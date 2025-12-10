@@ -94,19 +94,19 @@ spec-review review -i ./specs -o ./output --dry-run --verbose
 
 ### Model Options
 
-**Sonnet 4 (default)**: Fast, cost-effective, good for most reviews.
+**Sonnet 4.5 (default)**: Fast, cost-effective, good for most reviews.
 
 ```bash
 spec-review review -i ./specs -o ./output
 ```
 
-**Opus 4**: Higher quality analysis, better at catching subtle issues.
+**Opus 4.5**: Higher quality analysis, better at catching subtle issues.
 
 ```bash
 spec-review review -i ./specs --opus
 ```
 
-**Opus 4 + Extended Thinking**: Maximum quality, model "thinks" before responding. Best for complex specs with many interdependencies.
+**Opus 4.5 + Extended Thinking**: Maximum quality, model "thinks" before responding. Best for complex specs with many interdependencies.
 
 ```bash
 spec-review review -i ./specs --opus --thinking
@@ -131,7 +131,7 @@ output/
 {
   "metadata": {
     "timestamp": "2024-01-15T14:30:22",
-    "model": "claude-sonnet-4-20250514",
+    "model": "claude-sonnet-4-5-20250929",
     "input_tokens": 12500,
     "output_tokens": 3200,
     "thinking_tokens": 0,

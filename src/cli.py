@@ -167,7 +167,7 @@ def main():
               help='Output directory for reports and stripped files')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed processing information')
 @click.option('--dry-run', is_flag=True, help='Process files but do not call API')
-@click.option('--opus', is_flag=True, help='Use Opus 4 instead of Sonnet 4 (more expensive, higher quality)')
+@click.option('--opus', is_flag=True, help='Use Opus 4.5 instead of Sonnet 4.5 (higher quality, more expensive)')
 @click.option('--thinking', is_flag=True, help='Enable extended thinking (Opus only, even more expensive)')
 def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: bool, thinking: bool):
     """
@@ -278,7 +278,7 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     
     # Determine model
     model = MODEL_OPUS if opus or thinking else MODEL_SONNET
-    model_name = "Opus 4" if model == MODEL_OPUS else "Sonnet 4"
+    model_name = "Opus 4.5" if model == MODEL_OPUS else "Sonnet 4.5"
     thinking_str = " + Extended Thinking" if thinking else ""
     
     # Call Claude API

@@ -9,8 +9,8 @@ from .prompts import get_system_prompt, get_user_message
 
 
 # Model constants
-MODEL_SONNET = "claude-sonnet-4-20250514"
-MODEL_OPUS = "claude-opus-4-20250514"
+MODEL_SONNET = "claude-sonnet-4-5-20250929"
+MODEL_OPUS = "claude-opus-4-5-20251101"
 
 
 @dataclass
