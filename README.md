@@ -128,7 +128,8 @@ output/
     ├── stripped/                          # Cleaned spec content for review
     │   ├── 23 05 00 - Common Work Results_stripped.txt
     │   └── 23 21 13 - Hydronic Piping_stripped.txt
-    └── findings.json                      # Review results from Claude
+    ├── findings.json                      # Structured results (for automation)
+    └── report.docx                        # Formatted Word report (for humans)
 ```
 
 ### findings.json Structure
@@ -234,7 +235,7 @@ spec-review/
 - [x] Phase 1: Project skeleton, extraction, preprocessing, stripped file export
 - [x] Phase 2: Claude API integration
 - [x] Phase 3: Response parsing
-- [ ] Phase 4: Word report generation
+- [x] Phase 4: Word report generation
 - [ ] Phase 5: Polish and error handling
 - [ ] Phase 6: PyInstaller packaging
 

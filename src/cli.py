@@ -16,6 +16,7 @@ from .preprocessor import preprocess_spec, PreprocessResult
 from .tokenizer import analyze_token_usage, format_token_summary, RECOMMENDED_MAX
 from .prompts import get_system_prompt
 from .reviewer import review_specs, ReviewResult, MODEL_SONNET, MODEL_OPUS
+from .report import generate_report
 
 console = Console()
 
@@ -70,13 +71,12 @@ def print_alerts(summary: dict):
 
 def print_token_summary(token_summary, verbose: bool):
     """Print token usage summary."""
-
-    console.print(f"\n[bold]Token Analysis:[/bold]")
-    for item in token_summary.items:
-        console.print(f"  • {item.name}: {item.tokens:,} tokens")
-    console.print(f"  System prompt: {token_summary.system_prompt_tokens:,} tokens")
-    console.print(f"  [bold]Total: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}[/bold]")
-    console.print("  [green]✓ Within recommended limits[/green]")
+    if verbose:
+        console.print(f"\n[bold]Token Analysis:[/bold]")
+        for item in token_summary.items:
+            console.print(f"  • {item.name}: {item.tokens:,} tokens")
+        console.print(f"  System prompt: {token_summary.system_prompt_tokens:,} tokens")
+        console.print(f"  [bold]Total: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}[/bold]")
     
     if token_summary.warning_message:
         if "CRITICAL" in token_summary.warning_message:
@@ -85,6 +85,9 @@ def print_token_summary(token_summary, verbose: bool):
             console.print(f"\n[bold yellow]{token_summary.warning_message}[/bold yellow]")
         else:
             console.print(f"\n[dim]{token_summary.warning_message}[/dim]")
+    elif verbose:
+        console.print("  [green]✓ Within recommended limits[/green]")
+
 
 def get_docx_files_from_directory(input_dir: Path) -> list[Path]:
     """Get all .docx files from a directory."""
@@ -378,8 +381,18 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     with open(json_output_path, "w", encoding="utf-8") as f:
         json.dump(findings_data, f, indent=2, ensure_ascii=False)
     
-    console.print(f"\n[dim]Results saved to: {json_output_path}[/dim]")
-    console.print(f"[dim]Stripped files at: {stripped_dir}[/dim]")
+    # Generate Word report
+    report_path = generate_report(
+        review_result=review_result,
+        files_reviewed=[spec.filename for spec in specs],
+        leed_alerts=preprocess_summary['all_leed_alerts'],
+        placeholder_alerts=preprocess_summary['all_placeholder_alerts'],
+        output_path=run_dir
+    )
+    
+    console.print(f"\n[bold green]Report saved to: {report_path}[/bold green]")
+    console.print(f"[dim]JSON results: {json_output_path}[/dim]")
+    console.print(f"[dim]Stripped files: {stripped_dir}[/dim]")
     
     # Print detailed findings if verbose
     if verbose and review_result.findings:
