@@ -27,7 +27,7 @@ class PreprocessResult:
 # NOTE: Placeholders are NOT stripped - they are alerted separately and left in
 # so the LLM can also see and comment on them
 BOILERPLATE_PATTERNS = [
-    # Specifier notes - various formats
+    # Specifier notes - bracketed formats
     (r'\[Note to [Ss]pecifier[:\s][^\]]*\]', 'specifier_note'),
     (r'\[Specifier[:\s][^\]]*\]', 'specifier_note'),
     (r'\[SPECIFIER[:\s][^\]]*\]', 'specifier_note'),
@@ -35,11 +35,45 @@ BOILERPLATE_PATTERNS = [
     (r'(?i)<<\s*note to specifier[^>]*>>', 'specifier_note'),
     (r'(?i)^\s*note to specifier:.*$', 'specifier_note'),
     
-    # Copyright notices
-    (r'(?i)copyright\s*©?\s*\d{4}[^\n]*(?:masterspec|arcom|bsd|speclink|deltek)[^\n]*', 'copyright'),
-    (r'(?i)©\s*\d{4}\s*(?:masterspec|arcom|bsd|speclink|deltek)[^\n]*', 'copyright'),
-    (r'(?i)all rights reserved[^\n]*(?:masterspec|arcom|bsd|speclink|deltek)[^\n]*', 'copyright'),
-    (r'(?i)proprietary\s+information[^\n]*(?:masterspec|arcom|bsd|speclink|deltek)[^\n]*', 'copyright'),
+    # MasterSpec / AIA / ARCOM editorial instructions (plain sentence format)
+    # These typically start paragraphs and instruct the specifier what to do
+    (r'(?i)^Retain or delete this article.*$', 'masterspec_instruction'),
+    (r'(?i)^Retain [^\n]*paragraph[^\n]*below.*$', 'masterspec_instruction'),
+    (r'(?i)^Retain [^\n]*subparagraph[^\n]*below.*$', 'masterspec_instruction'),
+    (r'(?i)^Retain [^\n]*article[^\n]*below.*$', 'masterspec_instruction'),
+    (r'(?i)^Retain [^\n]*section[^\n]*below.*$', 'masterspec_instruction'),
+    (r'(?i)^Retain [^\n]*if .*$', 'masterspec_instruction'),
+    (r'(?i)^Retain one of.*$', 'masterspec_instruction'),
+    (r'(?i)^Retain one or more of.*$', 'masterspec_instruction'),
+    (r'(?i)^Revise this Section by deleting.*$', 'masterspec_instruction'),
+    (r'(?i)^Revise [^\n]*to suit [Pp]roject.*$', 'masterspec_instruction'),
+    (r'(?i)^This Section uses the term.*$', 'masterspec_instruction'),
+    (r'(?i)^Verify that Section titles.*$', 'masterspec_instruction'),
+    (r'(?i)^Coordinate [^\n]*paragraph[^\n]* with.*$', 'masterspec_instruction'),
+    (r'(?i)^Coordinate [^\n]*revision[^\n]* with.*$', 'masterspec_instruction'),
+    (r'(?i)^The list below matches.*$', 'masterspec_instruction'),
+    (r'(?i)^See [^\n]*Evaluations?[^\n]* for .*$', 'masterspec_instruction'),
+    (r'(?i)^See [^\n]*Article[^\n]* in the Evaluations.*$', 'masterspec_instruction'),
+    (r'(?i)^If retaining [^\n]*paragraph.*$', 'masterspec_instruction'),
+    (r'(?i)^If retaining [^\n]*subparagraph.*$', 'masterspec_instruction'),
+    (r'(?i)^If retaining [^\n]*article.*$', 'masterspec_instruction'),
+    (r'(?i)^When [^\n]*characteristics are important.*$', 'masterspec_instruction'),
+    (r'(?i)^Inspections in this article are.*$', 'masterspec_instruction'),
+    (r'(?i)^Materials and thicknesses in schedules below.*$', 'masterspec_instruction'),
+    (r'(?i)^Insulation materials and thicknesses are identified below.*$', 'masterspec_instruction'),
+    (r'(?i)^Do not duplicate requirements.*$', 'masterspec_instruction'),
+    (r'(?i)^Not all materials and thicknesses may be suitable.*$', 'masterspec_instruction'),
+    (r'(?i)^Consider the exposure of installed insulation.*$', 'masterspec_instruction'),
+    (r'(?i)^Flexible elastomeric and polyolefin thicknesses are limited.*$', 'masterspec_instruction'),
+    (r'(?i)^To comply with ASHRAE.*insulation should have.*$', 'masterspec_instruction'),
+    (r'(?i)^Architect should be prepared to reject.*$', 'masterspec_instruction'),
+    
+    # Copyright notices - expanded to catch AIA/ARCOM format
+    (r'(?i)^Copyright\s*©?\s*\d{4}.*$', 'copyright'),
+    (r'(?i)^©\s*\d{4}.*$', 'copyright'),
+    (r'(?i)^Exclusively published and distributed by.*$', 'copyright'),
+    (r'(?i)all rights reserved.*$', 'copyright'),
+    (r'(?i)proprietary\s+information.*$', 'copyright'),
     
     # Separator lines
     (r'^[\*]{4,}\s*$', 'separator'),
