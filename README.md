@@ -14,6 +14,23 @@ A CLI tool for reviewing mechanical and plumbing (M&P) specifications for Califo
 - **Model Options**: Choose between Sonnet 4.5 (fast) or Opus 4.5 (thorough), with optional extended thinking
 - **JSON Output**: Structured findings for further processing
 
+## Converting .doc Files
+
+This tool only supports `.docx` files. If you have older `.doc` files (Word 97-2003 format), convert them first using the included PowerShell script:
+
+```powershell
+# Convert all .doc files in a folder (requires Word installed)
+.\scripts\convert-doc-to-docx.ps1 -InputFolder "C:\path\to\specs"
+
+# Convert and save to a different folder
+.\scripts\convert-doc-to-docx.ps1 -InputFolder "C:\old-specs" -OutputFolder "C:\new-specs"
+
+# Include subfolders
+.\scripts\convert-doc-to-docx.ps1 -InputFolder "C:\specs" -Recurse
+```
+
+The script skips files that have already been converted.
+
 ## Installation
 
 ```bash
@@ -224,9 +241,13 @@ spec-review/
 │   ├── tokenizer.py     # Token counting
 │   ├── prompts.py       # System prompt
 │   ├── reviewer.py      # Claude API client
-│   └── report.py        # Word report generation (Phase 4)
+│   └── report.py        # Word report generation
+├── scripts/
+│   └── convert-doc-to-docx.ps1  # Batch .doc converter
 ├── requirements.txt
 ├── pyproject.toml
+├── spec-review.spec     # PyInstaller config
+├── build.bat            # Build script for Windows
 └── README.md
 ```
 
@@ -236,8 +257,35 @@ spec-review/
 - [x] Phase 2: Claude API integration
 - [x] Phase 3: Response parsing
 - [x] Phase 4: Word report generation
-- [ ] Phase 5: Polish and error handling
-- [ ] Phase 6: PyInstaller packaging
+- [x] Phase 5: Polish and error handling
+- [x] Phase 6: PyInstaller packaging
+
+## Building the Executable
+
+To create a standalone `.exe` that doesn't require Python:
+
+```bash
+# Option 1: Use the build script
+build.bat
+
+# Option 2: Run PyInstaller directly
+pip install pyinstaller
+pyinstaller spec-review.spec --clean
+```
+
+The executable will be created at `dist/spec-review.exe`.
+
+**Using the executable:**
+
+```cmd
+REM Set your API key
+set ANTHROPIC_API_KEY=your-key-here
+
+REM Run the tool
+spec-review.exe review -i C:\path\to\specs -o C:\path\to\output
+```
+
+You can copy `spec-review.exe` to any Windows machine — no Python installation required.
 
 ## License
 
