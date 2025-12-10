@@ -70,12 +70,13 @@ def print_alerts(summary: dict):
 
 def print_token_summary(token_summary, verbose: bool):
     """Print token usage summary."""
-    if verbose:
-        console.print(f"\n[bold]Token Analysis:[/bold]")
-        for item in token_summary.items:
-            console.print(f"  • {item.name}: {item.tokens:,} tokens")
-        console.print(f"  System prompt: {token_summary.system_prompt_tokens:,} tokens")
-        console.print(f"  [bold]Total: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}[/bold]")
+
+    console.print(f"\n[bold]Token Analysis:[/bold]")
+    for item in token_summary.items:
+        console.print(f"  • {item.name}: {item.tokens:,} tokens")
+    console.print(f"  System prompt: {token_summary.system_prompt_tokens:,} tokens")
+    console.print(f"  [bold]Total: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}[/bold]")
+    console.print("  [green]✓ Within recommended limits[/green]")
     
     if token_summary.warning_message:
         if "CRITICAL" in token_summary.warning_message:
@@ -84,9 +85,6 @@ def print_token_summary(token_summary, verbose: bool):
             console.print(f"\n[bold yellow]{token_summary.warning_message}[/bold yellow]")
         else:
             console.print(f"\n[dim]{token_summary.warning_message}[/dim]")
-    elif verbose:
-        console.print("  [green]✓ Within recommended limits[/green]")
-
 
 def get_docx_files_from_directory(input_dir: Path) -> list[Path]:
     """Get all .docx files from a directory."""

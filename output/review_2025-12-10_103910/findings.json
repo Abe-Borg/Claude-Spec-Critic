@@ -1,0 +1,537 @@
+{
+  "metadata": {
+    "timestamp": "2025-12-10T10:40:30.138140",
+    "model": "claude-sonnet-4-5-20250929",
+    "input_tokens": 44775,
+    "output_tokens": 5709,
+    "thinking_tokens": 0,
+    "total_output_tokens": 5709,
+    "elapsed_seconds": 78.82696866989136,
+    "files_reviewed": [
+      "230529 - HANGERS AND SUPPORTS.docx",
+      "230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT.docx",
+      "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "230713 - DUCT INSULATION.docx",
+      "230719 - HVAC PIPING INSULATION.docx"
+    ]
+  },
+  "summary": {
+    "critical": 2,
+    "high": 3,
+    "medium": 16,
+    "low": 4,
+    "gripes": 3,
+    "total": 28
+  },
+  "alerts": {
+    "leed_references": [
+      {
+        "filename": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+        "line": 49,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Submittals:"
+      },
+      {
+        "filename": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+        "line": 121,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain \"ASHRAE Compliance\" Paragraph below for LEED Prerequisite IEQ 1, which requires compliance wi"
+      },
+      {
+        "filename": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+        "line": 125,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain \"ASHRAE/IESNA Compliance\" Paragraph below for LEED Prerequisite EA 2, which requires complian"
+      },
+      {
+        "filename": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+        "line": 217,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Prerequisite IEQ 1 requires compliance with requirements in ASHRAE 62.1, Section 7.2.2 - \"Air B"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 59,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Submittals:"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 61,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "\"Product Data for Credit IEQ 4.1\" Subparagraph below applies to LEED-NC, LEED-CI, and LEED-CS; coord"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 65,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "\"Laboratory Test Reports for Credit IEQ 4\" Subparagraph below applies to LEED for Schools."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 261,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 265,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 281,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 285,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 293,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Credit IEQ 4.1 does not address requirements for mastics."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 349,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Credit IEQ 4.1 does not address requirements for lagging adhesives."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 395,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 399,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 809,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Duct and plenum insulation schedules in first two articles below specify commonly used insulation ma"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 45,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Submittals:"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 47,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "\"Product Data for Credit IEQ 4.1\" Subparagraph below applies to LEED-NC, LEED-CI, and LEED-CS; coord"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 51,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "\"Laboratory Test Reports for Credit IEQ 4\" Subparagraph below applies to LEED for Schools."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 233,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 237,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 255,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 259,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 277,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 281,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 289,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Credit IEQ 4.1 does not address requirements for mastics."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 345,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Credit IEQ 4.1 does not address requirements for lagging adhesives."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 401,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 405,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 425,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 429,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 899,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Piping insulation schedules in first three articles below specify commonly used insulation materials"
+      }
+    ],
+    "placeholders": []
+  },
+  "findings": [
+    {
+      "severity": "CRITICAL",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, Article 1.3 - Performance Requirements",
+      "issue": "References ASCE/SEI 7 without specifying the year. DSA requires ASCE 7-22 as adopted by CBC 2022. This is critical for seismic design compliance.",
+      "actionType": "EDIT",
+      "existingText": "Structural Performance: Hangers and supports for HVAC piping and equipment shall withstand the effects of gravity loads and stresses within limits and under conditions indicated according to ASCE/SEI 7.",
+      "replacementText": "Structural Performance: Hangers and supports for HVAC piping and equipment shall withstand the effects of gravity loads and stresses within limits and under conditions indicated according to ASCE 7-22 as adopted by CBC 2022.",
+      "codeReference": "CBC 2022 Chapter 16"
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, Article 1.3 - Performance Requirements",
+      "issue": "Missing DSA-specific seismic restraint requirements and certification documentation. DSA IR A-6 requires specific seismic bracing, certification, and pre-approval documentation for hangers and supports.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "Seismic Restraint: Design and certify seismic restraints per DSA IR A-6 and OSHPD seismic requirements. Provide seismic certification documentation and OSHPD pre-approval (OPA) where required for hangers and supports.",
+      "codeReference": "DSA IR A-6"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 2, Article 2.5 - Thermal-Hanger Shield Inserts",
+      "issue": "References ASTM C 533 which has been withdrawn. The current standard is ASTM C1427 for calcium silicate insulation.",
+      "actionType": "EDIT",
+      "existingText": "Insulation-Insert Material for Cold Piping: Water-repellent treated, ASTM C 533, Type I calcium silicate with 100-psig minimum compressive strength.\n\nInsulation-Insert Material for Hot Piping: Water-repellent treated, ASTM C 533, Type I calcium silicate with 100-psig minimum compressive strength.",
+      "replacementText": "Insulation-Insert Material for Cold Piping: Water-repellent treated, ASTM C1427, Type I calcium silicate with 100-psig minimum compressive strength.\n\nInsulation-Insert Material for Hot Piping: Water-repellent treated, ASTM C1427, Type I calcium silicate with 100-psig minimum compressive strength.",
+      "codeReference": "ASTM C1427"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 2, Article 2.9 - Miscellaneous Materials",
+      "issue": "References outdated structural steel standard. ASTM A 36/A 36M should be ASTM A36/A36M (current format without space).",
+      "actionType": "EDIT",
+      "existingText": "Structural Steel: ASTM A 36/A 36M, carbon-steel plates, shapes, and bars; black and galvanized.",
+      "replacementText": "Structural Steel: ASTM A36/A36M, carbon-steel plates, shapes, and bars; black and galvanized.",
+      "codeReference": "ASTM A36/A36M"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 3, Article 3.4 - Metal Fabrications",
+      "issue": "References AWS D1.1/D1.1M without year. The current edition as of CBC 2022 adoption is AWS D1.1/D1.1M:2020.",
+      "actionType": "EDIT",
+      "existingText": "Field Welding: Comply with AWS D1.1/D1.1M procedures for shielded, metal arc welding...",
+      "replacementText": "Field Welding: Comply with AWS D1.1/D1.1M:2020 procedures for shielded, metal arc welding...",
+      "codeReference": "AWS D1.1/D1.1M:2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, General",
+      "issue": "Section number 230529 uses outdated Division 15 format. Current CSI MasterFormat uses Division 23 for HVAC. Section should be renumbered to 23 05 29.",
+      "actionType": "EDIT",
+      "existingText": "SECTION 230529 - HANGERS AND SUPPORTS",
+      "replacementText": "SECTION 23 05 29 - HANGERS AND SUPPORTS FOR HVAC PIPING AND EQUIPMENT",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, Article 1.2 - Related Sections",
+      "issue": "References Section 233113 which uses outdated Division 15 format. Should be Section 23 31 13 per current CSI MasterFormat.",
+      "actionType": "EDIT",
+      "existingText": "Section 233113 \"Metal Ducts\" for duct hangers and supports.",
+      "replacementText": "Section 23 31 13 \"Metal Ducts\" for duct hangers and supports.",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 3, Article 3.6 - Painting",
+      "issue": "References ASTM A 780 which has been withdrawn. The current standard is ASTM A780/A780M (with M suffix).",
+      "actionType": "EDIT",
+      "existingText": "Galvanized Surfaces: Clean welds, bolted connections, and abraded areas and apply galvanizing-repair paint to comply with ASTM A 780.",
+      "replacementText": "Galvanized Surfaces: Clean welds, bolted connections, and abraded areas and apply galvanizing-repair paint to comply with ASTM A780/A780M.",
+      "codeReference": "ASTM A780/A780M"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 1, General",
+      "issue": "Section number 230553 uses outdated Division 15 format. Current CSI MasterFormat uses Division 23 for HVAC. Section should be renumbered to 23 05 53.",
+      "actionType": "EDIT",
+      "existingText": "SECTION 230553",
+      "replacementText": "SECTION 23 05 53",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, General",
+      "issue": "Section number 230593 uses outdated Division 15 format. Current CSI MasterFormat uses Division 23 for HVAC. Section should be renumbered to 23 05 93.",
+      "actionType": "EDIT",
+      "existingText": "SECTION 230593",
+      "replacementText": "SECTION 23 05 93",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 3, Article 3.4 - Examination",
+      "issue": "References Section 233113 which uses outdated Division 15 format. Should be Section 23 31 13 per current CSI MasterFormat.",
+      "actionType": "EDIT",
+      "existingText": "Examine ceiling plenums and underfloor air plenums used for supply, return, or relief air to verify that they meet the leakage class of connected ducts as specified in Section 233113 \"Metal Ducts\"...",
+      "replacementText": "Examine ceiling plenums and underfloor air plenums used for supply, return, or relief air to verify that they meet the leakage class of connected ducts as specified in Section 23 31 13 \"Metal Ducts\"...",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 3, Article 3.7 - General Procedures for Testing and Balancing",
+      "issue": "References Section 233300 which uses outdated Division 15 format. Should be Section 23 33 00 per current CSI MasterFormat.",
+      "actionType": "EDIT",
+      "existingText": "After testing and balancing, install test ports and duct access doors that comply with requirements in Section 233300 \"Air Duct Accessories.\"",
+      "replacementText": "After testing and balancing, install test ports and duct access doors that comply with requirements in Section 23 33 00 \"Air Duct Accessories.\"",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 1, General",
+      "issue": "Section number 230713 uses outdated Division 15 format. Current CSI MasterFormat uses Division 23 for HVAC. Section should be renumbered to 23 07 13.",
+      "actionType": "EDIT",
+      "existingText": "SECTION 230713",
+      "replacementText": "SECTION 23 07 13",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 1, Article 1.2 - Summary, Related Sections",
+      "issue": "References Section 230719 and Section 233113 which use outdated Division 15 format. Should be Section 23 07 19 and Section 23 31 13 per current CSI MasterFormat.",
+      "actionType": "EDIT",
+      "existingText": "Related Sections:\n\nSection 230719 \"HVAC Piping Insulation.\"\n\nSection 233113 \"Metal Ducts\" for duct liners.",
+      "replacementText": "Related Sections:\n\nSection 23 07 19 \"HVAC Piping Insulation.\"\n\nSection 23 31 13 \"Metal Ducts\" for duct liners.",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 2, Article 2.2 - Adhesives",
+      "issue": "References outdated military specification MIL-A-3316C (last updated October 1987). While still technically valid, projects should consider using current ASTM standards where available.",
+      "actionType": "EDIT",
+      "existingText": "Military Specification in this article was the only standard available when this Section was written. MIL-A-3316C was last updated in October 1987.",
+      "replacementText": "Military Specification MIL-A-3316C is referenced below. While valid, verify current availability and consider ASTM alternatives if MIL-spec products are discontinued.",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 3, Article 3.4 - Penetrations",
+      "issue": "References Section 078413 which uses outdated Division 07 format. Should be Section 07 84 13 per current CSI MasterFormat.",
+      "actionType": "EDIT",
+      "existingText": "Comply with requirements in Section 078413 \"Penetration Firestopping\"",
+      "replacementText": "Comply with requirements in Section 07 84 13 \"Penetration Firestopping\"",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 1, General",
+      "issue": "Section number 230719 uses outdated Division 15 format. Current CSI MasterFormat uses Division 23 for HVAC. Section should be renumbered to 23 07 19.",
+      "actionType": "EDIT",
+      "existingText": "SECTION 230719",
+      "replacementText": "SECTION 23 07 19",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 1, Article 1.2 - Summary, Related Sections",
+      "issue": "References Section 230713 and Section 230716 which use outdated Division 15 format. Should be Section 23 07 13 and Section 23 07 16 per current CSI MasterFormat.",
+      "actionType": "EDIT",
+      "existingText": "Related Sections:\n\nSection 230713 \"Duct Insulation.\"\n\nSection 230716 \"HVAC Equipment Insulation.\"",
+      "replacementText": "Related Sections:\n\nSection 23 07 13 \"Duct Insulation.\"\n\nSection 23 07 16 \"HVAC Equipment Insulation.\"",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 3, Article 3.3 - Penetrations",
+      "issue": "References Section 078413 which uses outdated Division 07 format. Should be Section 07 84 13 per current CSI MasterFormat (applies throughout this article).",
+      "actionType": "EDIT",
+      "existingText": "Comply with requirements in Section 078413 \"Penetration Firestopping\"",
+      "replacementText": "Comply with requirements in Section 07 84 13 \"Penetration Firestopping\"",
+      "codeReference": "CSI MasterFormat 2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 2, Article 2.1 - Insulation Materials",
+      "issue": "References ASTM C 553, C 1290, and other standards with space in designation (e.g., 'ASTM C 553'). Current ASTM format eliminates the space (e.g., 'ASTM C553'). This applies throughout the section.",
+      "actionType": "EDIT",
+      "existingText": "ASTM C 553, Type II and ASTM C 1290",
+      "replacementText": "ASTM C553, Type II and ASTM C1290",
+      "codeReference": "ASTM designation format"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 2, Article 2.1 - Insulation Materials",
+      "issue": "References ASTM C 534, C 547, and other standards with space in designation. Current ASTM format eliminates the space. This applies throughout the section.",
+      "actionType": "EDIT",
+      "existingText": "ASTM C 534, Type I",
+      "replacementText": "ASTM C534, Type I",
+      "codeReference": "ASTM designation format"
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, Article 1.6 - Action Submittals",
+      "issue": "Inconsistent capitalization: 'Shop Drawings' should follow standard CSI format as 'shop drawings' when used in body text.",
+      "actionType": "EDIT",
+      "existingText": "Shop Drawings: Signed and sealed by a qualified professional engineer.",
+      "replacementText": "Shop drawings: Signed and sealed by a qualified professional engineer.",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, Article 1.7 - Informational Submittals",
+      "issue": "Inconsistent capitalization and formatting of 'Contract Documents' appears multiple times and should be lowercase in body text per CSI conventions.",
+      "actionType": "EDIT",
+      "existingText": "Contract Documents Examination Report: Within 30 days...",
+      "replacementText": "Contract documents examination report: Within 30 days...",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 1, Article 1.6 - Action Submittals",
+      "issue": "Inconsistent capitalization: 'Product Data,' 'Shop Drawings,' and 'Samples' should be lowercase in body text per CSI conventions.",
+      "actionType": "EDIT",
+      "existingText": "Product Data: For each type of product indicated...\n\nShop Drawings: Include plans...\n\nSamples: For each type...",
+      "replacementText": "Product data: For each type of product indicated...\n\nShop drawings: Include plans...\n\nSamples: For each type...",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 1, Article 1.6 - Action Submittals",
+      "issue": "Inconsistent capitalization: submittal types should be lowercase in body text per CSI conventions (applies throughout section).",
+      "actionType": "EDIT",
+      "existingText": "Product Data: For each type...\n\nShop Drawings: Include plans...",
+      "replacementText": "Product data: For each type...\n\nShop drawings: Include plans...",
+      "codeReference": null
+    },
+    {
+      "severity": "GRIPES",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, Article 1.8 - Quality Assurance",
+      "issue": "Requiring AABC certification for all TAB work is unnecessarily restrictive. NEBB (National Environmental Balancing Bureau) and TABB (Testing, Adjusting and Balancing Bureau) are equally qualified organizations. Limiting to AABC reduces competition and may increase costs without improving quality.",
+      "actionType": "EDIT",
+      "existingText": "TAB Contractor Qualifications: Engage a TAB entity certified by AABC.",
+      "replacementText": "TAB Contractor Qualifications: Engage a TAB entity certified by AABC, NEBB, or TABB.",
+      "codeReference": null
+    },
+    {
+      "severity": "GRIPES",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 3, Article 3.10 - Field Quality Control",
+      "issue": "Requiring inspection at only 'one location for each duct system' is inadequate for K-12 facilities which typically have multiple air handlers and extensive ductwork. This minimal inspection may miss systemic installation problems and is insufficient quality assurance for a DSA project.",
+      "actionType": "EDIT",
+      "existingText": "Extent of inspection shall be limited to one location for each duct system defined in the \"Duct Insulation Schedule, General\" Article.",
+      "replacementText": "Extent of inspection shall be limited to a minimum of three locations for each duct system defined in the \"Duct Insulation Schedule, General\" Article, or one location per air handling unit, whichever is greater.",
+      "codeReference": null
+    },
+    {
+      "severity": "GRIPES",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 3, Article 3.10 - Field Quality Control",
+      "issue": "The inspection quantities specified (three locations of straight pipe, three of threaded fittings, etc.) may be inadequate for larger K-12 campuses with extensive piping systems. A percentage-based inspection or minimum per building would be more appropriate for ensuring quality across the entire project.",
+      "actionType": "EDIT",
+      "existingText": "Extent of inspection shall be limited to three locations of straight pipe, three locations of threaded fittings...",
+      "replacementText": "Extent of inspection shall be a minimum of three locations of straight pipe, three locations of threaded fittings... per building or piping system, or 5% of total installations, whichever is greater.",
+      "codeReference": null
+    }
+  ]
+}
