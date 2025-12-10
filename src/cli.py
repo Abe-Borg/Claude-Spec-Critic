@@ -70,20 +70,21 @@ def print_alerts(summary: dict):
 
 def print_token_summary(token_summary, verbose: bool):
     """Print token usage summary."""
+    # Always show total token count
+    console.print(f"\n[bold]Input tokens:[/bold] {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}")
+    
     if verbose:
-        console.print(f"\n[bold]Token Analysis:[/bold]")
         for item in token_summary.items:
             console.print(f"  • {item.name}: {item.tokens:,} tokens")
-        console.print(f"  System prompt: {token_summary.system_prompt_tokens:,} tokens")
-        console.print(f"  [bold]Total: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}[/bold]")
+        console.print(f"  • System prompt: {token_summary.system_prompt_tokens:,} tokens")
     
     if token_summary.warning_message:
         if "CRITICAL" in token_summary.warning_message:
-            console.print(f"\n[bold red]{token_summary.warning_message}[/bold red]")
+            console.print(f"[bold red]{token_summary.warning_message}[/bold red]")
         elif "WARNING" in token_summary.warning_message:
-            console.print(f"\n[bold yellow]{token_summary.warning_message}[/bold yellow]")
+            console.print(f"[bold yellow]{token_summary.warning_message}[/bold yellow]")
         else:
-            console.print(f"\n[dim]{token_summary.warning_message}[/dim]")
+            console.print(f"[dim]{token_summary.warning_message}[/dim]")
     elif verbose:
         console.print("  [green]✓ Within recommended limits[/green]")
 

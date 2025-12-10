@@ -102,6 +102,13 @@ Each finding must have these fields:
 - replacementText: The corrected text (null if actionType is DELETE). Keep this to a concise replacement, not a full specification rewrite.
 - codeReference: The code, standard, or best practice being violated (null if editorial issue or if you are not sure which specific code applies)
 
+
+CRITICAL CHECKS - DO NOT SKIP:
+1. Check each spec against itself for internal contradictions
+2. Verify all referenced sections/standards actually exist
+3. Check that Part 2 products match Part 3 installation requirements
+4. Verify units are consistent throughout (don't mix imperial/metric randomly)
+
 Example output:
 [
   {
