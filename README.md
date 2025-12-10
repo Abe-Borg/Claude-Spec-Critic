@@ -125,15 +125,20 @@ The `stripped/` folder contains text files showing exactly what content was sent
 | **MEDIUM** | Wrong code editions, obsolete products |
 | **LOW** | Editorial, formatting, terminology |
 
-## What Gets Stripped
+## What Gets Stripped (Removed from LLM Input)
 
-The preprocessor removes:
-- `[Note to specifier...]` blocks
-- `[INSERT...]`, `<INSERT...>` placeholders (still flagged as alerts)
-- Copyright notices (MasterSpec, ARCOM, BSD, SpecLink)
-- Separator lines (`****`, `----`, etc.)
-- Page numbers and headers/footers
-- Unresolved option brackets `[Option A]`
+The preprocessor removes content that adds no value to the review:
+- `[Note to specifier...]` blocks and variations
+- Copyright notices (MasterSpec, ARCOM, BSD, SpecLink, Deltek)
+- Separator lines (`****`, `----`, `====`)
+- Page numbers
+- Revision marks and hidden text markers
+
+## What Gets Alerted (But Kept for LLM Review)
+
+These items trigger alerts so you know about them, but they remain in the content so the LLM can also comment on them:
+- **LEED references**: Any mention of LEED, USGBC, or LEED credits
+- **Placeholders**: `[INSERT...]`, `[SPECIFY...]`, `[VERIFY...]`, `___`, `[TBD]`, etc.
 
 ## Project Structure
 

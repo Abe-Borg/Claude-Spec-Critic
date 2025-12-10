@@ -24,6 +24,8 @@ class PreprocessResult:
 
 
 # Patterns for boilerplate removal
+# NOTE: Placeholders are NOT stripped - they are alerted separately and left in
+# so the LLM can also see and comment on them
 BOILERPLATE_PATTERNS = [
     # Specifier notes - various formats
     (r'\[Note to [Ss]pecifier[:\s][^\]]*\]', 'specifier_note'),
@@ -31,33 +33,21 @@ BOILERPLATE_PATTERNS = [
     (r'\[SPECIFIER[:\s][^\]]*\]', 'specifier_note'),
     (r'(?i)\*\*\s*note to specifier\s*\*\*[^\n]*(?:\n(?!\n)[^\n]*)*', 'specifier_note'),
     (r'(?i)<<\s*note to specifier[^>]*>>', 'specifier_note'),
-    
-    # Placeholder brackets that span multiple words (but not single-word technical terms)
-    (r'\[INSERT[^\]]*\]', 'placeholder'),
-    (r'<INSERT[^>]*>', 'placeholder'),
-    (r'\[INCLUDE[^\]]*\]', 'placeholder'),
-    (r'\[SELECT[^\]]*\]', 'placeholder'),
-    (r'\[VERIFY[^\]]*\]', 'placeholder'),
-    (r'\[COORDINATE[^\]]*\]', 'placeholder'),
+    (r'(?i)^\s*note to specifier:.*$', 'specifier_note'),
     
     # Copyright notices
     (r'(?i)copyright\s*©?\s*\d{4}[^\n]*(?:masterspec|arcom|bsd|speclink|deltek)[^\n]*', 'copyright'),
     (r'(?i)©\s*\d{4}\s*(?:masterspec|arcom|bsd|speclink|deltek)[^\n]*', 'copyright'),
     (r'(?i)all rights reserved[^\n]*(?:masterspec|arcom|bsd|speclink|deltek)[^\n]*', 'copyright'),
+    (r'(?i)proprietary\s+information[^\n]*(?:masterspec|arcom|bsd|speclink|deltek)[^\n]*', 'copyright'),
     
     # Separator lines
     (r'^[\*]{4,}\s*$', 'separator'),
     (r'^[-]{4,}\s*$', 'separator'),
     (r'^[=]{4,}\s*$', 'separator'),
-    (r'^[_]{4,}\s*$', 'separator'),
     
     # Page artifacts
     (r'(?i)^page\s+\d+\s*(?:of\s*\d+)?\s*$', 'page_number'),
-    (r'(?i)^\d+\s*-\s*\d+\s*$', 'page_number'),  # Format: "23 05 00 - 1"
-    
-    # Empty option brackets (unresolved choices)
-    (r'\[\s*Option\s*[A-Z]\s*\][^\n]*\n?', 'unresolved_option'),
-    (r'\[\s*or\s*\][^\n]*', 'unresolved_option'),
     
     # Revision marks from editing
     (r'(?i)\{revision[^\}]*\}', 'revision_mark'),
