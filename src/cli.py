@@ -36,13 +36,14 @@ def print_files_loaded(specs: list[ExtractedSpec], verbose: bool):
             console.print(f"  • {spec.filename} ({spec.word_count:,} words)")
 
 
-def print_preprocessing_summary(results: list[PreprocessResult], summary: dict, verbose: bool):
+def print_preprocessing_summary(results: list[PreprocessResult], summary: dict, verbose: bool, stripped_dir: Path):
     """Print preprocessing summary."""
-    if verbose and summary['total_chars_removed'] > 0:
+    if summary['total_chars_removed'] > 0:
         console.print(
             f"\n[dim]Boilerplate stripped: {summary['total_chars_removed']:,} chars "
             f"({summary['reduction_percent']:.1f}% reduction)[/dim]"
         )
+    console.print(f"[dim]Stripped files saved to: {stripped_dir}[/dim]")
 
 
 def print_alerts(summary: dict):
@@ -85,24 +86,69 @@ def print_token_summary(token_summary, verbose: bool):
         console.print("  [green]✓ Within recommended limits[/green]")
 
 
-def validate_files(files: tuple[str, ...]) -> list[Path]:
-    """Validate input files exist and are .docx format."""
-    validated = []
+def get_docx_files_from_directory(input_dir: Path) -> list[Path]:
+    """Get all .docx files from a directory."""
+    if not input_dir.exists():
+        console.print(f"[red]Error: Input directory not found: {input_dir}[/red]")
+        sys.exit(1)
     
-    for f in files:
-        path = Path(f)
-        
-        if not path.exists():
-            console.print(f"[red]Error: File not found: {f}[/red]")
-            sys.exit(1)
-        
-        if path.suffix.lower() != '.docx':
-            console.print(f"[red]Error: Not a .docx file: {f}[/red]")
-            sys.exit(1)
-        
-        validated.append(path)
+    if not input_dir.is_dir():
+        console.print(f"[red]Error: Not a directory: {input_dir}[/red]")
+        sys.exit(1)
     
-    return validated
+    docx_files = sorted(input_dir.glob("*.docx"))
+    
+    # Filter out temp files (start with ~$)
+    docx_files = [f for f in docx_files if not f.name.startswith("~$")]
+    
+    return docx_files
+
+
+def save_stripped_content(specs: list[ExtractedSpec], results: list[PreprocessResult], output_dir: Path) -> Path:
+    """
+    Save stripped/cleaned spec content to text files for review.
+    
+    Args:
+        specs: Original extracted specs (for filenames)
+        results: Preprocessed results with cleaned content
+        output_dir: Base output directory
+        
+    Returns:
+        Path to the stripped files directory
+    """
+    stripped_dir = output_dir / "stripped"
+    stripped_dir.mkdir(parents=True, exist_ok=True)
+    
+    for spec, result in zip(specs, results):
+        # Change .docx to .txt
+        output_filename = Path(spec.filename).stem + "_stripped.txt"
+        output_path = stripped_dir / output_filename
+        
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(f"# Stripped content from: {spec.filename}\n")
+            f.write(f"# Original length: {result.original_length:,} chars\n")
+            f.write(f"# Cleaned length: {result.cleaned_length:,} chars\n")
+            f.write(f"# Removed: {result.chars_removed:,} chars ({result.reduction_percent:.1f}%)\n")
+            f.write("#" + "=" * 60 + "\n\n")
+            f.write(result.cleaned_content)
+    
+    return stripped_dir
+
+
+def setup_output_directory(output_dir: Path) -> Path:
+    """
+    Create timestamped output directory structure.
+    
+    Args:
+        output_dir: Base output directory
+        
+    Returns:
+        Path to the timestamped run directory
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    run_dir = output_dir / f"review_{timestamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
 
 
 @click.group()
@@ -113,32 +159,41 @@ def main():
 
 
 @main.command()
-@click.argument('files', nargs=-1, required=True, type=click.Path(exists=False))
+@click.option('--input-dir', '-i', type=click.Path(exists=True), required=True, 
+              help='Input directory containing .docx specification files')
+@click.option('--output-dir', '-o', type=click.Path(), default='./output', 
+              help='Output directory for reports and stripped files')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed processing information')
-@click.option('--output-dir', '-o', type=click.Path(), default='.', help='Output directory for report')
 @click.option('--dry-run', is_flag=True, help='Process files but do not call API')
-def review(files: tuple[str, ...], verbose: bool, output_dir: str, dry_run: bool):
+def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool):
     """
     Review MEP specifications for code compliance and technical issues.
     
-    Accepts 1-5 .docx specification files.
+    Loads all .docx files from the input directory (max 5).
     
     Example:
-        spec-review review "23 05 00.docx" "23 21 13.docx" --verbose
+        spec-review review -i ./specs -o ./output --verbose
     """
     print_header()
     
-    # Validate file count
-    if len(files) > 5:
-        console.print("[red]Error: Maximum of 5 specification files allowed.[/red]")
+    input_path = Path(input_dir)
+    output_path = Path(output_dir)
+    
+    # Get .docx files from input directory
+    docx_files = get_docx_files_from_directory(input_path)
+    
+    if len(docx_files) == 0:
+        console.print(f"[red]Error: No .docx files found in {input_path}[/red]")
         sys.exit(1)
     
-    if len(files) == 0:
-        console.print("[red]Error: At least one specification file required.[/red]")
+    if len(docx_files) > 5:
+        console.print(f"[red]Error: Found {len(docx_files)} .docx files. Maximum of 5 allowed.[/red]")
+        console.print("[dim]Remove some files from the input directory and try again.[/dim]")
         sys.exit(1)
     
-    # Validate files exist and are .docx
-    validated_files = validate_files(files)
+    # Setup output directory
+    run_dir = setup_output_directory(output_path)
+    console.print(f"\n[dim]Output directory: {run_dir}[/dim]")
     
     # Extract text from files
     specs: list[ExtractedSpec] = []
@@ -148,9 +203,9 @@ def review(files: tuple[str, ...], verbose: bool, output_dir: str, dry_run: bool
         console=console,
         transient=True
     ) as progress:
-        task = progress.add_task("Extracting text from documents...", total=len(validated_files))
+        task = progress.add_task("Extracting text from documents...", total=len(docx_files))
         
-        for filepath in validated_files:
+        for filepath in docx_files:
             try:
                 spec = extract_text_from_docx(filepath)
                 specs.append(spec)
@@ -185,16 +240,15 @@ def review(files: tuple[str, ...], verbose: bool, output_dir: str, dry_run: bool
         'all_placeholder_alerts': all_placeholder_alerts,
     }
     
-    print_preprocessing_summary(preprocess_results, preprocess_summary, verbose)
+    # Save stripped files
+    stripped_dir = save_stripped_content(specs, preprocess_results, run_dir)
+    
+    print_preprocessing_summary(preprocess_results, preprocess_summary, verbose, stripped_dir)
     print_alerts(preprocess_summary)
     
     # Analyze token usage
-    spec_contents = [
-        (result.cleaned_content, specs[i].filename) 
-        for i, result in enumerate(preprocess_results)
-    ]
-    # Flip the tuple order for analyze_token_usage
-    spec_contents_for_tokens = [(specs[i].filename, result.cleaned_content) for i, result in enumerate(preprocess_results)]
+    spec_contents_for_tokens = [(spec.filename, result.cleaned_content) 
+                                 for spec, result in zip(specs, preprocess_results)]
     
     system_prompt = get_system_prompt()
     token_summary = analyze_token_usage(spec_contents_for_tokens, system_prompt)
@@ -208,20 +262,13 @@ def review(files: tuple[str, ...], verbose: bool, output_dir: str, dry_run: bool
     
     if dry_run:
         console.print("\n[yellow]Dry run complete. No API call made.[/yellow]")
+        console.print(f"[dim]Review stripped files at: {stripped_dir}[/dim]")
         return
     
     # API call would go here
     console.print("\n[bold green]Phase 1 complete.[/bold green]")
     console.print("[dim]API integration (Phase 2) not yet implemented.[/dim]")
-    
-    # Show what would be sent
-    if verbose:
-        console.print("\n[dim]Combined content preview (first 500 chars):[/dim]")
-        combined = "\n\n".join([
-            f"=== FILE: {specs[i].filename} ===\n{result.cleaned_content[:200]}..."
-            for i, result in enumerate(preprocess_results)
-        ])
-        console.print(f"[dim]{combined[:500]}...[/dim]")
+    console.print(f"\n[dim]Review stripped files at: {stripped_dir}[/dim]")
 
 
 @main.command()
