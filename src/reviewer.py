@@ -208,33 +208,28 @@ def review_specs(
             }
             
             # Add extended thinking if enabled
+            # budget_tokens must be less than max_tokens
             if use_thinking:
                 request_params["temperature"] = 1  # Required for extended thinking
                 request_params["thinking"] = {
                     "type": "enabled",
-                    "budget_tokens": 50000
+                    "budget_tokens": 30000  # Must be < max_tokens (32768)
                 }
-                
-                # Use streaming for thinking (required for long requests)
+            
+            # Use streaming for Opus (required for long requests) or thinking
+            if model == MODEL_OPUS or use_thinking:
                 response_text = ""
-                thinking_text = ""
                 
                 with client.messages.stream(**request_params) as stream:
                     for event in stream:
-                        pass  # Just consume the stream
-                    
-                    # Get final message from stream
+                        pass  # Consume the stream
                     response = stream.get_final_message()
                 
                 result.elapsed_seconds = time.time() - start_time
                 result.input_tokens = response.usage.input_tokens
                 result.output_tokens = response.usage.output_tokens
                 
-                # Get thinking tokens from usage
-                if hasattr(response.usage, 'cache_read_input_tokens'):
-                    # Extended thinking returns thinking tokens differently
-                    pass
-                # Check for thinking tokens in the response usage
+                # Get thinking tokens if present
                 usage_dict = response.usage.model_dump() if hasattr(response.usage, 'model_dump') else {}
                 result.thinking_tokens = usage_dict.get('thinking_tokens', 0) or 0
                 
@@ -242,13 +237,11 @@ def review_specs(
                 for block in response.content:
                     if block.type == "text":
                         response_text += block.text
-                    elif block.type == "thinking":
-                        thinking_text += block.thinking
                 
                 result.raw_response = response_text
                 
             else:
-                # Non-thinking: use regular request
+                # Sonnet without thinking: use regular request
                 response = client.messages.create(**request_params)
                 
                 result.elapsed_seconds = time.time() - start_time
