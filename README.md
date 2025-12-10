@@ -99,9 +99,46 @@ output/
 └── review_2024-01-15_143022/
     ├── stripped/                          # Cleaned spec content for review
     │   ├── 23 05 00 - Common Work Results_stripped.txt
-    │   ├── 23 21 13 - Hydronic Piping_stripped.txt
-    │   └── 22 05 00 - Common Work Results Plumbing_stripped.txt
-    └── report.docx                        # Review findings (Phase 4)
+    │   └── 23 21 13 - Hydronic Piping_stripped.txt
+    └── findings.json                      # Review results from Claude
+```
+
+### findings.json Structure
+
+```json
+{
+  "metadata": {
+    "timestamp": "2024-01-15T14:30:22",
+    "model": "claude-sonnet-4-20250514",
+    "input_tokens": 12500,
+    "output_tokens": 3200,
+    "elapsed_seconds": 8.5,
+    "files_reviewed": ["23 05 00.docx", "23 21 13.docx"]
+  },
+  "summary": {
+    "critical": 2,
+    "high": 5,
+    "medium": 3,
+    "low": 1,
+    "total": 11
+  },
+  "alerts": {
+    "leed_references": [...],
+    "placeholders": [...]
+  },
+  "findings": [
+    {
+      "severity": "CRITICAL",
+      "fileName": "23 21 13 - Hydronic Piping.docx",
+      "section": "Part 2, Article 2.3.A",
+      "issue": "Seismic bracing requirements reference ASCE 7-16...",
+      "actionType": "EDIT",
+      "existingText": "Seismic design per ASCE 7-16",
+      "replacementText": "Seismic design per ASCE 7-22 as adopted by CBC 2022",
+      "codeReference": "CBC 2022 Chapter 16, DSA IR A-6"
+    }
+  ]
+}
 ```
 
 The `stripped/` folder contains text files showing exactly what content was sent to the LLM after boilerplate removal. Review these to verify the preprocessing is working correctly.
@@ -150,7 +187,7 @@ spec-review/
 │   ├── preprocessor.py  # Boilerplate removal, alert detection
 │   ├── tokenizer.py     # Token counting
 │   ├── prompts.py       # System prompt
-│   ├── reviewer.py      # Claude API client (Phase 2)
+│   ├── reviewer.py      # Claude API client
 │   └── report.py        # Word report generation (Phase 4)
 ├── requirements.txt
 ├── pyproject.toml
@@ -160,8 +197,8 @@ spec-review/
 ## Development Status
 
 - [x] Phase 1: Project skeleton, extraction, preprocessing, stripped file export
-- [ ] Phase 2: Claude API integration
-- [ ] Phase 3: Response parsing
+- [x] Phase 2: Claude API integration
+- [x] Phase 3: Response parsing (included in Phase 2)
 - [ ] Phase 4: Word report generation
 - [ ] Phase 5: Polish and error handling
 - [ ] Phase 6: PyInstaller packaging

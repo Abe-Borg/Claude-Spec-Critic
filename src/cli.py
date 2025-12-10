@@ -1,5 +1,6 @@
 """CLI entry point for spec-review tool."""
 import sys
+import json
 from pathlib import Path
 from datetime import datetime
 
@@ -14,6 +15,7 @@ from .extractor import extract_text_from_docx, ExtractedSpec
 from .preprocessor import preprocess_spec, PreprocessResult
 from .tokenizer import analyze_token_usage, format_token_summary, RECOMMENDED_MAX
 from .prompts import get_system_prompt
+from .reviewer import review_specs, ReviewResult
 
 console = Console()
 
@@ -265,10 +267,118 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool):
         console.print(f"[dim]Review stripped files at: {stripped_dir}[/dim]")
         return
     
-    # API call would go here
-    console.print("\n[bold green]Phase 1 complete.[/bold green]")
-    console.print("[dim]API integration (Phase 2) not yet implemented.[/dim]")
-    console.print(f"\n[dim]Review stripped files at: {stripped_dir}[/dim]")
+    # Build combined content for API
+    combined_content = "\n\n".join([
+        f"=== FILE: {spec.filename} ===\n{result.cleaned_content}"
+        for spec, result in zip(specs, preprocess_results)
+    ])
+    
+    # Call Claude API
+    console.print("\n[bold]Sending to Claude API...[/bold]")
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True
+    ) as progress:
+        task = progress.add_task("Reviewing specifications...", total=None)
+        review_result = review_specs(combined_content, verbose=verbose)
+    
+    if review_result.error:
+        console.print(f"\n[bold red]Error: {review_result.error}[/bold red]")
+        sys.exit(1)
+    
+    # Print results summary
+    console.print(f"\n[green]Review complete![/green] ({review_result.elapsed_seconds:.1f}s)")
+    console.print(f"[dim]Tokens used: {review_result.input_tokens:,} input, {review_result.output_tokens:,} output[/dim]")
+    
+    # Print findings summary
+    console.print(f"\n[bold]Findings Summary:[/bold]")
+    summary_table = Table(show_header=False, box=None, padding=(0, 2))
+    summary_table.add_column("Severity", style="bold")
+    summary_table.add_column("Count", justify="right")
+    
+    if review_result.critical_count > 0:
+        summary_table.add_row("[red]CRITICAL[/red]", f"[red]{review_result.critical_count}[/red]")
+    if review_result.high_count > 0:
+        summary_table.add_row("[orange1]HIGH[/orange1]", f"[orange1]{review_result.high_count}[/orange1]")
+    if review_result.medium_count > 0:
+        summary_table.add_row("[yellow]MEDIUM[/yellow]", f"[yellow]{review_result.medium_count}[/yellow]")
+    if review_result.low_count > 0:
+        summary_table.add_row("[blue]LOW[/blue]", f"[blue]{review_result.low_count}[/blue]")
+    
+    if review_result.total_count == 0:
+        console.print("  [green]No issues found![/green]")
+    else:
+        console.print(summary_table)
+    
+    # Save raw JSON response
+    json_output_path = run_dir / "findings.json"
+    findings_data = {
+        "metadata": {
+            "timestamp": datetime.now().isoformat(),
+            "model": review_result.model,
+            "input_tokens": review_result.input_tokens,
+            "output_tokens": review_result.output_tokens,
+            "elapsed_seconds": review_result.elapsed_seconds,
+            "files_reviewed": [spec.filename for spec in specs],
+        },
+        "summary": {
+            "critical": review_result.critical_count,
+            "high": review_result.high_count,
+            "medium": review_result.medium_count,
+            "low": review_result.low_count,
+            "total": review_result.total_count,
+        },
+        "alerts": {
+            "leed_references": preprocess_summary['all_leed_alerts'],
+            "placeholders": preprocess_summary['all_placeholder_alerts'],
+        },
+        "findings": [
+            {
+                "severity": f.severity,
+                "fileName": f.fileName,
+                "section": f.section,
+                "issue": f.issue,
+                "actionType": f.actionType,
+                "existingText": f.existingText,
+                "replacementText": f.replacementText,
+                "codeReference": f.codeReference,
+            }
+            for f in review_result.findings
+        ]
+    }
+    
+    with open(json_output_path, "w", encoding="utf-8") as f:
+        json.dump(findings_data, f, indent=2, ensure_ascii=False)
+    
+    console.print(f"\n[dim]Results saved to: {json_output_path}[/dim]")
+    console.print(f"[dim]Stripped files at: {stripped_dir}[/dim]")
+    
+    # Print detailed findings if verbose
+    if verbose and review_result.findings:
+        console.print("\n[bold]Detailed Findings:[/bold]")
+        for finding in review_result.findings:
+            severity_colors = {
+                "CRITICAL": "red",
+                "HIGH": "orange1", 
+                "MEDIUM": "yellow",
+                "LOW": "blue"
+            }
+            color = severity_colors.get(finding.severity, "white")
+            
+            console.print(f"\n  [{color}]{finding.severity}[/{color}] - {finding.fileName}")
+            console.print(f"  [dim]Section:[/dim] {finding.section}")
+            console.print(f"  [dim]Issue:[/dim] {finding.issue}")
+            if finding.actionType:
+                console.print(f"  [dim]Action:[/dim] {finding.actionType}")
+            if finding.existingText:
+                console.print(f"  [dim]Existing:[/dim] {finding.existingText[:100]}...")
+            if finding.replacementText:
+                console.print(f"  [dim]Replace with:[/dim] {finding.replacementText[:100]}...")
+            if finding.codeReference:
+                console.print(f"  [dim]Reference:[/dim] {finding.codeReference}")
 
 
 @main.command()
