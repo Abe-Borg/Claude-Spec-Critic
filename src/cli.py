@@ -15,7 +15,7 @@ from .extractor import extract_text_from_docx, ExtractedSpec
 from .preprocessor import preprocess_spec, PreprocessResult
 from .tokenizer import analyze_token_usage, format_token_summary, RECOMMENDED_MAX
 from .prompts import get_system_prompt
-from .reviewer import review_specs, ReviewResult, MODEL_SONNET, MODEL_OPUS
+from .reviewer import review_specs, ReviewResult, MODEL_SONNET, MODEL_OPUS, MODEL_HAIKU
 from .report import generate_report
 
 console = Console()
@@ -169,8 +169,9 @@ def main():
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed processing information')
 @click.option('--dry-run', is_flag=True, help='Process files but do not call API')
 @click.option('--opus', is_flag=True, help='Use Opus 4.5 instead of Sonnet 4.5 (higher quality, more expensive)')
+@click.option('--haiku', is_flag=True, help='Use Haiku 4.5 (fastest, cheapest)')
 @click.option('--thinking', is_flag=True, help='Enable extended thinking (Opus only, even more expensive)')
-def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: bool, thinking: bool):
+def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: bool, thinking: bool, haiku: bool):
     """
     Review MEP specifications for code compliance and technical issues.
     
@@ -278,8 +279,15 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     ])
     
     # Determine model
-    model = MODEL_OPUS if opus or thinking else MODEL_SONNET
-    model_name = "Opus 4.5" if model == MODEL_OPUS else "Sonnet 4.5"
+    if opus or thinking:
+        model = MODEL_OPUS
+    elif haiku:
+        model = MODEL_HAIKU
+    else:
+        model = MODEL_SONNET
+
+    model_names = {MODEL_OPUS: "Opus 4.5", MODEL_SONNET: "Sonnet 4.5", MODEL_HAIKU: "Haiku 4.5"}
+    model_name = model_names.get(model, "Unknown")
     thinking_str = " + Extended Thinking" if thinking else ""
     
     # Call Claude API

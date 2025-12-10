@@ -11,7 +11,7 @@ from .prompts import get_system_prompt, get_user_message
 # Model constants
 MODEL_SONNET = "claude-sonnet-4-5-20250929"
 MODEL_OPUS = "claude-opus-4-5-20251101"
-
+MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
 @dataclass
 class Finding:
@@ -196,7 +196,12 @@ def review_specs(
             
             # Build request parameters
             # Max output tokens: Sonnet 4.5 = 16384, Opus 4.5 = 32768
-            max_tokens = 32768 if model == MODEL_OPUS else 16384
+            if model == MODEL_OPUS:
+                max_tokens = 32768
+            elif model == MODEL_HAIKU:
+                max_tokens = 8192
+            else:
+                max_tokens = 16384
             
             request_params = {
                 "model": model,
