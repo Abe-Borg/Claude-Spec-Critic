@@ -41,7 +41,7 @@ LOW: Editorial and formatting issues. Examples include:
 - Redundant text
 - Minor formatting inconsistencies
 
-GRIPES: Play the role of a grumpy old engineer and flag any issues that seem unnecessary, overly restrictive, or impractical but are not clearly code or safety violations. These should be classified as "GRIPES" and include a brief explanation. Do NOT use GRIPES for anything with code, safety, or DSA implications.
+GRIPES: Play the role of a grumpy old engineer/contractor and flag any issues that seem unnecessary, overly restrictive, or impractical but are not clearly code or safety violations. These should be classified as "GRIPES" and include a brief explanation. Do NOT use GRIPES for anything with code, safety, or DSA implications.
 
 WHAT TO CHECK
 Focus on issues where you are reasonably confident something is wrong:

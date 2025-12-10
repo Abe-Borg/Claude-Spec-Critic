@@ -1,0 +1,547 @@
+{
+  "metadata": {
+    "timestamp": "2025-12-10T13:20:19.521625",
+    "model": "claude-opus-4-5-20251101",
+    "input_tokens": 44805,
+    "output_tokens": 8767,
+    "thinking_tokens": 0,
+    "total_output_tokens": 8767,
+    "elapsed_seconds": 145.6694519519806,
+    "files_reviewed": [
+      "230529 - HANGERS AND SUPPORTS.docx",
+      "230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT.docx",
+      "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "230713 - DUCT INSULATION.docx",
+      "230719 - HVAC PIPING INSULATION.docx"
+    ]
+  },
+  "summary": {
+    "critical": 4,
+    "high": 7,
+    "medium": 10,
+    "low": 6,
+    "gripes": 2,
+    "total": 29
+  },
+  "alerts": {
+    "leed_references": [
+      {
+        "filename": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+        "line": 49,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Submittals:"
+      },
+      {
+        "filename": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+        "line": 121,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain \"ASHRAE Compliance\" Paragraph below for LEED Prerequisite IEQ 1, which requires compliance wi"
+      },
+      {
+        "filename": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+        "line": 125,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain \"ASHRAE/IESNA Compliance\" Paragraph below for LEED Prerequisite EA 2, which requires complian"
+      },
+      {
+        "filename": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+        "line": 217,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Prerequisite IEQ 1 requires compliance with requirements in ASHRAE 62.1, Section 7.2.2 - \"Air B"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 59,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Submittals:"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 61,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "\"Product Data for Credit IEQ 4.1\" Subparagraph below applies to LEED-NC, LEED-CI, and LEED-CS; coord"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 65,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "\"Laboratory Test Reports for Credit IEQ 4\" Subparagraph below applies to LEED for Schools."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 261,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 265,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 281,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 285,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 293,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Credit IEQ 4.1 does not address requirements for mastics."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 349,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Credit IEQ 4.1 does not address requirements for lagging adhesives."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 395,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 399,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230713 - DUCT INSULATION.docx",
+        "line": 809,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Duct and plenum insulation schedules in first two articles below specify commonly used insulation ma"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 45,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Submittals:"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 47,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "\"Product Data for Credit IEQ 4.1\" Subparagraph below applies to LEED-NC, LEED-CI, and LEED-CS; coord"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 51,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "\"Laboratory Test Reports for Credit IEQ 4\" Subparagraph below applies to LEED for Schools."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 233,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 237,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 255,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 259,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 277,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 281,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 289,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Credit IEQ 4.1 does not address requirements for mastics."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 345,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "LEED Credit IEQ 4.1 does not address requirements for lagging adhesives."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 401,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 405,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 425,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "One or both subparagraphs below may be required to comply with Project requirements or authorities h"
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 429,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Retain subparagraph below if required for LEED for Schools Credit IEQ 4."
+      },
+      {
+        "filename": "230719 - HVAC PIPING INSULATION.docx",
+        "line": 899,
+        "type": "LEED reference",
+        "text": "LEED",
+        "context": "Piping insulation schedules in first three articles below specify commonly used insulation materials"
+      }
+    ],
+    "placeholders": []
+  },
+  "findings": [
+    {
+      "severity": "CRITICAL",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, Performance Requirements",
+      "issue": "Seismic design references generic 'ASCE/SEI 7' without specifying the edition required by CBC 2022. For DSA projects, must reference ASCE 7-22 as adopted by CBC 2022, and must include DSA IR A-6 seismic restraint requirements.",
+      "actionType": "EDIT",
+      "existingText": "Structural Performance:  Hangers and supports for HVAC piping and equipment shall withstand the effects of gravity loads and stresses within limits and under conditions indicated according to ASCE/SEI 7.",
+      "replacementText": "Structural Performance:  Hangers and supports for HVAC piping and equipment shall withstand the effects of gravity loads and stresses within limits and under conditions indicated according to ASCE 7-22 as adopted by CBC 2022. Seismic bracing shall comply with DSA IR A-6 and OSHPD pre-approval requirements where applicable.",
+      "codeReference": "CBC 2022 Chapter 16, DSA IR A-6"
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, Action Submittals",
+      "issue": "Missing required DSA seismic certification submittal requirements. DSA projects require seismic restraint calculations and certifications per DSA IR A-6.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "Seismic Restraint Submittals: Submit seismic restraint calculations and certification documentation per DSA IR A-6. Include OSHPD pre-approval (OPA) documentation for seismic bracing components where applicable. Calculations shall be signed and sealed by a California-licensed professional engineer.",
+      "codeReference": "DSA IR A-6"
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 2, Insulation Materials",
+      "issue": "No reference to California Energy Code (Title 24, Part 6) insulation requirements. For California K-12 projects, duct insulation must comply with Title 24 minimum R-values which may exceed ASHRAE 90.1 requirements.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "Comply with California Energy Code (Title 24, Part 6) minimum insulation R-values. Where Title 24 requirements exceed values specified herein, Title 24 shall govern.",
+      "codeReference": "California Title 24, Part 6"
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 2, Insulation Materials",
+      "issue": "No reference to California Energy Code (Title 24, Part 6) pipe insulation requirements. California K-12 projects must comply with Title 24 Table 120.3-A minimum pipe insulation thicknesses.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "Comply with California Energy Code (Title 24, Part 6) minimum pipe insulation thicknesses per Table 120.3-A. Where Title 24 requirements exceed values specified herein, Title 24 shall govern.",
+      "codeReference": "California Title 24, Part 6, Table 120.3-A"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 2, Insulation Materials, Mineral-Fiber Blanket Insulation",
+      "issue": "References ASTM C 553 which was withdrawn in 2018. This standard is no longer valid and products certified to it may not be available.",
+      "actionType": "EDIT",
+      "existingText": "Comply with ASTM C 553, Type II and ASTM C 1290, Type III with factory-applied FSK jacket.",
+      "replacementText": "Comply with ASTM C1290, Type III with factory-applied FSK jacket.",
+      "codeReference": "ASTM C1290"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, Quality Assurance",
+      "issue": "Specifies only AABC certification for TAB contractor, excluding NEBB-certified contractors. This unnecessarily restricts competition and may limit qualified bidders. Both certifying organizations are industry-recognized equivalents.",
+      "actionType": "EDIT",
+      "existingText": "TAB Contractor Qualifications:  Engage a TAB entity certified by AABC.",
+      "replacementText": "TAB Contractor Qualifications:  Engage a TAB entity certified by AABC or NEBB.",
+      "codeReference": null
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, Quality Assurance",
+      "issue": "References outdated 'ASHRAE/IESNA 90.1' nomenclature. IESNA was removed from the standard title in 2010. Current reference should be ASHRAE 90.1-2022 for CBC 2022 compliance.",
+      "actionType": "EDIT",
+      "existingText": "ASHRAE/IESNA Compliance:  Applicable requirements in ASHRAE/IESNA 90.1, Section 6.7.2.3 - \"System Balancing.\"",
+      "replacementText": "ASHRAE Compliance:  Applicable requirements in ASHRAE 90.1, Section 6.7.2.3 - \"System Balancing.\"",
+      "codeReference": "ASHRAE 90.1"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 3, Pipe Label Installation, Pipe Label Color Schedule",
+      "issue": "Chilled-Water Piping has contradictory letter color specifications listing both 'White' and 'Black'. This will cause confusion during installation.",
+      "actionType": "EDIT",
+      "existingText": "Chilled-Water Piping:\n\nBackground Color:  Blue.\n\nLetter Color:  White.\n\nLetter Color:  Black.",
+      "replacementText": "Chilled-Water Piping:\n\nBackground Color:  Blue.\n\nLetter Color:  White.",
+      "codeReference": "ASME A13.1"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 2, Pipe Stands, High-Type Single-Pipe Stand",
+      "issue": "Specifies cadmium-plated steel components. Cadmium is a toxic heavy metal with significant health and environmental concerns, and its use is increasingly restricted. Zinc or stainless steel alternatives should be specified.",
+      "actionType": "EDIT",
+      "existingText": "Vertical Members:  Two or more cadmium-plated-steel or stainless-steel, continuous-thread rods.\n\nHorizontal Member:  Cadmium-plated-steel or stainless-steel rod with plastic or stainless-steel, roller-type pipe support.",
+      "replacementText": "Vertical Members:  Two or more hot-dip galvanized steel or stainless-steel, continuous-thread rods.\n\nHorizontal Member:  Hot-dip galvanized steel or stainless-steel rod with plastic or stainless-steel, roller-type pipe support.",
+      "codeReference": null
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, Quality Assurance",
+      "issue": "Pipe welding qualifications reference 'ASME Boiler and Pressure Vessel Code' which is overly broad for building services piping. Should reference ASME B31.9 for building services piping or appropriate section of ASME B31.",
+      "actionType": "EDIT",
+      "existingText": "Pipe Welding Qualifications:  Qualify procedures and operators according to ASME Boiler and Pressure Vessel Code.",
+      "replacementText": "Pipe Welding Qualifications:  Qualify procedures and personnel according to ASME B31.9 for building services piping, or applicable section of ASME B31 for the specific piping service.",
+      "codeReference": "ASME B31.9"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 3, Indoor Piping Insulation Schedule",
+      "issue": "Chilled water insulation specified as 1 inch thick mineral-fiber for all pipe sizes. Title 24 Part 6 Table 120.3-A requires varying thicknesses based on pipe size. For pipes larger than 1.5 inches, minimum 1.5 inch insulation is required.",
+      "actionType": "EDIT",
+      "existingText": "Mineral-Fiber, Preformed Pipe, Type I:  1 inch thick.",
+      "replacementText": "Mineral-Fiber, Preformed Pipe, Type I: NPS 1 and smaller: 1 inch thick; NPS 1-1/4 to NPS 4: 1-1/2 inches thick; NPS 5 and larger: 2 inches thick. Verify compliance with Title 24, Part 6, Table 120.3-A.",
+      "codeReference": "California Title 24, Part 6, Table 120.3-A"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 2, Adhesives",
+      "issue": "References 'California Department of Health Services' which was reorganized. The current agency is California Department of Public Health (CDPH), and the referenced standard is now 'CDPH Standard Method v1.2'.",
+      "actionType": "EDIT",
+      "existingText": "California Department of Health Services' \"Standard Practice for the Testing of Volatile Organic Emissions from Various Sources Using Small-Scale Environmental Chambers.\"",
+      "replacementText": "California Department of Public Health (CDPH) Standard Method v1.2 for testing VOC emissions.",
+      "codeReference": "CDPH Standard Method v1.2"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 2, Adhesives",
+      "issue": "References outdated 'California Department of Health Services' standard. This applies throughout this specification section.",
+      "actionType": "EDIT",
+      "existingText": "California Department of Health Services' \"Standard Practice for the Testing of Volatile Organic Emissions from Various Sources Using Small-Scale Environmental Chambers.\"",
+      "replacementText": "California Department of Public Health (CDPH) Standard Method v1.2 for testing VOC emissions.",
+      "codeReference": "CDPH Standard Method v1.2"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, Quality Assurance",
+      "issue": "AWS D1.1/D1.1M referenced without year. For current code compliance, should reference AWS D1.1/D1.1M:2020 or later.",
+      "actionType": "EDIT",
+      "existingText": "Structural Steel Welding Qualifications:  Qualify procedures and personnel according to AWS D1.1/D1.1M, \"Structural Welding Code - Steel.\"",
+      "replacementText": "Structural Steel Welding Qualifications:  Qualify procedures and personnel according to AWS D1.1/D1.1M:2020, \"Structural Welding Code - Steel.\"",
+      "codeReference": "AWS D1.1/D1.1M:2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 2, Metal Framing Systems",
+      "issue": "Manufacturer 'Cooper B-Line, Inc.' has been rebranded to 'Eaton B-Line'. The listed company name is outdated.",
+      "actionType": "EDIT",
+      "existingText": "Cooper B-Line, Inc.",
+      "replacementText": "Eaton B-Line.",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 3, Examination",
+      "issue": "References 'AMCA 201' and 'SMACNA's HVAC Systems - Duct Design' without edition years. Current editions should be specified for clarity.",
+      "actionType": "EDIT",
+      "existingText": "To calculate system effects for air systems, use tables and charts found in AMCA 201, \"Fans and Systems,\" or in SMACNA's \"HVAC Systems - Duct Design.\"",
+      "replacementText": "To calculate system effects for air systems, use tables and charts found in AMCA 201-22, \"Fans and Systems,\" or in SMACNA's \"HVAC Systems - Duct Design,\" 4th Edition.",
+      "codeReference": "AMCA 201"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 3, General Procedures for Testing and Balancing",
+      "issue": "References ASHRAE 111 and SMACNA TAB standard without edition years. Should specify current editions.",
+      "actionType": "EDIT",
+      "existingText": "Perform testing and balancing procedures on each system according to the procedures contained in AABC's \"National Standards for Total System Balance\", ASHRAE 111, and SMACNA's \"HVAC Systems - Testing, Adjusting, and Balancing\" and in this Section.",
+      "replacementText": "Perform testing and balancing procedures on each system according to the procedures contained in AABC's \"National Standards for Total System Balance\" (current edition), ASHRAE 111-2008, and SMACNA's \"HVAC Systems - Testing, Adjusting, and Balancing,\" 3rd Edition, and in this Section.",
+      "codeReference": "ASHRAE 111"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 3, Duct Label Installation",
+      "issue": "References 'ASME A13.1' for hazardous material exhaust without specifying the edition. Current edition is ASME A13.1-2020.",
+      "actionType": "EDIT",
+      "existingText": "ASME A13.1 Colors and Designs:  For hazardous material exhaust.",
+      "replacementText": "ASME A13.1-2020 Colors and Designs:  For hazardous material exhaust.",
+      "codeReference": "ASME A13.1-2020"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 2, Fire-Rated Insulation Systems",
+      "issue": "Fire-rated board references ASTM C 656, Type II, Grade 6. This standard covers calcium silicate block and pipe insulation, which may not be appropriate for duct fire-rated assemblies. Verify product compatibility with fire-rated assembly listing.",
+      "actionType": "EDIT",
+      "existingText": "Fire-Rated Board:  Structural-grade, press-molded, xonolite calcium silicate, fireproofing board suitable for operating temperatures up to 1700 deg F.  Comply with ASTM C 656, Type II, Grade 6.",
+      "replacementText": "Fire-Rated Board:  Structural-grade, press-molded calcium silicate fireproofing board suitable for operating temperatures up to 1700 deg F. Comply with ASTM C656, Type II, and the specific UL or FM fire-rated assembly listing.",
+      "codeReference": "ASTM C656"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 3, Penetrations, Insulation Installation at Fire-Rated Wall and Partition Penetrations",
+      "issue": "Typo in section reference - 'Firestopping' is misspelled as 'irestopping'.",
+      "actionType": "EDIT",
+      "existingText": "Comply with requirements in Section 078413 \"Penetration Firestopping\"irestopping and fire-resistive joint sealers.",
+      "replacementText": "Comply with requirements in Section 078413 \"Penetration Firestopping\" for firestopping and fire-resistive joint sealers.",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 3, General Installation Requirements",
+      "issue": "Staple spacing has unresolved bracketed option '[2 inches] [4 inches]' that should have been selected during specification editing.",
+      "actionType": "EDIT",
+      "existingText": "Staple laps with outward clinching staples along edge at [2 inches] [4 inches] o.c.",
+      "replacementText": "Staple laps with outward clinching staples along edge at 4 inches o.c.",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 1, Definitions",
+      "issue": "Specification guide editing note 'Retain definitions remaining after this Section has been edited' was not deleted and remains in the document.",
+      "actionType": "DELETE",
+      "existingText": "Retain definitions remaining after this Section has been edited.",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, Definitions",
+      "issue": "Specification guide editing note 'Retain definition(s) remaining after this Section has been edited' was not deleted.",
+      "actionType": "DELETE",
+      "existingText": "Retain definition(s) remaining after this Section has been edited.",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 3, Pipe Label Installation",
+      "issue": "Missing space in dimension - '1-1/2 incheshigh' should be '1-1/2 inches high'.",
+      "actionType": "EDIT",
+      "existingText": "Lettering Size:  At least 1-1/2 incheshigh.",
+      "replacementText": "Lettering Size:  At least 1-1/2 inches high.",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 2, Factory-Applied Jackets",
+      "issue": "Specification guide note 'Knauf is the only mineral-fiber insulation manufacturer that offers factory-applied FSP jacket...' was not deleted and remains in the document.",
+      "actionType": "DELETE",
+      "existingText": "Knauf is the only mineral-fiber insulation manufacturer that offers factory-applied FSP jacket for blanket insulation.  CertainTeed and Johns Manville offer a vinyl jacket, but it does not comply with ASTM C 1136.  Owens Corning does not offer an FSP or a vinyl product.",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 2, Insulation Materials",
+      "issue": "Incomplete editing note 'Pipe insulation wicking system is a patented product offered only by the two manufacturers listed...' left in document without associated product listing.",
+      "actionType": "DELETE",
+      "existingText": "Pipe insulation wicking system is a patented product offered only by the two manufacturers listed.  Product is designed for use on below-ambient temperature (above freezing) services located in severely hot and humid environments.  See Evaluations for additional product information.",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 3, Final Report, Pump Test Reports",
+      "issue": "Editing note 'Net positive suction head is important for pumps in open circuits...' was not deleted from the document.",
+      "actionType": "DELETE",
+      "existingText": "Net positive suction head is important for pumps in open circuits and for pumps handling fluids at elevated temperatures.",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "GRIPES",
+      "fileName": "230529 - HANGERS AND SUPPORTS.docx",
+      "section": "Part 3, Hanger and Support Schedule",
+      "issue": "The specification lists an exhaustive catalog of MSS hanger types (Types 1 through 58 plus numerous building attachments) when most K-12 mechanical rooms only need a handful of standard hanger types. This level of detail is rarely necessary and adds bulk to the specification without practical benefit.",
+      "actionType": "EDIT",
+      "existingText": "Horizontal-Piping Hangers and Supports:  Unless otherwise indicated and except as specified in piping system Sections, install the following types: [extensive list of MSS Types 1-58]...",
+      "replacementText": "Consider simplifying to specify only commonly-used hanger types (MSS Types 1, 5, 8, 24) with a general note permitting other MSS SP-58 types as appropriate for specific conditions.",
+      "codeReference": null
+    },
+    {
+      "severity": "GRIPES",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 3, Final Report",
+      "issue": "The final report content requirements span multiple pages of extremely detailed data requirements for every conceivable piece of equipment. For a typical K-12 project with package rooftop units and simple hydronic systems, much of this is overkill and increases TAB costs without proportional benefit.",
+      "actionType": "EDIT",
+      "existingText": "Air-Handling-Unit Test Reports [extensive multi-page requirements]...",
+      "replacementText": "Consider tailoring report requirements to actual equipment on the project. Simpler systems warrant simpler reports.",
+      "codeReference": null
+    }
+  ]
+}
