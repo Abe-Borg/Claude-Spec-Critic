@@ -70,21 +70,20 @@ def print_alerts(summary: dict):
 
 def print_token_summary(token_summary, verbose: bool):
     """Print token usage summary."""
-    # Always show total token count
-    console.print(f"\n[bold]Input tokens:[/bold] {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}")
-    
     if verbose:
+        console.print(f"\n[bold]Token Analysis:[/bold]")
         for item in token_summary.items:
             console.print(f"  • {item.name}: {item.tokens:,} tokens")
-        console.print(f"  • System prompt: {token_summary.system_prompt_tokens:,} tokens")
+        console.print(f"  System prompt: {token_summary.system_prompt_tokens:,} tokens")
+        console.print(f"  [bold]Total: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}[/bold]")
     
     if token_summary.warning_message:
         if "CRITICAL" in token_summary.warning_message:
-            console.print(f"[bold red]{token_summary.warning_message}[/bold red]")
+            console.print(f"\n[bold red]{token_summary.warning_message}[/bold red]")
         elif "WARNING" in token_summary.warning_message:
-            console.print(f"[bold yellow]{token_summary.warning_message}[/bold yellow]")
+            console.print(f"\n[bold yellow]{token_summary.warning_message}[/bold yellow]")
         else:
-            console.print(f"[dim]{token_summary.warning_message}[/dim]")
+            console.print(f"\n[dim]{token_summary.warning_message}[/dim]")
     elif verbose:
         console.print("  [green]✓ Within recommended limits[/green]")
 
@@ -273,7 +272,7 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     
     # Build combined content for API
     combined_content = "\n\n".join([
-        f"=== FILE: {spec.filename} ===\n{result.cleaned_content}"
+        f"===== FILE: {spec.filename} =====\n{result.cleaned_content}"
         for spec, result in zip(specs, preprocess_results)
     ])
     
@@ -330,6 +329,8 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
         summary_table.add_row("[yellow]MEDIUM[/yellow]", f"[yellow]{review_result.medium_count}[/yellow]")
     if review_result.low_count > 0:
         summary_table.add_row("[blue]LOW[/blue]", f"[blue]{review_result.low_count}[/blue]")
+    if review_result.gripes_count > 0:
+        summary_table.add_row("[magenta]GRIPES[/magenta]", f"[magenta]{review_result.gripes_count}[/magenta]")
     
     if review_result.total_count == 0:
         console.print("  [green]No issues found![/green]")
@@ -354,6 +355,7 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
             "high": review_result.high_count,
             "medium": review_result.medium_count,
             "low": review_result.low_count,
+            "gripes": review_result.gripes_count,
             "total": review_result.total_count,
         },
         "alerts": {
@@ -389,7 +391,8 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
                 "CRITICAL": "red",
                 "HIGH": "orange1", 
                 "MEDIUM": "yellow",
-                "LOW": "blue"
+                "LOW": "blue",
+                "GRIPES": "magenta"
             }
             color = severity_colors.get(finding.severity, "white")
             

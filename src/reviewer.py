@@ -55,6 +55,10 @@ class ReviewResult:
         return sum(1 for f in self.findings if f.severity == "LOW")
     
     @property
+    def gripes_count(self) -> int:
+        return sum(1 for f in self.findings if f.severity == "GRIPES")
+    
+    @property
     def total_count(self) -> int:
         return len(self.findings)
     

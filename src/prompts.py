@@ -74,6 +74,9 @@ EVIDENCE AND CONFIDENCE
   - Provide a specific code or standard reference ONLY if you are reasonably confident it applies.
   - If you are uncertain which exact code or standard applies, set codeReference to null and explain in the issue text that the concern is based on general practice.
 
+THOROUGHNESS
+Review every article in each specification. Do not stop early or skip sections. A typical specification with issues should yield 5-20 findings.
+
 FILE DELIMITERS
 - Each file in the input will be introduced by a line like:
   ===== FILE: <fileName> =====
@@ -90,7 +93,7 @@ The response MUST be valid JSON:
 - A single top-level array.
 - Use double quotes for all strings.
 - No trailing commas.
-- Escape line breaks in existingText and replacementText as "\n".
+- Escape line breaks in existingText and replacementText as \\n.
 
 Each finding must have these fields:
 - severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "GRIPES"
@@ -107,7 +110,6 @@ CRITICAL CHECKS - DO NOT SKIP:
 1. Check each spec against itself for internal contradictions
 2. Verify all referenced sections/standards actually exist
 3. Check that Part 2 products match Part 3 installation requirements
-4. Verify units are consistent throughout (don't mix imperial/metric randomly)
 
 Example output:
 [
@@ -151,6 +153,6 @@ def get_user_message(combined_specs: str) -> str:
     Returns:
         Formatted user message
     """
-    return f"""Review the following MEP specification documents for a California K-12 project under DSA jurisdiction:
+    return f"""Review the following M&P specification documents for a California K-12 project under DSA jurisdiction:
 
 {combined_specs}"""
