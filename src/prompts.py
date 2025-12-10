@@ -23,6 +23,7 @@ HIGH: Significant technical errors requiring correction. Examples:
 - Coordination conflicts between spec sections
 - Missing quality assurance or testing requirements
 - Incorrect pressure ratings or temperature limits
+- Outdated CSI MasterFormat/SectionFormat/PageFormat formatting and references (for example, division 15 for MEP)
 - Other serious technical or coordination issues.
 
 MEDIUM: Reference errors and outdated or inconsistent content that should be corrected but are unlikely to block approval or construction by themselves. Examples include:
