@@ -8,6 +8,11 @@ from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 from .prompts import get_system_prompt, get_user_message
 
 
+# Model constants
+MODEL_SONNET = "claude-sonnet-4-20250514"
+MODEL_OPUS = "claude-opus-4-20250514"
+
+
 @dataclass
 class Finding:
     """A single review finding."""
@@ -29,6 +34,7 @@ class ReviewResult:
     model: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    thinking_tokens: int = 0
     elapsed_seconds: float = 0.0
     error: str | None = None
     
@@ -51,6 +57,11 @@ class ReviewResult:
     @property
     def total_count(self) -> int:
         return len(self.findings)
+    
+    @property
+    def total_output_tokens(self) -> int:
+        """Total output tokens including thinking tokens."""
+        return self.output_tokens + self.thinking_tokens
 
 
 def get_api_key() -> str:
@@ -134,7 +145,8 @@ def parse_findings(response_text: str) -> list[Finding]:
 
 def review_specs(
     combined_content: str,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = MODEL_SONNET,
+    use_thinking: bool = False,
     max_retries: int = 3,
     verbose: bool = False
 ) -> ReviewResult:
@@ -143,7 +155,8 @@ def review_specs(
     
     Args:
         combined_content: Combined specification text with file delimiters
-        model: Claude model to use
+        model: Claude model to use (MODEL_SONNET or MODEL_OPUS)
+        use_thinking: Whether to enable extended thinking (Opus only)
         max_retries: Number of retry attempts for transient errors
         verbose: Whether to print progress messages
         
@@ -151,6 +164,13 @@ def review_specs(
         ReviewResult with findings and metadata
     """
     result = ReviewResult(model=model)
+    
+    # Extended thinking only works with Opus
+    if use_thinking and model != MODEL_OPUS:
+        model = MODEL_OPUS
+        result.model = MODEL_OPUS
+        if verbose:
+            print("  Note: Extended thinking requires Opus. Switching to Opus.")
     
     try:
         api_key = get_api_key()
@@ -170,20 +190,35 @@ def review_specs(
             if verbose and attempt > 0:
                 print(f"  Retry attempt {attempt + 1}/{max_retries}...")
             
-            response = client.messages.create(
-                model=model,
-                max_tokens=16000,
-                system=system_prompt,
-                messages=[
+            # Build request parameters
+            request_params = {
+                "model": model,
+                "max_tokens": 16000,
+                "system": system_prompt,
+                "messages": [
                     {"role": "user", "content": user_message}
                 ]
-            )
+            }
+            
+            # Add extended thinking if enabled
+            if use_thinking:
+                request_params["temperature"] = 1  # Required for extended thinking
+                request_params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": 10000
+                }
+            
+            response = client.messages.create(**request_params)
             
             result.elapsed_seconds = time.time() - start_time
             result.input_tokens = response.usage.input_tokens
             result.output_tokens = response.usage.output_tokens
             
-            # Extract text from response
+            # Check for thinking tokens in usage (Opus with thinking)
+            if hasattr(response.usage, 'thinking_tokens'):
+                result.thinking_tokens = response.usage.thinking_tokens or 0
+            
+            # Extract text from response (skip thinking blocks)
             response_text = ""
             for block in response.content:
                 if block.type == "text":

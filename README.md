@@ -89,6 +89,28 @@ spec-review review -i ./specs -o ./output --dry-run --verbose
 | `--output-dir` | `-o` | Output directory for reports (default: `./output`) |
 | `--verbose` | `-v` | Show detailed processing information |
 | `--dry-run` | | Process files but do not call API |
+| `--opus` | | Use Opus 4 instead of Sonnet 4 (higher quality, more expensive) |
+| `--thinking` | | Enable extended thinking (Opus only, even more expensive) |
+
+### Model Options
+
+**Sonnet 4 (default)**: Fast, cost-effective, good for most reviews.
+
+```bash
+spec-review review -i ./specs -o ./output
+```
+
+**Opus 4**: Higher quality analysis, better at catching subtle issues.
+
+```bash
+spec-review review -i ./specs --opus
+```
+
+**Opus 4 + Extended Thinking**: Maximum quality, model "thinks" before responding. Best for complex specs with many interdependencies.
+
+```bash
+spec-review review -i ./specs --opus --thinking
+```
 
 ## Output Structure
 
@@ -112,6 +134,8 @@ output/
     "model": "claude-sonnet-4-20250514",
     "input_tokens": 12500,
     "output_tokens": 3200,
+    "thinking_tokens": 0,
+    "total_output_tokens": 3200,
     "elapsed_seconds": 8.5,
     "files_reviewed": ["23 05 00.docx", "23 21 13.docx"]
   },

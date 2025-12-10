@@ -15,7 +15,7 @@ from .extractor import extract_text_from_docx, ExtractedSpec
 from .preprocessor import preprocess_spec, PreprocessResult
 from .tokenizer import analyze_token_usage, format_token_summary, RECOMMENDED_MAX
 from .prompts import get_system_prompt
-from .reviewer import review_specs, ReviewResult
+from .reviewer import review_specs, ReviewResult, MODEL_SONNET, MODEL_OPUS
 
 console = Console()
 
@@ -167,7 +167,9 @@ def main():
               help='Output directory for reports and stripped files')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed processing information')
 @click.option('--dry-run', is_flag=True, help='Process files but do not call API')
-def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool):
+@click.option('--opus', is_flag=True, help='Use Opus 4 instead of Sonnet 4 (more expensive, higher quality)')
+@click.option('--thinking', is_flag=True, help='Enable extended thinking (Opus only, even more expensive)')
+def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: bool, thinking: bool):
     """
     Review MEP specifications for code compliance and technical issues.
     
@@ -175,6 +177,7 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool):
     
     Example:
         spec-review review -i ./specs -o ./output --verbose
+        spec-review review -i ./specs --opus --thinking
     """
     print_header()
     
@@ -273,8 +276,13 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool):
         for spec, result in zip(specs, preprocess_results)
     ])
     
+    # Determine model
+    model = MODEL_OPUS if opus or thinking else MODEL_SONNET
+    model_name = "Opus 4" if model == MODEL_OPUS else "Sonnet 4"
+    thinking_str = " + Extended Thinking" if thinking else ""
+    
     # Call Claude API
-    console.print("\n[bold]Sending to Claude API...[/bold]")
+    console.print(f"\n[bold]Sending to Claude API ({model_name}{thinking_str})...[/bold]")
     
     with Progress(
         SpinnerColumn(),
@@ -283,7 +291,12 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool):
         transient=True
     ) as progress:
         task = progress.add_task("Reviewing specifications...", total=None)
-        review_result = review_specs(combined_content, verbose=verbose)
+        review_result = review_specs(
+            combined_content, 
+            model=model, 
+            use_thinking=thinking,
+            verbose=verbose
+        )
     
     if review_result.error:
         console.print(f"\n[bold red]Error: {review_result.error}[/bold red]")
@@ -291,7 +304,16 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool):
     
     # Print results summary
     console.print(f"\n[green]Review complete![/green] ({review_result.elapsed_seconds:.1f}s)")
-    console.print(f"[dim]Tokens used: {review_result.input_tokens:,} input, {review_result.output_tokens:,} output[/dim]")
+    
+    # Token breakdown
+    token_info = f"[dim]Tokens: {review_result.input_tokens:,} in"
+    if review_result.thinking_tokens > 0:
+        token_info += f" → {review_result.thinking_tokens:,} thinking + {review_result.output_tokens:,} output"
+        token_info += f" = {review_result.total_output_tokens:,} total out"
+    else:
+        token_info += f" → {review_result.output_tokens:,} out"
+    token_info += "[/dim]"
+    console.print(token_info)
     
     # Print findings summary
     console.print(f"\n[bold]Findings Summary:[/bold]")
@@ -321,6 +343,8 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool):
             "model": review_result.model,
             "input_tokens": review_result.input_tokens,
             "output_tokens": review_result.output_tokens,
+            "thinking_tokens": review_result.thinking_tokens,
+            "total_output_tokens": review_result.total_output_tokens,
             "elapsed_seconds": review_result.elapsed_seconds,
             "files_reviewed": [spec.filename for spec in specs],
         },
