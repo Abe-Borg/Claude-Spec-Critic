@@ -175,7 +175,7 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     """
     Review MEP specifications for code compliance and technical issues.
     
-    Loads all .docx files from the input directory (max 5).
+    Loads all .docx files from the input directory.
     
     Example:
         spec-review review -i ./specs -o ./output --verbose
@@ -191,11 +191,6 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     
     if len(docx_files) == 0:
         console.print(f"[red]Error: No .docx files found in {input_path}[/red]")
-        sys.exit(1)
-    
-    if len(docx_files) > 5:
-        console.print(f"[red]Error: Found {len(docx_files)} .docx files. Maximum of 5 allowed.[/red]")
-        console.print("[dim]Remove some files from the input directory and try again.[/dim]")
         sys.exit(1)
     
     # Setup output directory
