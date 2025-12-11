@@ -173,10 +173,6 @@ class SpecReviewApp:
             messagebox.showerror("Error", "No .docx files found in the selected folder.")
             return False
         
-        if len(docx_files) > 5:
-            messagebox.showerror("Error", f"Too many files ({len(docx_files)}). Maximum is 5 files per review.")
-            return False
-        
         return True
     
     def start_review(self):
