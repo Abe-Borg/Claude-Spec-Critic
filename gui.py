@@ -76,14 +76,6 @@ class SpecReviewApp:
         ttk.Button(main_frame, text="Browse...", width=10, command=self.browse_output).grid(row=row, column=2, pady=5)
         row += 1
         
-        # Model selection
-        model_frame = ttk.LabelFrame(main_frame, text="Model Selection", padding="10")
-        model_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=10)
-        model_frame.columnconfigure(1, weight=1)
-        
-        ttk.Radiobutton(model_frame, text="Sonnet 4.5 (Balanced)", variable=self.model_choice, value="sonnet").grid(row=0, column=1, sticky="w", padx=10)
-        ttk.Radiobutton(model_frame, text="Opus 4.5 (Best Quality)", variable=self.model_choice, value="opus").grid(row=0, column=2, sticky="w", padx=10)
-        
         row += 1
         
         # Run button
