@@ -1,0 +1,585 @@
+SECTION 22 05 23 - GENERAL-DUTY VALVES FOR PLUMBING PIPING
+
+GENERAL
+
+RELATED DOCUMENTS
+
+Drawings and general provisions of the Contract, including General and Supplementary Conditions and Division 1 Specification Sections, apply to this Section.
+
+SUMMARY
+
+Section Includes:
+
+Bronze ball valves.
+
+Bronze lift check valves.
+
+Bronze gate valves.
+
+Iron gate valves
+
+Related Sections:
+
+Division 2 water distribution piping Sections for general-duty and specialty valves for site construction piping.
+
+Division 15 plumbing piping Sections for specialty valves applicable to those Sections only.
+
+Division 15 Section "Identification for Plumbing Piping and Equipment" for valve tags and schedules.
+
+DEFINITIONS
+
+Retain definition(s) remaining after this Section has been edited.
+
+CWP:  Cold working pressure.
+
+EPDM:  Ethylene propylene diene terpolymer rubber.
+
+NBR:  Acrylonitrile-butadiene, Buna-N, or nitrile rubber.
+
+NRS:  Nonrising stem.
+
+OS&Y:  Outside screw and yoke.
+
+RS:  Rising stem.
+
+WORK INCLUDED
+
+Furnish all labor, materials, services, testing, transportation and equipment necessary for the completion of all plumbing work as indicated on drawings and specified herein. Work materials and equipment not indicated or specified which is necessary for the complete and proper operation of the work of this Section in accordance with the true intent and meaning of the contract documents shall be provided and incorporated at no additional cost to the Owner.
+
+QUALITY ASSURANCE
+
+Code Requirements: All work covered by this Section shall conform to the latest requirements of the following regulations:
+
+C.C.R., Title 24, Part 5 (2022 CPC).
+
+2022 California Plumbing Code.
+
+SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.
+
+National Fire Protection Association.
+
+California State Division of Industrial Safety.
+
+County Health Department.
+
+Any other legally constituted body-having jurisdiction thereof.
+
+Nothing in the specifications or drawings shall be construed to permit deviation from the requirements of governing codes unless approval for said deviation has been obtained from the legally constituted authorities having jurisdiction and from the Owner's representative.
+
+DRAWINGS
+
+Because of the small-scale drawings, it is not possible to indicate all offsets, fittings and accessories which may be required. The Contractor shall carefully investigate the conditions surrounding installation of his work, furnishing the necessary piping, fittings, valves, traps, and other devices which may be required to complete the installation.
+
+The general arrangement indicated on the drawings shall be followed as closely as possible. Coordinate with the Architectural, Structural, Mechanical and Electrical Drawings and the work of other trades prior to installation of piping fixtures and equipment to verify adequate space available for installation of the work shown. In the event a field condition arises which makes it impossible to install the work as indicated, submit, in writing, the proposed departures to the Architect for his approval. Only when Architect's approval is given, in writing, shall Contractor proceed with installation of the work.
+
+Special Note: Should the Contractor make changes in the installation differing from what is indicated on the contract drawings and not necessitated due to field conditions as indicated hereinabove, the Contractor shall be required to re-install the work to comply with what has been indicated on the contract drawings.  Should it be impossible to re-install the work and the installation is in accordance with all governing authorities, the architect may permit the installation to remain.  However, all costs incurred to revise the contract drawings by the engineer for resubmittal to the building department indicating the as-installed condition shall become the responsibility of the Contractor.
+
+In case of a difference in the specifications or between the specifications and the drawings, the Contractor shall figure the most expensive alternate and after award of contract, shall secure direction from the Architect.
+
+PERMITS, INSPECTIONS AND LICENSES
+
+All permits, inspections and licenses required by the legally constituted authorities for installation of the work according to the plans and specifications shall be obtained and paid as a part of the work of this section.
+
+EXAMINATION OF PREMISES
+
+Before bidding on this work, Contractors shall make a careful examination of the premises and shall thoroughly familiarize themselves with the requirements of the contract.  By the act of submitting a proposal for the work included in this contract, the Contractor shall be deemed to have made such study and examination, and that he is familiar with and accepts all conditions of the site.
+
+PROTECTION
+
+All work, equipment and materials shall be protected at all times.  Contractor shall make good all damage caused either directly or indirectly by his own workmen.  Contractor shall also protect his own work from damage.  He shall close all pipe openings with caps or plugs during installation.  He shall protect all his equipment and materials against dirt, water, chemical and mechanical injury.  Upon completion, all work shall be thoroughly cleaned and delivered in a new condition.
+
+Contractor shall be held responsible for all damage to equipment and materials until he has received written notice from the Architect or Engineer that his work has been accepted.
+
+LOCATIONS
+
+The locations of apparatus, piping and equipment indicated on the drawings are approximate. Piping and equipment shall be installed in such a manner as to avoid all obstruction, preserve headroom, and keep openings and passages clear. The locations of and mounting heights of all fixtures shall be coordinated with the architectural plans and room elevations.
+
+Clearances and Openings: Contractor shall cooperate and coordinate his work with all other trades to avoid conflict and permit for a neat and orderly appearance of the entire installation.  The Contractor shall, in advance of the work, furnish instructions to the General Contractor as to his requirements for equipment and material installation of any kind, whether or not specifically mentioned on drawings or in the specifications, and shall include recesses, chases in walls, and all required openings in the structure.  Should furnishing this information be neglected, delayed or incorrect and additional cuttings are found to be required, the cost of the same shall be charged to this Contractor.
+
+Contractor shall verify and coordinate pipe routing with location of all electrical rooms, elevator equipment rooms, telecom/data rooms, and other rooms dedicated to the housing of switchgear, panels, or other electrical equipment. In no case shall piping be installed within or above the ceiling of such rooms.
+
+SUBMITTAL DATA
+
+Submittal Requirements:
+
+Furnish, all at one time, prior to any installation, within the time noted below, six (6) copies of valid submittal data on all fixtures, material, equipment and devices. Each submitted item shall be indexed and referenced to these specifications and to identification numbers on fixtures and equipment schedules.
+
+Manufacturers’ submittal literature and shop drawings are required on all items to ensure the latest and most complete manufacturer's data is available for review. Requirements of the submittals and Engineer's submittal notes are a part of the work of this Division except that Engineer's notes may not be used as a means of increasing the scope of work of this Division.
+
+Submittals will be checked for general conformance with the design concept of the project but the review does not guarantee quantities shown and does not supersede requirements of this Division to properly install work.
+
+To be valid, all submittals must:
+
+Be delivered to the Architect's office within thirty-five (35) days of award of the contract.  Contractor shall make time allowance for Engineer’s review, return of comments, if any, and resubmittal if required. Corrections or changes in submittals returned as inadequate or incomplete shall be accomplished within this time limit.
+
+Clearly indicate and label as such any items proposed as substitution for that specified or shown on plans.
+
+Include all pertinent construction, installation, performance and technical data.
+
+Have all product data sheets clearly labeled to indicate the individual items being submitted. In addition, all required options and accessories shall be clearly marked.
+
+Product data sheets corresponding to items indicated on plans shall be clearly labeled with the corresponding fixture or equipment tag number.
+
+Product data sheets corresponding to items indicated in specifications shall be clearly labeled with the specification section, page and item numbers.
+
+Include, for every item which differs in size, configuration, connections, service, accessibility or any other significant way, a drawing to the same (or larger) scale as to the pertinent portions of the contract drawings.  In this drawing show a complete layout of the system except that which is identical to the contract drawings, unless the unchanged portions must be shown to indicate such things as clearances.  This drawing, together with the contract design drawings must show the complete system as revised to accommodate the proposed alternate.
+
+Substitution Requirements:
+
+Any items included in submittals and proposed by the Contractor as substitution for that specified or shown on plans shall be submitted within thirty five (35) days of award of the contract. After such time, proposed substitutions shall not be accepted for review, and the Contractor shall submit all items as specified or shown on plans.
+
+For each item proposed as substitution for that specified or shown on plans, copies of product data sheets for the specified item shall be placed side by side with product data sheets for the proposed substitution item within the submittal.
+
+In addition to the Submittal Requirements for labeling listed above, product data sheets for the specified item shall be clearly labeled “SPECIFIED ITEM, NOT SUBMITTED”. Product data sheets for the corresponding proposed substitution item shall be clearly labeled “PROPOSED SUBSTITUTION”.
+
+Provide calculations and other detailed data justifying how any items proposed as substitution were selected for proposal.  Data must be complete enough to permit detailed comparison of every significant characteristic for which the specified item was analyzed during design.
+
+It shall be the Contractor’s responsibility to provide sufficient information to allow the Engineer to analyze any proposed alternate.  If inadequate information is provided, the proposal will not be approved and resubmittal will not be allowed.
+
+The Contractor shall provide or perform tests required by Engineer for purpose of judging acceptability of proposed substitutions.
+
+The Contractor assumes full responsibility that alternate items and procedures will meet the job requirements and is responsible for cost of redesign and of modifications to this and other parts of work caused by alternate items furnished under work in this Section.  In view of these responsibilities, it is the purpose of these specifications to establish procedures to ensure that the Contractor has considered all the ramifications of proposed alternates before submitting them for review.  Submittals which do not comply with the requirements of these specifications or which indicate proposed alternates that were selected without proper regard to the requirements of the job will not be approved.  No more than one proposed alternate will be considered for each item.
+
+Alternate items installed without Engineer's approval will be replaced with specified items at Contractor's expense.
+
+The Architect or his authorized representative shall be the sole judge as to the quality and suitability of proposed alternate equipment, fixtures or materials. Decisions of the Architect or that of his representative shall be final and conclusive.
+
+QUALITY ASSURANCE
+
+Source Limitations for Valves:  Obtain each type of valve from single source from single manufacturer.
+
+ASME Compliance:
+
+ASME B16.10 and ASME B16.34 for ferrous valve dimensions and design criteria.
+
+ASME B31.1 for power piping valves.
+
+ASME B31.9 for building services piping valves.
+
+NSF Compliance:  NSF 61-G and NSF-372 for valve materials for potable-water service.
+
+Valves for domestic water must comply with the Federal Reduction of Lead in Drinking Water Act.
+
+“Lead Free” refers to the wetted surface of pipe, fittings and fixtures in potable water systems that have a weighted average lead content ≤ 0.25%.
+
+All valves must be 3rd party certified.
+
+Bronze valves shall be made of dezincification-resistant material.
+
+DELIVERY, STORAGE, AND HANDLING
+
+Information in this article is paraphrased from MSS.
+
+Prepare valves for shipping as follows:
+
+Protect internal parts against rust and corrosion.
+
+Protect threads, flange faces, grooves, and weld ends.
+
+Set angle, gate, and globe valves closed to prevent rattling.
+
+Set ball and plug valves open to minimize exposure of functional surfaces.
+
+Set butterfly valves closed or slightly open.
+
+Block check valves in either closed or open position.
+
+Use the following precautions during storage:
+
+Maintain valve end protection.
+
+Store valves indoors and maintain at higher than ambient dew point temperature.  If outdoor storage is necessary, store valves off the ground in watertight enclosures.
+
+Use sling to handle large valves; rig sling to avoid damage to exposed parts.  Do not use handwheels or stems as lifting or rigging points.
+
+UNINSPECTED WORK
+
+The Contractor shall not allow or cause any of his work to be covered up or closed in until it has been inspected, tested, approved by all authorities have jurisdiction, and until Project Record drawings have been properly annotated.
+
+Should any of his work be covered up or closed in before such inspection, he shall, at his own expense, uncover the work to the satisfaction of the inspection party.  All related repair work cost shall be borne by the Contractor.
+
+RECORD DRAWINGS
+
+Contractor shall provide and keep up-to-date a complete "as-built" record set of blueline prints which shall show every change from the original drawings and the exact "as-built" locations and sizes of the work provided under this Section of the specifications.  This set shall include locations, dimensions, depth of buried piping, cleanouts, shut-off valves, sewer invert locations, plugged wyes, tees, etc.  On completion of the work, the Contractor shall incorporate all as-built information on a set of reproducible tracings provided by the Architect and this set of reproducibles shall be delivered to the Architect.
+
+GUARANTEES
+
+Contractor shall guarantee the entire plumbing and piping systems unconditionally for a period of one (1) year after final acceptance.  If, during this period, any materials, equipment, or any part of the systems fail to function properly, the Contractor shall make good the defects promptly and without any expense to the Owner.
+
+Contractor shall be responsible for all damage to any part of the premises caused by leaks in pipelines or equipment furnished and installed under this Section for a period of one (1) year after date of acceptance of his work.
+
+All equipment and fixtures shall carry manufacturer's warranty against defective parts or poor workmanship for not less than one (1) year.  See specific equipment specifications for extended warranty requirements.
+
+PRODUCTS
+
+GENERAL REQUIREMENTS FOR VALVES
+
+Plumbing valve applications specified in this Section are limited to NPS 12 (DN 300).  Many valves specified are available in larger sizes.
+
+Refer to valve schedule articles for applications of valves.
+
+Piping systems shall be supplied with valves arranged so as to give complete and regulating control of each building and piping systems throughout the building, and located so all parts are easily accessible and maintained.
+
+Valve Design: Rising stem or outside screw and yoke stems.  Non-rising stem valves may be used where space conditions prevent full extension of rising stems.
+
+Sizes:  Same size as upstream pipe, unless otherwise indicated.
+
+Extended stems: Where piping insulation is indicated or specified, valves shall be equipped with 2” extended handles of non-thermal conductive material.  Also provide a protective sleeve that allows operation of the valve without breaking the vapor seal or disturbing the insulation.  Supply with memory stops, which are fully adjustable after insulation is applied.
+
+End Connection: 2 inch and under shall be threaded, 2-1/2 inches and larger shall be flanged or full lug style.
+
+Valves for Potable Water must comply with California Lead Free Law, effective January 1, 2010.
+
+“Lead Free” refers to the wetted surface of pipe, fittings and fixtures in potable water systems that have a weighted average lead content ≤ 0.25%. Source: California Health & Safety Code (116875).
+
+All valves must be 3rd party certified.
+
+Bronze valves shall be made with dezincification-resistant material.
+
+Where possible, valves of one manufacturer shall be used.
+
+Provide Class 150 valves meeting the valve specifications where Class 125 valves are specified but are not available.
+
+Bronze valves shall be made with dezincification-resistant materials, (Bronze ASTM B62, B61, or B584 Alloy C87850).  This includes body, ball, stem and / or trim.
+
+Bronze Valves:  NPS 2 and smaller with threaded ends, unless otherwise indicated.
+
+Ferrous Valves:  NPS 2-1/2 and larger with flanged ends, unless otherwise indicated.
+
+Caution:  Revise pressure ratings and insert temperature ratings in valve articles if valves with higher ratings are required.  Valves larger than NPS 12 (DN 300) typically have a lower pressure rating than smaller valves.  Verify pressure requirements for large valves.
+
+Valve Pressure and Temperature Ratings:  Not less than indicated and as required for system pressures and temperatures.
+
+Valve Sizes:  Same as upstream piping unless otherwise indicated.
+
+Valve Actuator Types:
+
+Hand-wheel:  For valves other than quarter-turn types.
+
+Hand-lever:  For quarter-turn valves NPS 6 and smaller.
+
+Valves in Insulated Piping:  With 2-inch stem extensions and the following features:
+
+Ball Valves:  With extended operating handle of non-thermal-conductive material, and protective sleeve that allows operation of valve without breaking the vapor seal or disturbing insulation and memory stops that are fully adjustable after insulation is applied.
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Nib-seal handle extension or comparable product by one of the following:
+
+General valves:
+
+NIBCO
+
+Hammond
+
+Milwaukee
+
+Below grade domestic water shut-off valves (gate valves) 2” and larger:
+
+NIBCO.
+
+Clow.
+
+Mueller.
+
+Check valves, lift type:
+
+Hammond.
+
+Milwaukee.
+
+Butterfly Valves:  With extended neck.
+
+Valve-End Connections:
+
+Flanged:  With flanges according to ASME B16.1 for iron valves, ASME B16.5 for steel valves.
+
+Grooved:  With grooves according to AWWA C606.
+
+Valve solder-joint connections are common in smaller sizes of plumbing piping.  Soldering and brazing methods used to achieve required pressure-temperature ratings may damage internal valve parts.  Special installation requirements for soldered valves may make threaded valves more cost-effective.
+
+Caution:  Use solder with melting point below 840 deg F (454 deg C) for angle, check, gate, and globe valves and below 421 deg F (216 deg C) for ball valves.
+
+Solder Joint:  With sockets according to ASME B16.18.
+
+Threaded:  With threads according to ASME B1.20.1.
+
+Valve Bypass and Drain Connections:  MSS SP-45.
+
+BRONZE BALL VALVES
+
+A.                      Three-Piece, Full-Port, Bronze Ball Valves with Stainless-Steel Trim & Nib-Seal Handle:
+
+1.        See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers.  See Division 1 Section "Product Requirements."
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-595-Y-66-LF or T-595-Y-66-LF or a comparable product by one of the following,
+
+Milwaukee Valve Company.
+
+Apollo.
+
+2.    Description:
+
+Standard:  MSS SP-110, NSF 61-G.
+
+CWP Rating:  600 psig.
+
+Body Design:  Three piece with threaded body packnut design (no threaded stem designs allowed) with adjustable stem packing.
+
+Body Material:  Bronze ASTM B 584 Alloy C87850 or C87600.
+
+Ends:  Threaded or Solder.
+
+Seats:  PTFE or TFE.
+
+Stem:  316 Stainless steel.
+
+Ball:  316 Stainless steel, vented.
+
+Port:  Full.
+
+Caution:  Two-piece ball valves with a full or regular port are recommended for most services.  One-piece ball valves have a reduced port and one fewer leak path.  Three-piece ball valves are recommended if disassembly without removing valve from piping is required.
+
+Where pressure drop is a concern, use full-port ball valves.  For corrosive or high-temperature applications, use stainless-steel-trim ball valves.
+
+Two-Piece, Full-Port, Bronze Ball Valves with Stainless-Steel Trim & Nib-Seal Handle:
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-585-66-LF or T-585-66-LF or a comparable product by one of the following:
+
+Conbraco Industries, Inc.; Apollo Div.
+
+Milwaukee Valve Company.
+
+Description:
+
+Standard:  MSS SP-110, NSF 61-G.
+
+CWP Rating:  600 psig.
+
+Body Design:  Two piece with threaded body packnut design (no threaded stem designs allowed) with adjustable stem packing.
+
+Body Material:  Bronze ASTM B 584 Alloy C87600.
+
+Ends:  Threaded or Solder.
+
+Seats:  PTFE or TFE.
+
+Stem:  316 Stainless steel.
+
+Ball:  316 Stainless steel, vented.
+
+Port:  Full.
+
+Caution:  Two-piece ball valves with a full or regular port are recommended for most services.  One-piece ball valves have a reduced port and one fewer leak path.  Three-piece ball valves are recommended if disassembly without removing valve from piping is required.
+
+Where pressure drop is a concern, use full-port ball valves.  For corrosive or high-temperature applications, use stainless-steel-trim ball valves.
+
+BRONZE LIFT CHECK VALVES
+
+Class 125, Lift Check Valves with Nonmetallic TFE Disc:
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-480-Y-LF or T-480-Y-LF or a comparable product by one of the following:
+
+Hammond.
+
+Milwaukee.
+
+Description:
+
+Standard:  MSS SP-80, Type 2, NSF 61-G.
+
+CWP Rating:  200 psig.
+
+Body Design:  Vertical flow.
+
+Body Material:  ASTM B 584 Alloy C87850, lead free bronze.
+
+Ends:  Threaded or Solder.
+
+Disc:  PTFE, or TFE.
+
+BRONZE SWING CHECK VALVES
+
+Class 125, Bronze Swing Check Valves with Nonmetallic TFE Disc:
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-413-Y-LF or T-413-Y-LF or a comparable product by one of the following:
+
+Crane Co.; Crane Valve Group; Crane Valves.
+
+Powell Valves.
+
+Description:
+
+Standard:  MSS SP-80, Type 4, NSF 61-G.
+
+CWP Rating:  200 psig.
+
+Body Design:  Y-pattern Horizontal flow.
+
+Body Material:  ASTM B 584 Alloy C87850, lead free bronze.
+
+Ends:  Threaded or Solder.
+
+Disc:  PTFE or TFE.
+
+BRONZE GATE VALVES
+
+NRS Bronze Gate Valves:
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-113-LF or T-113-LF or a comparable product by one of the following:
+
+Crane Co.; Crane Valve Group; Crane Valves.
+
+Powell Valves.
+
+Description:
+
+Standard:  MSS SP-139, Type 2, NSF 61-G.
+
+CWP Rating:  200 psig.
+
+Body Material:  ASTM B 584, dezincification-resistant bronze with integral seat and threaded bonnet.
+
+Ends:  Threaded or Solder.
+
+Stem:  Lead free Silicon Bronze.
+
+Disc:  Solid wedge; lead free bronze.
+
+Packing:  Asbestos free.
+
+Handwheel:  Malleable iron.
+
+RS Bronze Gate Valves:
+
+Basis-of-Design Product: Subject to compliance with requirements, provide NIBCO Model S-111-LF or T-111-LF or a comparable product by one of the following:
+
+Crane Co.; Crane Valve Group; Crane Valves.
+
+Powell Valves
+
+Description:
+
+Standard: MSS SP-80, Type 2, NSF 61-G.
+
+CWP Rating: 200 psig.
+
+Body Material: ASTM B584 C87850 dezincification resistant bronze with integral seat and threaded bonnet.
+
+Ends: Threaded or Solder.
+
+Stem: Lead free silicon bronze.
+
+Disc: Solid wedge, lead free bronze.
+
+Packing: Asbestos free.
+
+Handwhell: Malleable iron.
+
+IRON GATE VALVES
+
+Class 125, Ductile-Iron Resilient Wedge Gate Valves:
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model F-619-RWS (NRS) or F-607-RWS (OS&Y) or a comparable product by one of the following:
+
+Clow
+
+Mueller
+
+Description:
+
+Standard:  AWWA C-509 and C-515,
+
+CWP Rating:  300 psig.
+
+Body Material:  ASTM A536 ductile iron, fusion-bonded epoxy coating inside and out.
+
+Ends:  Flanged.
+
+Trim:  stainless steel.
+
+Disc:  Rubber encapsulated ductile iron wedge.
+
+Packing and Gasket:  Asbestos free.
+
+EXECUTION
+
+EXAMINATION
+
+Examine valve interior for cleanliness, freedom from foreign matter, and corrosion.  Remove special packing materials, such as blocks, used to prevent disc movement during shipping and handling.
+
+Operate valves in positions from fully open to fully closed.  Examine guides and seats made accessible by such operations.
+
+Examine threads on valve and mating pipe for form and cleanliness.
+
+Examine mating flange faces for conditions that might cause leakage.  Check bolting for proper size, length, and material.  Verify that gasket is of proper size, that its material composition is suitable for service, and that it is free from defects and damage.
+
+Do not attempt to repair defective valves; replace with new valves.
+
+VALVE INSTALLATION
+
+Install valves with unions or flanges at each piece of equipment arranged to allow service, maintenance, and equipment removal without system shutdown.
+
+Locate valves for easy access and provide separate support where necessary.
+
+Install valves in horizontal piping with stem at or above center of pipe.
+
+Install valves in position to allow full stem movement.
+
+Install check valves for proper direction of flow and as follows:
+
+Swing Check Valves:  In horizontal position with hinge pin level.
+
+Check Valves:  In horizontal or vertical position, between flanges.
+
+Lift Check Valves:  With stem upright and plumb.
+
+ADJUSTING
+
+Adjust or replace valve packing after piping systems have been tested and put into service but before final adjusting and balancing.  Replace valves if persistent leaking occurs.
+
+GENERAL REQUIREMENTS FOR VALVE APPLICATIONS
+
+The Section Text is arranged to provide bronze or brass valves in NPS 2 (DN 50) and smaller and iron valves in NPS 2-1/2 to NPS 12 (DN 65 to DN 300).
+
+Caution:  Verify that valve classes and pressure and temperature ratings are adequate for system fluid.  Repeat each category listing if necessary and insert required pressure range for each listing.  Indicate location of each different pressure system on Drawings.
+
+If valve applications are not indicated, use the following:
+
+Shutoff Service:  Ball, butterfly valves.
+
+Butterfly Valve Dead-End Service:  Single-flange (lug) type.
+
+Throttling Service:  Ball or Butterfly valves.
+
+If valves with specified SWP classes or CWP ratings are not available, the same types of valves with higher SWP classes or CWP ratings may be substituted.
+
+Select valves, except wafer types, with the following end connections:
+
+For Copper Tubing, NPS 2 and Smaller:  Threaded ends.
+
+For Copper Tubing, NPS 2-1/2 to NPS 4:  Flanged ends.
+
+For Steel Piping, NPS 2 and Smaller:  Threaded ends.
+
+For Steel Piping, NPS 2-1/2 to NPS 4:  Flanged ends.
+
+DOMESTIC, HOT- AND COLD-WATER VALVE SCHEDULE
+
+Pipe NPS 2 and Smaller:
+
+Bronze Valves:  Threaded ends.
+
+Caution:  No one-piece, reduced-port, brass ball valves with stainless-steel trim; three-piece, regular-port, brass ball valves with brass trim; or bronze ball valves with bronze trim are included in the Section Text.  Retain brass or stainless-steel trim with brass ball valves, or bronze or stainless-steel trim with bronze ball valves.
+
+Ball Valves:  Two piece, full port, bronze with stainless-steel trim.
+
+Bronze Lift Check Valves:  Class 125, nonmetallic TFE disc.
+
+Bronze Swing Check Valves:  Class 150, nonmetallic TFE disc.
+
+Bronze Gate Valves:  Class 150, RS.
+
+Pipe NPS 2-1/2 and Larger:
+
+Ductile-Iron, Single-Flange Butterfly Valves:  200 CWP, EPDM seat, aluminum-bronze disc.
+
+END OF SECTION 22 05 23

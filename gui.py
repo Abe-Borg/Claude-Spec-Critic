@@ -25,7 +25,7 @@ from src.report import generate_report
 class SpecReviewApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("MEP Spec Review - California K-12 DSA Projects")
+        self.root.title("Mechanical & Plumbing Spec Review - California K-12 DSA Projects")
         self.root.geometry("700x600")
         self.root.minsize(600, 500)
         
@@ -81,7 +81,6 @@ class SpecReviewApp:
         model_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=10)
         model_frame.columnconfigure(1, weight=1)
         
-        ttk.Radiobutton(model_frame, text="Haiku 4.5 (Fastest, Cheapest)", variable=self.model_choice, value="haiku").grid(row=0, column=0, sticky="w", padx=10)
         ttk.Radiobutton(model_frame, text="Sonnet 4.5 (Balanced)", variable=self.model_choice, value="sonnet").grid(row=0, column=1, sticky="w", padx=10)
         ttk.Radiobutton(model_frame, text="Opus 4.5 (Best Quality)", variable=self.model_choice, value="opus").grid(row=0, column=2, sticky="w", padx=10)
         
@@ -272,9 +271,6 @@ class SpecReviewApp:
         if model_choice == "opus":
             model = MODEL_OPUS
             model_name = "Opus 4.5"
-        elif model_choice == "haiku":
-            model = MODEL_HAIKU
-            model_name = "Haiku 4.5"
         else:
             model = MODEL_SONNET
             model_name = "Sonnet 4.5"

@@ -1,0 +1,673 @@
+{
+  "metadata": {
+    "timestamp": "2025-12-11T11:43:23.612169",
+    "model": "claude-sonnet-4-5-20250929",
+    "input_tokens": 75697,
+    "output_tokens": 15099,
+    "thinking_tokens": 0,
+    "elapsed_seconds": 249.822119474411,
+    "files_reviewed": [
+      "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "220517 fl - Sleeves and Sleeve Seals for Plumbing Piping.docx",
+      "220518 fl - Escutcheons for Plumbing Piping.docx",
+      "220523 fl - General-Duty Valves for Plumbing Piping.docx",
+      "220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx",
+      "220553 fl - Identification for Plumbing Piping and Equipment.docx",
+      "230529 - HANGERS AND SUPPORTS FOR HVAC PIPING AND EQUIPMENT.docx",
+      "230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT.docx",
+      "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "230713 - DUCT INSULATION.docx",
+      "230719 - HVAC PIPING INSULATION.docx"
+    ]
+  },
+  "summary": {
+    "critical": 12,
+    "high": 17,
+    "medium": 19,
+    "low": 13,
+    "gripes": 3,
+    "total": 64
+  },
+  "findings": [
+    {
+      "severity": "CRITICAL",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 1, GENERAL, Use this Section... statement at top",
+      "issue": "Wrong reference to Section 230548.13. The correct format for a vibration controls section in CSI MasterFormat would be Section 230548 (or similar). Also, this cross-reference note should be removed or clarified because DSA jurisdiction requires seismic design in California, making the conditional language inappropriate for a DSA project.",
+      "actionType": "EDIT",
+      "existingText": "Use this Section if Project is in a seismic area.  Use Section 230548.13 \"Vibration Controls for HVAC\" for Projects not in a seismic area.",
+      "replacementText": "This Section is for use on Projects subject to DSA seismic design requirements per CBC 2022 and DSA IR A-6.",
+      "codeReference": "CBC 2022, DSA IR A-6"
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 1, DESIGN REQUIREMENTS, First paragraph",
+      "issue": "Incorrect edition of NFPA 13. California has adopted NFPA 13, 2022 edition as part of CBC 2022. Verify the correct edition adopted by the state.",
+      "actionType": "EDIT",
+      "existingText": "Wet pipe fire sprinkler system shall conform to NFPA13, 2022 edition.",
+      "replacementText": "Wet pipe fire sprinkler system shall conform to NFPA 13, 2022 edition, as adopted by CBC 2022.",
+      "codeReference": "CBC 2022"
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 1, REGULATORY REQUIREMENTS",
+      "issue": "Missing seismic design and certification requirements for fire sprinkler systems. DSA requires specific seismic design, certification, and submittal documentation per DSA IR A-6.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "Seismic Design and Restraint: Design and detail seismic bracing and restraints in accordance with NFPA 13, Chapter 9, and DSA IR A-6. Provide seismic certification by manufacturer or third-party engineer. Submit OSP and OSHPD pre-approval (OPA) where applicable.",
+      "codeReference": "DSA IR A-6, NFPA 13 Chapter 9"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 1, QUALIFICATIONS",
+      "issue": "Section refers to 'Uniform Fire Code with California amendments' which is outdated nomenclature. California uses the California Fire Code (CFC) which is based on the International Fire Code (IFC) with California amendments.",
+      "actionType": "EDIT",
+      "existingText": "Code Requirements:  All work covered by this Section shall conform to the 2022 edition of NFPA 13, California State Fire Marshal, DSA, Uniform Fire Code with California amendments.",
+      "replacementText": "Code Requirements: All work covered by this Section shall conform to the 2022 edition of NFPA 13, California Fire Code (CFC) 2022 with California amendments, California State Fire Marshal requirements, and DSA regulations.",
+      "codeReference": "CFC 2022"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 2, Wet Pipe System, Pipe specifications",
+      "issue": "ASTM A135 is not an appropriate standard for fire sprinkler pipe. ASTM A53 or ASTM A795 should be used. ASTM A135 is for electric-resistance-welded steel pipe and is typically not approved for fire sprinkler systems.",
+      "actionType": "EDIT",
+      "existingText": "Black Steel, 1\"-2\", Schedule 40, ASTM A135 or ASTM A795 for all piping with threaded joints and fittings.  Pipe must be UL Listed.\n\nBlack Steel 2 ½\" -6\", Schedule 10, ASTM A135 or ASTM A795 for all piping with grooved joints and fittings.",
+      "replacementText": "Black Steel, 1\"-2\", Schedule 40, ASTM A53 or ASTM A795 for all piping with threaded joints and fittings. Pipe must be UL Listed.\n\nBlack Steel 2-1/2\"-6\", Schedule 10 (for grooved systems), ASTM A53 or ASTM A795 for all piping with grooved joints and fittings. Verify Schedule 10 is permitted by manufacturer's listing for grooved applications.",
+      "codeReference": "NFPA 13, Section 6.3"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 2, Sprinkler Heads, third paragraph",
+      "issue": "Inconsistent temperature ratings. The specification states sprinklers in areas experiencing over 100°F shall be 200-225°F rated, and boiler rooms shall be 250-290°F. This may be inadequate. NFPA 13 requires consideration of ambient plus 20°F for intermediate temperature (typically 155°F-200°F) or ambient plus 50°F for ordinary temperature (135°F-170°F). Verify these ratings meet NFPA 13 Table 6.2.5.1.",
+      "actionType": "EDIT",
+      "existingText": "Sprinklers in concealed spaces, exterior locations and any other areas which may experience over 100 degrees F ambient temperatures shall be furnished with 200 to 225 degree rated sprinklers.  Sprinkler heads in boiler rooms shall be furnished with sprinklers rated at 250 to 290 degrees F.",
+      "replacementText": "Sprinkler temperature ratings shall be selected in accordance with NFPA 13, Table 6.2.5.1, based on maximum anticipated ceiling temperatures. Sprinklers in concealed spaces, exterior locations, and areas that may experience elevated ambient temperatures shall have temperature ratings a minimum of 50°F above maximum anticipated ceiling temperature. Coordinate ratings with design conditions and obtain approval prior to procurement.",
+      "codeReference": "NFPA 13, Section 6.2.5 and Table 6.2.5.1"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 2, Sprinkler Heads",
+      "issue": "Specification prohibits extended coverage heads without technical justification. Extended coverage heads are allowed by NFPA 13 and may be more efficient. This appears to be an arbitrary restriction.",
+      "actionType": "EDIT",
+      "existingText": "Sprinkler heads in light hazard occupancy shall be quick response type.  Sprinklers shall be same manufacturer throughout.  Extended coverage heads will not be permitted.",
+      "replacementText": "Sprinkler heads in light hazard occupancy shall be quick response type per NFPA 13, Section 6.2.3.2. Sprinklers shall be same manufacturer throughout to extent practical. Extended coverage heads are permitted if approved by Architect and authorities having jurisdiction, and if hydraulic calculations demonstrate compliance with NFPA 13.",
+      "codeReference": "NFPA 13, Section 6.2.3.2"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 3, INSTALLATION, Underground piping paragraph",
+      "issue": "36-inch minimum bury depth may not be adequate for freeze protection in all California climates, and conflicts with typical depth requirements for fire service. Verify this meets local frost depth and fire service requirements.",
+      "actionType": "EDIT",
+      "existingText": "Underground piping shall have a 36\" minimum bury.  Pipe shall be installed on a flat undisturbed sand bed.",
+      "replacementText": "Underground piping burial depth shall be a minimum of 36 inches or below frost line and shall comply with NFPA 24 requirements for the local climate zone. Where site conditions or frost depth require greater depth, increase burial accordingly. Pipe shall be installed on a flat undisturbed sand bed.",
+      "codeReference": "NFPA 24, Section 10.6"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 1, Manufacture's Data",
+      "issue": "Typo in heading: 'Manufacture's' should be 'Manufacturer's'.",
+      "actionType": "EDIT",
+      "existingText": "Manufacture's Data",
+      "replacementText": "Manufacturer's Data",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 1, QUALIFICATIONS, Retain terms... paragraph",
+      "issue": "Contains unedited boilerplate instruction text that should be removed before issuing specifications.",
+      "actionType": "DELETE",
+      "existingText": "Retain terms that remain after this Section has been edited for a project.",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 1, Drawings and Hydraulic calculations",
+      "issue": "Specifying AutoCAD 2019 as 'the latest' is outdated. AutoCAD 2019 was released in 2018. Specify current version or allow for compatibility with current software.",
+      "actionType": "EDIT",
+      "existingText": "Drawings shall be made in AutoCAD 2019 version as the latest.  Drawings shall be same size as contract drawings.",
+      "replacementText": "Drawings shall be made in AutoCAD (version 2019 or later) in DWG format compatible with current Architect's software. Drawings shall be same size as contract drawings.",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 2, REQUIRMENTS",
+      "issue": "Section heading misspelled: 'REQUIRMENTS' should be 'REQUIREMENTS'.",
+      "actionType": "EDIT",
+      "existingText": "REQUIRMENTS",
+      "replacementText": "REQUIREMENTS",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 2, REQUIRMENTS section, multiple locations",
+      "issue": "Contains multiple instances of unedited boilerplate instruction text (e.g., 'Copy \"Elastomeric Isolation Pads\" Paragraph below...', 'Coordinate specifications for products...', 'Verify availability of various pad materials...'). This editorial instruction text should be removed.",
+      "actionType": "DELETE",
+      "existingText": "Copy \"Elastomeric Isolation Pads\" Paragraph below and re-edit for each product...Coordinate specifications for products in this Section with structural engineer...Copy \"Sandwich-Core Material\" Subparagraph below...",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 2, MATERIALS, ACCESS PANELS",
+      "issue": "ACCESS PANELS section is misplaced in a fire sprinkler specification and appears to be copied from a different section. Fire sprinkler specs would require fire sprinkler access panels, but this describes general access panels. Remove or clarify.",
+      "actionType": "DELETE",
+      "existingText": "ACCESS PANELS\n\nSquare, stainless steel, with vandal proof door lock operated by allen wrench: Manufacturer's:  Smith – 4760, Elmdor – DW-AKL",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 3, INSTALLATION, Drainage paragraph",
+      "issue": "References 'CBC standards' which is non-specific. Should reference specific code sections or NFPA 13 requirements for drainage.",
+      "actionType": "EDIT",
+      "existingText": "Sprinkler system shall be provided with complete drainage facilities in accordance with CBC standards.",
+      "replacementText": "Sprinkler system shall be provided with complete drainage facilities in accordance with NFPA 13, Section 8.17, and CBC Chapter 9.",
+      "codeReference": "NFPA 13, Section 8.17; CBC 2022 Chapter 9"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 3, INSTALLATION, Testing paragraph",
+      "issue": "Reference to 'CBC standards' for testing is non-specific. Should reference NFPA 13 Chapter 11 for system acceptance testing.",
+      "actionType": "EDIT",
+      "existingText": "Upon completion of work and before substantial completion, subject entire system, including underground piping, to tests as required by NFPA13 and CBC standards and furnish Owner with a certificate of compliance as required.",
+      "replacementText": "Upon completion of work and before substantial completion, subject entire system, including underground piping, to hydrostatic and operational acceptance tests as required by NFPA 13, Chapter 11. Furnish Owner with test reports and certificate of compliance signed by contractor and approved by authority having jurisdiction.",
+      "codeReference": "NFPA 13, Chapter 11"
+    },
+    {
+      "severity": "LOW",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 1, SECTION INCLUDES, third paragraph",
+      "issue": "Run-on sentence with inconsistent punctuation. Should be broken into clearer statements or use proper list formatting.",
+      "actionType": "EDIT",
+      "existingText": "Work or equipment not indicated or specified which is necessary for the complete and proper operation of the work of the Section in accordance with the true intent and meaning of the contract documents shall be provided by this contractor and incorporated under this Section of the work at no additional cost.",
+      "replacementText": "Work or equipment not indicated or specified but necessary for the complete and proper operation of the fire sprinkler system in accordance with the true intent and meaning of the contract documents shall be provided by this Contractor and incorporated under this Section at no additional cost to the Owner.",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 2, Sprinkler Heads, paragraph about escutcheons",
+      "issue": "Inconsistent formatting: '=ceilings' contains a stray equals sign.",
+      "actionType": "EDIT",
+      "existingText": "Exposed pipe through walls and =ceilings shall have split ring chrome escutcheon.",
+      "replacementText": "Exposed pipe through walls and ceilings shall have split ring chrome escutcheon.",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 3, EXAMINATION, first paragraph",
+      "issue": "Inconsistent capitalization and terminology. 'Contractor' should be lowercase when used generically, and 'he' should be 'Contractor' or 'they' for consistency and inclusivity.",
+      "actionType": "EDIT",
+      "existingText": "Contractor shall make a careful examination of the premises and shall thoroughly familiarize themselves with the requirements of the contract.  By submitting a proposal for the work under this section of the specification, the Contractor shall be deemed to have made such a study and the he is familiar with and accepts all conditions of the site.",
+      "replacementText": "Contractor shall make a careful examination of the premises and shall thoroughly familiarize themselves with the requirements of the Contract. By submitting a proposal for the Work under this Section, the Contractor shall be deemed to have made such a study and to be familiar with and to accept all conditions of the site.",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Throughout document",
+      "issue": "Inconsistent capitalization of 'contractor' vs 'Contractor', 'architect' vs 'Architect', 'owner' vs 'Owner', and 'section' vs 'Section'. CSI format typically capitalizes these terms when referring to specific Contract parties or document divisions.",
+      "actionType": "EDIT",
+      "existingText": "Multiple instances throughout (applies throughout this section)",
+      "replacementText": "Standardize capitalization: Use 'Contractor', 'Architect', 'Owner', 'Engineer', 'Contract', 'Section', 'Work' when referring to specific Contract parties or Contract Document divisions.",
+      "codeReference": null
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "220517 fl - Sleeves and Sleeve Seals for Plumbing Piping.docx",
+      "section": "Part 1, QUALITY ASSURANCE",
+      "issue": "References 'SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems' which is primarily for HVAC, not plumbing. For plumbing piping seismic restraint, reference ASCE 7 and CBC Chapter 16, or ASPE standards.",
+      "actionType": "EDIT",
+      "existingText": "SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.",
+      "replacementText": "CBC 2022 Chapter 16, ASCE 7-22 Chapter 13, and applicable ASPE standards for seismic design and restraint.",
+      "codeReference": "CBC 2022 Chapter 16, ASCE 7-22"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "220517 fl - Sleeves and Sleeve Seals for Plumbing Piping.docx",
+      "section": "Part 1, QUALITY ASSURANCE, Code Requirements",
+      "issue": "References '2022 California Plumbing Code' which is correct, but should clarify that this is C.C.R., Title 24, Part 5 (already listed) to avoid redundancy and confusion.",
+      "actionType": "EDIT",
+      "existingText": "C.C.R., Title 24, Part 5 (2022 CPC).\n\n2022 California Plumbing Code.",
+      "replacementText": "C.C.R., Title 24, Part 5 (2022 California Plumbing Code).",
+      "codeReference": "CPC 2022"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "220517 fl - Sleeves and Sleeve Seals for Plumbing Piping.docx",
+      "section": "Part 2, GROUT",
+      "issue": "ASTM C 1107 is correct but the grade designation is incomplete. Should specify 'Grade B, post-hardening and volume-adjusting' more clearly and indicate suitable applications.",
+      "actionType": "EDIT",
+      "existingText": "Standard:  ASTM C 1107/C 1107M, Grade B, post-hardening and volume-adjusting, dry, hydraulic-cement grout.",
+      "replacementText": "Standard: ASTM C 1107/C 1107M, Grade B (flowable consistency), post-hardening and volume-adjusting, dry, hydraulic-cement grout suitable for interior and exterior applications.",
+      "codeReference": "ASTM C 1107"
+    },
+    {
+      "severity": "LOW",
+      "fileName": "220517 fl - Sleeves and Sleeve Seals for Plumbing Piping.docx",
+      "section": "Part 1, SUMMARY, Related Documents",
+      "issue": "Standard boilerplate includes reference to 'General and Supplementary Conditions and Division 01 Specification Sections'. On DSA projects, 'General Conditions' should reference DSA's required General Conditions (typically based on AIA but with DSA modifications).",
+      "actionType": "EDIT",
+      "existingText": "Drawings and general provisions of the Contract, including General and Supplementary Conditions and Division 01 Specification Sections, apply to this Section.",
+      "replacementText": "Drawings and general provisions of the Contract, including General Conditions (DSA Form 101), Supplementary Conditions, and Division 01 Specification Sections, apply to this Section.",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "220517 fl - Sleeves and Sleeve Seals for Plumbing Piping.docx",
+      "section": "Throughout document",
+      "issue": "Inconsistent capitalization and hyphenation: 'blueline prints' vs standard terminology, inconsistent use of hyphens in compound modifiers.",
+      "actionType": "EDIT",
+      "existingText": "Multiple instances (applies throughout this section)",
+      "replacementText": "Standardize terminology: use 'record drawings' or 'as-built drawings' instead of 'blueline prints'; use consistent hyphenation for compound modifiers (e.g., 'as-built information').",
+      "codeReference": null
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "220523 fl - General-Duty Valves for Plumbing Piping.docx",
+      "section": "Part 1, Related Sections",
+      "issue": "References 'Division 15' and 'Division 2' which are outdated CSI MasterFormat divisions. Division 15 was replaced by Division 22 (Plumbing) and Division 23 (HVAC) in MasterFormat 2004. Division 2 is now Division 31 (Earthwork) and Division 33 (Utilities).",
+      "actionType": "EDIT",
+      "existingText": "Related Sections:\n\nDivision 2 water distribution piping Sections for general-duty and specialty valves for site construction piping.\n\nDivision 15 plumbing piping Sections for specialty valves applicable to those Sections only.\n\nDivision 15 Section \"Identification for Plumbing Piping and Equipment\" for valve tags and schedules.",
+      "replacementText": "Related Sections:\n\nDivision 33 Utilities Sections for general-duty and specialty valves for site utilities piping.\n\nDivision 22 Plumbing Sections for specialty valves applicable to those Sections only.\n\nSection 220553 \"Identification for Plumbing Piping and Equipment\" for valve tags and schedules.",
+      "codeReference": null
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "220523 fl - General-Duty Valves for Plumbing Piping.docx",
+      "section": "Part 1, QUALITY ASSURANCE",
+      "issue": "References 'SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems' which is primarily for HVAC, not plumbing valves. For plumbing piping seismic restraint, reference ASCE 7 and CBC Chapter 16.",
+      "actionType": "EDIT",
+      "existingText": "SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.",
+      "replacementText": "CBC 2022 Chapter 16 and ASCE 7-22 Chapter 13 for seismic design and restraint.",
+      "codeReference": "CBC 2022 Chapter 16, ASCE 7-22"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "220523 fl - General-Duty Valves for Plumbing Piping.docx",
+      "section": "Part 2, GENERAL REQUIREMENTS FOR VALVES, Extended stems paragraph",
+      "issue": "Extended stem requirement for insulated piping specifies '2\" extended handles' but does not clarify whether this is the extension beyond the insulation surface or total handle length. Clarify dimension for constructability.",
+      "actionType": "EDIT",
+      "existingText": "Extended stems: Where piping insulation is indicated or specified, valves shall be equipped with 2\" extended handles of non-thermal conductive material.",
+      "replacementText": "Extended Stems: Where piping insulation is indicated or specified, valves shall be equipped with extended handles of non-thermal conductive material, with handle extension sufficient to project a minimum of 2 inches beyond insulation and jacket surface.",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "220523 fl - General-Duty Valves for Plumbing Piping.docx",
+      "section": "Part 2, GENERAL REQUIREMENTS FOR VALVES, Bronze valves paragraph",
+      "issue": "Specification states 'Bronze valves shall be made with dezincification-resistant material' twice in the same article (in general requirements and again later). Redundant text should be consolidated.",
+      "actionType": "EDIT",
+      "existingText": "Bronze valves shall be made with dezincification-resistant material. [later repeated]",
+      "replacementText": "Consolidate to single statement: 'Bronze valves shall be made with dezincification-resistant materials per ASTM B 98 or ASTM B 584, alloys C87850 or equivalent. This includes body, ball, stem, and trim where applicable.'",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "220523 fl - General-Duty Valves for Plumbing Piping.docx",
+      "section": "Part 2, BRONZE BALL VALVES, Description",
+      "issue": "Specification prohibits 'threaded stem designs' for ball valves but does not provide technical justification. Threaded stem designs are common and acceptable for many applications. Verify this restriction is necessary.",
+      "actionType": "EDIT",
+      "existingText": "Body Design:  Three piece with threaded body packnut design (no threaded stem designs allowed) with adjustable stem packing.",
+      "replacementText": "Body Design: Three piece with threaded body and union-end or flanged construction, with adjustable stem packing. Threaded-stem designs are not permitted.",
+      "codeReference": null
+    },
+    {
+      "severity": "LOW",
+      "fileName": "220523 fl - General-Duty Valves for Plumbing Piping.docx",
+      "section": "Part 1, DEFINITIONS",
+      "issue": "Contains instruction text 'Retain definition(s) remaining after this Section has been edited.' which should be removed from final specifications.",
+      "actionType": "DELETE",
+      "existingText": "Retain definition(s) remaining after this Section has been edited.",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx",
+      "section": "Part 1, QUALITY ASSURANCE",
+      "issue": "References 'SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems' which is primarily for HVAC. For plumbing piping seismic restraint, reference ASCE 7, CBC Chapter 16, and MSS SP-127 or SP-69.",
+      "actionType": "EDIT",
+      "existingText": "SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.",
+      "replacementText": "CBC 2022 Chapter 16, ASCE 7-22 Chapter 13, MSS SP-69 'Pipe Hangers and Supports - Selection and Application', and MSS SP-127 'Bracing for Piping Systems Seismic - Wind - Dynamic Design, Selection, and Installation'.",
+      "codeReference": "CBC 2022 Chapter 16, ASCE 7-22, MSS SP-69, MSS SP-127"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx",
+      "section": "Part 2, Pipe Supports, General description",
+      "issue": "Specification references hanger spacing per '2022 California Plumbing Code Table 313.1' but should verify this table reference is correct and whether it applies to all services (hot, cold, waste, etc.).",
+      "actionType": "EDIT",
+      "existingText": "Hanger spacing and location shall conform to 2022 California Plumbing Code Table 313.1.",
+      "replacementText": "Hanger spacing and location shall conform to CPC 2022 Table 313.1 for plumbing piping. For piping not covered by CPC Table 313.1, comply with MSS SP-69 'Pipe Hangers and Supports - Selection and Application'.",
+      "codeReference": "CPC 2022 Table 313.1, MSS SP-69"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx",
+      "section": "Part 2, Pipe Supports, Lateral bracing paragraph",
+      "issue": "References 'SMACNA \"Guidelines for Seismic Restraints of Piping Systems\"' which is an HVAC-focused document. For plumbing, should reference MSS SP-127 or CBC Chapter 16 requirements.",
+      "actionType": "EDIT",
+      "existingText": "Provide lateral bracing as manufactured by B-Line or approved equal for all piping to prevent swaying or movement in accordance with SMACNA \"Guidelines for Seismic Restraints of Piping Systems\".",
+      "replacementText": "Provide lateral bracing as manufactured by B-Line, Tolco, or approved equal for all piping to prevent swaying or movement in accordance with CBC 2022 Chapter 16, ASCE 7-22 Chapter 13, and MSS SP-127. Design seismic restraints for DSA requirements per DSA IR A-6.",
+      "codeReference": "CBC 2022 Chapter 16, ASCE 7-22, MSS SP-127, DSA IR A-6"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx",
+      "section": "Part 2, Hanger Rods and Spacing table",
+      "issue": "Hanger rod spacing table may not be adequate for all piping services and weights. CPC Table 313.1 provides more detailed requirements by pipe material and service. Verify this simplified table is appropriate.",
+      "actionType": "EDIT",
+      "existingText": "Hanger Rods and Spacing shall conform to the following table:\n\nPipe Sizes\t\t\t\tSpacing\t\t\tRods\n2 Inch and Smaller\t\t6 Feet\t\t\t3/8 Inch\n2-1/2 Inch to 3 Inch\t\t8 Feet\t\t\t1/2 Inch\n4 Inch and larger\t\t\t8 Feet\t\t\t5/8 Inch",
+      "replacementText": "Hanger rod sizing and spacing shall conform to CPC 2022 Table 313.1 for plumbing piping. For piping not covered by CPC Table 313.1, comply with MSS SP-69. As a minimum, provide:\n\nPipe Sizes 2 inches and smaller: Maximum 6-foot spacing, 3/8-inch rods\nPipe Sizes 2-1/2 inches to 3 inches: Maximum 8-foot spacing, 1/2-inch rods\nPipe Sizes 4 inches and larger: Maximum 8-foot spacing, 5/8-inch rods (minimum)\n\nReduce spacing near valves, fittings, and concentrated loads.",
+      "codeReference": "CPC 2022 Table 313.1, MSS SP-69"
+    },
+    {
+      "severity": "LOW",
+      "fileName": "220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx",
+      "section": "Throughout document",
+      "issue": "Contains multiple instances of unedited boilerplate instruction text related to painting and touchup that may not apply to plumbing installations or should be coordinated with other sections.",
+      "actionType": "EDIT",
+      "existingText": "Multiple painting-related instruction paragraphs (applies throughout Execution article)",
+      "replacementText": "Review and coordinate painting and finishing requirements with Division 09 Painting Sections. Remove instruction text or replace with project-specific requirements.",
+      "codeReference": null
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "220553 fl - Identification for Plumbing Piping and Equipment.docx",
+      "section": "Part 1, QUALITY ASSURANCE",
+      "issue": "References 'SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems' in a plumbing identification section, which is not relevant to pipe and equipment identification. This appears to be copied from another section.",
+      "actionType": "DELETE",
+      "existingText": "SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "220553 fl - Identification for Plumbing Piping and Equipment.docx",
+      "section": "Part 2, PIPE LABELS",
+      "issue": "Specifies lettering size of 'At least 1-1/2 inches high' which may be excessive for small piping. ASME A13.1 provides guidance on letter size based on pipe diameter. Verify this requirement is appropriate for all pipe sizes.",
+      "actionType": "EDIT",
+      "existingText": "Lettering Size:  At least 1-1/2 incheshigh.",
+      "replacementText": "Lettering Size: Minimum letter size shall be in accordance with ASME A13.1, based on pipe outside diameter:\n- Pipe 3/4\" to 1-1/4\": 1/2\" letters\n- Pipe 1-1/2\" to 2\": 3/4\" letters  \n- Pipe 2-1/2\" to 6\": 1-1/4\" letters\n- Pipe 8\" and larger: 2-1/2\" letters minimum",
+      "codeReference": "ASME A13.1"
+    },
+    {
+      "severity": "LOW",
+      "fileName": "220553 fl - Identification for Plumbing Piping and Equipment.docx",
+      "section": "Part 1, ACTION SUBMITTALS",
+      "issue": "Lists multiple submittal items but does not specify number of copies or submission format (electronic vs. hard copy). For DSA projects, electronic submittals via DSA's ePSSI system are typically required.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "Submit all product data, samples, and schedules electronically through DSA's ePSSI system in accordance with DSA procedures. Provide [ ] hard copies of schedules for Architect's review.",
+      "codeReference": "DSA ePSSI requirements"
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "230529 - HANGERS AND SUPPORTS FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 1, PERFORMANCE REQUIREMENTS",
+      "issue": "States 'Design seismic-restraint hangers and supports for piping and equipment' but does not reference DSA-specific requirements. For California K-12 DSA projects, seismic design must comply with DSA IR A-6 and include certification and pre-approval (OPA) where applicable.",
+      "actionType": "EDIT",
+      "existingText": "Design seismic-restraint hangers and supports for piping and equipment and obtain approval from authorities having jurisdiction.",
+      "replacementText": "Design seismic-restraint hangers and supports for piping and equipment in accordance with CBC 2022 Chapter 16, ASCE 7-22 Chapter 13, and DSA IR A-6. Obtain DSA approval. Provide seismic certification by manufacturer or third-party engineer. Submit OSHPD pre-approval (OPA) documentation where applicable.",
+      "codeReference": "CBC 2022 Chapter 16, ASCE 7-22, DSA IR A-6"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230529 - HANGERS AND SUPPORTS FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 1, Related Sections",
+      "issue": "References 'Section 230548 \"Vibration and Seismic Controls for HVAC\"' but does not clarify whether vibration isolation is included in that section or this section. For DSA projects, seismic restraint of isolated equipment requires special detailing.",
+      "actionType": "EDIT",
+      "existingText": "Section 230548 \"Vibration and Seismic Controls for HVAC for vibration isolation devices.",
+      "replacementText": "Section 230548 \"Vibration and Seismic Controls for HVAC\" for vibration isolation devices and seismic restraint of vibration-isolated equipment. Coordinate seismic restraint details with requirements in this Section.",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230529 - HANGERS AND SUPPORTS FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 1, ACTION SUBMITTALS, Shop Drawings",
+      "issue": "Requires shop drawings to be 'Signed and sealed by a qualified professional engineer' but does not clarify that for DSA projects, the engineer must be licensed in California and familiar with DSA requirements.",
+      "actionType": "EDIT",
+      "existingText": "Shop Drawings:  Signed and sealed by a qualified professional engineer.",
+      "replacementText": "Shop Drawings: Signed and sealed by a professional engineer licensed in the State of California and experienced with DSA seismic design requirements.",
+      "codeReference": "California Business and Professions Code, DSA requirements"
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230529 - HANGERS AND SUPPORTS FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 1, DEFINITIONS",
+      "issue": "Contains instruction text 'Retain definitions remaining after this Section has been edited.' which should be removed from final specifications.",
+      "actionType": "DELETE",
+      "existingText": "Retain definitions remaining after this Section has been edited.",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 1, SUMMARY, Section Includes",
+      "issue": "Missing section header 'SECTION 230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT' at the beginning of the specification. The document starts directly with 'GENERAL'.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "SECTION 230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230553 - IDENTIFICATION FOR HVAC PIPING AND EQUIPMENT.docx",
+      "section": "Part 2, DUCT LABELS",
+      "issue": "Specifies lettering size of 'At least 1-1/2 inches high' which may be excessive for small ducts. Consider providing guidance based on duct size for better proportionality.",
+      "actionType": "EDIT",
+      "existingText": "Lettering Size:  At least 1-1/2 inches high.",
+      "replacementText": "Lettering Size: Minimum letter size based on duct size:\n- Ducts less than 12\" wide: 1/2\" letters\n- Ducts 12\" to 24\" wide: 1\" letters\n- Ducts over 24\" wide: 1-1/2\" letters minimum",
+      "codeReference": null
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, SUMMARY, Section Includes",
+      "issue": "Missing section header 'SECTION 230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC' at the beginning of the specification. The document starts directly with 'GENERAL'.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "SECTION 230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC",
+      "codeReference": null
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, ACTION SUBMITTALS, LEED Submittals",
+      "issue": "References 'ASHRAE/IESNA 90.1' which is outdated nomenclature. The current standard is 'ANSI/ASHRAE/IES Standard 90.1'. Also, verify the correct edition year for the project (2022 California Energy Code references ASHRAE 90.1-2019).",
+      "actionType": "EDIT",
+      "existingText": "TAB Report for Prerequisite EA 2:  Documentation of work performed for ASHRAE/IESNA 90.1, Section 6.7.2.3 - \"System Balancing.\"",
+      "replacementText": "TAB Report for Prerequisite EA 2: Documentation of work performed demonstrating compliance with ANSI/ASHRAE/IES Standard 90.1-2019, Section 6.7.2.3 - \"System Balancing,\" as required by California Energy Code 2022.",
+      "codeReference": "California Energy Code 2022, ANSI/ASHRAE/IES 90.1-2019"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, INFORMATIONAL SUBMITTALS",
+      "issue": "Contract Documents examination report is required 'Within 30 days of Contractor's Notice to Proceed' but for DSA projects, this should be coordinated with DSA submittal and approval timelines which may differ from standard AIA timelines.",
+      "actionType": "EDIT",
+      "existingText": "Contract Documents Examination Report:  Within 30 days of Contractor's Notice to Proceed, submit the Contract Documents review report as specified in Part 3.",
+      "replacementText": "Contract Documents Examination Report: Within 30 days of Contractor's Notice to Proceed, or prior to start of TAB work, whichever is earlier, submit the Contract Documents review report as specified in Part 3. Coordinate timing with DSA submittal requirements and overall project schedule.",
+      "codeReference": null
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 1, QUALITY ASSURANCE, ASHRAE/IESNA Compliance",
+      "issue": "References 'ASHRAE/IESNA 90.1' which should be updated to 'ANSI/ASHRAE/IES 90.1-2019' to match the edition adopted by California Energy Code 2022.",
+      "actionType": "EDIT",
+      "existingText": "ASHRAE/IESNA Compliance:  Applicable requirements in ASHRAE/IESNA 90.1, Section 6.7.2.3 - \"System Balancing.\"",
+      "replacementText": "Energy Code Compliance: Applicable requirements in ANSI/ASHRAE/IES Standard 90.1-2019, Section 6.7.2.3 - \"System Balancing,\" as required by California Energy Code 2022, Title 24, Part 6.",
+      "codeReference": "California Energy Code 2022, ANSI/ASHRAE/IES 90.1-2019"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Part 3, EXAMINATION, Ceiling plenums paragraph",
+      "issue": "References 'Section 233113 \"Metal Ducts\"' for plenum leakage requirements, but does not clarify that for California projects under Title 24, duct and plenum sealing must meet specific leakage class requirements per Section 120.2(d).",
+      "actionType": "EDIT",
+      "existingText": "Examine ceiling plenums and underfloor air plenums used for supply, return, or relief air to verify that they meet the leakage class of connected ducts as specified in Section 233113 \"Metal Ducts\" and are properly separated from adjacent areas.",
+      "replacementText": "Examine ceiling plenums and underfloor air plenums used for supply, return, or relief air to verify that they meet the leakage class of connected ducts as specified in Section 233113 \"Metal Ducts\" and comply with California Energy Code 2022 Section 120.2(d) duct sealing requirements. Verify plenums are properly separated from adjacent areas and that penetrations are sealed and fire-stopped where required.",
+      "codeReference": "California Energy Code 2022, Section 120.2(d)"
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230593 - TESTING, ADJUSTING, AND BALANCING FOR HVAC.docx",
+      "section": "Throughout document",
+      "issue": "Contains multiple bracketed placeholders such as '[Architect]', '[Owner]', '[Construction Manager]', '[Commissioning Authority]' that should be filled in with the actual party responsible for TAB oversight on this project.",
+      "actionType": "EDIT",
+      "existingText": "Multiple instances of bracketed placeholders (applies throughout)",
+      "replacementText": "Replace bracketed placeholders with the actual party name responsible for TAB oversight, coordination, and approval on this DSA project.",
+      "codeReference": null
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 1, SUMMARY, Section Includes",
+      "issue": "Missing section header 'SECTION 230713 - DUCT INSULATION' at the beginning of the specification. The document starts directly with 'GENERAL'.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "SECTION 230713 - DUCT INSULATION",
+      "codeReference": null
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 1, ACTION SUBMITTALS, LEED Submittals",
+      "issue": "LEED submittal requirements reference VOC limits and California Department of Health Services testing, but do not reference the current applicable standard. For adhesives and sealants in California, reference California SCAQMD Rule 1168 and current CDPH Standard Method V1.2 (previously called 'Section 01350').",
+      "actionType": "EDIT",
+      "existingText": "Laboratory Test Reports for Credit IEQ 4:  For adhesives and sealants, documentation indicating that products comply with the testing and product requirements of the California Department of Health Services' \"Standard Practice for the Testing of Volatile Organic Emissions from Various Sources Using Small-Scale Environmental Chambers.\"",
+      "replacementText": "Laboratory Test Reports for Credit IEQ 4: For adhesives and sealants, documentation indicating that products comply with CDPH Standard Method V1.2 (formerly Section 01350) for low-emitting materials, and California SCAQMD Rule 1168 VOC limits where applicable.",
+      "codeReference": "CDPH Standard Method V1.2, SCAQMD Rule 1168"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 2, INSULATION MATERIALS, Mineral-Fiber Blanket",
+      "issue": "Specifies ASTM C 1290, Type III for blanket insulation with FSK jacket, but should verify this type designation is current and appropriate for all duct applications listed in the schedules. Type III is for flexible duct wrap; verify if rigid board is needed for any applications.",
+      "actionType": "EDIT",
+      "existingText": "Mineral-Fiber Blanket Insulation:  Mineral or glass fibers bonded with a thermosetting resin.  Comply with ASTM C 553, Type II and ASTM C 1290, Type III with factory-applied FSK jacket.",
+      "replacementText": "Mineral-Fiber Blanket Insulation: Mineral or glass fibers bonded with a thermosetting resin. Comply with ASTM C 553, Type II (for temperatures up to 250°F) and ASTM C 1290, Type III (for flexible duct wrap with factory-applied FSK jacket). For higher temperature applications, use board insulation per ASTM C 612.",
+      "codeReference": "ASTM C 553, ASTM C 1290, ASTM C 612"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Part 3, INDOOR DUCT AND PLENUM INSULATION SCHEDULE",
+      "issue": "Schedule specifies 'Internally lined per Section 233113 \"Metal Ducts\"' for exposed ducts but does not clarify minimum R-value or thickness required to meet California Energy Code 2022. Energy Code Section 120.2 specifies minimum duct insulation R-values.",
+      "actionType": "EDIT",
+      "existingText": "Exposed, supply-air duct and plenum insulation shall be the following:\n\nInternally lined per Section 233113 \"Metal Ducts.\"",
+      "replacementText": "Exposed, supply-air duct and plenum insulation shall be the following:\n\nInternally lined per Section 233113 \"Metal Ducts\" with minimum R-value complying with California Energy Code 2022, Section 120.2 and Tables 120.2-A through 120.2-C as applicable for the climate zone and duct location.",
+      "codeReference": "California Energy Code 2022, Section 120.2"
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230713 - DUCT INSULATION.docx",
+      "section": "Throughout document",
+      "issue": "Contains multiple instances of instruction text for spec writers (e.g., 'Retain definition(s) remaining...', 'Revise first subparagraph...', etc.) that should be removed from final specifications.",
+      "actionType": "DELETE",
+      "existingText": "Multiple instances of spec writer instruction text (applies throughout)",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "CRITICAL",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 1, SUMMARY, Section Includes",
+      "issue": "Missing section header 'SECTION 230719 - HVAC PIPING INSULATION' at the beginning of the specification. The document starts directly with 'GENERAL'.",
+      "actionType": "ADD",
+      "existingText": null,
+      "replacementText": "SECTION 230719 - HVAC PIPING INSULATION",
+      "codeReference": null
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 1, ACTION SUBMITTALS, LEED Submittals",
+      "issue": "LEED submittal requirements reference VOC limits and California Department of Health Services testing using outdated terminology. Should reference current CDPH Standard Method V1.2.",
+      "actionType": "EDIT",
+      "existingText": "Laboratory Test Reports for Credit IEQ 4:  For adhesives and sealants, documentation indicating that products comply with the testing and product requirements of the California Department of Health Services' \"Standard Practice for the Testing of Volatile Organic Emissions from Various Sources Using Small-Scale Environmental Chambers.\"",
+      "replacementText": "Laboratory Test Reports for Credit IEQ 4: For adhesives and sealants, documentation indicating that products comply with CDPH Standard Method V1.2 for low-emitting materials testing.",
+      "codeReference": "CDPH Standard Method V1.2"
+    },
+    {
+      "severity": "HIGH",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 3, INDOOR PIPING INSULATION SCHEDULE, Chilled Water",
+      "issue": "Insulation schedule for chilled water specifies 'Mineral-Fiber, Preformed Pipe, Type I: 1 inch thick' but does not verify this thickness meets condensation control requirements or California Energy Code minimum R-value requirements for the climate zone.",
+      "actionType": "EDIT",
+      "existingText": "Chilled Water:\n\nInsulation shall be the following:\n\nMineral-Fiber, Preformed Pipe, Type I:  1 inch thick.",
+      "replacementText": "Chilled Water:\n\nInsulation shall be the following:\n\nMineral-Fiber, Preformed Pipe, Type I: Minimum 1 inch thick, or thickness required to meet California Energy Code 2022 minimum R-value per Table 120.3 and to prevent condensation under design conditions, whichever is greater. Verify thickness with condensation control calculations.",
+      "codeReference": "California Energy Code 2022, Section 120.3 and Table 120.3"
+    },
+    {
+      "severity": "MEDIUM",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Part 3, INDOOR PIPING INSULATION SCHEDULE, Heating-Hot-Water",
+      "issue": "Heating hot water piping insulation thickness of 2 inches should be verified to comply with California Energy Code requirements, which vary by pipe size and fluid temperature. Table 120.3 provides minimum requirements.",
+      "actionType": "EDIT",
+      "existingText": "Heating-Hot-Water Supply and Return:\n\nInsulation shall be the following:\n\nMineral-Fiber, Preformed Pipe, Type I: 2 inches thick.",
+      "replacementText": "Heating-Hot-Water Supply and Return:\n\nInsulation shall be the following:\n\nMineral-Fiber, Preformed Pipe, Type I: Minimum thickness per California Energy Code 2022, Table 120.3, based on pipe size and fluid operating temperature. Minimum 2 inches for typical applications; verify compliance for all pipe sizes.",
+      "codeReference": "California Energy Code 2022, Section 120.3 and Table 120.3"
+    },
+    {
+      "severity": "LOW",
+      "fileName": "230719 - HVAC PIPING INSULATION.docx",
+      "section": "Throughout document",
+      "issue": "Contains extensive instruction text and commentary for spec writers (shown in italics and in notes) that should be removed from final specifications for bidding and construction.",
+      "actionType": "DELETE",
+      "existingText": "Multiple instances of instruction text and spec writer guidance (applies throughout)",
+      "replacementText": null,
+      "codeReference": null
+    },
+    {
+      "severity": "GRIPES",
+      "fileName": "220517 fl - Sleeves and Sleeve Seals for Plumbing Piping.docx",
+      "section": "Part 1, Multiple locations in general coordination articles",
+      "issue": "Excessively prescriptive language about contractor coordination and examination of premises. Phrases like 'By the act of submitting a proposal for the work included in this contract, the Contractor shall be deemed to have made such study and examination...' are standard risk-shifting boilerplate but are repetitive across multiple sections and may be viewed as unnecessarily legalistic.",
+      "actionType": "EDIT",
+      "existingText": "Multiple paragraphs about examination, coordination, protection (applies throughout General articles)",
+      "replacementText": "Consider consolidating repetitive coordination and examination requirements into Division 01 General Requirements rather than repeating in every specification section. This would streamline the specifications.",
+      "codeReference": null
+    },
+    {
+      "severity": "GRIPES",
+      "fileName": "220523 fl - General-Duty Valves for Plumbing Piping.docx",
+      "section": "Part 1, SUBMITTAL DATA, Substitution Requirements",
+      "issue": "The substitution requirements are extremely detailed and rigid ('only one proposed alternate will be considered', extensive documentation requirements, etc.). While thoroughness is good, this level of restriction may discourage competitive bidding and limit contractor flexibility in a supply chain with potential availability issues.",
+      "actionType": "EDIT",
+      "existingText": "Extensive substitution requirements including detailed data requirements and 'No more than one proposed alternate will be considered for each item'",
+      "replacementText": "Consider simplifying substitution requirements to focus on performance criteria and allow reasonable flexibility for equal products, especially given current supply chain challenges. The current language may unnecessarily limit competition.",
+      "codeReference": null
+    },
+    {
+      "severity": "GRIPES",
+      "fileName": "211313 - AUTOMATIC FIRE SPRINKLERS.docx",
+      "section": "Part 2, Sprinkler Heads, Alignment requirement",
+      "issue": "Requires sprinklers to be 'installed in center of tile at 12\" increments from tile edge and shall be aligned with other ceiling mounted devices.' This is an aesthetic requirement that may conflict with hydraulic design requirements or structural conditions and could drive up costs unnecessarily. While desirable, making this mandatory without allowing for field conditions seems overly restrictive.",
+      "actionType": "EDIT",
+      "existingText": "Sprinklers shall be installed in center of tile at 12\" increments from tile edge and shall be aligned with other ceiling mounted devices.",
+      "replacementText": "Consider revising to: 'Sprinklers shall be located to align with ceiling tile grid and other ceiling-mounted devices where practical and where such alignment does not conflict with coverage requirements, structural conditions, or hydraulic design. Coordinate final locations with Architect.'",
+      "codeReference": null
+    }
+  ]
+}

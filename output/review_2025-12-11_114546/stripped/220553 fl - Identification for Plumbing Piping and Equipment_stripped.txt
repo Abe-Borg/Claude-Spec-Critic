@@ -1,0 +1,331 @@
+SECTION 22 05 53 – IDENITIFICATION FOR PLUMBING PIPING AND EQUIPMENT
+
+GENERAL
+
+RELATED DOCUMENTS
+
+Drawings and general provisions of the Contract, including General and Supplementary Conditions and Division 01 Specification Sections, apply to this Section.
+
+SUMMARY
+
+Section Includes:
+
+Equipment labels.
+
+Warning signs and labels.
+
+Pipe labels.
+
+Valve tags.
+
+Warning tags.
+
+WORK INCLUDED
+
+Furnish all labor, materials, services, testing, transportation and equipment necessary for the completion of all plumbing work as indicated on drawings and specified herein. Work materials and equipment not indicated or specified which is necessary for the complete and proper operation of the work of this Section in accordance with the true intent and meaning of the contract documents shall be provided and incorporated at no additional cost to the Owner.
+
+QUALITY ASSURANCE
+
+Code Requirements: All work covered by this Section shall conform to the latest requirements of the following regulations:
+
+C.C.R., Title 24, Part 5 (2022 CPC).
+
+2022 California Plumbing Code.
+
+SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.
+
+National Fire Protection Association.
+
+California State Division of Industrial Safety.
+
+County Health Department.
+
+Any other legally constituted body-having jurisdiction thereof.
+
+Nothing in the specifications or drawings shall be construed to permit deviation from the requirements of governing codes unless approval for said deviation has been obtained from the legally constituted authorities having jurisdiction and from the Owner's representative.
+
+DRAWINGS
+
+Because of the small-scale drawings, it is not possible to indicate all offsets, fittings and accessories which may be required. The Contractor shall carefully investigate the conditions surrounding installation of his work, furnishing the necessary piping, fittings, valves, traps, and other devices which may be required to complete the installation.
+
+The general arrangement indicated on the drawings shall be followed as closely as possible. Coordinate with the Architectural, Structural, Mechanical and Electrical Drawings and the work of other trades prior to installation of piping fixtures and equipment to verify adequate space available for installation of the work shown. In the event a field condition arises which makes it impossible to install the work as indicated, submit, in writing, the proposed departures to the Architect for his approval. Only when Architect's approval is given, in writing, shall Contractor proceed with installation of the work.
+
+Special Note: Should the Contractor make changes in the installation differing from what is indicated on the contract drawings and not necessitated due to field conditions as indicated hereinabove, the Contractor shall be required to re-install the work to comply with what has been indicated on the contract drawings.  Should it be impossible to re-install the work and the installation is in accordance with all governing authorities, the architect may permit the installation to remain.  However, all costs incurred to revise the contract drawings by the engineer for resubmittal to the building department indicating the as-installed condition shall become the responsibility of the Contractor.
+
+In case of a difference in the specifications or between the specifications and the drawings, the Contractor shall figure the most expensive alternate and after award of contract, shall secure direction from the Architect.
+
+PERMITS, INSPECTIONS AND LICENSES
+
+All permits, inspections and licenses required by the legally constituted authorities for installation of the work according to the plans and specifications shall be obtained and paid as a part of the work of this section.
+
+EXAMINATION OF PREMISES
+
+Before bidding on this work, Contractors shall make a careful examination of the premises and shall thoroughly familiarize themselves with the requirements of the contract.  By the act of submitting a proposal for the work included in this contract, the Contractor shall be deemed to have made such study and examination, and that he is familiar with and accepts all conditions of the site.
+
+PROTECTION
+
+All work, equipment and materials shall be protected at all times.  Contractor shall make good all damage caused either directly or indirectly by his own workmen.  Contractor shall also protect his own work from damage.  He shall close all pipe openings with caps or plugs during installation.  He shall protect all his equipment and materials against dirt, water, chemical and mechanical injury.  Upon completion, all work shall be thoroughly cleaned and delivered in a new condition.
+
+Contractor shall be held responsible for all damage to equipment and materials until he has received written notice from the Architect or Engineer that his work has been accepted.
+
+LOCATIONS
+
+The locations of apparatus, piping and equipment indicated on the drawings are approximate. Piping and equipment shall be installed in such a manner as to avoid all obstruction, preserve headroom, and keep openings and passages clear. The locations of and mounting heights of all fixtures shall be coordinated with the architectural plans and room elevations.
+
+Clearances and Openings: Contractor shall cooperate and coordinate his work with all other trades to avoid conflict and permit for a neat and orderly appearance of the entire installation.  The Contractor shall, in advance of the work, furnish instructions to the General Contractor as to his requirements for equipment and material installation of any kind, whether or not specifically mentioned on drawings or in the specifications, and shall include recesses, chases in walls, and all required openings in the structure.  Should furnishing this information be neglected, delayed or incorrect and additional cuttings are found to be required, the cost of the same shall be charged to this Contractor.
+
+Contractor shall verify and coordinate pipe routing with location of all electrical rooms, elevator equipment rooms, telecom/data rooms, and other rooms dedicated to the housing of switchgear, panels, or other electrical equipment. In no case shall piping be installed within or above the ceiling of such rooms.
+
+SUBMITTAL DATA
+
+Product Data:  For each type of product indicated.
+
+Samples:  For color, letter style, and graphic representation required for each identification material and device.
+
+Equipment Label Schedule:  Include a listing of all equipment to be labeled with the proposed content for each label.
+
+Valve numbering scheme.
+
+Valve Schedules:  For each piping system to include in maintenance manuals.
+
+Submittal Requirements:
+
+Furnish, all at one time, prior to any installation, within the time noted below, six (6) copies of valid submittal data on all fixtures, material, equipment and devices. Each submitted item shall be indexed and referenced to these specifications and to identification numbers on fixtures and equipment schedules.
+
+Manufacturers’ submittal literature and shop drawings are required on all items to ensure the latest and most complete manufacturer's data is available for review. Requirements of the submittals and Engineer's submittal notes are a part of the work of this Division except that Engineer's notes may not be used as a means of increasing the scope of work of this Division.
+
+Submittals will be checked for general conformance with the design concept of the project but the review does not guarantee quantities shown and does not supersede requirements of this Division to properly install work.
+
+To be valid, all submittals must:
+
+Be delivered to the Architect's office within thirty-five (35) days of award of the contract.  Contractor shall make time allowance for Engineer’s review, return of comments, if any, and resubmittal if required. Corrections or changes in submittals returned as inadequate or incomplete shall be accomplished within this time limit.
+
+Clearly indicate and label as such any items proposed as substitution for that specified or shown on plans.
+
+Include all pertinent construction, installation, performance and technical data.
+
+Have all product data sheets clearly labeled to indicate the individual items being submitted. In addition, all required options and accessories shall be clearly marked.
+
+Product data sheets corresponding to items indicated on plans shall be clearly labeled with the corresponding fixture or equipment tag number.
+
+Product data sheets corresponding to items indicated in specifications shall be clearly labeled with the specification section, page and item numbers.
+
+Include, for every item which differs in size, configuration, connections, service, accessibility or any other significant way, a drawing to the same (or larger) scale as to the pertinent portions of the contract drawings.  In this drawing show a complete layout of the system except that which is identical to the contract drawings, unless the unchanged portions must be shown to indicate such things as clearances.  This drawing, together with the contract design drawings must show the complete system as revised to accommodate the proposed alternate.
+
+Substitution Requirements:
+
+Any items included in submittals and proposed by the Contractor as substitution for that specified or shown on plans shall be submitted within thirty five (35) days of award of the contract. After such time, proposed substitutions shall not be accepted for review, and the Contractor shall submit all items as specified or shown on plans.
+
+For each item proposed as substitution for that specified or shown on plans, copies of product data sheets for the specified item shall be placed side by side with product data sheets for the proposed substitution item within the submittal.
+
+In addition to the Submittal Requirements for labeling listed above, product data sheets for the specified item shall be clearly labeled “SPECIFIED ITEM, NOT SUBMITTED”. Product data sheets for the corresponding proposed substitution item shall be clearly labeled “PROPOSED SUBSTITUTION”.
+
+Provide calculations and other detailed data justifying how any items proposed as substitution were selected for proposal.  Data must be complete enough to permit detailed comparison of every significant characteristic for which the specified item was analyzed during design.
+
+It shall be the Contractor’s responsibility to provide sufficient information to allow the Engineer to analyze any proposed alternate.  If inadequate information is provided, the proposal will not be approved and resubmittal will not be allowed.
+
+The Contractor shall provide or perform tests required by Engineer for purpose of judging acceptability of proposed substitutions.
+
+The Contractor assumes full responsibility that alternate items and procedures will meet the job requirements and is responsible for cost of redesign and of modifications to this and other parts of work caused by alternate items furnished under work in this Section.  In view of these responsibilities, it is the purpose of these specifications to establish procedures to ensure that the Contractor has considered all the ramifications of proposed alternates before submitting them for review.  Submittals which do not comply with the requirements of these specifications or which indicate proposed alternates that were selected without proper regard to the requirements of the job will not be approved.  No more than one proposed alternate will be considered for each item.
+
+Alternate items installed without Engineer's approval will be replaced with specified items at Contractor's expense.
+
+The Architect or his authorized representative shall be the sole judge as to the quality and suitability of proposed alternate equipment, fixtures or materials. Decisions of the Architect or that of his representative shall be final and conclusive.
+
+COORDINATION
+
+Coordinate installation of identifying devices with completion of covering and painting of surfaces where devices are to be applied.
+
+Coordinate installation of identifying devices with locations of access panels and doors.
+
+Install identifying devices before installing acoustical ceilings and similar concealment.
+
+UNINSPECTED WORK
+
+The Contractor shall not allow or cause any of his work to be covered up or closed in until it has been inspected, tested, approved by all authorities have jurisdiction, and until Project Record drawings have been properly annotated.
+
+Should any of his work be covered up or closed in before such inspection, he shall, at his own expense, uncover the work to the satisfaction of the inspection party.  All related repair work cost shall be borne by the Contractor.
+
+RECORD DRAWINGS (Also see General Conditions)
+
+Contractor shall provide and keep up-to-date a complete "as-built" record set of blueline prints which shall show every change from the original drawings and the exact "as-built" locations and sizes of the work provided under this Section of the specifications.  This set shall include locations, dimensions, depth of buried piping, cleanouts, shut-off valves, sewer invert locations, plugged wyes, tees, etc.  On completion of the work, the Contractor shall incorporate all as-built information on a set of reproducible tracings provided by the Architect and this set of reproducibles shall be delivered to the Architect.
+
+GUARANTEES
+
+Contractor shall guarantee the entire plumbing and piping systems unconditionally for a period of one (1) year after final acceptance.  If, during this period, any materials, equipment, or any part of the systems fail to function properly, the Contractor shall make good the defects promptly and without any expense to the Owner.
+
+Contractor shall be responsible for all damage to any part of the premises caused by leaks in pipelines or equipment furnished and installed under this Section for a period of one (1) year after date of acceptance of his work.
+
+All equipment and fixtures shall carry manufacturer's warranty against defective parts or poor workmanship for not less than one (1) year.  See specific equipment specifications for extended warranty requirements.
+
+PRODUCTS
+
+EQUIPMENT LABELS
+
+Metal Labels for Equipment:
+
+Material and Thickness:  Brass, 0.032-inch minimum thickness, and having predrilled or stamped holes for attachment hardware.
+
+Minimum Label Size:  Length and width vary for required label content, but not less than 2-1/2 by 3/4 inch.
+
+Minimum Letter Size:  1/4 inch for name of units if viewing distance is less than 24 inches, 1/2 inch for viewing distances up to 72 inches, and proportionately larger lettering for greater viewing distances.  Include secondary lettering two-thirds to three-fourths the size of principal lettering.
+
+Fasteners:  Stainless-steel rivets or self-tapping screws.
+
+Adhesive:  Contact-type permanent adhesive, compatible with label and with substrate.
+
+In first paragraph below, describe required label content.  The objective of labeling equipment is to coordinate it with Drawings, including plans, details, and schedules.  This will allow other information, such as capacities and operating characteristics, to be obtained.
+
+Label Content:  Include equipment's Drawing designation or unique equipment number, Drawing numbers where equipment is indicated (plans, details, and schedules), plus the Specification Section number and title where equipment is specified.
+
+Equipment Label Schedule:  For each item of equipment to be labeled, on 8-1/2-by-11-inch bond paper.  Tabulate equipment identification number and identify Drawing numbers where equipment is indicated (plans, details, and schedules), plus the Specification Section number and title where equipment is specified.  Equipment schedule shall be included in operation and maintenance data.
+
+WARNING SIGNS AND LABELS
+
+Material and Thickness:  Multilayer, multicolor, plastic labels for mechanical engraving, 1/8 inch thick, and having predrilled holes for attachment hardware.
+
+Letter Color:  Black.
+
+Background Color:  White.
+
+Maximum Temperature:  Able to withstand temperatures up to 160 deg F.
+
+Minimum Label Size:  Length and width vary for required label content, but not less than 2-1/2 by 3/4 inch.
+
+Minimum Letter Size:  1/4 inch for name of units if viewing distance is less than 24 inches, 1/2 inch for viewing distances up to 72 inches, and proportionately larger lettering for greater viewing distances.  Include secondary lettering two-thirds to three-fourths the size of principal lettering.
+
+Adhesive:  Contact-type permanent adhesive, compatible with label and with substrate.
+
+In paragraph below, describe required label content.  The objective of labeling equipment is to coordinate it with Drawings, including plans, details, and schedules.  This will allow other information, such as capacities and operating characteristics, to be obtained.
+
+Label Content:  Include caution and warning information, plus emergency notification instructions.
+
+PIPE LABELS
+
+Do not use pipe labels or plastic tapes for bare pipes conveying fluids at temperatures of 125 deg F (52 deg C) or higher.
+
+General Requirements for Manufactured Pipe Labels:  Preprinted, color-coded, with lettering indicating service, and showing flow direction.
+
+Pretensioned Pipe Labels:  Precoiled, semirigid plastic formed to cover full circumference of pipe and to attach to pipe without fasteners or adhesive.
+
+Self-Adhesive Pipe Labels:  Printed plastic with contact-type, permanent-adhesive backing.
+
+Pipe Label Contents:  Include identification of piping service using same designations or abbreviations as used on Drawings, pipe size, and an arrow indicating flow direction.
+
+Flow-Direction Arrows:  Integral with piping system service lettering to accommodate both directions, or as separate unit on each pipe label to indicate flow direction.
+
+Lettering Size:  At least 1-1/2 incheshigh.
+
+VALVE TAGS
+
+Retain requirement in "Action Submittals" Article to submit numbering scheme for approval.
+
+Valve Tags:  Stamped or engraved with 1/4-inch letters for piping system abbreviation and 1/2-inch numbers.
+
+Tag Material:  Brass, 0.032-inch minimum thickness, and having predrilled or stamped holes for attachment hardware.
+
+Fasteners:  Brass wire-link or beaded chain; or S-hook.
+
+Valve Schedules:  For each piping system, on 8-1/2-by-11-inch bond paper.  Tabulate valve number, piping system, system abbreviation (as shown on valve tag), location of valve (room or space), normal-operating position (open, closed, or modulating), and variations for identification.  Mark valves for emergency shutoff and similar special uses.
+
+Valve-tag schedule shall be included in operation and maintenance data.
+
+WARNING TAGS
+
+Warning Tags:  Preprinted or partially preprinted, accident-prevention tags, of plasticized card stock with matte finish suitable for writing.
+
+Size:  3 by 5-1/4 inches minimum.
+
+Fasteners:  Brass grommet and wire.
+
+Nomenclature:  Large-size primary caption such as "DANGER," "CAUTION," or "DO NOT OPERATE."
+
+Color:  Yellow background with black lettering.
+
+EXECUTION
+
+PREPARATION
+
+Clean piping and equipment surfaces of substances that could impair bond of identification devices, including dirt, oil, grease, release agents, and incompatible primers, paints, and encapsulants.
+
+EQUIPMENT LABEL INSTALLATION
+
+Install or permanently fasten labels on each major item of mechanical equipment.
+
+Locate equipment labels where accessible and visible.
+
+PIPE LABEL INSTALLATION
+
+Piping Color-Coding:  Painting of piping is specified in Section 099123 "Interior Painting."
+
+Stenciled Pipe Label Option:  Stenciled labels may be provided instead of manufactured pipe labels, at Installer's option.  Install stenciled pipe labels with painted, color-coded bands or rectangles on each piping system.
+
+Identification Paint:  Use for contrasting background.
+
+Stencil Paint:  Use for pipe marking.
+
+Locate pipe labels where piping is exposed or above accessible ceilings in finished spaces; machine rooms; accessible maintenance spaces such as shafts, tunnels, and plenums; and exterior exposed locations as follows:
+
+Near each valve and control device.
+
+Near each branch connection, excluding short takeoffs for fixtures and terminal units.  Where flow pattern is not obvious, mark each pipe at branch.
+
+Near penetrations through walls, floors, ceilings, and inaccessible enclosures.
+
+At access doors, manholes, and similar access points that permit view of concealed piping.
+
+Near major equipment items and other points of origination and termination.
+
+Spaced at maximum intervals of 50 feet  along each run.  Reduce intervals to 25 feet in areas of congested piping and equipment.
+
+On piping above removable acoustical ceilings.  Omit intermediately spaced labels.
+
+Pipe Label Color Schedule:
+
+Domestic Water Piping:
+
+Background Color:  White.
+
+Letter Color:  Black.
+
+Sanitary Waste and Storm Drainage Piping:
+
+Background Color:  White.
+
+Letter Color:  Black.
+
+VALVE-TAG INSTALLATION
+
+Revise this article as required to delete an entire piping system from tagging or other changes.  A schedule is helpful for complex projects.  Retain and revise first paragraph below if a schedule is prepared.
+
+Install tags on valves and control devices in piping systems, except check valves; valves within factory-fabricated equipment units; shutoff valves; faucets; convenience and lawn-watering hose connections; and similar roughing-in connections of end-use fixtures and units.  List tagged valves in a valve schedule.
+
+Valve-Tag Application Schedule:  Tag valves according to size, shape, and color scheme and with captions similar to those indicated in the following subparagraphs:
+
+Other valve-tag sizes, shapes, colors, and letter colors may be available if required.
+
+Valve-Tag Size and Shape:
+
+Cold Water:  1-1/2 inches, round.
+
+Hot Water:  1-1/2 inches, round.
+
+Select contrasting valve-tag color and letter color in two subparagraphs below for each service.  Retain "Natural" option for brass or stainless-steel valve tags.
+
+Valve-Tag Color:
+
+Cold Water:  Natural.
+
+Hot Water:  Natural.
+
+Letter Color:
+
+Cold Water:  Black.
+
+Hot Water:  Black.
+
+WARNING-TAG INSTALLATION
+
+Write required message on, and attach warning tags to, equipment and other items where required.
+
+END OF SECTION 22 05 53

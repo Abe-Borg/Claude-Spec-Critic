@@ -1,0 +1,1169 @@
+GENERAL
+
+RELATED DOCUMENTS
+
+Drawings and general provisions of the Contract, including General and Supplementary Conditions and Division 01 Specification Sections, apply to this Section.
+
+SUMMARY
+
+Section Includes:
+
+Balancing Air Systems:
+
+Constant-volume air systems.
+
+Variable-air-volume systems.
+
+Balancing Hydronic Piping Systems:
+
+Constant-flow hydronic systems.
+
+Variable-flow hydronic systems.
+
+Primary-secondary hydronic systems.
+
+DEFINITIONS
+
+Retain definition(s) remaining after this Section has been edited.
+
+AABC:  Associated Air Balance Council.
+
+TAB:  Testing, adjusting, and balancing.
+
+TAB Specialist:  An entity engaged to perform TAB Work.
+
+ACTION SUBMITTALS
+
+LEED Submittals:
+
+Air-Balance Report for Prerequisite IEQ 1:  Documentation of work performed for ASHRAE 62.1, Section 7.2.2 - "Air Balancing."
+
+TAB Report for Prerequisite EA 2:  Documentation of work performed for ASHRAE/IESNA 90.1, Section 6.7.2.3 - "System Balancing."
+
+INFORMATIONAL SUBMITTALS
+
+Coordinate timing of submittals with Section 013200 "Construction Progress Documentation" and Section 013300 "Submittal Procedures."
+
+Qualification Data:  Within 30 days of Contractor's Notice to Proceed, submit documentation that the TAB contractor and this Project's TAB team members meet the qualifications specified in "Quality Assurance" Article.
+
+Contract Documents Examination Report:  Within 30 days of Contractor's Notice to Proceed, submit the Contract Documents review report as specified in Part 3.
+
+Strategies and Procedures Plan:  Within 30 days of Contractor's Notice to Proceed, submit TAB strategies and step-by-step procedures as specified in "Preparation" Article.
+
+Certified TAB reports.
+
+Sample report forms.
+
+Instrument calibration reports, to include the following:
+
+Instrument type and make.
+
+Serial number.
+
+Application.
+
+Dates of use.
+
+Dates of calibration.
+
+QUALITY ASSURANCE
+
+TAB Contractor Qualifications:  Engage a TAB entity certified by AABC.
+
+TAB Field Supervisor:  Employee of the TAB contractor and certified by AABC.
+
+TAB Technician:  Employee of the TAB contractor and who is certified by AABC as a TAB technician.
+
+TAB Conference:  Meet with [Architect] [Owner] [Construction Manager] [Commissioning Authority] on approval of the TAB strategies and procedures plan to develop a mutual understanding of the details.  Require the participation of the TAB field supervisor and technicians.  Provide seven days' advance notice of scheduled meeting time and location.
+
+Agenda Items:
+
+The Contract Documents examination report.
+
+The TAB plan.
+
+Coordination and cooperation of trades and subcontractors.
+
+Coordination of documentation and communication flow.
+
+Certify TAB field data reports and perform the following:
+
+Review field data reports to validate accuracy of data and to prepare certified TAB reports.
+
+Certify that the TAB team complied with the approved TAB plan and the procedures specified and referenced in this Specification.
+
+TAB Report Forms:  Use standard TAB contractor's forms approved by [Architect] [Owner] [Construction Manager] [Commissioning Authority].
+
+Instrumentation Type, Quantity, Accuracy, and Calibration:  As described in ASHRAE 111, Section 5, "Instrumentation."
+
+ASHRAE Compliance:  Applicable requirements in ASHRAE 62.1, Section 7.2.2 - "Air Balancing."
+
+ASHRAE/IESNA Compliance:  Applicable requirements in ASHRAE/IESNA 90.1, Section 6.7.2.3 - "System Balancing."
+
+PROJECT CONDITIONS
+
+Full Owner Occupancy:  Owner will occupy the site and existing building during entire TAB period.  Cooperate with Owner during TAB operations to minimize conflicts with Owner's operations.
+
+Partial Owner Occupancy:  Owner may occupy completed areas of building before Substantial Completion.  Cooperate with Owner during TAB operations to minimize conflicts with Owner's operations.
+
+COORDINATION
+
+Notice:  Provide seven days' advance notice for each test.  Include scheduled test dates and times.
+
+Perform TAB after leakage and pressure tests on air and water distribution systems have been satisfactorily completed.
+
+PRODUCTS (Not Applicable)
+
+EXECUTION
+
+EXAMINATION
+
+Examine the Contract Documents to become familiar with Project requirements and to discover conditions in systems' designs that may preclude proper TAB of systems and equipment.
+
+Examine systems for installed balancing devices, such as test ports, gage cocks, thermometer wells, flow-control devices, balancing valves and fittings, and manual volume dampers.  Verify that locations of these balancing devices are accessible.
+
+Examine the approved submittals for HVAC systems and equipment.
+
+Examine design data including HVAC system descriptions, statements of design assumptions for environmental conditions and systems' output, and statements of philosophies and assumptions about HVAC system and equipment controls.
+
+Examine ceiling plenums and underfloor air plenums used for supply, return, or relief air to verify that they meet the leakage class of connected ducts as specified in Section 233113 "Metal Ducts" and are properly separated from adjacent areas.  Verify that penetrations in plenum walls are sealed and fire-stopped if required.
+
+Examine equipment performance data including fan and pump curves.
+
+Relate performance data to Project conditions and requirements, including system effects that can create undesired or unpredicted conditions that cause reduced capacities in all or part of a system.
+
+Calculate system-effect factors to reduce performance ratings of HVAC equipment when installed under conditions different from the conditions used to rate equipment performance.  To calculate system effects for air systems, use tables and charts found in AMCA 201, "Fans and Systems," or in SMACNA's "HVAC Systems - Duct Design."  Compare results with the design data and installed conditions.
+
+Examine system and equipment installations and verify that field quality-control testing, cleaning, and adjusting specified in individual Sections have been performed.
+
+Examine test reports specified in individual system and equipment Sections.
+
+Examine HVAC equipment and filters and verify that bearings are greased, belts are aligned and tight, and equipment with functioning controls is ready for operation.
+
+Examine terminal units, such as variable-air-volume boxes, and verify that they are accessible and their controls are connected and functioning.
+
+Examine strainers.  Verify that startup screens are replaced by permanent screens with indicated perforations.
+
+Examine three-way valves for proper installation for their intended function of diverting or mixing fluid flows.
+
+Examine heat-transfer coils for correct piping connections and for clean and straight fins.
+
+Examine system pumps to ensure absence of entrained air in the suction piping.
+
+Examine operating safety interlocks and controls on HVAC equipment.
+
+Report deficiencies discovered before and during performance of TAB procedures.  Observe and record system reactions to changes in conditions.  Record default set points if different from indicated values.
+
+PREPARATION
+
+Prepare a TAB plan that includes strategies and step-by-step procedures.
+
+Complete system-readiness checks and prepare reports.  Verify the following:
+
+Permanent electrical-power wiring is complete.
+
+Hydronic systems are filled, clean, and free of air.
+
+Automatic temperature-control systems are operational.
+
+Equipment and duct access doors are securely closed.
+
+Balance, smoke, and fire dampers are open.
+
+Isolating and balancing valves are open and control valves are operational.
+
+Ceilings are installed in critical areas where air-pattern adjustments are required and access to balancing devices is provided.
+
+Windows and doors can be closed so indicated conditions for system operations can be met.
+
+GENERAL PROCEDURES FOR TESTING AND BALANCING
+
+Perform testing and balancing procedures on each system according to the procedures contained in AABC's "National Standards for Total System Balance", ASHRAE 111, and SMACNA's "HVAC Systems - Testing, Adjusting, and Balancing" and in this Section.
+
+LEED Prerequisite IEQ 1 requires compliance with requirements in ASHRAE 62.1, Section 7.2.2 - "Air Balancing."  ASHRAE 62.1 requires that ventilation systems be balanced according to ASHRAE 111 or SMACNA's "HVAC Systems - Testing, Adjusting, and Balancing," or be equivalent at least to extent necessary to verify compliance with the standard.
+
+Comply with requirements in ASHRAE 62.1, Section 7.2.2 - "Air Balancing."
+
+Cut insulation, ducts, pipes, and equipment cabinets for installation of test probes to the minimum extent necessary for TAB procedures.
+
+After testing and balancing, patch probe holes in ducts with same material and thickness as used to construct ducts.
+
+After testing and balancing, install test ports and duct access doors that comply with requirements in Section 233300 "Air Duct Accessories."
+
+Install and join new insulation that matches removed materials.  Restore insulation, coverings, vapor barrier, and finish according to Section 230713 "Duct Insulation," Section 230716 "HVAC Equipment Insulation," and Section 230719 "HVAC Piping Insulation."
+
+Mark equipment and balancing devices, including damper-control positions, valve position indicators, fan-speed-control levers, and similar controls and devices, with paint or other suitable, permanent identification material to show final settings.
+
+Take and report testing and balancing measurements in inch-pound (IP) units.
+
+GENERAL PROCEDURES FOR BALANCING AIR SYSTEMS
+
+Prepare test reports for both fans and outlets.  Obtain manufacturer's outlet factors and recommended testing procedures.  Crosscheck the summation of required outlet volumes with required fan volumes.
+
+Prepare schematic diagrams of systems' "as-built" duct layouts.
+
+For variable-air-volume systems, develop a plan to simulate diversity.
+
+Determine the best locations in main and branch ducts for accurate duct-airflow measurements.
+
+Check airflow patterns from the outdoor-air louvers and dampers and the return- and exhaust-air dampers through the supply-fan discharge and mixing dampers.
+
+Locate start-stop and disconnect switches, electrical interlocks, and motor starters.
+
+Verify that motor starters are equipped with properly sized thermal protection.
+
+Check dampers for proper position to achieve desired airflow path.
+
+Check for airflow blockages.
+
+Check condensate drains for proper connections and functioning.
+
+Check for proper sealing of air-handling-unit components.
+
+Verify that air duct system is sealed as specified in Section 233113 "Metal Ducts."
+
+PROCEDURES FOR CONSTANT-VOLUME AIR SYSTEMS
+
+Adjust fans to deliver total indicated airflows within the maximum allowable fan speed listed by fan manufacturer.
+
+Measure total airflow.
+
+Where sufficient space in ducts is unavailable for Pitot-tube traverse measurements, measure airflow at terminal outlets and inlets and calculate the total airflow.
+
+Measure fan static pressures as follows to determine actual static pressure:
+
+Measure outlet static pressure as far downstream from the fan as practical and upstream from restrictions in ducts such as elbows and transitions.
+
+Measure static pressure directly at the fan outlet or through the flexible connection.
+
+Measure inlet static pressure of single-inlet fans in the inlet duct as near the fan as possible, upstream from the flexible connection, and downstream from duct restrictions.
+
+Measure inlet static pressure of double-inlet fans through the wall of the plenum that houses the fan.
+
+Measure static pressure across each component that makes up an air-handling unit, rooftop unit, and other air-handling and -treating equipment.
+
+Report the cleanliness status of filters and the time static pressures are measured.
+
+Measure static pressures entering and leaving other devices, such as sound traps, heat-recovery equipment, and air washers, under final balanced conditions.
+
+First two subparagraphs below may require changes to installed systems or equipment; these changes may require a contract modification.
+
+Review Record Documents to determine variations in design static pressures versus actual static pressures.  Calculate actual system-effect factors.  Recommend adjustments to accommodate actual conditions.
+
+Obtain approval from [Architect] [Owner] [Construction Manager] [Commissioning Authority] for adjustment of fan speed higher or lower than indicated speed.  Comply with requirements in HVAC Sections for air-handling units for adjustment of fans, belts, and pulley sizes to achieve indicated air-handling-unit performance.
+
+Do not make fan-speed adjustments that result in motor overload.  Consult equipment manufacturers about fan-speed safety factors.  Modulate dampers and measure fan-motor amperage to ensure that no overload will occur.  Measure amperage in full-cooling, full-heating, economizer, and any other operating mode to determine the maximum required brake horsepower.
+
+Adjust volume dampers for main duct, submain ducts, and major branch ducts to indicated airflows within specified tolerances.
+
+Measure airflow of submain and branch ducts.
+
+Where sufficient space in submain and branch ducts is unavailable for Pitot-tube traverse measurements, measure airflow at terminal outlets and inlets and calculate the total airflow for that zone.
+
+Measure static pressure at a point downstream from the balancing damper, and adjust volume dampers until the proper static pressure is achieved.
+
+Remeasure each submain and branch duct after all have been adjusted.  Continue to adjust submain and branch ducts to indicated airflows within specified tolerances.
+
+Measure air outlets and inlets without making adjustments.
+
+Measure terminal outlets using a direct-reading hood or outlet manufacturer's written instructions and calculating factors.
+
+Adjust air outlets and inlets for each space to indicated airflows within specified tolerances of indicated values.  Make adjustments using branch volume dampers rather than extractors and the dampers at air terminals.
+
+Adjust each outlet in same room or space to within specified tolerances of indicated quantities without generating noise levels above the limitations prescribed by the Contract Documents.
+
+Adjust patterns of adjustable outlets for proper distribution without drafts.
+
+PROCEDURES FOR VARIABLE-AIR-VOLUME SYSTEMS
+
+Compensating for Diversity:  When the total airflow of all terminal units is more than the indicated airflow of the fan, place a selected number of terminal units at a minimum set-point airflow with the remainder at maximum-airflow condition until the total airflow of the terminal units equals the indicated airflow of the fan.  Select the reduced-airflow terminal units so they are distributed evenly among the branch ducts.
+
+Pressure-Independent, Variable-Air-Volume Systems:  After the fan systems have been adjusted, adjust the variable-air-volume systems as follows:
+
+Set outdoor-air dampers at minimum, and set return- and exhaust-air dampers at a position that simulates full-cooling load.
+
+Select the terminal unit that is most critical to the supply-fan airflow and static pressure.  Measure static pressure.  Adjust system static pressure so the entering static pressure for the critical terminal unit is not less than the sum of the terminal-unit manufacturer's recommended minimum inlet static pressure plus the static pressure needed to overcome terminal-unit discharge system losses.
+
+Measure total system airflow.  Adjust to within indicated airflow.
+
+Set terminal units at maximum airflow and adjust controller or regulator to deliver the designed maximum airflow.  Use terminal-unit manufacturer's written instructions to make this adjustment.  When total airflow is correct, balance the air outlets downstream from terminal units the same as described for constant-volume air systems.
+
+Set terminal units at minimum airflow and adjust controller or regulator to deliver the designed minimum airflow.  Check air outlets for a proportional reduction in airflow the same as described for constant-volume air systems.
+
+If air outlets are out of balance at minimum airflow, report the condition but leave outlets balanced for maximum airflow.
+
+Remeasure the return airflow to the fan while operating at maximum return airflow and minimum outdoor airflow.
+
+Adjust the fan and balance the return-air ducts and inlets the same as described for constant-volume air systems.
+
+Measure static pressure at the most critical terminal unit and adjust the static-pressure controller at the main supply-air sensing station to ensure that adequate static pressure is maintained at the most critical unit.
+
+Record final fan-performance data.
+
+Pressure-Dependent, Variable-Air-Volume Systems without Diversity:  After the fan systems have been adjusted, adjust the variable-air-volume systems as follows:
+
+Balance variable-air-volume systems the same as described for constant-volume air systems.
+
+Set terminal units and supply fan at full-airflow condition.
+
+Adjust inlet dampers of each terminal unit to indicated airflow and verify operation of the static-pressure controller.  When total airflow is correct, balance the air outlets downstream from terminal units the same as described for constant-volume air systems.
+
+Readjust fan airflow for final maximum readings.
+
+Measure operating static pressure at the sensor that controls the supply fan if one is installed, and verify operation of the static-pressure controller.
+
+Set supply fan at minimum airflow if minimum airflow is indicated.  Measure static pressure to verify that it is being maintained by the controller.
+
+Set terminal units at minimum airflow and adjust controller or regulator to deliver the designed minimum airflow.  Check air outlets for a proportional reduction in airflow the same as described for constant-volume air systems.
+
+If air outlets are out of balance at minimum airflow, report the condition but leave the outlets balanced for maximum airflow.
+
+Measure the return airflow to the fan while operating at maximum return airflow and minimum outdoor airflow.
+
+Adjust the fan and balance the return-air ducts and inlets the same as described for constant-volume air systems.
+
+Pressure-Dependent, Variable-Air-Volume Systems with Diversity:  After the fan systems have been adjusted, adjust the variable-air-volume systems as follows:
+
+Set system at maximum indicated airflow by setting the required number of terminal units at minimum airflow.  Select the reduced-airflow terminal units so they are distributed evenly among the branch ducts.
+
+Adjust supply fan to maximum indicated airflow with the variable-airflow controller set at maximum airflow.
+
+Set terminal units at full-airflow condition.
+
+Adjust terminal units starting at the supply-fan end of the system and continuing progressively to the end of the system.  Adjust inlet dampers of each terminal unit to indicated airflow.  When total airflow is correct, balance the air outlets downstream from terminal units the same as described for constant-volume air systems.
+
+Adjust terminal units for minimum airflow.
+
+Measure static pressure at the sensor.
+
+Measure the return airflow to the fan while operating at maximum return airflow and minimum outdoor airflow.  Adjust the fan and balance the return-air ducts and inlets the same as described for constant-volume air systems.
+
+GENERAL PROCEDURES FOR HYDRONIC SYSTEMS
+
+Prepare test reports with pertinent design data, and number in sequence starting at pump to end of system.  Check the sum of branch-circuit flows against the approved pump flow rate.  Correct variations that exceed plus or minus 5 percent.
+
+Prepare schematic diagrams of systems' "as-built" piping layouts.
+
+Prepare hydronic systems for testing and balancing according to the following, in addition to the general preparation procedures specified above:
+
+Open all manual valves for maximum flow.
+
+Check liquid level in expansion tank.
+
+Check makeup water-station pressure gage for adequate pressure for highest vent.
+
+Check flow-control valves for specified sequence of operation, and set at indicated flow.
+
+Set differential-pressure control valves at the specified differential pressure.  Do not set at fully closed position when pump is positive-displacement type unless several terminal valves are kept open.
+
+Set system controls so automatic valves are wide open to heat exchangers.
+
+Check pump-motor load.  If motor is overloaded, throttle main flow-balancing device so motor nameplate rating is not exceeded.
+
+Check air vents for a forceful liquid flow exiting from vents when manually operated.
+
+PROCEDURES FOR CONSTANT-FLOW HYDRONIC SYSTEMS
+
+Measure water flow at pumps.  Use the following procedures except for positive-displacement pumps:
+
+Verify impeller size by operating the pump with the discharge valve closed.  Read pressure differential across the pump.  Convert pressure to head and correct for differences in gage heights.  Note the point on manufacturer's pump curve at zero flow and verify that the pump has the intended impeller size.
+
+If impeller sizes must be adjusted to achieve pump performance, obtain approval from [Architect] [Owner] [Construction Manager] [Commissioning Authority] and comply with requirements in Section 232123 "Hydronic Pumps."
+
+Check system resistance.  With all valves open, read pressure differential across the pump and mark pump manufacturer's head-capacity curve.  Adjust pump discharge valve until indicated water flow is achieved.
+
+Monitor motor performance during procedures and do not operate motors in overload conditions.
+
+Verify pump-motor brake horsepower.  Calculate the intended brake horsepower for the system based on pump manufacturer's performance data.  Compare calculated brake horsepower with nameplate data on the pump motor.  Report conditions where actual amperage exceeds motor nameplate amperage.
+
+Report flow rates that are not within plus or minus 10 percent of design.
+
+Measure flow at all automatic flow control valves to verify that valves are functioning as designed.
+
+Measure flow at all pressure-independent characterized control valves, with valves in fully open position, to verify that valves are functioning as designed.
+
+Set calibrated balancing valves, if installed, at calculated presettings.
+
+Measure flow at all stations and adjust, where necessary, to obtain first balance.
+
+System components that have Cv rating or an accurately cataloged flow-pressure-drop relationship may be used as a flow-indicating device.
+
+Measure flow at main balancing station and set main balancing device to achieve flow that is 5 percent greater than indicated flow.
+
+Adjust balancing stations to within specified tolerances of indicated flow rate as follows:
+
+Determine the balancing station with the highest percentage over indicated flow.
+
+Adjust each station in turn, beginning with the station with the highest percentage over indicated flow and proceeding to the station with the lowest percentage over indicated flow.
+
+Record settings and mark balancing devices.
+
+Measure pump flow rate and make final measurements of pump amperage, voltage, rpm, pump heads, and systems' pressures and temperatures including outdoor-air temperature.
+
+Measure the differential-pressure-control-valve settings existing at the conclusion of balancing.
+
+Check settings and operation of each safety valve.  Record settings.
+
+PROCEDURES FOR VARIABLE-FLOW HYDRONIC SYSTEMS
+
+Balance systems with automatic two- and three-way control valves by setting systems at maximum flow through heat-exchange terminals and proceed as specified above for hydronic systems.
+
+PROCEDURES FOR PRIMARY-SECONDARY HYDRONIC SYSTEMS
+
+Balance the primary circuit flow first and then balance the secondary circuits.
+
+PROCEDURES FOR STEAM SYSTEMS
+
+Measure and record upstream and downstream pressure of each piece of equipment.
+
+Measure and record upstream and downstream steam pressure of pressure-reducing valves.
+
+Check settings and operation of automatic temperature-control valves, self-contained control valves, and pressure-reducing valves.  Record final settings.
+
+Check settings and operation of each safety valve.  Record settings.
+
+Verify the operation of each steam trap.
+
+PROCEDURES FOR HEAT EXCHANGERS
+
+Measure water flow through all circuits.
+
+Adjust water flow to within specified tolerances.
+
+Measure inlet and outlet water temperatures.
+
+Measure inlet steam pressure.
+
+Check settings and operation of safety and relief valves.  Record settings.
+
+PROCEDURES FOR MOTORS
+
+Motors, 1/2 HP and Larger:  Test at final balanced conditions and record the following data:
+
+Manufacturer's name, model number, and serial number.
+
+Motor horsepower rating.
+
+Motor rpm.
+
+Efficiency rating.
+
+Nameplate and measured voltage, each phase.
+
+Nameplate and measured amperage, each phase.
+
+Starter thermal-protection-element rating.
+
+Motors Driven by Variable-Frequency Controllers:  Test for proper operation at speeds varying from minimum to maximum.  Test the manual bypass of the controller to prove proper operation.  Record observations including name of controller manufacturer, model number, serial number, and nameplate data.
+
+PROCEDURES FOR CHILLERS
+
+Balance water flow through each evaporator and condenser to within specified tolerances of indicated flow with all pumps operating.  With only one chiller operating in a multiple chiller installation, do not exceed the flow for the maximum tube velocity recommended by the chiller manufacturer.  Measure and record the following data with each chiller operating at design conditions:
+
+Evaporator-water entering and leaving temperatures, pressure drop, and water flow.
+
+For water-cooled chillers, condenser-water entering and leaving temperatures, pressure drop, and water flow.
+
+Evaporator and condenser refrigerant temperatures and pressures, using instruments furnished by chiller manufacturer.
+
+Power factor if factory-installed instrumentation is furnished for measuring kilowatts.
+
+Kilowatt input if factory-installed instrumentation is furnished for measuring kilowatts.
+
+Capacity:  Calculate in tons of cooling.
+
+For air-cooled chillers, verify condenser-fan rotation and record fan and motor data including number of fans and entering- and leaving-air temperatures.
+
+PROCEDURES FOR COOLING TOWERS
+
+Tests in paragraph below do not comply with CTI STD-105, "Acceptance Test Code."  If a CTI test is included in the Section specifying cooling towers, delete this article.
+
+Shut off makeup water for the duration of the test, and verify that makeup and blowdown systems are fully operational after tests and before leaving the equipment.  Perform the following tests and record the results:
+
+Measure condenser-water flow to each cell of the cooling tower.
+
+Measure entering- and leaving-water temperatures.
+
+Measure wet- and dry-bulb temperatures of entering air.
+
+Measure wet- and dry-bulb temperatures of leaving air.
+
+Measure condenser-water flow rate recirculating through the cooling tower.
+
+Measure cooling-tower spray pump discharge pressure.
+
+Adjust water level and feed rate of makeup water system.
+
+Measure flow through bypass.
+
+PROCEDURES FOR CONDENSING UNITS
+
+Verify proper rotation of fans.
+
+Measure entering- and leaving-air temperatures.
+
+Record compressor data.
+
+PROCEDURES FOR BOILERS
+
+Hydronic Boilers:  Measure and record entering- and leaving-water temperatures and water flow.
+
+Steam Boilers:  Measure and record entering-water temperature and flow and leaving-steam pressure, temperature, and flow.
+
+PROCEDURES FOR HEAT-TRANSFER COILS
+
+Measure, adjust, and record the following data for each water coil:
+
+Entering- and leaving-water temperature.
+
+Water flow rate.
+
+Water pressure drop.
+
+Dry-bulb temperature of entering and leaving air.
+
+Wet-bulb temperature of entering and leaving air for cooling coils.
+
+Airflow.
+
+Air pressure drop.
+
+Measure, adjust, and record the following data for each electric heating coil:
+
+Nameplate data.
+
+Airflow.
+
+Entering- and leaving-air temperature at full load.
+
+Voltage and amperage input of each phase at full load and at each incremental stage.
+
+Calculated kilowatt at full load.
+
+Fuse or circuit-breaker rating for overload protection.
+
+Measure, adjust, and record the following data for each steam coil:
+
+Dry-bulb temperature of entering and leaving air.
+
+Airflow.
+
+Air pressure drop.
+
+Inlet steam pressure.
+
+Measure, adjust, and record the following data for each refrigerant coil:
+
+Dry-bulb temperature of entering and leaving air.
+
+Wet-bulb temperature of entering and leaving air.
+
+Airflow.
+
+Air pressure drop.
+
+Refrigerant suction pressure and temperature.
+
+PROCEDURES FOR TESTING, ADJUSTING, AND BALANCING EXISTING SYSTEMS
+
+Perform a preconstruction inspection of existing equipment that is to remain and be reused.
+
+Measure and record the operating speed, airflow, and static pressure of each fan.
+
+Measure motor voltage and amperage.  Compare the values to motor nameplate information.
+
+Check the refrigerant charge.
+
+Check the condition of filters.
+
+Check the condition of coils.
+
+Check the operation of the drain pan and condensate-drain trap.
+
+Check bearings and other lubricated parts for proper lubrication.
+
+Report on the operating condition of the equipment and the results of the measurements taken.  Report deficiencies.
+
+Before performing testing and balancing of existing systems, inspect existing equipment that is to remain and be reused to verify that existing equipment has been cleaned and refurbished.  Verify the following:
+
+New filters are installed.
+
+Coils are clean and fins combed.
+
+Drain pans are clean.
+
+Fans are clean.
+
+Bearings and other parts are properly lubricated.
+
+Deficiencies noted in the preconstruction report are corrected.
+
+Perform testing and balancing of existing systems to the extent that existing systems are affected by the renovation work.
+
+Compare the indicated airflow of the renovated work to the measured fan airflows, and determine the new fan speed and the face velocity of filters and coils.
+
+Verify that the indicated airflows of the renovated work result in filter and coil face velocities and fan speeds that are within the acceptable limits defined by equipment manufacturer.
+
+If calculations increase or decrease the air flow rates and water flow rates by more than 5 percent, make equipment adjustments to achieve the calculated rates.  If increase or decrease is 5 percent or less, equipment adjustments are not required.
+
+Balance each air outlet.
+
+TOLERANCES
+
+Set HVAC system's air flow rates and water flow rates within the following tolerances:
+
+Supply, Return, and Exhaust Fans and Equipment with Fans:  Plus or minus 10 percent.
+
+Air Outlets and Inlets:  Plus or minus 10 percent.
+
+Heating-Water Flow Rate:  Plus or minus 10 percent.
+
+Cooling-Water Flow Rate: Plus or minus 10 percent.
+
+REPORTING
+
+Initial Construction-Phase Report:  Based on examination of the Contract Documents as specified in "Examination" Article, prepare a report on the adequacy of design for systems' balancing devices.  Recommend changes and additions to systems' balancing devices to facilitate proper performance measuring and balancing.  Recommend changes and additions to HVAC systems and general construction to allow access for performance measuring and balancing devices.
+
+FINAL REPORT
+
+Revise contents of reports specified in this article to suit office practice.
+
+General:  Prepare a certified written report; tabulate and divide the report into separate sections for tested systems and balanced systems.
+
+Include a certification sheet at the front of the report's binder, signed and sealed by the certified testing and balancing engineer.
+
+Include a list of instruments used for procedures, along with proof of calibration.
+
+Final Report Contents:  In addition to certified field-report data, include the following:
+
+Pump curves.
+
+Fan curves.
+
+Manufacturers' test data.
+
+Field test reports prepared by system and equipment installers.
+
+Other information relative to equipment performance; do not include Shop Drawings and product data.
+
+General Report Data:  In addition to form titles and entries, include the following data:
+
+Title page.
+
+Name and address of the TAB contractor.
+
+Project name.
+
+Project location.
+
+Architect's name and address.
+
+Engineer's name and address.
+
+Contractor's name and address.
+
+Report date.
+
+Signature of TAB supervisor who certifies the report.
+
+Table of Contents with the total number of pages defined for each section of the report.  Number each page in the report.
+
+Summary of contents including the following:
+
+Indicated versus final performance.
+
+Notable characteristics of systems.
+
+Description of system operation sequence if it varies from the Contract Documents.
+
+Nomenclature sheets for each item of equipment.
+
+Data for terminal units, including manufacturer's name, type, size, and fittings.
+
+Notes to explain why certain final data in the body of reports vary from indicated values.
+
+Test conditions for fans and pump performance forms including the following:
+
+Settings for outdoor-, return-, and exhaust-air dampers.
+
+Conditions of filters.
+
+Cooling coil, wet- and dry-bulb conditions.
+
+Face and bypass damper settings at coils.
+
+Fan drive settings including settings and percentage of maximum pitch diameter.
+
+Inlet vane settings for variable-air-volume systems.
+
+Settings for supply-air, static-pressure controller.
+
+Other system operating conditions that affect performance.
+
+System Diagrams:  Include schematic layouts of air and hydronic distribution systems.  Present each system with single-line diagram and include the following:
+
+Quantities of outdoor, supply, return, and exhaust airflows.
+
+Water and steam flow rates.
+
+Duct, outlet, and inlet sizes.
+
+Pipe and valve sizes and locations.
+
+Terminal units.
+
+Balancing stations.
+
+Position of balancing devices.
+
+Air-Handling-Unit Test Reports:  For air-handling units with coils, include the following:
+
+Unit Data:
+
+Unit identification.
+
+Location.
+
+Make and type.
+
+Model number and unit size.
+
+Manufacturer's serial number.
+
+Unit arrangement and class.
+
+Discharge arrangement.
+
+Sheave make, size in inches, and bore.
+
+Center-to-center dimensions of sheave, and amount of adjustments in inches.
+
+Number, make, and size of belts.
+
+Number, type, and size of filters.
+
+Motor Data:
+
+Motor make, and frame type and size.
+
+Horsepower and rpm.
+
+Volts, phase, and hertz.
+
+Full-load amperage and service factor.
+
+Sheave make, size in inches, and bore.
+
+Center-to-center dimensions of sheave, and amount of adjustments in inches.
+
+Test Data (Indicated and Actual Values):
+
+Total air flow rate in cfm.
+
+Total system static pressure in inches wg.
+
+Fan rpm.
+
+Discharge static pressure in inches wg.
+
+Filter static-pressure differential in inches wg.
+
+Preheat-coil static-pressure differential in inches wg.
+
+Cooling-coil static-pressure differential in inches wg.
+
+Heating-coil static-pressure differential in inches wg.
+
+Outdoor airflow in cfm.
+
+Return airflow in cfm.
+
+Outdoor-air damper position.
+
+Return-air damper position.
+
+Vortex damper position.
+
+Apparatus-Coil Test Reports:
+
+Coil Data:
+
+System identification.
+
+Location.
+
+Coil type.
+
+Number of rows.
+
+Fin spacing in fins per inch o.c.
+
+Make and model number.
+
+Face area in sq. ft..
+
+Tube size in NPS.
+
+Tube and fin materials.
+
+Circuiting arrangement.
+
+Test Data (Indicated and Actual Values):
+
+Air flow rate in cfm.
+
+Average face velocity in fpm.
+
+Air pressure drop in inches wg.
+
+Outdoor-air, wet- and dry-bulb temperatures in deg F.
+
+Return-air, wet- and dry-bulb temperatures in deg F.
+
+Entering-air, wet- and dry-bulb temperatures in deg F.
+
+Leaving-air, wet- and dry-bulb temperatures in deg F.
+
+Water flow rate in gpm.
+
+Water pressure differential in feet of head or psig.
+
+Entering-water temperature in deg F.
+
+Leaving-water temperature in deg F.
+
+Refrigerant expansion valve and refrigerant types.
+
+Refrigerant suction pressure in psig.
+
+Refrigerant suction temperature in deg F.
+
+Inlet steam pressure in psig.
+
+Gas- and Oil-Fired Heat Apparatus Test Reports:  In addition to manufacturer's factory startup equipment reports, include the following:
+
+Unit Data:
+
+System identification.
+
+Location.
+
+Make and type.
+
+Model number and unit size.
+
+Manufacturer's serial number.
+
+Fuel type in input data.
+
+Output capacity in Btu/h.
+
+Ignition type.
+
+Burner-control types.
+
+Motor horsepower and rpm.
+
+Motor volts, phase, and hertz.
+
+Motor full-load amperage and service factor.
+
+Sheave make, size in inches, and bore.
+
+Center-to-center dimensions of sheave, and amount of adjustments in inches.
+
+Test Data (Indicated and Actual Values):
+
+Total air flow rate in cfm.
+
+Entering-air temperature in deg F.
+
+Leaving-air temperature in deg F.
+
+Air temperature differential in deg F.
+
+Entering-air static pressure in inches wg.
+
+Leaving-air static pressure in inches wg.
+
+Air static-pressure differential in inches wg.
+
+Low-fire fuel input in Btu/h.
+
+High-fire fuel input in Btu/h.
+
+Manifold pressure in psig.
+
+High-temperature-limit setting in deg F.
+
+Operating set point in Btu/h.
+
+Motor voltage at each connection.
+
+Motor amperage for each phase.
+
+Heating value of fuel in Btu/h.
+
+Fan Test Reports:  For supply, return, and exhaust fans, include the following:
+
+Fan Data:
+
+System identification.
+
+Location.
+
+Make and type.
+
+Model number and size.
+
+Manufacturer's serial number.
+
+Arrangement and class.
+
+Sheave make, size in inches, and bore.
+
+Center-to-center dimensions of sheave, and amount of adjustments in inches.
+
+Motor Data:
+
+Motor make, and frame type and size.
+
+Horsepower and rpm.
+
+Volts, phase, and hertz.
+
+Full-load amperage and service factor.
+
+Sheave make, size in inches, and bore.
+
+Center-to-center dimensions of sheave, and amount of adjustments in inches.
+
+Number, make, and size of belts.
+
+Test Data (Indicated and Actual Values):
+
+Total airflow rate in cfm.
+
+Total system static pressure in inches wg.
+
+Fan rpm.
+
+Discharge static pressure in inches wg.
+
+Suction static pressure in inches wg.
+
+Round, Flat-Oval, and Rectangular Duct Traverse Reports:  Include a diagram with a grid representing the duct cross-section and record the following:
+
+Report Data:
+
+System and air-handling-unit number.
+
+Location and zone.
+
+Traverse air temperature in deg F.
+
+Duct static pressure in inches wg.
+
+Duct size in inches.
+
+Duct area in sq. ft..
+
+Indicated air flow rate in cfm.
+
+Indicated velocity in fpm.
+
+Actual air flow rate in cfm.
+
+Actual average velocity in fpm.
+
+Barometric pressure in psig.
+
+Air-Terminal-Device Reports:
+
+Unit Data:
+
+System and air-handling unit identification.
+
+Location and zone.
+
+Apparatus used for test.
+
+Area served.
+
+Make.
+
+Number from system diagram.
+
+Type and model number.
+
+Size.
+
+Effective area in sq. ft..
+
+Test Data (Indicated and Actual Values):
+
+Air flow rate in cfm.
+
+Air velocity in fpm.
+
+Preliminary air flow rate as needed in cfm.
+
+Preliminary velocity as needed in fpm.
+
+Final air flow rate in cfm.
+
+Final velocity in fpm.
+
+Space temperature in deg F.
+
+System-Coil Reports:  For reheat coils and water coils of terminal units, include the following:
+
+Unit Data:
+
+System and air-handling-unit identification.
+
+Location and zone.
+
+Room or riser served.
+
+Coil make and size.
+
+Flowmeter type.
+
+Test Data (Indicated and Actual Values):
+
+Air flow rate in cfm.
+
+Entering-water temperature in deg F.
+
+Leaving-water temperature in deg F.
+
+Water pressure drop in feet of head or psig.
+
+Entering-air temperature in deg F.
+
+Leaving-air temperature in deg F.
+
+Net positive suction head is important for pumps in open circuits and for pumps handling fluids at elevated temperatures.
+
+Pump Test Reports:  Calculate impeller size by plotting the shutoff head on pump curves and include the following:
+
+Unit Data:
+
+Unit identification.
+
+Location.
+
+Service.
+
+Make and size.
+
+Model number and serial number.
+
+Water flow rate in gpm.
+
+Water pressure differential in feet of head or psig.
+
+Required net positive suction head in feet of head or psig.
+
+Pump rpm.
+
+Impeller diameter in inches.
+
+Motor make and frame size.
+
+Motor horsepower and rpm.
+
+Voltage at each connection.
+
+Amperage for each phase.
+
+Full-load amperage and service factor.
+
+Seal type.
+
+Test Data (Indicated and Actual Values):
+
+Static head in feet of head or psig.
+
+Pump shutoff pressure in feet of head or psig.
+
+Actual impeller size in inches.
+
+Full-open flow rate in gpm.
+
+Full-open pressure in feet of head or psig.
+
+Final discharge pressure in feet of head or psig.
+
+Final suction pressure in feet of head or psig.
+
+Final total pressure in feet of head or psig.
+
+Final water flow rate in gpm.
+
+Voltage at each connection.
+
+Amperage for each phase.
+
+Instrument Calibration Reports:
+
+Report Data:
+
+Instrument type and make.
+
+Serial number.
+
+Application.
+
+Dates of use.
+
+Dates of calibration.
+
+INSPECTIONS
+
+Initial Inspection:
+
+After testing and balancing are complete, operate each system and randomly check measurements to verify that the system is operating according to the final test and balance readings documented in the final report.
+
+Check the following for each system:
+
+Measure airflow of at least 10 percent of air outlets.
+
+Measure water flow of at least 5 percent of terminals.
+
+Measure room temperature at each thermostat/temperature sensor.  Compare the reading to the set point.
+
+Verify that balancing devices are marked with final balance position.
+
+Note deviations from the Contract Documents in the final report.
+
+Final Inspection:
+
+After initial inspection is complete and documentation by random checks verifies that testing and balancing are complete and accurately documented in the final report, request that a final inspection be made by [Architect] [Owner] [Construction Manager] [Commissioning Authority].
+
+The TAB contractor's test and balance engineer shall conduct the inspection in the presence of [Architect] [Owner] [Construction Manager] [Commissioning Authority].
+
+[Architect] [Owner] [Construction Manager] [Commissioning Authority] shall randomly select measurements, documented in the final report, to be rechecked.  Rechecking shall be limited to either 10 percent of the total measurements recorded or the extent of measurements that can be accomplished in a normal 8-hour business day.
+
+If rechecks yield measurements that differ from the measurements documented in the final report by more than the tolerances allowed, the measurements shall be noted as "FAILED."
+
+If the number of "FAILED" measurements is greater than 10 percent of the total measurements checked during the final inspection, the testing and balancing shall be considered incomplete and shall be rejected.
+
+See Section 014000 "Quality Requirements" for retesting and reinspecting requirements and Section 017300 "Execution" for requirements for correcting the Work.
+
+TAB Work will be considered defective if it does not pass final inspections.  If TAB Work fails, proceed as follows:
+
+Recheck all measurements and make adjustments.  Revise the final report and balancing device settings to include all changes; resubmit the final report and request a second final inspection.
+
+If the second final inspection also fails, Owner may contract the services of another TAB contractor to complete TAB Work according to the Contract Documents and deduct the cost of the services from the original TAB contractor's final payment.
+
+Prepare test and inspection reports.
+
+ADDITIONAL TESTS
+
+Within 90 days of completing TAB, perform additional TAB to verify that balanced conditions are being maintained throughout and to correct unusual conditions.
+
+Seasonal Periods:  If initial TAB procedures were not performed during near-peak summer and winter conditions, perform additional TAB during near-peak summer and winter conditions.
+
+END OF SECTION 230593
