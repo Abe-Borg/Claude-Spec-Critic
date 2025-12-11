@@ -1,4 +1,4 @@
-"""GUI application for MEP Specification Review."""
+"""GUI application for Mechanical & Plumbing Specifications Review."""
 import os
 import sys
 import threading
@@ -49,7 +49,7 @@ class SpecReviewApp:
         row = 0
         
         # Title
-        title_label = ttk.Label(main_frame, text="MEP Specification Review", font=("Arial", 16, "bold"))
+        title_label = ttk.Label(main_frame, text="Mechanical & Plumbing Specifications Review", font=("Arial", 16, "bold"))
         title_label.grid(row=row, column=0, columnspan=3, pady=(0, 10))
         row += 1
         
