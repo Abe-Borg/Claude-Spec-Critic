@@ -262,7 +262,7 @@ class SpecReviewApp:
         self.root.after(0, lambda: self.set_status("Analyzing token usage..."))
         
         system_prompt = get_system_prompt()
-        spec_contents = [r.cleaned_content for r in preprocess_results]
+        spec_contents = [(spec.filename, result.cleaned_content) for spec, result in zip(specs, preprocess_results)]
         token_summary = analyze_token_usage(spec_contents, system_prompt)
         
         self.root.after(0, lambda: self.log(f"\nToken usage: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}"))
