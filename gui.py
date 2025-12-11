@@ -201,7 +201,9 @@ class SpecReviewApp:
         try:
             self.do_review()
         except Exception as e:
-            self.root.after(0, lambda: self.on_error(str(e)))
+            import traceback
+            error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
+            self.root.after(0, lambda: self.on_error(error_msg))
         finally:
             self.root.after(0, self.on_complete)
     
@@ -319,8 +321,8 @@ class SpecReviewApp:
         # Generate report
         self.root.after(0, lambda: self.set_status("Generating report..."))
         
-        leed_alerts_dicts = [{"filename": a.filename, "line": a.line, "text": a.text} for a in all_leed_alerts]
-        placeholder_alerts_dicts = [{"filename": a.filename, "line": a.line, "text": a.text} for a in all_placeholder_alerts]
+        leed_alerts_dicts = [{"filename": a['filename'], "line": a['line'], "text": a['text']} for a in all_leed_alerts]
+        placeholder_alerts_dicts = [{"filename": a['filename'], "line": a['line'], "text": a['text']} for a in all_placeholder_alerts]
         
         report_path = generate_report(
             review_result=review_result,
