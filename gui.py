@@ -85,7 +85,6 @@ class SpecReviewApp:
         ttk.Radiobutton(model_frame, text="Sonnet 4.5 (Balanced)", variable=self.model_choice, value="sonnet").grid(row=0, column=1, sticky="w", padx=10)
         ttk.Radiobutton(model_frame, text="Opus 4.5 (Best Quality)", variable=self.model_choice, value="opus").grid(row=0, column=2, sticky="w", padx=10)
         
-        ttk.Checkbutton(model_frame, text="Enable Extended Thinking (Opus only - slower but more thorough)", variable=self.use_thinking).grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=(10, 0))
         row += 1
         
         # Run button
@@ -270,7 +269,7 @@ class SpecReviewApp:
         model_choice = self.model_choice.get()
         use_thinking = self.use_thinking.get()
         
-        if model_choice == "opus" or use_thinking:
+        if model_choice == "opus":
             model = MODEL_OPUS
             model_name = "Opus 4.5"
         elif model_choice == "haiku":
@@ -280,9 +279,8 @@ class SpecReviewApp:
             model = MODEL_SONNET
             model_name = "Sonnet 4.5"
         
-        thinking_str = " + Extended Thinking" if use_thinking else ""
-        self.root.after(0, lambda: self.set_status(f"Sending to Claude API ({model_name}{thinking_str})..."))
-        self.root.after(0, lambda: self.log(f"\nCalling {model_name}{thinking_str}..."))
+        self.root.after(0, lambda: self.set_status(f"Sending to Claude API ({model_name})..."))
+        self.root.after(0, lambda: self.log(f"\nCalling {model_name}..."))
         self.root.after(0, lambda: self.log("This may take a few minutes. Please wait..."))
         
         # Build combined content
