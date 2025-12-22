@@ -32,7 +32,7 @@ class SpecReviewApp:
         # Variables
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop" / "spec-review-output"))
-        self.model_choice = tk.StringVar(value="Opus")
+        self.model_choice = tk.StringVar(value="opus")
         self.use_thinking = tk.BooleanVar(value=False)
         self.api_key = tk.StringVar(value=os.environ.get("ANTHROPIC_API_KEY", ""))
         
@@ -194,8 +194,6 @@ class SpecReviewApp:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         run_dir = output_base / f"review_{timestamp}"
         run_dir.mkdir(parents=True, exist_ok=True)
-        stripped_dir = run_dir / "stripped"
-        stripped_dir.mkdir(exist_ok=True)
         
         self.last_output_path = run_dir
         
@@ -226,10 +224,7 @@ class SpecReviewApp:
             all_leed_alerts.extend(result.leed_alerts)
             all_placeholder_alerts.extend(result.placeholder_alerts)
             
-            # Save stripped content
-            stripped_path = stripped_dir / f"{Path(spec.filename).stem}_stripped.txt"
-            with open(stripped_path, "w", encoding="utf-8") as f:
-                f.write(result.cleaned_content)
+            
         
         # Log alerts
         if all_leed_alerts:
@@ -249,17 +244,8 @@ class SpecReviewApp:
         if not token_summary.within_limit:
             raise Exception(f"Token limit exceeded: {token_summary.total_tokens:,} > {RECOMMENDED_MAX:,}")
         
-        # Determine model
-        model_choice = self.model_choice.get()
-        use_thinking = self.use_thinking.get()
-        
-        if model_choice == "opus":
-            model = MODEL_OPUS
-            model_name = "Opus 4.5"
-        else:
-            model = MODEL_SONNET
-            model_name = "Sonnet 4.5"
-        
+        # Determine model 
+        model_name = "Opus 4.5"
         self.root.after(0, lambda: self.set_status(f"Sending to Claude API ({model_name})..."))
         self.root.after(0, lambda: self.log(f"\nCalling {model_name}..."))
         self.root.after(0, lambda: self.log("This may take a few minutes. Please wait..."))
@@ -274,7 +260,6 @@ class SpecReviewApp:
         review_result = review_specs(
             combined_content,
             model=model,
-            use_thinking=use_thinking,
             verbose=False
         )
         
@@ -289,7 +274,6 @@ class SpecReviewApp:
         self.root.after(0, lambda: self.log(f"  CRITICAL: {review_result.critical_count}"))
         self.root.after(0, lambda: self.log(f"  HIGH: {review_result.high_count}"))
         self.root.after(0, lambda: self.log(f"  MEDIUM: {review_result.medium_count}"))
-        self.root.after(0, lambda: self.log(f"  LOW: {review_result.low_count}"))
         self.root.after(0, lambda: self.log(f"  GRIPES: {review_result.gripes_count}"))
         self.root.after(0, lambda: self.log(f"  TOTAL: {review_result.total_count}"))
         
@@ -316,7 +300,6 @@ class SpecReviewApp:
                 "model": review_result.model,
                 "input_tokens": review_result.input_tokens,
                 "output_tokens": review_result.output_tokens,
-                "thinking_tokens": review_result.thinking_tokens,
                 "elapsed_seconds": review_result.elapsed_seconds,
                 "files_reviewed": [spec.filename for spec in specs],
             },
@@ -324,7 +307,6 @@ class SpecReviewApp:
                 "critical": review_result.critical_count,
                 "high": review_result.high_count,
                 "medium": review_result.medium_count,
-                "low": review_result.low_count,
                 "gripes": review_result.gripes_count,
                 "total": review_result.total_count,
             },
