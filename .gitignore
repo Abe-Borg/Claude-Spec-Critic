@@ -37,3 +37,5 @@ htmlcov/
 .DS_Store
 
 output/
+
+specs/
