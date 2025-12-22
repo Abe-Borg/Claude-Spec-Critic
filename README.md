@@ -1,35 +1,26 @@
 # MEP Spec Review
 
 A CLI tool for reviewing mechanical and plumbing (M&P) specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction.
+Current implementation uses Anthropic API for LLM analysis. But this code can easily be adjusted to use any LLM.
 
 ## Features
 
-- **Batch Review**: Process up to 5 specification documents at once
-- **Boilerplate Stripping**: Automatically removes specifier notes, copyright notices, and MasterSpec editorial instructions
-- **Stripped File Export**: Saves cleaned specs to disk so you can review what was removed
-- **LEED Detection**: Alerts when LEED references are found (since you don't work on LEED projects)
+- **Batch Review**: Process multiple specification documents at once. Only limitation is LLM context window.
+- **LEED Detection**: Alerts when LEED references are found.
 - **Placeholder Detection**: Flags unresolved placeholders like `[INSERT...]`
 - **Token Management**: Pre-flight token counting with warnings before API calls
-- **Severity Classification**: Issues categorized as CRITICAL, HIGH, MEDIUM, LOW, and GRIPES
-- **Model Options**: Choose between Sonnet 4.5 (fast) or Opus 4.5 (thorough), with optional extended thinking
+- **Severity Classification**: Issues categorized as CRITICAL, HIGH, MEDIUM and GRIPES
 - **JSON Output**: Structured findings for further processing
 
 ## Converting .doc Files
 
-This tool only supports `.docx` files. If you have older `.doc` files (Word 97-2003 format), convert them first using the included PowerShell script:
+This tool only supports `.docx` files. If you have older `.doc` files (Word 97-2003 format), convert them
+using the following library: https://github.com/Abe-Borg/convert-doc-to-docx
 
-```powershell
-# Convert all .doc files in a folder (requires Word installed)
-.\scripts\convert-doc-to-docx.ps1 -InputFolder "C:\path\to\specs"
+##
 
-# Convert and save to a different folder
-.\scripts\convert-doc-to-docx.ps1 -InputFolder "C:\old-specs" -OutputFolder "C:\new-specs"
-
-# Include subfolders
-.\scripts\convert-doc-to-docx.ps1 -InputFolder "C:\specs" -Recurse
-```
-
-The script skips files that have already been converted.
+The Word docs should be scrubbed of unnecessary components and fluff/garbage for best results. Use this
+library: https://github.com/Abe-Borg/Spec_Cleanse
 
 ## Installation
 
@@ -107,32 +98,14 @@ spec-review review -i ./specs -o ./output --dry-run --verbose
 | `--output-dir` | `-o` | Output directory for reports (default: `./output`) |
 | `--verbose` | `-v` | Show detailed processing information |
 | `--dry-run` | | Process files but do not call API |
-| `--opus` | | Use Opus 4.5 instead of Sonnet 4.5 (higher quality, more expensive) |
-| `--thinking` | | Enable extended thinking (Opus only, even more expensive) |
+
 
 ### Model Options
-
-**Sonnet 4.5 (default)**: Fast, cost-effective, good for quick reviews.
-- Max output: 16,384 tokens
-
-```bash
-spec-review review -i ./specs -o ./output
-```
-
 **Opus 4.5**: Higher quality analysis, better at catching subtle issues.
 - Max output: 32,768 tokens
 
 ```bash
 spec-review review -i ./specs --opus
-```
-
-**Opus 4.5 + Extended Thinking**: Maximum quality. Model "thinks" through the problem before responding. Best for complex specs with many interdependencies.
-- Max output: 32,768 tokens
-- Thinking budget: 50,000 tokens
-- Uses streaming (required for long-running requests)
-
-```bash
-spec-review review -i ./specs --opus --thinking
 ```
 
 ## Output Structure
@@ -142,9 +115,6 @@ Each run creates a timestamped folder:
 ```
 output/
 └── review_2024-01-15_143022/
-    ├── stripped/                          # Cleaned spec content for review
-    │   ├── 23 05 00 - Common Work Results_stripped.txt
-    │   └── 23 21 13 - Hydronic Piping_stripped.txt
     ├── findings.json                      # Structured results (for automation)
     └── report.docx                        # Formatted Word report (for humans)
 ```
@@ -158,7 +128,6 @@ output/
     "model": "claude-opus-4-5-20251101",
     "input_tokens": 37942,
     "output_tokens": 8500,
-    "thinking_tokens": 45000,
     "total_output_tokens": 53500,
     "elapsed_seconds": 120.5,
     "files_reviewed": ["23 05 00.docx", "23 21 13.docx"]
@@ -167,7 +136,6 @@ output/
     "critical": 2,
     "high": 5,
     "medium": 3,
-    "low": 1,
     "gripes": 2,
     "total": 13
   },
@@ -190,8 +158,6 @@ output/
 }
 ```
 
-The `stripped/` folder contains text files showing exactly what content was sent to the LLM after boilerplate removal. Review these to verify the preprocessing is working correctly.
-
 ## Severity Definitions
 
 | Level | Description |
@@ -199,8 +165,7 @@ The `stripped/` folder contains text files showing exactly what content was sent
 | **CRITICAL** | DSA rejection, code violations, safety hazards |
 | **HIGH** | Significant technical errors, outdated CSI format |
 | **MEDIUM** | Wrong code editions, obsolete products |
-| **LOW** | Editorial, formatting, terminology |
-| **GRIPES** | Grumpy engineer complaints (not code/safety issues) |
+| **GRIPES** | Grumpy engineer complaints (not code/safety issues), editorial, formatting, terminology |
 
 ## What It Checks
 
@@ -214,19 +179,8 @@ The `stripped/` folder contains text files showing exactly what content was sent
 - Cross-spec coordination (when multiple specs provided)
 - Constructability issues
 
-## What Gets Stripped (Removed from LLM Input)
-
-The preprocessor removes content that adds no value to the review:
-- `[Note to specifier...]` blocks and variations
-- MasterSpec editorial instructions ("Retain or delete...", "Revise this Section...", etc.)
-- Copyright notices (MasterSpec, ARCOM, BSD, SpecLink, Deltek, AIA)
-- Separator lines (`****`, `----`, `====`)
-- Page numbers
-- Revision marks and hidden text markers
-
-## What Gets Alerted (But Kept for LLM Review)
-
-These items trigger alerts so you know about them, but they remain in the content so the LLM can also comment on them:
+## What Gets Alerted 
+These items trigger alerts so the Human can review and edit them:
 - **LEED references**: Any mention of LEED, USGBC, or LEED credits
 - **Placeholders**: `[INSERT...]`, `[SPECIFY...]`, `[VERIFY...]`, `___`, `[TBD]`, etc.
 
@@ -237,13 +191,11 @@ spec-review/
 ├── src/
 │   ├── cli.py           # CLI entry point
 │   ├── extractor.py     # DOCX text extraction
-│   ├── preprocessor.py  # Boilerplate removal, alert detection
+│   ├── preprocessor.py  # alert detection
 │   ├── tokenizer.py     # Token counting
 │   ├── prompts.py       # System prompt
 │   ├── reviewer.py      # Claude API client
 │   └── report.py        # Word report generation
-├── scripts/
-│   └── convert-doc-to-docx.ps1  # Batch .doc converter
 ├── requirements.txt
 ├── pyproject.toml
 ├── spec-review.spec     # PyInstaller config
@@ -253,7 +205,7 @@ spec-review/
 
 ## Development Status
 
-- [x] Phase 1: Project skeleton, extraction, preprocessing, stripped file export
+- [x] Phase 1: Project skeleton, extraction, preprocessing
 - [x] Phase 2: Claude API integration
 - [x] Phase 3: Response parsing
 - [x] Phase 4: Word report generation
@@ -289,4 +241,4 @@ You can copy `spec-review.exe` to any Windows machine — no Python installation
 
 ## License
 
-Proprietary - Internal use only
+MIT License
