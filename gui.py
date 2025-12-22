@@ -32,7 +32,7 @@ class SpecReviewApp:
         # Variables
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop" / "spec-review-output"))
-        self.model_choice = tk.StringVar(value="sonnet")
+        self.model_choice = tk.StringVar(value="Opus")
         self.use_thinking = tk.BooleanVar(value=False)
         self.api_key = tk.StringVar(value=os.environ.get("ANTHROPIC_API_KEY", ""))
         
@@ -61,7 +61,6 @@ class SpecReviewApp:
         ttk.Label(main_frame, text="API Key:").grid(row=row, column=0, sticky="w", pady=5)
         api_entry = ttk.Entry(main_frame, textvariable=self.api_key, width=50, show="*")
         api_entry.grid(row=row, column=1, sticky="ew", pady=5, padx=5)
-        ttk.Button(main_frame, text="Show/Hide", width=10, command=lambda: self.toggle_api_key(api_entry)).grid(row=row, column=2, pady=5)
         row += 1
         
         # Input directory
@@ -109,12 +108,6 @@ class SpecReviewApp:
         
         self.last_output_path = None
         
-    def toggle_api_key(self, entry):
-        if entry.cget("show") == "*":
-            entry.config(show="")
-        else:
-            entry.config(show="*")
-    
     def browse_input(self):
         folder = filedialog.askdirectory(title="Select folder containing .docx specification files")
         if folder:
