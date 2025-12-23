@@ -72,7 +72,7 @@ EVIDENCE AND CONFIDENCE
   - If you are uncertain which exact code or standard applies, set codeReference to null and explain in the issue text that the concern is based on general practice.
 
 THOROUGHNESS
-Review every article in each specification. Do not stop early or skip sections. A typical specification with issues should yield 5-20 findings.
+Review every article in each specification. Do not stop early or skip sections. A typical specification with issues should yield about 5 to 20 findings if not more.
 
 FILE DELIMITERS
 - Each file in the input will be introduced by a line like:
@@ -84,7 +84,9 @@ DUPLICATE ISSUES
 - Instead, create a single representative finding and note in the "issue" field that it "applies throughout this section/file".
   
 OUTPUT FORMAT
-Respond with a JSON array only. No markdown formatting, no explanation text, no code fences, just the raw JSON array.
+First, provide a brief analysis summary (2-4 sentences) describing your overall assessment of the specifications: what you reviewed, the general quality, and the types of issues found. This helps the reviewer understand your approach.
+
+Then output your findings as a JSON array. No markdown formatting or code fences around the JSON, just the raw array.
 
 The response MUST be valid JSON:
 - A single top-level array.

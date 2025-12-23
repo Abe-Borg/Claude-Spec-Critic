@@ -50,8 +50,8 @@ COLORS = {
     "bg_input": "#252525",
     "border": "#333333",
     "text_primary": "#FFFFFF",
-    "text_secondary": "#888888",
-    "text_muted": "#555555",
+    "text_secondary": "#B0B0B0",  # Brighter for better legibility
+    "text_muted": "#707070",      # Slightly brighter
     "accent": "#3B82F6",        # Blue
     "accent_hover": "#2563EB",
     "success": "#22C55E",
@@ -539,7 +539,7 @@ class SpecReviewApp(ctk.CTk):
         
         title = ctk.CTkLabel(
             header,
-            text="MEP Spec Review",
+            text="Mechanical & Plumbing Spec Review",
             font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"),
             text_color=COLORS["text_primary"]
         )
@@ -547,9 +547,9 @@ class SpecReviewApp(ctk.CTk):
         
         subtitle = ctk.CTkLabel(
             header,
-            text=f"California K-12 DSA Projects  •  {MODEL_OPUS_45}",
+            text="California K-12 DSA Projects  •  Claude OPUS 4.5",
             font=ctk.CTkFont(family="Segoe UI", size=13),
-            text_color=COLORS["text_muted"]
+            text_color=COLORS["text_secondary"]
         )
         subtitle.pack(anchor="w", pady=(4, 0))
         
@@ -805,8 +805,10 @@ class SpecReviewApp(ctk.CTk):
             return
             
         self.is_processing = True
-        self.log.clear()
         self.thinking_panel.clear()
+        
+        # Add separator in log for new run
+        self.log.log("─" * 40, level="muted", timestamp=False)
         
         # Update UI
         self.run_button.set_processing()
