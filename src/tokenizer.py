@@ -3,10 +3,9 @@ import tiktoken
 from dataclasses import dataclass
 
 
-# Sonnet 4.5 context window and our safety margins
 MAX_CONTEXT_TOKENS = 200_000
 SAFETY_BUFFER = 50_000  # Leave room for system prompt + response
-RECOMMENDED_MAX = MAX_CONTEXT_TOKENS - SAFETY_BUFFER  # 150K tokens
+RECOMMENDED_MAX = MAX_CONTEXT_TOKENS - SAFETY_BUFFER  
 
 
 @dataclass

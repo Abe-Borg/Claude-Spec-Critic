@@ -9,9 +9,7 @@ from .prompts import get_system_prompt, get_user_message
 
 
 # Model constants
-MODEL_SONNET = "claude-sonnet-4-5-20250929"
 MODEL_OPUS = "claude-opus-4-5-20251101"
-MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
 @dataclass
 class Finding:
@@ -34,7 +32,6 @@ class ReviewResult:
     model: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
-    thinking_tokens: int = 0
     elapsed_seconds: float = 0.0
     error: str | None = None
     
@@ -49,11 +46,7 @@ class ReviewResult:
     @property
     def medium_count(self) -> int:
         return sum(1 for f in self.findings if f.severity == "MEDIUM")
-    
-    @property
-    def low_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity == "LOW")
-    
+        
     @property
     def gripes_count(self) -> int:
         return sum(1 for f in self.findings if f.severity == "GRIPES")
@@ -64,8 +57,8 @@ class ReviewResult:
     
     @property
     def total_output_tokens(self) -> int:
-        """Total output tokens including thinking tokens."""
-        return self.output_tokens + self.thinking_tokens
+        """Total output tokens"""
+        return self.output_tokens
 
 
 def get_api_key() -> str:
@@ -149,7 +142,7 @@ def parse_findings(response_text: str) -> list[Finding]:
 
 def review_specs(
     combined_content: str,
-    model: str = MODEL_SONNET,
+    model: str = MODEL_,
     use_thinking: bool = False,
     max_retries: int = 3,
     verbose: bool = False
@@ -169,12 +162,6 @@ def review_specs(
     """
     result = ReviewResult(model=model)
     
-    # Extended thinking only works with Opus
-    if use_thinking and model != MODEL_OPUS:
-        model = MODEL_OPUS
-        result.model = MODEL_OPUS
-        if verbose:
-            print("  Note: Extended thinking requires Opus. Switching to Opus.")
     
     try:
         api_key = get_api_key()
@@ -195,13 +182,8 @@ def review_specs(
                 print(f"  Retry attempt {attempt + 1}/{max_retries}...")
             
             # Build request parameters
-            # Max output tokens: Sonnet 4.5 = 16384, Opus 4.5 = 32768
             if model == MODEL_OPUS:
                 max_tokens = 32768
-            elif model == MODEL_HAIKU:
-                max_tokens = 8192
-            else:
-                max_tokens = 16384
             
             request_params = {
                 "model": model,
@@ -212,54 +194,28 @@ def review_specs(
                 ]
             }
             
-            # Add extended thinking if enabled
-            # budget_tokens must be less than max_tokens
-            if use_thinking:
-                request_params["temperature"] = 1  # Required for extended thinking
-                request_params["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": 30000  # Must be < max_tokens (32768)
-                }
+           
             
-            # Use streaming for Opus (required for long requests) or thinking
-            if model == MODEL_OPUS or use_thinking:
-                response_text = ""
+            # Use streaming for Opus
+            response_text = ""
+            
+            with client.messages.stream(**request_params) as stream:
+                for event in stream:
+                    pass  # Consume the stream
+                response = stream.get_final_message()
+            
+            result.elapsed_seconds = time.time() - start_time
+            result.input_tokens = response.usage.input_tokens
+            result.output_tokens = response.usage.output_tokens
+            
+            
+            # Extract text from response 
+            for block in response.content:
+                if block.type == "text":
+                    response_text += block.text
+            
+            result.raw_response = response_text
                 
-                with client.messages.stream(**request_params) as stream:
-                    for event in stream:
-                        pass  # Consume the stream
-                    response = stream.get_final_message()
-                
-                result.elapsed_seconds = time.time() - start_time
-                result.input_tokens = response.usage.input_tokens
-                result.output_tokens = response.usage.output_tokens
-                
-                # Get thinking tokens if present
-                usage_dict = response.usage.model_dump() if hasattr(response.usage, 'model_dump') else {}
-                result.thinking_tokens = usage_dict.get('thinking_tokens', 0) or 0
-                
-                # Extract text from response (skip thinking blocks)
-                for block in response.content:
-                    if block.type == "text":
-                        response_text += block.text
-                
-                result.raw_response = response_text
-                
-            else:
-                # Sonnet without thinking: use regular request
-                response = client.messages.create(**request_params)
-                
-                result.elapsed_seconds = time.time() - start_time
-                result.input_tokens = response.usage.input_tokens
-                result.output_tokens = response.usage.output_tokens
-                
-                # Extract text from response
-                response_text = ""
-                for block in response.content:
-                    if block.type == "text":
-                        response_text += block.text
-                
-                result.raw_response = response_text
             
             # Parse findings
             try:

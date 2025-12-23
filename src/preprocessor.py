@@ -6,89 +6,10 @@ from dataclasses import dataclass, field
 @dataclass
 class PreprocessResult:
     """Result of preprocessing a specification."""
-    cleaned_content: str
-    original_length: int
-    cleaned_length: int
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     
-    @property
-    def chars_removed(self) -> int:
-        return self.original_length - self.cleaned_length
     
-    @property
-    def reduction_percent(self) -> float:
-        if self.original_length == 0:
-            return 0.0
-        return (self.chars_removed / self.original_length) * 100
-
-
-# Patterns for boilerplate removal
-# NOTE: Placeholders are NOT stripped - they are alerted separately and left in
-# so the LLM can also see and comment on them
-BOILERPLATE_PATTERNS = [
-    # Specifier notes - bracketed formats
-    (r'\[Note to [Ss]pecifier[:\s][^\]]*\]', 'specifier_note'),
-    (r'\[Specifier[:\s][^\]]*\]', 'specifier_note'),
-    (r'\[SPECIFIER[:\s][^\]]*\]', 'specifier_note'),
-    (r'(?i)\*\*\s*note to specifier\s*\*\*[^\n]*(?:\n(?!\n)[^\n]*)*', 'specifier_note'),
-    (r'(?i)<<\s*note to specifier[^>]*>>', 'specifier_note'),
-    (r'(?i)^\s*note to specifier:.*$', 'specifier_note'),
-    
-    # MasterSpec / AIA / ARCOM editorial instructions (plain sentence format)
-    # These typically start paragraphs and instruct the specifier what to do
-    (r'(?i)^Retain or delete this article.*$', 'masterspec_instruction'),
-    (r'(?i)^Retain [^\n]*paragraph[^\n]*below.*$', 'masterspec_instruction'),
-    (r'(?i)^Retain [^\n]*subparagraph[^\n]*below.*$', 'masterspec_instruction'),
-    (r'(?i)^Retain [^\n]*article[^\n]*below.*$', 'masterspec_instruction'),
-    (r'(?i)^Retain [^\n]*section[^\n]*below.*$', 'masterspec_instruction'),
-    (r'(?i)^Retain [^\n]*if .*$', 'masterspec_instruction'),
-    (r'(?i)^Retain one of.*$', 'masterspec_instruction'),
-    (r'(?i)^Retain one or more of.*$', 'masterspec_instruction'),
-    (r'(?i)^Revise this Section by deleting.*$', 'masterspec_instruction'),
-    (r'(?i)^Revise [^\n]*to suit [Pp]roject.*$', 'masterspec_instruction'),
-    (r'(?i)^This Section uses the term.*$', 'masterspec_instruction'),
-    (r'(?i)^Verify that Section titles.*$', 'masterspec_instruction'),
-    (r'(?i)^Coordinate [^\n]*paragraph[^\n]* with.*$', 'masterspec_instruction'),
-    (r'(?i)^Coordinate [^\n]*revision[^\n]* with.*$', 'masterspec_instruction'),
-    (r'(?i)^The list below matches.*$', 'masterspec_instruction'),
-    (r'(?i)^See [^\n]*Evaluations?[^\n]* for .*$', 'masterspec_instruction'),
-    (r'(?i)^See [^\n]*Article[^\n]* in the Evaluations.*$', 'masterspec_instruction'),
-    (r'(?i)^If retaining [^\n]*paragraph.*$', 'masterspec_instruction'),
-    (r'(?i)^If retaining [^\n]*subparagraph.*$', 'masterspec_instruction'),
-    (r'(?i)^If retaining [^\n]*article.*$', 'masterspec_instruction'),
-    (r'(?i)^When [^\n]*characteristics are important.*$', 'masterspec_instruction'),
-    (r'(?i)^Inspections in this article are.*$', 'masterspec_instruction'),
-    (r'(?i)^Materials and thicknesses in schedules below.*$', 'masterspec_instruction'),
-    (r'(?i)^Insulation materials and thicknesses are identified below.*$', 'masterspec_instruction'),
-    (r'(?i)^Do not duplicate requirements.*$', 'masterspec_instruction'),
-    (r'(?i)^Not all materials and thicknesses may be suitable.*$', 'masterspec_instruction'),
-    (r'(?i)^Consider the exposure of installed insulation.*$', 'masterspec_instruction'),
-    (r'(?i)^Flexible elastomeric and polyolefin thicknesses are limited.*$', 'masterspec_instruction'),
-    (r'(?i)^To comply with ASHRAE.*insulation should have.*$', 'masterspec_instruction'),
-    (r'(?i)^Architect should be prepared to reject.*$', 'masterspec_instruction'),
-    
-    # Copyright notices - expanded to catch AIA/ARCOM format
-    (r'(?i)^Copyright\s*©?\s*\d{4}.*$', 'copyright'),
-    (r'(?i)^©\s*\d{4}.*$', 'copyright'),
-    (r'(?i)^Exclusively published and distributed by.*$', 'copyright'),
-    (r'(?i)all rights reserved.*$', 'copyright'),
-    (r'(?i)proprietary\s+information.*$', 'copyright'),
-    
-    # Separator lines
-    (r'^[\*]{4,}\s*$', 'separator'),
-    (r'^[-]{4,}\s*$', 'separator'),
-    (r'^[=]{4,}\s*$', 'separator'),
-    
-    # Page artifacts
-    (r'(?i)^page\s+\d+\s*(?:of\s*\d+)?\s*$', 'page_number'),
-    
-    # Revision marks from editing
-    (r'(?i)\{revision[^\}]*\}', 'revision_mark'),
-    
-    # Hidden text markers
-    (r'(?i)<<[^>]*hidden[^>]*>>', 'hidden_text'),
-]
 
 # LEED detection patterns
 LEED_PATTERNS = [
@@ -189,27 +110,7 @@ def detect_placeholders(content: str, filename: str) -> list[dict]:
     return unique_alerts
 
 
-def strip_boilerplate(content: str) -> str:
-    """
-    Remove boilerplate content from specification text.
-    
-    Args:
-        content: Raw specification text
-        
-    Returns:
-        Cleaned text with boilerplate removed
-    """
-    cleaned = content
-    
-    for pattern, _ in BOILERPLATE_PATTERNS:
-        cleaned = re.sub(pattern, '', cleaned, flags=re.MULTILINE)
-    
-    # Clean up excessive whitespace left behind
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-    cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)
-    cleaned = cleaned.strip()
-    
-    return cleaned
+
 
 
 def preprocess_spec(content: str, filename: str) -> PreprocessResult:
@@ -223,19 +124,12 @@ def preprocess_spec(content: str, filename: str) -> PreprocessResult:
     Returns:
         PreprocessResult with cleaned content and alerts
     """
-    original_length = len(content)
     
     # Detect alerts BEFORE stripping (so we have accurate line numbers)
     leed_alerts = detect_leed_references(content, filename)
     placeholder_alerts = detect_placeholders(content, filename)
-    
-    # Strip boilerplate
-    cleaned = strip_boilerplate(content)
-    
+        
     return PreprocessResult(
-        cleaned_content=cleaned,
-        original_length=original_length,
-        cleaned_length=len(cleaned),
         leed_alerts=leed_alerts,
         placeholder_alerts=placeholder_alerts
     )
@@ -252,24 +146,16 @@ def preprocess_multiple_specs(specs: list[tuple[str, str]]) -> tuple[list[Prepro
         Tuple of (list of PreprocessResults, summary dict)
     """
     results = []
-    total_original = 0
-    total_cleaned = 0
     all_leed_alerts = []
     all_placeholder_alerts = []
     
     for filename, content in specs:
         result = preprocess_spec(content, filename)
         results.append(result)
-        total_original += result.original_length
-        total_cleaned += result.cleaned_length
         all_leed_alerts.extend(result.leed_alerts)
         all_placeholder_alerts.extend(result.placeholder_alerts)
     
     summary = {
-        'total_original_chars': total_original,
-        'total_cleaned_chars': total_cleaned,
-        'total_chars_removed': total_original - total_cleaned,
-        'reduction_percent': ((total_original - total_cleaned) / total_original * 100) if total_original > 0 else 0,
         'leed_alert_count': len(all_leed_alerts),
         'placeholder_alert_count': len(all_placeholder_alerts),
         'all_leed_alerts': all_leed_alerts,

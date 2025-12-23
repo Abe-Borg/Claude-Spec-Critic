@@ -17,11 +17,10 @@ SEVERITY_COLORS = {
     "CRITICAL": RGBColor(192, 0, 0),      # Dark red
     "HIGH": RGBColor(255, 102, 0),         # Orange
     "MEDIUM": RGBColor(192, 152, 0),       # Dark yellow/gold
-    "LOW": RGBColor(0, 112, 192),          # Blue
     "GRIPES": RGBColor(128, 0, 128),       # Purple
 }
 
-SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "GRIPES"]
+SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]
 
 
 def set_cell_shading(cell, color_hex: str):
@@ -59,12 +58,11 @@ def create_summary_table(doc: Document, review_result: ReviewResult):
     
     # Header row
     header_cells = table.rows[0].cells
-    headers = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "GRIPES", "TOTAL"]
+    headers = ["CRITICAL", "HIGH", "MEDIUM", "GRIPES", "TOTAL"]
     counts = [
         review_result.critical_count,
         review_result.high_count,
         review_result.medium_count,
-        review_result.low_count,
         review_result.gripes_count,
         review_result.total_count
     ]
@@ -282,17 +280,11 @@ def generate_report(
     # Token usage
     para = doc.add_paragraph()
     para.add_run("Token Usage: ").bold = True
-    if review_result.thinking_tokens > 0:
-        para.add_run(
-            f"{review_result.input_tokens:,} input → "
-            f"{review_result.thinking_tokens:,} thinking + "
-            f"{review_result.output_tokens:,} output"
-        )
-    else:
-        para.add_run(
-            f"{review_result.input_tokens:,} input → "
-            f"{review_result.output_tokens:,} output"
-        )
+    
+    para.add_run(
+        f"{review_result.input_tokens:,} input → "
+        f"{review_result.output_tokens:,} output"
+    )
     
     para = doc.add_paragraph()
     para.add_run("Processing Time: ").bold = True

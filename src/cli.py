@@ -39,16 +39,6 @@ def print_files_loaded(specs: list[ExtractedSpec], verbose: bool):
             console.print(f"  • {spec.filename} ({spec.word_count:,} words)")
 
 
-def print_preprocessing_summary(results: list[PreprocessResult], summary: dict, verbose: bool, stripped_dir: Path):
-    """Print preprocessing summary."""
-    if summary['total_chars_removed'] > 0:
-        console.print(
-            f"\n[dim]Boilerplate stripped: {summary['total_chars_removed']:,} chars "
-            f"({summary['reduction_percent']:.1f}% reduction)[/dim]"
-        )
-    console.print(f"[dim]Stripped files saved to: {stripped_dir}[/dim]")
-
-
 def print_alerts(summary: dict):
     """Print LEED and placeholder alerts."""
     if summary['leed_alert_count'] > 0 or summary['placeholder_alert_count'] > 0:
@@ -106,38 +96,6 @@ def get_docx_files_from_directory(input_dir: Path) -> list[Path]:
     
     return docx_files
 
-
-def save_stripped_content(specs: list[ExtractedSpec], results: list[PreprocessResult], output_dir: Path) -> Path:
-    """
-    Save stripped/cleaned spec content to text files for review.
-    
-    Args:
-        specs: Original extracted specs (for filenames)
-        results: Preprocessed results with cleaned content
-        output_dir: Base output directory
-        
-    Returns:
-        Path to the stripped files directory
-    """
-    stripped_dir = output_dir / "stripped"
-    stripped_dir.mkdir(parents=True, exist_ok=True)
-    
-    for spec, result in zip(specs, results):
-        # Change .docx to .txt
-        output_filename = Path(spec.filename).stem + "_stripped.txt"
-        output_path = stripped_dir / output_filename
-        
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(f"# Stripped content from: {spec.filename}\n")
-            f.write(f"# Original length: {result.original_length:,} chars\n")
-            f.write(f"# Cleaned length: {result.cleaned_length:,} chars\n")
-            f.write(f"# Removed: {result.chars_removed:,} chars ({result.reduction_percent:.1f}%)\n")
-            f.write("#" + "=" * 60 + "\n\n")
-            f.write(result.cleaned_content)
-    
-    return stripped_dir
-
-
 def setup_output_directory(output_dir: Path) -> Path:
     """
     Create timestamped output directory structure.
@@ -168,9 +126,6 @@ def main():
               help='Output directory for reports and stripped files')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed processing information')
 @click.option('--dry-run', is_flag=True, help='Process files but do not call API')
-@click.option('--opus', is_flag=True, help='Use Opus 4.5 instead of Sonnet 4.5 (higher quality, more expensive)')
-@click.option('--haiku', is_flag=True, help='Use Haiku 4.5 (fastest, cheapest)')
-@click.option('--thinking', is_flag=True, help='Enable extended thinking (Opus only, even more expensive)')
 def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: bool, thinking: bool, haiku: bool):
     """
     Review MEP specifications for code compliance and technical issues.
@@ -179,7 +134,6 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     
     Example:
         spec-review review -i ./specs -o ./output --verbose
-        spec-review review -i ./specs --opus --thinking
     """
     print_header()
     
@@ -234,19 +188,11 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
         total_cleaned += result.cleaned_length
     
     preprocess_summary = {
-        'total_chars_removed': total_original - total_cleaned,
-        'reduction_percent': ((total_original - total_cleaned) / total_original * 100) if total_original > 0 else 0,
         'leed_alert_count': len(all_leed_alerts),
         'placeholder_alert_count': len(all_placeholder_alerts),
         'all_leed_alerts': all_leed_alerts,
         'all_placeholder_alerts': all_placeholder_alerts,
     }
-    
-    # Save stripped files
-    stripped_dir = save_stripped_content(specs, preprocess_results, run_dir)
-    
-    print_preprocessing_summary(preprocess_results, preprocess_summary, verbose, stripped_dir)
-    print_alerts(preprocess_summary)
     
     # Analyze token usage
     spec_contents_for_tokens = [(spec.filename, result.cleaned_content) 
@@ -264,7 +210,6 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     
     if dry_run:
         console.print("\n[yellow]Dry run complete. No API call made.[/yellow]")
-        console.print(f"[dim]Review stripped files at: {stripped_dir}[/dim]")
         return
     
     # Build combined content for API
@@ -273,20 +218,11 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
         for spec, result in zip(specs, preprocess_results)
     ])
     
-    # Determine model
-    if opus or thinking:
-        model = MODEL_OPUS
-    elif haiku:
-        model = MODEL_HAIKU
-    else:
-        model = MODEL_SONNET
 
-    model_names = {MODEL_OPUS: "Opus 4.5", MODEL_SONNET: "Sonnet 4.5", MODEL_HAIKU: "Haiku 4.5"}
-    model_name = model_names.get(model, "Unknown")
-    thinking_str = " + Extended Thinking" if thinking else ""
+    model_name = "Opus 4.5"
     
     # Call Claude API
-    console.print(f"\n[bold]Sending to Claude API ({model_name}{thinking_str})...[/bold]")
+    console.print(f"\n[bold]Sending to Claude API ({model_name})...[/bold]")
     
     with Progress(
         SpinnerColumn(),
@@ -311,11 +247,7 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     
     # Token breakdown
     token_info = f"[dim]Tokens: {review_result.input_tokens:,} in"
-    if review_result.thinking_tokens > 0:
-        token_info += f" → {review_result.thinking_tokens:,} thinking + {review_result.output_tokens:,} output"
-        token_info += f" = {review_result.total_output_tokens:,} total out"
-    else:
-        token_info += f" → {review_result.output_tokens:,} out"
+    token_info += f" → {review_result.output_tokens:,} out"
     token_info += "[/dim]"
     console.print(token_info)
     
@@ -331,8 +263,6 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
         summary_table.add_row("[orange1]HIGH[/orange1]", f"[orange1]{review_result.high_count}[/orange1]")
     if review_result.medium_count > 0:
         summary_table.add_row("[yellow]MEDIUM[/yellow]", f"[yellow]{review_result.medium_count}[/yellow]")
-    if review_result.low_count > 0:
-        summary_table.add_row("[blue]LOW[/blue]", f"[blue]{review_result.low_count}[/blue]")
     if review_result.gripes_count > 0:
         summary_table.add_row("[magenta]GRIPES[/magenta]", f"[magenta]{review_result.gripes_count}[/magenta]")
     
@@ -349,7 +279,6 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
             "model": review_result.model,
             "input_tokens": review_result.input_tokens,
             "output_tokens": review_result.output_tokens,
-            "thinking_tokens": review_result.thinking_tokens,
             "total_output_tokens": review_result.total_output_tokens,
             "elapsed_seconds": review_result.elapsed_seconds,
             "files_reviewed": [spec.filename for spec in specs],
@@ -358,7 +287,6 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
             "critical": review_result.critical_count,
             "high": review_result.high_count,
             "medium": review_result.medium_count,
-            "low": review_result.low_count,
             "gripes": review_result.gripes_count,
             "total": review_result.total_count,
         },
@@ -395,7 +323,6 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
     
     console.print(f"\n[bold green]Report saved to: {report_path}[/bold green]")
     console.print(f"[dim]JSON results: {json_output_path}[/dim]")
-    console.print(f"[dim]Stripped files: {stripped_dir}[/dim]")
     
     # Print detailed findings if verbose
     if verbose and review_result.findings:
@@ -405,7 +332,6 @@ def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: 
                 "CRITICAL": "red",
                 "HIGH": "orange1", 
                 "MEDIUM": "yellow",
-                "LOW": "blue",
                 "GRIPES": "magenta"
             }
             color = severity_colors.get(finding.severity, "white")
