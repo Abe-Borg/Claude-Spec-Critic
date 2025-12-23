@@ -13,16 +13,32 @@ Uses Anthropic Claude Opus 4.5 for LLM analysis.
 - **Instant Token Analysis**: See token usage immediately when selecting a folder
 - **Severity Classification**: Issues categorized as CRITICAL, HIGH, MEDIUM, and GRIPES
 - **Dual Output**: Human-readable Word report + machine-readable JSON
-- **Modern GUI**: Dark-themed CustomTkinter interface with visual token gauge
+- **Modern GUI**: Dark-themed CustomTkinter interface with animations and visual polish
 
-## GUI Features (v0.2.0)
+## GUI Features (v0.3.0)
 
-The new CustomTkinter GUI includes:
+The CustomTkinter GUI includes:
 
-- **Token Gauge**: Visual meter showing token capacity usage as soon as you select an input folder
-- **Color-coded Log**: Activity log with timestamps, colored entries for different event types
+- **Animated Token Gauge**: Visual meter with smooth fill animation showing token capacity usage
+- **Paced Activity Log**: Entries appear at a readable pace (100ms for files, 200ms for status changes)
+- **Fade-in Log Entries**: New log entries fade in smoothly instead of popping
+- **Animated Run Button**: Gentle pulse during processing, glow effect on completion
+- **Smooth Progress Bar**: Slower, calmer indeterminate animation during API calls
+- **Collapsible Analysis Panel**: Smooth expand/collapse animation for Claude's analysis summary
+- **Completion Effects**: Button glow and output folder button highlight when review finishes
 - **Modern Dark Theme**: Professional dark interface with accent colors
-- **Instant Feedback**: Token analysis runs immediately on folder selection — know if you're over limit before running
+
+### Animation Details
+
+| Element | Animation |
+|---------|-----------|
+| Token Gauge | Smooth ease-out fill with color gradient transition |
+| Log Entries | Fade-in from background color (200ms) |
+| Log Pacing | 100ms between file entries, 200ms between status entries |
+| Run Button | Pulse effect while processing, glow on completion |
+| Progress Bar | Slow, smooth indeterminate oscillation |
+| Thinking Panel | Smooth height animation for expand/collapse |
+| Output Button | Brief border glow on completion |
 
 ## Prerequisites
 
@@ -101,7 +117,7 @@ my-project/
 Launch the modern interface:
 
 ```bash
-python -m src.gui_ctk
+python -m src.gui
 ```
 
 Or if using the compiled executable:
@@ -113,10 +129,11 @@ MEP-Spec-Review.exe
 **GUI Workflow:**
 1. Enter your API key (or let it auto-load from `spec_critic_api_key.txt`)
 2. Click "Browse" to select your specs folder
-3. **Token gauge updates immediately** — shows capacity usage
-4. Review the log to see files detected
+3. **Watch the animated token gauge** — shows capacity usage with smooth fill
+4. **Review the paced log** — entries appear at a readable speed
 5. Click "Run Review"
-6. Report opens automatically when complete
+6. **See the button pulse** while processing
+7. Report opens automatically when complete
 
 ### CLI: Basic Review
 
@@ -239,8 +256,7 @@ spec-review/
 ├── src/
 │   ├── __init__.py      # Package version
 │   ├── cli.py           # CLI entry point (thin shell)
-│   ├── gui_ctk.py       # CustomTkinter GUI (new)
-│   ├── gui.py           # Legacy tkinter GUI (deprecated)
+│   ├── gui.py           # CustomTkinter GUI with animations
 │   ├── pipeline.py      # Core orchestration (single source of truth)
 │   ├── extractor.py     # DOCX text extraction
 │   ├── preprocessor.py  # LEED/placeholder detection (no mutation)
@@ -282,8 +298,9 @@ The executable will be created at `dist/MEP-Spec-Review.exe`.
 1. Place `spec_critic_api_key.txt` in the same folder as the `.exe` (optional, for auto-load)
 2. Run `MEP-Spec-Review.exe`
 3. Select your specs folder
-4. Review token usage in the gauge
+4. Watch the animated token gauge fill
 5. Click "Run Review"
+6. Enjoy the smooth animations while processing
 
 ## Troubleshooting
 
@@ -307,6 +324,17 @@ If you see "Token limit exceeded", split your input specs into smaller batches a
 - For Python 3.12+, ensure tkinter is available: `pip install tk`
 
 ## Changelog
+
+### v0.3.0
+- **Paced log output**: File entries at 100ms, status at 200ms intervals
+- **Log fade-in animation**: Entries fade in smoothly from background
+- **Animated token gauge**: Smooth ease-out fill with color gradient
+- **Button pulse animation**: Gentle pulse while processing
+- **Button glow on complete**: Brief success glow effect
+- **Slower progress bar**: Calmer indeterminate animation
+- **Smooth panel expand/collapse**: Animated height transitions
+- **Output button glow**: Brief highlight on completion
+- **Animation timing constants**: Centralized in ANIM dict for tuning
 
 ### v0.2.0
 - New CustomTkinter GUI with dark theme

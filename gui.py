@@ -1,6 +1,8 @@
 """
 MEP Spec Review - Modern GUI with CustomTkinter
 California K-12 DSA Projects
+
+v0.3.0 - Animation polish, log pacing, smooth transitions
 """
 import os
 import sys
@@ -8,7 +10,8 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Callable
+from collections import deque
 
 import customtkinter as ctk
 
@@ -54,7 +57,9 @@ COLORS = {
     "text_muted": "#707070",      # Slightly brighter
     "accent": "#3B82F6",        # Blue
     "accent_hover": "#2563EB",
+    "accent_glow": "#60A5FA",   # Lighter blue for glow effects
     "success": "#22C55E",
+    "success_glow": "#4ADE80",  # Lighter green for glow
     "warning": "#F59E0B",
     "error": "#EF4444",
     "critical": "#DC2626",
@@ -72,6 +77,20 @@ LOG_COLORS = {
     "step": COLORS["accent"],
     "file": COLORS["text_primary"],
     "muted": COLORS["text_muted"],
+}
+
+# Animation timing (ms)
+ANIM = {
+    "log_file_delay": 100,      # Delay between file log entries
+    "log_status_delay": 200,    # Delay for status log entries
+    "gauge_step": 16,           # ~60fps for gauge animation
+    "gauge_duration": 400,      # Total gauge fill animation time
+    "fade_duration": 200,       # Fade-in duration for log entries
+    "fade_steps": 8,            # Number of fade steps
+    "pulse_interval": 1200,     # Button pulse cycle time
+    "expand_duration": 200,     # Panel expand/collapse time
+    "expand_steps": 10,         # Steps for expand animation
+    "progress_speed": 0.4,      # Indeterminate progress speed (lower = slower)
 }
 
 
@@ -95,18 +114,61 @@ def get_docx_files(folder: Path) -> list[Path]:
     return sorted([p for p in folder.glob("*.docx") if not p.name.startswith("~$")])
 
 
+def lerp(start: float, end: float, t: float) -> float:
+    """Linear interpolation between start and end."""
+    return start + (end - start) * t
+
+
+def ease_out_cubic(t: float) -> float:
+    """Cubic ease-out function for smooth deceleration."""
+    return 1 - pow(1 - t, 3)
+
+
+def ease_in_out_cubic(t: float) -> float:
+    """Cubic ease-in-out for smooth acceleration and deceleration."""
+    if t < 0.5:
+        return 4 * t * t * t
+    else:
+        return 1 - pow(-2 * t + 2, 3) / 2
+
+
+def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    """Convert hex color to RGB tuple."""
+    hex_color = hex_color.lstrip('#')
+    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+
+def rgb_to_hex(r: int, g: int, b: int) -> str:
+    """Convert RGB values to hex color."""
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def blend_colors(color1: str, color2: str, t: float) -> str:
+    """Blend between two hex colors."""
+    r1, g1, b1 = hex_to_rgb(color1)
+    r2, g2, b2 = hex_to_rgb(color2)
+    r = int(lerp(r1, r2, t))
+    g = int(lerp(g1, g2, t))
+    b = int(lerp(b1, b2, t))
+    return rgb_to_hex(r, g, b)
+
+
 # ============================================================================
 # CUSTOM WIDGETS
 # ============================================================================
 
 class TokenGauge(ctk.CTkFrame):
-    """Visual gauge showing token usage against limit."""
+    """Visual gauge showing token usage against limit with animated fill."""
     
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
         
         self.token_count = 0
         self.max_tokens = RECOMMENDED_MAX
+        self._target_pct = 0.0
+        self._current_pct = 0.0
+        self._animating = False
+        self._target_color = COLORS["accent"]
         
         # Header
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -148,38 +210,71 @@ class TokenGauge(ctk.CTkFrame):
         self.status_label.pack(padx=16, pady=(0, 12))
         
     def update_gauge(self, tokens: int, file_count: int = 0):
-        """Update the gauge with new token count."""
+        """Update the gauge with new token count (animated)."""
         self.token_count = tokens
-        pct = min(tokens / self.max_tokens, 1.0)
+        self._target_pct = min(tokens / self.max_tokens, 1.0)
         
-        # Update count label
+        # Update count label immediately
         self.count_label.configure(text=f"{tokens:,} / {self.max_tokens:,}")
         
-        # Update progress bar width
+        # Determine target color and status
+        pct = self._target_pct
+        if pct > 1.0:
+            self._target_color = COLORS["error"]
+            status = f"⚠ EXCEEDS LIMIT — Cannot process. Remove some specs."
+            status_color = COLORS["error"]
+        elif pct > 0.9:
+            self._target_color = COLORS["warning"]
+            status = f"⚠ {pct*100:.0f}% capacity — Approaching limit"
+            status_color = COLORS["warning"]
+        elif pct > 0.7:
+            self._target_color = COLORS["warning"]
+            status = f"✓ {pct*100:.0f}% capacity — {file_count} files ready"
+            status_color = COLORS["text_secondary"]
+        else:
+            self._target_color = COLORS["success"]
+            status = f"✓ {pct*100:.0f}% capacity — {file_count} files ready"
+            status_color = COLORS["text_secondary"]
+        
+        self.status_label.configure(text=status, text_color=status_color)
+        
+        # Start animation if not already running
+        if not self._animating:
+            self._animating = True
+            self._animate_gauge(0)
+    
+    def _animate_gauge(self, step: int):
+        """Animate the gauge fill."""
+        total_steps = ANIM["gauge_duration"] // ANIM["gauge_step"]
+        
+        if step >= total_steps:
+            self._current_pct = self._target_pct
+            self._animating = False
+            self._update_bar_visual()
+            return
+        
+        # Ease-out animation
+        t = ease_out_cubic(step / total_steps)
+        self._current_pct = lerp(0, self._target_pct, t)
+        self._update_bar_visual()
+        
+        self.after(ANIM["gauge_step"], lambda: self._animate_gauge(step + 1))
+    
+    def _update_bar_visual(self):
+        """Update the progress bar width and color."""
         bar_width = self.bar_frame.winfo_width()
         if bar_width > 1:
-            self.progress_bar.configure(width=int(bar_width * pct))
+            self.progress_bar.configure(width=int(bar_width * self._current_pct))
         
-        # Update color based on usage
-        if pct > 1.0:
-            color = COLORS["error"]
-            status = f"⚠ EXCEEDS LIMIT — Cannot process. Remove some specs."
-        elif pct > 0.9:
-            color = COLORS["warning"]
-            status = f"⚠ {pct*100:.0f}% capacity — Approaching limit"
-        elif pct > 0.7:
-            color = COLORS["warning"]
-            status = f"✓ {pct*100:.0f}% capacity — {file_count} files ready"
-        else:
-            color = COLORS["success"]
-            status = f"✓ {pct*100:.0f}% capacity — {file_count} files ready"
-        
-        self.progress_bar.configure(fg_color=color)
-        self.status_label.configure(text=status, text_color=color if pct > 0.9 else COLORS["text_secondary"])
+        # Animate color transition
+        current_color = blend_colors(COLORS["accent"], self._target_color, self._current_pct / max(self._target_pct, 0.01))
+        self.progress_bar.configure(fg_color=current_color)
         
     def reset(self):
         """Reset gauge to initial state."""
         self.token_count = 0
+        self._target_pct = 0.0
+        self._current_pct = 0.0
         self.count_label.configure(text="— / 150,000")
         self.progress_bar.configure(width=0, fg_color=COLORS["accent"])
         self.status_label.configure(
@@ -189,10 +284,14 @@ class TokenGauge(ctk.CTkFrame):
 
 
 class EnhancedLog(ctk.CTkFrame):
-    """Enhanced log display with colored entries and timestamps."""
+    """Enhanced log display with colored entries, timestamps, and paced output."""
     
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
+        
+        # Log queue for paced output
+        self._log_queue: deque = deque()
+        self._processing_queue = False
         
         # Header
         header = ctk.CTkFrame(self, fg_color="transparent", height=36)
@@ -229,8 +328,27 @@ class EnhancedLog(ctk.CTkFrame):
         
         self.entries: list[ctk.CTkLabel] = []
         
-    def log(self, message: str, level: str = "info", timestamp: bool = True):
-        """Add a log entry with optional timestamp and color."""
+    def _queue_log(self, message: str, level: str, timestamp: bool, delay: int):
+        """Add a log entry to the queue."""
+        self._log_queue.append((message, level, timestamp, delay))
+        if not self._processing_queue:
+            self._process_queue()
+    
+    def _process_queue(self):
+        """Process queued log entries with pacing."""
+        if not self._log_queue:
+            self._processing_queue = False
+            return
+        
+        self._processing_queue = True
+        message, level, timestamp, delay = self._log_queue.popleft()
+        self._create_log_entry(message, level, timestamp)
+        
+        # Schedule next entry
+        self.after(delay, self._process_queue)
+    
+    def _create_log_entry(self, message: str, level: str, timestamp: bool):
+        """Create and animate a log entry."""
         color = LOG_COLORS.get(level, COLORS["text_secondary"])
         
         # Build display text
@@ -251,44 +369,72 @@ class EnhancedLog(ctk.CTkFrame):
         entry.pack(fill="x", anchor="w", pady=1)
         self.entries.append(entry)
         
+        # Fade-in animation
+        self._fade_in_entry(entry, color, 0)
+        
         # Auto-scroll to bottom
         self.log_frame._parent_canvas.yview_moveto(1.0)
+    
+    def _fade_in_entry(self, entry: ctk.CTkLabel, target_color: str, step: int):
+        """Animate entry fade-in."""
+        if step >= ANIM["fade_steps"]:
+            entry.configure(text_color=target_color)
+            return
+        
+        t = step / ANIM["fade_steps"]
+        # Fade from muted to target color
+        current_color = blend_colors(COLORS["bg_input"], target_color, ease_out_cubic(t))
+        entry.configure(text_color=current_color)
+        
+        delay = ANIM["fade_duration"] // ANIM["fade_steps"]
+        self.after(delay, lambda: self._fade_in_entry(entry, target_color, step + 1))
+        
+    def log(self, message: str, level: str = "info", timestamp: bool = True, paced: bool = True):
+        """Add a log entry with optional timestamp and color."""
+        delay = ANIM["log_status_delay"] if paced else 0
+        if paced:
+            self._queue_log(message, level, timestamp, delay)
+        else:
+            self._create_log_entry(message, level, timestamp)
         
     def clear(self):
         """Clear all log entries."""
+        self._log_queue.clear()
         for entry in self.entries:
             entry.destroy()
         self.entries.clear()
         
     def log_step(self, message: str):
-        """Log a major step."""
-        self.log(f"▸ {message}", level="step")
+        """Log a major step (paced)."""
+        self._queue_log(f"▸ {message}", "step", True, ANIM["log_status_delay"])
         
     def log_success(self, message: str):
-        """Log a success message."""
-        self.log(f"✓ {message}", level="success")
+        """Log a success message (paced)."""
+        self._queue_log(f"✓ {message}", "success", True, ANIM["log_status_delay"])
         
     def log_warning(self, message: str):
-        """Log a warning."""
-        self.log(f"⚠ {message}", level="warning")
+        """Log a warning (paced)."""
+        self._queue_log(f"⚠ {message}", "warning", True, ANIM["log_status_delay"])
         
     def log_error(self, message: str):
-        """Log an error."""
-        self.log(f"✗ {message}", level="error")
+        """Log an error (paced)."""
+        self._queue_log(f"✗ {message}", "error", True, ANIM["log_status_delay"])
         
     def log_file(self, filename: str):
-        """Log a file being processed."""
-        self.log(f"  → {filename}", level="file", timestamp=False)
+        """Log a file being processed (faster pacing)."""
+        self._queue_log(f"  → {filename}", "file", False, ANIM["log_file_delay"])
 
 
 class ThinkingPanel(ctk.CTkFrame):
-    """Collapsible panel to display Claude's reasoning process."""
+    """Collapsible panel to display Claude's reasoning process with smooth animation."""
     
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
         
         self._expanded = False
         self._thinking_text = ""
+        self._animating = False
+        self._target_height = 0
         
         # Header (always visible, clickable to expand/collapse)
         self.header = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2")
@@ -327,8 +473,13 @@ class ThinkingPanel(ctk.CTkFrame):
         self.preview_label.pack(side="right", fill="x", expand=True, padx=(16, 0))
         self.preview_label.bind("<Button-1>", self._toggle)
         
-        # Content area (hidden by default)
-        self.content_frame = ctk.CTkFrame(self, fg_color=COLORS["bg_input"], corner_radius=4)
+        # Content container (for animation)
+        self.content_container = ctk.CTkFrame(self, fg_color="transparent", height=0)
+        self.content_container.pack_propagate(False)
+        
+        # Content area
+        self.content_frame = ctk.CTkFrame(self.content_container, fg_color=COLORS["bg_input"], corner_radius=4)
+        self.content_frame.pack(fill="both", expand=True, padx=16, pady=(0, 12))
         
         self.content_text = ctk.CTkTextbox(
             self.content_frame,
@@ -345,25 +496,62 @@ class ThinkingPanel(ctk.CTkFrame):
         self.pack_forget()
         
     def _toggle(self, event=None):
-        """Toggle expanded/collapsed state."""
+        """Toggle expanded/collapsed state with animation."""
+        if self._animating:
+            return
         if self._expanded:
-            self.collapse()
+            self._animate_collapse()
         else:
-            self.expand()
+            self._animate_expand()
             
-    def expand(self):
-        """Expand to show full thinking text."""
+    def _animate_expand(self):
+        """Animate expanding the content."""
+        self._animating = True
         self._expanded = True
         self.expand_label.configure(text="▼")
-        self.content_frame.pack(fill="both", expand=True, padx=16, pady=(0, 12))
         self.preview_label.configure(text="")
+        
+        # Show container and animate height
+        self.content_container.pack(fill="x")
+        self._target_height = 180  # Target expanded height
+        self._animate_height(0, 0, self._target_height, True)
+    
+    def _animate_collapse(self):
+        """Animate collapsing the content."""
+        self._animating = True
+        self._expanded = False
+        self.expand_label.configure(text="▶")
+        
+        current_height = self.content_container.winfo_height()
+        self._animate_height(0, current_height, 0, False)
+    
+    def _animate_height(self, step: int, start_height: int, end_height: int, expanding: bool):
+        """Animate height change."""
+        if step >= ANIM["expand_steps"]:
+            if expanding:
+                self.content_container.configure(height=end_height)
+            else:
+                self.content_container.pack_forget()
+                self._update_preview()
+            self._animating = False
+            return
+        
+        t = ease_in_out_cubic(step / ANIM["expand_steps"])
+        current_height = int(lerp(start_height, end_height, t))
+        self.content_container.configure(height=max(1, current_height))
+        
+        delay = ANIM["expand_duration"] // ANIM["expand_steps"]
+        self.after(delay, lambda: self._animate_height(step + 1, start_height, end_height, expanding))
+    
+    def expand(self):
+        """Expand to show full thinking text."""
+        if not self._expanded and not self._animating:
+            self._animate_expand()
         
     def collapse(self):
         """Collapse to show only preview."""
-        self._expanded = False
-        self.expand_label.configure(text="▶")
-        self.content_frame.pack_forget()
-        self._update_preview()
+        if self._expanded and not self._animating:
+            self._animate_collapse()
         
     def _update_preview(self):
         """Update the preview text shown when collapsed."""
@@ -388,7 +576,11 @@ class ThinkingPanel(ctk.CTkFrame):
             self.content_text.configure(state="disabled")
             
             # Show panel collapsed by default
+            self._expanded = False
+            self.expand_label.configure(text="▶")
+            self.content_container.pack_forget()
             self._update_preview()
+            
             if before_widget:
                 self.pack(fill="x", pady=(16, 0), before=before_widget)
             else:
@@ -401,8 +593,9 @@ class ThinkingPanel(ctk.CTkFrame):
         self.pack_forget()
         self._thinking_text = ""
         self._expanded = False
+        self._animating = False
         self.expand_label.configure(text="▶")
-        self.content_frame.pack_forget()
+        self.content_container.pack_forget()
         
     def clear(self):
         """Clear content and hide."""
@@ -410,7 +603,7 @@ class ThinkingPanel(ctk.CTkFrame):
 
 
 class AnimatedButton(ctk.CTkButton):
-    """Button with state-based styling for run/processing/complete states."""
+    """Button with animated states for run/processing/complete."""
     
     def __init__(self, master, **kwargs):
         self.default_text = kwargs.pop("text", "Run")
@@ -425,19 +618,48 @@ class AnimatedButton(ctk.CTkButton):
             **kwargs
         )
         self._state = "ready"
+        self._pulse_active = False
+        self._pulse_step = 0
+        self._glow_active = False
         
     def set_processing(self):
-        """Set button to processing state."""
+        """Set button to processing state with pulse animation."""
         self._state = "processing"
         self.configure(
             text="Processing...",
-            fg_color=COLORS["bg_input"],
-            hover_color=COLORS["bg_input"],
             state="disabled"
         )
+        self._start_pulse()
+        
+    def _start_pulse(self):
+        """Start the pulse animation."""
+        self._pulse_active = True
+        self._pulse_step = 0
+        self._animate_pulse()
+    
+    def _animate_pulse(self):
+        """Animate button pulse during processing."""
+        if not self._pulse_active or self._state != "processing":
+            return
+        
+        # Pulse between bg_input and a slightly lighter shade
+        steps_per_cycle = ANIM["pulse_interval"] // 16
+        t = self._pulse_step / steps_per_cycle
+        
+        # Sin wave for smooth pulsing (0 to 1 to 0)
+        import math
+        pulse_t = (math.sin(t * math.pi * 2) + 1) / 2
+        
+        color = blend_colors(COLORS["bg_input"], COLORS["border"], pulse_t * 0.5)
+        self.configure(fg_color=color, hover_color=color)
+        
+        self._pulse_step = (self._pulse_step + 1) % steps_per_cycle
+        self.after(16, self._animate_pulse)
         
     def set_ready(self):
         """Reset button to ready state."""
+        self._pulse_active = False
+        self._glow_active = False
         self._state = "ready"
         self.configure(
             text=self.default_text,
@@ -447,7 +669,8 @@ class AnimatedButton(ctk.CTkButton):
         )
         
     def set_complete(self):
-        """Set button to complete state (brief success indicator)."""
+        """Set button to complete state with glow effect."""
+        self._pulse_active = False
         self._state = "complete"
         self.configure(
             text="✓ Complete",
@@ -455,6 +678,75 @@ class AnimatedButton(ctk.CTkButton):
             hover_color=COLORS["success"],
             state="disabled"
         )
+        # Start glow animation
+        self._start_glow()
+    
+    def _start_glow(self):
+        """Start the completion glow animation."""
+        self._glow_active = True
+        self._animate_glow(0)
+    
+    def _animate_glow(self, step: int):
+        """Animate a brief glow on completion."""
+        if not self._glow_active or self._state != "complete":
+            return
+        
+        # Quick glow then settle
+        total_steps = 15
+        if step >= total_steps:
+            self.configure(fg_color=COLORS["success"])
+            self._glow_active = False
+            return
+        
+        t = step / total_steps
+        # Glow up then down
+        if t < 0.3:
+            glow_t = t / 0.3
+            color = blend_colors(COLORS["success"], COLORS["success_glow"], glow_t)
+        else:
+            glow_t = (t - 0.3) / 0.7
+            color = blend_colors(COLORS["success_glow"], COLORS["success"], glow_t)
+        
+        self.configure(fg_color=color, hover_color=color)
+        self.after(20, lambda: self._animate_glow(step + 1))
+
+
+class SlowProgressBar(ctk.CTkProgressBar):
+    """Progress bar with slower indeterminate animation."""
+    
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self._indeterminate_running = False
+        self._indeterminate_pos = 0.0
+        self._indeterminate_direction = 1
+    
+    def start(self):
+        """Start indeterminate animation (slower than default)."""
+        self._indeterminate_running = True
+        self._animate_indeterminate()
+    
+    def stop(self):
+        """Stop indeterminate animation."""
+        self._indeterminate_running = False
+    
+    def _animate_indeterminate(self):
+        """Custom slower indeterminate animation."""
+        if not self._indeterminate_running:
+            return
+        
+        # Move position
+        self._indeterminate_pos += ANIM["progress_speed"] * self._indeterminate_direction * 0.02
+        
+        # Bounce at edges
+        if self._indeterminate_pos >= 1.0:
+            self._indeterminate_pos = 1.0
+            self._indeterminate_direction = -1
+        elif self._indeterminate_pos <= 0.0:
+            self._indeterminate_pos = 0.0
+            self._indeterminate_direction = 1
+        
+        self.set(self._indeterminate_pos)
+        self.after(16, self._animate_indeterminate)
 
 
 # ============================================================================
@@ -510,8 +802,8 @@ class SpecReviewApp(ctk.CTk):
         )
         self.run_button.pack(fill="x", pady=(16, 0))
         
-        # Progress bar (hidden until processing)
-        self.progress_bar = ctk.CTkProgressBar(
+        # Progress bar (hidden until processing) - using slow version
+        self.progress_bar = SlowProgressBar(
             container,
             height=4,
             corner_radius=2,
@@ -808,13 +1100,12 @@ class SpecReviewApp(ctk.CTk):
         self.thinking_panel.clear()
         
         # Add separator in log for new run
-        self.log.log("─" * 40, level="muted", timestamp=False)
+        self.log.log("─" * 40, level="muted", timestamp=False, paced=False)
         
         # Update UI
         self.run_button.set_processing()
         self.progress_bar.pack(fill="x", pady=(8, 0), before=self.log)
         self.progress_bar.set(0)
-        self.progress_bar.configure(mode="indeterminate")
         self.progress_bar.start()
         self.open_folder_btn.configure(state="disabled")
         
@@ -862,7 +1153,6 @@ class SpecReviewApp(ctk.CTk):
     def _on_review_complete(self, result):
         """Handle successful review completion."""
         self.progress_bar.stop()
-        self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(1.0)
         
         self.log.log_success("Review complete!")
@@ -884,14 +1174,38 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.set_complete()
         self.open_folder_btn.configure(state="normal")
         
+        # Brief glow effect on output button
+        self._glow_output_button()
+        
         # Reset button after delay
-        self.after(2000, self._reset_ui)
+        self.after(2500, self._reset_ui)
         
         # Auto-open report
         try:
             os.startfile(result.report_docx)
         except Exception:
             pass
+    
+    def _glow_output_button(self):
+        """Brief glow effect on the output folder button."""
+        original_border = COLORS["border"]
+        glow_color = COLORS["success"]
+        
+        def animate(step):
+            if step >= 10:
+                self.open_folder_btn.configure(border_color=original_border)
+                return
+            
+            t = step / 10
+            if t < 0.3:
+                color = blend_colors(original_border, glow_color, t / 0.3)
+            else:
+                color = blend_colors(glow_color, original_border, (t - 0.3) / 0.7)
+            
+            self.open_folder_btn.configure(border_color=color)
+            self.after(30, lambda: animate(step + 1))
+        
+        animate(0)
             
     def _on_review_error(self, error_msg: str):
         """Handle review error."""
