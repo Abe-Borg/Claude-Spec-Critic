@@ -281,6 +281,134 @@ class EnhancedLog(ctk.CTkFrame):
         self.log(f"  → {filename}", level="file", timestamp=False)
 
 
+class ThinkingPanel(ctk.CTkFrame):
+    """Collapsible panel to display Claude's reasoning process."""
+    
+    def __init__(self, master, **kwargs):
+        super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
+        
+        self._expanded = False
+        self._thinking_text = ""
+        
+        # Header (always visible, clickable to expand/collapse)
+        self.header = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2")
+        self.header.pack(fill="x", padx=16, pady=12)
+        self.header.bind("<Button-1>", self._toggle)
+        
+        # Expand/collapse indicator
+        self.expand_label = ctk.CTkLabel(
+            self.header,
+            text="▶",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["text_muted"],
+            width=20
+        )
+        self.expand_label.pack(side="left")
+        self.expand_label.bind("<Button-1>", self._toggle)
+        
+        # Title
+        self.title_label = ctk.CTkLabel(
+            self.header,
+            text="CLAUDE'S ANALYSIS",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLORS["text_muted"]
+        )
+        self.title_label.pack(side="left", padx=(4, 0))
+        self.title_label.bind("<Button-1>", self._toggle)
+        
+        # Preview (shown when collapsed)
+        self.preview_label = ctk.CTkLabel(
+            self.header,
+            text="",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLORS["text_muted"],
+            anchor="e"
+        )
+        self.preview_label.pack(side="right", fill="x", expand=True, padx=(16, 0))
+        self.preview_label.bind("<Button-1>", self._toggle)
+        
+        # Content area (hidden by default)
+        self.content_frame = ctk.CTkFrame(self, fg_color=COLORS["bg_input"], corner_radius=4)
+        
+        self.content_text = ctk.CTkTextbox(
+            self.content_frame,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_secondary"],
+            fg_color="transparent",
+            wrap="word",
+            height=150,
+            activate_scrollbars=True
+        )
+        self.content_text.pack(fill="both", expand=True, padx=12, pady=12)
+        
+        # Initially hidden
+        self.pack_forget()
+        
+    def _toggle(self, event=None):
+        """Toggle expanded/collapsed state."""
+        if self._expanded:
+            self.collapse()
+        else:
+            self.expand()
+            
+    def expand(self):
+        """Expand to show full thinking text."""
+        self._expanded = True
+        self.expand_label.configure(text="▼")
+        self.content_frame.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        self.preview_label.configure(text="")
+        
+    def collapse(self):
+        """Collapse to show only preview."""
+        self._expanded = False
+        self.expand_label.configure(text="▶")
+        self.content_frame.pack_forget()
+        self._update_preview()
+        
+    def _update_preview(self):
+        """Update the preview text shown when collapsed."""
+        if self._thinking_text:
+            # Show first ~60 chars as preview
+            preview = self._thinking_text[:80].replace("\n", " ").strip()
+            if len(self._thinking_text) > 80:
+                preview += "..."
+            self.preview_label.configure(text=preview, text_color=COLORS["text_muted"])
+        else:
+            self.preview_label.configure(text="")
+            
+    def set_thinking(self, text: str, before_widget=None):
+        """Set the thinking text and show the panel."""
+        self._thinking_text = text.strip()
+        
+        if self._thinking_text:
+            # Update content
+            self.content_text.configure(state="normal")
+            self.content_text.delete("1.0", "end")
+            self.content_text.insert("1.0", self._thinking_text)
+            self.content_text.configure(state="disabled")
+            
+            # Show panel collapsed by default
+            self._update_preview()
+            if before_widget:
+                self.pack(fill="x", pady=(16, 0), before=before_widget)
+            else:
+                self.pack(fill="x", pady=(16, 0))
+        else:
+            self.hide()
+            
+    def hide(self):
+        """Hide the panel entirely."""
+        self.pack_forget()
+        self._thinking_text = ""
+        self._expanded = False
+        self.expand_label.configure(text="▶")
+        self.content_frame.pack_forget()
+        
+    def clear(self):
+        """Clear content and hide."""
+        self.hide()
+
+
 class AnimatedButton(ctk.CTkButton):
     """Button with state-based styling for run/processing/complete states."""
     
@@ -392,6 +520,10 @@ class SpecReviewApp(ctk.CTk):
         )
         self.progress_bar.set(0)
         # Will be packed when processing starts
+        
+        # Thinking panel (hidden until review complete)
+        self.thinking_panel = ThinkingPanel(container)
+        # Note: pack is called dynamically when thinking is available
         
         # Log area
         self.log = EnhancedLog(container)
@@ -674,6 +806,7 @@ class SpecReviewApp(ctk.CTk):
             
         self.is_processing = True
         self.log.clear()
+        self.thinking_panel.clear()
         
         # Update UI
         self.run_button.set_processing()
@@ -741,6 +874,10 @@ class SpecReviewApp(ctk.CTk):
                 f"{findings.medium_count} medium, {findings.gripe_count} gripes",
                 level="info"
             )
+            
+            # Display Claude's thinking if present
+            if findings.thinking:
+                self.thinking_panel.set_thinking(findings.thinking, before_widget=self.log)
             
         self.run_button.set_complete()
         self.open_folder_btn.configure(state="normal")

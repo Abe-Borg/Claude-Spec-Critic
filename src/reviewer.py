@@ -33,6 +33,7 @@ class ReviewResult:
     """Result of a specification review."""
     findings: list[Finding] = field(default_factory=list)
     raw_response: str = ""
+    thinking: str = ""  # Claude's reasoning before the JSON output
     model: str = MODEL_OPUS_45
     input_tokens: int = 0
     output_tokens: int = 0
@@ -67,20 +68,29 @@ def _get_api_key() -> str:
     return key
 
 
-def _extract_json_array(text: str) -> list:
-    """Extract the first top-level JSON array from a response string."""
+def _extract_json_array(text: str) -> tuple[list, str]:
+    """
+    Extract the first top-level JSON array from a response string.
+    
+    Returns:
+        Tuple of (parsed JSON list, thinking text before the JSON)
+    """
     start_idx = text.find("[")
     end_idx = text.rfind("]")
+    
     if start_idx == -1 or end_idx == -1:
         if "no issues" in text.lower() or text.strip() == "[]":
-            return []
+            return [], text.strip()
         raise ValueError(f"Could not find JSON array in response: {text[:200]}...")
 
+    # Capture any text before the JSON array as "thinking"
+    thinking = text[:start_idx].strip()
+    
     json_str = text[start_idx:end_idx + 1]
     data = json.loads(json_str)
     if not isinstance(data, list):
         raise ValueError(f"Expected JSON array, got: {type(data)}")
-    return data
+    return data, thinking
 
 
 def _parse_findings(data: list) -> list[Finding]:
@@ -157,8 +167,9 @@ def review_specs(
             except Exception:
                 pass
 
-            data = _extract_json_array(response_text)
+            data, thinking = _extract_json_array(response_text)
             result.findings = _parse_findings(data)
+            result.thinking = thinking
             result.elapsed_seconds = time.time() - start_time
             return result
 
