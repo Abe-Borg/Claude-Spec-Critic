@@ -1,13 +1,8 @@
-"""
-Claude API client for specification review.
-
-Single-model design:
-- Always uses Opus 4.5 (no model selection in this repo).
-"""
+"""Claude API client for specification review (single model: Opus 4.5)."""
 from __future__ import annotations
 
-import json
 import os
+import json
 import time
 from dataclasses import dataclass, field
 
@@ -24,10 +19,13 @@ MODEL_OPUS_45 = "claude-opus-4-5-20251101"
 class Finding:
     """A single review finding."""
     severity: str
-    file: str
-    location: str
+    fileName: str
+    section: str
     issue: str
-    recommendation: str
+    actionType: str
+    existingText: str | None
+    replacementText: str | None
+    codeReference: str | None
 
 
 @dataclass
@@ -62,51 +60,44 @@ class ReviewResult:
         return len(self.findings)
 
 
-def get_api_key() -> str:
+def _get_api_key() -> str:
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise ValueError("ANTHROPIC_API_KEY environment variable not set")
     return key
 
 
-def _extract_json_object(text: str) -> str:
-    """
-    Extract the first top-level JSON object from a response.
-    Prompts demand JSON-only, but this makes us more resilient.
-    """
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("No JSON object found in model response")
-    return text[start:end + 1]
+def _extract_json_array(text: str) -> list:
+    """Extract the first top-level JSON array from a response string."""
+    start_idx = text.find("[")
+    end_idx = text.rfind("]")
+    if start_idx == -1 or end_idx == -1:
+        if "no issues" in text.lower() or text.strip() == "[]":
+            return []
+        raise ValueError(f"Could not find JSON array in response: {text[:200]}...")
+
+    json_str = text[start_idx:end_idx + 1]
+    data = json.loads(json_str)
+    if not isinstance(data, list):
+        raise ValueError(f"Expected JSON array, got: {type(data)}")
+    return data
 
 
-def _parse_findings(response_text: str) -> list[Finding]:
-    obj_text = _extract_json_object(response_text)
-    data = json.loads(obj_text)
-
-    findings_raw = data.get("findings", [])
+def _parse_findings(data: list) -> list[Finding]:
     findings: list[Finding] = []
-    for f in findings_raw:
-        if not isinstance(f, dict):
+    for item in data:
+        if not isinstance(item, dict):
             continue
-        # Best-effort field extraction
-        severity = str(f.get("severity", "")).strip()
-        file = str(f.get("file", "")).strip()
-        location = str(f.get("location", "")).strip()
-        issue = str(f.get("issue", "")).strip()
-        recommendation = str(f.get("recommendation", "")).strip()
-
-        if not severity or not issue:
-            continue
-
         findings.append(
             Finding(
-                severity=severity,
-                file=file,
-                location=location,
-                issue=issue,
-                recommendation=recommendation,
+                severity=str(item.get("severity", "")).strip(),
+                fileName=str(item.get("fileName", "")).strip(),
+                section=str(item.get("section", "")).strip(),
+                issue=str(item.get("issue", "")).strip(),
+                actionType=str(item.get("actionType", "")).strip(),
+                existingText=item.get("existingText", None),
+                replacementText=item.get("replacementText", None),
+                codeReference=item.get("codeReference", None),
             )
         )
     return findings
@@ -120,19 +111,17 @@ def review_specs(
 ) -> ReviewResult:
     """
     Send specifications to Claude for review (Opus 4.5 only).
+    Prompts require a JSON array response.
     """
     start_time = time.time()
     result = ReviewResult(model=MODEL_OPUS_45)
 
-    client = Anthropic(api_key=get_api_key())
+    client = Anthropic(api_key=_get_api_key())
 
     system_prompt = get_system_prompt()
     user_message = get_user_message(combined_content)
 
-    # Tune this if you want shorter/longer outputs
-    max_tokens = 32768
-
-    last_error: str | None = None
+    max_tokens = 32768  # adjust if desired
 
     for attempt in range(max_retries):
         try:
@@ -146,10 +135,9 @@ def review_specs(
                 messages=[{"role": "user", "content": user_message}],
             )
 
-            # Anthropic SDK response format: content is a list of blocks.
+            # Response text extraction (SDK versions vary)
             response_text = ""
             try:
-                # Typical: resp.content[0].text
                 if resp.content and hasattr(resp.content[0], "text"):
                     response_text = resp.content[0].text or ""
                 else:
@@ -159,7 +147,7 @@ def review_specs(
 
             result.raw_response = response_text
 
-            # Token usage (best-effort; varies by SDK version)
+            # Token usage (best effort)
             try:
                 usage = getattr(resp, "usage", None)
                 if usage:
@@ -168,24 +156,21 @@ def review_specs(
             except Exception:
                 pass
 
-            # Parse JSON findings
-            result.findings = _parse_findings(response_text)
-
+            data = _extract_json_array(response_text)
+            result.findings = _parse_findings(data)
             result.elapsed_seconds = time.time() - start_time
             return result
 
         except RateLimitError as e:
-            last_error = f"Rate limit: {e}"
-            wait_time = 2 ** attempt * 10  # 10s, 20s, 40s...
+            wait_time = 2 ** attempt * 10
             if verbose:
-                print(f"  {last_error}. Waiting {wait_time}s...")
+                print(f"Rate limit: {e}. Waiting {wait_time}s...")
             time.sleep(wait_time)
 
         except APIConnectionError as e:
-            last_error = f"Connection error: {e}"
-            wait_time = 2 ** attempt * 5  # 5s, 10s, 20s...
+            wait_time = 2 ** attempt * 5
             if verbose:
-                print(f"  {last_error}. Waiting {wait_time}s...")
+                print(f"Connection error: {e}. Waiting {wait_time}s...")
             time.sleep(wait_time)
 
         except APIError as e:
@@ -194,11 +179,10 @@ def review_specs(
             return result
 
         except Exception as e:
-            # Parsing or unexpected failures
             result.error = f"Error: {e}"
             result.elapsed_seconds = time.time() - start_time
             return result
 
-    result.error = f"Failed after {max_retries} attempts. Last error: {last_error}"
+    result.error = f"Failed after {max_retries} attempts."
     result.elapsed_seconds = time.time() - start_time
     return result

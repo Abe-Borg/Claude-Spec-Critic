@@ -14,12 +14,9 @@ else:
     base_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, base_path)
 
-from src.extractor import extract_text_from_docx
-from src.preprocessor import preprocess_spec
-from src.tokenizer import analyze_token_usage, RECOMMENDED_MAX
-from src.prompts import get_system_prompt
-from src.reviewer import review_specs, MODEL_OPUS_45
-from src.report import generate_report
+from src.pipeline import run_review
+from src.reviewer import MODEL_OPUS_45
+
 
 
 class SpecReviewApp:
@@ -33,6 +30,9 @@ class SpecReviewApp:
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop" / "spec-review-output"))
         self.api_key = tk.StringVar(value=os.environ.get("ANTHROPIC_API_KEY", ""))
+        self.verbose = tk.BooleanVar(value=False)
+        self.dry_run = tk.BooleanVar(value=False)
+
         
         self.create_widgets()
         
@@ -113,7 +113,7 @@ class SpecReviewApp:
             self.log(f"Input folder: {folder}")
             
             # Count docx files
-            docx_files = list(Path(folder).glob("*.docx"))
+            docx_files = [p for p in Path(folder).glob("*.docx") if not p.name.startswith("~$")]
             self.log(f"Found {len(docx_files)} .docx file(s)")
     
     def browse_output(self):
@@ -187,147 +187,46 @@ class SpecReviewApp:
     def do_review(self):
         input_path = Path(self.input_dir.get())
         output_base = Path(self.output_dir.get())
-        
-        # Create timestamped output folder
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        run_dir = output_base / f"review_{timestamp}"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.last_output_path = run_dir
-        
-        self.root.after(0, lambda: self.set_status("Loading specification files..."))
-        self.root.after(0, lambda: self.log(f"Output folder: {run_dir}"))
-        
-        # Load files
-        docx_files = sorted(input_path.glob("*.docx"))
-        specs = []
-        
-        for docx_file in docx_files:
-            self.root.after(0, lambda f=docx_file: self.log(f"Loading: {f.name}"))
-            spec = extract_text_from_docx(docx_file)
-            specs.append(spec)
-        
-        self.root.after(0, lambda: self.log(f"\nLoaded {len(specs)} file(s)"))
-        
-        # Preprocess
-        self.root.after(0, lambda: self.set_status("Preprocessing specifications..."))
-        
-        preprocess_results = []
-        all_leed_alerts = []
-        all_placeholder_alerts = []
-        
-        for spec in specs:
-            result = preprocess_spec(spec.content, spec.filename)
-            preprocess_results.append(result)
-            all_leed_alerts.extend(result.leed_alerts)
-            all_placeholder_alerts.extend(result.placeholder_alerts)
-            
-            
-        
-        # Log alerts
-        if all_leed_alerts:
-            self.root.after(0, lambda: self.log(f"\n⚠ Found {len(all_leed_alerts)} LEED reference(s)"))
-        if all_placeholder_alerts:
-            self.root.after(0, lambda: self.log(f"⚠ Found {len(all_placeholder_alerts)} placeholder(s)"))
-        
-        # Token analysis
-        self.root.after(0, lambda: self.set_status("Analyzing token usage..."))
-        
-        system_prompt = get_system_prompt()
-        spec_contents = [(spec.filename, spec.content) for spec in specs]
-        token_summary = analyze_token_usage(spec_contents, system_prompt)
-        
-        self.root.after(0, lambda: self.log(f"\nToken usage: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}"))
-        
-        if not token_summary.within_limit:
-            raise Exception(f"Token limit exceeded: {token_summary.total_tokens:,} > {RECOMMENDED_MAX:,}")
-        
-        # Determine model 
-        model_name = "Opus 4.5"
-        self.root.after(0, lambda: self.set_status(f"Sending to Claude API ({model_name})..."))
-        self.root.after(0, lambda: self.log(f"\nCalling {model_name}..."))
-        self.root.after(0, lambda: self.log("This may take a few minutes. Please wait..."))
-        
-        # Build combined content
-        combined_content = "\n\n".join([
-            f"===== FILE: {spec.filename} =====\n{spec.content}"
-            for spec, result in zip(specs, preprocess_results)
-        ])
-        
-        # Call API
-        review_result = review_specs(combined_content, verbose=self.verbose.get())
-        
-        if review_result.error:
-            raise Exception(review_result.error)
-        
-        self.root.after(0, lambda: self.log(f"\nReview complete! ({review_result.elapsed_seconds:.1f}s)"))
-        self.root.after(0, lambda: self.log(f"Tokens: {review_result.input_tokens:,} in → {review_result.output_tokens:,} out"))
-        
-        # Log findings summary
-        self.root.after(0, lambda: self.log(f"\nFindings:"))
-        self.root.after(0, lambda: self.log(f"  CRITICAL: {review_result.critical_count}"))
-        self.root.after(0, lambda: self.log(f"  HIGH: {review_result.high_count}"))
-        self.root.after(0, lambda: self.log(f"  MEDIUM: {review_result.medium_count}"))
-        self.root.after(0, lambda: self.log(f"  GRIPES: {review_result.gripes_count}"))
-        self.root.after(0, lambda: self.log(f"  TOTAL: {review_result.total_count}"))
-        
-        # Generate report
-        self.root.after(0, lambda: self.set_status("Generating report..."))
-        
-        leed_alerts_dicts = [{"filename": a['filename'], "line": a['line'], "text": a['text']} for a in all_leed_alerts]
-        placeholder_alerts_dicts = [{"filename": a['filename'], "line": a['line'], "text": a['text']} for a in all_placeholder_alerts]
-        
-        report_path = generate_report(
-            review_result=review_result,
-            files_reviewed=[spec.filename for spec in specs],
-            leed_alerts=leed_alerts_dicts,
-            placeholder_alerts=placeholder_alerts_dicts,
-            output_path=run_dir
+
+        self.root.after(0, lambda: self.set_status(f"Running (model: {MODEL_OPUS_45})..."))
+        self.root.after(0, lambda: self.log(f"Model: {MODEL_OPUS_45}"))
+        self.root.after(0, lambda: self.log(f"Input folder: {input_path}"))
+        self.root.after(0, lambda: self.log(f"Output base: {output_base}\n"))
+
+        def log(msg: str) -> None:
+            self.root.after(0, lambda m=msg: self.log(m))
+
+        def prog(pct: float, msg: str) -> None:
+            # Your progress bar is indeterminate; we’ll just update status + log milestones.
+            self.root.after(0, lambda m=msg: self.set_status(m))
+            # If you ever switch to determinate, you can bind pct to a DoubleVar and set it here.
+
+        out = run_review(
+            input_dir=input_path,
+            output_dir=output_base,
+            dry_run=self.dry_run.get(),
+            verbose=self.verbose.get(),
+            log=log,
+            progress=prog,
         )
-        
-        # Save JSON too
-        import json
-        json_path = run_dir / "findings.json"
-        findings_data = {
-            "metadata": {
-                "timestamp": datetime.now().isoformat(),
-                "model": review_result.model,
-                "input_tokens": review_result.input_tokens,
-                "output_tokens": review_result.output_tokens,
-                "elapsed_seconds": review_result.elapsed_seconds,
-                "files_reviewed": [spec.filename for spec in specs],
-            },
-            "summary": {
-                "critical": review_result.critical_count,
-                "high": review_result.high_count,
-                "medium": review_result.medium_count,
-                "gripes": review_result.gripes_count,
-                "total": review_result.total_count,
-            },
-            "findings": [
-                {
-                    "severity": f.severity,
-                    "fileName": f.fileName,
-                    "section": f.section,
-                    "issue": f.issue,
-                    "actionType": f.actionType,
-                    "existingText": f.existingText,
-                    "replacementText": f.replacementText,
-                    "codeReference": f.codeReference,
-                }
-                for f in review_result.findings
-            ]
-        }
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(findings_data, f, indent=2, ensure_ascii=False)
-        
-        self.root.after(0, lambda: self.log(f"\n✓ Report saved: {report_path.name}"))
-        self.root.after(0, lambda: self.log(f"✓ JSON saved: {json_path.name}"))
+
+        self.last_output_path = out.run_dir
+
+        self.root.after(0, lambda: self.log("\n✓ Complete"))
+        self.root.after(0, lambda: self.log(f"Run folder: {out.run_dir}"))
+        self.root.after(0, lambda: self.log(f"Report: {out.report_docx.name}"))
+        self.root.after(0, lambda: self.log(f"Findings JSON: {out.findings_json.name}"))
+        self.root.after(0, lambda: self.log(f"Raw response: {out.raw_response_txt.name}"))
+
         self.root.after(0, lambda: self.set_status("Done! Click 'Open Output Folder' to view results."))
-        
-        # Open report automatically
-        self.root.after(0, lambda: os.startfile(report_path))
-        
+
+        # Auto-open report (skip on dry-run where report still exists but may be empty)
+        try:
+            self.root.after(0, lambda p=out.report_docx: os.startfile(p))
+        except Exception:
+            pass
+
+
     def on_error(self, message):
         self.log(f"\n❌ ERROR: {message}")
         self.set_status("Error occurred")

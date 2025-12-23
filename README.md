@@ -100,7 +100,7 @@ spec-review review -i ./specs -o ./output --dry-run --verbose
 | `--dry-run` | | Process files but do not call API |
 
 
-### Model Options
+### Model
 **Opus 4.5**: Higher quality analysis, better at catching subtle issues.
 - Max output: 32,768 tokens
 
@@ -114,9 +114,14 @@ Each run creates a timestamped folder:
 
 ```
 output/
-└── review_2024-01-15_143022/
-    ├── findings.json                      # Structured results (for automation)
-    └── report.docx                        # Formatted Word report (for humans)
+└── review_YYYY-MM-DD_HHMMSS/
+    ├── report.docx
+    ├── findings.json
+    ├── raw_response.txt
+    ├── inputs_combined.txt
+    ├── token_summary.json
+    └── error.txt              # only if failure
+
 ```
 
 ### findings.json Structure
@@ -128,7 +133,6 @@ output/
     "model": "claude-opus-4-5-20251101",
     "input_tokens": 37942,
     "output_tokens": 8500,
-    "total_output_tokens": 53500,
     "elapsed_seconds": 120.5,
     "files_reviewed": ["23 05 00.docx", "23 21 13.docx"]
   },
