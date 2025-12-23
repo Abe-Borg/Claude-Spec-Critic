@@ -128,12 +128,13 @@ def review_specs(
             if verbose:
                 print(f"Calling Claude (attempt {attempt + 1}/{max_retries})...")
 
-            resp = client.messages.create(
+            with client.messages.stream(
                 model=MODEL_OPUS_45,
                 max_tokens=max_tokens,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
-            )
+            ) as stream:
+                resp = stream.get_final_message()
 
             # Response text extraction (SDK versions vary)
             response_text = ""
