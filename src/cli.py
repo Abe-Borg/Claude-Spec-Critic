@@ -1,4 +1,6 @@
 """CLI entry point for spec-review tool."""
+from __future__ import annotations
+
 import sys
 import json
 from pathlib import Path
@@ -12,100 +14,32 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from . import __version__
 from .extractor import extract_text_from_docx, ExtractedSpec
-from .preprocessor import preprocess_spec, PreprocessResult
+from .preprocessor import preprocess_spec
 from .tokenizer import analyze_token_usage, format_token_summary, RECOMMENDED_MAX
-from .prompts import get_system_prompt
-from .reviewer import review_specs, ReviewResult, MODEL_SONNET, MODEL_OPUS, MODEL_HAIKU
-from .report import generate_report
+from .reviewer import review_specs, MODEL_OPUS_45
+from .report import generate_report_docx
+
 
 console = Console()
 
 
-def print_header():
-    """Print the application header."""
-    console.print(Panel.fit(
-        "[bold blue]MEP Spec Review[/bold blue]\n"
-        f"[dim]v{__version__} • California K-12 DSA Projects[/dim]",
-        border_style="blue"
-    ))
-
-
-def print_files_loaded(specs: list[ExtractedSpec], verbose: bool):
-    """Print information about loaded files."""
-    console.print(f"\n[bold]Files loaded:[/bold] {len(specs)}")
-    
-    if verbose:
-        for spec in specs:
-            console.print(f"  • {spec.filename} ({spec.word_count:,} words)")
-
-
-def print_alerts(summary: dict):
-    """Print LEED and placeholder alerts."""
-    if summary['leed_alert_count'] > 0 or summary['placeholder_alert_count'] > 0:
-        console.print("\n[bold yellow]⚠ ALERTS DETECTED[/bold yellow]")
-        
-        if summary['leed_alert_count'] > 0:
-            console.print(f"\n  [yellow]LEED References ({summary['leed_alert_count']}):[/yellow]")
-            for alert in summary['all_leed_alerts'][:10]:  # Limit display
-                console.print(f"    • {alert['filename']} (line {alert['line']}): {alert['text']}")
-            if summary['leed_alert_count'] > 10:
-                console.print(f"    [dim]... and {summary['leed_alert_count'] - 10} more[/dim]")
-        
-        if summary['placeholder_alert_count'] > 0:
-            console.print(f"\n  [yellow]Unresolved Placeholders ({summary['placeholder_alert_count']}):[/yellow]")
-            for alert in summary['all_placeholder_alerts'][:10]:
-                console.print(f"    • {alert['filename']} (line {alert['line']}): {alert['text']}")
-            if summary['placeholder_alert_count'] > 10:
-                console.print(f"    [dim]... and {summary['placeholder_alert_count'] - 10} more[/dim]")
-
-
-def print_token_summary(token_summary, verbose: bool):
-    """Print token usage summary."""
-    if verbose:
-        console.print(f"\n[bold]Token Analysis:[/bold]")
-        for item in token_summary.items:
-            console.print(f"  • {item.name}: {item.tokens:,} tokens")
-        console.print(f"  System prompt: {token_summary.system_prompt_tokens:,} tokens")
-        console.print(f"  [bold]Total: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}[/bold]")
-    
-    if token_summary.warning_message:
-        if "CRITICAL" in token_summary.warning_message:
-            console.print(f"\n[bold red]{token_summary.warning_message}[/bold red]")
-        elif "WARNING" in token_summary.warning_message:
-            console.print(f"\n[bold yellow]{token_summary.warning_message}[/bold yellow]")
-        else:
-            console.print(f"\n[dim]{token_summary.warning_message}[/dim]")
-    elif verbose:
-        console.print("  [green]✓ Within recommended limits[/green]")
+def print_header() -> None:
+    console.print(
+        Panel.fit(
+            f"[bold cyan]MEP SPEC REVIEW[/bold cyan]  [dim]v{__version__}[/dim]\n"
+            f"[dim]Model: {MODEL_OPUS_45} (single-model)[/dim]",
+            border_style="cyan",
+        )
+    )
 
 
 def get_docx_files_from_directory(input_dir: Path) -> list[Path]:
-    """Get all .docx files from a directory."""
-    if not input_dir.exists():
-        console.print(f"[red]Error: Input directory not found: {input_dir}[/red]")
-        sys.exit(1)
-    
-    if not input_dir.is_dir():
-        console.print(f"[red]Error: Not a directory: {input_dir}[/red]")
-        sys.exit(1)
-    
-    docx_files = sorted(input_dir.glob("*.docx"))
-    
-    # Filter out temp files (start with ~$)
-    docx_files = [f for f in docx_files if not f.name.startswith("~$")]
-    
-    return docx_files
+    return sorted(
+        [p for p in input_dir.glob("*.docx") if not p.name.startswith("~$")]
+    )
 
-def setup_output_directory(output_dir: Path) -> Path:
-    """
-    Create timestamped output directory structure.
-    
-    Args:
-        output_dir: Base output directory
-        
-    Returns:
-        Path to the timestamped run directory
-    """
+
+def create_run_directory(output_dir: Path) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir = output_dir / f"review_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -115,245 +49,144 @@ def setup_output_directory(output_dir: Path) -> Path:
 @click.group()
 @click.version_option(version=__version__)
 def main():
-    """MEP Specification Review Tool for California K-12 DSA Projects."""
+    """MEP Specification Review Tool."""
     pass
 
 
 @main.command()
-@click.option('--input-dir', '-i', type=click.Path(exists=True), required=True, 
-              help='Input directory containing .docx specification files')
-@click.option('--output-dir', '-o', type=click.Path(), default='./output', 
-              help='Output directory for reports and stripped files')
-@click.option('--verbose', '-v', is_flag=True, help='Show detailed processing information')
-@click.option('--dry-run', is_flag=True, help='Process files but do not call API')
-def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool, opus: bool, thinking: bool, haiku: bool):
+@click.option("--input-dir", "-i", type=click.Path(exists=True), required=True,
+              help="Directory containing .docx specification files")
+@click.option("--output-dir", "-o", type=click.Path(), default="./output",
+              help="Output directory for review results")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed processing information")
+@click.option("--dry-run", is_flag=True, help="Process files but do not call API")
+def review(input_dir: str, output_dir: str, verbose: bool, dry_run: bool) -> None:
     """
-    Review MEP specifications for code compliance and technical issues.
-    
-    Loads all .docx files from the input directory.
-    
-    Example:
-        spec-review review -i ./specs -o ./output --verbose
+    Review specification .docx files in a directory using Opus 4.5 only.
     """
     print_header()
-    
+
     input_path = Path(input_dir)
     output_path = Path(output_dir)
-    
-    # Get .docx files from input directory
+
     docx_files = get_docx_files_from_directory(input_path)
-    
-    if len(docx_files) == 0:
+    if not docx_files:
         console.print(f"[red]Error: No .docx files found in {input_path}[/red]")
         sys.exit(1)
-    
-    # Setup output directory
-    run_dir = setup_output_directory(output_path)
-    console.print(f"\n[dim]Output directory: {run_dir}[/dim]")
-    
-    # Extract text from files
-    specs: list[ExtractedSpec] = []
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        transient=True
-    ) as progress:
-        task = progress.add_task("Extracting text from documents...", total=len(docx_files))
-        
-        for filepath in docx_files:
-            try:
-                spec = extract_text_from_docx(filepath)
-                specs.append(spec)
-                progress.advance(task)
-            except Exception as e:
-                console.print(f"[red]Error extracting {filepath.name}: {e}[/red]")
-                sys.exit(1)
-    
-    print_files_loaded(specs, verbose)
-    
-    # Preprocess specs
-    preprocess_results = []
-    all_leed_alerts = []
-    all_placeholder_alerts = []
-    total_original = 0
-    total_cleaned = 0
-    
-    for spec in specs:
-        result = preprocess_spec(spec.content, spec.filename)
-        preprocess_results.append(result)
-        all_leed_alerts.extend(result.leed_alerts)
-        all_placeholder_alerts.extend(result.placeholder_alerts)
-        total_original += result.original_length
-        total_cleaned += result.cleaned_length
-    
-    preprocess_summary = {
-        'leed_alert_count': len(all_leed_alerts),
-        'placeholder_alert_count': len(all_placeholder_alerts),
-        'all_leed_alerts': all_leed_alerts,
-        'all_placeholder_alerts': all_placeholder_alerts,
-    }
-    
-    # Analyze token usage
-    spec_contents_for_tokens = [(spec.filename, result.cleaned_content) 
-                                 for spec, result in zip(specs, preprocess_results)]
-    
-    system_prompt = get_system_prompt()
-    token_summary = analyze_token_usage(spec_contents_for_tokens, system_prompt)
-    
-    print_token_summary(token_summary, verbose)
-    
-    # Check if we can proceed
-    if not token_summary.within_limit:
-        console.print("\n[bold red]Cannot proceed: Token limit exceeded.[/bold red]")
-        sys.exit(1)
-    
-    if dry_run:
-        console.print("\n[yellow]Dry run complete. No API call made.[/yellow]")
-        return
-    
-    # Build combined content for API
-    combined_content = "\n\n".join([
-        f"===== FILE: {spec.filename} =====\n{result.cleaned_content}"
-        for spec, result in zip(specs, preprocess_results)
-    ])
-    
 
-    model_name = "Opus 4.5"
-    
-    # Call Claude API
-    console.print(f"\n[bold]Sending to Claude API ({model_name})...[/bold]")
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        transient=True
-    ) as progress:
-        task = progress.add_task("Reviewing specifications...", total=None)
-        review_result = review_specs(
-            combined_content, 
-            model=model, 
-            use_thinking=thinking,
-            verbose=verbose
+    run_dir = create_run_directory(output_path)
+    console.print(f"[dim]Output: {run_dir}[/dim]\n")
+
+    # Extract + preprocess (detection-only)
+    extracted_specs: list[ExtractedSpec] = []
+    leed_alerts: list[dict] = []
+    placeholder_alerts: list[dict] = []
+
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                  console=console) as progress:
+        task = progress.add_task("Extracting text from .docx files...", total=len(docx_files))
+        for docx_path in docx_files:
+            spec = extract_text_from_docx(docx_path)
+            extracted_specs.append(spec)
+
+            pre = preprocess_spec(spec.content, spec.filename)
+            leed_alerts.extend(pre.leed_alerts)
+            placeholder_alerts.extend(pre.placeholder_alerts)
+
+            progress.advance(task)
+
+    console.print(f"[green]Loaded {len(extracted_specs)} file(s)[/green]")
+
+    # Token analysis on RAW extracted content (since we no longer "clean" here)
+    spec_contents_for_tokens = [(s.filename, s.content) for s in extracted_specs]
+    token_report = analyze_token_usage(spec_contents_for_tokens)
+
+    console.print("\n[bold]Token Analysis:[/bold]")
+    console.print(format_token_summary(token_report))
+
+    if token_report.total_tokens > RECOMMENDED_MAX:
+        console.print(
+            f"\n[yellow]Warning:[/yellow] Estimated tokens exceed recommended max "
+            f"({token_report.total_tokens:,} > {RECOMMENDED_MAX:,}). Consider splitting input."
         )
-    
+
+    # Alerts summary
+    if leed_alerts or placeholder_alerts:
+        console.print("\n[bold yellow]Alerts (not sent as findings targets):[/bold yellow]")
+        alert_table = Table(show_header=True, header_style="bold")
+        alert_table.add_column("Type")
+        alert_table.add_column("Count", justify="right")
+        alert_table.add_row("LEED references", str(len(leed_alerts)))
+        alert_table.add_row("Placeholders", str(len(placeholder_alerts)))
+        console.print(alert_table)
+
+    # Build combined content for the LLM
+    combined_content = "\n\n".join(
+        f"===== FILE: {s.filename} =====\n{s.content}" for s in extracted_specs
+    )
+
+    # Save inputs snapshot (always)
+    (run_dir / "inputs_combined.txt").write_text(combined_content, encoding="utf-8")
+
+    if dry_run:
+        console.print("\n[cyan]Dry run:[/cyan] Skipping API call.")
+        sys.exit(0)
+
+    # Call Claude
+    console.print("\n[bold]Reviewing with Opus 4.5...[/bold]")
+    review_result = review_specs(combined_content, verbose=verbose)
+
     if review_result.error:
-        console.print(f"\n[bold red]Error: {review_result.error}[/bold red]")
+        console.print(f"[red]Error:[/red] {review_result.error}")
+        (run_dir / "error.txt").write_text(review_result.error, encoding="utf-8")
         sys.exit(1)
-    
-    # Print results summary
-    console.print(f"\n[green]Review complete![/green] ({review_result.elapsed_seconds:.1f}s)")
-    
-    # Token breakdown
-    token_info = f"[dim]Tokens: {review_result.input_tokens:,} in"
-    token_info += f" → {review_result.output_tokens:,} out"
-    token_info += "[/dim]"
-    console.print(token_info)
-    
-    # Print findings summary
-    console.print(f"\n[bold]Findings Summary:[/bold]")
-    summary_table = Table(show_header=False, box=None, padding=(0, 2))
-    summary_table.add_column("Severity", style="bold")
-    summary_table.add_column("Count", justify="right")
-    
-    if review_result.critical_count > 0:
-        summary_table.add_row("[red]CRITICAL[/red]", f"[red]{review_result.critical_count}[/red]")
-    if review_result.high_count > 0:
-        summary_table.add_row("[orange1]HIGH[/orange1]", f"[orange1]{review_result.high_count}[/orange1]")
-    if review_result.medium_count > 0:
-        summary_table.add_row("[yellow]MEDIUM[/yellow]", f"[yellow]{review_result.medium_count}[/yellow]")
-    if review_result.gripes_count > 0:
-        summary_table.add_row("[magenta]GRIPES[/magenta]", f"[magenta]{review_result.gripes_count}[/magenta]")
-    
-    if review_result.total_count == 0:
-        console.print("  [green]No issues found![/green]")
-    else:
-        console.print(summary_table)
-    
-    # Save raw JSON response
-    json_output_path = run_dir / "findings.json"
-    findings_data = {
-        "metadata": {
-            "timestamp": datetime.now().isoformat(),
+
+    # Save raw response + findings
+    (run_dir / "raw_response.txt").write_text(review_result.raw_response or "", encoding="utf-8")
+
+    findings_json = {
+        "meta": {
             "model": review_result.model,
             "input_tokens": review_result.input_tokens,
             "output_tokens": review_result.output_tokens,
-            "total_output_tokens": review_result.total_output_tokens,
             "elapsed_seconds": review_result.elapsed_seconds,
-            "files_reviewed": [spec.filename for spec in specs],
         },
-        "summary": {
-            "critical": review_result.critical_count,
-            "high": review_result.high_count,
-            "medium": review_result.medium_count,
-            "gripes": review_result.gripes_count,
-            "total": review_result.total_count,
-        },
+        "findings": [f.__dict__ for f in review_result.findings],
         "alerts": {
-            "leed_references": preprocess_summary['all_leed_alerts'],
-            "placeholders": preprocess_summary['all_placeholder_alerts'],
+            "leed_alerts": leed_alerts,
+            "placeholder_alerts": placeholder_alerts,
         },
-        "findings": [
-            {
-                "severity": f.severity,
-                "fileName": f.fileName,
-                "section": f.section,
-                "issue": f.issue,
-                "actionType": f.actionType,
-                "existingText": f.existingText,
-                "replacementText": f.replacementText,
-                "codeReference": f.codeReference,
-            }
-            for f in review_result.findings
-        ]
     }
-    
-    with open(json_output_path, "w", encoding="utf-8") as f:
-        json.dump(findings_data, f, indent=2, ensure_ascii=False)
-    
-    # Generate Word report
-    report_path = generate_report(
-        review_result=review_result,
-        files_reviewed=[spec.filename for spec in specs],
-        leed_alerts=preprocess_summary['all_leed_alerts'],
-        placeholder_alerts=preprocess_summary['all_placeholder_alerts'],
-        output_path=run_dir
+    (run_dir / "findings.json").write_text(json.dumps(findings_json, indent=2), encoding="utf-8")
+
+    # Generate report docx
+    report_path = run_dir / "report.docx"
+    generate_report_docx(
+        findings=review_result.findings,
+        output_path=report_path,
+        leed_alerts=leed_alerts,
+        placeholder_alerts=placeholder_alerts,
     )
-    
-    console.print(f"\n[bold green]Report saved to: {report_path}[/bold green]")
-    console.print(f"[dim]JSON results: {json_output_path}[/dim]")
-    
-    # Print detailed findings if verbose
-    if verbose and review_result.findings:
-        console.print("\n[bold]Detailed Findings:[/bold]")
-        for finding in review_result.findings:
-            severity_colors = {
-                "CRITICAL": "red",
-                "HIGH": "orange1", 
-                "MEDIUM": "yellow",
-                "GRIPES": "magenta"
-            }
-            color = severity_colors.get(finding.severity, "white")
-            
-            console.print(f"\n  [{color}]{finding.severity}[/{color}] - {finding.fileName}")
-            console.print(f"  [dim]Section:[/dim] {finding.section}")
-            console.print(f"  [dim]Issue:[/dim] {finding.issue}")
-            if finding.actionType:
-                console.print(f"  [dim]Action:[/dim] {finding.actionType}")
-            if finding.existingText:
-                console.print(f"  [dim]Existing:[/dim] {finding.existingText[:100]}...")
-            if finding.replacementText:
-                console.print(f"  [dim]Replace with:[/dim] {finding.replacementText[:100]}...")
-            if finding.codeReference:
-                console.print(f"  [dim]Reference:[/dim] {finding.codeReference}")
+
+    console.print(f"\n[green]Review complete![/green] ({review_result.elapsed_seconds:.1f}s)")
+    if review_result.input_tokens or review_result.output_tokens:
+        console.print(f"[dim]Tokens: {review_result.input_tokens:,} in → {review_result.output_tokens:,} out[/dim]")
+
+    # Findings summary
+    console.print("\n[bold]Findings Summary:[/bold]")
+    summary_table = Table(show_header=False, box=None, padding=(0, 2))
+    summary_table.add_column("Severity", style="bold")
+    summary_table.add_column("Count", justify="right")
+
+    summary_table.add_row("CRITICAL", str(review_result.critical_count))
+    summary_table.add_row("HIGH", str(review_result.high_count))
+    summary_table.add_row("MEDIUM", str(review_result.medium_count))
+    summary_table.add_row("GRIPES", str(review_result.gripe_count))
+    summary_table.add_row("TOTAL", str(review_result.total_count))
+
+    console.print(summary_table)
+    console.print(f"[dim]Outputs written to: {run_dir}[/dim]")
 
 
-@main.command()
-def version():
-    """Show version information."""
-    console.print(f"spec-review v{__version__}")
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

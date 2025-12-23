@@ -1,27 +1,33 @@
-"""Claude API client for specification review."""
-import os
+"""
+Claude API client for specification review.
+
+Single-model design:
+- Always uses Opus 4.5 (no model selection in this repo).
+"""
+from __future__ import annotations
+
 import json
+import os
 import time
 from dataclasses import dataclass, field
+
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
 from .prompts import get_system_prompt, get_user_message
 
 
-# Model constants
-MODEL_OPUS = "claude-opus-4-5-20251101"
+# Single allowed model for this repo
+MODEL_OPUS_45 = "claude-opus-4-5-20251101"
+
 
 @dataclass
 class Finding:
     """A single review finding."""
     severity: str
-    fileName: str
-    section: str
+    file: str
+    location: str
     issue: str
-    actionType: str
-    existingText: str | None
-    replacementText: str | None
-    codeReference: str | None
+    recommendation: str
 
 
 @dataclass
@@ -29,223 +35,170 @@ class ReviewResult:
     """Result of a specification review."""
     findings: list[Finding] = field(default_factory=list)
     raw_response: str = ""
-    model: str = ""
+    model: str = MODEL_OPUS_45
     input_tokens: int = 0
     output_tokens: int = 0
     elapsed_seconds: float = 0.0
     error: str | None = None
-    
+
     @property
     def critical_count(self) -> int:
         return sum(1 for f in self.findings if f.severity == "CRITICAL")
-    
+
     @property
     def high_count(self) -> int:
         return sum(1 for f in self.findings if f.severity == "HIGH")
-    
+
     @property
     def medium_count(self) -> int:
         return sum(1 for f in self.findings if f.severity == "MEDIUM")
-        
+
     @property
-    def gripes_count(self) -> int:
+    def gripe_count(self) -> int:
         return sum(1 for f in self.findings if f.severity == "GRIPES")
-    
+
     @property
     def total_count(self) -> int:
         return len(self.findings)
-    
-    @property
-    def total_output_tokens(self) -> int:
-        """Total output tokens"""
-        return self.output_tokens
 
 
 def get_api_key() -> str:
-    """Get the Anthropic API key from environment."""
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
-        raise ValueError(
-            "ANTHROPIC_API_KEY environment variable not set.\n"
-            "Set it with: set ANTHROPIC_API_KEY=your-key-here (Windows CMD)\n"
-            "         or: $env:ANTHROPIC_API_KEY='your-key-here' (PowerShell)"
-        )
+        raise ValueError("ANTHROPIC_API_KEY environment variable not set")
     return key
 
 
-def parse_findings(response_text: str) -> list[Finding]:
+def _extract_json_object(text: str) -> str:
     """
-    Parse the JSON response from Claude into Finding objects.
-    
-    Args:
-        response_text: Raw text response from the API
-        
-    Returns:
-        List of Finding objects
-        
-    Raises:
-        ValueError: If response cannot be parsed as JSON
+    Extract the first top-level JSON object from a response.
+    Prompts demand JSON-only, but this makes us more resilient.
     """
-    # Try to extract JSON array from response
-    text = response_text.strip()
-    
-    # Remove markdown code fences if present
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first line (```json or ```)
-        lines = lines[1:]
-        # Remove last line (```)
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines)
-    
-    # Try to find JSON array in the text
-    start_idx = text.find("[")
-    end_idx = text.rfind("]")
-    
-    if start_idx == -1 or end_idx == -1:
-        # No array found - might be empty or error
-        if "no issues" in text.lower() or text.strip() == "[]":
-            return []
-        raise ValueError(f"Could not find JSON array in response: {text[:200]}...")
-    
-    json_str = text[start_idx:end_idx + 1]
-    
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in response: {e}")
-    
-    if not isinstance(data, list):
-        raise ValueError(f"Expected JSON array, got: {type(data)}")
-    
-    findings = []
-    for item in data:
-        try:
-            finding = Finding(
-                severity=item.get("severity", "MEDIUM"),
-                fileName=item.get("fileName", "Unknown"),
-                section=item.get("section", "Unknown"),
-                issue=item.get("issue", "No description"),
-                actionType=item.get("actionType", "EDIT"),
-                existingText=item.get("existingText"),
-                replacementText=item.get("replacementText"),
-                codeReference=item.get("codeReference")
-            )
-            findings.append(finding)
-        except Exception as e:
-            # Skip malformed findings but continue processing
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found in model response")
+    return text[start:end + 1]
+
+
+def _parse_findings(response_text: str) -> list[Finding]:
+    obj_text = _extract_json_object(response_text)
+    data = json.loads(obj_text)
+
+    findings_raw = data.get("findings", [])
+    findings: list[Finding] = []
+    for f in findings_raw:
+        if not isinstance(f, dict):
             continue
-    
+        # Best-effort field extraction
+        severity = str(f.get("severity", "")).strip()
+        file = str(f.get("file", "")).strip()
+        location = str(f.get("location", "")).strip()
+        issue = str(f.get("issue", "")).strip()
+        recommendation = str(f.get("recommendation", "")).strip()
+
+        if not severity or not issue:
+            continue
+
+        findings.append(
+            Finding(
+                severity=severity,
+                file=file,
+                location=location,
+                issue=issue,
+                recommendation=recommendation,
+            )
+        )
     return findings
 
 
 def review_specs(
     combined_content: str,
-    model: str = MODEL_,
-    use_thinking: bool = False,
+    *,
     max_retries: int = 3,
-    verbose: bool = False
+    verbose: bool = False,
 ) -> ReviewResult:
     """
-    Send specifications to Claude for review.
-    
-    Args:
-        combined_content: Combined specification text with file delimiters
-        model: Claude model to use (MODEL_SONNET or MODEL_OPUS)
-        use_thinking: Whether to enable extended thinking (Opus only)
-        max_retries: Number of retry attempts for transient errors
-        verbose: Whether to print progress messages
-        
-    Returns:
-        ReviewResult with findings and metadata
+    Send specifications to Claude for review (Opus 4.5 only).
     """
-    result = ReviewResult(model=model)
-    
-    
-    try:
-        api_key = get_api_key()
-    except ValueError as e:
-        result.error = str(e)
-        return result
-    
-    client = Anthropic(api_key=api_key)
+    start_time = time.time()
+    result = ReviewResult(model=MODEL_OPUS_45)
+
+    client = Anthropic(api_key=get_api_key())
+
     system_prompt = get_system_prompt()
     user_message = get_user_message(combined_content)
-    
-    last_error = None
-    start_time = time.time()
-    
+
+    # Tune this if you want shorter/longer outputs
+    max_tokens = 32768
+
+    last_error: str | None = None
+
     for attempt in range(max_retries):
         try:
-            if verbose and attempt > 0:
-                print(f"  Retry attempt {attempt + 1}/{max_retries}...")
-            
-            # Build request parameters
-            if model == MODEL_OPUS:
-                max_tokens = 32768
-            
-            request_params = {
-                "model": model,
-                "max_tokens": max_tokens,
-                "system": system_prompt,
-                "messages": [
-                    {"role": "user", "content": user_message}
-                ]
-            }
-            
-           
-            
-            # Use streaming for Opus
+            if verbose:
+                print(f"Calling Claude (attempt {attempt + 1}/{max_retries})...")
+
+            resp = client.messages.create(
+                model=MODEL_OPUS_45,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+
+            # Anthropic SDK response format: content is a list of blocks.
             response_text = ""
-            
-            with client.messages.stream(**request_params) as stream:
-                for event in stream:
-                    pass  # Consume the stream
-                response = stream.get_final_message()
-            
-            result.elapsed_seconds = time.time() - start_time
-            result.input_tokens = response.usage.input_tokens
-            result.output_tokens = response.usage.output_tokens
-            
-            
-            # Extract text from response 
-            for block in response.content:
-                if block.type == "text":
-                    response_text += block.text
-            
-            result.raw_response = response_text
-                
-            
-            # Parse findings
             try:
-                result.findings = parse_findings(response_text)
-            except ValueError as e:
-                result.error = f"Failed to parse response: {e}"
-            
+                # Typical: resp.content[0].text
+                if resp.content and hasattr(resp.content[0], "text"):
+                    response_text = resp.content[0].text or ""
+                else:
+                    response_text = str(resp.content)
+            except Exception:
+                response_text = str(resp)
+
+            result.raw_response = response_text
+
+            # Token usage (best-effort; varies by SDK version)
+            try:
+                usage = getattr(resp, "usage", None)
+                if usage:
+                    result.input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+                    result.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+            except Exception:
+                pass
+
+            # Parse JSON findings
+            result.findings = _parse_findings(response_text)
+
+            result.elapsed_seconds = time.time() - start_time
             return result
-            
+
         except RateLimitError as e:
-            last_error = e
-            wait_time = 2 ** attempt * 10  # 10s, 20s, 40s
+            last_error = f"Rate limit: {e}"
+            wait_time = 2 ** attempt * 10  # 10s, 20s, 40s...
             if verbose:
-                print(f"  Rate limited. Waiting {wait_time}s...")
+                print(f"  {last_error}. Waiting {wait_time}s...")
             time.sleep(wait_time)
-            
+
         except APIConnectionError as e:
-            last_error = e
-            wait_time = 2 ** attempt * 5  # 5s, 10s, 20s
+            last_error = f"Connection error: {e}"
+            wait_time = 2 ** attempt * 5  # 5s, 10s, 20s...
             if verbose:
-                print(f"  Connection error. Waiting {wait_time}s...")
+                print(f"  {last_error}. Waiting {wait_time}s...")
             time.sleep(wait_time)
-            
+
         except APIError as e:
-            # Non-retryable API error
             result.error = f"API error: {e}"
             result.elapsed_seconds = time.time() - start_time
             return result
-    
-    # All retries exhausted
+
+        except Exception as e:
+            # Parsing or unexpected failures
+            result.error = f"Error: {e}"
+            result.elapsed_seconds = time.time() - start_time
+            return result
+
     result.error = f"Failed after {max_retries} attempts. Last error: {last_error}"
     result.elapsed_seconds = time.time() - start_time
     return result

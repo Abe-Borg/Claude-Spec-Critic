@@ -18,7 +18,7 @@ from src.extractor import extract_text_from_docx
 from src.preprocessor import preprocess_spec
 from src.tokenizer import analyze_token_usage, RECOMMENDED_MAX
 from src.prompts import get_system_prompt
-from src.reviewer import review_specs, MODEL_SONNET, MODEL_OPUS, MODEL_HAIKU
+from src.reviewer import review_specs, MODEL_OPUS_45
 from src.report import generate_report
 
 
@@ -32,8 +32,6 @@ class SpecReviewApp:
         # Variables
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop" / "spec-review-output"))
-        self.model_choice = tk.StringVar(value="opus")
-        self.use_thinking = tk.BooleanVar(value=False)
         self.api_key = tk.StringVar(value=os.environ.get("ANTHROPIC_API_KEY", ""))
         
         self.create_widgets()
@@ -236,7 +234,7 @@ class SpecReviewApp:
         self.root.after(0, lambda: self.set_status("Analyzing token usage..."))
         
         system_prompt = get_system_prompt()
-        spec_contents = [(spec.filename, result.cleaned_content) for spec, result in zip(specs, preprocess_results)]
+        spec_contents = [(spec.filename, spec.content) for spec in specs]
         token_summary = analyze_token_usage(spec_contents, system_prompt)
         
         self.root.after(0, lambda: self.log(f"\nToken usage: {token_summary.total_tokens:,} / {RECOMMENDED_MAX:,}"))
@@ -252,16 +250,12 @@ class SpecReviewApp:
         
         # Build combined content
         combined_content = "\n\n".join([
-            f"===== FILE: {spec.filename} =====\n{result.cleaned_content}"
+            f"===== FILE: {spec.filename} =====\n{spec.content}"
             for spec, result in zip(specs, preprocess_results)
         ])
         
         # Call API
-        review_result = review_specs(
-            combined_content,
-            model=model,
-            verbose=False
-        )
+        review_result = review_specs(combined_content, verbose=self.verbose.get())
         
         if review_result.error:
             raise Exception(review_result.error)
