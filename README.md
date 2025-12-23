@@ -1,26 +1,30 @@
 # MEP Spec Review
 
-A CLI tool for reviewing mechanical and plumbing (M&P) specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction.
-Current implementation uses Anthropic API for LLM analysis. But this code can easily be adjusted to use any LLM.
+A CLI + GUI tool for reviewing mechanical and plumbing (M&P) specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction.
+
+Uses Anthropic Claude Opus 4.5 for LLM analysis.
 
 ## Features
 
-- **Batch Review**: Process multiple specification documents at once. Only limitation is LLM context window.
-- **LEED Detection**: Alerts when LEED references are found.
+- **Batch Review**: Process multiple specification documents at once (limited by LLM context window)
+- **LEED Detection**: Alerts when LEED references are found
 - **Placeholder Detection**: Flags unresolved placeholders like `[INSERT...]`
 - **Token Management**: Pre-flight token counting with warnings before API calls
-- **Severity Classification**: Issues categorized as CRITICAL, HIGH, MEDIUM and GRIPES
-- **JSON Output**: Structured findings for further processing
+- **Severity Classification**: Issues categorized as CRITICAL, HIGH, MEDIUM, and GRIPES
+- **Dual Output**: Human-readable Word report + machine-readable JSON
+- **GUI + CLI**: Desktop interface or command-line workflow
 
-## Converting .doc Files
+## Prerequisites
 
-This tool only supports `.docx` files. If you have older `.doc` files (Word 97-2003 format), convert them
-using the following library: https://github.com/Abe-Borg/convert-doc-to-docx
+### Converting .doc Files
 
-##
+This tool only supports `.docx` files. If you have older `.doc` files (Word 97-2003 format), convert them first:
+https://github.com/Abe-Borg/convert-doc-to-docx
 
-The Word docs should be scrubbed of unnecessary components and fluff/garbage for best results. Use this
-library: https://github.com/Abe-Borg/Spec_Cleanse
+### Cleaning Specifications
+
+For best results, scrub Word docs of unnecessary components before review:
+https://github.com/Abe-Borg/Spec_Cleanse
 
 ## Installation
 
@@ -70,24 +74,38 @@ my-project/
 └── output/                   # Output will be created here
 ```
 
-### Basic Review
+### CLI: Basic Review
 
 ```bash
 spec-review review -i ./specs -o ./output
 ```
 
-### With Verbose Output
+### CLI: With Verbose Output
 
 ```bash
 spec-review review -i ./specs -o ./output --verbose
 ```
 
-### Dry Run (No API Call)
+### CLI: Dry Run (No API Call)
 
-Test the preprocessing without calling the API:
+Test extraction and preprocessing without calling the API:
 
 ```bash
 spec-review review -i ./specs -o ./output --dry-run --verbose
+```
+
+### GUI
+
+Launch the desktop interface:
+
+```bash
+python src/gui.py
+```
+
+Or if using the compiled executable:
+
+```cmd
+spec-review-gui.exe
 ```
 
 ### Command Options
@@ -97,16 +115,15 @@ spec-review review -i ./specs -o ./output --dry-run --verbose
 | `--input-dir` | `-i` | Input directory containing .docx files (required) |
 | `--output-dir` | `-o` | Output directory for reports (default: `./output`) |
 | `--verbose` | `-v` | Show detailed processing information |
-| `--dry-run` | | Process files but do not call API |
-
+| `--dry-run` | | Process files but skip API call |
 
 ### Model
-**Opus 4.5**: Higher quality analysis, better at catching subtle issues.
-- Max output: 32,768 tokens
 
-```bash
-spec-review review -i ./specs --opus
-```
+This tool uses **Claude Opus 4.5** (`claude-opus-4-5-20251101`) exclusively.
+
+- Context window: 200,000 tokens
+- Max output: 32,768 tokens
+- Recommended input limit: 150,000 tokens (leaves buffer for system prompt + response)
 
 ## Output Structure
 
@@ -115,37 +132,23 @@ Each run creates a timestamped folder:
 ```
 output/
 └── review_YYYY-MM-DD_HHMMSS/
-    ├── report.docx
-    ├── findings.json
-    ├── raw_response.txt
-    ├── inputs_combined.txt
-    ├── token_summary.json
-    └── error.txt              # only if failure
-
+    ├── report.docx           # Human-readable findings report
+    ├── findings.json         # Machine-readable findings + alerts
+    ├── raw_response.txt      # Raw Claude response (for debugging)
+    ├── inputs_combined.txt   # Combined spec text sent to API
+    ├── token_summary.json    # Token usage breakdown
+    └── error.txt             # Only present if failure occurred
 ```
 
 ### findings.json Structure
 
 ```json
 {
-  "metadata": {
-    "timestamp": "2024-01-15T14:30:22",
+  "meta": {
     "model": "claude-opus-4-5-20251101",
     "input_tokens": 37942,
     "output_tokens": 8500,
-    "elapsed_seconds": 120.5,
-    "files_reviewed": ["23 05 00.docx", "23 21 13.docx"]
-  },
-  "summary": {
-    "critical": 2,
-    "high": 5,
-    "medium": 3,
-    "gripes": 2,
-    "total": 13
-  },
-  "alerts": {
-    "leed_references": [...],
-    "placeholders": [...]
+    "elapsed_seconds": 120.5
   },
   "findings": [
     {
@@ -158,7 +161,11 @@ output/
       "replacementText": "Seismic design per ASCE 7-22 as adopted by CBC 2022",
       "codeReference": "CBC 2022 Chapter 16, DSA IR A-6"
     }
-  ]
+  ],
+  "alerts": {
+    "leed_alerts": [...],
+    "placeholder_alerts": [...]
+  }
 }
 ```
 
@@ -166,25 +173,32 @@ output/
 
 | Level | Description |
 |-------|-------------|
-| **CRITICAL** | DSA rejection, code violations, safety hazards |
+| **CRITICAL** | DSA rejection risk, code violations, safety hazards |
 | **HIGH** | Significant technical errors, outdated CSI format |
 | **MEDIUM** | Wrong code editions, obsolete products |
-| **GRIPES** | Grumpy engineer complaints (not code/safety issues), editorial, formatting, terminology |
+| **GRIPES** | Editorial issues, formatting, terminology (not code/safety) |
 
 ## What It Checks
 
 - California code compliance (CBC, CMC, CPC, CEC, CALGreen)
 - DSA-specific requirements (seismic, certification, submittals)
-- ASHRAE, SMACNA, ASPE, NFPA standards
+- ASHRAE standards (62.1, 90.1, 55, etc.)
+- SMACNA standards (duct construction, seismic restraint)
+- ASPE standards (plumbing engineering practice)
+- NFPA standards (fire pumps, special hazards)
+- MSS standards (pipe hangers and supports)
+- ASTM standards (materials and testing)
 - Technical accuracy of performance criteria
-- Product specifications
+- Product specifications (manufacturer names, model numbers, ratings)
 - Submittal and QA requirements
 - Internal consistency within each spec
 - Cross-spec coordination (when multiple specs provided)
 - Constructability issues
 
-## What Gets Alerted 
-These items trigger alerts so the Human can review and edit them:
+## What Gets Alerted (Not Sent to LLM)
+
+These items are detected locally and reported separately:
+
 - **LEED references**: Any mention of LEED, USGBC, or LEED credits
 - **Placeholders**: `[INSERT...]`, `[SPECIFY...]`, `[VERIFY...]`, `___`, `[TBD]`, etc.
 
@@ -193,28 +207,30 @@ These items trigger alerts so the Human can review and edit them:
 ```
 spec-review/
 ├── src/
-│   ├── cli.py           # CLI entry point
+│   ├── __init__.py      # Package version
+│   ├── cli.py           # CLI entry point (thin shell)
+│   ├── gui.py           # Tkinter GUI (thin shell)
+│   ├── pipeline.py      # Core orchestration (single source of truth)
 │   ├── extractor.py     # DOCX text extraction
-│   ├── preprocessor.py  # alert detection
-│   ├── tokenizer.py     # Token counting
-│   ├── prompts.py       # System prompt
-│   ├── reviewer.py      # Claude API client
+│   ├── preprocessor.py  # LEED/placeholder detection (no mutation)
+│   ├── tokenizer.py     # Token counting with tiktoken
+│   ├── prompts.py       # System prompt for Claude
+│   ├── reviewer.py      # Anthropic API client
 │   └── report.py        # Word report generation
 ├── requirements.txt
 ├── pyproject.toml
+├── main.py              # PyInstaller entry point
 ├── spec-review.spec     # PyInstaller config
 ├── build.bat            # Build script for Windows
 └── README.md
 ```
 
-## Development Status
+## Architecture Notes
 
-- [x] Phase 1: Project skeleton, extraction, preprocessing
-- [x] Phase 2: Claude API integration
-- [x] Phase 3: Response parsing
-- [x] Phase 4: Word report generation
-- [x] Phase 5: Polish and error handling
-- [x] Phase 6: PyInstaller packaging
+- **Single pipeline**: All workflow logic lives in `pipeline.py`. CLI and GUI are thin shells.
+- **Single model**: Hardcoded to Claude Opus 4.5. No model selection flags.
+- **No document mutation**: This repo only analyzes specs. Cleanup belongs in Spec_Cleanse.
+- **Advisory only**: This tool assists human reviewers. It is not an AHJ substitute.
 
 ## Building the Executable
 
@@ -242,6 +258,21 @@ spec-review.exe review -i C:\path\to\specs -o C:\path\to\output
 ```
 
 You can copy `spec-review.exe` to any Windows machine — no Python installation required.
+
+## Troubleshooting
+
+### Token Limit Exceeded
+
+If you see "Token limit exceeded", split your input specs into smaller batches and run separately.
+
+### API Key Not Set
+
+Ensure `ANTHROPIC_API_KEY` is set in your environment before running.
+
+### No .docx Files Found
+
+- Verify files have `.docx` extension (not `.doc`)
+- Check that files aren't temp files (`~$filename.docx`)
 
 ## License
 

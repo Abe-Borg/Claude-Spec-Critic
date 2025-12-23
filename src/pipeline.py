@@ -156,6 +156,7 @@ def run_review(
         # Still generate a report with 0 findings so you get the artifact structure
         dummy = ReviewResult(findings=[], raw_response="", model=MODEL_OPUS_45)
         report_docx = run_dir / "report.docx"
+
         generate_report(
             review_result=dummy,
             files_reviewed=[s.filename for s in specs],
@@ -233,11 +234,12 @@ def run_review(
 
     progress(85.0, "Generating report.docx...")
     report_docx = run_dir / "report.docx"
+    
     generate_report(
         review_result=review_result,
         files_reviewed=[s.filename for s in specs],
-        leed_alerts=leed_alerts,
-        placeholder_alerts=placeholder_alerts,
+        leed_alerts=_normalize_alerts(leed_alerts),
+        placeholder_alerts=_normalize_alerts(placeholder_alerts),
         output_path=report_docx,
     )
 

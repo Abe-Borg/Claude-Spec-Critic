@@ -82,18 +82,4 @@ def extract_multiple_specs(filepaths: list[Path]) -> list[ExtractedSpec]:
     return [extract_text_from_docx(fp) for fp in filepaths]
 
 
-def combine_specs_for_review(specs: list[ExtractedSpec]) -> str:
-    """
-    Combine multiple extracted specs into a single string for API submission.
-    
-    Args:
-        specs: List of ExtractedSpec objects
-        
-    Returns:
-        Combined string with clear file delimiters
-    """
-    sections = []
-    for spec in specs:
-        sections.append(f"=== FILE: {spec.filename} ===\n{spec.content}")
-    
-    return "\n\n".join(sections)
+

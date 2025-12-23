@@ -10,13 +10,33 @@ from datetime import datetime
 # Add src to path for imports
 if getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
+    exe_dir = Path(sys.executable).parent
 else:
     base_path = os.path.dirname(os.path.abspath(__file__))
+    exe_dir = Path(base_path)
+
 sys.path.insert(0, base_path)
 
 from src.pipeline import run_review
 from src.reviewer import MODEL_OPUS_45
 
+
+API_KEY_FILENAME = "spec_critic_api_key.txt"
+
+
+def load_api_key_from_file() -> str:
+    """
+    Attempt to load API key from spec_critic_api_key.txt in the executable directory.
+    Returns empty string if file doesn't exist or is empty.
+    """
+    key_file = exe_dir / API_KEY_FILENAME
+    if key_file.exists():
+        try:
+            key = key_file.read_text(encoding="utf-8").strip()
+            return key
+        except Exception:
+            return ""
+    return ""
 
 
 class SpecReviewApp:
@@ -29,10 +49,11 @@ class SpecReviewApp:
         # Variables
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop" / "spec-review-output"))
-        self.api_key = tk.StringVar(value=os.environ.get("ANTHROPIC_API_KEY", ""))
-        self.verbose = tk.BooleanVar(value=False)
-        self.dry_run = tk.BooleanVar(value=False)
-
+        
+        # Load API key: prefer file, fall back to environment variable
+        file_key = load_api_key_from_file()
+        env_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        self.api_key = tk.StringVar(value=file_key if file_key else env_key)
         
         self.create_widgets()
         
@@ -71,8 +92,6 @@ class SpecReviewApp:
         ttk.Label(main_frame, text="Output Folder:").grid(row=row, column=0, sticky="w", pady=5)
         ttk.Entry(main_frame, textvariable=self.output_dir, width=50).grid(row=row, column=1, sticky="ew", pady=5, padx=5)
         ttk.Button(main_frame, text="Browse...", width=10, command=self.browse_output).grid(row=row, column=2, pady=5)
-        row += 1
-        
         row += 1
         
         # Run button
@@ -197,15 +216,13 @@ class SpecReviewApp:
             self.root.after(0, lambda m=msg: self.log(m))
 
         def prog(pct: float, msg: str) -> None:
-            # Your progress bar is indeterminate; we’ll just update status + log milestones.
             self.root.after(0, lambda m=msg: self.set_status(m))
-            # If you ever switch to determinate, you can bind pct to a DoubleVar and set it here.
 
         out = run_review(
             input_dir=input_path,
             output_dir=output_base,
-            dry_run=self.dry_run.get(),
-            verbose=self.verbose.get(),
+            dry_run=False,
+            verbose=False,
             log=log,
             progress=prog,
         )
@@ -220,7 +237,7 @@ class SpecReviewApp:
 
         self.root.after(0, lambda: self.set_status("Done! Click 'Open Output Folder' to view results."))
 
-        # Auto-open report (skip on dry-run where report still exists but may be empty)
+        # Auto-open report
         try:
             self.root.after(0, lambda p=out.report_docx: os.startfile(p))
         except Exception:
@@ -228,7 +245,7 @@ class SpecReviewApp:
 
 
     def on_error(self, message):
-        self.log(f"\n❌ ERROR: {message}")
+        self.log(f"\n✗ ERROR: {message}")
         self.set_status("Error occurred")
         messagebox.showerror("Error", message)
     
