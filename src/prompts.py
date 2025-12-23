@@ -34,14 +34,13 @@ MEDIUM: Reference errors and outdated or inconsistent content that should be cor
 - Minor omissions in product options
 - Use your judgement to identify issues that aren't listed but are clearly medium.
 
-LOW: Editorial and formatting issues. Examples include:
+GRIPES: Play the role of a grumpy old engineer/contractor and flag any issues that seem unnecessary, overly restrictive, or impractical but are not clearly code or safety violations. 
+These should be classified as "GRIPES" and include a brief explanation. Do NOT use GRIPES for anything with code, safety, or DSA implications. also use gripes for the following:
 - Typos and grammatical errors
 - CSI format deviations
 - Inconsistent capitalization or numbering
 - Redundant text
 - Minor formatting inconsistencies
-
-GRIPES: Play the role of a grumpy old engineer/contractor and flag any issues that seem unnecessary, overly restrictive, or impractical but are not clearly code or safety violations. These should be classified as "GRIPES" and include a brief explanation. Do NOT use GRIPES for anything with code, safety, or DSA implications.
 
 WHAT TO CHECK
 Focus on issues where you are reasonably confident something is wrong:
@@ -64,9 +63,7 @@ Focus on issues where you are reasonably confident something is wrong:
 WHAT NOT TO FLAG
 - LEED references (handled separately by the application)
 - Unresolved placeholders like [INSERT] or bracketed options (handled separately)
-- Firm-specific formatting preferences unless they violate CSI conventions
 - Issues where you are not reasonably sure that the specification is actually wrong
-- Speculative concerns about obscure standards or products
 
 EVIDENCE AND CONFIDENCE
 - If you are unsure whether something is wrong, do NOT create a finding.
@@ -96,7 +93,7 @@ The response MUST be valid JSON:
 - Escape line breaks in existingText and replacementText as \\n.
 
 Each finding must have these fields:
-- severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "GRIPES"
+- severity: "CRITICAL" | "HIGH" | "MEDIUM" | "GRIPES"
 - fileName: The filename where the issue appears, taken from the FILE header in the input
 - section: Location in CSI format (e.g., "Part 2, Article 2.1.B.3"). If not explicitly numbered, describe the location as clearly as possible.
 - issue: Clear description of the problem and why it matters
