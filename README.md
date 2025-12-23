@@ -10,9 +10,19 @@ Uses Anthropic Claude Opus 4.5 for LLM analysis.
 - **LEED Detection**: Alerts when LEED references are found
 - **Placeholder Detection**: Flags unresolved placeholders like `[INSERT...]`
 - **Token Management**: Pre-flight token counting with warnings before API calls
+- **Instant Token Analysis**: See token usage immediately when selecting a folder
 - **Severity Classification**: Issues categorized as CRITICAL, HIGH, MEDIUM, and GRIPES
 - **Dual Output**: Human-readable Word report + machine-readable JSON
-- **GUI + CLI**: Desktop interface or command-line workflow
+- **Modern GUI**: Dark-themed CustomTkinter interface with visual token gauge
+
+## GUI Features (v0.2.0)
+
+The new CustomTkinter GUI includes:
+
+- **Token Gauge**: Visual meter showing token capacity usage as soon as you select an input folder
+- **Color-coded Log**: Activity log with timestamps, colored entries for different event types
+- **Modern Dark Theme**: Professional dark interface with accent colors
+- **Instant Feedback**: Token analysis runs immediately on folder selection — know if you're over limit before running
 
 ## Prerequisites
 
@@ -36,9 +46,18 @@ cd spec-review
 # Install dependencies
 pip install -r requirements.txt
 
-# Install the CLI tool
+# Or install with pyproject.toml
 pip install -e .
 ```
+
+### Dependencies
+
+- `anthropic>=0.40.0` — Claude API client
+- `click>=8.1.0` — CLI framework
+- `python-docx>=1.1.0` — Word document handling
+- `rich>=13.0.0` — CLI formatting
+- `tiktoken>=0.7.0` — Token counting
+- `customtkinter>=5.2.0` — Modern GUI framework
 
 ## Configuration
 
@@ -59,6 +78,9 @@ $env:ANTHROPIC_API_KEY="your-api-key-here"
 export ANTHROPIC_API_KEY="your-api-key-here"
 ```
 
+**Or create a key file** (GUI only):
+Create `spec_critic_api_key.txt` in the same directory as the executable, containing just your API key.
+
 ## Usage
 
 ### Directory Structure
@@ -73,6 +95,28 @@ my-project/
 │   └── 22 05 00 - Common Work Results Plumbing.docx
 └── output/                   # Output will be created here
 ```
+
+### GUI (Recommended)
+
+Launch the modern interface:
+
+```bash
+python -m src.gui_ctk
+```
+
+Or if using the compiled executable:
+
+```cmd
+MEP-Spec-Review.exe
+```
+
+**GUI Workflow:**
+1. Enter your API key (or let it auto-load from `spec_critic_api_key.txt`)
+2. Click "Browse" to select your specs folder
+3. **Token gauge updates immediately** — shows capacity usage
+4. Review the log to see files detected
+5. Click "Run Review"
+6. Report opens automatically when complete
 
 ### CLI: Basic Review
 
@@ -92,20 +136,6 @@ Test extraction and preprocessing without calling the API:
 
 ```bash
 spec-review review -i ./specs -o ./output --dry-run --verbose
-```
-
-### GUI
-
-Launch the desktop interface:
-
-```bash
-python src/gui.py
-```
-
-Or if using the compiled executable:
-
-```cmd
-spec-review-gui.exe
 ```
 
 ### Command Options
@@ -209,7 +239,8 @@ spec-review/
 ├── src/
 │   ├── __init__.py      # Package version
 │   ├── cli.py           # CLI entry point (thin shell)
-│   ├── gui.py           # Tkinter GUI (thin shell)
+│   ├── gui_ctk.py       # CustomTkinter GUI (new)
+│   ├── gui.py           # Legacy tkinter GUI (deprecated)
 │   ├── pipeline.py      # Core orchestration (single source of truth)
 │   ├── extractor.py     # DOCX text extraction
 │   ├── preprocessor.py  # LEED/placeholder detection (no mutation)
@@ -217,7 +248,6 @@ spec-review/
 │   ├── prompts.py       # System prompt for Claude
 │   ├── reviewer.py      # Anthropic API client
 │   └── report.py        # Word report generation
-├── requirements.txt
 ├── pyproject.toml
 ├── main.py              # PyInstaller entry point
 ├── spec-review.spec     # PyInstaller config
@@ -245,34 +275,49 @@ pip install pyinstaller
 pyinstaller spec-review.spec --clean
 ```
 
-The executable will be created at `dist/spec-review.exe`.
+The executable will be created at `dist/MEP-Spec-Review.exe`.
 
 **Using the executable:**
 
-```cmd
-REM Set your API key
-set ANTHROPIC_API_KEY=your-key-here
-
-REM Run the tool
-spec-review.exe review -i C:\path\to\specs -o C:\path\to\output
-```
-
-You can copy `spec-review.exe` to any Windows machine — no Python installation required.
+1. Place `spec_critic_api_key.txt` in the same folder as the `.exe` (optional, for auto-load)
+2. Run `MEP-Spec-Review.exe`
+3. Select your specs folder
+4. Review token usage in the gauge
+5. Click "Run Review"
 
 ## Troubleshooting
 
 ### Token Limit Exceeded
 
-If you see "Token limit exceeded", split your input specs into smaller batches and run separately.
+If you see "Token limit exceeded", split your input specs into smaller batches and run separately. The token gauge shows your usage before you even click Run.
 
 ### API Key Not Set
 
-Ensure `ANTHROPIC_API_KEY` is set in your environment before running.
+- Ensure `ANTHROPIC_API_KEY` is set in your environment, OR
+- Create `spec_critic_api_key.txt` next to the executable with your key
 
 ### No .docx Files Found
 
 - Verify files have `.docx` extension (not `.doc`)
 - Check that files aren't temp files (`~$filename.docx`)
+
+### GUI Looks Wrong / Crashes
+
+- Ensure you have `customtkinter>=5.2.0` installed
+- For Python 3.12+, ensure tkinter is available: `pip install tk`
+
+## Changelog
+
+### v0.2.0
+- New CustomTkinter GUI with dark theme
+- Token gauge shows capacity on folder selection
+- Enhanced activity log with colors and timestamps
+- Visual feedback during processing
+
+### v0.1.0
+- Initial release with basic tkinter GUI
+- CLI with --verbose and --dry-run options
+- Streaming API support for Opus 4.5
 
 ## License
 
