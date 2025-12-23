@@ -39,6 +39,22 @@ class PipelineOutputs:
     placeholder_alert_count: int
 
 
+def _normalize_alerts(alerts: list[dict]) -> list[dict]:
+    """
+    Convert alert dicts from preprocessor schema to the report schema expected by report.py:
+    {filename, line, text}
+    """
+    out: list[dict] = []
+    for a in alerts:
+        out.append({
+            "filename": a.get("filename", ""),
+            "line": a.get("line", a.get("position", "")),  # fallback to char position
+            "text": a.get("text", a.get("context", a.get("match", ""))),  # readable snippet
+        })
+    return out
+
+
+
 def _get_docx_files(input_dir: Path) -> list[Path]:
     return sorted([p for p in input_dir.glob("*.docx") if not p.name.startswith("~$")])
 
@@ -143,8 +159,8 @@ def run_review(
         generate_report(
             review_result=dummy,
             files_reviewed=[s.filename for s in specs],
-            leed_alerts=leed_alerts,
-            placeholder_alerts=placeholder_alerts,
+            leed_alerts=_normalize_alerts(leed_alerts),
+            placeholder_alerts=_normalize_alerts(placeholder_alerts),
             output_path=report_docx,
         )
 

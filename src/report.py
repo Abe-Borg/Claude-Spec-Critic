@@ -63,7 +63,7 @@ def create_summary_table(doc: Document, review_result: ReviewResult):
         review_result.critical_count,
         review_result.high_count,
         review_result.medium_count,
-        review_result.gripes_count,
+        review_result.gripe_count,
         review_result.total_count
     ]
     
@@ -308,7 +308,7 @@ def generate_report(
             create_findings_section(doc, review_result.findings, severity)
     
     # Save document
-    report_path = output_path / "report.docx"
+    report_path = output_path
     doc.save(report_path)
-    
     return report_path
+
