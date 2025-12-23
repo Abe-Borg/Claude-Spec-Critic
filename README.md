@@ -32,13 +32,12 @@ The CustomTkinter GUI includes:
 
 | Element | Animation |
 |---------|-----------|
-| Token Gauge | Smooth ease-out fill with color gradient transition |
+| Token Gauge | Smooth ease-out fill (700ms) with color gradient transition |
 | Log Entries | Fade-in from background color (200ms) |
-| Log Pacing | 100ms between file entries, 200ms between status entries |
-| Run Button | Pulse effect while processing, glow on completion |
-| Progress Bar | Slow, smooth indeterminate oscillation |
+| Log Pacing | 200ms between file entries, 400ms between status entries |
+| Run Button | Blue pulse effect while processing, glow on completion |
+| Progress Bar | Standard CustomTkinter indeterminate animation |
 | Thinking Panel | Smooth height animation for expand/collapse |
-| Output Button | Brief border glow on completion |
 
 ## Prerequisites
 
@@ -326,14 +325,14 @@ If you see "Token limit exceeded", split your input specs into smaller batches a
 ## Changelog
 
 ### v0.3.0
-- **Paced log output**: File entries at 100ms, status at 200ms intervals
+- **Paced log output**: File entries at 200ms, status at 400ms intervals
 - **Log fade-in animation**: Entries fade in smoothly from background
-- **Animated token gauge**: Smooth ease-out fill with color gradient
-- **Button pulse animation**: Gentle pulse while processing
+- **Animated token gauge**: Smooth 700ms ease-out fill with color gradient
+- **Button pulse animation**: Visible blue pulse while processing
 - **Button glow on complete**: Brief success glow effect
-- **Slower progress bar**: Calmer indeterminate animation
 - **Smooth panel expand/collapse**: Animated height transitions
-- **Output button glow**: Brief highlight on completion
+- **Larger default window**: 800x800 for bigger log area
+- **Removed output folder button**: Cleaner interface
 - **Animation timing constants**: Centralized in ANIM dict for tuning
 
 ### v0.2.0

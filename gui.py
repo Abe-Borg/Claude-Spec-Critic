@@ -4,6 +4,7 @@ California K-12 DSA Projects
 
 v0.3.0 - Animation polish, log pacing, smooth transitions
 """
+import math
 import os
 import sys
 import threading
@@ -81,16 +82,15 @@ LOG_COLORS = {
 
 # Animation timing (ms)
 ANIM = {
-    "log_file_delay": 100,      # Delay between file log entries
-    "log_status_delay": 200,    # Delay for status log entries
+    "log_file_delay": 200,      # Delay between file log entries
+    "log_status_delay": 400,    # Delay for status log entries
     "gauge_step": 16,           # ~60fps for gauge animation
-    "gauge_duration": 400,      # Total gauge fill animation time
+    "gauge_duration": 700,      # Total gauge fill animation time (slower)
     "fade_duration": 200,       # Fade-in duration for log entries
     "fade_steps": 8,            # Number of fade steps
-    "pulse_interval": 1200,     # Button pulse cycle time
+    "pulse_interval": 1500,     # Button pulse cycle time
     "expand_duration": 200,     # Panel expand/collapse time
     "expand_steps": 10,         # Steps for expand animation
-    "progress_speed": 0.4,      # Indeterminate progress speed (lower = slower)
 }
 
 
@@ -642,15 +642,15 @@ class AnimatedButton(ctk.CTkButton):
         if not self._pulse_active or self._state != "processing":
             return
         
-        # Pulse between bg_input and a slightly lighter shade
+        # Pulse between dark and accent color for visibility
         steps_per_cycle = ANIM["pulse_interval"] // 16
         t = self._pulse_step / steps_per_cycle
         
         # Sin wave for smooth pulsing (0 to 1 to 0)
-        import math
         pulse_t = (math.sin(t * math.pi * 2) + 1) / 2
         
-        color = blend_colors(COLORS["bg_input"], COLORS["border"], pulse_t * 0.5)
+        # Pulse from bg_input to a muted accent for noticeable effect
+        color = blend_colors(COLORS["bg_input"], COLORS["accent"], pulse_t * 0.6)
         self.configure(fg_color=color, hover_color=color)
         
         self._pulse_step = (self._pulse_step + 1) % steps_per_cycle
@@ -711,42 +711,6 @@ class AnimatedButton(ctk.CTkButton):
         self.after(20, lambda: self._animate_glow(step + 1))
 
 
-class SlowProgressBar(ctk.CTkProgressBar):
-    """Progress bar with slower indeterminate animation."""
-    
-    def __init__(self, master, **kwargs):
-        super().__init__(master, **kwargs)
-        self._indeterminate_running = False
-        self._indeterminate_pos = 0.0
-        self._indeterminate_direction = 1
-    
-    def start(self):
-        """Start indeterminate animation (slower than default)."""
-        self._indeterminate_running = True
-        self._animate_indeterminate()
-    
-    def stop(self):
-        """Stop indeterminate animation."""
-        self._indeterminate_running = False
-    
-    def _animate_indeterminate(self):
-        """Custom slower indeterminate animation."""
-        if not self._indeterminate_running:
-            return
-        
-        # Move position
-        self._indeterminate_pos += ANIM["progress_speed"] * self._indeterminate_direction * 0.02
-        
-        # Bounce at edges
-        if self._indeterminate_pos >= 1.0:
-            self._indeterminate_pos = 1.0
-            self._indeterminate_direction = -1
-        elif self._indeterminate_pos <= 0.0:
-            self._indeterminate_pos = 0.0
-            self._indeterminate_direction = 1
-        
-        self.set(self._indeterminate_pos)
-        self.after(16, self._animate_indeterminate)
 
 
 # ============================================================================
@@ -761,8 +725,8 @@ class SpecReviewApp(ctk.CTk):
         
         # Window setup
         self.title("MEP Spec Review")
-        self.geometry("800x700")
-        self.minsize(700, 600)
+        self.geometry("800x800")
+        self.minsize(700, 650)
         self.configure(fg_color=COLORS["bg_dark"])
         
         # State
@@ -802,8 +766,8 @@ class SpecReviewApp(ctk.CTk):
         )
         self.run_button.pack(fill="x", pady=(16, 0))
         
-        # Progress bar (hidden until processing) - using slow version
-        self.progress_bar = SlowProgressBar(
+        # Progress bar (hidden until processing)
+        self.progress_bar = ctk.CTkProgressBar(
             container,
             height=4,
             corner_radius=2,
@@ -820,9 +784,6 @@ class SpecReviewApp(ctk.CTk):
         # Log area
         self.log = EnhancedLog(container)
         self.log.pack(fill="both", expand=True, pady=(16, 0))
-        
-        # Footer with output button
-        self._create_footer(container)
         
     def _create_header(self, parent):
         """Create the header section."""
@@ -965,26 +926,6 @@ class SpecReviewApp(ctk.CTk):
         parent.columnconfigure(1, weight=1)
         setattr(self, variable_name, entry)
         
-    def _create_footer(self, parent):
-        """Create footer with output folder button."""
-        footer = ctk.CTkFrame(parent, fg_color="transparent", height=44)
-        footer.pack(fill="x", pady=(16, 0))
-        
-        self.open_folder_btn = ctk.CTkButton(
-            footer,
-            text="Open Output Folder",
-            font=ctk.CTkFont(size=12),
-            fg_color="transparent",
-            hover_color=COLORS["bg_card"],
-            border_width=1,
-            border_color=COLORS["border"],
-            text_color=COLORS["text_secondary"],
-            height=36,
-            state="disabled",
-            command=self._open_output_folder
-        )
-        self.open_folder_btn.pack(side="right")
-        
     # ========================================================================
     # ACTIONS
     # ========================================================================
@@ -1054,11 +995,6 @@ class SpecReviewApp(ctk.CTk):
         thread = threading.Thread(target=analyze, daemon=True)
         thread.start()
         
-    def _open_output_folder(self):
-        """Open the output folder in file explorer."""
-        if self.last_output_path and self.last_output_path.exists():
-            os.startfile(self.last_output_path)
-            
     def _validate_inputs(self) -> bool:
         """Validate all inputs before running."""
         api_key = self.api_key_entry.get().strip()
@@ -1106,8 +1042,8 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.set_processing()
         self.progress_bar.pack(fill="x", pady=(8, 0), before=self.log)
         self.progress_bar.set(0)
+        self.progress_bar.configure(mode="indeterminate")
         self.progress_bar.start()
-        self.open_folder_btn.configure(state="disabled")
         
         # Set API key
         os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()
@@ -1153,6 +1089,7 @@ class SpecReviewApp(ctk.CTk):
     def _on_review_complete(self, result):
         """Handle successful review completion."""
         self.progress_bar.stop()
+        self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(1.0)
         
         self.log.log_success("Review complete!")
@@ -1172,10 +1109,6 @@ class SpecReviewApp(ctk.CTk):
                 self.thinking_panel.set_thinking(findings.thinking, before_widget=self.log)
             
         self.run_button.set_complete()
-        self.open_folder_btn.configure(state="normal")
-        
-        # Brief glow effect on output button
-        self._glow_output_button()
         
         # Reset button after delay
         self.after(2500, self._reset_ui)
@@ -1185,27 +1118,6 @@ class SpecReviewApp(ctk.CTk):
             os.startfile(result.report_docx)
         except Exception:
             pass
-    
-    def _glow_output_button(self):
-        """Brief glow effect on the output folder button."""
-        original_border = COLORS["border"]
-        glow_color = COLORS["success"]
-        
-        def animate(step):
-            if step >= 10:
-                self.open_folder_btn.configure(border_color=original_border)
-                return
-            
-            t = step / 10
-            if t < 0.3:
-                color = blend_colors(original_border, glow_color, t / 0.3)
-            else:
-                color = blend_colors(glow_color, original_border, (t - 0.3) / 0.7)
-            
-            self.open_folder_btn.configure(border_color=color)
-            self.after(30, lambda: animate(step + 1))
-        
-        animate(0)
             
     def _on_review_error(self, error_msg: str):
         """Handle review error."""
