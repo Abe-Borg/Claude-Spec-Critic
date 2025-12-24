@@ -628,7 +628,7 @@ class AnimatedButton(ctk.CTkButton):
         self._state = "processing"
         self.configure(
             text="Processing...",
-            text_color=COLORS["text_primary"],
+            text_color_disabled="#FFFFFF",
             state="disabled"
         )
         self._start_pulse()
