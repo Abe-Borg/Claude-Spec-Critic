@@ -7,6 +7,7 @@ Uses Anthropic Claude Opus 4.5 for LLM analysis.
 ## Features
 
 - **Batch Review**: Process multiple specification documents at once (limited by LLM context window)
+- **File Selection**: Choose which specs to include/exclude from analysis with per-file token counts
 - **LEED Detection**: Alerts when LEED references are found
 - **Placeholder Detection**: Flags unresolved placeholders like `[INSERT...]`
 - **Token Management**: Pre-flight token counting with warnings before API calls
@@ -16,6 +17,21 @@ Uses Anthropic Claude Opus 4.5 for LLM analysis.
 - **Modern GUI**: Dark-themed CustomTkinter interface with animations and visual polish
 - **Live Streaming**: Watch Claude's analysis appear in real-time as it's generated
 - **Personality**: Claude provides entertaining, ball-busting commentary on spec quality
+
+## What's New in v0.5.0
+
+### File Selection Panel
+New collapsible panel showing all loaded files with checkboxes. Uncheck files to exclude them from analysis. The token gauge updates instantly when you change selections — making it easy to stay under the token limit without reloading folders.
+
+Features:
+- Per-file token counts so you can see which specs are eating your budget
+- "All" / "None" buttons for quick bulk selection
+- Dimmed styling for deselected files
+- Collapsible to save space once you've made your selection
+- Run button automatically disables when over limit or no files selected
+
+### Capacity Exceeded Warning
+When tokens exceed the 150k limit, the gauge now shows "⚠ Capacity Exceeded!" in bright red and the Run button is disabled until you deselect enough files.
 
 ## What's New in v0.4.0
 
@@ -32,10 +48,11 @@ The findings themselves remain professional and actionable. The sass is in the a
 ### Analysis Summary in Report
 Claude's analysis summary is now included at the end of the Word report under "Reviewer's Notes" — giving you both the formal findings and the reviewer's take on spec quality.
 
-## GUI Features (v0.4.0)
+## GUI Features (v0.5.0)
 
 The CustomTkinter GUI includes:
 
+- **File Selection Panel**: Checkboxes for each file with per-file token counts
 - **Live Streaming Panel**: Real-time display of Claude's analysis with blinking indicator
 - **Animated Token Gauge**: Visual meter with smooth fill animation showing token capacity usage
 - **Paced Activity Log**: Entries appear at a readable pace (200ms for files, 400ms for status)
@@ -48,6 +65,7 @@ The CustomTkinter GUI includes:
 
 | Element | Animation |
 |---------|-----------|
+| File Selection | Instant token recalculation on checkbox change |
 | Streaming Panel | Real-time text with blinking indicator |
 | Token Gauge | Smooth ease-out fill (700ms) with color gradient transition |
 | Log Entries | Fade-in from background color (200ms) |

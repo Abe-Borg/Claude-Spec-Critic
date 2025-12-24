@@ -78,6 +78,7 @@ def run_review(
     *,
     input_dir: Path,
     output_dir: Path,
+    files: Optional[list[Path]] = None,
     dry_run: bool = False,
     verbose: bool = False,
     log: LogFn = _noop_log,
@@ -91,6 +92,7 @@ def run_review(
     Args:
         input_dir: Directory containing .docx specification files
         output_dir: Directory for output files
+        files: Optional list of specific files to process (if None, uses all .docx in input_dir)
         dry_run: If True, skip API call
         verbose: Enable verbose logging
         log: Callback for log messages
@@ -104,7 +106,12 @@ def run_review(
     output_dir = Path(output_dir)
     run_dir = _create_run_dir(output_dir)
 
-    docx_files = _get_docx_files(input_dir)
+    # Use provided files list, or scan directory
+    if files:
+        docx_files = [Path(f) for f in files]
+    else:
+        docx_files = _get_docx_files(input_dir)
+    
     if not docx_files:
         raise FileNotFoundError(f"No .docx files found in: {input_dir}")
 

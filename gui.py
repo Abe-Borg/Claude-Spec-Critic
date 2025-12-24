@@ -287,6 +287,244 @@ class TokenGauge(ctk.CTkFrame):
         )
 
 
+
+class FileListPanel(ctk.CTkFrame):
+    """Collapsible panel showing loaded files with checkboxes for selection."""
+    
+    def __init__(self, master, on_selection_change: callable = None, **kwargs):
+        super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
+        
+        self._expanded = True
+        self._animating = False
+        self._file_data: list[dict] = []  # [{path, filename, tokens, var (BooleanVar)}]
+        self._on_selection_change = on_selection_change
+        
+        # Header (clickable to expand/collapse)
+        self.header = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2")
+        self.header.pack(fill="x", padx=16, pady=12)
+        self.header.bind("<Button-1>", self._toggle)
+        
+        # Expand/collapse indicator
+        self.expand_label = ctk.CTkLabel(
+            self.header,
+            text="▼",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["text_muted"],
+            width=20
+        )
+        self.expand_label.pack(side="left")
+        self.expand_label.bind("<Button-1>", self._toggle)
+        
+        # Title
+        self.title_label = ctk.CTkLabel(
+            self.header,
+            text="FILES",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLORS["text_muted"]
+        )
+        self.title_label.pack(side="left", padx=(4, 0))
+        self.title_label.bind("<Button-1>", self._toggle)
+        
+        # File count label
+        self.count_label = ctk.CTkLabel(
+            self.header,
+            text="",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLORS["text_secondary"]
+        )
+        self.count_label.pack(side="right")
+        self.count_label.bind("<Button-1>", self._toggle)
+        
+        # Select all / none buttons
+        self.btn_frame = ctk.CTkFrame(self.header, fg_color="transparent")
+        self.btn_frame.pack(side="right", padx=(0, 16))
+        
+        self.select_all_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="All",
+            width=40,
+            height=22,
+            font=ctk.CTkFont(size=10),
+            fg_color="transparent",
+            hover_color=COLORS["bg_input"],
+            text_color=COLORS["text_muted"],
+            command=self._select_all
+        )
+        self.select_all_btn.pack(side="left", padx=(0, 4))
+        
+        self.select_none_btn = ctk.CTkButton(
+            self.btn_frame,
+            text="None",
+            width=40,
+            height=22,
+            font=ctk.CTkFont(size=10),
+            fg_color="transparent",
+            hover_color=COLORS["bg_input"],
+            text_color=COLORS["text_muted"],
+            command=self._select_none
+        )
+        self.select_none_btn.pack(side="left")
+        
+        # Content container (for animation)
+        self.content_container = ctk.CTkFrame(self, fg_color="transparent")
+        
+        # Scrollable file list
+        self.file_list = ctk.CTkScrollableFrame(
+            self.content_container,
+            fg_color=COLORS["bg_input"],
+            corner_radius=4,
+            height=150
+        )
+        self.file_list.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        
+        # Initially hidden until files loaded
+        self.pack_forget()
+    
+    def load_files(self, file_data: list[dict]):
+        """
+        Load files into the panel.
+        
+        Args:
+            file_data: List of dicts with 'path', 'filename', 'tokens' keys
+        """
+        # Clear existing
+        for widget in self.file_list.winfo_children():
+            widget.destroy()
+        self._file_data.clear()
+        
+        # Create checkbox rows
+        for data in file_data:
+            var = ctk.BooleanVar(value=True)
+            var.trace_add("write", lambda *args: self._on_checkbox_change())
+            
+            row = ctk.CTkFrame(self.file_list, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            
+            cb = ctk.CTkCheckBox(
+                row,
+                text="",
+                variable=var,
+                width=24,
+                height=24,
+                checkbox_width=18,
+                checkbox_height=18,
+                corner_radius=4,
+                border_width=2,
+                fg_color=COLORS["accent"],
+                hover_color=COLORS["accent_hover"],
+                border_color=COLORS["border"],
+                checkmark_color=COLORS["text_primary"]
+            )
+            cb.pack(side="left")
+            
+            name_label = ctk.CTkLabel(
+                row,
+                text=data["filename"],
+                font=ctk.CTkFont(family="Segoe UI", size=11),
+                text_color=COLORS["text_secondary"],
+                anchor="w"
+            )
+            name_label.pack(side="left", padx=(8, 0), fill="x", expand=True)
+            
+            token_label = ctk.CTkLabel(
+                row,
+                text=f"{data['tokens']:,}",
+                font=ctk.CTkFont(family="Consolas", size=10),
+                text_color=COLORS["text_muted"],
+                width=60,
+                anchor="e"
+            )
+            token_label.pack(side="right", padx=(8, 4))
+            
+            self._file_data.append({
+                "path": data["path"],
+                "filename": data["filename"],
+                "tokens": data["tokens"],
+                "var": var,
+                "row": row,
+                "name_label": name_label
+            })
+        
+        self._update_count_label()
+        
+        # Show panel
+        self.pack(fill="x", pady=(16, 0))
+        self.content_container.pack(fill="x")
+        self._expanded = True
+        self.expand_label.configure(text="▼")
+    
+    def get_selected_files(self) -> list[Path]:
+        """Return list of paths for selected files."""
+        return [d["path"] for d in self._file_data if d["var"].get()]
+    
+    def get_selected_tokens(self) -> int:
+        """Return total tokens for selected files."""
+        return sum(d["tokens"] for d in self._file_data if d["var"].get())
+    
+    def get_selected_count(self) -> int:
+        """Return count of selected files."""
+        return sum(1 for d in self._file_data if d["var"].get())
+    
+    def _on_checkbox_change(self):
+        """Handle checkbox state change."""
+        self._update_count_label()
+        self._update_row_styling()
+        if self._on_selection_change:
+            self._on_selection_change()
+    
+    def _update_count_label(self):
+        """Update the file count display."""
+        selected = self.get_selected_count()
+        total = len(self._file_data)
+        self.count_label.configure(text=f"{selected}/{total} selected")
+    
+    def _update_row_styling(self):
+        """Dim unselected files."""
+        for d in self._file_data:
+            if d["var"].get():
+                d["name_label"].configure(text_color=COLORS["text_secondary"])
+            else:
+                d["name_label"].configure(text_color=COLORS["text_muted"])
+    
+    def _select_all(self):
+        """Select all files."""
+        for d in self._file_data:
+            d["var"].set(True)
+    
+    def _select_none(self):
+        """Deselect all files."""
+        for d in self._file_data:
+            d["var"].set(False)
+    
+    def _toggle(self, event=None):
+        """Toggle expanded/collapsed state."""
+        if self._animating:
+            return
+        if self._expanded:
+            self._collapse()
+        else:
+            self._expand()
+    
+    def _expand(self):
+        """Expand the content."""
+        self._expanded = True
+        self.expand_label.configure(text="▼")
+        self.content_container.pack(fill="x")
+    
+    def _collapse(self):
+        """Collapse the content."""
+        self._expanded = False
+        self.expand_label.configure(text="▶")
+        self.content_container.pack_forget()
+    
+    def reset(self):
+        """Clear all files and hide panel."""
+        for widget in self.file_list.winfo_children():
+            widget.destroy()
+        self._file_data.clear()
+        self.pack_forget()
+
+
 class EnhancedLog(ctk.CTkFrame):
     """Enhanced log display with colored entries, timestamps, and paced output."""
     
@@ -919,6 +1157,13 @@ class SpecReviewApp(ctk.CTk):
         
         # Input fields card
         self._create_inputs_card(container)
+
+        # File list panel (hidden until folder selected)
+        self.file_list_panel = FileListPanel(
+            container,
+            on_selection_change=self._on_file_selection_change
+        )
+        # Note: pack is called dynamically when files are loaded
         
         # Token gauge
         self.token_gauge = TokenGauge(container)
@@ -1124,7 +1369,7 @@ class SpecReviewApp(ctk.CTk):
             self.output_dir_entry.insert(0, folder)
             
     def _analyze_folder_tokens(self):
-        """Analyze token usage for selected folder."""
+        """Analyze token usage for selected folder and populate file list."""
         if not self.input_dir or not self.input_dir.exists():
             return
             
@@ -1132,6 +1377,7 @@ class SpecReviewApp(ctk.CTk):
         if not docx_files:
             self.log.log_warning("No .docx files found in folder")
             self.token_gauge.reset()
+            self.file_list_panel.reset()
             return
             
         self.log.log_step(f"Analyzing {len(docx_files)} files...")
@@ -1139,34 +1385,79 @@ class SpecReviewApp(ctk.CTk):
         # Run analysis in background to keep UI responsive
         def analyze():
             try:
-                spec_contents = []
+                file_data = []  # For FileListPanel
+                system_prompt = get_system_prompt()
+                
+                # Get system prompt tokens once
+                from tiktoken import get_encoding
+                encoder = get_encoding("cl100k_base")
+                self._system_prompt_tokens = len(encoder.encode(system_prompt))
+                
                 for f in docx_files:
                     try:
                         spec = extract_text_from_docx(f)
-                        spec_contents.append((spec.filename, spec.content))
+                        tokens = len(encoder.encode(spec.content))
+                        file_data.append({
+                            "path": f,
+                            "filename": spec.filename,
+                            "tokens": tokens,
+                            "content": spec.content
+                        })
                         self.after(0, lambda name=f.name: self.log.log_file(name))
                     except Exception as e:
                         self.after(0, lambda err=str(e), name=f.name: 
                                    self.log.log_warning(f"Could not read {name}: {err}"))
                 
-                if spec_contents:
-                    system_prompt = get_system_prompt()
-                    summary = analyze_token_usage(spec_contents, system_prompt)
+                if file_data:
+                    # Store file data for later use
+                    self._loaded_file_data = file_data
                     
+                    # Calculate total tokens
+                    content_tokens = sum(d["tokens"] for d in file_data)
+                    total_tokens = self._system_prompt_tokens + content_tokens
+                    
+                    # Update UI
+                    self.after(0, lambda: self.file_list_panel.load_files(file_data))
                     self.after(0, lambda: self.token_gauge.update_gauge(
-                        summary.total_tokens, 
-                        len(spec_contents)
+                        total_tokens, 
+                        len(file_data)
                     ))
                     self.after(0, lambda: self.log.log_success(
-                        f"Token analysis complete: {summary.total_tokens:,} tokens"
+                        f"Token analysis complete: {total_tokens:,} tokens"
                     ))
-                    self.after(0, lambda: self._update_run_button_state(summary.within_limit))
+                    # Enable/disable run button based on token limit
+                    within_limit = total_tokens <= RECOMMENDED_MAX
+                    self.after(0, lambda: self._update_run_button_state(within_limit))
                     
             except Exception as e:
                 self.after(0, lambda: self.log.log_error(f"Analysis failed: {e}"))
                 
         thread = threading.Thread(target=analyze, daemon=True)
         thread.start()
+    
+    def _on_file_selection_change(self):
+        """Handle file selection changes - recalculate tokens."""
+        if not hasattr(self, "_loaded_file_data") or not self._loaded_file_data:
+            return
+        
+        # Get selected file data
+        selected_paths = set(self.file_list_panel.get_selected_files())
+        selected_tokens = sum(
+            d["tokens"] for d in self._loaded_file_data 
+            if d["path"] in selected_paths
+        )
+        
+        # Add system prompt tokens
+        total_tokens = getattr(self, "_system_prompt_tokens", 0) + selected_tokens
+        file_count = len(selected_paths)
+        
+        # Update gauge
+        self.token_gauge.update_gauge(total_tokens, file_count)
+        
+        # Update run button state - disabled if over limit OR no files selected
+        within_limit = total_tokens <= RECOMMENDED_MAX
+        has_files = file_count > 0
+        self._update_run_button_state(within_limit and has_files)
 
     def _update_run_button_state(self, within_limit: bool):
         """Enable or disable the run button based on token limit."""
