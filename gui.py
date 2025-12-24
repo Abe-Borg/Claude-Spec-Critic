@@ -1214,8 +1214,7 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
         self.progress_bar.set(0)
         self.progress_bar.configure(mode="indeterminate")
-        self.progress_bar.start(interval=40)  # Slower animation (default is ~20ms)
-        
+        self.progress_bar.start()
         # Set API key
         os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()
         
