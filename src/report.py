@@ -1,6 +1,7 @@
 """Word report generation module."""
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -229,12 +230,54 @@ def create_findings_section(doc: Document, findings: list[Finding], severity: st
         create_finding_entry(doc, finding, i)
 
 
+def create_analysis_summary_section(doc: Document, analysis_summary: str):
+    """Create the reviewer's analysis summary section at the end of the document."""
+    if not analysis_summary:
+        return
+    
+    # Page break before the summary
+    doc.add_page_break()
+    
+    # Section heading
+    heading = doc.add_heading("Reviewer's Notes", level=0)
+    heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    
+    # Subtitle explaining the section
+    subtitle = doc.add_paragraph()
+    run = subtitle.add_run("Claude's analysis summary — the reviewer's take on these specifications.")
+    run.font.size = Pt(11)
+    run.font.italic = True
+    run.font.color.rgb = RGBColor(128, 128, 128)
+    subtitle.paragraph_format.space_after = Pt(12)
+    
+    # The analysis summary content
+    # Split by paragraphs to preserve formatting
+    for para_text in analysis_summary.split('\n\n'):
+        para_text = para_text.strip()
+        if para_text:
+            para = doc.add_paragraph()
+            run = para.add_run(para_text)
+            run.font.size = Pt(11)
+            para.paragraph_format.space_after = Pt(8)
+    
+    # If there were no double-newlines, just add as single paragraph
+    if '\n\n' not in analysis_summary:
+        for para_text in analysis_summary.split('\n'):
+            para_text = para_text.strip()
+            if para_text:
+                para = doc.add_paragraph()
+                run = para.add_run(para_text)
+                run.font.size = Pt(11)
+                para.paragraph_format.space_after = Pt(8)
+
+
 def generate_report(
     review_result: ReviewResult,
     files_reviewed: list[str],
     leed_alerts: list,
     placeholder_alerts: list,
-    output_path: Path
+    output_path: Path,
+    analysis_summary: Optional[str] = None,
 ) -> Path:
     """
     Generate a Word document report from review results.
@@ -245,6 +288,7 @@ def generate_report(
         leed_alerts: List of LEED alert dicts
         placeholder_alerts: List of placeholder alert dicts
         output_path: Path to save the report
+        analysis_summary: Optional Claude analysis summary to include at end
         
     Returns:
         Path to the generated report
@@ -307,8 +351,13 @@ def generate_report(
         for severity in SEVERITY_ORDER:
             create_findings_section(doc, review_result.findings, severity)
     
+    # Analysis summary at the end (if provided)
+    # Use the passed parameter, or fall back to review_result.thinking
+    summary_text = analysis_summary or review_result.thinking
+    if summary_text:
+        create_analysis_summary_section(doc, summary_text)
+    
     # Save document
     report_path = output_path
     doc.save(report_path)
     return report_path
-

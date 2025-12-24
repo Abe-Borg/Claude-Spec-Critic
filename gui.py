@@ -2,7 +2,7 @@
 MEP Spec Review - Modern GUI with CustomTkinter
 California K-12 DSA Projects
 
-v0.3.0 - Animation polish, log pacing, smooth transitions
+v0.4.0 - Live streaming of Claude's analysis + sassy personality
 """
 import math
 import os
@@ -67,6 +67,7 @@ COLORS = {
     "high": "#F97316",
     "medium": "#EAB308",
     "gripe": "#A855F7",
+    "streaming": "#10B981",     # Teal for streaming indicator
 }
 
 # Log entry types with colors
@@ -91,6 +92,7 @@ ANIM = {
     "pulse_interval": 1500,     # Button pulse cycle time
     "expand_duration": 200,     # Panel expand/collapse time
     "expand_steps": 10,         # Steps for expand animation
+    "cursor_blink": 530,        # Cursor blink interval for streaming
 }
 
 
@@ -426,6 +428,166 @@ class EnhancedLog(ctk.CTkFrame):
         self._queue_log(f"  → {filename}", "file", False, ANIM["log_file_delay"])
 
 
+class StreamingPanel(ctk.CTkFrame):
+    """
+    Panel for displaying Claude's analysis in real-time as it streams in.
+    Shows a live feed of text with a blinking cursor effect.
+    """
+    
+    def __init__(self, master, **kwargs):
+        super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
+        
+        self._streaming = False
+        self._full_text = ""
+        self._cursor_visible = True
+        self._cursor_job = None
+        
+        # Header
+        self.header = ctk.CTkFrame(self, fg_color="transparent")
+        self.header.pack(fill="x", padx=16, pady=(12, 8))
+        
+        # Streaming indicator (animated dot)
+        self.indicator = ctk.CTkLabel(
+            self.header,
+            text="●",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["streaming"],
+            width=20
+        )
+        self.indicator.pack(side="left")
+        
+        # Title
+        self.title_label = ctk.CTkLabel(
+            self.header,
+            text="CLAUDE'S ANALYSIS",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLORS["text_muted"]
+        )
+        self.title_label.pack(side="left", padx=(4, 0))
+        
+        # Status label
+        self.status_label = ctk.CTkLabel(
+            self.header,
+            text="",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLORS["text_muted"]
+        )
+        self.status_label.pack(side="right")
+        
+        # Content area with textbox for streaming text
+        self.content_frame = ctk.CTkFrame(self, fg_color=COLORS["bg_input"], corner_radius=4)
+        self.content_frame.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        
+        self.content_text = ctk.CTkTextbox(
+            self.content_frame,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_primary"],
+            fg_color="transparent",
+            wrap="word",
+            height=120,
+            activate_scrollbars=True
+        )
+        self.content_text.pack(fill="both", expand=True, padx=12, pady=12)
+        
+        # Initially hidden
+        self.pack_forget()
+        
+    def start_streaming(self, before_widget=None):
+        """Start streaming mode - show panel and prepare for text."""
+        self._streaming = True
+        self._full_text = ""
+        
+        # Clear and enable the textbox
+        self.content_text.configure(state="normal")
+        self.content_text.delete("1.0", "end")
+        
+        # Update status
+        self.status_label.configure(text="streaming...", text_color=COLORS["streaming"])
+        self.indicator.configure(text_color=COLORS["streaming"])
+        
+        # Show the panel
+        if before_widget:
+            self.pack(fill="x", pady=(16, 0), before=before_widget)
+        else:
+            self.pack(fill="x", pady=(16, 0))
+        
+        # Start cursor blink animation
+        self._start_cursor_blink()
+        
+    def _start_cursor_blink(self):
+        """Start the blinking cursor animation."""
+        self._cursor_visible = True
+        self._animate_cursor()
+        
+    def _animate_cursor(self):
+        """Animate the streaming indicator."""
+        if not self._streaming:
+            self.indicator.configure(text_color=COLORS["success"])
+            return
+        
+        # Pulse the indicator
+        if self._cursor_visible:
+            self.indicator.configure(text_color=COLORS["streaming"])
+        else:
+            self.indicator.configure(text_color=COLORS["bg_card"])
+        
+        self._cursor_visible = not self._cursor_visible
+        self._cursor_job = self.after(ANIM["cursor_blink"], self._animate_cursor)
+        
+    def append_text(self, chunk: str):
+        """Append a chunk of text to the display."""
+        if not self._streaming:
+            return
+            
+        self._full_text += chunk
+        
+        # Insert text at end
+        self.content_text.insert("end", chunk)
+        
+        # Auto-scroll to bottom
+        self.content_text.see("end")
+        
+    def finish_streaming(self):
+        """Finish streaming mode - stop animations and finalize."""
+        self._streaming = False
+        
+        # Stop cursor animation
+        if self._cursor_job:
+            self.after_cancel(self._cursor_job)
+            self._cursor_job = None
+        
+        # Update status
+        self.status_label.configure(text="complete", text_color=COLORS["success"])
+        self.indicator.configure(text_color=COLORS["success"])
+        
+        # Make textbox read-only
+        self.content_text.configure(state="disabled")
+        
+    def get_full_text(self) -> str:
+        """Get the complete streamed text."""
+        return self._full_text
+        
+    def hide(self):
+        """Hide the panel entirely."""
+        self._streaming = False
+        if self._cursor_job:
+            self.after_cancel(self._cursor_job)
+            self._cursor_job = None
+        self.pack_forget()
+        
+    def clear(self):
+        """Clear content and reset state."""
+        self._streaming = False
+        self._full_text = ""
+        if self._cursor_job:
+            self.after_cancel(self._cursor_job)
+            self._cursor_job = None
+        self.content_text.configure(state="normal")
+        self.content_text.delete("1.0", "end")
+        self.status_label.configure(text="")
+        self.pack_forget()
+
+
 class ThinkingPanel(ctk.CTkFrame):
     """Collapsible panel to display Claude's reasoning process with smooth animation."""
     
@@ -727,8 +889,8 @@ class SpecReviewApp(ctk.CTk):
         
         # Window setup
         self.title("MEP Spec Review")
-        self.geometry("800x800")
-        self.minsize(700, 650)
+        self.geometry("800x850")
+        self.minsize(700, 700)
         self.configure(fg_color=COLORS["bg_dark"])
         
         # State
@@ -779,7 +941,11 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.set(0)
         # Will be packed when processing starts
         
-        # Thinking panel (hidden until review complete)
+        # Streaming panel (shows Claude's live response)
+        self.streaming_panel = StreamingPanel(container)
+        # Note: pack is called dynamically when streaming starts
+        
+        # Thinking panel (shows final analysis, collapsible) - kept for backwards compat
         self.thinking_panel = ThinkingPanel(container)
         # Note: pack is called dynamically when thinking is available
         
@@ -1035,6 +1201,7 @@ class SpecReviewApp(ctk.CTk):
             return
             
         self.is_processing = True
+        self.streaming_panel.clear()
         self.thinking_panel.clear()
         
         # Add separator in log for new run
@@ -1068,6 +1235,20 @@ class SpecReviewApp(ctk.CTk):
                 
             def progress_callback(pct: float, msg: str):
                 self.after(0, lambda m=msg: self.log.log_step(m))
+            
+            # Create stream callback for real-time display
+            stream_started = [False]  # Use list to allow mutation in closure
+            
+            def stream_callback(chunk: str):
+                """Called with each text chunk from Claude's response."""
+                # Start streaming panel on first chunk
+                if not stream_started[0]:
+                    stream_started[0] = True
+                    self.after(0, lambda: self.streaming_panel.start_streaming(before_widget=self.log))
+                    self.after(0, lambda: self.log.log_step("Claude is analyzing..."))
+                
+                # Append chunk to streaming panel
+                self.after(0, lambda c=chunk: self.streaming_panel.append_text(c))
                 
             result = run_review(
                 input_dir=input_path,
@@ -1075,10 +1256,14 @@ class SpecReviewApp(ctk.CTk):
                 dry_run=False,
                 verbose=False,
                 log=log_callback,
-                progress=progress_callback
+                progress=progress_callback,
+                stream_callback=stream_callback,
             )
             
             self.last_output_path = result.run_dir
+            
+            # Finish streaming
+            self.after(0, lambda: self.streaming_panel.finish_streaming())
             
             # Success
             self.after(0, lambda: self._on_review_complete(result))
@@ -1115,10 +1300,6 @@ class SpecReviewApp(ctk.CTk):
                 level="muted"
             )
             
-            # Display Claude's thinking if present
-            if findings.thinking:
-                self.thinking_panel.set_thinking(findings.thinking, before_widget=self.log)
-            
         self.run_button.set_complete()
         
         # Reset button after delay
@@ -1134,6 +1315,9 @@ class SpecReviewApp(ctk.CTk):
         """Handle review error."""
         self.progress_bar.stop()
         self.progress_bar.pack_forget()
+        
+        # Finish streaming panel if it was active
+        self.streaming_panel.finish_streaming()
         
         self.log.log_error(f"Review failed: {error_msg}")
         self.run_button.set_ready()

@@ -14,30 +14,46 @@ Uses Anthropic Claude Opus 4.5 for LLM analysis.
 - **Severity Classification**: Issues categorized as CRITICAL, HIGH, MEDIUM, and GRIPES
 - **Dual Output**: Human-readable Word report + machine-readable JSON
 - **Modern GUI**: Dark-themed CustomTkinter interface with animations and visual polish
+- **Live Streaming**: Watch Claude's analysis appear in real-time as it's generated
+- **Personality**: Claude provides entertaining, ball-busting commentary on spec quality
 
-## GUI Features (v0.3.0)
+## What's New in v0.4.0
+
+### Live Streaming
+Watch Claude's analysis appear character-by-character in real-time. No more staring at a blank screen wondering if anything is happening — you see Claude's thoughts as they form.
+
+### Sassy Claude
+Claude now has personality. Instead of dry, clinical output, you get honest (and often entertaining) commentary:
+
+> "Alright, let's talk about what's happening here. Whoever wrote this spec seems to think we're still in 2019 — I found ASCE 7-16 references scattered around like confetti. Also, Division 15? Really? MasterFormat updated that numbering scheme back when flip phones were cool."
+
+The findings themselves remain professional and actionable. The sass is in the analysis summary.
+
+### Analysis Summary in Report
+Claude's analysis summary is now included at the end of the Word report under "Reviewer's Notes" — giving you both the formal findings and the reviewer's take on spec quality.
+
+## GUI Features (v0.4.0)
 
 The CustomTkinter GUI includes:
 
+- **Live Streaming Panel**: Real-time display of Claude's analysis with blinking indicator
 - **Animated Token Gauge**: Visual meter with smooth fill animation showing token capacity usage
-- **Paced Activity Log**: Entries appear at a readable pace (100ms for files, 200ms for status changes)
+- **Paced Activity Log**: Entries appear at a readable pace (200ms for files, 400ms for status)
 - **Fade-in Log Entries**: New log entries fade in smoothly instead of popping
 - **Animated Run Button**: Gentle pulse during processing, glow effect on completion
-- **Smooth Progress Bar**: Slower, calmer indeterminate animation during API calls
-- **Collapsible Analysis Panel**: Smooth expand/collapse animation for Claude's analysis summary
-- **Completion Effects**: Button glow and output folder button highlight when review finishes
+- **Smooth Progress Bar**: Indeterminate animation during API calls
 - **Modern Dark Theme**: Professional dark interface with accent colors
 
 ### Animation Details
 
 | Element | Animation |
 |---------|-----------|
+| Streaming Panel | Real-time text with blinking indicator |
 | Token Gauge | Smooth ease-out fill (700ms) with color gradient transition |
 | Log Entries | Fade-in from background color (200ms) |
 | Log Pacing | 200ms between file entries, 400ms between status entries |
 | Run Button | Blue pulse effect while processing, glow on completion |
 | Progress Bar | Standard CustomTkinter indeterminate animation |
-| Thinking Panel | Smooth height animation for expand/collapse |
 
 ## Prerequisites
 
@@ -131,7 +147,7 @@ MEP-Spec-Review.exe
 3. **Watch the animated token gauge** — shows capacity usage with smooth fill
 4. **Review the paced log** — entries appear at a readable speed
 5. Click "Run Review"
-6. **See the button pulse** while processing
+6. **Watch Claude's analysis stream in real-time** — see the thinking as it happens
 7. Report opens automatically when complete
 
 ### CLI: Basic Review
@@ -178,8 +194,8 @@ Each run creates a timestamped folder:
 ```
 output/
 └── review_YYYY-MM-DD_HHMMSS/
-    ├── report.docx           # Human-readable findings report
-    ├── findings.json         # Machine-readable findings + alerts
+    ├── report.docx           # Human-readable findings report (includes analysis summary)
+    ├── findings.json         # Machine-readable findings + alerts + analysis summary
     ├── raw_response.txt      # Raw Claude response (for debugging)
     ├── inputs_combined.txt   # Combined spec text sent to API
     ├── token_summary.json    # Token usage breakdown
@@ -211,9 +227,21 @@ output/
   "alerts": {
     "leed_alerts": [...],
     "placeholder_alerts": [...]
-  }
+  },
+  "analysis_summary": "Alright, let's see what we've got here..."
 }
 ```
+
+### Word Report Structure
+
+The Word report (`report.docx`) now includes:
+
+1. **Header** — Title, generation date, model info
+2. **Files Reviewed** — List of analyzed specifications
+3. **Summary** — Finding counts by severity, token usage, processing time
+4. **Alerts** — LEED references and unresolved placeholders
+5. **Findings** — Detailed findings organized by severity (CRITICAL → HIGH → MEDIUM → GRIPES)
+6. **Reviewer's Notes** — Claude's analysis summary with personality (at the end)
 
 ## Severity Definitions
 
@@ -255,14 +283,14 @@ spec-review/
 ├── src/
 │   ├── __init__.py      # Package version
 │   ├── cli.py           # CLI entry point (thin shell)
-│   ├── gui.py           # CustomTkinter GUI with animations
+│   ├── gui.py           # CustomTkinter GUI with streaming + animations
 │   ├── pipeline.py      # Core orchestration (single source of truth)
 │   ├── extractor.py     # DOCX text extraction
 │   ├── preprocessor.py  # LEED/placeholder detection (no mutation)
 │   ├── tokenizer.py     # Token counting with tiktoken
-│   ├── prompts.py       # System prompt for Claude
-│   ├── reviewer.py      # Anthropic API client
-│   └── report.py        # Word report generation
+│   ├── prompts.py       # System prompt for Claude (with personality)
+│   ├── reviewer.py      # Anthropic API client with streaming support
+│   └── report.py        # Word report generation (includes analysis summary)
 ├── pyproject.toml
 ├── main.py              # PyInstaller entry point
 ├── spec-review.spec     # PyInstaller config
@@ -274,6 +302,7 @@ spec-review/
 
 - **Single pipeline**: All workflow logic lives in `pipeline.py`. CLI and GUI are thin shells.
 - **Single model**: Hardcoded to Claude Opus 4.5. No model selection flags.
+- **Streaming support**: `reviewer.py` accepts a callback for real-time text chunks.
 - **No document mutation**: This repo only analyzes specs. Cleanup belongs in Spec_Cleanse.
 - **Advisory only**: This tool assists human reviewers. It is not an AHJ substitute.
 
@@ -299,7 +328,8 @@ The executable will be created at `dist/MEP-Spec-Review.exe`.
 3. Select your specs folder
 4. Watch the animated token gauge fill
 5. Click "Run Review"
-6. Enjoy the smooth animations while processing
+6. Watch Claude's analysis stream in real-time
+7. Enjoy the sassy commentary
 
 ## Troubleshooting
 
@@ -322,7 +352,21 @@ If you see "Token limit exceeded", split your input specs into smaller batches a
 - Ensure you have `customtkinter>=5.2.0` installed
 - For Python 3.12+, ensure tkinter is available: `pip install tk`
 
+### Streaming Not Working
+
+- Ensure you have `anthropic>=0.40.0` installed
+- Check your network connection
+- The streaming panel should appear automatically when Claude starts responding
+
 ## Changelog
+
+### v0.4.0
+- **Live streaming**: Watch Claude's analysis appear in real-time
+- **Sassy Claude**: Entertaining commentary on spec quality
+- **Analysis summary in report**: Reviewer's notes section at end of Word report
+- **StreamingPanel widget**: New GUI component for real-time text display
+- **Streaming callback**: `reviewer.py` now accepts callback for text chunks
+- **Updated prompts**: Personality instructions added to system prompt
 
 ### v0.3.0
 - **Paced log output**: File entries at 200ms, status at 400ms intervals

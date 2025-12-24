@@ -5,6 +5,7 @@ import os
 import json
 import time
 from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
@@ -13,6 +14,9 @@ from .prompts import get_system_prompt, get_user_message
 
 # Single allowed model for this repo
 MODEL_OPUS_45 = "claude-opus-4-5-20251101"
+
+# Type alias for streaming callback
+StreamCallback = Callable[[str], None]
 
 
 @dataclass
@@ -33,7 +37,7 @@ class ReviewResult:
     """Result of a specification review."""
     findings: list[Finding] = field(default_factory=list)
     raw_response: str = ""
-    thinking: str = ""  # Claude's reasoning before the JSON output
+    thinking: str = ""  # Claude's analysis summary before the JSON output
     model: str = MODEL_OPUS_45
     input_tokens: int = 0
     output_tokens: int = 0
@@ -118,10 +122,21 @@ def review_specs(
     *,
     max_retries: int = 3,
     verbose: bool = False,
+    stream_callback: Optional[StreamCallback] = None,
 ) -> ReviewResult:
     """
     Send specifications to Claude for review (Opus 4.5 only).
     Prompts require a JSON array response.
+    
+    Args:
+        combined_content: Combined specification text with file delimiters
+        max_retries: Number of retry attempts for transient errors
+        verbose: Enable verbose logging to stdout
+        stream_callback: Optional callback function called with each text chunk
+                        as it streams in. Use for real-time UI updates.
+    
+    Returns:
+        ReviewResult with findings, raw response, and metadata
     """
     start_time = time.time()
     result = ReviewResult(model=MODEL_OPUS_45)
@@ -138,24 +153,33 @@ def review_specs(
             if verbose:
                 print(f"Calling Claude (attempt {attempt + 1}/{max_retries})...")
 
+            # Use streaming to enable real-time display
             with client.messages.stream(
                 model=MODEL_OPUS_45,
                 max_tokens=max_tokens,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             ) as stream:
+                
+                # Accumulate full response while streaming
+                response_chunks: list[str] = []
+                
+                for text in stream.text_stream:
+                    response_chunks.append(text)
+                    
+                    # Call the streaming callback if provided
+                    if stream_callback:
+                        try:
+                            stream_callback(text)
+                        except Exception:
+                            # Don't let callback errors break the stream
+                            pass
+                
+                # Get the final message for token counts
                 resp = stream.get_final_message()
-
-            # Response text extraction (SDK versions vary)
-            response_text = ""
-            try:
-                if resp.content and hasattr(resp.content[0], "text"):
-                    response_text = resp.content[0].text or ""
-                else:
-                    response_text = str(resp.content)
-            except Exception:
-                response_text = str(resp)
-
+            
+            # Reconstruct full response from chunks
+            response_text = "".join(response_chunks)
             result.raw_response = response_text
 
             # Token usage (best effort)

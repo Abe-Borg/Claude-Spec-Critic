@@ -10,7 +10,7 @@ from .extractor import extract_text_from_docx, ExtractedSpec
 from .preprocessor import preprocess_spec
 from .prompts import get_system_prompt
 from .tokenizer import analyze_token_usage, RECOMMENDED_MAX
-from .reviewer import review_specs, ReviewResult, MODEL_OPUS_45
+from .reviewer import review_specs, ReviewResult, MODEL_OPUS_45, StreamCallback
 from .report import generate_report
 
 
@@ -82,10 +82,23 @@ def run_review(
     verbose: bool = False,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
+    stream_callback: Optional[StreamCallback] = None,
 ) -> PipelineOutputs:
     """
     Single source of truth for the whole workflow.
     CLI and GUI both call this.
+    
+    Args:
+        input_dir: Directory containing .docx specification files
+        output_dir: Directory for output files
+        dry_run: If True, skip API call
+        verbose: Enable verbose logging
+        log: Callback for log messages
+        progress: Callback for progress updates (percent, message)
+        stream_callback: Optional callback for real-time streaming of Claude's response
+    
+    Returns:
+        PipelineOutputs with paths to all generated files
     """
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -163,6 +176,7 @@ def run_review(
             leed_alerts=_normalize_alerts(leed_alerts),
             placeholder_alerts=_normalize_alerts(placeholder_alerts),
             output_path=report_docx,
+            analysis_summary=None,
         )
 
         findings_json = run_dir / "findings.json"
@@ -201,6 +215,7 @@ def run_review(
     review_result = review_specs(
         combined_content=combined,
         verbose=verbose,
+        stream_callback=stream_callback,
     )
 
     raw_response_txt = run_dir / "raw_response.txt"
@@ -226,6 +241,7 @@ def run_review(
                     "leed_alerts": leed_alerts,
                     "placeholder_alerts": placeholder_alerts,
                 },
+                "analysis_summary": review_result.thinking,
             },
             indent=2,
         ),
@@ -241,6 +257,7 @@ def run_review(
         leed_alerts=_normalize_alerts(leed_alerts),
         placeholder_alerts=_normalize_alerts(placeholder_alerts),
         output_path=report_docx,
+        analysis_summary=review_result.thinking,
     )
 
     progress(100.0, "Done.")
