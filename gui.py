@@ -372,7 +372,8 @@ class EnhancedLog(ctk.CTkFrame):
         # Fade-in animation
         self._fade_in_entry(entry, color, 0)
         
-        # Auto-scroll to bottom
+        # Auto-scroll to bottom (update first so geometry is current)
+        self.log_frame.update_idletasks()
         self.log_frame._parent_canvas.yview_moveto(1.0)
     
     def _fade_in_entry(self, entry: ctk.CTkLabel, target_color: str, step: int):
@@ -627,6 +628,7 @@ class AnimatedButton(ctk.CTkButton):
         self._state = "processing"
         self.configure(
             text="Processing...",
+            text_color=COLORS["text_primary"],
             state="disabled"
         )
         self._start_pulse()
@@ -650,7 +652,7 @@ class AnimatedButton(ctk.CTkButton):
         pulse_t = (math.sin(t * math.pi * 2) + 1) / 2
         
         # Pulse from bg_input to a muted accent for noticeable effect
-        color = blend_colors(COLORS["bg_input"], COLORS["accent"], pulse_t * 0.6)
+        color = blend_colors(COLORS["bg_input"], COLORS["accent"], pulse_t)
         self.configure(fg_color=color, hover_color=color)
         
         self._pulse_step = (self._pulse_step + 1) % steps_per_cycle
@@ -842,7 +844,7 @@ class SpecReviewApp(ctk.CTk):
             placeholder="Select output folder",
             variable_name="output_dir_entry",
             browse_command=self._browse_output,
-            default_value=str(self.output_dir),
+            # default_value=str(self.output_dir),
             row=2
         )
         
@@ -1040,7 +1042,7 @@ class SpecReviewApp(ctk.CTk):
         
         # Update UI
         self.run_button.set_processing()
-        self.progress_bar.pack(fill="x", pady=(8, 0), before=self.log)
+        self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
         self.progress_bar.set(0)
         self.progress_bar.configure(mode="indeterminate")
         self.progress_bar.start()
@@ -1102,6 +1104,15 @@ class SpecReviewApp(ctk.CTk):
                 f"Findings: {findings.critical_count} critical, {findings.high_count} high, "
                 f"{findings.medium_count} medium, {findings.gripe_count} gripes",
                 level="info"
+            )
+            
+            # Log timing info
+            elapsed = findings.elapsed_seconds
+            file_count = len(list(Path(self.input_dir_entry.get()).glob("*.docx")))
+            avg_time = elapsed / file_count if file_count > 0 else 0
+            self.log.log(
+                f"Time: {elapsed:.1f}s total, {avg_time:.1f}s avg per spec",
+                level="muted"
             )
             
             # Display Claude's thinking if present
