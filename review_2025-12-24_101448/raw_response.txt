@@ -1,0 +1,186 @@
+Alright, let's dig into this collection of specs. What we've got here is a mixed bag — some architectural, some plumbing, and one fire suppression spec that looks like it time-traveled from the early 2000s.
+
+First, the good news: The plumbing specs (22 05 18, 22 05 23, 22 05 29) are using the correct 2022 CPC references, which tells me someone was at least paying attention to the code cycle. The acoustic ceiling spec (09 51 00) is reasonably clean and properly formatted.
+
+Now for the fun part. Section 15071? That's Division 15 MasterFormat numbering, which was deprecated back in 2004. We're on the 2020 MasterFormat now, folks. This spec should be renumbered to 21 05 48 or similar. Even better, the spec header literally says "Use this Section if Project is not in a seismic area" — but this is a California K-12 project under DSA jurisdiction. California. Seismic. You seeing the problem here? This entire specification is fundamentally wrong for the project. We should be using seismic-rated vibration controls, period.
+
+The plumbing specs have some cross-referencing issues too. Section 22 05 23 references "Division 2" and "Division 15" — both outdated MasterFormat divisions. Division 2 became Division 31-33 (Sitework), and Division 15 split into Divisions 21-23. These references need updating.
+
+I also noticed some coordination issues between specs. The hangers spec (22 05 29) references SMACNA Seismic Restraint Manual, which is good, but doesn't specify which edition. Meanwhile, the valve spec is missing any reference to seismic requirements for valve supports entirely.
+
+The escutcheons spec (22 05 18) has a lot of editing artifacts and duplicative language that could confuse contractors. And while we're at it, multiple specs still contain AIA/ARCOM boilerplate editing instructions that should have been deleted before issue.
+
+Found 18 issues total — 2 critical, 5 high, 6 medium, and 5 gripes. The fire suppression vibration control spec needs the most attention by far.
+
+[
+  {
+    "severity": "CRITICAL",
+    "fileName": "15071 FL - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT.docx",
+    "section": "Part 1, Header Note",
+    "issue": "Specification states 'Use this Section if Project is not in a seismic area' but California is a seismic region. DSA-jurisdiction K-12 projects require seismic-rated vibration and restraint systems. This entire specification is inappropriate for the project and should be replaced with Section 15072 or equivalent seismic-rated specification.",
+    "actionType": "DELETE",
+    "existingText": "Use this Section if Project is not in a seismic area. Use Section 15072 \"Vibration and Seismic Controls for Fire-Suppression Piping and Equipment\" for projects in a seismic area.",
+    "replacementText": null,
+    "codeReference": "CBC 2022 Chapter 16, ASCE 7-22 Chapter 13"
+  },
+  {
+    "severity": "CRITICAL",
+    "fileName": "09_51_00_Acoustic_Ceilings.docx",
+    "section": "Part 1, Article 1.4.B",
+    "issue": "Seismic requirements reference 'ASCE 7' without specifying the edition. For CBC 2022 compliance, must reference ASCE 7-22. Additionally, CBC Chapter 13 does not exist for non-structural components — should reference CBC Chapter 16 which adopts ASCE 7-22 Chapter 13.",
+    "actionType": "EDIT",
+    "existingText": "Seismic Requirements: Comply with ASCE 7 and CBC Chapter 13 for ceiling systems.",
+    "replacementText": "Seismic Requirements: Comply with ASCE 7-22 Chapter 13 as adopted by CBC 2022 Chapter 16 for ceiling systems. Provide seismic bracing per DSA IR A-4.",
+    "codeReference": "CBC 2022 Chapter 16, DSA IR A-4"
+  },
+  {
+    "severity": "HIGH",
+    "fileName": "15071 FL - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT.docx",
+    "section": "Section Number",
+    "issue": "Section uses obsolete Division 15 MasterFormat numbering (deprecated 2004). Fire suppression vibration controls should be numbered under Division 21 per current MasterFormat 2020.",
+    "actionType": "EDIT",
+    "existingText": "SECTION 15071 - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT",
+    "replacementText": "SECTION 21 05 48 - VIBRATION AND SEISMIC CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT",
+    "codeReference": "CSI MasterFormat 2020"
+  },
+  {
+    "severity": "HIGH",
+    "fileName": "220523 fl - General-Duty Valves for Plumbing Piping - Copy.docx",
+    "section": "Part 1, Article 1.1.B (Related Sections)",
+    "issue": "References obsolete MasterFormat divisions. 'Division 2' and 'Division 15' numbering was replaced in 2004. These cross-references will confuse contractors and indicate the spec hasn't been updated.",
+    "actionType": "EDIT",
+    "existingText": "Division 2 water distribution piping Sections... Division 15 plumbing piping Sections... Division 15 Section \"Identification for Plumbing Piping and Equipment\"",
+    "replacementText": "Division 33 water distribution piping Sections for general-duty and specialty valves for site construction piping.\nDivision 22 plumbing piping Sections for specialty valves applicable to those Sections only.\nSection 22 05 53 \"Identification for Plumbing Piping and Equipment\" for valve tags and schedules.",
+    "codeReference": "CSI MasterFormat 2020"
+  },
+  {
+    "severity": "HIGH",
+    "fileName": "220523 fl - General-Duty Valves for Plumbing Piping - Copy.docx",
+    "section": "Part 1, Article 1.1.A",
+    "issue": "References 'Division 1 Specification Sections' which is obsolete MasterFormat numbering. Should reference 'Division 01'.",
+    "actionType": "EDIT",
+    "existingText": "Division 1 Specification Sections",
+    "replacementText": "Division 01 Specification Sections",
+    "codeReference": "CSI MasterFormat 2020"
+  },
+  {
+    "severity": "HIGH",
+    "fileName": "220523 fl - General-Duty Valves for Plumbing Piping - Copy.docx",
+    "section": "Part 2, Article 2.7.A.4",
+    "issue": "Valve specification references California Lead Free Law effective January 1, 2010, but current compliance date and requirements have been superseded by Assembly Bill 1953 amendments. Should reference current California Health & Safety Code Section 116875 requirements.",
+    "actionType": "EDIT",
+    "existingText": "Valves for Potable Water must comply with California Lead Free Law, effective January 1, 2010.",
+    "replacementText": "Valves for Potable Water must comply with California Health & Safety Code Section 116875 lead-free requirements as amended.",
+    "codeReference": "California Health & Safety Code Section 116875"
+  },
+  {
+    "severity": "HIGH",
+    "fileName": "220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx",
+    "section": "Part 1, Article 1.4.C",
+    "issue": "References 'SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems' without specifying edition. Current edition is 4th Edition (2019). Older editions may not meet current CBC/ASCE 7-22 requirements.",
+    "actionType": "EDIT",
+    "existingText": "SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.",
+    "replacementText": "SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems, 4th Edition (2019) or latest edition as adopted by DSA.",
+    "codeReference": "CBC 2022 Chapter 16"
+  },
+  {
+    "severity": "MEDIUM",
+    "fileName": "15071 FL - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT.docx",
+    "section": "Part 1, Article 1.2.B",
+    "issue": "Cross-references use obsolete Division 15 section numbers. Section 15068 and 15078 should be updated to current MasterFormat Division 23 and 22 numbering respectively.",
+    "actionType": "EDIT",
+    "existingText": "Section 15068 \"Vibration Controls for HVAC\"... Section 15078 \"Vibration Controls for Plumbing Piping and Equipment\"",
+    "replacementText": "Section 23 05 48 \"Vibration and Seismic Controls for HVAC\" for devices for HVAC equipment and systems.\nSection 22 05 48 \"Vibration and Seismic Controls for Plumbing Piping and Equipment\" for devices for plumbing equipment and systems.",
+    "codeReference": "CSI MasterFormat 2020"
+  },
+  {
+    "severity": "MEDIUM",
+    "fileName": "15071 FL - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT.docx",
+    "section": "Part 1, Article 1.3.B",
+    "issue": "References 'Section 01400 Quality Requirements' using obsolete 5-digit section numbering. Should be 'Section 01 40 00'.",
+    "actionType": "EDIT",
+    "existingText": "Section 01400 \"Quality Requirements\"",
+    "replacementText": "Section 01 40 00 \"Quality Requirements\"",
+    "codeReference": "CSI MasterFormat 2020"
+  },
+  {
+    "severity": "MEDIUM",
+    "fileName": "15071 FL - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT.docx",
+    "section": "Part 3, Article 3.2",
+    "issue": "References 'Section 03300 Cast-in-Place Concrete' or 'Section 03305' using obsolete 5-digit numbering. Current MasterFormat uses 'Section 03 30 00'.",
+    "actionType": "EDIT",
+    "existingText": "[Section 03300 \"Cast-in-Place Concrete.\"] [Section 03305 \"Miscellaneous Cast-in-Place Concrete.\"]",
+    "replacementText": "Section 03 30 00 \"Cast-in-Place Concrete.\"",
+    "codeReference": "CSI MasterFormat 2020"
+  },
+  {
+    "severity": "MEDIUM",
+    "fileName": "220518 fl - Escutcheons for Plumbing Piping.docx",
+    "section": "Part 3, Article 3.1.B",
+    "issue": "Multiple subparagraphs for 'Bare Piping' installations are duplicated with identical text and a note to 'Retain one of first two subparagraphs below.' These editing instructions should be resolved and duplicates removed.",
+    "actionType": "EDIT",
+    "existingText": "Retain one of first two subparagraphs below.\n\nBare Piping at Wall and Floor Penetrations in Finished Spaces: One-piece, cast-brass type with polished, chrome-plated finish.\n\nRetain one of first two subparagraphs below.\n\nBare Piping at Ceiling Penetrations in Finished Spaces:...",
+    "replacementText": "Bare Piping at Wall and Floor Penetrations in Finished Spaces: One-piece, cast-brass type with polished, chrome-plated finish.\n\nBare Piping at Ceiling Penetrations in Finished Spaces: One-piece, cast-brass type with polished, chrome-plated finish.",
+    "codeReference": null
+  },
+  {
+    "severity": "MEDIUM",
+    "fileName": "220523 fl - General-Duty Valves for Plumbing Piping - Copy.docx",
+    "section": "Part 2, Article 2.1.L",
+    "issue": "Duplicate paragraphs for lead-free requirements appear in both Article 2.1.D and 2.1.L with slightly different wording. This redundancy creates confusion and potential for conflicting interpretations.",
+    "actionType": "DELETE",
+    "existingText": "Valves for domestic water must comply with the Federal Reduction of Lead in Drinking Water Act.\n\n\"Lead Free\" refers to the wetted surface of pipe, fittings and fixtures in potable water systems that have a weighted average lead content ≤ 0.25%.\n\nAll valves must be 3rd party certified.\n\nBronze valves shall be made of dezincification-resistant material.",
+    "replacementText": null,
+    "codeReference": null
+  },
+  {
+    "severity": "GRIPES",
+    "fileName": "15071 FL - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT.docx",
+    "section": "Throughout",
+    "issue": "Specification contains numerous editing instructions and placeholder notes intended for the spec writer (e.g., 'Retain or delete this article...', 'Copy paragraph below and re-edit...', 'Insert drawing designation'). These should be removed before issuing for construction.",
+    "actionType": "DELETE",
+    "existingText": "Retain or delete this article in all Sections of Project Manual... Revise this Section by deleting and inserting text to meet Project-specific requirements...",
+    "replacementText": null,
+    "codeReference": null
+  },
+  {
+    "severity": "GRIPES",
+    "fileName": "220518 fl - Escutcheons for Plumbing Piping.docx",
+    "section": "Throughout",
+    "issue": "Specification contains editing instructions meant for spec writer (e.g., 'Retain one or both finish options...', 'Retain one of first two subparagraphs below'). These should be resolved and removed before issuing.",
+    "actionType": "DELETE",
+    "existingText": "Retain one or both finish options in first paragraph below that match escutcheon types retained in Part 3.",
+    "replacementText": null,
+    "codeReference": null
+  },
+  {
+    "severity": "GRIPES",
+    "fileName": "220523 fl - General-Duty Valves for Plumbing Piping - Copy.docx",
+    "section": "Throughout",
+    "issue": "Specification contains extensive editing instructions and notes for spec writers that should have been deleted (e.g., 'See Editing Instruction No. 1 in the Evaluations...', 'Retain one or more paragraphs...'). These create a cluttered, unprofessional document.",
+    "actionType": "DELETE",
+    "existingText": "See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers. See Division 1 Section \"Product Requirements.\"",
+    "replacementText": null,
+    "codeReference": null
+  },
+  {
+    "severity": "GRIPES",
+    "fileName": "220523 fl - General-Duty Valves for Plumbing Piping - Copy.docx",
+    "section": "Filename",
+    "issue": "Filename contains '- Copy' suffix, suggesting this may be a working copy rather than the final specification. Verify correct version is being issued.",
+    "actionType": "EDIT",
+    "existingText": "220523 fl - General-Duty Valves for Plumbing Piping - Copy.docx",
+    "replacementText": "22 05 23 - General-Duty Valves for Plumbing Piping.docx",
+    "codeReference": null
+  },
+  {
+    "severity": "GRIPES",
+    "fileName": "220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx",
+    "section": "Throughout",
+    "issue": "Specification contains multiple editing instructions for spec writers (e.g., 'Paragraph below is defined in Section 013300...', 'Retain first paragraph below if...'). These should be removed before issue.",
+    "actionType": "DELETE",
+    "existingText": "Paragraph below is defined in Section 013300 \"Submittal Procedures\" as a \"Delegated-Design Submittal.\" Retain if Work of this Section is required to withstand specific design loads...",
+    "replacementText": null,
+    "codeReference": null
+  }
+]

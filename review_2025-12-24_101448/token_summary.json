@@ -1,0 +1,35 @@
+{
+  "model": "claude-opus-4-5-20251101",
+  "recommended_max_tokens": 150000,
+  "within_limit": true,
+  "total_tokens": 23016,
+  "system_prompt_tokens": 2263,
+  "items": [
+    {
+      "name": "09_51_00_Acoustic_Ceilings.docx",
+      "tokens": 705,
+      "chars": 3160
+    },
+    {
+      "name": "15071 FL - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT.docx",
+      "tokens": 3100,
+      "chars": 15334
+    },
+    {
+      "name": "220518 fl - Escutcheons for Plumbing Piping.docx",
+      "tokens": 3027,
+      "chars": 15965
+    },
+    {
+      "name": "220523 fl - General-Duty Valves for Plumbing Piping - Copy.docx",
+      "tokens": 6811,
+      "chars": 31786
+    },
+    {
+      "name": "220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx",
+      "tokens": 7110,
+      "chars": 35154
+    }
+  ],
+  "warning_message": null
+}

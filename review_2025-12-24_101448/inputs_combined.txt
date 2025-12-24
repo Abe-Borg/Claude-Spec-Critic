@@ -1,0 +1,1806 @@
+===== FILE: 09_51_00_Acoustic_Ceilings.docx =====
+SECTION 09 51 00 - ACOUSTIC CEILINGS
+
+PART 1 - GENERAL
+
+SUMMARY
+
+Section Includes:
+
+Acoustic ceiling panels.
+
+Suspension systems for acoustic ceilings.
+
+Acoustic ceiling accessories.
+
+Related Sections:
+
+Section 09 22 16 - Non-Structural Metal Framing.
+
+Section 09 91 00 - Painting.
+
+REFERENCES
+
+Reference Standards:
+
+ASTM C635 - Standard Specification for Manufacture, Performance, and Testing of Metal Suspension Systems for Acoustical Tile and Lay-in Panel Ceilings.
+
+ASTM C636 - Standard Practice for Installation of Metal Ceiling Suspension Systems for Acoustical Tile and Lay-in Panels.
+
+ASTM E1264 - Standard Classification for Acoustical Ceiling Products.
+
+ASTM E84 - Standard Test Method for Surface Burning Characteristics of Building Materials.
+
+SUBMITTALS
+
+Product Data: Submit manufacturer's technical data for each product.
+
+Include performance characteristics and installation instructions.
+
+Include ceiling panel patterns and edge details.
+
+Samples: Submit two full-size samples of each ceiling panel type.
+
+Shop Drawings: Submit layout drawings showing panel arrangement and edge conditions.
+
+QUALITY ASSURANCE
+
+Fire Performance: Provide panels with Class A fire rating per ASTM E84.
+
+Seismic Requirements: Comply with ASCE 7 and CBC Chapter 13 for ceiling systems.
+
+PART 2 - PRODUCTS
+
+MANUFACTURERS
+
+Acceptable Manufacturers:
+
+Armstrong World Industries.
+
+USG Corporation.
+
+CertainTeed Corporation.
+
+Substitutions: In accordance with Section 01 60 00.
+
+ACOUSTIC CEILING PANELS
+
+Standard Acoustic Panel (Type ACT-1):
+
+Size: 24 inches by 24 inches by 3/4 inch thick.
+
+NRC: 0.55 minimum.
+
+CAC: 35 minimum.
+
+Light Reflectance: 0.83 minimum.
+
+Edge Detail: Square lay-in.
+
+Color: White.
+
+High-NRC Acoustic Panel (Type ACT-2):
+
+Size: 24 inches by 48 inches by 3/4 inch thick.
+
+NRC: 0.70 minimum.
+
+CAC: 35 minimum.
+
+Edge Detail: Tegular.
+
+Application: Conference rooms and private offices.
+
+SUSPENSION SYSTEM
+
+Grid System: Heavy-duty exposed tee system per ASTM C635.
+
+Main Runners: 15/16 inch face width.
+
+Cross Tees: 15/16 inch face width, intermediate duty.
+
+Finish: White baked enamel to match ceiling panels.
+
+Hanger Wire: 12 gauge galvanized steel wire.
+
+Seismic Bracing: As required by code for Seismic Design Category D.
+
+PART 3 - EXECUTION
+
+EXAMINATION
+
+Verify conditions are ready for ceiling installation:
+
+Structure is complete and accessible.
+
+MEP systems above ceiling are installed and tested.
+
+Room temperature and humidity are within manufacturer's limits.
+
+Do not proceed until unsatisfactory conditions are corrected.
+
+INSTALLATION
+
+Install suspension system per ASTM C636 and manufacturer's instructions.
+
+Install hanger wires at maximum 4 feet on center.
+
+Locate first hanger within 2 feet of each wall.
+
+Provide supplemental hangers at light fixtures and diffusers.
+
+Level grid to within 1/8 inch in 12 feet.
+
+Install seismic bracing per engineered drawings.
+
+Install ceiling panels after grid is complete and inspected.
+
+CLEANING AND PROTECTION
+
+Clean exposed surfaces of ceiling panels and grid.
+
+Replace panels that are damaged, soiled, or do not match.
+
+Protect installed ceilings from damage by other trades.
+
+END OF SECTION
+
+===== FILE: 15071 FL - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT.docx =====
+Copyright 2011 by The American Institute of Architects (AIA)
+
+Exclusively published and distributed by Architectural Computer Services, Inc. (ARCOM) for the AIA
+
+SECTION 15071 - VIBRATION CONTROLS FOR FIRE-SUPPRESSION PIPING AND EQUIPMENT
+
+Use this Section if Project is not in a seismic area.  Use Section 15072 "Vibration and Seismic Controls for Fire-Suppression Piping and Equipment" for projects in a seismic area.
+
+Revise this Section by deleting and inserting text to meet Project-specific requirements.
+
+Verify that Section titles referenced in this Section are correct for this Project's Specifications; Section titles may have changed.
+
+GENERAL
+
+RELATED DOCUMENTS
+
+Retain or delete this article in all Sections of Project Manual.
+
+Drawings and general provisions of the Contract, including General and Supplementary Conditions and Division 01 Specification Sections, apply to this Section.
+
+SUMMARY
+
+Section Includes:
+
+Elastomeric isolation pads.
+
+Elastomeric isolation mounts.
+
+Restrained elastomeric isolation mounts.
+
+Pipe-riser resilient supports.
+
+Resilient pipe guides.
+
+Elastomeric hangers.
+
+Related Requirements:
+
+Retain subparagraphs below to cross-reference requirements Contractor might expect to find in this Section but are specified in other Sections.
+
+Section 15068 "Vibration Controls for HVAC" for devices for HVAC equipment and systems.
+
+Section 15078 "Vibration Controls for Plumbing Piping and Equipment" for devices for plumbing equipment and systems.
+
+ACTION SUBMITTALS
+
+Product Data: For each type of product.
+
+Include rated load, rated deflection, and overload capacity for each vibration isolation device.
+
+Illustrate and indicate style, material, strength, fastening provision, and finish for each type and size of vibration isolation device type required.
+
+Retain "Delegated-Design Submittal" Paragraph below if design services have been delegated to Contractor.
+
+Delegated-Design Submittal:  For each vibration isolation device.
+
+Include design calculations for selecting vibration isolators.
+
+INFORMATIONAL SUBMITTALS
+
+Retain "Coordination Drawings" Paragraph below if piping, ducts, equipment, and other fire-suppression system components are installed in congested areas.
+
+Coordination Drawings:  Show coordination of vibration isolation device installation for fire-suppression piping and equipment with other systems and equipment in the vicinity, including other supports and restraints, if any.
+
+Coordinate "Qualification Data" Paragraph below with qualification requirements in Section 01400 "Quality Requirements" and as may be supplemented in "Quality Assurance" Article.
+
+Qualification Data:  For testing agency.
+
+Retain "Welding certificates" Paragraph below if retaining "Welding Qualifications" Paragraph in "Quality Assurance" Article.
+
+Welding certificates.
+
+QUALITY ASSURANCE
+
+Retain "Welding Qualifications" Paragraph below if shop or field welding is required.  If retaining, also retain "Welding certificates" Paragraph in "Informational Submittals" Article.
+
+Welding Qualifications:  Qualify procedures and personnel according to AWS D1.1/D1.1M, "Structural Welding Code - Steel."
+
+PRODUCTS
+
+See Editing Instruction No. 1 in the Evaluations for cautions about named manufacturers and products.  For an explanation of options and Contractor's product selection procedures, see Section 01600 "Product Requirements."
+
+See Evaluations for more detailed information about controlling vibration, additional information on products listed in Part 2, illustrations, selection guides, and supplements to equipment schedules.
+
+ELASTOMERIC ISOLATION PADS
+
+Copy "Elastomeric Isolation Pads" Paragraph below and re-edit for each product.
+
+The configuration and materials of elastomeric isolation pads depend on the equipment being supported.  It is possible to have more than one type of elastomeric isolation pad on the same Project.  Insert drawing designation for each elastomeric isolation pad type required.  Use these designations on Drawings to identify each product.
+
+Elastomeric Isolation Pads:  <Insert drawing designation>.
+
+Retain "Manufacturers" Subparagraph and list of manufacturers below to require products from manufacturers listed o Elastomeric Isolation Pads r a comparable product from other manufacturers.
+
+Manufacturers:  Subject to compliance with requirements, [provide products by the following] [provide products by one of the following] [available manufacturers offering products that may be incorporated into the Work include, but are not limited to, the following]:
+
+Retain "Basis-of-Design Product" Subparagraph and list of manufacturers below to identify a specific product or a comparable product from manufacturers listed.  Retain option and delete insert note if manufacturer's name and model number are indicated on Drawings.
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide [product indicated on Drawings] <Insert manufacturer's name; product name or designation> or comparable product by one of the following:
+
+Ace Mountings Co., Inc.
+
+California Dynamics Corporation.
+
+Isolation Technology, Inc.
+
+Kinetics Noise Control, Inc.
+
+Mason Industries, Inc.
+
+Vibration Eliminator Co., Inc.
+
+Vibration Isolation.
+
+Vibration Mountings & Controls, Inc.
+
+<Insert manufacturer's name>.
+
+Fabrication:  Single or multiple layers of sufficient durometer stiffness for uniform loading over pad area.
+
+Size:  Factory or field cut to match requirements of supported equipment.
+
+Verify availability of various pad materials and their properties with manufacturers.
+
+Pad Material:  Oil and water resistant with elastomeric properties.
+
+Surface Pattern:  [Smooth] [Ribbed] [Waffle] pattern.
+
+Retain first subparagraph below if pad is infused with synthetic fibers.
+
+Infused nonwoven cotton or synthetic fibers.
+
+Retain first subparagraph below if galvanized-steel baseplates are adhered to the isolation pad to facilitate load distribution.
+
+Load-bearing metal plates adhered to pads.
+
+Retain "Sandwich-Core Material" Subparagraph below if pad has a sandwich-core material.
+
+Copy "Sandwich-Core Material" Subparagraph below and re-edit for each sandwich-core material.  Core materials may not be elastomeric.  See "Elastomeric Isolation Pads" Article in the Evaluations for more information.
+
+Sandwich-Core Material:  [Resilient] [and] [elastomeric] <Insert compound>.
+
+Retain "Surface Pattern" Subparagraph below if the sandwich-core material has a surface pattern.
+
+Surface Pattern:  [Smooth] [Ribbed] [Waffle] pattern.
+
+Retain subparagraph below if pad is infused with synthetic fibers.
+
+Infused nonwoven cotton or synthetic fibers.
+
+ELASTOMERIC ISOLATION MOUNTS
+
+Copy "Double-Deflection, Elastomeric Isolation Mounts" Paragraph below and re-edit for each product.
+
+The configuration and materials of elastomeric isolation mounts depend on the equipment being supported.  It is possible to have more than one type of elastomeric isolation mount on the same Project.  Insert drawing designation for each elastomeric isolation mount type required.  Use these designations on Drawings to identify each product.
+
+Double-Deflection, Elastomeric Isolation Mounts:  <Insert drawing designation>.
+
+Retain "Manufacturers" Subparagraph and list of manufacturers below to require products from manufacturers listed or a comparable product from other manufacturers.
+
+Manufacturers:  Subject to compliance with requirements, [provide products by the following] [provide products by one of the following] [available manufacturers offering products that may be incorporated into the Work include, but are not limited to, the following]:
+
+Retain "Basis-of-Design Product" Subparagraph and list of manufacturers below to identify a specific product or a comparable product from manufacturers listed.  Retain option and delete insert note if manufacturer's name and model number are indicated on Drawings.
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide [product indicated on Drawings] <Insert manufacturer's name; product name or designation> or comparable product by one of the following:
+
+Ace Mountings Co., Inc.
+
+California Dynamics Corporation.
+
+Isolation Technology, Inc.
+
+Kinetics Noise Control, Inc.
+
+Mason Industries, Inc.
+
+Vibration Eliminator Co., Inc.
+
+Vibration Isolation.
+
+Vibration Mountings & Controls, Inc.
+
+<Insert manufacturer's name>.
+
+Mounting Plates:
+
+Top Plate:  Encapsulated steel load transfer top plates, factory drilled and threaded[ with threaded studs or bolts].
+
+Retain "Baseplate" Subparagraph below if the elastomeric mount being specified has a baseplate.
+
+Baseplate:  Encapsulated steel bottom plates with holes provided for anchoring to support structure.
+
+Elastomeric Material:  Molded, oil-resistant rubber, neoprene, or other elastomeric material.
+
+RESTRAINED ELASTOMERIC ISOLATION MOUNTS
+
+Copy "Restrained Elastomeric Isolation Mounts" Paragraph below and re-edit for each product.
+
+The configuration and materials of restrained elastomeric isolation mounts depend on the equipment being supported.  It is possible to have more than one type of restrained elastomeric isolation mount on the same Project.  Insert drawing designation for each mount type required.  Use these designations on Drawings to identify each product.
+
+Restrained Elastomeric Isolation Mounts:  <Insert drawing designation>.
+
+Retain "Manufacturers" Subparagraph and list of manufacturers below to require products from manufacturers listed or a comparable product from other manufacturers.
+
+Manufacturers:  Subject to compliance with requirements, [provide products by the following] [provide products by one of the following] [available manufacturers offering products that may be incorporated into the Work include, but are not limited to, the following]:
+
+Retain "Basis-of-Design Product" Subparagraph and list of manufacturers below to identify a specific product or a comparable product from manufacturers listed.  Retain option and delete insert note if manufacturer's name and model number are indicated on Drawings.
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide [product indicated on Drawings] <Insert manufacturer's name; product name or designation> or comparable product by one of the following:
+
+Ace Mountings Co., Inc.
+
+California Dynamics Corporation.
+
+Isolation Technology, Inc.
+
+Kinetics Noise Control, Inc.
+
+Mason Industries, Inc.
+
+Vibration Eliminator Co., Inc.
+
+Vibration Isolation.
+
+Vibration Mountings & Controls, Inc.
+
+<Insert manufacturer's name>.
+
+Description:  All-directional isolator with restraints containing two separate and opposing elastomeric elements that prevent central threaded element and attachment hardware from contacting the housing during normal operation.
+
+Housing:  Cast-ductile iron or welded steel.
+
+Elastomeric Material:  Molded, oil-resistant rubber, neoprene, or other elastomeric material.
+
+PIPE-RISER RESILIENT SUPPORTS
+
+Description:  All-directional, acoustical pipe anchor consisting of two steel tubes separated by a minimum 1/2-inch- (13-mm-) thick neoprene <Insert drawing designation>.
+
+Vertical-Limit Stops:  Steel and neoprene vertical-limit stops arranged to prevent vertical travel in both directions.
+
+Maximum Load Per Support:  500 psig (3.45 MPa)on isolation material providing equal isolation in all directions.
+
+RESILIENT PIPE GUIDES
+
+Copy "Description" Paragraph below and re-edit for each product.
+
+The configuration and materials of resilient pipe guides depend on the equipment being supported.  It is possible to have more than one type of resilient pipe guide on the same Project.  Insert drawing designation for each resilient pipe guide type required.  Use these designations on Drawings to identify each product.
+
+Description:  Telescopic arrangement of 2 steel tubes or post and sleeve arrangement separated by a minimum 1/2-inch- (13-mm-) thick neoprene <Insert drawing designation>.
+
+Retain "Factory-Set Height Guide with Shear Pin" Subparagraph below where vertical motion due to pipe expansion and contraction is required and clearances are not readily visible.
+
+Factory-Set Height Guide with Shear Pin:  Shear pin shall be removable and reinsertable to allow for selection of pipe movement.  Guides shall be capable of motion to meet location requirements.
+
+ELASTOMERIC HANGERS
+
+Copy "Elastomeric Mount in a Steel Frame with Upper and Lower Steel Hanger Rods" Paragraph below and re-edit for each product.
+
+The configuration and materials of elastomeric hangers depend on the equipment being supported.  It is possible to have more than one type of elastomeric hanger on the same Project.  Insert drawing designation for each elastomeric hanger type required.  Use these designations on Drawings to identify each product.
+
+Elastomeric Mount in a Steel Frame with Upper and Lower Steel Hanger Rods:  <Insert drawing designation>.
+
+Retain "Manufacturers" Subparagraph and list of manufacturers below to require products from manufacturers listed or a comparable product from other manufacturers.
+
+Manufacturers:  Subject to compliance with requirements, [provide products by the following] [provide products by one of the following] [available manufacturers offering products that may be incorporated into the Work include, but are not limited to, the following]:
+
+Retain "Basis-of-Design Product" Subparagraph and list of manufacturers below to identify a specific product or a comparable product from manufacturers listed.  Retain option and delete insert note if manufacturer's name and model number are indicated on Drawings.
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide [product indicated on Drawings] <Insert manufacturer's name; product name or designation> or comparable product by one of the following:
+
+Ace Mountings Co., Inc.
+
+California Dynamics Corporation.
+
+Isolation Technology, Inc.
+
+Kinetics Noise Control, Inc.
+
+Mason Industries, Inc.
+
+Vibration Eliminator Co., Inc.
+
+Vibration Mountings & Controls, Inc.
+
+<Insert manufacturer's name>.
+
+Frame:  Steel, fabricated with a connection for an upper threaded hanger rod and an opening on the underside to allow for a maximum of 30 degrees of angular lower hanger-rod misalignment without binding or reducing isolation efficiency.
+
+Dampening Element:  Molded, oil-resistant rubber, neoprene, or other elastomeric material with a projecting bushing for the underside opening preventing steel to steel contact.
+
+EXECUTION
+
+EXAMINATION
+
+Examine areas and equipment to receive vibration isolation control devices for compliance with requirements for installation tolerances and other conditions affecting performance of the Work.
+
+Examine roughing-in of reinforcement and cast-in-place anchors to verify actual locations before installation.
+
+Proceed with installation only after unsatisfactory conditions have been corrected.
+
+VIBRATION CONTROL DEVICE INSTALLATION
+
+Coordinate the location of embedded connection hardware with supported equipment attachment and mounting points and with requirements for concrete reinforcement and formwork specified in [Section 03300 "Cast-in-Place Concrete."] [Section 03305 "Miscellaneous Cast-in-Place Concrete."]
+
+Installation of vibration isolators must not cause any change of position of equipment, piping, or ductwork resulting in stresses or misalignment.
+
+END OF SECTION 15071
+
+===== FILE: 220518 fl - Escutcheons for Plumbing Piping.docx =====
+SECTION 22 05 18 ESCUTCHEONS FOR PLUMBING PIPING
+
+Copyright 2010 by The American Institute of Architects (AIA)
+
+Exclusively published and distributed by Architectural Computer Services, Inc. (ARCOM) for the AIA
+
+Revise this Section by deleting and inserting text to meet Project-specific requirements.
+
+Verify that Section title referenced in this Section is correct for this Project's Specifications; Section title may have changed.
+
+GENERAL
+
+RELATED DOCUMENTS
+
+Retain or delete this article in all Sections of Project Manual.
+
+Drawings and general provisions of the Contract, including General and Supplementary Conditions and Division 01 Specification Sections, apply to this Section.
+
+SUMMARY
+
+Section Includes:
+
+Escutcheons.
+
+Floor plates.
+
+WORK INCLUDED
+
+Furnish all labor, materials, services, testing, transportation and equipment necessary for the completion of all plumbing work as indicated on drawings and specified herein. Work materials and equipment not indicated or specified which is necessary for the complete and proper operation of the work of this Section in accordance with the true intent and meaning of the contract documents shall be provided and incorporated at no additional cost to the Owner.
+
+QUALITY ASSURANCE
+
+Code Requirements: All work covered by this Section shall conform to the latest requirements of the following regulations:
+
+C.C.R., Title 24, Part 5 (2022 CPC).
+
+2022 California Plumbing Code.
+
+SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.
+
+National Fire Protection Association.
+
+California State Division of Industrial Safety.
+
+County Health Department.
+
+Any other legally constituted body-having jurisdiction thereof.
+
+Nothing in the specifications or drawings shall be construed to permit deviation from the requirements of governing codes unless approval for said deviation has been obtained from the legally constituted authorities having jurisdiction and from the Owner's representative.
+
+DRAWINGS
+
+Because of the small-scale drawings, it is not possible to indicate all offsets, fittings and accessories which may be required. The Contractor shall carefully investigate the conditions surrounding installation of his work, furnishing the necessary piping, fittings, valves, traps, and other devices which may be required to complete the installation.
+
+The general arrangement indicated on the drawings shall be followed as closely as possible. Coordinate with the Architectural, Structural, Mechanical and Electrical Drawings and the work of other trades prior to installation of piping fixtures and equipment to verify adequate space available for installation of the work shown. In the event a field condition arises which makes it impossible to install the work as indicated, submit, in writing, the proposed departures to the Architect for his approval. Only when Architect's approval is given, in writing, shall Contractor proceed with installation of the work.
+
+Special Note: Should the Contractor make changes in the installation differing from what is indicated on the contract drawings and not necessitated due to field conditions as indicated hereinabove, the Contractor shall be required to re-install the work to comply with what has been indicated on the contract drawings.  Should it be impossible to re-install the work and the installation is in accordance with all governing authorities, the architect may permit the installation to remain.  However, all costs incurred to revise the contract drawings by the engineer for resubmittal to the building department indicating the as-installed condition shall become the responsibility of the Contractor.
+
+In case of a difference in the specifications or between the specifications and the drawings, the Contractor shall figure the most expensive alternate and after award of contract, shall secure direction from the Architect.
+
+PERMITS, INSPECTIONS AND LICENSES
+
+All permits, inspections and licenses required by the legally constituted authorities for installation of the work according to the plans and specifications shall be obtained and paid as a part of the work of this section.
+
+EXAMINATION OF PREMISES
+
+Before bidding on this work, Contractors shall make a careful examination of the premises and shall thoroughly familiarize themselves with the requirements of the contract.  By the act of submitting a proposal for the work included in this contract, the Contractor shall be deemed to have made such study and examination, and that he is familiar with and accepts all conditions of the site.
+
+PROTECTION
+
+All work, equipment and materials shall be protected at all times.  Contractor shall make good all damage caused either directly or indirectly by his own workmen.  Contractor shall also protect his own work from damage.  He shall close all pipe openings with caps or plugs during installation.  He shall protect all his equipment and materials against dirt, water, chemical and mechanical injury.  Upon completion, all work shall be thoroughly cleaned and delivered in a new condition.
+
+Contractor shall be held responsible for all damage to equipment and materials until he has received written notice from the Architect or Engineer that his work has been accepted.
+
+LOCATIONS
+
+The locations of apparatus, piping and equipment indicated on the drawings are approximate. Piping and equipment shall be installed in such a manner as to avoid all obstruction, preserve headroom, and keep openings and passages clear. The locations of and mounting heights of all fixtures shall be coordinated with the architectural plans and room elevations.
+
+Clearances and Openings: Contractor shall cooperate and coordinate his work with all other trades to avoid conflict and permit for a neat and orderly appearance of the entire installation.  The Contractor shall, in advance of the work, furnish instructions to the General Contractor as to his requirements for equipment and material installation of any kind, whether or not specifically mentioned on drawings or in the specifications, and shall include recesses, chases in walls, and all required openings in the structure.  Should furnishing this information be neglected, delayed or incorrect and additional cuttings are found to be required, the cost of the same shall be charged to this Contractor.
+
+Contractor shall verify and coordinate pipe routing with location of all electrical rooms, elevator equipment rooms, telecom/data rooms, and other rooms dedicated to the housing of switchgear, panels, or other electrical equipment. In no case shall piping be installed within or above the ceiling of such rooms.
+
+SUBMITTAL DATA
+
+Submittal Requirements:
+
+Furnish, all at one time, prior to any installation, within the time noted below, six (6) copies of valid submittal data on all fixtures, material, equipment and devices. Each submitted item shall be indexed and referenced to these specifications and to identification numbers on fixtures and equipment schedules.
+
+Manufacturers’ submittal literature and shop drawings are required on all items to ensure the latest and most complete manufacturer's data is available for review. Requirements of the submittals and Engineer's submittal notes are a part of the work of this Division except that Engineer's notes may not be used as a means of increasing the scope of work of this Division.
+
+Submittals will be checked for general conformance with the design concept of the project but the review does not guarantee quantities shown and does not supersede requirements of this Division to properly install work.
+
+To be valid, all submittals must:
+
+Be delivered to the Architect's office within thirty-five (35) days of award of the contract.  Contractor shall make time allowance for Engineer’s review, return of comments, if any, and resubmittal if required. Corrections or changes in submittals returned as inadequate or incomplete shall be accomplished within this time limit.
+
+Clearly indicate and label as such any items proposed as substitution for that specified or shown on plans.
+
+Include all pertinent construction, installation, performance and technical data.
+
+Have all product data sheets clearly labeled to indicate the individual items being submitted. In addition, all required options and accessories shall be clearly marked.
+
+Product data sheets corresponding to items indicated on plans shall be clearly labeled with the corresponding fixture or equipment tag number.
+
+Product data sheets corresponding to items indicated in specifications shall be clearly labeled with the specification section, page and item numbers.
+
+Include, for every item which differs in size, configuration, connections, service, accessibility or any other significant way, a drawing to the same (or larger) scale as to the pertinent portions of the contract drawings.  In this drawing show a complete layout of the system except that which is identical to the contract drawings, unless the unchanged portions must be shown to indicate such things as clearances.  This drawing, together with the contract design drawings must show the complete system as revised to accommodate the proposed alternate.
+
+Substitution Requirements:
+
+Any items included in submittals and proposed by the Contractor as substitution for that specified or shown on plans shall be submitted within thirty five (35) days of award of the contract. After such time, proposed substitutions shall not be accepted for review, and the Contractor shall submit all items as specified or shown on plans.
+
+For each item proposed as substitution for that specified or shown on plans, copies of product data sheets for the specified item shall be placed side by side with product data sheets for the proposed substitution item within the submittal.
+
+In addition to the Submittal Requirements for labeling listed above, product data sheets for the specified item shall be clearly labeled “SPECIFIED ITEM, NOT SUBMITTED”. Product data sheets for the corresponding proposed substitution item shall be clearly labeled “PROPOSED SUBSTITUTION”.
+
+Provide calculations and other detailed data justifying how any items proposed as substitution were selected for proposal.  Data must be complete enough to permit detailed comparison of every significant characteristic for which the specified item was analyzed during design.
+
+It shall be the Contractor’s responsibility to provide sufficient information to allow the Engineer to analyze any proposed alternate.  If inadequate information is provided, the proposal will not be approved and resubmittal will not be allowed.
+
+The Contractor shall provide or perform tests required by Engineer for purpose of judging acceptability of proposed substitutions.
+
+The Contractor assumes full responsibility that alternate items and procedures will meet the job requirements and is responsible for cost of redesign and of modifications to this and other parts of work caused by alternate items furnished under work in this Section.  In view of these responsibilities, it is the purpose of these specifications to establish procedures to ensure that the Contractor has considered all the ramifications of proposed alternates before submitting them for review.  Submittals which do not comply with the requirements of these specifications or which indicate proposed alternates that were selected without proper regard to the requirements of the job will not be approved.  No more than one proposed alternate will be considered for each item.
+
+Alternate items installed without Engineer's approval will be replaced with specified items at Contractor's expense.
+
+The Architect or his authorized representative shall be the sole judge as to the quality and suitability of proposed alternate equipment, fixtures or materials. Decisions of the Architect or that of his representative shall be final and conclusive.
+
+UNINSPECTED WORK
+
+The Contractor shall not allow or cause any of his work to be covered up or closed in until it has been inspected, tested, approved by all authorities have jurisdiction, and until Project Record drawings have been properly annotated.
+
+Should any of his work be covered up or closed in before such inspection, he shall, at his own expense, uncover the work to the satisfaction of the inspection party.  All related repair work cost shall be borne by the Contractor.
+
+RECORD DRAWINGS
+
+Contractor shall provide and keep up-to-date a complete "as-built" record set of blueline prints which shall show every change from the original drawings and the exact "as-built" locations and sizes of the work provided under this Section of the specifications.  This set shall include locations, dimensions, depth of buried piping, cleanouts, shut-off valves, sewer invert locations, plugged wyes, tees, etc.  On completion of the work, the Contractor shall incorporate all as-built information on a set of reproducible tracings provided by the Architect and this set of reproducibles shall be delivered to the Architect.
+
+GUARANTEES
+
+Contractor shall guarantee the entire plumbing and piping systems unconditionally for a period of one (1) year after final acceptance.  If, during this period, any materials, equipment, or any part of the systems fail to function properly, the Contractor shall make good the defects promptly and without any expense to the Owner.
+
+Contractor shall be responsible for all damage to any part of the premises caused by leaks in pipelines or equipment furnished and installed under this Section for a period of one (1) year after date of acceptance of his work.
+
+All equipment and fixtures shall carry manufacturer's warranty against defective parts or poor workmanship for not less than one (1) year.  See specific equipment specifications for extended warranty requirements.
+
+PRODUCTS
+
+ESCUTCHEONS
+
+Retain one or both finish options in first paragraph below that match escutcheon types retained in Part 3.
+
+One-Piece, Cast-Brass Type:  With polished, chrome-plated and rough-brass finish and setscrew fastener.
+
+One-Piece, Deep-Pattern Type:  Deep-drawn, box-shaped brass with chrome-plated finish and spring-clip fasteners.
+
+Retain one or both finish options in first paragraph below that match escutcheon types retained in Part 3.
+
+FLOOR PLATES
+
+One-Piece Floor Plates:  Cast-iron flange with holes for fasteners.
+
+Split-Casting Floor Plates:  Cast brass with concealed hinge.
+
+EXECUTION
+
+INSTALLATION
+
+Install escutcheons for piping penetrations of walls, ceilings, and finished floors.
+
+Install escutcheons with ID to closely fit around pipe, tube, and insulation of insulated piping and with OD that completely covers opening.
+
+Escutcheons for New Piping:
+
+Piping with Fitting or Sleeve Protruding from Wall:  One-piece, deep-pattern type.
+
+Chrome-Plated Piping:  One-piece, cast-brass type with polished, chrome-plated finish.
+
+Retain one of first two subparagraphs below.
+
+Bare Piping at Wall and Floor Penetrations in Finished Spaces:  One-piece, cast-brass type with polished, chrome-plated finish.
+
+Retain one of first two subparagraphs below.
+
+Bare Piping at Ceiling Penetrations in Finished Spaces:  One-piece, cast-brass type with polished, chrome-plated finish.
+
+Retain one of first two subparagraphs below.
+
+Bare Piping in Unfinished Service Spaces:  One-piece, cast-brass type with polished, chrome-plated or rough-brass finish.
+
+Retain one of first two subparagraphs below.
+
+Bare Piping in Equipment Rooms:  One-piece, cast-brass type with polished, chrome-plated or rough-brass finish.
+
+Install floor plates for piping penetrations of equipment-room floors.
+
+Install floor plates with ID to closely fit around pipe, tube, and insulation of piping and with OD that completely covers opening.
+
+Subparagraphs below apply to both bare and insulated piping.
+
+New Piping:  One-piece, floor-plate type.
+
+Existing Piping:  Split-casting, floor-plate type.
+
+FIELD QUALITY CONTROL
+
+Replace broken and damaged escutcheons and floor plates using new materials.
+
+END OF SECTION 22 05 18
+
+===== FILE: 220523 fl - General-Duty Valves for Plumbing Piping - Copy.docx =====
+Copyright 2005 by The American Institute of Architects (AIA)
+
+Exclusively published and distributed by Architectural Computer Services, Inc. (ARCOM) for the AIA
+
+SECTION 22 05 23 - GENERAL-DUTY VALVES FOR PLUMBING PIPING
+
+Revise this Section by deleting and inserting text to meet Project-specific requirements.
+
+Verify that Section titles referenced in this Section are correct for this Project's Specifications; Section titles may have changed.
+
+GENERAL
+
+RELATED DOCUMENTS
+
+Retain or delete this article in all Sections of Project Manual.
+
+Drawings and general provisions of the Contract, including General and Supplementary Conditions and Division 1 Specification Sections, apply to this Section.
+
+SUMMARY
+
+Section Includes:
+
+Bronze ball valves.
+
+Bronze lift check valves.
+
+Bronze gate valves.
+
+Iron gate valves
+
+Related Sections:
+
+Retain Sections in subparagraphs below that contain requirements Contractor might expect to find in this Section but are specified in other Sections.
+
+Division 2 water distribution piping Sections for general-duty and specialty valves for site construction piping.
+
+Division 15 plumbing piping Sections for specialty valves applicable to those Sections only.
+
+Division 15 Section "Identification for Plumbing Piping and Equipment" for valve tags and schedules.
+
+DEFINITIONS
+
+Retain definition(s) remaining after this Section has been edited.
+
+CWP:  Cold working pressure.
+
+EPDM:  Ethylene propylene diene terpolymer rubber.
+
+NBR:  Acrylonitrile-butadiene, Buna-N, or nitrile rubber.
+
+NRS:  Nonrising stem.
+
+OS&Y:  Outside screw and yoke.
+
+RS:  Rising stem.
+
+WORK INCLUDED
+
+Furnish all labor, materials, services, testing, transportation and equipment necessary for the completion of all plumbing work as indicated on drawings and specified herein. Work materials and equipment not indicated or specified which is necessary for the complete and proper operation of the work of this Section in accordance with the true intent and meaning of the contract documents shall be provided and incorporated at no additional cost to the Owner.
+
+QUALITY ASSURANCE
+
+Code Requirements: All work covered by this Section shall conform to the latest requirements of the following regulations:
+
+C.C.R., Title 24, Part 5 (2022 CPC).
+
+2022 California Plumbing Code.
+
+SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.
+
+National Fire Protection Association.
+
+California State Division of Industrial Safety.
+
+County Health Department.
+
+Any other legally constituted body-having jurisdiction thereof.
+
+Nothing in the specifications or drawings shall be construed to permit deviation from the requirements of governing codes unless approval for said deviation has been obtained from the legally constituted authorities having jurisdiction and from the Owner's representative.
+
+DRAWINGS
+
+Because of the small-scale drawings, it is not possible to indicate all offsets, fittings and accessories which may be required. The Contractor shall carefully investigate the conditions surrounding installation of his work, furnishing the necessary piping, fittings, valves, traps, and other devices which may be required to complete the installation.
+
+The general arrangement indicated on the drawings shall be followed as closely as possible. Coordinate with the Architectural, Structural, Mechanical and Electrical Drawings and the work of other trades prior to installation of piping fixtures and equipment to verify adequate space available for installation of the work shown. In the event a field condition arises which makes it impossible to install the work as indicated, submit, in writing, the proposed departures to the Architect for his approval. Only when Architect's approval is given, in writing, shall Contractor proceed with installation of the work.
+
+Special Note: Should the Contractor make changes in the installation differing from what is indicated on the contract drawings and not necessitated due to field conditions as indicated hereinabove, the Contractor shall be required to re-install the work to comply with what has been indicated on the contract drawings.  Should it be impossible to re-install the work and the installation is in accordance with all governing authorities, the architect may permit the installation to remain.  However, all costs incurred to revise the contract drawings by the engineer for resubmittal to the building department indicating the as-installed condition shall become the responsibility of the Contractor.
+
+In case of a difference in the specifications or between the specifications and the drawings, the Contractor shall figure the most expensive alternate and after award of contract, shall secure direction from the Architect.
+
+PERMITS, INSPECTIONS AND LICENSES
+
+All permits, inspections and licenses required by the legally constituted authorities for installation of the work according to the plans and specifications shall be obtained and paid as a part of the work of this section.
+
+EXAMINATION OF PREMISES
+
+Before bidding on this work, Contractors shall make a careful examination of the premises and shall thoroughly familiarize themselves with the requirements of the contract.  By the act of submitting a proposal for the work included in this contract, the Contractor shall be deemed to have made such study and examination, and that he is familiar with and accepts all conditions of the site.
+
+PROTECTION
+
+All work, equipment and materials shall be protected at all times.  Contractor shall make good all damage caused either directly or indirectly by his own workmen.  Contractor shall also protect his own work from damage.  He shall close all pipe openings with caps or plugs during installation.  He shall protect all his equipment and materials against dirt, water, chemical and mechanical injury.  Upon completion, all work shall be thoroughly cleaned and delivered in a new condition.
+
+Contractor shall be held responsible for all damage to equipment and materials until he has received written notice from the Architect or Engineer that his work has been accepted.
+
+LOCATIONS
+
+The locations of apparatus, piping and equipment indicated on the drawings are approximate. Piping and equipment shall be installed in such a manner as to avoid all obstruction, preserve headroom, and keep openings and passages clear. The locations of and mounting heights of all fixtures shall be coordinated with the architectural plans and room elevations.
+
+Clearances and Openings: Contractor shall cooperate and coordinate his work with all other trades to avoid conflict and permit for a neat and orderly appearance of the entire installation.  The Contractor shall, in advance of the work, furnish instructions to the General Contractor as to his requirements for equipment and material installation of any kind, whether or not specifically mentioned on drawings or in the specifications, and shall include recesses, chases in walls, and all required openings in the structure.  Should furnishing this information be neglected, delayed or incorrect and additional cuttings are found to be required, the cost of the same shall be charged to this Contractor.
+
+Contractor shall verify and coordinate pipe routing with location of all electrical rooms, elevator equipment rooms, telecom/data rooms, and other rooms dedicated to the housing of switchgear, panels, or other electrical equipment. In no case shall piping be installed within or above the ceiling of such rooms.
+
+SUBMITTAL DATA
+
+Submittal Requirements:
+
+Furnish, all at one time, prior to any installation, within the time noted below, six (6) copies of valid submittal data on all fixtures, material, equipment and devices. Each submitted item shall be indexed and referenced to these specifications and to identification numbers on fixtures and equipment schedules.
+
+Manufacturers’ submittal literature and shop drawings are required on all items to ensure the latest and most complete manufacturer's data is available for review. Requirements of the submittals and Engineer's submittal notes are a part of the work of this Division except that Engineer's notes may not be used as a means of increasing the scope of work of this Division.
+
+Submittals will be checked for general conformance with the design concept of the project but the review does not guarantee quantities shown and does not supersede requirements of this Division to properly install work.
+
+To be valid, all submittals must:
+
+Be delivered to the Architect's office within thirty-five (35) days of award of the contract.  Contractor shall make time allowance for Engineer’s review, return of comments, if any, and resubmittal if required. Corrections or changes in submittals returned as inadequate or incomplete shall be accomplished within this time limit.
+
+Clearly indicate and label as such any items proposed as substitution for that specified or shown on plans.
+
+Include all pertinent construction, installation, performance and technical data.
+
+Have all product data sheets clearly labeled to indicate the individual items being submitted. In addition, all required options and accessories shall be clearly marked.
+
+Product data sheets corresponding to items indicated on plans shall be clearly labeled with the corresponding fixture or equipment tag number.
+
+Product data sheets corresponding to items indicated in specifications shall be clearly labeled with the specification section, page and item numbers.
+
+Include, for every item which differs in size, configuration, connections, service, accessibility or any other significant way, a drawing to the same (or larger) scale as to the pertinent portions of the contract drawings.  In this drawing show a complete layout of the system except that which is identical to the contract drawings, unless the unchanged portions must be shown to indicate such things as clearances.  This drawing, together with the contract design drawings must show the complete system as revised to accommodate the proposed alternate.
+
+Substitution Requirements:
+
+Any items included in submittals and proposed by the Contractor as substitution for that specified or shown on plans shall be submitted within thirty five (35) days of award of the contract. After such time, proposed substitutions shall not be accepted for review, and the Contractor shall submit all items as specified or shown on plans.
+
+For each item proposed as substitution for that specified or shown on plans, copies of product data sheets for the specified item shall be placed side by side with product data sheets for the proposed substitution item within the submittal.
+
+In addition to the Submittal Requirements for labeling listed above, product data sheets for the specified item shall be clearly labeled “SPECIFIED ITEM, NOT SUBMITTED”. Product data sheets for the corresponding proposed substitution item shall be clearly labeled “PROPOSED SUBSTITUTION”.
+
+Provide calculations and other detailed data justifying how any items proposed as substitution were selected for proposal.  Data must be complete enough to permit detailed comparison of every significant characteristic for which the specified item was analyzed during design.
+
+It shall be the Contractor’s responsibility to provide sufficient information to allow the Engineer to analyze any proposed alternate.  If inadequate information is provided, the proposal will not be approved and resubmittal will not be allowed.
+
+The Contractor shall provide or perform tests required by Engineer for purpose of judging acceptability of proposed substitutions.
+
+The Contractor assumes full responsibility that alternate items and procedures will meet the job requirements and is responsible for cost of redesign and of modifications to this and other parts of work caused by alternate items furnished under work in this Section.  In view of these responsibilities, it is the purpose of these specifications to establish procedures to ensure that the Contractor has considered all the ramifications of proposed alternates before submitting them for review.  Submittals which do not comply with the requirements of these specifications or which indicate proposed alternates that were selected without proper regard to the requirements of the job will not be approved.  No more than one proposed alternate will be considered for each item.
+
+Alternate items installed without Engineer's approval will be replaced with specified items at Contractor's expense.
+
+The Architect or his authorized representative shall be the sole judge as to the quality and suitability of proposed alternate equipment, fixtures or materials. Decisions of the Architect or that of his representative shall be final and conclusive.
+
+QUALITY ASSURANCE
+
+Source Limitations for Valves:  Obtain each type of valve from single source from single manufacturer.
+
+ASME Compliance:
+
+ASME B16.10 and ASME B16.34 for ferrous valve dimensions and design criteria.
+
+ASME B31.1 for power piping valves.
+
+ASME B31.9 for building services piping valves.
+
+NSF Compliance:  NSF 61-G and NSF-372 for valve materials for potable-water service.
+
+Valves for domestic water must comply with the Federal Reduction of Lead in Drinking Water Act.
+
+“Lead Free” refers to the wetted surface of pipe, fittings and fixtures in potable water systems that have a weighted average lead content ≤ 0.25%.
+
+All valves must be 3rd party certified.
+
+Bronze valves shall be made of dezincification-resistant material.
+
+DELIVERY, STORAGE, AND HANDLING
+
+Information in this article is paraphrased from MSS.
+
+Prepare valves for shipping as follows:
+
+Protect internal parts against rust and corrosion.
+
+Protect threads, flange faces, grooves, and weld ends.
+
+Set angle, gate, and globe valves closed to prevent rattling.
+
+Set ball and plug valves open to minimize exposure of functional surfaces.
+
+Set butterfly valves closed or slightly open.
+
+Block check valves in either closed or open position.
+
+Use the following precautions during storage:
+
+Maintain valve end protection.
+
+Store valves indoors and maintain at higher than ambient dew point temperature.  If outdoor storage is necessary, store valves off the ground in watertight enclosures.
+
+Use sling to handle large valves; rig sling to avoid damage to exposed parts.  Do not use handwheels or stems as lifting or rigging points.
+
+UNINSPECTED WORK
+
+The Contractor shall not allow or cause any of his work to be covered up or closed in until it has been inspected, tested, approved by all authorities have jurisdiction, and until Project Record drawings have been properly annotated.
+
+Should any of his work be covered up or closed in before such inspection, he shall, at his own expense, uncover the work to the satisfaction of the inspection party.  All related repair work cost shall be borne by the Contractor.
+
+RECORD DRAWINGS
+
+Contractor shall provide and keep up-to-date a complete "as-built" record set of blueline prints which shall show every change from the original drawings and the exact "as-built" locations and sizes of the work provided under this Section of the specifications.  This set shall include locations, dimensions, depth of buried piping, cleanouts, shut-off valves, sewer invert locations, plugged wyes, tees, etc.  On completion of the work, the Contractor shall incorporate all as-built information on a set of reproducible tracings provided by the Architect and this set of reproducibles shall be delivered to the Architect.
+
+GUARANTEES
+
+Contractor shall guarantee the entire plumbing and piping systems unconditionally for a period of one (1) year after final acceptance.  If, during this period, any materials, equipment, or any part of the systems fail to function properly, the Contractor shall make good the defects promptly and without any expense to the Owner.
+
+Contractor shall be responsible for all damage to any part of the premises caused by leaks in pipelines or equipment furnished and installed under this Section for a period of one (1) year after date of acceptance of his work.
+
+All equipment and fixtures shall carry manufacturer's warranty against defective parts or poor workmanship for not less than one (1) year.  See specific equipment specifications for extended warranty requirements.
+
+PRODUCTS
+
+GENERAL REQUIREMENTS FOR VALVES
+
+Plumbing valve applications specified in this Section are limited to NPS 12 (DN 300).  Many valves specified are available in larger sizes.
+
+Refer to valve schedule articles for applications of valves.
+
+Piping systems shall be supplied with valves arranged so as to give complete and regulating control of each building and piping systems throughout the building, and located so all parts are easily accessible and maintained.
+
+Valve Design: Rising stem or outside screw and yoke stems.  Non-rising stem valves may be used where space conditions prevent full extension of rising stems.
+
+Sizes:  Same size as upstream pipe, unless otherwise indicated.
+
+Extended stems: Where piping insulation is indicated or specified, valves shall be equipped with 2” extended handles of non-thermal conductive material.  Also provide a protective sleeve that allows operation of the valve without breaking the vapor seal or disturbing the insulation.  Supply with memory stops, which are fully adjustable after insulation is applied.
+
+End Connection: 2 inch and under shall be threaded, 2-1/2 inches and larger shall be flanged or full lug style.
+
+Valves for Potable Water must comply with California Lead Free Law, effective January 1, 2010.
+
+“Lead Free” refers to the wetted surface of pipe, fittings and fixtures in potable water systems that have a weighted average lead content ≤ 0.25%. Source: California Health & Safety Code (116875).
+
+All valves must be 3rd party certified.
+
+Bronze valves shall be made with dezincification-resistant material.
+
+Where possible, valves of one manufacturer shall be used.
+
+Provide Class 150 valves meeting the valve specifications where Class 125 valves are specified but are not available.
+
+Bronze valves shall be made with dezincification-resistant materials, (Bronze ASTM B62, B61, or B584 Alloy C87850).  This includes body, ball, stem and / or trim.
+
+Bronze Valves:  NPS 2 and smaller with threaded ends, unless otherwise indicated.
+
+Ferrous Valves:  NPS 2-1/2 and larger with flanged ends, unless otherwise indicated.
+
+Caution:  Revise pressure ratings and insert temperature ratings in valve articles if valves with higher ratings are required.  Valves larger than NPS 12 (DN 300) typically have a lower pressure rating than smaller valves.  Verify pressure requirements for large valves.
+
+Valve Pressure and Temperature Ratings:  Not less than indicated and as required for system pressures and temperatures.
+
+Valve Sizes:  Same as upstream piping unless otherwise indicated.
+
+Valve Actuator Types:
+
+Hand-wheel:  For valves other than quarter-turn types.
+
+Hand-lever:  For quarter-turn valves NPS 6 and smaller.
+
+Valves in Insulated Piping:  With 2-inch stem extensions and the following features:
+
+Ball Valves:  With extended operating handle of non-thermal-conductive material, and protective sleeve that allows operation of valve without breaking the vapor seal or disturbing insulation and memory stops that are fully adjustable after insulation is applied.
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Nib-seal handle extension or comparable product by one of the following:
+
+General valves:
+
+NIBCO
+
+Hammond
+
+Milwaukee
+
+Below grade domestic water shut-off valves (gate valves) 2” and larger:
+
+NIBCO.
+
+Clow.
+
+Mueller.
+
+Check valves, lift type:
+
+Hammond.
+
+Milwaukee.
+
+Butterfly Valves:  With extended neck.
+
+Valve-End Connections:
+
+Flanged:  With flanges according to ASME B16.1 for iron valves, ASME B16.5 for steel valves.
+
+Grooved:  With grooves according to AWWA C606.
+
+Valve solder-joint connections are common in smaller sizes of plumbing piping.  Soldering and brazing methods used to achieve required pressure-temperature ratings may damage internal valve parts.  Special installation requirements for soldered valves may make threaded valves more cost-effective.
+
+Caution:  Use solder with melting point below 840 deg F (454 deg C) for angle, check, gate, and globe valves and below 421 deg F (216 deg C) for ball valves.
+
+Solder Joint:  With sockets according to ASME B16.18.
+
+Threaded:  With threads according to ASME B1.20.1.
+
+Valve Bypass and Drain Connections:  MSS SP-45.
+
+BRONZE BALL VALVES
+
+A.                      Three-Piece, Full-Port, Bronze Ball Valves with Stainless-Steel Trim & Nib-Seal Handle:
+
+1.        See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers.  See Division 1 Section "Product Requirements."
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-595-Y-66-LF or T-595-Y-66-LF or a comparable product by one of the following,
+
+Milwaukee Valve Company.
+
+Apollo.
+
+2.    Description:
+
+Standard:  MSS SP-110, NSF 61-G.
+
+CWP Rating:  600 psig.
+
+Body Design:  Three piece with threaded body packnut design (no threaded stem designs allowed) with adjustable stem packing.
+
+Body Material:  Bronze ASTM B 584 Alloy C87850 or C87600.
+
+Ends:  Threaded or Solder.
+
+Seats:  PTFE or TFE.
+
+Stem:  316 Stainless steel.
+
+Ball:  316 Stainless steel, vented.
+
+Port:  Full.
+
+Retain one or more of eight paragraphs in this article if bronze ball valves are required.  MSS SP-110 covers both brass and bronze, copper-alloy ball valves NPS 1/4 to NPS 4 (DN 8 to DN 100).  See the Evaluations and manufacturers' catalogs before selecting either brass or bronze ball valves or including both.
+
+Caution:  Two-piece ball valves with a full or regular port are recommended for most services.  One-piece ball valves have a reduced port and one fewer leak path.  Three-piece ball valves are recommended if disassembly without removing valve from piping is required.
+
+Where pressure drop is a concern, use full-port ball valves.  For corrosive or high-temperature applications, use stainless-steel-trim ball valves.
+
+Two-Piece, Full-Port, Bronze Ball Valves with Stainless-Steel Trim & Nib-Seal Handle:
+
+See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers.  See Division 1 Section "Product Requirements."
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-585-66-LF or T-585-66-LF or a comparable product by one of the following:
+
+Conbraco Industries, Inc.; Apollo Div.
+
+Milwaukee Valve Company.
+
+Description:
+
+Standard:  MSS SP-110, NSF 61-G.
+
+CWP Rating:  600 psig.
+
+Body Design:  Two piece with threaded body packnut design (no threaded stem designs allowed) with adjustable stem packing.
+
+Body Material:  Bronze ASTM B 584 Alloy C87600.
+
+Ends:  Threaded or Solder.
+
+Seats:  PTFE or TFE.
+
+Stem:  316 Stainless steel.
+
+Ball:  316 Stainless steel, vented.
+
+Port:  Full.
+
+Retain one or more of eight paragraphs in this article if bronze ball valves are required.  MSS SP-110 covers both brass and bronze, copper-alloy ball valves NPS 1/4 to NPS 4 (DN 8 to DN 100).  See the Evaluations and manufacturers' catalogs before selecting either brass or bronze ball valves or including both.
+
+Caution:  Two-piece ball valves with a full or regular port are recommended for most services.  One-piece ball valves have a reduced port and one fewer leak path.  Three-piece ball valves are recommended if disassembly without removing valve from piping is required.
+
+Where pressure drop is a concern, use full-port ball valves.  For corrosive or high-temperature applications, use stainless-steel-trim ball valves.
+
+BRONZE LIFT CHECK VALVES
+
+See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers.  See Division 1 Section "Product Requirements."
+
+Retain one or both paragraphs in this article if bronze lift check valves are required.  MSS SP-80 covers bronze lift check valves NPS 1/4 to NPS 3 (DN 8 to DN 80).
+
+Class 125, Lift Check Valves with Nonmetallic TFE Disc:
+
+See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers.  See Division 1 Section "Product Requirements."
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-480-Y-LF or T-480-Y-LF or a comparable product by one of the following:
+
+Hammond.
+
+Milwaukee.
+
+Description:
+
+Standard:  MSS SP-80, Type 2, NSF 61-G.
+
+CWP Rating:  200 psig.
+
+Body Design:  Vertical flow.
+
+Body Material:  ASTM B 584 Alloy C87850, lead free bronze.
+
+Ends:  Threaded or Solder.
+
+Disc:  PTFE, or TFE.
+
+BRONZE SWING CHECK VALVES
+
+Retain one or more of four paragraphs in this article if bronze swing check valves are required.  MSS SP-80 covers bronze swing check valves NPS 1/4 to NPS 3 (DN 8 to DN 80).
+
+Class 125, Bronze Swing Check Valves with Nonmetallic TFE Disc:
+
+See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers.  See Division 1 Section "Product Requirements."
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-413-Y-LF or T-413-Y-LF or a comparable product by one of the following:
+
+Crane Co.; Crane Valve Group; Crane Valves.
+
+Powell Valves.
+
+Description:
+
+Standard:  MSS SP-80, Type 4, NSF 61-G.
+
+CWP Rating:  200 psig.
+
+Body Design:  Y-pattern Horizontal flow.
+
+Body Material:  ASTM B 584 Alloy C87850, lead free bronze.
+
+Ends:  Threaded or Solder.
+
+Disc:  PTFE or TFE.
+
+BRONZE GATE VALVES
+
+Retain one or more of four paragraphs in this article if bronze gate valves are required.  MSS SP-80 covers bronze gate valves NPS 1/4 to NPS 3 (DN 8 to DN 80).
+
+NRS Bronze Gate Valves:
+
+See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers.  See Division 1 Section "Product Requirements."
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model S-113-LF or T-113-LF or a comparable product by one of the following:
+
+Crane Co.; Crane Valve Group; Crane Valves.
+
+Powell Valves.
+
+Description:
+
+Standard:  MSS SP-139, Type 2, NSF 61-G.
+
+CWP Rating:  200 psig.
+
+Body Material:  ASTM B 584, dezincification-resistant bronze with integral seat and threaded bonnet.
+
+Ends:  Threaded or Solder.
+
+Stem:  Lead free Silicon Bronze.
+
+Disc:  Solid wedge; lead free bronze.
+
+Packing:  Asbestos free.
+
+Handwheel:  Malleable iron.
+
+RS Bronze Gate Valves:
+
+Basis-of-Design Product: Subject to compliance with requirements, provide NIBCO Model S-111-LF or T-111-LF or a comparable product by one of the following:
+
+Crane Co.; Crane Valve Group; Crane Valves.
+
+Powell Valves
+
+Description:
+
+Standard: MSS SP-80, Type 2, NSF 61-G.
+
+CWP Rating: 200 psig.
+
+Body Material: ASTM B584 C87850 dezincification resistant bronze with integral seat and threaded bonnet.
+
+Ends: Threaded or Solder.
+
+Stem: Lead free silicon bronze.
+
+Disc: Solid wedge, lead free bronze.
+
+Packing: Asbestos free.
+
+Handwhell: Malleable iron.
+
+IRON GATE VALVES
+
+Retain one or more of four paragraphs in this article if iron gate valves are required.  MSS SP-70 covers iron gate valves NPS 2 to NPS 48 (DN 50 to DN 1200).
+
+Class 125, Ductile-Iron Resilient Wedge Gate Valves:
+
+See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers.  See Division 1 Section "Product Requirements."
+
+Basis-of-Design Product:  Subject to compliance with requirements, provide NIBCO Model F-619-RWS (NRS) or F-607-RWS (OS&Y) or a comparable product by one of the following:
+
+Clow
+
+Mueller
+
+Description:
+
+Standard:  AWWA C-509 and C-515,
+
+CWP Rating:  300 psig.
+
+Body Material:  ASTM A536 ductile iron, fusion-bonded epoxy coating inside and out.
+
+Ends:  Flanged.
+
+Trim:  stainless steel.
+
+Disc:  Rubber encapsulated ductile iron wedge.
+
+Packing and Gasket:  Asbestos free.
+
+EXECUTION
+
+EXAMINATION
+
+Examine valve interior for cleanliness, freedom from foreign matter, and corrosion.  Remove special packing materials, such as blocks, used to prevent disc movement during shipping and handling.
+
+Operate valves in positions from fully open to fully closed.  Examine guides and seats made accessible by such operations.
+
+Examine threads on valve and mating pipe for form and cleanliness.
+
+Examine mating flange faces for conditions that might cause leakage.  Check bolting for proper size, length, and material.  Verify that gasket is of proper size, that its material composition is suitable for service, and that it is free from defects and damage.
+
+Do not attempt to repair defective valves; replace with new valves.
+
+VALVE INSTALLATION
+
+Install valves with unions or flanges at each piece of equipment arranged to allow service, maintenance, and equipment removal without system shutdown.
+
+Locate valves for easy access and provide separate support where necessary.
+
+Install valves in horizontal piping with stem at or above center of pipe.
+
+Install valves in position to allow full stem movement.
+
+Install check valves for proper direction of flow and as follows:
+
+Revise check valve installation requirements to suit Project; delete those not required.
+
+Swing Check Valves:  In horizontal position with hinge pin level.
+
+Check Valves:  In horizontal or vertical position, between flanges.
+
+Lift Check Valves:  With stem upright and plumb.
+
+ADJUSTING
+
+Adjust or replace valve packing after piping systems have been tested and put into service but before final adjusting and balancing.  Replace valves if persistent leaking occurs.
+
+GENERAL REQUIREMENTS FOR VALVE APPLICATIONS
+
+The Section Text is arranged to provide bronze or brass valves in NPS 2 (DN 50) and smaller and iron valves in NPS 2-1/2 to NPS 12 (DN 65 to DN 300).
+
+Caution:  Verify that valve classes and pressure and temperature ratings are adequate for system fluid.  Repeat each category listing if necessary and insert required pressure range for each listing.  Indicate location of each different pressure system on Drawings.
+
+Retain and revise valve applications in paragraphs and schedules below.  Coordinate with valves specified in Part 2.
+
+If valve applications are not indicated, use the following:
+
+Shutoff Service:  Ball, butterfly valves.
+
+Butterfly Valve Dead-End Service:  Single-flange (lug) type.
+
+Throttling Service:  Ball or Butterfly valves.
+
+If valves with specified SWP classes or CWP ratings are not available, the same types of valves with higher SWP classes or CWP ratings may be substituted.
+
+Select valves, except wafer types, with the following end connections:
+
+For Copper Tubing, NPS 2 and Smaller:  Threaded ends.
+
+For Copper Tubing, NPS 2-1/2 to NPS 4:  Flanged ends.
+
+For Steel Piping, NPS 2 and Smaller:  Threaded ends.
+
+For Steel Piping, NPS 2-1/2 to NPS 4:  Flanged ends.
+
+DOMESTIC, HOT- AND COLD-WATER VALVE SCHEDULE
+
+Pipe NPS 2 and Smaller:
+
+Retain first subparagraph below if solder-joint valve ends are permitted for this application.
+
+Bronze Valves:  Threaded ends.
+
+Retain only valve types, in five subparagraphs below, required for Project.
+
+Caution:  No one-piece, reduced-port, brass ball valves with stainless-steel trim; three-piece, regular-port, brass ball valves with brass trim; or bronze ball valves with bronze trim are included in the Section Text.  Retain brass or stainless-steel trim with brass ball valves, or bronze or stainless-steel trim with bronze ball valves.
+
+Ball Valves:  Two piece, full port, bronze with stainless-steel trim.
+
+Bronze Lift Check Valves:  Class 125, nonmetallic TFE disc.
+
+Bronze Swing Check Valves:  Class 150, nonmetallic TFE disc.
+
+Bronze Gate Valves:  Class 150, RS.
+
+Pipe NPS 2-1/2 and Larger:
+
+Retain first subparagraph below if threaded valve ends are permitted for this application.
+
+Retain one of first two subparagraphs below, or retain both and indicate location of each type on Drawings.
+
+Ductile-Iron, Single-Flange Butterfly Valves:  200 CWP, EPDM seat, aluminum-bronze disc.
+
+END OF SECTION 22 05 23
+
+===== FILE: 220529 fl - Hangers and Supports for Plumbing Piping and Equipment.docx =====
+SECTION 22 05 29 - HANGERS AND SUPPORTS FOR PLUMBING PIPING AND EQUIPMENT
+
+Copyright 2011 by The American Institute of Architects (AIA)
+
+Exclusively published and distributed by Architectural Computer Services, Inc. (ARCOM) for the AIA
+
+Revise this Section by deleting and inserting text to meet Project-specific requirements.
+
+Verify that Section titles referenced in this Section are correct for this Project's Specifications; Section titles may have changed.
+
+GENERAL
+
+RELATED DOCUMENTS
+
+Retain or delete this article in all Sections of Project Manual.
+
+Drawings and general provisions of the Contract, including General and Supplementary Conditions and Division 01 Specification Sections, apply to this Section.
+
+SUMMARY
+
+Section Includes:
+
+Metal pipe hangers and supports.
+
+Trapeze pipe hangers.
+
+Thermal-hanger shield inserts.
+
+Fastener systems.
+
+Related Sections:
+
+Retain Sections in subparagraphs below that contain requirements Contractor might expect to find in this Section but are specified in other Sections.
+
+Section 055000 "Metal Fabrications" for structural-steel shapes and plates for trapeze hangers for pipe and equipment supports.
+
+DEFINITIONS
+
+Retain definitions remaining after this Section has been edited.
+
+MSS:  Manufacturers Standardization Society of The Valve and Fittings Industry Inc.
+
+PERFORMANCE REQUIREMENTS
+
+Retain first paragraph below if Contractor is required to assume responsibility for design.
+
+Structural Performance:  Hangers and supports for plumbing piping and equipment shall withstand the effects of gravity loads and stresses within limits and under conditions indicated according to ASCE/SEI 7.
+
+Design supports for multiple pipes, including pipe stands, capable of supporting combined weight of supported systems, system contents, and test water.
+
+Design equipment supports capable of supporting combined operating weight of supported equipment and connected systems and components.
+
+Design seismic-restraint hangers and supports for piping and equipment and obtain approval from authorities having jurisdiction.
+
+WORK INCLUDED
+
+Furnish all labor, materials, services, testing, transportation and equipment necessary for the completion of all plumbing work as indicated on drawings and specified herein. Work materials and equipment not indicated or specified which is necessary for the complete and proper operation of the work of this Section in accordance with the true intent and meaning of the contract documents shall be provided and incorporated at no additional cost to the Owner.
+
+QUALITY ASSURANCE
+
+Code Requirements: All work covered by this Section shall conform to the latest requirements of the following regulations:
+
+C.C.R., Title 24, Part 5 (2022 CPC).
+
+2022 California Plumbing Code.
+
+SMACNA Seismic Restraint Manual Guidelines for Mechanical Systems.
+
+National Fire Protection Association.
+
+California State Division of Industrial Safety.
+
+County Health Department.
+
+Any other legally constituted body-having jurisdiction thereof.
+
+Nothing in the specifications or drawings shall be construed to permit deviation from the requirements of governing codes unless approval for said deviation has been obtained from the legally constituted authorities having jurisdiction and from the Owner's representative.
+
+DRAWINGS
+
+Because of the small-scale drawings, it is not possible to indicate all offsets, fittings and accessories which may be required. The Contractor shall carefully investigate the conditions surrounding installation of his work, furnishing the necessary piping, fittings, valves, traps, and other devices which may be required to complete the installation.
+
+The general arrangement indicated on the drawings shall be followed as closely as possible. Coordinate with the Architectural, Structural, Mechanical and Electrical Drawings and the work of other trades prior to installation of piping fixtures and equipment to verify adequate space available for installation of the work shown. In the event a field condition arises which makes it impossible to install the work as indicated, submit, in writing, the proposed departures to the Architect for his approval. Only when Architect's approval is given, in writing, shall Contractor proceed with installation of the work.
+
+Special Note: Should the Contractor make changes in the installation differing from what is indicated on the contract drawings and not necessitated due to field conditions as indicated hereinabove, the Contractor shall be required to re-install the work to comply with what has been indicated on the contract drawings.  Should it be impossible to re-install the work and the installation is in accordance with all governing authorities, the architect may permit the installation to remain.  However, all costs incurred to revise the contract drawings by the engineer for resubmittal to the building department indicating the as-installed condition shall become the responsibility of the Contractor.
+
+In case of a difference in the specifications or between the specifications and the drawings, the Contractor shall figure the most expensive alternate and after award of contract, shall secure direction from the Architect.
+
+PERMITS, INSPECTIONS AND LICENSES
+
+All permits, inspections and licenses required by the legally constituted authorities for installation of the work according to the plans and specifications shall be obtained and paid as a part of the work of this section.
+
+EXAMINATION OF PREMISES
+
+Before bidding on this work, Contractors shall make a careful examination of the premises and shall thoroughly familiarize themselves with the requirements of the contract.  By the act of submitting a proposal for the work included in this contract, the Contractor shall be deemed to have made such study and examination, and that he is familiar with and accepts all conditions of the site.
+
+PROTECTION
+
+All work, equipment and materials shall be protected at all times.  Contractor shall make good all damage caused either directly or indirectly by his own workmen.  Contractor shall also protect his own work from damage.  He shall close all pipe openings with caps or plugs during installation.  He shall protect all his equipment and materials against dirt, water, chemical and mechanical injury.  Upon completion, all work shall be thoroughly cleaned and delivered in a new condition.
+
+Contractor shall be held responsible for all damage to equipment and materials until he has received written notice from the Architect or Engineer that his work has been accepted.
+
+LOCATIONS
+
+The locations of apparatus, piping and equipment indicated on the drawings are approximate. Piping and equipment shall be installed in such a manner as to avoid all obstruction, preserve headroom, and keep openings and passages clear. The locations of and mounting heights of all fixtures shall be coordinated with the architectural plans and room elevations.
+
+Clearances and Openings: Contractor shall cooperate and coordinate his work with all other trades to avoid conflict and permit for a neat and orderly appearance of the entire installation.  The Contractor shall, in advance of the work, furnish instructions to the General Contractor as to his requirements for equipment and material installation of any kind, whether or not specifically mentioned on drawings or in the specifications, and shall include recesses, chases in walls, and all required openings in the structure.  Should furnishing this information be neglected, delayed or incorrect and additional cuttings are found to be required, the cost of the same shall be charged to this Contractor.
+
+Contractor shall verify and coordinate pipe routing with location of all electrical rooms, elevator equipment rooms, telecom/data rooms, and other rooms dedicated to the housing of switchgear, panels, or other electrical equipment. In no case shall piping be installed within or above the ceiling of such rooms.
+
+SUBMITTAL DATA
+
+Submittal Requirements:
+
+Furnish, all at one time, prior to any installation, within the time noted below, six (6) copies of valid submittal data on all fixtures, material, equipment and devices. Each submitted item shall be indexed and referenced to these specifications and to identification numbers on fixtures and equipment schedules.
+
+Manufacturers’ submittal literature and shop drawings are required on all items to ensure the latest and most complete manufacturer's data is available for review. Requirements of the submittals and Engineer's submittal notes are a part of the work of this Division except that Engineer's notes may not be used as a means of increasing the scope of work of this Division.
+
+Submittals will be checked for general conformance with the design concept of the project but the review does not guarantee quantities shown and does not supersede requirements of this Division to properly install work.
+
+To be valid, all submittals must:
+
+Be delivered to the Architect's office within thirty-five (35) days of award of the contract.  Contractor shall make time allowance for Engineer’s review, return of comments, if any, and resubmittal if required. Corrections or changes in submittals returned as inadequate or incomplete shall be accomplished within this time limit.
+
+Clearly indicate and label as such any items proposed as substitution for that specified or shown on plans.
+
+Include all pertinent construction, installation, performance and technical data.
+
+Have all product data sheets clearly labeled to indicate the individual items being submitted. In addition, all required options and accessories shall be clearly marked.
+
+Product data sheets corresponding to items indicated on plans shall be clearly labeled with the corresponding fixture or equipment tag number.
+
+Product data sheets corresponding to items indicated in specifications shall be clearly labeled with the specification section, page and item numbers.
+
+Include, for every item which differs in size, configuration, connections, service, accessibility or any other significant way, a drawing to the same (or larger) scale as to the pertinent portions of the contract drawings.  In this drawing show a complete layout of the system except that which is identical to the contract drawings, unless the unchanged portions must be shown to indicate such things as clearances.  This drawing, together with the contract design drawings must show the complete system as revised to accommodate the proposed alternate.
+
+Substitution Requirements:
+
+Any items included in submittals and proposed by the Contractor as substitution for that specified or shown on plans shall be submitted within thirty five (35) days of award of the contract. After such time, proposed substitutions shall not be accepted for review, and the Contractor shall submit all items as specified or shown on plans.
+
+For each item proposed as substitution for that specified or shown on plans, copies of product data sheets for the specified item shall be placed side by side with product data sheets for the proposed substitution item within the submittal.
+
+In addition to the Submittal Requirements for labeling listed above, product data sheets for the specified item shall be clearly labeled “SPECIFIED ITEM, NOT SUBMITTED”. Product data sheets for the corresponding proposed substitution item shall be clearly labeled “PROPOSED SUBSTITUTION”.
+
+Provide calculations and other detailed data justifying how any items proposed as substitution were selected for proposal.  Data must be complete enough to permit detailed comparison of every significant characteristic for which the specified item was analyzed during design.
+
+It shall be the Contractor’s responsibility to provide sufficient information to allow the Engineer to analyze any proposed alternate.  If inadequate information is provided, the proposal will not be approved and resubmittal will not be allowed.
+
+The Contractor shall provide or perform tests required by Engineer for purpose of judging acceptability of proposed substitutions.
+
+The Contractor assumes full responsibility that alternate items and procedures will meet the job requirements and is responsible for cost of redesign and of modifications to this and other parts of work caused by alternate items furnished under work in this Section.  In view of these responsibilities, it is the purpose of these specifications to establish procedures to ensure that the Contractor has considered all the ramifications of proposed alternates before submitting them for review.  Submittals which do not comply with the requirements of these specifications or which indicate proposed alternates that were selected without proper regard to the requirements of the job will not be approved.  No more than one proposed alternate will be considered for each item.
+
+Alternate items installed without Engineer's approval will be replaced with specified items at Contractor's expense.
+
+The Architect or his authorized representative shall be the sole judge as to the quality and suitability of proposed alternate equipment, fixtures or materials. Decisions of the Architect or that of his representative shall be final and conclusive.
+
+Paragraph below is defined in Section 013300 "Submittal Procedures" as a "Delegated-Design Submittal."  Retain if Work of this Section is required to withstand specific design loads and design responsibilities have been delegated to Contractor or if structural data are required as another way to verify compliance with performance requirements.  Professional engineer qualifications are specified in Section 014000 "Quality Requirements."
+
+QUALITY ASSURANCE
+
+Retain both paragraphs below if shop or field welding is required.  If retaining, also retain "Welding certificates" Paragraph in "Informational Submittals" Article.
+
+Structural Steel Welding Qualifications:  Qualify procedures and personnel according to AWS D1.1/D1.1M, "Structural Welding Code - Steel."
+
+UNINSPECTED WORK
+
+The Contractor shall not allow or cause any of his work to be covered up or closed in until it has been inspected, tested, approved by all authorities have jurisdiction, and until Project Record drawings have been properly annotated.
+
+Should any of his work be covered up or closed in before such inspection, he shall, at his own expense, uncover the work to the satisfaction of the inspection party.  All related repair work cost shall be borne by the Contractor.
+
+RECORD DRAWINGS
+
+Contractor shall provide and keep up-to-date a complete "as-built" record set of blueline prints which shall show every change from the original drawings and the exact "as-built" locations and sizes of the work provided under this Section of the specifications.  This set shall include locations, dimensions, depth of buried piping, cleanouts, shut-off valves, sewer invert locations, plugged wyes, tees, etc.  On completion of the work, the Contractor shall incorporate all as-built information on a set of reproducible tracings provided by the Architect and this set of reproducibles shall be delivered to the Architect.
+
+GUARANTEES
+
+Contractor shall guarantee the entire plumbing and piping systems unconditionally for a period of one (1) year after final acceptance.  If, during this period, any materials, equipment, or any part of the systems fail to function properly, the Contractor shall make good the defects promptly and without any expense to the Owner.
+
+Contractor shall be responsible for all damage to any part of the premises caused by leaks in pipelines or equipment furnished and installed under this Section for a period of one (1) year after date of acceptance of his work.
+
+All equipment and fixtures shall carry manufacturer's warranty against defective parts or poor workmanship for not less than one (1) year.  See specific equipment specifications for extended warranty requirements.
+
+PRODUCTS
+
+Pipe Supports: Unless otherwise indicated on the drawings, shall be as follows:
+
+The Contractor shall furnish and install all miscellaneous iron work including angles, channels, etc., required to appropriately support the various piping systems.  Hanger spacing and location shall conform to 2022 California Plumbing Code Table 313.1.
+
+All horizontal runs of piping within the building to be supported from the structural framing with steel rods and split ring hangers, B-Line, Grinnell Company, Tolco, or approved equal.  Steel rods shall be secured to overhead framing with side beam connectors.  Where necessary, install angle iron between framing to accommodate hanger rods.  Where several pipes are running together, Unistrut, B-Line or Powerstrut channels with clamps may be used in lieu of individual pipe hangers, and supported from structure as herein specified.  Submit test data for type of hanger supports to be provided.  For support conditions other than specified herein, the Contractor shall submit method of support for approval prior to any installation.
+
+Horizontal Piping Hangers and Supports:
+
+General:  Provide factory fabricated horizontal hangers and supports complying with one of the following MSS types listed to suit horizontal-piping systems, in accordance with MSS SP-69 and manufacturer's published product information. Select size of hangers and supports to exactly fit pipe size for bare piping, and to exactly fit around piping insulation with saddle or shield for insulated piping.  Provide copper-plated hangers and supports for copper-piping systems.
+
+Adjustable Steel Clevis Hangers:  (MSS Type 1.) B-Line B 3100
+
+Adjustable Swivel Pipe Rings: (MSS Type 5) B-Line B3690
+
+Vertical-Piping Clamps:
+
+General:  Provide factory fabricated vertical-piping clamps complying with the following types listed, to suit vertical piping systems, in accordance with MSS SP-69 and manufacturer's published product information.  Select size of vertical piping clamps to exactly fit pipe size of bare pipe.  Provide copper-plated clamps for copper-piping systems.
+
+Two-Bolt Riser Clamps: (MSS Type 8) B-Line B3373
+
+Hanger-Rod Attachments:
+
+General:  Provide factory fabricated hanger-rod attachments B-Line, Tolco or approved equal, selected by Installer to suit horizontal-piping hangers and building attachments, in accordance with MSS SP-58 and manufacturer's published product information. Select size of hanger-rod attachment to suit hanger rods.  Provide copper-plated hanger-rod attachments for copper-piping systems.
+
+Side beam eye socket, Tolco Fig. #57 for rod sizes 3/8" dia. and Tolco Fig. #25-30-251 for rod sizes 1/2" dia.
+
+Building Attachments:
+
+General:  Provide factory fabricated building attachments, selected by Installer to suit building structural framing conditions, in accordance with MSS SP-69 and manufacturer's published product information.  Select size of building attachments to suit hanger rods.  Provide copper-plated building attachments for copper-piping systems.
+
+Hanger Rods and Spacing shall conform to the following table:
+
+Pipe Sizes				Spacing			Rods
+
+2 Inch and Smaller		6 Feet			3/8 Inch
+
+2-1/2 Inch to 3 Inch		8 Feet			1/2 Inch
+
+4 Inch and larger			8 Feet			5/8 Inch
+
+Hangers and Supports shall be adequate to maintain alignment and prevent sagging and shall be placed within 18 inches of joint.  Support shall be provided at each horizontal branch connection.
+
+Provide lateral bracing as manufactured by B-Line or approved equal for all piping to prevent swaying or movement in accordance with SMACNA "Guidelines for Seismic Restraints of Piping Systems".  Piping smaller than indicated in the guidelines shall be provided with bracing as specified for the smallest size indicated.  The entire water distribution system shall be properly braced and will not move due to the action of quick closing of valves.
+
+Miscellaneous Supports, Wall Brackets, Etc.:  Provide where required in accordance with the best standard practices of the trade.  Submit shop drawings for all fabricated supports.
+
+Isolators.  All piping which is not isolated from contact with the building by its insulation shall be installed with a manufactured type isolator.  Isolators shall be B-Line vibra clamp and cushion, Super Strut, Stoneman "Trisolator", or approved equal.  Piping shall be installed and supported in a manner to provide for expansion without strains.  Guides shall be properly installed to ensure this requirement.
+
+Shields:
+
+General:  Provide shields at piping hangers and supports, factory-fabricated, for all insulated piping as manufactured by Pipeshields Incorporated or approved equal.  Size shields for exact fit to mate with pipe insulation.
+
+Protection Shields: MSS Type 40; provide high density insert of same thickness of insulation or equal 100-psi average compressive strength, waterproofed calcium silicate, encased with a sheet metal shield.  Insert and shield shall cover entire circumference of the pipe and shall be of length indicated by manufacturer for pipe size and thickness of insulation.
+
+METAL PIPE HANGERS AND SUPPORTS
+
+Carbon-Steel Pipe Hangers and Supports:
+
+Description:  MSS SP-58, Types 1 through 58, factory-fabricated components.
+
+Galvanized Metallic Coatings:  Pregalvanized or hot dipped.
+
+Nonmetallic Coatings:  Plastic coating, jacket, or liner.
+
+Padded Hangers:  Hanger with fiberglass or other pipe insulation pad or cushion to support bearing surface of piping.
+
+Hanger Rods:  Continuous-thread rod, nuts, and washer made of stainless steel.
+
+Stainless-Steel Pipe Hangers and Supports:
+
+Description:  MSS SP-58, Types 1 through 58, factory-fabricated components.
+
+Padded Hangers:  Hanger with fiberglass or other pipe insulation pad or cushion to support bearing surface of piping.
+
+Hanger Rods:  Continuous-thread rod, nuts, and washer made of stainless steel.
+
+Copper Pipe Hangers:
+
+Manufacturers' catalogs indicate that copper pipe hangers are small, typically NPS 4 (DN 100) or smaller, and types available are limited.
+
+Description:  MSS SP-58, Types 1 through 58, copper-coated-steel, factory-fabricated components.
+
+Hanger Rods:  Continuous-thread rod, nuts, and washer made of stainless steel.
+
+TRAPEZE PIPE HANGERS
+
+Trapeze pipe hanger in paragraph below requires calculating and detailing at each use.
+
+Description:  MSS SP-69, Type 59, shop- or field-fabricated pipe-support assembly made from structural carbon-steel shapes with MSS SP-58 carbon-steel hanger rods, nuts, saddles, and U-bolts.
+
+THERMAL-HANGER SHIELD INSERTS
+
+See Editing Instruction No. 1 in the Evaluations for cautions about naming manufacturers.  Retain one of first two paragraphs and list of manufacturers below.  See Section 016000 "Product Requirements."
+
+Manufacturers:  Subject to compliance with requirements, provide products by one of the following:
+
+Retain option in first paragraph below if manufacturer's name and model number are indicated in schedules or plans on Drawings; delete option and insert manufacturer's name and model number if not included on Drawings.
+
+ERICO International Corporation.
+
+PHS Industries, Inc.
+
+Pipe Shields, Inc.; a subsidiary of Piping Technology & Products, Inc.
+
+Piping Technology & Products, Inc.
+
+Insulation-Insert Material for Hot Piping:  Water-repellent treated, ASTM C 533, Type I calcium silicate with 100-psig ASTM C 552 or Type II cellular glass with 100-psig minimum compressive strength.
+
+For Trapeze or Clamped Systems:  Insert and shield shall cover entire circumference of pipe.
+
+For Clevis or Band Hangers:  Insert and shield shall cover lower 180 degrees of pipe.
+
+Insert Length:  Extend 2 inches beyond sheet metal shield for piping operating below ambient air temperature.
+
+FASTENER SYSTEMS
+
+Verify suitability of fasteners in this article for use in lightweight concrete or concrete slabs less than 4 inches (100 mm) thick.
+
+Powder-Actuated Fasteners:  Threaded-steel stud, for use in hardened portland cement concrete with pull-out, tension, and shear capacities appropriate for supported loads and building materials where used.
+
+Mechanical-Expansion Anchors:  Insert-wedge-type, stainless- steel anchors, for use in hardened portland cement concrete; with pull-out, tension, and shear capacities appropriate for supported loads and building materials where used.
+
+MISCELLANEOUS MATERIALS
+
+Structural Steel:  ASTM A 36/A 36M, carbon-steel plates, shapes, and bars; black and galvanized.
+
+Grout:  ASTM C 1107, factory-mixed and -packaged, dry, hydraulic-cement, nonshrink and nonmetallic grout; suitable for interior and exterior applications.
+
+Properties:  Nonstaining, noncorrosive, and nongaseous.
+
+Design Mix:  5000-psi, 28-day compressive strength.
+
+EXECUTION
+
+HANGER AND SUPPORT INSTALLATION
+
+Metal Pipe-Hanger Installation:  Comply with MSS SP-69 and MSS SP-89.  Install hangers, supports, clamps, and attachments as required to properly support piping from the building structure.
+
+Trapeze pipe hanger in first paragraph below requires calculating and detailing at each use.
+
+Metal Trapeze Pipe-Hanger Installation:  Comply with MSS SP-69 and MSS SP-89.  Arrange for grouping of parallel runs of horizontal piping, and support together on field-fabricated trapeze pipe hangers.
+
+Pipes of Various Sizes:  Support together and space trapezes for smallest pipe size or install intermediate supports for smaller diameter pipes as specified for individual pipe hangers.
+
+Field fabricate from ASTM A 36/A 36M, carbon-steel shapes selected for loads being supported.  Weld steel according to AWS D1.1/D1.1M.
+
+Metal framing system in first paragraph below requires calculating and detailing at each use.
+
+Fiberglass strut system in first paragraph below requires calculating and detailing at each use.
+
+Thermal-Hanger Shield Installation:  Install in pipe hanger or shield for insulated piping.
+
+Fastener System Installation:
+
+Verify suitability of fasteners in two subparagraphs below for use in lightweight concrete or concrete slabs less than 4 inches (100 mm) thick.
+
+Install powder-actuated fasteners for use in lightweight concrete or concrete slabs less than 4 inches thick in concrete after concrete is placed and completely cured.  Use operators that are licensed by powder-actuated tool manufacturer.  Install fasteners according to powder-actuated tool manufacturer's operating manual.
+
+Install mechanical-expansion anchors in concrete after concrete is placed and completely cured.  Install fasteners according to manufacturer's written instructions.
+
+Pipe stand in first paragraph below requires calculating and detailing at each use.
+
+Install hangers and supports complete with necessary attachments, inserts, bolts, rods, nuts, washers, and other accessories.
+
+Equipment support in first paragraph below requires calculating and detailing at each use.
+
+Equipment Support Installation:  Fabricate from welded-structural-steel shapes.
+
+Install hangers and supports to allow controlled thermal and seismic movement of piping systems, to permit freedom of movement between pipe anchors, and to facilitate action of expansion joints, expansion loops, expansion bends, and similar units.
+
+Install lateral bracing with pipe hangers and supports to prevent swaying.
+
+Install building attachments within concrete slabs or attach to structural steel.  Install additional attachments at concentrated loads, including valves, flanges, and strainers, NPS 2-1/2 and larger and at changes in direction of piping.  Install concrete inserts before concrete is placed; fasten inserts to forms and install reinforcing bars through openings at top of inserts.
+
+Load Distribution:  Install hangers and supports so that piping live and dead loads and stresses from movement will not be transmitted to connected equipment.
+
+Pipe Slopes:  Install hangers and supports to provide indicated pipe slopes and to not exceed maximum pipe deflections allowed by ASME B31.9 for building services piping.
+
+Insulated Piping:
+
+Specify parts in first three subparagraphs below as galvanized or painted, as required.  Other materials are available in place of wooden blocks.
+
+Attach clamps and spacers to piping.
+
+Piping Operating above Ambient Air Temperature:  Clamp may project through insulation.
+
+Piping Operating below Ambient Air Temperature:  Use thermal-hanger shield insert with clamp sized to match OD of insert.
+
+Do not exceed pipe stress limits allowed by ASME B31.9 for building services piping.
+
+Install MSS SP-58, Type 39, protection saddles if insulation without vapor barrier is indicated.  Fill interior voids with insulation that matches adjoining insulation.
+
+Option:  Thermal-hanger shield inserts may be used.  Include steel weight-distribution plate for pipe NPS 4 and larger if pipe is installed on rollers.
+
+High-compressive-strength inserts may permit use of shorter shields or shields with less arc span.  Revise first subparagraph below to suit Project.
+
+Shield Dimensions for Pipe:  Not less than the following:
+
+NPS 1/4 to NPS 3-1/2:  12 inches long and 0.048 inch thick.
+
+NPS 4:  12 inches long and 0.06 inch thick.
+
+Pipes NPS 8 and Larger:  Include wood or reinforced calcium-silicate-insulation inserts of length at least as long as protective shield.
+
+Thermal-Hanger Shields:  Install with insulation same thickness as piping insulation.
+
+EQUIPMENT SUPPORTS
+
+Fabricate structural-steel stands to suspend equipment from structure overhead or to support equipment above floor.
+
+Grouting:  Place grout under supports for equipment and make bearing surface smooth.
+
+Provide lateral bracing, to prevent swaying, for equipment supports.
+
+METAL FABRICATIONS
+
+Cut, drill, and fit miscellaneous metal fabrications for trapeze pipe hangers.
+
+Fit exposed connections together to form hairline joints.  Field weld connections that cannot be shop welded because of shipping size limitations.
+
+Field Welding:  Comply with AWS D1.1/D1.1M procedures for shielded, metal arc welding; appearance and quality of welds; and methods used in correcting welding work; and with the following:
+
+Use materials and methods that minimize distortion and develop strength and corrosion resistance of base metals.
+
+Obtain fusion without undercut or overlap.
+
+Remove welding flux immediately.
+
+Finish welds at exposed connections so no roughness shows after finishing and so contours of welded surfaces match adjacent contours.
+
+ADJUSTING
+
+Hanger Adjustments:  Adjust hangers to distribute loads equally on attachments and to achieve indicated slope of pipe.
+
+Trim excess length of continuous-thread hanger and support rods to 1-1/2 inches.
+
+PAINTING
+
+Retain first paragraph below if Section 099113 "Exterior Painting" or Section 099123 "Interior Painting" is not in Project Manual.
+
+Touchup:  Clean field welds and abraded areas of shop paint.  Paint exposed areas immediately after erecting hangers and supports.  Use same materials as used for shop painting.  Comply with SSPC-PA 1 requirements for touching up field-painted surfaces.
+
+Apply paint by brush or spray to provide a minimum dry film thickness of 2.0 mils.
+
+Retain first paragraph below if Section 099113 "Exterior Painting" or Section 099123 "Interior Painting" is in Project Manual.  Revise reference if Section 099600 "High-Performance Coatings" applies instead.
+
+Touchup:  Cleaning and touchup painting of field welds, bolted connections, and abraded areas of shop paint on miscellaneous metal are specified in Section 099123 "Interior Painting."
+
+Galvanized Surfaces:  Clean welds, bolted connections, and abraded areas and apply galvanizing-repair paint to comply with ASTM A 780.
+
+HANGER AND SUPPORT SCHEDULE
+
+Specific hanger and support requirements are in Sections specifying piping systems and equipment.
+
+Comply with MSS SP-69 for pipe-hanger selections and applications that are not specified in piping system Sections.
+
+Use hangers and supports with galvanized metallic coatings for piping and equipment that will not have field-applied finish.
+
+Use nonmetallic coatings on attachments for electrolytic protection where attachments are in direct contact with copper tubing.
+
+Use carbon-steel pipe hangers and supports metal trapeze pipe hangers and attachments for general service applications.
+
+Use stainless-steel pipe hangers and stainless-steel attachments for hostile environment applications.
+
+Use copper-plated pipe hangers and copper or stainless-steel attachments for copper piping and tubing.
+
+Use thermal-hanger shield inserts for insulated piping and tubing.
+
+Horizontal-Piping Hangers and Supports:  Unless otherwise indicated and except as specified in piping system Sections, install the following types:
+
+Adjustable, Steel Clevis Hangers (MSS Type 1):  For suspension of noninsulated or insulated, stationary pipes NPS 1/2 to NPS 30.
+
+Pipe Hangers (MSS Type 5):  For suspension of pipes NPS 1/2 to NPS 4, to allow off-center closure for hanger installation before pipe erection.
+
+Vertical-Piping Clamps:  Unless otherwise indicated and except as specified in piping system Sections, install the following types:
+
+Extension Pipe or Riser Clamps (MSS Type 8):  For support of pipe risers NPS 3/4 to NPS 24.
+
+Hanger-Rod Attachments:  Unless otherwise indicated and except as specified in piping system Sections, install the following types:
+
+Steel Turnbuckles (MSS Type 13):  For adjustment up to 6 inches for heavy loads.
+
+Steel Clevises (MSS Type 14):  For 120 to 450 deg F piping installations.
+
+Malleable-Iron Sockets (MSS Type 16):  For attaching hanger rods to various types of building attachments.
+
+Steel Weldless Eye Nuts (MSS Type 17):  For 120 to 450 deg F piping installations.
+
+Building Attachments:  Unless otherwise indicated and except as specified in piping system Sections, install the following types:
+
+Steel or Malleable Concrete Inserts (MSS Type 18):  For upper attachment to suspend pipe hangers from concrete ceiling.
+
+Top-Beam C-Clamps (MSS Type 19):  For use under roof installations with bar-joist construction, to attach to top flange of structural shape.
+
+Side-Beam or Channel Clamps (MSS Type 20):  For attaching to bottom flange of beams, channels, or angles.
+
+Center-Beam Clamps (MSS Type 21):  For attaching to center of bottom flange of beams.
+
+C-Clamps (MSS Type 23):  For structural shapes.
+
+Top-Beam Clamps (MSS Type 25):  For top of beams if hanger rod is required tangent to flange edge.
+
+Side-Beam Clamps (MSS Type 27):  For bottom of steel I-beams.
+
+Steel-Beam Clamps with Eye Nuts (MSS Type 28):  For attaching to bottom of steel I-beams for heavy loads.Side-Beam Brackets (MSS Type 34):  For sides of steel or wooden beams.
+
+Horizontal Travelers (MSS Type 58):  For supporting piping systems subject to linear horizontal movement where headroom is limited.
+
+Saddles and Shields:  Unless otherwise indicated and except as specified in piping system Sections, install the following types:
+
+Protection Shields (MSS Type 40):  Of length recommended in writing by manufacturer to prevent crushing insulation.
+
+Thermal-Hanger Shield Inserts:  For supporting insulated pipe.
+
+Comply with MSS SP-69 for trapeze pipe-hanger selections and applications that are not specified in piping system Sections.
+
+Use powder-actuated fasteners or mechanical-expansion anchors instead of building attachments where required in concrete construction.
+
+END OF SECTION 22 05 29
