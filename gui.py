@@ -936,8 +936,10 @@ class SpecReviewApp(ctk.CTk):
             height=4,
             corner_radius=2,
             fg_color=COLORS["bg_input"],
-            progress_color=COLORS["accent"]
+            progress_color=COLORS["accent"],
+            indeterminate_speed=0.5  # Slower animation (default is 1.0)
         )
+        
         self.progress_bar.set(0)
         # Will be packed when processing starts
         
@@ -1212,7 +1214,7 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
         self.progress_bar.set(0)
         self.progress_bar.configure(mode="indeterminate")
-        self.progress_bar.start()
+        self.progress_bar.start(interval=40)  # Slower animation (default is ~20ms)
         
         # Set API key
         os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()

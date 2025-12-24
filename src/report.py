@@ -352,10 +352,8 @@ def generate_report(
             create_findings_section(doc, review_result.findings, severity)
     
     # Analysis summary at the end (if provided)
-    # Use the passed parameter, or fall back to review_result.thinking
-    summary_text = analysis_summary or review_result.thinking
-    if summary_text:
-        create_analysis_summary_section(doc, summary_text)
+    if analysis_summary:
+        create_analysis_summary_section(doc, analysis_summary)
     
     # Save document
     report_path = output_path
