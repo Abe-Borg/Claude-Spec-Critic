@@ -251,24 +251,19 @@ def create_analysis_summary_section(doc: Document, analysis_summary: str):
     subtitle.paragraph_format.space_after = Pt(12)
     
     # The analysis summary content
-    # Split by paragraphs to preserve formatting
-    for para_text in analysis_summary.split('\n\n'):
+    # Split by double-newlines if present, otherwise single newlines
+    if '\n\n' in analysis_summary:
+        paragraphs = analysis_summary.split('\n\n')
+    else:
+        paragraphs = analysis_summary.split('\n')
+    
+    for para_text in paragraphs:
         para_text = para_text.strip()
         if para_text:
             para = doc.add_paragraph()
             run = para.add_run(para_text)
             run.font.size = Pt(11)
             para.paragraph_format.space_after = Pt(8)
-    
-    # If there were no double-newlines, just add as single paragraph
-    if '\n\n' not in analysis_summary:
-        for para_text in analysis_summary.split('\n'):
-            para_text = para_text.strip()
-            if para_text:
-                para = doc.add_paragraph()
-                run = para.add_run(para_text)
-                run.font.size = Pt(11)
-                para.paragraph_format.space_after = Pt(8)
 
 
 def generate_report(

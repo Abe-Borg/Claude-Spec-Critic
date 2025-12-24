@@ -171,6 +171,7 @@ class TokenGauge(ctk.CTkFrame):
         self._current_pct = 0.0
         self._animating = False
         self._target_color = COLORS["accent"]
+        self.is_over_limit = False
         
         # Header
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -214,28 +215,29 @@ class TokenGauge(ctk.CTkFrame):
     def update_gauge(self, tokens: int, file_count: int = 0):
         """Update the gauge with new token count (animated)."""
         self.token_count = tokens
-        self._target_pct = min(tokens / self.max_tokens, 1.0)
+        raw_pct = tokens / self.max_tokens  # Uncapped for status checks
+        self._target_pct = min(raw_pct, 1.0)  # Capped for visual bar
+        self.is_over_limit = raw_pct > 1.0  # Store for external checks
         
         # Update count label immediately
         self.count_label.configure(text=f"{tokens:,} / {self.max_tokens:,}")
         
-        # Determine target color and status
-        pct = self._target_pct
-        if pct > 1.0:
+        # Determine target color and status based on raw percentage
+        if raw_pct > 1.0:
             self._target_color = COLORS["error"]
-            status = f"⚠ EXCEEDS LIMIT — Cannot process. Remove some specs."
+            status = f"⚠ Capacity Exceeded!"
             status_color = COLORS["error"]
-        elif pct > 0.9:
+        elif raw_pct > 0.9:
             self._target_color = COLORS["warning"]
-            status = f"⚠ {pct*100:.0f}% capacity — Approaching limit"
+            status = f"⚠ {raw_pct*100:.0f}% capacity — Approaching limit"
             status_color = COLORS["warning"]
-        elif pct > 0.7:
+        elif raw_pct > 0.7:
             self._target_color = COLORS["warning"]
-            status = f"✓ {pct*100:.0f}% capacity — {file_count} files ready"
+            status = f"✓ {raw_pct*100:.0f}% capacity — {file_count} files ready"
             status_color = COLORS["text_secondary"]
         else:
             self._target_color = COLORS["success"]
-            status = f"✓ {pct*100:.0f}% capacity — {file_count} files ready"
+            status = f"✓ {raw_pct*100:.0f}% capacity — {file_count} files ready"
             status_color = COLORS["text_secondary"]
         
         self.status_label.configure(text=status, text_color=status_color)
@@ -1158,12 +1160,21 @@ class SpecReviewApp(ctk.CTk):
                     self.after(0, lambda: self.log.log_success(
                         f"Token analysis complete: {summary.total_tokens:,} tokens"
                     ))
+                    self.after(0, lambda: self._update_run_button_state(summary.within_limit))
                     
             except Exception as e:
                 self.after(0, lambda: self.log.log_error(f"Analysis failed: {e}"))
                 
         thread = threading.Thread(target=analyze, daemon=True)
         thread.start()
+
+    def _update_run_button_state(self, within_limit: bool):
+        """Enable or disable the run button based on token limit."""
+        if within_limit:
+            self.run_button.configure(state="normal")
+        else:
+            self.run_button.configure(state="disabled")
+            self.log.log_error("Token limit exceeded. Remove some specs to proceed.")
         
     def _validate_inputs(self) -> bool:
         """Validate all inputs before running."""
