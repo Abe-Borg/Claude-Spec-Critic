@@ -287,17 +287,17 @@ class TokenGauge(ctk.CTkFrame):
         )
 
 
-
 class FileListPanel(ctk.CTkFrame):
     """Collapsible panel showing loaded files with checkboxes for selection."""
     
-    def __init__(self, master, on_selection_change: callable = None, **kwargs):
+    def __init__(self, master, on_selection_change: callable = None, pack_after=None, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
         
         self._expanded = True
         self._animating = False
         self._file_data: list[dict] = []  # [{path, filename, tokens, var (BooleanVar)}]
         self._on_selection_change = on_selection_change
+        self._pack_after = pack_after  # Widget to pack after
         
         # Header (clickable to expand/collapse)
         self.header = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2")
@@ -447,8 +447,11 @@ class FileListPanel(ctk.CTkFrame):
         
         self._update_count_label()
         
-        # Show panel
-        self.pack(fill="x", pady=(16, 0))
+        # Show panel (pack after inputs card for correct positioning)
+        if self._pack_after:
+            self.pack(fill="x", pady=(16, 0), after=self._pack_after)
+        else:
+            self.pack(fill="x", pady=(16, 0))
         self.content_container.pack(fill="x")
         self._expanded = True
         self.expand_label.configure(text="▼")
@@ -1129,7 +1132,7 @@ class SpecReviewApp(ctk.CTk):
         
         # Window setup
         self.title("MEP Spec Review")
-        self.geometry("800x850")
+        self.geometry("800x950")
         self.minsize(700, 700)
         self.configure(fg_color=COLORS["bg_dark"])
         
@@ -1157,11 +1160,12 @@ class SpecReviewApp(ctk.CTk):
         
         # Input fields card
         self._create_inputs_card(container)
-
+        
         # File list panel (hidden until folder selected)
         self.file_list_panel = FileListPanel(
             container,
-            on_selection_change=self._on_file_selection_change
+            on_selection_change=self._on_file_selection_change,
+            pack_after=self.inputs_card
         )
         # Note: pack is called dynamically when files are loaded
         
@@ -1224,16 +1228,45 @@ class SpecReviewApp(ctk.CTk):
         subtitle.pack(anchor="w", pady=(4, 0))
         
     def _create_inputs_card(self, parent):
-        """Create the inputs card with API key and folder selections."""
-        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
-        card.pack(fill="x")
+        """Create the collapsible inputs card with API key and folder selections."""
+        self.inputs_card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
+        self.inputs_card.pack(fill="x")
         
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=16, pady=16)
+        self._inputs_expanded = True
+        
+        # Header (clickable to expand/collapse)
+        header = ctk.CTkFrame(self.inputs_card, fg_color="transparent", cursor="hand2")
+        header.pack(fill="x", padx=16, pady=12)
+        header.bind("<Button-1>", self._toggle_inputs_card)
+        
+        # Expand/collapse indicator
+        self.inputs_expand_label = ctk.CTkLabel(
+            header,
+            text="▼",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["text_muted"],
+            width=20
+        )
+        self.inputs_expand_label.pack(side="left")
+        self.inputs_expand_label.bind("<Button-1>", self._toggle_inputs_card)
+        
+        # Title
+        title_label = ctk.CTkLabel(
+            header,
+            text="INPUTS",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLORS["text_muted"]
+        )
+        title_label.pack(side="left", padx=(4, 0))
+        title_label.bind("<Button-1>", self._toggle_inputs_card)
+        
+        # Content container
+        self.inputs_content = ctk.CTkFrame(self.inputs_card, fg_color="transparent")
+        self.inputs_content.pack(fill="x", padx=16, pady=(0, 16))
         
         # API Key
         self._create_input_row(
-            inner,
+            self.inputs_content,
             label="API Key",
             placeholder="sk-ant-...",
             show="•",
@@ -1244,7 +1277,7 @@ class SpecReviewApp(ctk.CTk):
         
         # Specs folder
         self._create_folder_row(
-            inner,
+            self.inputs_content,
             label="Specs Folder",
             placeholder="Select folder containing .docx files",
             variable_name="input_dir_entry",
@@ -1254,14 +1287,24 @@ class SpecReviewApp(ctk.CTk):
         
         # Output folder
         self._create_folder_row(
-            inner,
+            self.inputs_content,
             label="Output Folder",
             placeholder="Select output folder",
             variable_name="output_dir_entry",
             browse_command=self._browse_output,
-            # default_value=str(self.output_dir),
             row=2
         )
+    
+    def _toggle_inputs_card(self, event=None):
+        """Toggle inputs card expanded/collapsed state."""
+        if self._inputs_expanded:
+            self.inputs_content.pack_forget()
+            self.inputs_expand_label.configure(text="▶")
+            self._inputs_expanded = False
+        else:
+            self.inputs_content.pack(fill="x", padx=16, pady=(0, 16))
+            self.inputs_expand_label.configure(text="▼")
+            self._inputs_expanded = True
         
     def _create_input_row(self, parent, label, placeholder, variable_name, row, 
                           show=None, default_value=""):
@@ -1423,7 +1466,7 @@ class SpecReviewApp(ctk.CTk):
                         len(file_data)
                     ))
                     self.after(0, lambda: self.log.log_success(
-                        f"Token analysis complete: {total_tokens:,} tokens"
+                        f"Token analysis complete!"
                     ))
                     # Enable/disable run button based on token limit
                     within_limit = total_tokens <= RECOMMENDED_MAX
@@ -1458,14 +1501,14 @@ class SpecReviewApp(ctk.CTk):
         within_limit = total_tokens <= RECOMMENDED_MAX
         has_files = file_count > 0
         self._update_run_button_state(within_limit and has_files)
-
-    def _update_run_button_state(self, within_limit: bool):
-        """Enable or disable the run button based on token limit."""
-        if within_limit:
+    
+    def _update_run_button_state(self, can_run: bool):
+        """Enable or disable the run button based on token limit and file selection."""
+        if can_run:
             self.run_button.configure(state="normal")
         else:
             self.run_button.configure(state="disabled")
-            self.log.log_error("Token limit exceeded. Remove some specs to proceed.")
+            # Don't log here - let the gauge status speak for itself
         
     def _validate_inputs(self) -> bool:
         """Validate all inputs before running."""
@@ -1483,10 +1526,11 @@ class SpecReviewApp(ctk.CTk):
         if not input_dir.exists():
             self.log.log_error(f"Folder not found: {input_path}")
             return False
-            
-        docx_files = get_docx_files(input_dir)
-        if not docx_files:
-            self.log.log_error("No .docx files found in folder")
+        
+        # Check that at least one file is selected
+        selected_count = self.file_list_panel.get_selected_count()
+        if selected_count == 0:
+            self.log.log_error("No files selected. Select at least one spec to review.")
             return False
             
         # Check token limit
@@ -1503,6 +1547,10 @@ class SpecReviewApp(ctk.CTk):
             
         if not self._validate_inputs():
             return
+        
+        # Capture selected files NOW (main thread) before spawning background thread
+        # This avoids thread-safety issues with Tkinter variables
+        self._selected_files_for_review = self.file_list_panel.get_selected_files()
             
         self.is_processing = True
         self.streaming_panel.clear()
@@ -1519,6 +1567,9 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.start()
         # Set API key
         os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()
+        
+        # Log which files are being reviewed
+        self.log.log_step(f"Reviewing {len(self._selected_files_for_review)} files...")
         
         # Run in background
         thread = threading.Thread(target=self._run_review_thread, daemon=True)
@@ -1552,10 +1603,14 @@ class SpecReviewApp(ctk.CTk):
                 
                 # Append chunk to streaming panel
                 self.after(0, lambda c=chunk: self.streaming_panel.append_text(c))
-                
+            
+            # Use files captured in main thread (thread-safe)
+            selected_files = self._selected_files_for_review
+            
             result = run_review(
                 input_dir=input_path,
                 output_dir=output_path,
+                files=selected_files if selected_files else None,
                 dry_run=False,
                 verbose=False,
                 log=log_callback,
