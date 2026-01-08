@@ -1,3 +1,51 @@
+"""
+Core orchestration pipeline for MEP Spec Review.
+
+This module is the SINGLE SOURCE OF TRUTH for the review workflow. Both
+the CLI (cli.py) and GUI (gui.py) call run_review() and receive identical
+behavior. This design ensures consistency and makes testing straightforward.
+
+Pipeline stages:
+    1. Create timestamped output directory
+    2. Extract text from .docx files (extractor.py)
+    3. Detect LEED references and placeholders locally (preprocessor.py)
+    4. Analyze token usage and enforce limits (tokenizer.py)
+    5. Combine specs with file delimiters for the LLM
+    6. Call Claude Opus 4.5 via streaming API (reviewer.py)
+    7. Parse JSON findings from response
+    8. Generate Word report (report.py)
+    9. Write all artifacts to output directory
+
+Output artifacts (per run):
+    review_YYYY-MM-DD_HHMMSS/
+    ├── report.docx          # Human-readable findings
+    ├── findings.json        # Machine-readable findings + metadata
+    ├── raw_response.txt     # Raw Claude response (debugging)
+    ├── inputs_combined.txt  # Exact text sent to API (reproducibility)
+    ├── token_summary.json   # Token breakdown by file
+    └── error.txt            # Only if run failed
+
+Design decisions:
+    - Hard stop on token limit exceeded (no silent truncation)
+    - LEED/placeholder detection is LOCAL, not sent to LLM (saves tokens)
+    - Streaming callback enables real-time GUI updates
+    - dry_run mode skips API call but generates all other artifacts
+
+Usage:
+    from pipeline import run_review, PipelineOutputs
+    
+    result = run_review(
+        input_dir=Path("./specs"),
+        output_dir=Path("./output"),
+        dry_run=False,
+        verbose=True,
+        log=print,
+        progress=lambda pct, msg: print(f"{pct}% {msg}"),
+        stream_callback=lambda chunk: print(chunk, end=""),
+    )
+    print(f"Report: {result.report_docx}")
+"""
+
 from __future__ import annotations
 
 import json
@@ -13,7 +61,7 @@ from .tokenizer import analyze_token_usage, RECOMMENDED_MAX
 from .reviewer import review_specs, ReviewResult, MODEL_OPUS_45, StreamCallback
 from .report import generate_report
 
-
+# Type aliases for callback signatures
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[float, str], None]  # percent (0-100), message
 
@@ -28,6 +76,20 @@ def _noop_progress(_: float, __: str) -> None:
 
 @dataclass
 class PipelineOutputs:
+    """
+    Container for all paths and results from a pipeline run.
+    
+    Attributes:
+        run_dir: Timestamped directory containing all outputs
+        report_docx: Path to Word report with findings
+        findings_json: Path to JSON file with findings + metadata
+        raw_response_txt: Path to raw Claude response text
+        inputs_combined_txt: Path to combined spec text sent to API
+        token_summary_json: Path to token usage breakdown
+        review_result: Parsed ReviewResult (None if dry_run)
+        leed_alert_count: Number of LEED references detected locally
+        placeholder_alert_count: Number of placeholders detected locally
+    """
     run_dir: Path
     report_docx: Path
     findings_json: Path
@@ -41,8 +103,16 @@ class PipelineOutputs:
 
 def _normalize_alerts(alerts: list[dict]) -> list[dict]:
     """
-    Convert alert dicts from preprocessor schema to the report schema expected by report.py:
-    {filename, line, text}
+    Convert alert dicts from preprocessor schema to report schema.
+    
+    The preprocessor returns alerts with 'position' and 'context' keys,
+    but report.py expects 'line' and 'text' keys.
+    
+    Args:
+        alerts: List of alert dicts from preprocessor
+        
+    Returns:
+        List of alert dicts with {filename, line, text} structure
     """
     out: list[dict] = []
     for a in alerts:
@@ -56,10 +126,33 @@ def _normalize_alerts(alerts: list[dict]) -> list[dict]:
 
 
 def _get_docx_files(input_dir: Path) -> list[Path]:
+    """
+    Get all .docx files from a directory, excluding temp files.
+    
+    Word creates temp files starting with ~$ when documents are open.
+    These are filtered out to avoid processing partial/locked files.
+    
+    Args:
+        input_dir: Directory to scan
+        
+    Returns:
+        Sorted list of .docx file paths
+    """
     return sorted([p for p in input_dir.glob("*.docx") if not p.name.startswith("~$")])
 
 
 def _create_run_dir(output_dir: Path) -> Path:
+    """
+    Create a timestamped directory for this run's outputs.
+    
+    Format: review_YYYY-MM-DD_HHMMSS
+    
+    Args:
+        output_dir: Parent directory for outputs
+        
+    Returns:
+        Path to created run directory
+    """
     ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir = output_dir / f"review_{ts}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -67,7 +160,18 @@ def _create_run_dir(output_dir: Path) -> Path:
 
 
 def _combine_specs(specs: list[ExtractedSpec]) -> str:
-    # Prompts.py expects this exact delimiter style:
+    """
+    Combine multiple specs into a single string with file delimiters.
+    
+    The delimiter format matches what prompts.py tells Claude to expect:
+        ===== FILE: <filename> =====
+    
+    Args:
+        specs: List of extracted specifications
+        
+    Returns:
+        Combined string with all specs separated by file headers
+    """
     blocks = []
     for s in specs:
         blocks.append(f"===== FILE: {s.filename} =====\n{s.content}")
@@ -86,21 +190,41 @@ def run_review(
     stream_callback: Optional[StreamCallback] = None,
 ) -> PipelineOutputs:
     """
-    Single source of truth for the whole workflow.
-    CLI and GUI both call this.
+    Execute the full specification review pipeline.
+    
+    This is the main entry point called by both CLI and GUI. All workflow
+    logic is here — callers just provide callbacks for logging and progress.
     
     Args:
         input_dir: Directory containing .docx specification files
-        output_dir: Directory for output files
-        files: Optional list of specific files to process (if None, uses all .docx in input_dir)
-        dry_run: If True, skip API call
-        verbose: Enable verbose logging
-        log: Callback for log messages
-        progress: Callback for progress updates (percent, message)
-        stream_callback: Optional callback for real-time streaming of Claude's response
+        output_dir: Parent directory for output folder (timestamped subfolder created)
+        files: Optional list of specific files to process. If None, all .docx
+               files in input_dir are processed.
+        dry_run: If True, skip the API call. Useful for testing extraction
+                 and token counting without spending API credits.
+        verbose: Passed to reviewer for additional stdout logging
+        log: Callback for log messages. Called with single string argument.
+        progress: Callback for progress updates. Called with (percent, message).
+                  Percent ranges from 0.0 to 100.0.
+        stream_callback: Optional callback for real-time streaming. Called with
+                         each text chunk as Claude generates it. Enables live
+                         display in GUI.
     
     Returns:
-        PipelineOutputs with paths to all generated files
+        PipelineOutputs with paths to all generated files and parsed results
+        
+    Raises:
+        FileNotFoundError: If input_dir has no .docx files
+        ValueError: If total tokens exceed RECOMMENDED_MAX (150k)
+        RuntimeError: If API call fails after retries
+        
+    Example:
+        >>> result = run_review(
+        ...     input_dir=Path("./specs"),
+        ...     output_dir=Path("./output"),
+        ...     log=lambda msg: print(f"[LOG] {msg}"),
+        ... )
+        >>> print(f"Found {result.review_result.total_count} issues")
     """
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -115,6 +239,11 @@ def run_review(
     if not docx_files:
         raise FileNotFoundError(f"No .docx files found in: {input_dir}")
 
+    
+    
+    # -------------------------------------------------------------------------
+    # Stage 1: Extract text from DOCX files
+    # -------------------------------------------------------------------------
     progress(0.0, "Extracting DOCX text...")
     specs: list[ExtractedSpec] = []
     leed_alerts: list[dict] = []
@@ -126,12 +255,17 @@ def run_review(
         spec = extract_text_from_docx(p)
         specs.append(spec)
 
+        # Local detection (not sent to LLM)
         pre = preprocess_spec(spec.content, spec.filename)
         leed_alerts.extend(pre.leed_alerts)
         placeholder_alerts.extend(pre.placeholder_alerts)
 
         progress((i / total) * 35.0, f"Loaded {i}/{total}")
 
+
+    # -------------------------------------------------------------------------
+    # Stage 2: Token analysis and limit enforcement
+    # -------------------------------------------------------------------------
     system_prompt = get_system_prompt()
     spec_contents = [(s.filename, s.content) for s in specs]
 
@@ -158,19 +292,27 @@ def run_review(
         encoding="utf-8",
     )
 
+
+    # -------------------------------------------------------------------------
+    # Stage 3: Combine specs for API call
+    # -------------------------------------------------------------------------
     # Always write combined inputs snapshot (useful for reproducing runs)
     progress(45.0, "Preparing combined input...")
     combined = _combine_specs(specs)
     inputs_combined_txt = run_dir / "inputs_combined.txt"
     inputs_combined_txt.write_text(combined, encoding="utf-8")
 
+    # Hard stop if over limit — both CLI and GUI behave identically
     if not token_summary.within_limit:
-        # Hard stop: both CLI and GUI should behave the same
         raise ValueError(
             f"Token limit exceeded: {token_summary.total_tokens:,} > {RECOMMENDED_MAX:,}. "
             "Split the input specs and re-run."
         )
 
+
+    # -------------------------------------------------------------------------
+    # Stage 4: Dry run exit point
+    # -------------------------------------------------------------------------
     if dry_run:
         log("Dry-run enabled: skipping API call.")
         # Still generate a report with 0 findings so you get the artifact structure
@@ -218,6 +360,10 @@ def run_review(
             placeholder_alert_count=len(placeholder_alerts),
         )
 
+
+    # -------------------------------------------------------------------------
+    # Stage 5: API call with streaming
+    # -------------------------------------------------------------------------
     progress(55.0, "Calling Opus 4.5...")
     review_result = review_specs(
         combined_content=combined,
@@ -233,6 +379,9 @@ def run_review(
         err_path.write_text(review_result.error, encoding="utf-8")
         raise RuntimeError(review_result.error)
 
+    # -------------------------------------------------------------------------
+    # Stage 6: Write findings JSON
+    # -------------------------------------------------------------------------
     findings_json = run_dir / "findings.json"
     findings_json.write_text(
         json.dumps(
@@ -255,6 +404,10 @@ def run_review(
         encoding="utf-8",
     )
 
+
+    # -------------------------------------------------------------------------
+    # Stage 7: Generate Word report
+    # -------------------------------------------------------------------------
     progress(85.0, "Generating report.docx...")
     report_docx = run_dir / "report.docx"
     
