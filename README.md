@@ -18,6 +18,23 @@ Uses Anthropic Claude Opus 4.5 for LLM analysis.
 - **Live Streaming**: Watch Claude's analysis appear in real-time as it's generated
 - **Personality**: Claude provides entertaining, ball-busting commentary on spec quality
 
+## How It Works
+
+MEP Spec Review sends your specification documents to Claude Opus 4.5 along with a detailed system prompt that instructs Claude to act as a senior specification reviewer. The prompt includes:
+
+- **Role Definition**: Claude acts as a grumpy but brilliant senior engineer with 30 years of spec review experience
+- **Severity Definitions**: Clear criteria for CRITICAL, HIGH, MEDIUM, and GRIPES classifications
+- **California K-12 Focus**: Specific attention to CBC, CMC, CPC, CALGreen, DSA requirements, and relevant ASHRAE/SMACNA/NFPA standards
+- **Output Format**: Structured JSON findings with severity, location, issue description, and recommended corrections
+- **Analysis Summary**: A narrative "reviewer's take" with personality before the formal findings
+
+The tool handles:
+1. **Extraction**: Pulls text from .docx files (paragraphs + tables)
+2. **Preprocessing**: Detects LEED references and unresolved placeholders locally (not sent to LLM)
+3. **Token Analysis**: Counts tokens to ensure you stay within context limits
+4. **API Call**: Sends combined specs to Claude with streaming response
+5. **Report Generation**: Creates Word document with findings organized by severity
+
 ## What's New in v0.5.0
 
 ### File Selection Panel
@@ -163,10 +180,11 @@ MEP-Spec-Review.exe
 1. Enter your API key (or let it auto-load from `spec_critic_api_key.txt`)
 2. Click "Browse" to select your specs folder
 3. **Watch the animated token gauge** — shows capacity usage with smooth fill
-4. **Review the paced log** — entries appear at a readable speed
-5. Click "Run Review"
-6. **Watch Claude's analysis stream in real-time** — see the thinking as it happens
-7. Report opens automatically when complete
+4. **Review the file list** — uncheck any specs you want to exclude from analysis
+5. **Check the token gauge** — if over 150k, deselect more files until under limit
+6. Click "Run Review" (disabled if over limit or no files selected)
+7. **Watch Claude's analysis stream in real-time** — see the thinking as it happens
+8. Report opens automatically when complete
 
 ### CLI: Basic Review
 
@@ -252,7 +270,7 @@ output/
 
 ### Word Report Structure
 
-The Word report (`report.docx`) now includes:
+The Word report (`report.docx`) includes:
 
 1. **Header** — Title, generation date, model info
 2. **Files Reviewed** — List of analyzed specifications
@@ -310,7 +328,6 @@ spec-review/
 │   ├── reviewer.py      # Anthropic API client with streaming support
 │   └── report.py        # Word report generation (includes analysis summary)
 ├── pyproject.toml
-├── main.py              # PyInstaller entry point
 ├── spec-review.spec     # PyInstaller config
 ├── build.bat            # Build script for Windows
 └── README.md
@@ -344,16 +361,19 @@ The executable will be created at `dist/MEP-Spec-Review.exe`.
 1. Place `spec_critic_api_key.txt` in the same folder as the `.exe` (optional, for auto-load)
 2. Run `MEP-Spec-Review.exe`
 3. Select your specs folder
-4. Watch the animated token gauge fill
-5. Click "Run Review"
-6. Watch Claude's analysis stream in real-time
-7. Enjoy the sassy commentary
+4. Review file list and deselect any you want to exclude
+5. Watch the animated token gauge — stay under 150k
+6. Click "Run Review"
+7. Watch Claude's analysis stream in real-time
+8. Enjoy the sassy commentary
 
 ## Troubleshooting
 
 ### Token Limit Exceeded
 
-If you see "Token limit exceeded", split your input specs into smaller batches and run separately. The token gauge shows your usage before you even click Run.
+If you see "⚠ Capacity Exceeded!" in the token gauge, use the file selection checkboxes to exclude large specs until you're under the 150k limit. The per-file token counts help you identify which specs are consuming the most budget.
+
+For very large spec packages, split them into batches and run separately.
 
 ### API Key Not Set
 
@@ -377,6 +397,13 @@ If you see "Token limit exceeded", split your input specs into smaller batches a
 - The streaming panel should appear automatically when Claude starts responding
 
 ## Changelog
+
+### v0.5.0
+- **File selection panel**: Checkboxes for each file with per-file token counts
+- **Instant token recalculation**: Token gauge updates when you change file selection
+- **Capacity exceeded warning**: Clear visual feedback when over 150k limit
+- **Run button state management**: Disabled when over limit or no files selected
+- **Collapsible panels**: File list and inputs panels collapse to save space
 
 ### v0.4.0
 - **Live streaming**: Watch Claude's analysis appear in real-time

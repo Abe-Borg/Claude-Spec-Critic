@@ -14,9 +14,7 @@ dist/
 *.egg-info/
 .eggs/
 
-# PyInstaller
-*.manifest
-*.spec
+
 
 # Unit test / coverage reports
 htmlcov/

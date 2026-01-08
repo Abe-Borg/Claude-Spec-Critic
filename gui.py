@@ -160,7 +160,7 @@ def blend_colors(color1: str, color2: str, t: float) -> str:
 # ============================================================================
 
 class TokenGauge(ctk.CTkFrame):
-    """Visual gauge showing token usage against limit with animated fill."""
+    """Visual gauge showing token usage against limit with animated fill. Collapsible."""
     
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
@@ -172,29 +172,48 @@ class TokenGauge(ctk.CTkFrame):
         self._animating = False
         self._target_color = COLORS["accent"]
         self.is_over_limit = False
+        self._expanded = True
         
-        # Header
-        header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        header_frame.pack(fill="x", padx=16, pady=(12, 8))
+        # Header (clickable to expand/collapse)
+        self.header_frame = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2")
+        self.header_frame.pack(fill="x", padx=16, pady=(12, 8))
+        self.header_frame.bind("<Button-1>", self._toggle)
+        
+        # Expand/collapse indicator
+        self.expand_label = ctk.CTkLabel(
+            self.header_frame,
+            text="▼",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["text_muted"],
+            width=20
+        )
+        self.expand_label.pack(side="left")
+        self.expand_label.bind("<Button-1>", self._toggle)
         
         self.title_label = ctk.CTkLabel(
-            header_frame,
+            self.header_frame,
             text="TOKEN CAPACITY",
             font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
             text_color=COLORS["text_muted"]
         )
-        self.title_label.pack(side="left")
+        self.title_label.pack(side="left", padx=(4, 0))
+        self.title_label.bind("<Button-1>", self._toggle)
         
         self.count_label = ctk.CTkLabel(
-            header_frame,
+            self.header_frame,
             text="— / 150,000",
             font=ctk.CTkFont(family="Consolas", size=12),
             text_color=COLORS["text_secondary"]
         )
         self.count_label.pack(side="right")
+        self.count_label.bind("<Button-1>", self._toggle)
+        
+        # Content container (for collapse)
+        self.content_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.content_container.pack(fill="x")
         
         # Progress bar container
-        bar_frame = ctk.CTkFrame(self, fg_color=COLORS["bg_input"], corner_radius=4, height=8)
+        bar_frame = ctk.CTkFrame(self.content_container, fg_color=COLORS["bg_input"], corner_radius=4, height=8)
         bar_frame.pack(fill="x", padx=16, pady=(0, 8))
         bar_frame.pack_propagate(False)
         
@@ -205,12 +224,31 @@ class TokenGauge(ctk.CTkFrame):
         
         # Status message
         self.status_label = ctk.CTkLabel(
-            self,
+            self.content_container,
             text="Select a specs folder to analyze token usage",
             font=ctk.CTkFont(family="Segoe UI", size=11),
             text_color=COLORS["text_muted"]
         )
         self.status_label.pack(padx=16, pady=(0, 12))
+    
+    def _toggle(self, event=None):
+        """Toggle expanded/collapsed state."""
+        if self._expanded:
+            self.collapse()
+        else:
+            self.expand()
+    
+    def expand(self):
+        """Expand the gauge."""
+        self._expanded = True
+        self.expand_label.configure(text="▼")
+        self.content_container.pack(fill="x")
+    
+    def collapse(self):
+        """Collapse the gauge."""
+        self._expanded = False
+        self.expand_label.configure(text="▶")
+        self.content_container.pack_forget()
         
     def update_gauge(self, tokens: int, file_count: int = 0):
         """Update the gauge with new token count (animated)."""
@@ -293,11 +331,13 @@ class FileListPanel(ctk.CTkFrame):
     def __init__(self, master, on_selection_change: callable = None, pack_after=None, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
         
-        self._expanded = True
+        self._expanded = False  # Start collapsed by default
         self._animating = False
         self._file_data: list[dict] = []  # [{path, filename, tokens, var (BooleanVar)}]
         self._on_selection_change = on_selection_change
         self._pack_after = pack_after  # Widget to pack after
+        self._is_over_limit = False
+        self._glow_animation_id = None
         
         # Header (clickable to expand/collapse)
         self.header = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2")
@@ -307,7 +347,7 @@ class FileListPanel(ctk.CTkFrame):
         # Expand/collapse indicator
         self.expand_label = ctk.CTkLabel(
             self.header,
-            text="▼",
+            text="▶",  # Start collapsed
             font=ctk.CTkFont(family="Consolas", size=12),
             text_color=COLORS["text_muted"],
             width=20
@@ -448,13 +488,14 @@ class FileListPanel(ctk.CTkFrame):
         self._update_count_label()
         
         # Show panel (pack after inputs card for correct positioning)
+        # Start collapsed by default
         if self._pack_after:
             self.pack(fill="x", pady=(16, 0), after=self._pack_after)
         else:
             self.pack(fill="x", pady=(16, 0))
-        self.content_container.pack(fill="x")
-        self._expanded = True
-        self.expand_label.configure(text="▼")
+        # Don't pack content_container - stay collapsed
+        self._expanded = False
+        self.expand_label.configure(text="▶")
     
     def get_selected_files(self) -> list[Path]:
         """Return list of paths for selected files."""
@@ -504,24 +545,70 @@ class FileListPanel(ctk.CTkFrame):
         if self._animating:
             return
         if self._expanded:
-            self._collapse()
+            self.collapse()
         else:
-            self._expand()
+            self.expand()
     
-    def _expand(self):
+    def expand(self):
         """Expand the content."""
         self._expanded = True
         self.expand_label.configure(text="▼")
         self.content_container.pack(fill="x")
     
-    def _collapse(self):
+    def collapse(self):
         """Collapse the content."""
         self._expanded = False
         self.expand_label.configure(text="▶")
         self.content_container.pack_forget()
     
+    def set_over_limit(self, over_limit: bool):
+        """Set the over-limit state with red glow animation."""
+        if over_limit == self._is_over_limit:
+            return  # No change
+        
+        self._is_over_limit = over_limit
+        
+        if over_limit:
+            self._start_glow_animation()
+        else:
+            self._stop_glow_animation()
+            self.title_label.configure(text_color=COLORS["text_muted"])
+    
+    def _start_glow_animation(self):
+        """Start the red glow pulse animation."""
+        self._glow_step = 0
+        self._animate_glow()
+    
+    def _stop_glow_animation(self):
+        """Stop the glow animation."""
+        if self._glow_animation_id:
+            self.after_cancel(self._glow_animation_id)
+            self._glow_animation_id = None
+    
+    def _animate_glow(self):
+        """Animate the red glow pulse."""
+        if not self._is_over_limit:
+            return
+        
+        # Pulse between error red and a brighter red
+        import math
+        t = (math.sin(self._glow_step * 0.15) + 1) / 2  # 0 to 1 oscillation
+        
+        # Interpolate between error color and bright red
+        base_color = COLORS["error"]  # #ff6b6b
+        bright_color = "#ff9999"
+        
+        color = blend_colors(base_color, bright_color, t)
+        self.title_label.configure(text_color=color)
+        
+        self._glow_step += 1
+        self._glow_animation_id = self.after(50, self._animate_glow)
+    
     def reset(self):
         """Clear all files and hide panel."""
+        self._stop_glow_animation()
+        self._is_over_limit = False
+        self.title_label.configure(text_color=COLORS["text_muted"])
         for widget in self.file_list.winfo_children():
             widget.destroy()
         self._file_data.clear()
@@ -529,7 +616,7 @@ class FileListPanel(ctk.CTkFrame):
 
 
 class EnhancedLog(ctk.CTkFrame):
-    """Enhanced log display with colored entries, timestamps, and paced output."""
+    """Enhanced log display with colored entries, timestamps, and paced output. Collapsible."""
     
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
@@ -537,21 +624,36 @@ class EnhancedLog(ctk.CTkFrame):
         # Log queue for paced output
         self._log_queue: deque = deque()
         self._processing_queue = False
+        self._expanded = True
         
-        # Header
-        header = ctk.CTkFrame(self, fg_color="transparent", height=36)
-        header.pack(fill="x", padx=16, pady=(12, 0))
-        header.pack_propagate(False)
+        # Header (clickable to expand/collapse)
+        self.header = ctk.CTkFrame(self, fg_color="transparent", height=36, cursor="hand2")
+        self.header.pack(fill="x", padx=16, pady=(12, 0))
+        self.header.pack_propagate(False)
+        self.header.bind("<Button-1>", self._toggle)
         
-        ctk.CTkLabel(
-            header,
+        # Expand/collapse indicator
+        self.expand_label = ctk.CTkLabel(
+            self.header,
+            text="▼",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["text_muted"],
+            width=20
+        )
+        self.expand_label.pack(side="left")
+        self.expand_label.bind("<Button-1>", self._toggle)
+        
+        self.title_label = ctk.CTkLabel(
+            self.header,
             text="ACTIVITY LOG",
             font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
             text_color=COLORS["text_muted"]
-        ).pack(side="left", anchor="w")
+        )
+        self.title_label.pack(side="left", padx=(4, 0))
+        self.title_label.bind("<Button-1>", self._toggle)
         
         self.clear_btn = ctk.CTkButton(
-            header,
+            self.header,
             text="Clear",
             width=50,
             height=24,
@@ -563,15 +665,38 @@ class EnhancedLog(ctk.CTkFrame):
         )
         self.clear_btn.pack(side="right")
         
+        # Content container
+        self.content_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.content_container.pack(fill="both", expand=True)
+        
         # Scrollable log area
         self.log_frame = ctk.CTkScrollableFrame(
-            self,
+            self.content_container,
             fg_color=COLORS["bg_input"],
             corner_radius=4,
         )
         self.log_frame.pack(fill="both", expand=True, padx=16, pady=12)
         
         self.entries: list[ctk.CTkLabel] = []
+    
+    def _toggle(self, event=None):
+        """Toggle expanded/collapsed state."""
+        if self._expanded:
+            self.collapse()
+        else:
+            self.expand()
+    
+    def expand(self):
+        """Expand the log panel."""
+        self._expanded = True
+        self.expand_label.configure(text="▼")
+        self.content_container.pack(fill="both", expand=True)
+    
+    def collapse(self):
+        """Collapse the log panel."""
+        self._expanded = False
+        self.expand_label.configure(text="▶")
+        self.content_container.pack_forget()
         
     def _queue_log(self, message: str, level: str, timestamp: bool, delay: int):
         """Add a log entry to the queue."""
@@ -1466,11 +1591,13 @@ class SpecReviewApp(ctk.CTk):
                         len(file_data)
                     ))
                     self.after(0, lambda: self.log.log_success(
-                        f"Token analysis complete!"
+                        f"Token analysis complete: {total_tokens:,} tokens"
                     ))
                     # Enable/disable run button based on token limit
                     within_limit = total_tokens <= RECOMMENDED_MAX
                     self.after(0, lambda: self._update_run_button_state(within_limit))
+                    # Set FILES panel red glow if over limit
+                    self.after(0, lambda wl=within_limit: self.file_list_panel.set_over_limit(not wl))
                     
             except Exception as e:
                 self.after(0, lambda: self.log.log_error(f"Analysis failed: {e}"))
@@ -1501,6 +1628,9 @@ class SpecReviewApp(ctk.CTk):
         within_limit = total_tokens <= RECOMMENDED_MAX
         has_files = file_count > 0
         self._update_run_button_state(within_limit and has_files)
+        
+        # Update FILES panel red glow based on limit
+        self.file_list_panel.set_over_limit(not within_limit)
     
     def _update_run_button_state(self, can_run: bool):
         """Enable or disable the run button based on token limit and file selection."""
@@ -1509,6 +1639,24 @@ class SpecReviewApp(ctk.CTk):
         else:
             self.run_button.configure(state="disabled")
             # Don't log here - let the gauge status speak for itself
+    
+    def _collapse_all_panels(self):
+        """Collapse all panels to let streaming take center stage."""
+        # Collapse inputs card
+        if self._inputs_expanded:
+            self._toggle_inputs_card()
+        
+        # Collapse file list panel
+        if self.file_list_panel._expanded:
+            self.file_list_panel.collapse()
+        
+        # Collapse token gauge
+        if self.token_gauge._expanded:
+            self.token_gauge.collapse()
+        
+        # Collapse activity log
+        if self.log._expanded:
+            self.log.collapse()
         
     def _validate_inputs(self) -> bool:
         """Validate all inputs before running."""
@@ -1600,6 +1748,8 @@ class SpecReviewApp(ctk.CTk):
                     stream_started[0] = True
                     self.after(0, lambda: self.streaming_panel.start_streaming(before_widget=self.log))
                     self.after(0, lambda: self.log.log_step("Claude is analyzing..."))
+                    # Auto-collapse all other panels - Claude takes center stage
+                    self.after(0, self._collapse_all_panels)
                 
                 # Append chunk to streaming panel
                 self.after(0, lambda c=chunk: self.streaming_panel.append_text(c))
