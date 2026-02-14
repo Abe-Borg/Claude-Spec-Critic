@@ -4,7 +4,7 @@ This file provides guidance for AI assistants working on the **MEP Spec Review**
 
 ## Project Overview
 
-MEP Spec Review is a CLI + GUI tool for reviewing Mechanical, Electrical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.5 for AI-powered analysis of `.docx` specification files and produces Word report + JSON artifacts.
+MEP Spec Review is a GUI tool for reviewing Mechanical, Electrical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.5 for AI-powered analysis of `.docx` specification files and produces Word report + JSON artifacts.
 
 - **Version**: 0.5.0
 - **Python**: >= 3.10 (uses `X | Y` union type syntax)
@@ -14,11 +14,9 @@ MEP Spec Review is a CLI + GUI tool for reviewing Mechanical, Electrical & Plumb
 
 ```
 Claude-Spec-Critic/
-├── main.py                  # PyInstaller entry point (detects frozen context)
 ├── gui.py                   # CustomTkinter GUI application (~1,850 lines)
 ├── src/                     # Core package
 │   ├── __init__.py          # Package version ("0.5.0")
-│   ├── cli.py               # Click CLI interface (thin shell, delegates to pipeline)
 │   ├── pipeline.py          # SINGLE SOURCE OF TRUTH for review workflow
 │   ├── extractor.py         # .docx text extraction (paragraphs + tables)
 │   ├── preprocessor.py      # Local LEED/placeholder detection (NOT sent to LLM)
@@ -38,7 +36,7 @@ Claude-Spec-Critic/
 
 ### Core Design Principle
 
-`pipeline.py` is the **single source of truth** for the review workflow. Both the CLI (`cli.py`) and GUI (`gui.py`) call `pipeline.run_review()` and receive identical behavior. Never duplicate pipeline logic in the GUI or CLI modules.
+`pipeline.py` is the **single source of truth** for the review workflow. The GUI (`gui.py`) calls `pipeline.run_review()`. Never duplicate pipeline logic in the GUI module.
 
 ### Pipeline Stages (in order)
 
@@ -74,9 +72,7 @@ Each run produces a timestamped directory containing:
 | `prompts.py` | System prompt with personality + severity definitions |
 | `reviewer.py` | Anthropic API streaming client with retry logic |
 | `report.py` | Word document generation with color-coded findings |
-| `cli.py` | Click CLI (thin shell) |
 | `gui.py` | CustomTkinter GUI with animations and real-time streaming |
-| `main.py` | PyInstaller frozen-app entry point |
 
 ### Data Flow Classes
 
@@ -98,16 +94,11 @@ All data containers use `@dataclass` decorators.
 
 ## Entry Points
 
-### GUI (primary usage)
+### GUI
 ```bash
 python gui.py
 # OR
 python -m src.gui
-```
-
-### CLI
-```bash
-spec-review review -i ./specs -o ./output [--verbose] [--dry-run]
 ```
 
 ### PyInstaller executable
@@ -121,19 +112,12 @@ build.bat
 dist/MEP-Spec-Review.exe
 ```
 
-### Dry-run mode (no API call)
-```bash
-spec-review review -i ./specs -o ./output --dry-run --verbose
-```
-
 ## Dependencies
 
 ### Core (from pyproject.toml)
 - `anthropic` — Claude API client with streaming
-- `click` — CLI framework
 - `customtkinter` — Modern dark-theme GUI toolkit
 - `python-docx` — Word document read/write
-- `rich` — Colored terminal output
 - `tiktoken` — Token counting (cl100k_base encoding)
 
 ### Build
@@ -228,7 +212,7 @@ All heavy operations (folder analysis, API calls) run in background threads. GUI
 
 ## Important Patterns to Preserve
 
-1. **Pipeline is the single source of truth** — Do not add workflow logic to `cli.py` or `gui.py`. All review logic goes through `pipeline.run_review()`.
+1. **Pipeline is the single source of truth** — Do not add workflow logic to `gui.py`. All review logic goes through `pipeline.run_review()`.
 2. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM. They are detected locally and added directly to the report.
 3. **Token limits are enforced before API calls** — Never allow API calls that exceed the 150k recommended limit.
 4. **Streaming is the default** — The reviewer always streams responses. The `stream_callback` parameter enables real-time display.
@@ -267,8 +251,8 @@ Output: `dist/MEP-Spec-Review.exe`
 ## Testing
 
 There is no formal test suite. Validation approaches:
-- **Dry-run mode**: `--dry-run` flag skips the API call but exercises all other pipeline stages
-- **Verbose mode**: `--verbose` flag outputs detailed logs for debugging
+- **Dry-run mode**: `dry_run=True` parameter skips the API call but exercises all other pipeline stages
+- **Verbose mode**: `verbose=True` parameter outputs detailed logs for debugging
 - **Modular design**: Each module is independently importable and testable
 - **Callback injection**: Log/progress/stream callbacks can be replaced with test harnesses
 
