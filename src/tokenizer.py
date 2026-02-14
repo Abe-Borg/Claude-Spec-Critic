@@ -7,7 +7,7 @@ Pre-flight token checking prevents wasted API calls and provides clear
 feedback when specs need to be split into batches.
 
 Token limits:
-    - Claude Opus 4.5 context window: 200,000 tokens
+    - Claude Opus 4.6 context window: 200,000 tokens
     - Recommended input limit: 150,000 tokens
     - The 50k buffer leaves room for:
         - System prompt (~2-3k tokens)

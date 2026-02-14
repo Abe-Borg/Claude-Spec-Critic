@@ -29,13 +29,13 @@ else:
 # Try both import styles for flexibility
 try:
     from src.pipeline import run_review
-    from src.reviewer import MODEL_OPUS_45
+    from src.reviewer import MODEL_OPUS_46
     from src.extractor import extract_text_from_docx
     from src.tokenizer import analyze_token_usage, RECOMMENDED_MAX
     from src.prompts import get_system_prompt
 except ImportError:
     from pipeline import run_review
-    from reviewer import MODEL_OPUS_45
+    from reviewer import MODEL_OPUS_46
     from extractor import extract_text_from_docx
     from tokenizer import analyze_token_usage, RECOMMENDED_MAX
     from prompts import get_system_prompt
@@ -225,7 +225,7 @@ class TokenGauge(ctk.CTkFrame):
         # Status message
         self.status_label = ctk.CTkLabel(
             self.content_container,
-            text="Select a specs folder to analyze token usage",
+            text="Select specs to analyze token usage",
             font=ctk.CTkFont(family="Segoe UI", size=11),
             text_color=COLORS["text_muted"]
         )
@@ -320,7 +320,7 @@ class TokenGauge(ctk.CTkFrame):
         self.count_label.configure(text="— / 150,000")
         self.progress_bar.configure(width=0, fg_color=COLORS["accent"])
         self.status_label.configure(
-            text="Select a specs folder to analyze token usage",
+            text="Select specs to analyze token usage",
             text_color=COLORS["text_muted"]
         )
 
@@ -1263,6 +1263,7 @@ class SpecReviewApp(ctk.CTk):
         
         # State
         self.input_dir: Optional[Path] = None
+        self._selected_individual_files: Optional[list[Path]] = None
         self.output_dir = Path.home() / "Desktop" / "spec-review-output"
         self.last_output_path: Optional[Path] = None
         self.is_processing = False
@@ -1346,7 +1347,7 @@ class SpecReviewApp(ctk.CTk):
         
         subtitle = ctk.CTkLabel(
             header,
-            text="California K-12 DSA Projects  •  Claude OPUS 4.5",
+            text="California K-12 DSA Projects  •  Claude OPUS 4.6",
             font=ctk.CTkFont(family="Segoe UI", size=13),
             text_color=COLORS["text_secondary"]
         )
@@ -1400,15 +1401,8 @@ class SpecReviewApp(ctk.CTk):
             row=0
         )
         
-        # Specs folder
-        self._create_folder_row(
-            self.inputs_content,
-            label="Specs Folder",
-            placeholder="Select folder containing .docx files",
-            variable_name="input_dir_entry",
-            browse_command=self._browse_input,
-            row=1
-        )
+        # Specs (folder or individual files)
+        self._create_specs_row(self.inputs_content, row=1)
         
         # Output folder
         self._create_folder_row(
@@ -1511,10 +1505,62 @@ class SpecReviewApp(ctk.CTk):
         parent.columnconfigure(1, weight=1)
         setattr(self, variable_name, entry)
         
+    def _create_specs_row(self, parent, row):
+        """Create the specs input row with Folder and Files browse buttons."""
+        label_widget = ctk.CTkLabel(
+            parent,
+            text="Specs",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_secondary"],
+            width=100,
+            anchor="w"
+        )
+        label_widget.grid(row=row, column=0, sticky="w", pady=8)
+
+        entry_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        entry_frame.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=8)
+        entry_frame.columnconfigure(0, weight=1)
+
+        entry = ctk.CTkEntry(
+            entry_frame,
+            placeholder_text="Select a folder or individual .docx files",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color=COLORS["bg_input"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            height=36
+        )
+        entry.grid(row=0, column=0, sticky="ew")
+        self.input_dir_entry = entry
+
+        btn_style = {
+            "height": 36,
+            "font": ctk.CTkFont(size=12),
+            "fg_color": COLORS["bg_input"],
+            "hover_color": COLORS["border"],
+            "border_width": 1,
+            "border_color": COLORS["border"],
+            "text_color": COLORS["text_secondary"],
+        }
+
+        folder_btn = ctk.CTkButton(
+            entry_frame, text="Folder", width=60, command=self._browse_input,
+            **btn_style
+        )
+        folder_btn.grid(row=0, column=1, padx=(8, 0))
+
+        files_btn = ctk.CTkButton(
+            entry_frame, text="Files", width=60, command=self._browse_files,
+            **btn_style
+        )
+        files_btn.grid(row=0, column=2, padx=(4, 0))
+
+        parent.columnconfigure(1, weight=1)
+
     # ========================================================================
     # ACTIONS
     # ========================================================================
-    
+
     def _browse_input(self):
         """Open folder picker for input directory."""
         folder = ctk.filedialog.askdirectory(
@@ -1522,11 +1568,38 @@ class SpecReviewApp(ctk.CTk):
         )
         if folder:
             self.input_dir = Path(folder)
+            self._selected_individual_files = None  # Clear any file selection
             self.input_dir_entry.delete(0, "end")
             self.input_dir_entry.insert(0, folder)
-            
+
             # Analyze tokens immediately
             self._analyze_folder_tokens()
+
+    def _browse_files(self):
+        """Open file picker for individual .docx files."""
+        files = ctk.filedialog.askopenfilenames(
+            title="Select .docx specification files",
+            filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")]
+        )
+        if files:
+            paths = [Path(f) for f in files if f.lower().endswith(".docx")]
+            if not paths:
+                self.log.log_warning("No .docx files selected")
+                return
+
+            self._selected_individual_files = paths
+            # Use the parent directory of the first file as input_dir
+            self.input_dir = paths[0].parent
+
+            # Update entry display
+            self.input_dir_entry.delete(0, "end")
+            if len(paths) == 1:
+                self.input_dir_entry.insert(0, str(paths[0]))
+            else:
+                self.input_dir_entry.insert(0, f"{len(paths)} files selected")
+
+            # Analyze tokens for selected files
+            self._analyze_selected_files(paths)
             
     def _browse_output(self):
         """Open folder picker for output directory."""
@@ -1604,7 +1677,60 @@ class SpecReviewApp(ctk.CTk):
                 
         thread = threading.Thread(target=analyze, daemon=True)
         thread.start()
-    
+
+    def _analyze_selected_files(self, file_paths: list[Path]):
+        """Analyze token usage for individually selected files and populate file list."""
+        if not file_paths:
+            return
+
+        self.log.log_step(f"Analyzing {len(file_paths)} files...")
+
+        def analyze():
+            try:
+                file_data = []
+                system_prompt = get_system_prompt()
+
+                from tiktoken import get_encoding
+                encoder = get_encoding("cl100k_base")
+                self._system_prompt_tokens = len(encoder.encode(system_prompt))
+
+                for f in file_paths:
+                    try:
+                        spec = extract_text_from_docx(f)
+                        tokens = len(encoder.encode(spec.content))
+                        file_data.append({
+                            "path": f,
+                            "filename": spec.filename,
+                            "tokens": tokens,
+                            "content": spec.content,
+                        })
+                        self.after(0, lambda name=f.name: self.log.log_file(name))
+                    except Exception as e:
+                        self.after(0, lambda err=str(e), name=f.name:
+                                   self.log.log_warning(f"Could not read {name}: {err}"))
+
+                if file_data:
+                    self._loaded_file_data = file_data
+                    content_tokens = sum(d["tokens"] for d in file_data)
+                    total_tokens = self._system_prompt_tokens + content_tokens
+
+                    self.after(0, lambda: self.file_list_panel.load_files(file_data))
+                    self.after(0, lambda: self.token_gauge.update_gauge(
+                        total_tokens, len(file_data)
+                    ))
+                    self.after(0, lambda: self.log.log_success(
+                        f"Token analysis complete: {total_tokens:,} tokens"
+                    ))
+                    within_limit = total_tokens <= RECOMMENDED_MAX
+                    self.after(0, lambda: self._update_run_button_state(within_limit))
+                    self.after(0, lambda wl=within_limit: self.file_list_panel.set_over_limit(not wl))
+
+            except Exception as e:
+                self.after(0, lambda: self.log.log_error(f"Analysis failed: {e}"))
+
+        thread = threading.Thread(target=analyze, daemon=True)
+        thread.start()
+
     def _on_file_selection_change(self):
         """Handle file selection changes - recalculate tokens."""
         if not hasattr(self, "_loaded_file_data") or not self._loaded_file_data:
@@ -1664,16 +1790,23 @@ class SpecReviewApp(ctk.CTk):
         if not api_key:
             self.log.log_error("API key is required")
             return False
-            
+
         input_path = self.input_dir_entry.get().strip()
         if not input_path:
-            self.log.log_error("Specs folder is required")
+            self.log.log_error("Select a specs folder or individual files")
             return False
-            
-        input_dir = Path(input_path)
-        if not input_dir.exists():
-            self.log.log_error(f"Folder not found: {input_path}")
-            return False
+
+        # For individual file selection, validate that files still exist
+        if self._selected_individual_files:
+            missing = [f for f in self._selected_individual_files if not f.exists()]
+            if missing:
+                self.log.log_error(f"File not found: {missing[0].name}")
+                return False
+        else:
+            input_dir = Path(input_path)
+            if not input_dir.exists():
+                self.log.log_error(f"Folder not found: {input_path}")
+                return False
         
         # Check that at least one file is selected
         selected_count = self.file_list_panel.get_selected_count()
@@ -1726,11 +1859,11 @@ class SpecReviewApp(ctk.CTk):
     def _run_review_thread(self):
         """Background thread for review process."""
         try:
-            input_path = Path(self.input_dir_entry.get())
+            input_path = self.input_dir
             output_path = Path(self.output_dir_entry.get())
             
             self.after(0, lambda: self.log.log_step("Starting review..."))
-            self.after(0, lambda: self.log.log(f"Model: {MODEL_OPUS_45}", level="muted"))
+            self.after(0, lambda: self.log.log(f"Model: {MODEL_OPUS_46}", level="muted"))
             
             def log_callback(msg: str):
                 self.after(0, lambda m=msg: self.log.log(m, level="info"))
