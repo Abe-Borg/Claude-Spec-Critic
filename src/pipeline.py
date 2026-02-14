@@ -11,7 +11,7 @@ Pipeline stages:
     3. Detect LEED references and placeholders locally (preprocessor.py)
     4. Analyze token usage and enforce limits (tokenizer.py)
     5. Combine specs with file delimiters for the LLM
-    6. Call Claude Opus 4.5 via streaming API (reviewer.py)
+    6. Call Claude Opus 4.6 via streaming API (reviewer.py)
     7. Parse JSON findings from response
     8. Generate Word report (report.py)
     9. Write all artifacts to output directory
@@ -58,7 +58,7 @@ from .extractor import extract_text_from_docx, ExtractedSpec
 from .preprocessor import preprocess_spec
 from .prompts import get_system_prompt
 from .tokenizer import analyze_token_usage, RECOMMENDED_MAX
-from .reviewer import review_specs, ReviewResult, MODEL_OPUS_45, StreamCallback
+from .reviewer import review_specs, ReviewResult, MODEL_OPUS_46, StreamCallback
 from .report import generate_report
 
 # Type aliases for callback signatures
@@ -276,7 +276,7 @@ def run_review(
     token_summary_json.write_text(
         json.dumps(
             {
-                "model": MODEL_OPUS_45,
+                "model": MODEL_OPUS_46,
                 "recommended_max_tokens": RECOMMENDED_MAX,
                 "within_limit": token_summary.within_limit,
                 "total_tokens": token_summary.total_tokens,
@@ -316,7 +316,7 @@ def run_review(
     if dry_run:
         log("Dry-run enabled: skipping API call.")
         # Still generate a report with 0 findings so you get the artifact structure
-        dummy = ReviewResult(findings=[], raw_response="", model=MODEL_OPUS_45)
+        dummy = ReviewResult(findings=[], raw_response="", model=MODEL_OPUS_46)
         report_docx = run_dir / "report.docx"
 
         generate_report(
@@ -332,7 +332,7 @@ def run_review(
         findings_json.write_text(
             json.dumps(
                 {
-                    "meta": {"model": MODEL_OPUS_45, "dry_run": True},
+                    "meta": {"model": MODEL_OPUS_46, "dry_run": True},
                     "findings": [],
                     "alerts": {
                         "leed_alerts": leed_alerts,
@@ -364,7 +364,7 @@ def run_review(
     # -------------------------------------------------------------------------
     # Stage 5: API call with streaming
     # -------------------------------------------------------------------------
-    progress(55.0, "Calling Opus 4.5...")
+    progress(55.0, "Calling Opus 4.6...")
     review_result = review_specs(
         combined_content=combined,
         verbose=verbose,

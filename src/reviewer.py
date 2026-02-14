@@ -8,8 +8,8 @@ This module handles all communication with the Anthropic API, including:
     - Token usage tracking
 
 Model:
-    This tool uses Claude Opus 4.5 exclusively. The model is hardcoded —
-    there are no flags to select different models. Opus 4.5 was chosen for
+    This tool uses Claude Opus 4.6 exclusively. The model is hardcoded —
+    there are no flags to select different models. Opus 4.6 was chosen for
     its superior reasoning on complex technical documents.
 
 Response format:
@@ -59,7 +59,7 @@ from .prompts import get_system_prompt, get_user_message
 
 
 # Single allowed model for this repo
-MODEL_OPUS_45 = "claude-opus-4-5-20251101"
+MODEL_OPUS_46 = "claude-opus-4-6"
 
 # Type alias for streaming callback
 # Called with each text chunk as it arrives from the API
@@ -115,7 +115,7 @@ class ReviewResult:
     findings: list[Finding] = field(default_factory=list)
     raw_response: str = ""
     thinking: str = ""  # Claude's analysis summary before the JSON output
-    model: str = MODEL_OPUS_45
+    model: str = MODEL_OPUS_46
     input_tokens: int = 0
     output_tokens: int = 0
     elapsed_seconds: float = 0.0
@@ -289,7 +289,7 @@ def review_specs(
         ...         print(f"{f.severity}: {f.issue}")
     """
     start_time = time.time()
-    result = ReviewResult(model=MODEL_OPUS_45)
+    result = ReviewResult(model=MODEL_OPUS_46)
 
     client = Anthropic(api_key=_get_api_key())
 
@@ -305,7 +305,7 @@ def review_specs(
 
             # Use streaming to enable real-time display
             with client.messages.stream(
-                model=MODEL_OPUS_45,
+                model=MODEL_OPUS_46,
                 max_tokens=max_tokens,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
