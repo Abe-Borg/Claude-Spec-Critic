@@ -43,7 +43,6 @@ hiddenimports = [
     'lxml._elementpath',
     # Our src modules (explicit)
     'src',
-    'src.cli',
     'src.pipeline',
     'src.extractor',
     'src.preprocessor',
