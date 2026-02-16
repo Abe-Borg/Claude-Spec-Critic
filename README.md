@@ -1,316 +1,83 @@
-# MEP Spec Review
+# MEP Spec Review v1.0.0
 
-A CLI + GUI tool for reviewing mechanical and plumbing (M&P) specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction.
+A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude Opus 4.6. Load `.docx` spec files, run the review, and see color-coded findings rendered directly in the app.
 
-Uses Anthropic Claude Opus 4.5 for LLM analysis.
+## What It Does
 
-## Features
+1. Extracts text from `.docx` specification files (paragraphs + tables)
+2. Detects LEED references and unresolved placeholders locally (no API call needed)
+3. Performs pre-flight token analysis with an animated visual gauge
+4. Sends combined spec content to Claude Opus 4.6 via streaming API
+5. Streams Claude's analysis in real-time with a sassy senior-engineer personality
+6. Parses structured JSON findings from the response
+7. Renders a full report in-app: summary grid, alerts, severity-colored finding cards, reviewer's notes
 
-- **Batch Review**: Process multiple specification documents at once (limited by LLM context window)
-- **File Selection**: Choose which specs to include/exclude from analysis with per-file token counts
-- **LEED Detection**: Alerts when LEED references are found
-- **Placeholder Detection**: Flags unresolved placeholders like `[INSERT...]`
-- **Token Management**: Pre-flight token counting with warnings before API calls
-- **Instant Token Analysis**: See token usage immediately when selecting a folder
-- **Severity Classification**: Issues categorized as CRITICAL, HIGH, MEDIUM, and GRIPES
-- **Dual Output**: Human-readable Word report + machine-readable JSON
-- **Modern GUI**: Dark-themed CustomTkinter interface with animations and visual polish
-- **Live Streaming**: Watch Claude's analysis appear in real-time as it's generated
-- **Personality**: Claude provides entertaining, ball-busting commentary on spec quality
-
-## How It Works
-
-MEP Spec Review sends your specification documents to Claude Opus 4.5 along with a detailed system prompt that instructs Claude to act as a senior specification reviewer. The prompt includes:
-
-- **Role Definition**: Claude acts as a grumpy but brilliant senior engineer with 30 years of spec review experience
-- **Severity Definitions**: Clear criteria for CRITICAL, HIGH, MEDIUM, and GRIPES classifications
-- **California K-12 Focus**: Specific attention to CBC, CMC, CPC, CALGreen, DSA requirements, and relevant ASHRAE/SMACNA/NFPA standards
-- **Output Format**: Structured JSON findings with severity, location, issue description, and recommended corrections
-- **Analysis Summary**: A narrative "reviewer's take" with personality before the formal findings
-
-The tool handles:
-1. **Extraction**: Pulls text from .docx files (paragraphs + tables)
-2. **Preprocessing**: Detects LEED references and unresolved placeholders locally (not sent to LLM)
-3. **Token Analysis**: Counts tokens to ensure you stay within context limits
-4. **API Call**: Sends combined specs to Claude with streaming response
-5. **Report Generation**: Creates Word document with findings organized by severity
-
-## What's New in v0.5.0
-
-### File Selection Panel
-New collapsible panel showing all loaded files with checkboxes. Uncheck files to exclude them from analysis. The token gauge updates instantly when you change selections — making it easy to stay under the token limit without reloading folders.
-
-Features:
-- Per-file token counts so you can see which specs are eating your budget
-- "All" / "None" buttons for quick bulk selection
-- Dimmed styling for deselected files
-- Collapsible to save space once you've made your selection
-- Run button automatically disables when over limit or no files selected
-
-### Capacity Exceeded Warning
-When tokens exceed the 150k limit, the gauge now shows "⚠ Capacity Exceeded!" in bright red and the Run button is disabled until you deselect enough files.
-
-## What's New in v0.4.0
-
-### Live Streaming
-Watch Claude's analysis appear character-by-character in real-time. No more staring at a blank screen wondering if anything is happening — you see Claude's thoughts as they form.
-
-### Sassy Claude
-Claude now has personality. Instead of dry, clinical output, you get honest (and often entertaining) commentary:
-
-> "Alright, let's talk about what's happening here. Whoever wrote this spec seems to think we're still in 2019 — I found ASCE 7-16 references scattered around like confetti. Also, Division 15? Really? MasterFormat updated that numbering scheme back when flip phones were cool."
-
-The findings themselves remain professional and actionable. The sass is in the analysis summary.
-
-### Analysis Summary in Report
-Claude's analysis summary is now included at the end of the Word report under "Reviewer's Notes" — giving you both the formal findings and the reviewer's take on spec quality.
-
-## GUI Features (v0.5.0)
-
-The CustomTkinter GUI includes:
-
-- **File Selection Panel**: Checkboxes for each file with per-file token counts
-- **Live Streaming Panel**: Real-time display of Claude's analysis with blinking indicator
-- **Animated Token Gauge**: Visual meter with smooth fill animation showing token capacity usage
-- **Paced Activity Log**: Entries appear at a readable pace (200ms for files, 400ms for status)
-- **Fade-in Log Entries**: New log entries fade in smoothly instead of popping
-- **Animated Run Button**: Gentle pulse during processing, glow effect on completion
-- **Smooth Progress Bar**: Indeterminate animation during API calls
-- **Modern Dark Theme**: Professional dark interface with accent colors
-
-### Animation Details
-
-| Element | Animation |
-|---------|-----------|
-| File Selection | Instant token recalculation on checkbox change |
-| Streaming Panel | Real-time text with blinking indicator |
-| Token Gauge | Smooth ease-out fill (700ms) with color gradient transition |
-| Log Entries | Fade-in from background color (200ms) |
-| Log Pacing | 200ms between file entries, 400ms between status entries |
-| Run Button | Blue pulse effect while processing, glow on completion |
-| Progress Bar | Standard CustomTkinter indeterminate animation |
-
-## Prerequisites
-
-### Converting .doc Files
-
-This tool only supports `.docx` files. If you have older `.doc` files (Word 97-2003 format), convert them first:
-https://github.com/Abe-Borg/convert-doc-to-docx
-
-### Cleaning Specifications
-
-For best results, scrub Word docs of unnecessary components before review:
-https://github.com/Abe-Borg/Spec_Cleanse
-
-## Installation
+## Running the Application
 
 ```bash
-# Unzip and enter the project directory
-unzip spec-review.zip
+python main.py
+```
+
+### First-Time Setup
+
+```bash
+# Clone the repo
+git clone <your-repo-url>
 cd spec-review
 
+# Create and activate a virtual environment
+python -m venv venv
+venv\Scripts\activate        # Windows
+source venv/bin/activate     # macOS/Linux
+
 # Install dependencies
-pip install -r requirements.txt
-
-# Or install with pyproject.toml
 pip install -e .
+
+# Run
+python main.py
 ```
 
-### Dependencies
+## API Key
 
-- `anthropic>=0.40.0` — Claude API client
-- `click>=8.1.0` — CLI framework
-- `python-docx>=1.1.0` — Word document handling
-- `rich>=13.0.0` — CLI formatting
-- `tiktoken>=0.7.0` — Token counting
-- `customtkinter>=5.2.0` — Modern GUI framework
+The tool looks for your Anthropic API key in this order:
 
-## Configuration
+1. `spec_critic_api_key.txt` file in the same directory as the executable (or project root during development)
+2. `ANTHROPIC_API_KEY` environment variable
+3. Manual entry in the API Key field within the app
 
-Set your Anthropic API key as an environment variable:
+For day-to-day use, drop a `spec_critic_api_key.txt` file next to the executable (or in the project root) containing just your key. The app will auto-load it on launch.
 
-**Windows (Command Prompt):**
-```cmd
-set ANTHROPIC_API_KEY=your-api-key-here
-```
+## How to Use
 
-**Windows (PowerShell):**
-```powershell
-$env:ANTHROPIC_API_KEY="your-api-key-here"
-```
+1. Launch the app with `python main.py`
+2. Enter your API key (or let it auto-load from file)
+3. Click **Folder** to select a directory of `.docx` specs, or **Files** to pick individual files
+4. The token gauge fills to show capacity usage — stay under the 150k limit
+5. Expand the **FILES** panel to check/uncheck individual specs if needed
+6. Click **Run Review**
+7. Watch Claude's analysis stream in real-time
+8. When complete, the report panel appears with all findings
 
-**Mac/Linux:**
-```bash
-export ANTHROPIC_API_KEY="your-api-key-here"
-```
+### Report Panel
 
-**Or create a key file** (GUI only):
-Create `spec_critic_api_key.txt` in the same directory as the executable, containing just your API key.
+After the review completes, the report panel renders:
 
-## Usage
+- **Summary grid**: Five color-coded cards showing Critical, High, Medium, Gripes, and Total counts
+- **Token/time metadata**: Input/output token counts and processing duration
+- **Alerts**: LEED references and unresolved placeholders detected locally (grouped by file)
+- **Findings**: Cards grouped by severity (CRITICAL → HIGH → MEDIUM → GRIPES), each showing:
+  - Severity badge and filename
+  - Section reference (CSI format)
+  - Issue description
+  - Existing text in red monospace
+  - Replacement text in green monospace
+  - Code reference in blue
+- **Reviewer's Notes**: Claude's personality-driven analysis summary
 
-### Directory Structure
+### Export Options
 
-Put your .docx spec files in an input directory:
-
-```
-my-project/
-├── specs/                    # Your input directory
-│   ├── 23 05 00 - Common Work Results.docx
-│   ├── 23 21 13 - Hydronic Piping.docx
-│   └── 22 05 00 - Common Work Results Plumbing.docx
-└── output/                   # Output will be created here
-```
-
-### GUI (Recommended)
-
-Launch the modern interface:
-
-```bash
-python -m src.gui
-```
-
-Or if using the compiled executable:
-
-```cmd
-MEP-Spec-Review.exe
-```
-
-**GUI Workflow:**
-1. Enter your API key (or let it auto-load from `spec_critic_api_key.txt`)
-2. Click "Browse" to select your specs folder
-3. **Watch the animated token gauge** — shows capacity usage with smooth fill
-4. **Review the file list** — uncheck any specs you want to exclude from analysis
-5. **Check the token gauge** — if over 150k, deselect more files until under limit
-6. Click "Run Review" (disabled if over limit or no files selected)
-7. **Watch Claude's analysis stream in real-time** — see the thinking as it happens
-8. Report opens automatically when complete
-
-### CLI: Basic Review
-
-```bash
-spec-review review -i ./specs -o ./output
-```
-
-### CLI: With Verbose Output
-
-```bash
-spec-review review -i ./specs -o ./output --verbose
-```
-
-### CLI: Dry Run (No API Call)
-
-Test extraction and preprocessing without calling the API:
-
-```bash
-spec-review review -i ./specs -o ./output --dry-run --verbose
-```
-
-### Command Options
-
-| Option | Short | Description |
-|--------|-------|-------------|
-| `--input-dir` | `-i` | Input directory containing .docx files (required) |
-| `--output-dir` | `-o` | Output directory for reports (default: `./output`) |
-| `--verbose` | `-v` | Show detailed processing information |
-| `--dry-run` | | Process files but skip API call |
-
-### Model
-
-This tool uses **Claude Opus 4.5** (`claude-opus-4-5-20251101`) exclusively.
-
-- Context window: 200,000 tokens
-- Max output: 32,768 tokens
-- Recommended input limit: 150,000 tokens (leaves buffer for system prompt + response)
-
-## Output Structure
-
-Each run creates a timestamped folder:
-
-```
-output/
-└── review_YYYY-MM-DD_HHMMSS/
-    ├── report.docx           # Human-readable findings report (includes analysis summary)
-    ├── findings.json         # Machine-readable findings + alerts + analysis summary
-    ├── raw_response.txt      # Raw Claude response (for debugging)
-    ├── inputs_combined.txt   # Combined spec text sent to API
-    ├── token_summary.json    # Token usage breakdown
-    └── error.txt             # Only present if failure occurred
-```
-
-### findings.json Structure
-
-```json
-{
-  "meta": {
-    "model": "claude-opus-4-5-20251101",
-    "input_tokens": 37942,
-    "output_tokens": 8500,
-    "elapsed_seconds": 120.5
-  },
-  "findings": [
-    {
-      "severity": "CRITICAL",
-      "fileName": "23 21 13 - Hydronic Piping.docx",
-      "section": "Part 2, Article 2.3.A",
-      "issue": "Seismic bracing requirements reference ASCE 7-16 instead of ASCE 7-22 as required by CBC 2022",
-      "actionType": "EDIT",
-      "existingText": "Seismic design per ASCE 7-16",
-      "replacementText": "Seismic design per ASCE 7-22 as adopted by CBC 2022",
-      "codeReference": "CBC 2022 Chapter 16, DSA IR A-6"
-    }
-  ],
-  "alerts": {
-    "leed_alerts": [...],
-    "placeholder_alerts": [...]
-  },
-  "analysis_summary": "Alright, let's see what we've got here..."
-}
-```
-
-### Word Report Structure
-
-The Word report (`report.docx`) includes:
-
-1. **Header** — Title, generation date, model info
-2. **Files Reviewed** — List of analyzed specifications
-3. **Summary** — Finding counts by severity, token usage, processing time
-4. **Alerts** — LEED references and unresolved placeholders
-5. **Findings** — Detailed findings organized by severity (CRITICAL → HIGH → MEDIUM → GRIPES)
-6. **Reviewer's Notes** — Claude's analysis summary with personality (at the end)
-
-## Severity Definitions
-
-| Level | Description |
-|-------|-------------|
-| **CRITICAL** | DSA rejection risk, code violations, safety hazards |
-| **HIGH** | Significant technical errors, outdated CSI format |
-| **MEDIUM** | Wrong code editions, obsolete products |
-| **GRIPES** | Editorial issues, formatting, terminology (not code/safety) |
-
-## What It Checks
-
-- California code compliance (CBC, CMC, CPC, CEC, CALGreen)
-- DSA-specific requirements (seismic, certification, submittals)
-- ASHRAE standards (62.1, 90.1, 55, etc.)
-- SMACNA standards (duct construction, seismic restraint)
-- ASPE standards (plumbing engineering practice)
-- NFPA standards (fire pumps, special hazards)
-- MSS standards (pipe hangers and supports)
-- ASTM standards (materials and testing)
-- Technical accuracy of performance criteria
-- Product specifications (manufacturer names, model numbers, ratings)
-- Submittal and QA requirements
-- Internal consistency within each spec
-- Cross-spec coordination (when multiple specs provided)
-- Constructability issues
-
-## What Gets Alerted (Not Sent to LLM)
-
-These items are detected locally and reported separately:
-
-- **LEED references**: Any mention of LEED, USGBC, or LEED credits
-- **Placeholders**: `[INSERT...]`, `[SPECIFY...]`, `[VERIFY...]`, `___`, `[TBD]`, etc.
+- **Export JSON**: Opens a save dialog to write findings, alerts, and metadata to a `.json` file
+- **Copy Summary**: Copies the reviewer's analysis summary text to your clipboard
 
 ## Project Structure
 
@@ -318,38 +85,87 @@ These items are detected locally and reported separately:
 spec-review/
 ├── src/
 │   ├── __init__.py      # Package version
-│   ├── cli.py           # CLI entry point (thin shell)
-│   ├── gui.py           # CustomTkinter GUI with streaming + animations
+│   ├── gui.py           # Main application window
+│   ├── widgets.py       # Custom UI widgets (TokenGauge, FileListPanel,
+│   │                    #   EnhancedLog, StreamingPanel, AnimatedButton,
+│   │                    #   ReportPanel)
 │   ├── pipeline.py      # Core orchestration (single source of truth)
 │   ├── extractor.py     # DOCX text extraction
 │   ├── preprocessor.py  # LEED/placeholder detection (no mutation)
 │   ├── tokenizer.py     # Token counting with tiktoken
-│   ├── prompts.py       # System prompt for Claude (with personality)
-│   ├── reviewer.py      # Anthropic API client with streaming support
-│   └── report.py        # Word report generation (includes analysis summary)
-├── pyproject.toml
-├── spec-review.spec     # PyInstaller config
-├── build.bat            # Build script for Windows
+│   ├── prompts.py       # System prompt for Claude
+│   └── reviewer.py      # Anthropic API client with streaming + retry
+├── main.py              # Entry point (also PyInstaller target)
+├── pyproject.toml       # Project metadata & dependencies
 └── README.md
 ```
 
-## Architecture Notes
+## Architecture
 
-- **Single pipeline**: All workflow logic lives in `pipeline.py`. CLI and GUI are thin shells.
-- **Single model**: Hardcoded to Claude Opus 4.5. No model selection flags.
-- **Streaming support**: `reviewer.py` accepts a callback for real-time text chunks.
-- **No document mutation**: This repo only analyzes specs. Cleanup belongs in Spec_Cleanse.
+### Design Decisions
+
+- **Single pipeline**: All workflow logic lives in `pipeline.py`. The GUI is a thin shell that calls `run_review()` and renders the result. This eliminates drift and makes testing straightforward.
+- **Single model**: Hardcoded to Claude Opus 4.6 (`claude-opus-4-6`). No model selection flags, no alternatives.
+- **No document mutation**: This repo only analyzes specs. Document cleanup belongs in the separate SpecCleanse tool.
+- **No file output**: All results render in-app. The only file output is the optional Export JSON button. No output directories, no intermediate files.
 - **Advisory only**: This tool assists human reviewers. It is not an AHJ substitute.
+- **Streaming first**: Claude's response streams in real-time to the StreamingPanel. When streaming completes, findings are parsed and rendered in the ReportPanel. All other panels auto-collapse during streaming so Claude's analysis takes center stage.
+
+### Module Responsibilities
+
+| Module | Purpose |
+|---|---|
+| `gui.py` | App window, input handling, threading, review orchestration |
+| `widgets.py` | All custom CustomTkinter widgets with animations |
+| `pipeline.py` | Single source of truth for the review workflow |
+| `extractor.py` | DOCX text extraction (paragraphs + tables) |
+| `preprocessor.py` | Local detection of LEED refs and placeholders |
+| `tokenizer.py` | Token counting via tiktoken, limit enforcement |
+| `prompts.py` | System prompt with personality and severity definitions |
+| `reviewer.py` | Anthropic API client, streaming, JSON parsing, retry logic |
+
+### Data Flow
+
+```
+.docx files
+    → extractor.py (text extraction)
+    → preprocessor.py (LEED/placeholder detection, local only)
+    → tokenizer.py (token counting, limit check)
+    → reviewer.py (streaming API call to Claude Opus 4.6)
+    → pipeline.py (orchestration, returns PipelineResult)
+    → gui.py (renders ReportPanel with findings)
+```
+
+## What Claude Reviews
+
+The system prompt instructs Claude to check:
+
+- Code compliance: CBC, CMC, CPC, California Energy Code, CALGreen
+- DSA-specific requirements: seismic restraint, certification, submittals
+- ASHRAE standards: 62.1, 90.1, 55, etc.
+- SMACNA standards: duct construction, seismic restraint
+- ASPE standards: plumbing engineering practice
+- NFPA standards: fire pumps, special hazards
+- MSS, ASTM standards: pipe hangers, materials, testing
+- Product specifications: manufacturer names, model numbers, ratings
+- Internal consistency: within each spec and across multiple specs
+- Coordination: mechanical vs. plumbing, and cross-discipline if non-MEP specs are included
+- Constructability: issues that could cause delays or cost overruns
+
+Claude classifies findings into four severity levels:
+
+- **CRITICAL**: DSA rejection risks, code violations, safety hazards
+- **HIGH**: Significant technical errors, outdated CSI formatting, coordination conflicts
+- **MEDIUM**: Wrong code years, discontinued products, minor inconsistencies
+- **GRIPES**: Typos, formatting issues, overly restrictive requirements
+
+LEED references and unresolved placeholders (`[INSERT]`, `[VERIFY]`, `[TBD]`, etc.) are detected locally by `preprocessor.py` and displayed as alerts — they are not sent to Claude.
 
 ## Building the Executable
 
 To create a standalone `.exe` that doesn't require Python:
 
 ```bash
-# Option 1: Use the build script
-build.bat
-
-# Option 2: Run PyInstaller directly
 pip install pyinstaller
 pyinstaller spec-review.spec --clean
 ```
@@ -358,83 +174,43 @@ The executable will be created at `dist/MEP-Spec-Review.exe`.
 
 **Using the executable:**
 
-1. Place `spec_critic_api_key.txt` in the same folder as the `.exe` (optional, for auto-load)
+1. Place `spec_critic_api_key.txt` in the same folder as the `.exe`
 2. Run `MEP-Spec-Review.exe`
-3. Select your specs folder
-4. Review file list and deselect any you want to exclude
-5. Watch the animated token gauge — stay under 150k
-6. Click "Run Review"
-7. Watch Claude's analysis stream in real-time
-8. Enjoy the sassy commentary
+3. Select your specs folder or individual files
+4. Click "Run Review"
 
 ## Troubleshooting
 
 ### Token Limit Exceeded
 
-If you see "⚠ Capacity Exceeded!" in the token gauge, use the file selection checkboxes to exclude large specs until you're under the 150k limit. The per-file token counts help you identify which specs are consuming the most budget.
+If the token gauge shows "Capacity Exceeded" and turns red, your combined specs exceed the 150k token input limit. Use the FILES panel to uncheck some specs and bring the count under the limit. The run button is disabled while over capacity.
 
-For very large spec packages, split them into batches and run separately.
+### API Key Not Loading
 
-### API Key Not Set
+Make sure `spec_critic_api_key.txt` is in the project root (during development) or next to the `.exe` (when using the compiled version). The file should contain only the API key with no extra whitespace or newlines.
 
-- Ensure `ANTHROPIC_API_KEY` is set in your environment, OR
-- Create `spec_critic_api_key.txt` next to the executable with your key
+### Streaming Stalls or Errors
 
-### No .docx Files Found
+Claude Opus 4.6 with large context windows requires streaming. If you see connection errors, the reviewer will automatically retry with exponential backoff (up to 3 attempts). Rate limit errors wait 10s/20s/40s between retries; connection errors wait 5s/10s/20s.
 
-- Verify files have `.docx` extension (not `.doc`)
-- Check that files aren't temp files (`~$filename.docx`)
+## Dependencies
 
-### GUI Looks Wrong / Crashes
-
-- Ensure you have `customtkinter>=5.2.0` installed
-- For Python 3.12+, ensure tkinter is available: `pip install tk`
-
-### Streaming Not Working
-
-- Ensure you have `anthropic>=0.40.0` installed
-- Check your network connection
-- The streaming panel should appear automatically when Claude starts responding
+```
+anthropic          # Claude API client
+python-docx        # DOCX text extraction
+tiktoken           # Token counting (cl100k_base encoding)
+customtkinter      # Modern themed Tkinter widgets
+```
 
 ## Changelog
 
-### v0.5.0
-- **File selection panel**: Checkboxes for each file with per-file token counts
-- **Instant token recalculation**: Token gauge updates when you change file selection
-- **Capacity exceeded warning**: Clear visual feedback when over 150k limit
-- **Run button state management**: Disabled when over limit or no files selected
-- **Collapsible panels**: File list and inputs panels collapse to save space
+### v1.0.0
 
-### v0.4.0
-- **Live streaming**: Watch Claude's analysis appear in real-time
-- **Sassy Claude**: Entertaining commentary on spec quality
-- **Analysis summary in report**: Reviewer's notes section at end of Word report
-- **StreamingPanel widget**: New GUI component for real-time text display
-- **Streaming callback**: `reviewer.py` now accepts callback for text chunks
-- **Updated prompts**: Personality instructions added to system prompt
-
-### v0.3.0
-- **Paced log output**: File entries at 200ms, status at 400ms intervals
-- **Log fade-in animation**: Entries fade in smoothly from background
-- **Animated token gauge**: Smooth 700ms ease-out fill with color gradient
-- **Button pulse animation**: Visible blue pulse while processing
-- **Button glow on complete**: Brief success glow effect
-- **Smooth panel expand/collapse**: Animated height transitions
-- **Larger default window**: 800x800 for bigger log area
-- **Removed output folder button**: Cleaner interface
-- **Animation timing constants**: Centralized in ANIM dict for tuning
-
-### v0.2.0
-- New CustomTkinter GUI with dark theme
-- Token gauge shows capacity on folder selection
-- Enhanced activity log with colors and timestamps
-- Visual feedback during processing
-
-### v0.1.0
-- Initial release with basic tkinter GUI
-- CLI with --verbose and --dry-run options
-- Streaming API support for Opus 4.5
-
-## License
-
-MIT License
+- Replaced Word document output with in-app ReportPanel
+- Extracted all custom widgets into `widgets.py`
+- Moved `gui.py` into `src/` package
+- Removed all file output (no report.docx, findings.json, raw_response.txt, etc.)
+- Removed CLI mode, debug mode, output folder picker
+- Updated system prompt to HTML version (richer severity definitions, cross-discipline coordination, no brevity constraint, CRITICAL CHECKS section)
+- Updated model reference to Claude Opus 4.6
+- Simplified `pipeline.py` to return in-memory `PipelineResult` only
