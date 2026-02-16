@@ -28,9 +28,6 @@ def load_api_key_from_file():
         except Exception: pass
     return ""
 
-def get_docx_files(folder):
-    return sorted([p for p in folder.glob("*.docx") if not p.name.startswith("~$")])
-
 
 class SpecReviewApp(ctk.CTk):
     def __init__(self):
@@ -40,7 +37,6 @@ class SpecReviewApp(ctk.CTk):
         self.minsize(750, 700)
         self.configure(fg_color=COLORS["bg_dark"])
         self.input_dir = None
-        self._selected_individual_files = None
         self.is_processing = False
         self._report_mode = False
         fk = load_api_key_from_file()
@@ -55,13 +51,9 @@ class SpecReviewApp(ctk.CTk):
 
         # Report-mode toolbar (hidden by default)
         self.report_toolbar = ctk.CTkFrame(c, fg_color="transparent")
-        ctk.CTkButton(
-            self.report_toolbar, text="\u2190  Back to Review", width=150, height=34,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            fg_color=COLORS["bg_card"], hover_color=COLORS["border"],
-            border_width=1, border_color=COLORS["border"],
-            text_color=COLORS["text_secondary"], command=self._exit_report_mode
-        ).pack(side="left")
+        tb_kw = {"height": 34, "font": ctk.CTkFont(family="Segoe UI", size=12), "fg_color": COLORS["bg_card"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
+        ctk.CTkButton(self.report_toolbar, text="\u2190  Back to Review", width=150, command=self._exit_report_mode, **tb_kw).pack(side="left")
+        ctk.CTkButton(self.report_toolbar, text="\u21bb  New Review", width=130, command=self._reset_for_new_review, **tb_kw).pack(side="left", padx=(8, 0))
 
         # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
@@ -106,11 +98,10 @@ class SpecReviewApp(ctk.CTk):
         ef = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ef.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=8)
         ef.columnconfigure(0, weight=1)
-        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select a folder or individual .docx files", font=ctk.CTkFont(family="Consolas", size=12), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
+        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select .docx specification files", font=ctk.CTkFont(family="Consolas", size=12), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
         self.input_dir_entry.grid(row=0, column=0, sticky="ew")
         bkw = {"height": 36, "font": ctk.CTkFont(size=12), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
-        ctk.CTkButton(ef, text="Folder", width=60, command=self._browse_input, **bkw).grid(row=0, column=1, padx=(8, 0))
-        ctk.CTkButton(ef, text="Files", width=60, command=self._browse_files, **bkw).grid(row=0, column=2, padx=(4, 0))
+        ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
         self.inputs_content.columnconfigure(1, weight=1)
 
     def _toggle_inputs_card(self, event=None):
@@ -119,19 +110,13 @@ class SpecReviewApp(ctk.CTk):
         else:
             self.inputs_content.pack(fill="x", padx=16, pady=(0, 16)); self.inputs_expand_label.configure(text="\u25bc"); self._inputs_expanded = True
 
-    def _browse_input(self):
-        folder = ctk.filedialog.askdirectory(title="Select folder containing .docx specification files")
-        if folder:
-            self.input_dir = Path(folder); self._selected_individual_files = None
-            self.input_dir_entry.delete(0, "end"); self.input_dir_entry.insert(0, folder)
-            self._analyze_tokens(get_docx_files(self.input_dir))
-
     def _browse_files(self):
         files = ctk.filedialog.askopenfilenames(title="Select .docx specification files", filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")])
         if files:
             paths = [Path(f) for f in files if f.lower().endswith(".docx")]
             if not paths: self.log.log_warning("No .docx files selected"); return
-            self._selected_individual_files = paths; self.input_dir = paths[0].parent
+            self._selected_files = paths
+            self.input_dir = paths[0].parent
             self.input_dir_entry.delete(0, "end")
             self.input_dir_entry.insert(0, str(paths[0]) if len(paths) == 1 else f"{len(paths)} files selected")
             self._analyze_tokens(paths)
@@ -179,12 +164,9 @@ class SpecReviewApp(ctk.CTk):
 
     def _validate_inputs(self):
         if not self.api_key_entry.get().strip(): self.log.log_error("API key is required"); return False
-        if not self.input_dir_entry.get().strip(): self.log.log_error("Select a specs folder or individual files"); return False
-        if self._selected_individual_files:
-            missing = [f for f in self._selected_individual_files if not f.exists()]
-            if missing: self.log.log_error(f"File not found: {missing[0].name}"); return False
-        else:
-            if not Path(self.input_dir_entry.get().strip()).exists(): self.log.log_error("Folder not found"); return False
+        if not hasattr(self, "_selected_files") or not self._selected_files: self.log.log_error("Select .docx specification files"); return False
+        missing = [f for f in self._selected_files if not f.exists()]
+        if missing: self.log.log_error(f"File not found: {missing[0].name}"); return False
         if self.file_list_panel.get_selected_count() == 0: self.log.log_error("No files selected"); return False
         if self.token_gauge.token_count > RECOMMENDED_MAX: self.log.log_error("Token limit exceeded"); return False
         return True
@@ -211,7 +193,7 @@ class SpecReviewApp(ctk.CTk):
 
             result = run_review(
                 input_dir=self.input_dir,
-                files=self._selected_files_for_review if self._selected_files_for_review else None,
+                files=self._selected_files_for_review,
                 dry_run=False, verbose=False,
                 log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
                 progress=lambda pct, msg: self.after(0, lambda m=msg: self.log.log_step(m)),
@@ -271,6 +253,39 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.pack(fill="x", pady=(16, 0))
         # Log stays collapsed so report keeps space
         self.log.pack(fill="x", pady=(16, 0))
+
+    def _reset_for_new_review(self):
+        """Clear all state and return to a fresh starting layout."""
+        # Exit report mode if active
+        if self._report_mode:
+            self._report_mode = False
+            self.report_toolbar.pack_forget()
+
+        # Clear results
+        self.report_panel.clear()
+        self.progress_bar.pack_forget()
+
+        # Reset input state
+        self.input_dir = None
+        self._selected_files = []
+        self._loaded_file_data = []
+        self.input_dir_entry.delete(0, "end")
+
+        # Reset widgets
+        self.token_gauge.reset()
+        self.file_list_panel.reset()
+        self.log.clear()
+        self.run_button.set_ready()
+        self.is_processing = False
+
+        # Re-pack everything in original order
+        self.hdr.pack(fill="x", pady=(0, 20))
+        self.inputs_card.pack(fill="x")
+        self.token_gauge.pack(fill="x", pady=(16, 0))
+        self.run_button.pack(fill="x", pady=(16, 0))
+        self.log.pack(fill="both", expand=True, pady=(16, 0))
+        if not self._inputs_expanded:
+            self._toggle_inputs_card()
 
 
 def main():
