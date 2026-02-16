@@ -8,13 +8,9 @@ from pathlib import Path
 from typing import Optional
 import customtkinter as ctk
 
-if getattr(sys, 'frozen', False):
-    base_path = sys._MEIPASS
-    exe_dir = Path(sys.executable).parent
-else:
-    base_path = os.path.dirname(os.path.abspath(__file__))
-    exe_dir = Path(base_path).parent
-    sys.path.insert(0, str(Path(base_path).parent))
+base_path = os.path.dirname(os.path.abspath(__file__))
+exe_dir = Path(base_path).parent
+sys.path.insert(0, str(Path(base_path).parent))
 
 try:
     from src.pipeline import run_review
