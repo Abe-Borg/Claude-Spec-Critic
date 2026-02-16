@@ -1,20 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
 [project]
-name = "spec-review"
-version = "0.5.0"
-description = "MEP Specification Review Tool for California K-12 DSA Projects"
-readme = "README.md"
-requires-python = ">=3.10"
+name = "mep-spec-review"
+version = "1.0.0"
+description = "MEP specification review tool for California K-12 DSA projects"
+requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.40.0",
-    "customtkinter>=5.2.0",
-    "python-docx>=1.1.0",
-    "tiktoken>=0.7.0",
+    "anthropic",
+    "python-docx",
+    "tiktoken",
+    "customtkinter",
 ]
 
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+[project.scripts]
+spec-review = "src.gui:main"
