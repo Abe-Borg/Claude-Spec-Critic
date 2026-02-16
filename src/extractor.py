@@ -129,6 +129,3 @@ def extract_multiple_specs(filepaths: list[Path]) -> list[ExtractedSpec]:
         >>> total_words = sum(s.word_count for s in specs)
     """
     return [extract_text_from_docx(fp) for fp in filepaths]
-
-
-

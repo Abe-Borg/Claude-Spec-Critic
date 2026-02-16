@@ -55,9 +55,6 @@ class PreprocessResult:
 # Detection Patterns
 # -----------------------------------------------------------------------------
 
-# LEED and sustainability certification references
-# These are flagged because K-12 DSA projects typically aren't LEED certified,
-# so references are likely copy/paste artifacts from other project specs.
 LEED_PATTERNS: list[tuple[str, str]] = [
     (r"(?i)\bLEED\b", "LEED reference"),
     (r"(?i)\bLEED[-\s]?NC\b", "LEED-NC reference"),
@@ -67,9 +64,6 @@ LEED_PATTERNS: list[tuple[str, str]] = [
     (r"(?i)\bGreen\s+Building\b", "Green Building reference"),
 ]
 
-# Unresolved editorial placeholders
-# These indicate the spec isn't ready for issue — someone needs to fill in
-# project-specific information or make a selection.
 PLACEHOLDER_PATTERNS: list[tuple[str, str]] = [
     (r"\[\s*INSERT[^\]]*\]", "INSERT placeholder"),
     (r"\[\s*VERIFY[^\]]*\]", "VERIFY placeholder"),
@@ -92,32 +86,11 @@ PLACEHOLDER_PATTERNS: list[tuple[str, str]] = [
 # Detection Functions
 # -----------------------------------------------------------------------------
 def _find_matches(patterns: Iterable[tuple[str, str]], content: str, filename: str, max_matches: int) -> list[dict]:
-    """
-    Find all matches for a set of regex patterns in content.
-    
-    Scans content for each pattern and builds alert dicts with context
-    windows around each match. Stops early if max_matches is reached
-    to prevent runaway output on pathological documents.
-    
-    Args:
-        patterns: Iterable of (regex_pattern, description) tuples
-        content: Text to search
-        filename: Source filename for alert attribution
-        max_matches: Maximum alerts to return (prevents flooding)
-        
-    Returns:
-        List of alert dicts, each containing:
-            - filename: Source file
-            - type: Pattern description
-            - match: Matched text
-            - context: ~120 char window (60 before + match + 60 after)
-            - position: Character offset
-    """
+    """Find all matches for a set of regex patterns in content."""
     alerts: list[dict] = []
     for pattern, description in patterns:
         try:
             for match in re.finditer(pattern, content):
-                # Context window
                 start = max(0, match.start() - 60)
                 end = min(len(content), match.end() + 60)
                 ctx = content[start:end].replace("\n", " ").strip()
@@ -135,71 +108,22 @@ def _find_matches(patterns: Iterable[tuple[str, str]], content: str, filename: s
                 if len(alerts) >= max_matches:
                     return alerts
         except re.error:
-            # If a regex is bad, skip it rather than killing the run.
             continue
     return alerts
 
 
 def detect_leed_references(content: str, filename: str, max_matches: int = 50) -> list[dict]:
-    """
-    Detect LEED-related references in spec content.
-    
-    Searches for LEED, LEED-NC, LEED-CI, LEED-EB, USGBC, and "Green Building"
-    mentions. These are flagged because most K-12 DSA projects aren't LEED
-    certified, so references are typically copy/paste errors.
-    
-    Args:
-        content: Specification text to search
-        filename: Source filename for alert attribution
-        max_matches: Maximum alerts to return (default 50)
-        
-    Returns:
-        List of alert dicts with match details and context
-    """
+    """Detect LEED-related references in spec content."""
     return _find_matches(LEED_PATTERNS, content, filename, max_matches=max_matches)
 
 
 def detect_placeholders(content: str, filename: str, max_matches: int = 200) -> list[dict]:
-    """
-    Detect unresolved placeholders and editorial markers in spec content.
-    
-    Searches for common placeholder patterns like [INSERT...], [VERIFY...],
-    [TBD], underscores (___), and similar markers that indicate incomplete
-    specifications requiring attention before issue.
-    
-    Args:
-        content: Specification text to search
-        filename: Source filename for alert attribution
-        max_matches: Maximum alerts to return (default 200, higher than LEED
-                     because placeholder-heavy specs are common)
-        
-    Returns:
-        List of alert dicts with match details and context
-    """
+    """Detect unresolved placeholders and editorial markers in spec content."""
     return _find_matches(PLACEHOLDER_PATTERNS, content, filename, max_matches=max_matches)
 
 
 def preprocess_spec(content: str, filename: str) -> PreprocessResult:
-    """
-    Run all detection passes on a single specification.
-    
-    This is the main entry point for single-file preprocessing. Runs both
-    LEED and placeholder detection and returns combined results.
-    
-    Note: This function does NOT modify content. Detection only.
-    
-    Args:
-        content: Full text content of the specification
-        filename: Filename for alert attribution
-        
-    Returns:
-        PreprocessResult with leed_alerts and placeholder_alerts lists
-        
-    Example:
-        >>> result = preprocess_spec(spec_text, "23 05 00.docx")
-        >>> if result.placeholder_alerts:
-        ...     print("Warning: unresolved placeholders found")
-    """
+    """Run all detection passes on a single specification."""
     return PreprocessResult(
         leed_alerts=detect_leed_references(content, filename),
         placeholder_alerts=detect_placeholders(content, filename),
@@ -207,29 +131,7 @@ def preprocess_spec(content: str, filename: str) -> PreprocessResult:
 
 
 def preprocess_specs(specs: list[tuple[str, str]]) -> tuple[list[PreprocessResult], dict]:
-    """
-    Process multiple specs and return per-spec results plus aggregate summary.
-    
-    Convenience function for batch processing. Returns both individual results
-    (for per-file reporting) and a summary dict (for aggregate counts).
-    
-    Args:
-        specs: List of (filename, content) tuples
-        
-    Returns:
-        Tuple of:
-            - List of PreprocessResult objects (one per input spec)
-            - Summary dict with keys:
-                - leed_alert_count: Total LEED alerts across all specs
-                - placeholder_alert_count: Total placeholder alerts
-                - all_leed_alerts: Flat list of all LEED alerts
-                - all_placeholder_alerts: Flat list of all placeholder alerts
-                
-    Example:
-        >>> specs = [("spec1.docx", text1), ("spec2.docx", text2)]
-        >>> results, summary = preprocess_specs(specs)
-        >>> print(f"Total placeholders: {summary['placeholder_alert_count']}")
-    """
+    """Process multiple specs and return per-spec results plus aggregate summary."""
     results: list[PreprocessResult] = []
     all_leed: list[dict] = []
     all_ph: list[dict] = []
