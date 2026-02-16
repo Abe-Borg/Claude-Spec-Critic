@@ -1,7 +1,7 @@
 """
 Custom widgets for MEP Spec Review GUI.
 
-Contains: TokenGauge, FileListPanel, EnhancedLog, StreamingPanel,
+Contains: TokenGauge, FileListPanel, EnhancedLog,
 AnimatedButton, ReportPanel.
 """
 import json
@@ -37,7 +37,6 @@ COLORS = {
     "high": "#F97316",
     "medium": "#EAB308",
     "gripe": "#A855F7",
-    "streaming": "#10B981",
 }
 
 SEVERITY_COLORS = {
@@ -67,7 +66,6 @@ ANIM = {
     "pulse_interval": 1500,
     "expand_duration": 200,
     "expand_steps": 10,
-    "cursor_blink": 530,
 }
 
 
@@ -114,7 +112,7 @@ class TokenGauge(ctk.CTkFrame):
         self.header_frame.pack(fill="x", padx=16, pady=(12, 8))
         self.header_frame.bind("<Button-1>", self._toggle)
 
-        self.expand_label = ctk.CTkLabel(self.header_frame, text="▼", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"], width=20)
+        self.expand_label = ctk.CTkLabel(self.header_frame, text="\u25bc", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"], width=20)
         self.expand_label.pack(side="left")
         self.expand_label.bind("<Button-1>", self._toggle)
 
@@ -122,7 +120,7 @@ class TokenGauge(ctk.CTkFrame):
         self.title_label.pack(side="left", padx=(4, 0))
         self.title_label.bind("<Button-1>", self._toggle)
 
-        self.count_label = ctk.CTkLabel(self.header_frame, text=f"— / {max_tokens:,}", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_secondary"])
+        self.count_label = ctk.CTkLabel(self.header_frame, text=f"\u2014 / {max_tokens:,}", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_secondary"])
         self.count_label.pack(side="right")
         self.count_label.bind("<Button-1>", self._toggle)
 
@@ -144,12 +142,12 @@ class TokenGauge(ctk.CTkFrame):
 
     def expand(self):
         self._expanded = True
-        self.expand_label.configure(text="▼")
+        self.expand_label.configure(text="\u25bc")
         self.content_container.pack(fill="x")
 
     def collapse(self):
         self._expanded = False
-        self.expand_label.configure(text="▶")
+        self.expand_label.configure(text="\u25b6")
         self.content_container.pack_forget()
 
     def update_gauge(self, tokens, file_count=0):
@@ -159,13 +157,13 @@ class TokenGauge(ctk.CTkFrame):
         self.is_over_limit = raw_pct > 1.0
         self.count_label.configure(text=f"{tokens:,} / {self.max_tokens:,}")
         if raw_pct > 1.0:
-            self._target_color, status, sc = COLORS["error"], "⚠ Capacity Exceeded!", COLORS["error"]
+            self._target_color, status, sc = COLORS["error"], "\u26a0 Capacity Exceeded!", COLORS["error"]
         elif raw_pct > 0.9:
-            self._target_color, status, sc = COLORS["warning"], f"⚠ {raw_pct*100:.0f}% — Approaching limit", COLORS["warning"]
+            self._target_color, status, sc = COLORS["warning"], f"\u26a0 {raw_pct*100:.0f}% \u2014 Approaching limit", COLORS["warning"]
         elif raw_pct > 0.7:
-            self._target_color, status, sc = COLORS["warning"], f"✓ {raw_pct*100:.0f}% — {file_count} files ready", COLORS["text_secondary"]
+            self._target_color, status, sc = COLORS["warning"], f"\u2713 {raw_pct*100:.0f}% \u2014 {file_count} files ready", COLORS["text_secondary"]
         else:
-            self._target_color, status, sc = COLORS["success"], f"✓ {raw_pct*100:.0f}% — {file_count} files ready", COLORS["text_secondary"]
+            self._target_color, status, sc = COLORS["success"], f"\u2713 {raw_pct*100:.0f}% \u2014 {file_count} files ready", COLORS["text_secondary"]
         self.status_label.configure(text=status, text_color=sc)
         if not self._animating:
             self._animating = True
@@ -192,7 +190,7 @@ class TokenGauge(ctk.CTkFrame):
     def reset(self):
         self.token_count = 0
         self._target_pct = self._current_pct = 0.0
-        self.count_label.configure(text=f"— / {self.max_tokens:,}")
+        self.count_label.configure(text=f"\u2014 / {self.max_tokens:,}")
         self.progress_bar.configure(width=0, fg_color=COLORS["accent"])
         self.status_label.configure(text="Select specs to analyze token usage", text_color=COLORS["text_muted"])
 
@@ -216,7 +214,7 @@ class FileListPanel(ctk.CTkFrame):
         self.header.pack(fill="x", padx=16, pady=12)
         self.header.bind("<Button-1>", self._toggle)
 
-        self.expand_label = ctk.CTkLabel(self.header, text="▶", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"], width=20)
+        self.expand_label = ctk.CTkLabel(self.header, text="\u25b6", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"], width=20)
         self.expand_label.pack(side="left")
         self.expand_label.bind("<Button-1>", self._toggle)
 
@@ -258,7 +256,7 @@ class FileListPanel(ctk.CTkFrame):
         else:
             self.pack(fill="x", pady=(16, 0))
         self._expanded = False
-        self.expand_label.configure(text="▶")
+        self.expand_label.configure(text="\u25b6")
 
     def get_selected_files(self): return [d["path"] for d in self._file_data if d["var"].get()]
     def get_selected_count(self): return sum(1 for d in self._file_data if d["var"].get())
@@ -282,9 +280,9 @@ class FileListPanel(ctk.CTkFrame):
         if self._animating: return
         self.collapse() if self._expanded else self.expand()
     def expand(self):
-        self._expanded = True; self.expand_label.configure(text="▼"); self.content_container.pack(fill="x")
+        self._expanded = True; self.expand_label.configure(text="\u25bc"); self.content_container.pack(fill="x")
     def collapse(self):
-        self._expanded = False; self.expand_label.configure(text="▶"); self.content_container.pack_forget()
+        self._expanded = False; self.expand_label.configure(text="\u25b6"); self.content_container.pack_forget()
 
     def set_over_limit(self, over):
         if over == self._is_over_limit: return
@@ -325,7 +323,7 @@ class EnhancedLog(ctk.CTkFrame):
         self.header.pack_propagate(False)
         self.header.bind("<Button-1>", self._toggle)
 
-        self.expand_label = ctk.CTkLabel(self.header, text="▼", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"], width=20)
+        self.expand_label = ctk.CTkLabel(self.header, text="\u25bc", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"], width=20)
         self.expand_label.pack(side="left")
         self.expand_label.bind("<Button-1>", self._toggle)
         ctk.CTkLabel(self.header, text="ACTIVITY LOG", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(side="left", padx=(4, 0))
@@ -340,9 +338,9 @@ class EnhancedLog(ctk.CTkFrame):
     def _toggle(self, event=None):
         self.collapse() if self._expanded else self.expand()
     def expand(self):
-        self._expanded = True; self.expand_label.configure(text="▼"); self.content_container.pack(fill="both", expand=True)
+        self._expanded = True; self.expand_label.configure(text="\u25bc"); self.content_container.pack(fill="both", expand=True)
     def collapse(self):
-        self._expanded = False; self.expand_label.configure(text="▶"); self.content_container.pack_forget()
+        self._expanded = False; self.expand_label.configure(text="\u25b6"); self.content_container.pack_forget()
 
     def _queue_log(self, msg, level, ts, delay):
         self._log_queue.append((msg, level, ts, delay))
@@ -373,76 +371,11 @@ class EnhancedLog(ctk.CTkFrame):
         for e in self.entries: e.destroy()
         self.entries.clear()
 
-    def log_step(self, msg): self._queue_log(f"▸ {msg}", "step", True, ANIM["log_status_delay"])
-    def log_success(self, msg): self._queue_log(f"✓ {msg}", "success", True, ANIM["log_status_delay"])
-    def log_warning(self, msg): self._queue_log(f"⚠ {msg}", "warning", True, ANIM["log_status_delay"])
-    def log_error(self, msg): self._queue_log(f"✗ {msg}", "error", True, ANIM["log_status_delay"])
-    def log_file(self, fn): self._queue_log(f"  → {fn}", "file", False, ANIM["log_file_delay"])
-
-
-# ============================================================================
-# STREAMING PANEL
-# ============================================================================
-
-class StreamingPanel(ctk.CTkFrame):
-    def __init__(self, master, **kwargs):
-        super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
-        self._streaming = False
-        self._full_text = ""
-        self._cursor_visible = True
-        self._cursor_job = None
-
-        hdr = ctk.CTkFrame(self, fg_color="transparent")
-        hdr.pack(fill="x", padx=16, pady=(12, 8))
-        self.indicator = ctk.CTkLabel(hdr, text="●", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["streaming"], width=20)
-        self.indicator.pack(side="left")
-        ctk.CTkLabel(hdr, text="CLAUDE'S ANALYSIS", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(side="left", padx=(4, 0))
-        self.status_label = ctk.CTkLabel(hdr, text="", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_muted"])
-        self.status_label.pack(side="right")
-
-        cf = ctk.CTkFrame(self, fg_color=COLORS["bg_input"], corner_radius=4)
-        cf.pack(fill="both", expand=True, padx=16, pady=(0, 12))
-        self.content_text = ctk.CTkTextbox(cf, font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_primary"], fg_color="transparent", wrap="word", height=120, activate_scrollbars=True)
-        self.content_text.pack(fill="both", expand=True, padx=12, pady=12)
-        self.pack_forget()
-
-    def start_streaming(self, before_widget=None):
-        self._streaming = True; self._full_text = ""
-        self.content_text.configure(state="normal"); self.content_text.delete("1.0", "end")
-        self.status_label.configure(text="streaming...", text_color=COLORS["streaming"])
-        self.indicator.configure(text_color=COLORS["streaming"])
-        self.pack(fill="x", pady=(16, 0), before=before_widget) if before_widget else self.pack(fill="x", pady=(16, 0))
-        self._cursor_visible = True; self._animate_cursor()
-
-    def _animate_cursor(self):
-        if not self._streaming: self.indicator.configure(text_color=COLORS["success"]); return
-        self.indicator.configure(text_color=COLORS["streaming"] if self._cursor_visible else COLORS["bg_card"])
-        self._cursor_visible = not self._cursor_visible
-        self._cursor_job = self.after(ANIM["cursor_blink"], self._animate_cursor)
-
-    def append_text(self, chunk):
-        if not self._streaming: return
-        self._full_text += chunk; self.content_text.insert("end", chunk); self.content_text.see("end")
-
-    def finish_streaming(self):
-        self._streaming = False
-        if self._cursor_job: self.after_cancel(self._cursor_job); self._cursor_job = None
-        self.status_label.configure(text="complete", text_color=COLORS["success"])
-        self.indicator.configure(text_color=COLORS["success"])
-        self.content_text.configure(state="disabled")
-
-    def get_full_text(self): return self._full_text
-
-    def hide(self):
-        self._streaming = False
-        if self._cursor_job: self.after_cancel(self._cursor_job); self._cursor_job = None
-        self.pack_forget()
-
-    def clear(self):
-        self._streaming = False; self._full_text = ""
-        if self._cursor_job: self.after_cancel(self._cursor_job); self._cursor_job = None
-        self.content_text.configure(state="normal"); self.content_text.delete("1.0", "end")
-        self.status_label.configure(text=""); self.pack_forget()
+    def log_step(self, msg): self._queue_log(f"\u25b8 {msg}", "step", True, ANIM["log_status_delay"])
+    def log_success(self, msg): self._queue_log(f"\u2713 {msg}", "success", True, ANIM["log_status_delay"])
+    def log_warning(self, msg): self._queue_log(f"\u26a0 {msg}", "warning", True, ANIM["log_status_delay"])
+    def log_error(self, msg): self._queue_log(f"\u2717 {msg}", "error", True, ANIM["log_status_delay"])
+    def log_file(self, fn): self._queue_log(f"  \u2192 {fn}", "file", False, ANIM["log_file_delay"])
 
 
 # ============================================================================
@@ -473,7 +406,7 @@ class AnimatedButton(ctk.CTkButton):
 
     def set_complete(self):
         self._pulse_active = False; self._state = "complete"
-        self.configure(text="✓ Complete", fg_color=COLORS["success"], hover_color=COLORS["success"], state="disabled")
+        self.configure(text="\u2713 Complete", fg_color=COLORS["success"], hover_color=COLORS["success"], state="disabled")
         self._glow_active = True; self._animate_glow(0)
 
     def _animate_glow(self, step):
@@ -492,8 +425,9 @@ class AnimatedButton(ctk.CTkButton):
 class ReportPanel(ctk.CTkFrame):
     """In-app report panel that renders findings, alerts, and analysis summary."""
 
-    def __init__(self, master, **kwargs):
+    def __init__(self, master, on_fullscreen=None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
+        self._on_fullscreen = on_fullscreen
         self.pack_forget()
 
     def show_report(self, result, files_reviewed, leed_alerts, placeholder_alerts):
@@ -504,6 +438,8 @@ class ReportPanel(ctk.CTkFrame):
         ebar = ctk.CTkFrame(self, fg_color="transparent")
         ebar.pack(fill="x", pady=(0, 12))
         btn_kw = {"width": 120, "height": 32, "font": ctk.CTkFont(size=12), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
+        if self._on_fullscreen:
+            ctk.CTkButton(ebar, text="\u26f6  Expand", command=self._on_fullscreen, **btn_kw).pack(side="left", padx=(0, 8))
         ctk.CTkButton(ebar, text="Export JSON", command=lambda: self._export_json(review, files_reviewed, leed_alerts, placeholder_alerts), **btn_kw).pack(side="left", padx=(0, 8))
         ctk.CTkButton(ebar, text="Copy Summary", command=lambda: self._copy_summary(review.thinking), **btn_kw).pack(side="left")
 
@@ -516,8 +452,8 @@ class ReportPanel(ctk.CTkFrame):
         hc.pack(fill="x", pady=(0, 12))
         hi = ctk.CTkFrame(hc, fg_color="transparent")
         hi.pack(fill="x", padx=16, pady=12)
-        ctk.CTkLabel(hi, text="M&P Specification Review Report", font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
-        ctk.CTkLabel(hi, text=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  •  Model: {review.model}  •  Files: {len(files_reviewed)}", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(hi, text="Spec Review Report", font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
+        ctk.CTkLabel(hi, text=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  \u2022  Model: {review.model}  \u2022  Files: {len(files_reviewed)}", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
 
         # Summary grid
         sc = ctk.CTkFrame(body, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -535,7 +471,7 @@ class ReportPanel(ctk.CTkFrame):
             ci.pack(padx=12, pady=10)
             ctk.CTkLabel(ci, text=str(count), font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"), text_color=color).pack()
             ctk.CTkLabel(ci, text=label.upper(), font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"), text_color=COLORS["text_muted"]).pack()
-        ctk.CTkLabel(si, text=f"Tokens: {review.input_tokens:,} in → {review.output_tokens:,} out  •  Time: {review.elapsed_seconds:.1f}s", font=ctk.CTkFont(family="Consolas", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(si, text=f"Tokens: {review.input_tokens:,} in \u2192 {review.output_tokens:,} out  \u2022  Time: {review.elapsed_seconds:.1f}s", font=ctk.CTkFont(family="Consolas", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
 
         # Alerts
         if leed_alerts or placeholder_alerts:
@@ -576,7 +512,7 @@ class ReportPanel(ctk.CTkFrame):
         inner.pack(fill="x", padx=16, pady=12)
         ctk.CTkLabel(inner, text="FINDINGS", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 8))
         if review.total_count == 0:
-            ctk.CTkLabel(inner, text="✓ No issues found", font=ctk.CTkFont(family="Segoe UI", size=14), text_color=COLORS["success"]).pack(pady=16)
+            ctk.CTkLabel(inner, text="\u2713 No issues found", font=ctk.CTkFont(family="Segoe UI", size=14), text_color=COLORS["success"]).pack(pady=16)
             return
         for sev in ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]:
             sf = [f for f in review.findings if f.severity == sev]

@@ -8,28 +8,16 @@ from pathlib import Path
 from typing import Optional
 import customtkinter as ctk
 
-if getattr(sys, 'frozen', False):
-    base_path = sys._MEIPASS
-    exe_dir = Path(sys.executable).parent
-else:
-    base_path = os.path.dirname(os.path.abspath(__file__))
-    exe_dir = Path(base_path).parent
-    sys.path.insert(0, str(Path(base_path).parent))
+base_path = os.path.dirname(os.path.abspath(__file__))
+exe_dir = Path(base_path).parent
+sys.path.insert(0, str(exe_dir))
 
-try:
-    from src.pipeline import run_review
-    from src.reviewer import MODEL_OPUS_46
-    from src.extractor import extract_text_from_docx
-    from src.tokenizer import RECOMMENDED_MAX
-    from src.prompts import get_system_prompt
-    from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, StreamingPanel, AnimatedButton, ReportPanel)
-except ImportError:
-    from pipeline import run_review
-    from reviewer import MODEL_OPUS_46
-    from extractor import extract_text_from_docx
-    from tokenizer import RECOMMENDED_MAX
-    from prompts import get_system_prompt
-    from widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, StreamingPanel, AnimatedButton, ReportPanel)
+from src.pipeline import run_review
+from src.reviewer import MODEL_OPUS_46
+from src.extractor import extract_text_from_docx
+from src.tokenizer import RECOMMENDED_MAX
+from src.prompts import get_system_prompt
+from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportPanel)
 
 API_KEY_FILENAME = "spec_critic_api_key.txt"
 
@@ -54,6 +42,7 @@ class SpecReviewApp(ctk.CTk):
         self.input_dir = None
         self._selected_individual_files = None
         self.is_processing = False
+        self._report_mode = False
         fk = load_api_key_from_file()
         ek = os.environ.get("ANTHROPIC_API_KEY", "")
         self.api_key = fk if fk else ek
@@ -62,11 +51,23 @@ class SpecReviewApp(ctk.CTk):
     def _create_ui(self):
         c = ctk.CTkFrame(self, fg_color="transparent")
         c.pack(fill="both", expand=True, padx=24, pady=24)
+        self.container = c
 
-        hdr = ctk.CTkFrame(c, fg_color="transparent")
-        hdr.pack(fill="x", pady=(0, 20))
-        ctk.CTkLabel(hdr, text="Mechanical & Plumbing Spec Review", font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
-        ctk.CTkLabel(hdr, text="California K-12 DSA Projects  \u2022  Claude Opus 4.6", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
+        # Report-mode toolbar (hidden by default)
+        self.report_toolbar = ctk.CTkFrame(c, fg_color="transparent")
+        ctk.CTkButton(
+            self.report_toolbar, text="\u2190  Back to Review", width=150, height=34,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["bg_card"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"], command=self._exit_report_mode
+        ).pack(side="left")
+
+        # Header
+        self.hdr = ctk.CTkFrame(c, fg_color="transparent")
+        self.hdr.pack(fill="x", pady=(0, 20))
+        ctk.CTkLabel(self.hdr, text="Mechanical & Plumbing Spec Review", font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
+        ctk.CTkLabel(self.hdr, text="California K-12 DSA Projects  \u2022  Claude Opus 4.6", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
         self._create_inputs_card(c)
         self.file_list_panel = FileListPanel(c, on_selection_change=self._on_file_selection_change, pack_after=self.inputs_card)
@@ -76,8 +77,7 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.pack(fill="x", pady=(16, 0))
         self.progress_bar = ctk.CTkProgressBar(c, height=4, corner_radius=2, fg_color=COLORS["bg_input"], progress_color=COLORS["accent"], indeterminate_speed=0.5)
         self.progress_bar.set(0)
-        self.streaming_panel = StreamingPanel(c)
-        self.report_panel = ReportPanel(c)
+        self.report_panel = ReportPanel(c, on_fullscreen=self._enter_report_mode)
         self.log = EnhancedLog(c)
         self.log.pack(fill="both", expand=True, pady=(16, 0))
 
@@ -177,12 +177,6 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.configure(state="normal" if (wl and fc > 0) else "disabled")
         self.file_list_panel.set_over_limit(not wl)
 
-    def _collapse_all_panels(self):
-        if self._inputs_expanded: self._toggle_inputs_card()
-        if self.file_list_panel._expanded: self.file_list_panel.collapse()
-        if self.token_gauge._expanded: self.token_gauge.collapse()
-        if self.log._expanded: self.log.collapse()
-
     def _validate_inputs(self):
         if not self.api_key_entry.get().strip(): self.log.log_error("API key is required"); return False
         if not self.input_dir_entry.get().strip(): self.log.log_error("Select a specs folder or individual files"); return False
@@ -200,7 +194,7 @@ class SpecReviewApp(ctk.CTk):
         if not self._validate_inputs(): return
         self._selected_files_for_review = self.file_list_panel.get_selected_files()
         self.is_processing = True
-        self.streaming_panel.clear(); self.report_panel.clear()
+        self.report_panel.clear()
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
         self.run_button.set_processing()
         self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
@@ -213,14 +207,7 @@ class SpecReviewApp(ctk.CTk):
         try:
             self.after(0, lambda: self.log.log_step("Starting review..."))
             self.after(0, lambda: self.log.log(f"Model: {MODEL_OPUS_46}", level="muted"))
-            stream_started = [False]
-            def stream_cb(chunk):
-                if not stream_started[0]:
-                    stream_started[0] = True
-                    self.after(0, lambda: self.streaming_panel.start_streaming(before_widget=self.log))
-                    self.after(0, lambda: self.log.log_step("Claude is analyzing..."))
-                    self.after(0, self._collapse_all_panels)
-                self.after(0, lambda c=chunk: self.streaming_panel.append_text(c))
+            self.after(0, lambda: self.log.log_step("Claude is analyzing..."))
 
             result = run_review(
                 input_dir=self.input_dir,
@@ -228,9 +215,7 @@ class SpecReviewApp(ctk.CTk):
                 dry_run=False, verbose=False,
                 log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
                 progress=lambda pct, msg: self.after(0, lambda m=msg: self.log.log_step(m)),
-                stream_callback=stream_cb,
             )
-            self.after(0, lambda: self.streaming_panel.finish_streaming())
             self.after(0, lambda: self._on_review_complete(result))
         except Exception as e:
             import traceback
@@ -244,18 +229,48 @@ class SpecReviewApp(ctk.CTk):
             rv = result.review_result
             self.log.log(f"Findings: {rv.critical_count} critical, {rv.high_count} high, {rv.medium_count} medium, {rv.gripe_count} gripes", level="info")
             self.log.log(f"Time: {rv.elapsed_seconds:.1f}s", level="muted")
+            # Collapse log so report gets maximum space
+            if self.log._expanded:
+                self.log.collapse()
             self.report_panel.show_report(result=rv, files_reviewed=result.files_reviewed, leed_alerts=result.leed_alerts, placeholder_alerts=result.placeholder_alerts)
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
 
     def _on_review_error(self, err):
         self.progress_bar.stop(); self.progress_bar.pack_forget()
-        self.streaming_panel.finish_streaming()
         self.log.log_error(f"Review failed: {err}")
         self.run_button.set_ready(); self.is_processing = False
 
     def _reset_ui(self):
         self.run_button.set_ready(); self.progress_bar.pack_forget(); self.is_processing = False
+
+    # ----- Report expand / collapse mode -----
+
+    def _enter_report_mode(self):
+        """Hide all input panels so the report fills the entire window."""
+        self._report_mode = True
+        self.hdr.pack_forget()
+        self.inputs_card.pack_forget()
+        self.file_list_panel.pack_forget()
+        self.token_gauge.pack_forget()
+        self.run_button.pack_forget()
+        self.progress_bar.pack_forget()
+        self.log.pack_forget()
+        self.report_toolbar.pack(fill="x", pady=(0, 8), before=self.report_panel)
+
+    def _exit_report_mode(self):
+        """Restore all input panels, keep report visible below."""
+        self._report_mode = False
+        self.report_toolbar.pack_forget()
+        # Re-pack all widgets in original order
+        self.hdr.pack(fill="x", pady=(0, 20))
+        self.inputs_card.pack(fill="x")
+        if self.file_list_panel._file_data:
+            self.file_list_panel.pack(fill="x", pady=(16, 0), after=self.inputs_card)
+        self.token_gauge.pack(fill="x", pady=(16, 0))
+        self.run_button.pack(fill="x", pady=(16, 0))
+        # Log stays collapsed so report keeps space
+        self.log.pack(fill="x", pady=(16, 0))
 
 
 def main():

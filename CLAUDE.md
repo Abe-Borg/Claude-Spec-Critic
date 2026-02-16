@@ -1,78 +1,77 @@
 # CLAUDE.md
 
-This file provides guidance for AI assistants working on the **MEP Spec Review** codebase (Claude-Spec-Critic).
+This file provides guidance for AI assistants working on the **MEP Spec Review** codebase.
 
 ## Project Overview
 
-MEP Spec Review is a GUI tool for reviewing Mechanical, Electrical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.5 for AI-powered analysis of `.docx` specification files and produces Word report + JSON artifacts.
+MEP Spec Review is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.6 for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
 
-- **Version**: 0.5.0
-- **Python**: >= 3.10 (uses `X | Y` union type syntax)
-- **Model**: Claude Opus 4.5 (`claude-opus-4-5-20251101`), hardcoded — no model selection flags
+- **Version**: 1.0.0
+- **Python**: >= 3.11 (uses `X | Y` union type syntax)
+- **Model**: Claude Opus 4.6 (`claude-opus-4-6`), hardcoded — no model selection flags
+- **Output**: In-app only. No files are written during a review. The only file output is the optional Export JSON button.
 
 ## Repository Structure
 
 ```
-Claude-Spec-Critic/
-├── gui.py                   # CustomTkinter GUI application (~1,850 lines)
+spec-review/
+├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("0.5.0")
+│   ├── __init__.py          # Package version ("1.0.0")
+│   ├── gui.py               # CustomTkinter app window, input handling, threading
+│   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
+│   │                        #   EnhancedLog, AnimatedButton, ReportPanel)
 │   ├── pipeline.py          # SINGLE SOURCE OF TRUTH for review workflow
 │   ├── extractor.py         # .docx text extraction (paragraphs + tables)
 │   ├── preprocessor.py      # Local LEED/placeholder detection (NOT sent to LLM)
 │   ├── tokenizer.py         # tiktoken-based token counting + limit enforcement
 │   ├── prompts.py           # System prompt and user message construction
-│   ├── reviewer.py          # Anthropic API client with streaming + retry logic
-│   └── report.py            # Word document (.docx) report generation
+│   └── reviewer.py          # Anthropic API client with streaming + retry logic
 ├── pyproject.toml           # Modern Python packaging config
-├── requirements.txt         # Pinned dependency versions (pip freeze output)
-├── build.bat                # Windows PyInstaller build script
-├── spec-review.spec         # PyInstaller config → MEP-Spec-Review.exe
-├── .gitignore               # Excludes output/, specs/, venv/, build/, dist/
-└── README.md                # Full documentation (~440 lines)
+├── .gitignore               # Excludes specs/, venv/, build/, dist/
+└── README.md                # User-facing documentation
 ```
 
 ## Architecture
 
 ### Core Design Principle
 
-`pipeline.py` is the **single source of truth** for the review workflow. The GUI (`gui.py`) calls `pipeline.run_review()`. Never duplicate pipeline logic in the GUI module.
+`pipeline.py` is the **single source of truth** for the review workflow. The GUI (`gui.py`) calls `pipeline.run_review()` and receives a `PipelineResult` containing all data needed to render the in-app report. Never duplicate pipeline logic in the GUI module.
 
 ### Pipeline Stages (in order)
 
-1. Create timestamped output directory (`review_YYYY-MM-DD_HHMMSS/`)
-2. Extract text from `.docx` files → `ExtractedSpec` objects
-3. Detect LEED references and placeholders locally (regex, not sent to LLM)
-4. Analyze token usage with system prompt
-5. Enforce 150k token limit (hard stop, no silent truncation)
-6. Combine specs with `===== FILE:` header delimiters
-7. Stream API call to Claude Opus 4.5
-8. Parse JSON findings + analysis summary from response
-9. Generate Word report organized by severity
-10. Write all artifacts to output directory
-
-### Output Artifacts
-
-Each run produces a timestamped directory containing:
-- `report.docx` — Human-readable findings
-- `findings.json` — Machine-readable findings + metadata
-- `raw_response.txt` — Raw Claude response (for debugging)
-- `inputs_combined.txt` — Exact text sent to API (reproducibility)
-- `token_summary.json` — Token breakdown by file
-- `error.txt` — Only if run failed
+1. Extract text from `.docx` files → `ExtractedSpec` objects
+2. Detect LEED references and placeholders locally (regex, not sent to LLM)
+3. Combine specs with `===== FILE:` header delimiters
+4. Enforce 150k token limit (hard stop, no silent truncation)
+5. Stream API call to Claude Opus 4.6
+6. Parse JSON findings + analysis summary from response
+7. Return `PipelineResult` to GUI for in-app rendering
 
 ### Module Responsibilities
 
 | Module | Responsibility |
 |--------|---------------|
-| `pipeline.py` | Orchestration — ties all modules together |
+| `gui.py` | App window, input handling, threading, review orchestration, report expand/collapse mode |
+| `widgets.py` | All custom CustomTkinter widgets with animations |
+| `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult` |
 | `extractor.py` | `.docx` → plain text (paragraphs + tables) |
 | `preprocessor.py` | Local regex detection of LEED refs and placeholders |
 | `tokenizer.py` | Token counting (tiktoken cl100k_base) + limit enforcement |
 | `prompts.py` | System prompt with personality + severity definitions |
-| `reviewer.py` | Anthropic API streaming client with retry logic |
-| `report.py` | Word document generation with color-coded findings |
-| `gui.py` | CustomTkinter GUI with animations and real-time streaming |
+| `reviewer.py` | Anthropic API streaming client with retry logic + JSON parsing |
+
+### Data Flow
+
+```
+.docx files
+    → extractor.py (text extraction)
+    → preprocessor.py (LEED/placeholder detection, local only)
+    → tokenizer.py (token counting, limit check)
+    → reviewer.py (streaming API call to Claude Opus 4.6)
+    → pipeline.py (orchestration, returns PipelineResult)
+    → gui.py (renders ReportPanel with findings)
+```
 
 ### Data Flow Classes
 
@@ -81,7 +80,7 @@ Each run produces a timestamped directory containing:
 - `TokenCount` / `TokenSummary` — per-file and total token analysis (from tokenizer)
 - `Finding` — severity, fileName, section, issue, actionType, etc. (from reviewer)
 - `ReviewResult` — findings, raw_response, thinking, model, tokens, etc. (from reviewer)
-- `PipelineOutputs` — all output paths and metadata (from pipeline)
+- `PipelineResult` — review_result, files_reviewed, leed/placeholder alerts (from pipeline)
 
 All data containers use `@dataclass` decorators.
 
@@ -90,26 +89,12 @@ All data containers use `@dataclass` decorators.
 - **Max context**: 200,000 tokens (hard)
 - **Recommended max input**: 150,000 tokens (enforced)
 - **Safety buffer**: 50,000 tokens (for system prompt ~2-3k, max output 32,768, tokenizer variance)
-- **Warning levels**: CRITICAL (>200k), WARNING (>150k), NOTE (>120k)
+- **Warning levels**: CRITICAL (>200k), WARNING (>150k), NOTE (>80% of 150k)
 
-## Entry Points
+## Entry Point
 
-### GUI
 ```bash
-python gui.py
-# OR
-python -m src.gui
-```
-
-### PyInstaller executable
-```bash
-# Build
-pyinstaller spec-review.spec --clean --noconfirm
-# OR
-build.bat
-
-# Run
-dist/MEP-Spec-Review.exe
+python main.py
 ```
 
 ## Dependencies
@@ -117,24 +102,19 @@ dist/MEP-Spec-Review.exe
 ### Core (from pyproject.toml)
 - `anthropic` — Claude API client with streaming
 - `customtkinter` — Modern dark-theme GUI toolkit
-- `python-docx` — Word document read/write
+- `python-docx` — Word document reading
 - `tiktoken` — Token counting (cl100k_base encoding)
-
-### Build
-- `pyinstaller` — Standalone executable packaging
 
 ### Install
 ```bash
-pip install -r requirements.txt
-# OR for editable development install:
 pip install -e .
 ```
 
 ## API Key Configuration
 
 The Anthropic API key is resolved in this order:
-1. Environment variable: `ANTHROPIC_API_KEY`
-2. File: `spec_critic_api_key.txt` (next to executable or in project root)
+1. File: `spec_critic_api_key.txt` (in project root)
+2. Environment variable: `ANTHROPIC_API_KEY`
 3. Manual entry via GUI dialog
 
 ## Code Conventions
@@ -155,8 +135,7 @@ Google-style docstrings with `Args:`, `Returns:`, `Raises:`, `Example:` sections
 ### Callback Pattern
 The pipeline uses callback injection for decoupling from UI:
 - `LogFn = Callable[[str], None]` — log messages
-- `ProgressFn = Callable[[str, int], None]` — progress updates
-- `StreamCallback = Callable[[str], None]` — streaming text chunks
+- `ProgressFn = Callable[[float, str], None]` — progress updates
 
 ### Error Handling
 - Early validation with `FileNotFoundError` / `ValueError`
@@ -201,24 +180,29 @@ Findings are classified into four severity tiers:
 
 ## GUI Architecture
 
-The GUI (`gui.py`) uses CustomTkinter with a dark theme and these custom widgets:
+The GUI uses CustomTkinter with a dark theme. All custom widgets live in `widgets.py`:
 - `TokenGauge` — Animated fill gauge showing token capacity usage
 - `FileListPanel` — Checkbox list with per-file token counts
 - `EnhancedLog` — Scrollable log with paced entries and animations
-- `StreamingPanel` — Real-time display of Claude's streaming response
 - `AnimatedButton` — Run button with pulse/glow animations
+- `ReportPanel` — In-app report with summary grid, alerts, severity-colored finding cards, reviewer's notes, Expand button, Export JSON, and Copy Summary
+
+### Report Expand Mode
+
+After a review completes, the activity log auto-collapses and the report renders below the input panels. The user can click **Expand** in the report toolbar to enter full-screen report mode, which hides all input panels (header, inputs card, file list, token gauge, run button, log) and lets the report fill the entire window. A **← Back to Review** button restores the normal layout.
 
 All heavy operations (folder analysis, API calls) run in background threads. GUI updates are scheduled via `after()` to stay on the main thread.
 
 ## Important Patterns to Preserve
 
 1. **Pipeline is the single source of truth** — Do not add workflow logic to `gui.py`. All review logic goes through `pipeline.run_review()`.
-2. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM. They are detected locally and added directly to the report.
-3. **Token limits are enforced before API calls** — Never allow API calls that exceed the 150k recommended limit.
-4. **Streaming is the default** — The reviewer always streams responses. The `stream_callback` parameter enables real-time display.
-5. **No model selection** — Claude Opus 4.5 is hardcoded. There are no flags to change models.
-6. **All output goes to timestamped directories** — Never overwrite previous results.
-7. **The `output/` and `specs/` directories are gitignored** — User data never enters version control.
+2. **No file output** — All results render in-app. The only file output is the optional Export JSON button.
+3. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM. They are detected locally and displayed as alerts in the ReportPanel.
+4. **Token limits are enforced before API calls** — Never allow API calls that exceed the 150k recommended limit.
+5. **Streaming is used internally** — The reviewer always streams responses from the API. Streaming chunks are not displayed to the user; the complete response is parsed and rendered in the ReportPanel when finished.
+6. **No model selection** — Claude Opus 4.6 is hardcoded. There are no flags to change models.
+7. **No document mutation** — This tool only analyzes specs. Document cleanup belongs in the separate SpecCleanse tool.
+8. **Advisory only** — This tool assists human reviewers. It is not an AHJ substitute.
 
 ## Common Development Tasks
 
@@ -226,27 +210,17 @@ All heavy operations (folder analysis, API calls) run in background threads. GUI
 1. Update the `Finding` dataclass in `reviewer.py`
 2. Update JSON parsing in `reviewer._parse_findings()`
 3. Update the prompt schema in `prompts.py`
-4. Update report rendering in `report.py`
-5. Update `findings.json` output in `pipeline.py`
+4. Update card rendering in `widgets.py` `ReportPanel._render_card()`
 
 ### Adding a new preprocessor check
 1. Add detection function in `preprocessor.py` (follow `detect_leed_references` pattern)
 2. Add results to `PreprocessResult` dataclass
 3. Wire into `preprocess_spec()` / `preprocess_specs()`
-4. Add alerts section rendering in `report.py`
+4. Add alerts rendering in `widgets.py` `ReportPanel._render_alerts()`
 5. Update summary stats in `pipeline.py`
 
 ### Modifying the system prompt
 Edit `prompts.py`. The system prompt defines the reviewer personality, severity definitions, and expected output format (narrative + JSON array). Changes here affect all review behavior.
-
-### Building the executable
-```bash
-# Windows only
-build.bat
-# OR
-pyinstaller spec-review.spec --clean --noconfirm
-```
-Output: `dist/MEP-Spec-Review.exe`
 
 ## Testing
 
@@ -254,12 +228,11 @@ There is no formal test suite. Validation approaches:
 - **Dry-run mode**: `dry_run=True` parameter skips the API call but exercises all other pipeline stages
 - **Verbose mode**: `verbose=True` parameter outputs detailed logs for debugging
 - **Modular design**: Each module is independently importable and testable
-- **Callback injection**: Log/progress/stream callbacks can be replaced with test harnesses
+- **Callback injection**: Log/progress callbacks can be replaced with test harnesses
 
 ## Files to Never Commit
 
-- `output/` — Contains user review results
 - `specs/` — Contains user specification files
 - `spec_critic_api_key.txt` — Contains API credentials
 - `.env` files — May contain secrets
-- `build/`, `dist/` — Build artifacts
+- `build/`, `dist/` — Build artifacts (if any)
