@@ -248,7 +248,7 @@ customtkinter      # Modern themed Tkinter widgets
 
 **Copyright © 2025 Abraham Borg. All Rights Reserved.**
 
-This software and associated documentation files (the "Software") are the proprietary property of Andrew Gossman. 
+This software and associated documentation files (the "Software") are the proprietary property of Abraham Borg. 
 
 **Unauthorized copying, modification, distribution, or use of this Software, via any medium, is strictly prohibited without express written permission from the copyright holder.**
 
