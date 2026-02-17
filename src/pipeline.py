@@ -5,7 +5,7 @@ This module is the SINGLE SOURCE OF TRUTH for the review workflow.
 The GUI calls run_review() and receives a PipelineResult containing
 all data needed to render the in-app report.
 
-v1.0.0 — All output is in-app. No files emitted.
+v1.1.0 — All output is in-app. No files emitted.
 
 Pipeline stages:
     1. Extract text from .docx files (extractor.py)
@@ -180,6 +180,7 @@ def run_review(
     progress(55.0, "Calling Opus 4.6...")
     review_result = review_specs(
         combined_content=combined,
+        file_count=len(specs),
         verbose=verbose,
         stream_callback=stream_callback,
     )

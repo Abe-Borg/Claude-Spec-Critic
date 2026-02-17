@@ -6,7 +6,7 @@ This file provides guidance for AI assistants working on the **MEP Spec Review**
 
 MEP Spec Review is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.6 for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
 
-- **Version**: 1.0.0
+- **Version**: 1.1.0
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
 - **Model**: Claude Opus 4.6 (`claude-opus-4-6`), hardcoded — no model selection flags
 - **Output**: In-app only. No files are written during a review. The only file output is the optional Export JSON button.
@@ -17,10 +17,10 @@ MEP Spec Review is a GUI tool for reviewing Mechanical & Plumbing specifications
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.0.0")
+│   ├── __init__.py          # Package version ("1.1.0")
 │   ├── gui.py               # CustomTkinter app window, input handling, threading
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
-│   │                        #   EnhancedLog, AnimatedButton, ReportPanel)
+│   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py          # SINGLE SOURCE OF TRUTH for review workflow
 │   ├── extractor.py         # .docx text extraction (paragraphs + tables)
 │   ├── preprocessor.py      # Local LEED/placeholder detection (NOT sent to LLM)
@@ -52,13 +52,13 @@ spec-review/
 
 | Module | Responsibility |
 |--------|---------------|
-| `gui.py` | App window, input handling, threading, review orchestration, report expand/collapse mode |
-| `widgets.py` | All custom CustomTkinter widgets with animations |
+| `gui.py` | App window, input handling, threading, review orchestration, report expand/collapse mode, pop-out report window lifecycle |
+| `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel |
 | `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult` |
 | `extractor.py` | `.docx` → plain text (paragraphs + tables) |
 | `preprocessor.py` | Local regex detection of LEED refs and placeholders |
 | `tokenizer.py` | Token counting (tiktoken cl100k_base) + limit enforcement |
-| `prompts.py` | System prompt with personality + severity definitions |
+| `prompts.py` | XML-structured system prompt with parameterized code cycle + enriched user message |
 | `reviewer.py` | Anthropic API streaming client with retry logic + JSON parsing |
 
 ### Data Flow
@@ -70,7 +70,7 @@ spec-review/
     → tokenizer.py (token counting, limit check)
     → reviewer.py (streaming API call to Claude Opus 4.6)
     → pipeline.py (orchestration, returns PipelineResult)
-    → gui.py (renders ReportPanel with findings)
+    → gui.py (renders ReportPanel + opens ReportWindow)
 ```
 
 ### Data Flow Classes
@@ -83,6 +83,47 @@ spec-review/
 - `PipelineResult` — review_result, files_reviewed, leed/placeholder alerts (from pipeline)
 
 All data containers use `@dataclass` decorators.
+
+## Prompt Architecture
+
+### System Prompt (`prompts.py`)
+
+The system prompt uses XML-tagged sections for clear structural hierarchy:
+
+| Section | Purpose |
+|---------|---------|
+| `<task>` | Core instruction: review specs, classify findings |
+| `<personality>` | Tone calibration with three example ranges + narrative budget (2-4 paragraphs) |
+| `<severity_definitions>` | CRITICAL / HIGH / MEDIUM / GRIPES with concrete examples |
+| `<review_priorities>` | Three-tier weighted checklist (Tier 1 = always check, Tier 3 = when relevant) |
+| `<what_not_to_flag>` | LEED, placeholders, low-confidence hunches |
+| `<confidence_guidance>` | High/moderate/low spectrum (not binary flag-or-skip) |
+| `<edge_cases>` | Single spec, non-MEP only, very short specs, mixed disciplines |
+| `<duplicate_issues>` | Consolidation rule for repeated problems |
+| `<file_delimiters>` | How input files are separated |
+| `<output_format>` | JSON schema + examples showing ADD, EDIT, and DELETE action types |
+| `<critical_checks>` | Five mandatory verification steps |
+
+### Code Cycle Parameters
+
+Code references are parameterized at the top of `prompts.py`:
+
+```python
+CURRENT_CBC = "2025"
+CURRENT_ASCE7 = "7-22"
+PREVIOUS_CBC = "2022"
+PREVIOUS_ASCE7 = "7-16"
+```
+
+When California adopts a new code cycle, update these constants. All references in the system prompt and user message update automatically via f-string interpolation.
+
+### User Message
+
+The user message (`get_user_message`) reinforces key behaviors at the end of the context (recency bias = stronger influence):
+- States the current code cycle explicitly
+- Reminds about output format (summary + JSON, no code fences)
+- Reminds about confidence handling
+- Includes file count for context
 
 ## Token Limits
 
@@ -185,11 +226,29 @@ The GUI uses CustomTkinter with a dark theme. All custom widgets live in `widget
 - `FileListPanel` — Checkbox list with per-file token counts
 - `EnhancedLog` — Scrollable log with paced entries and animations
 - `AnimatedButton` — Run button with pulse/glow animations
-- `ReportPanel` — In-app report with summary grid, alerts, severity-colored finding cards, reviewer's notes, Expand button, Export JSON, and Copy Summary
+- `ReportPanel` — In-app report with summary grid, alerts, collapsible severity-colored finding cards, reviewer's notes, Expand button, Export JSON, and Copy Summary
+- `ReportWindow` — Pop-out toplevel window with the full report (opens automatically on review completion)
+
+### Collapsible Finding Cards
+
+Each finding card has a clickable header row (severity badge + filename + section). Clicking the header toggles the card body (issue, existing/replacement text, code reference) between visible and collapsed. The findings section includes Collapse All / Expand All buttons for bulk toggling.
 
 ### Report Expand Mode
 
 After a review completes, the activity log auto-collapses and the report renders below the input panels. The user can click **Expand** in the report toolbar to enter full-screen report mode, which hides all input panels (header, inputs card, file list, token gauge, run button, log) and lets the report fill the entire window. A **← Back to Review** button restores the normal layout.
+
+### Pop-Out Report Window
+
+When the review completes, a `ReportWindow` (CTkToplevel) opens automatically with the full report. It has its own toolbar with Export JSON and Copy Summary, the same collapsible cards and bulk toggle controls, and works independently from the main window. Starting a new review or clicking "New Review" closes it automatically.
+
+### Shared Report Rendering
+
+Report rendering logic is extracted into module-level helper functions in `widgets.py` to avoid duplication between `ReportPanel` and `ReportWindow`:
+- `_render_summary_grid()` — Header card and summary grid
+- `_render_alerts()` — LEED and placeholder alert cards
+- `_render_findings_section()` — Findings with collapsible cards and bulk toggle
+- `_render_collapsible_card()` — Individual finding card with toggle state
+- `_render_notes()` — Reviewer's Notes section
 
 All heavy operations (folder analysis, API calls) run in background threads. GUI updates are scheduled via `after()` to stay on the main thread.
 
@@ -203,24 +262,34 @@ All heavy operations (folder analysis, API calls) run in background threads. GUI
 6. **No model selection** — Claude Opus 4.6 is hardcoded. There are no flags to change models.
 7. **No document mutation** — This tool only analyzes specs. Document cleanup belongs in the separate SpecCleanse tool.
 8. **Advisory only** — This tool assists human reviewers. It is not an AHJ substitute.
+9. **Code cycle is parameterized** — Update the constants at the top of `prompts.py` when California adopts a new code cycle. All prompt references update automatically.
 
 ## Common Development Tasks
 
 ### Adding a new finding field
 1. Update the `Finding` dataclass in `reviewer.py`
 2. Update JSON parsing in `reviewer._parse_findings()`
-3. Update the prompt schema in `prompts.py`
-4. Update card rendering in `widgets.py` `ReportPanel._render_card()`
+3. Update the prompt schema in `prompts.py` `<output_format>` section
+4. Update card rendering in `widgets.py` `_render_collapsible_card()`
 
 ### Adding a new preprocessor check
 1. Add detection function in `preprocessor.py` (follow `detect_leed_references` pattern)
 2. Add results to `PreprocessResult` dataclass
 3. Wire into `preprocess_spec()` / `preprocess_specs()`
-4. Add alerts rendering in `widgets.py` `ReportPanel._render_alerts()`
+4. Add alerts rendering in `widgets.py` `_render_alerts()`
 5. Update summary stats in `pipeline.py`
 
 ### Modifying the system prompt
-Edit `prompts.py`. The system prompt defines the reviewer personality, severity definitions, and expected output format (narrative + JSON array). Changes here affect all review behavior.
+Edit `prompts.py`. The system prompt is organized into XML-tagged sections. Each section has a clear purpose documented in this file under "Prompt Architecture." Changes to the prompt affect all review behavior.
+
+### Updating the code cycle
+Edit the constants at the top of `prompts.py`:
+```python
+CURRENT_CBC = "2025"    # ← update this
+CURRENT_ASCE7 = "7-22"  # ← and this
+PREVIOUS_CBC = "2022"   # ← and these for comparison references
+PREVIOUS_ASCE7 = "7-16"
+```
 
 ## Testing
 

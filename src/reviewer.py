@@ -119,6 +119,7 @@ def _parse_findings(data: list) -> list[Finding]:
 def review_specs(
     combined_content: str,
     *,
+    file_count: int = 0,
     max_retries: int = 3,
     verbose: bool = False,
     stream_callback: Optional[StreamCallback] = None,
@@ -128,6 +129,13 @@ def review_specs(
     
     Uses streaming API for real-time display. Retries on rate limit
     and connection errors with exponential backoff.
+    
+    Args:
+        combined_content: All spec text concatenated with FILE headers
+        file_count: Number of spec files (passed to user message for context)
+        max_retries: Maximum retry attempts for transient API errors
+        verbose: If True, print debug info to stdout
+        stream_callback: Optional callback invoked with each streaming text chunk
     """
     start_time = time.time()
     result = ReviewResult(model=MODEL_OPUS_46)
@@ -135,7 +143,7 @@ def review_specs(
     client = Anthropic(api_key=_get_api_key())
 
     system_prompt = get_system_prompt()
-    user_message = get_user_message(combined_content)
+    user_message = get_user_message(combined_content, file_count=file_count)
 
     max_tokens = 32768
 
