@@ -1,4 +1,4 @@
-# MEP Spec Review v1.0.0
+# MEP Spec Review v1.1.0
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude Opus 4.6. Load `.docx` spec files, run the review, and see color-coded findings rendered directly in the app.
 
@@ -10,6 +10,7 @@ A desktop tool that reviews mechanical and plumbing construction specifications 
 4. Sends combined spec content to Claude Opus 4.6 via streaming API
 5. Parses structured JSON findings from the response
 6. Renders a full report in-app: summary grid, alerts, severity-colored finding cards, reviewer's notes
+7. Opens the report in a separate pop-out window for dedicated viewing
 
 ## Running the Application
 
@@ -50,12 +51,22 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root. T
 
 1. Launch the app with `python main.py`
 2. Enter your API key (or let it auto-load from file)
-3. Click **Folder** to select a directory of `.docx` specs, or **Files** to pick individual files
+3. Click **Browse** to select `.docx` specs
 4. The token gauge fills to show capacity usage — stay under the 150k limit
 5. Expand the **FILES** panel to check/uncheck individual specs if needed
 6. Click **Run Review**
-7. When complete, the report panel appears with all findings
-8. Click **Expand** to view the report full-screen, or **← Back to Review** to return
+7. When complete, the report renders in-app and a **pop-out report window** opens automatically
+8. Click **Expand** to view the in-app report full-screen, or **← Back to Review** to return
+
+### Collapsible Finding Cards
+
+Each finding card in the report has a clickable header. Click the header row (severity badge, filename, section) to collapse that card down to a single line. Click again to expand it. This lets you dismiss findings you've already reviewed and focus on the ones that still need attention.
+
+Use the **Collapse All** and **Expand All** buttons in the findings toolbar to toggle all cards at once.
+
+### Pop-Out Report Window
+
+When the review finishes, a separate report window opens automatically with the full results. This window has the same collapsible cards, export, and copy functionality as the embedded report. You can work with the pop-out window independently — close it any time, or keep it alongside the main app while you prepare a new review.
 
 ### Report Panel
 
@@ -65,7 +76,7 @@ After the review completes, the activity log collapses and the report panel rend
 - **Token/time metadata**: Input/output token counts and processing duration
 - **Alerts**: LEED references and unresolved placeholders detected locally (grouped by file)
 - **Findings**: Cards grouped by severity (CRITICAL → HIGH → MEDIUM → GRIPES), each showing:
-  - Severity badge and filename
+  - Clickable header with severity badge and filename (click to collapse/expand)
   - Section reference (CSI format)
   - Issue description
   - Existing text in red monospace
@@ -88,7 +99,7 @@ spec-review/
 │   ├── __init__.py      # Package version
 │   ├── gui.py           # Main application window
 │   ├── widgets.py       # Custom UI widgets (TokenGauge, FileListPanel,
-│   │                    #   EnhancedLog, AnimatedButton, ReportPanel)
+│   │                    #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py      # Core orchestration (single source of truth)
 │   ├── extractor.py     # DOCX text extraction
 │   ├── preprocessor.py  # LEED/placeholder detection (no mutation)
@@ -110,13 +121,15 @@ spec-review/
 - **No file output**: All results render in-app. The only file output is the optional Export JSON button. No output directories, no intermediate files.
 - **Advisory only**: This tool assists human reviewers. It is not an AHJ substitute.
 - **Report expand mode**: After a review, the report renders below the input panels. The Expand button hides all input panels so the report fills the entire window.
+- **Pop-out window**: The report also opens in a separate `ReportWindow` toplevel for dedicated viewing.
+- **Collapsible cards**: Finding cards can be individually collapsed/expanded, with bulk Collapse All / Expand All controls.
 
 ### Module Responsibilities
 
 | Module | Purpose |
 |---|---|
-| `gui.py` | App window, input handling, threading, review orchestration, report expand/collapse |
-| `widgets.py` | All custom CustomTkinter widgets with animations |
+| `gui.py` | App window, input handling, threading, review orchestration, report expand/collapse, pop-out window lifecycle |
+| `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel |
 | `pipeline.py` | Single source of truth for the review workflow |
 | `extractor.py` | DOCX text extraction (paragraphs + tables) |
 | `preprocessor.py` | Local detection of LEED refs and placeholders |
@@ -133,7 +146,7 @@ spec-review/
     → tokenizer.py (token counting, limit check)
     → reviewer.py (streaming API call to Claude Opus 4.6)
     → pipeline.py (orchestration, returns PipelineResult)
-    → gui.py (renders ReportPanel with findings)
+    → gui.py (renders ReportPanel with findings + opens ReportWindow)
 ```
 
 ## What Claude Reviews
@@ -185,6 +198,15 @@ customtkinter      # Modern themed Tkinter widgets
 ```
 
 ## Changelog
+
+### v1.1.0
+
+- Collapsible finding cards: click a card header to minimize it to a single line
+- Collapse All / Expand All buttons in the findings toolbar
+- Pop-out report window: opens automatically when the review completes
+- Shared rendering helpers extracted for DRY report rendering between ReportPanel and ReportWindow
+- New Review button in report toolbar closes the pop-out window
+- ReportWindow added to widgets.py
 
 ### v1.0.0
 

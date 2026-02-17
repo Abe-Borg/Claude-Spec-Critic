@@ -2,7 +2,12 @@
 Custom widgets for MEP Spec Review GUI.
 
 Contains: TokenGauge, FileListPanel, EnhancedLog,
-AnimatedButton, ReportPanel.
+AnimatedButton, ReportPanel, ReportWindow.
+
+v1.1.0 changes:
+    - Finding cards are collapsible (click header to minimize/expand)
+    - Collapse All / Expand All buttons in findings toolbar
+    - ReportWindow: pop-out toplevel that mirrors the ReportPanel
 """
 import json
 import math
@@ -419,7 +424,385 @@ class AnimatedButton(ctk.CTkButton):
 
 
 # ============================================================================
-# REPORT PANEL
+# REPORT RENDERING HELPERS (shared between ReportPanel and ReportWindow)
+# ============================================================================
+
+def _render_summary_grid(parent, review, files_reviewed):
+    """Render the header card and summary grid into a parent frame."""
+    # Header card
+    hc = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
+    hc.pack(fill="x", pady=(0, 12))
+    hi = ctk.CTkFrame(hc, fg_color="transparent")
+    hi.pack(fill="x", padx=16, pady=12)
+    ctk.CTkLabel(hi, text="Spec Review Report", font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
+    ctk.CTkLabel(hi, text=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  \u2022  Model: {review.model}  \u2022  Files: {len(files_reviewed)}", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
+
+    # Summary grid
+    sc = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
+    sc.pack(fill="x", pady=(0, 12))
+    si = ctk.CTkFrame(sc, fg_color="transparent")
+    si.pack(fill="x", padx=16, pady=12)
+    ctk.CTkLabel(si, text="SUMMARY", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 8))
+    grid = ctk.CTkFrame(si, fg_color="transparent")
+    grid.pack(fill="x", pady=(0, 8))
+    for i in range(5):
+        grid.columnconfigure(i, weight=1)
+    for col, (label, count, color) in enumerate([
+        ("Critical", review.critical_count, COLORS["critical"]),
+        ("High", review.high_count, COLORS["high"]),
+        ("Medium", review.medium_count, COLORS["medium"]),
+        ("Gripes", review.gripe_count, COLORS["gripe"]),
+        ("Total", review.total_count, COLORS["text_primary"]),
+    ]):
+        cell = ctk.CTkFrame(grid, fg_color=COLORS["bg_input"], corner_radius=6)
+        cell.grid(row=0, column=col, padx=4, sticky="nsew")
+        ci = ctk.CTkFrame(cell, fg_color="transparent")
+        ci.pack(padx=12, pady=10)
+        ctk.CTkLabel(ci, text=str(count), font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"), text_color=color).pack()
+        ctk.CTkLabel(ci, text=label.upper(), font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"), text_color=COLORS["text_muted"]).pack()
+    ctk.CTkLabel(si, text=f"Tokens: {review.input_tokens:,} in \u2192 {review.output_tokens:,} out  \u2022  Time: {review.elapsed_seconds:.1f}s", font=ctk.CTkFont(family="Consolas", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
+
+
+def _render_alerts(parent, leed_alerts, placeholder_alerts):
+    """Render LEED and placeholder alerts into a parent frame."""
+    if not leed_alerts and not placeholder_alerts:
+        return
+    card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
+    card.pack(fill="x", pady=(0, 12))
+    inner = ctk.CTkFrame(card, fg_color="transparent")
+    inner.pack(fill="x", padx=16, pady=12)
+    ctk.CTkLabel(inner, text="ALERTS", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 8))
+    for label, alerts in [("LEED References Detected", leed_alerts), ("Unresolved Placeholders", placeholder_alerts)]:
+        if not alerts:
+            continue
+        ctk.CTkLabel(inner, text=label, font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color=COLORS["warning"]).pack(anchor="w", pady=(4, 4))
+        by_file = {}
+        for a in alerts:
+            by_file.setdefault(a["filename"], []).append(a)
+        for fname, fa in by_file.items():
+            ai = ctk.CTkFrame(inner, fg_color=COLORS["bg_input"], corner_radius=6)
+            ai.pack(fill="x", pady=2)
+            aii = ctk.CTkFrame(ai, fg_color="transparent")
+            aii.pack(fill="x", padx=12, pady=8)
+            ctk.CTkLabel(aii, text=fname, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
+            ctk.CTkLabel(aii, text=f"{len(fa)} found", font=ctk.CTkFont(family="Consolas", size=10), text_color=COLORS["text_muted"]).pack(anchor="w")
+
+
+def _render_collapsible_card(parent, finding, card_refs: list | None = None):
+    """
+    Render a single finding card that can be collapsed/expanded by clicking
+    its header row.
+
+    Args:
+        parent: Parent frame to pack into
+        finding: Finding dataclass instance
+        card_refs: Optional list to append {"outer", "body", "expanded"} dicts
+                   for bulk collapse/expand operations
+    """
+    sc = SEVERITY_COLORS.get(finding.severity, COLORS["border"])
+
+    # Outer colored border frame
+    outer = ctk.CTkFrame(parent, fg_color=sc, corner_radius=8)
+    outer.pack(fill="x", pady=4)
+
+    card = ctk.CTkFrame(outer, fg_color=COLORS["bg_input"], corner_radius=6)
+    card.pack(fill="x", padx=(4, 0))
+
+    # --- Clickable header row (always visible) ---
+    header = ctk.CTkFrame(card, fg_color="transparent", cursor="hand2")
+    header.pack(fill="x", padx=14, pady=(10, 0))
+
+    # Expand/collapse indicator
+    arrow_label = ctk.CTkLabel(
+        header, text="\u25bc", font=ctk.CTkFont(family="Consolas", size=11),
+        text_color=COLORS["text_muted"], width=16,
+    )
+    arrow_label.pack(side="left")
+
+    # Severity badge
+    ctk.CTkLabel(
+        header, text=finding.severity,
+        font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+        text_color="white" if finding.severity != "MEDIUM" else "black",
+        fg_color=sc, corner_radius=4, width=70, height=22,
+    ).pack(side="left", padx=(4, 0))
+
+    # Filename
+    ctk.CTkLabel(
+        header, text=finding.fileName or "Unknown",
+        font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+        text_color=COLORS["text_primary"],
+    ).pack(side="left", padx=(8, 0))
+
+    # Section (compact preview when collapsed)
+    if finding.section:
+        ctk.CTkLabel(
+            header, text=f"\u2022  {finding.section}",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left", padx=(10, 0))
+
+    # --- Body content (toggled) ---
+    body = ctk.CTkFrame(card, fg_color="transparent")
+    body.pack(fill="x", padx=14, pady=(4, 12))
+
+    # Issue description
+    ctk.CTkLabel(
+        body, text=finding.issue or "",
+        font=ctk.CTkFont(family="Segoe UI", size=12),
+        text_color=COLORS["text_secondary"], anchor="w", justify="left",
+        wraplength=700,
+    ).pack(fill="x", pady=(0, 8))
+
+    # Existing text
+    if finding.existingText:
+        r = ctk.CTkFrame(body, fg_color="transparent")
+        r.pack(fill="x", pady=2)
+        ctk.CTkLabel(
+            r, text="Existing:",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLORS["text_muted"], width=90, anchor="w",
+        ).pack(side="left")
+        ctk.CTkLabel(
+            r, text=finding.existingText,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            text_color=COLORS["error"], anchor="w", justify="left",
+            wraplength=600,
+        ).pack(side="left", fill="x", expand=True)
+
+    # Replacement text
+    if finding.replacementText:
+        r = ctk.CTkFrame(body, fg_color="transparent")
+        r.pack(fill="x", pady=2)
+        ctk.CTkLabel(
+            r, text="Replace with:",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=COLORS["text_muted"], width=90, anchor="w",
+        ).pack(side="left")
+        ctk.CTkLabel(
+            r, text=finding.replacementText,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            text_color=COLORS["success"], anchor="w", justify="left",
+            wraplength=600,
+        ).pack(side="left", fill="x", expand=True)
+
+    # Code reference
+    if finding.codeReference:
+        ctk.CTkLabel(
+            body, text=f"Reference: {finding.codeReference}",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLORS["accent"], anchor="w",
+        ).pack(fill="x", pady=(4, 0))
+
+    # ---- Toggle state ----
+    card_state = {"expanded": True}
+
+    def _toggle_card(event=None):
+        if card_state["expanded"]:
+            body.pack_forget()
+            arrow_label.configure(text="\u25b6")
+            card_state["expanded"] = False
+        else:
+            body.pack(fill="x", padx=14, pady=(4, 12))
+            arrow_label.configure(text="\u25bc")
+            card_state["expanded"] = True
+
+    # Bind click on the entire header row + children
+    header.bind("<Button-1>", _toggle_card)
+    for child in header.winfo_children():
+        child.bind("<Button-1>", _toggle_card)
+
+    # Track for bulk operations
+    if card_refs is not None:
+        card_refs.append({
+            "body": body,
+            "arrow": arrow_label,
+            "state": card_state,
+            "padx": 14,
+            "pady": (4, 12),
+        })
+
+
+def _render_findings_section(parent, review, card_refs: list | None = None):
+    """Render the FINDINGS section with collapsible cards and bulk toggle buttons."""
+    card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
+    card.pack(fill="x", pady=(0, 12))
+    inner = ctk.CTkFrame(card, fg_color="transparent")
+    inner.pack(fill="x", padx=16, pady=12)
+
+    # Header row with title + Collapse All / Expand All buttons
+    findings_header = ctk.CTkFrame(inner, fg_color="transparent")
+    findings_header.pack(fill="x", pady=(0, 8))
+
+    ctk.CTkLabel(
+        findings_header, text="FINDINGS",
+        font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+        text_color=COLORS["text_muted"],
+    ).pack(side="left")
+
+    if review.total_count > 0 and card_refs is not None:
+        btn_kw = {
+            "width": 85, "height": 24,
+            "font": ctk.CTkFont(size=10),
+            "fg_color": "transparent",
+            "hover_color": COLORS["bg_input"],
+            "text_color": COLORS["text_muted"],
+            "border_width": 1,
+            "border_color": COLORS["border"],
+            "corner_radius": 4,
+        }
+
+        def _collapse_all():
+            for ref in card_refs:
+                if ref["state"]["expanded"]:
+                    ref["body"].pack_forget()
+                    ref["arrow"].configure(text="\u25b6")
+                    ref["state"]["expanded"] = False
+
+        def _expand_all():
+            for ref in card_refs:
+                if not ref["state"]["expanded"]:
+                    ref["body"].pack(fill="x", padx=ref["padx"], pady=ref["pady"])
+                    ref["arrow"].configure(text="\u25bc")
+                    ref["state"]["expanded"] = True
+
+        ctk.CTkButton(findings_header, text="Expand All", command=_expand_all, **btn_kw).pack(side="right", padx=(4, 0))
+        ctk.CTkButton(findings_header, text="Collapse All", command=_collapse_all, **btn_kw).pack(side="right")
+
+    if review.total_count == 0:
+        ctk.CTkLabel(inner, text="\u2713 No issues found", font=ctk.CTkFont(family="Segoe UI", size=14), text_color=COLORS["success"]).pack(pady=16)
+        return
+
+    for sev in ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]:
+        sf = [f for f in review.findings if f.severity == sev]
+        if not sf:
+            continue
+        ctk.CTkLabel(
+            inner, text=f"{sev} ({len(sf)})",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=SEVERITY_COLORS.get(sev, COLORS["text_primary"]),
+        ).pack(anchor="w", pady=(12, 6))
+        for f in sf:
+            _render_collapsible_card(inner, f, card_refs=card_refs)
+
+
+def _render_notes(parent, text):
+    """Render the Reviewer's Notes section."""
+    card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
+    card.pack(fill="x", pady=(0, 12))
+    inner = ctk.CTkFrame(card, fg_color="transparent")
+    inner.pack(fill="x", padx=16, pady=12)
+    ctk.CTkLabel(inner, text="REVIEWER'S NOTES", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 8))
+    nf = ctk.CTkFrame(inner, fg_color=COLORS["bg_input"], corner_radius=6)
+    nf.pack(fill="x")
+    ctk.CTkLabel(nf, text=text, font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], anchor="w", justify="left", wraplength=750).pack(fill="x", padx=14, pady=14)
+
+
+# ============================================================================
+# REPORT WINDOW (pop-out toplevel)
+# ============================================================================
+
+class ReportWindow(ctk.CTkToplevel):
+    """
+    Detached report window that opens automatically when the review completes.
+    Contains the full report: summary, alerts, collapsible findings, and notes.
+    """
+
+    def __init__(self, master, review, files_reviewed, leed_alerts, placeholder_alerts, **kwargs):
+        super().__init__(master, **kwargs)
+        self.title("Spec Review Report")
+        self.geometry("960x800")
+        self.minsize(700, 500)
+        self.configure(fg_color=COLORS["bg_dark"])
+
+        self._review = review
+        self._files_reviewed = files_reviewed
+        self._leed_alerts = leed_alerts
+        self._placeholder_alerts = placeholder_alerts
+        self._card_refs: list[dict] = []
+
+        self._build_ui()
+
+        # Bring to front
+        self.lift()
+        self.focus_force()
+
+    def _build_ui(self):
+        # Top toolbar
+        toolbar = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=0, height=48)
+        toolbar.pack(fill="x")
+        toolbar.pack_propagate(False)
+
+        tb_inner = ctk.CTkFrame(toolbar, fg_color="transparent")
+        tb_inner.pack(fill="x", padx=16, pady=8)
+
+        ctk.CTkLabel(
+            tb_inner, text="Spec Review Report",
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left")
+
+        btn_kw = {
+            "height": 30, "font": ctk.CTkFont(size=12),
+            "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"],
+            "border_width": 1, "border_color": COLORS["border"],
+            "text_color": COLORS["text_secondary"],
+        }
+
+        ctk.CTkButton(
+            tb_inner, text="Copy Summary", width=110,
+            command=lambda: self._copy_summary(self._review.thinking), **btn_kw,
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
+            tb_inner, text="Export JSON", width=100,
+            command=lambda: self._export_json(
+                self._review, self._files_reviewed,
+                self._leed_alerts, self._placeholder_alerts,
+            ), **btn_kw,
+        ).pack(side="right")
+
+        # Scrollable body
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
+        body.pack(fill="both", expand=True, padx=16, pady=16)
+
+        _render_summary_grid(body, self._review, self._files_reviewed)
+        _render_alerts(body, self._leed_alerts, self._placeholder_alerts)
+        _render_findings_section(body, self._review, card_refs=self._card_refs)
+        if self._review.thinking:
+            _render_notes(body, self._review.thinking)
+
+    def _export_json(self, review, files_reviewed, leed_alerts, placeholder_alerts):
+        data = {
+            "meta": {
+                "model": review.model,
+                "input_tokens": review.input_tokens,
+                "output_tokens": review.output_tokens,
+                "elapsed_seconds": review.elapsed_seconds,
+                "generated_at": datetime.now().isoformat(),
+            },
+            "files_reviewed": files_reviewed,
+            "findings": [f.__dict__ for f in review.findings],
+            "alerts": {"leed_alerts": leed_alerts, "placeholder_alerts": placeholder_alerts},
+            "analysis_summary": review.thinking,
+        }
+        path = ctk.filedialog.asksaveasfilename(
+            parent=self,
+            title="Save findings JSON", defaultextension=".json",
+            filetypes=[("JSON Files", "*.json")],
+            initialfile=f"spec-review-{datetime.now().strftime('%Y-%m-%d')}.json",
+        )
+        if path:
+            Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _copy_summary(self, text):
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+
+
+# ============================================================================
+# REPORT PANEL (embedded in main window)
 # ============================================================================
 
 class ReportPanel(ctk.CTkFrame):
@@ -428,151 +811,81 @@ class ReportPanel(ctk.CTkFrame):
     def __init__(self, master, on_fullscreen=None, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
         self._on_fullscreen = on_fullscreen
+        self._card_refs: list[dict] = []
         self.pack_forget()
 
     def show_report(self, result, files_reviewed, leed_alerts, placeholder_alerts):
-        for w in self.winfo_children(): w.destroy()
+        for w in self.winfo_children():
+            w.destroy()
+        self._card_refs.clear()
         review = result
 
         # Export bar
         ebar = ctk.CTkFrame(self, fg_color="transparent")
         ebar.pack(fill="x", pady=(0, 12))
-        btn_kw = {"width": 120, "height": 32, "font": ctk.CTkFont(size=12), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
+        btn_kw = {
+            "width": 120, "height": 32, "font": ctk.CTkFont(size=12),
+            "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"],
+            "border_width": 1, "border_color": COLORS["border"],
+            "text_color": COLORS["text_secondary"],
+        }
         if self._on_fullscreen:
             ctk.CTkButton(ebar, text="\u26f6  Expand", command=self._on_fullscreen, **btn_kw).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(ebar, text="Export JSON", command=lambda: self._export_json(review, files_reviewed, leed_alerts, placeholder_alerts), **btn_kw).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(ebar, text="Copy Summary", command=lambda: self._copy_summary(review.thinking), **btn_kw).pack(side="left")
+        ctk.CTkButton(
+            ebar, text="Export JSON",
+            command=lambda: self._export_json(review, files_reviewed, leed_alerts, placeholder_alerts),
+            **btn_kw,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            ebar, text="Copy Summary",
+            command=lambda: self._copy_summary(review.thinking),
+            **btn_kw,
+        ).pack(side="left")
 
         # Scrollable body
         body = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
         body.pack(fill="both", expand=True)
 
-        # Header card
-        hc = ctk.CTkFrame(body, fg_color=COLORS["bg_card"], corner_radius=8)
-        hc.pack(fill="x", pady=(0, 12))
-        hi = ctk.CTkFrame(hc, fg_color="transparent")
-        hi.pack(fill="x", padx=16, pady=12)
-        ctk.CTkLabel(hi, text="Spec Review Report", font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
-        ctk.CTkLabel(hi, text=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  \u2022  Model: {review.model}  \u2022  Files: {len(files_reviewed)}", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
-
-        # Summary grid
-        sc = ctk.CTkFrame(body, fg_color=COLORS["bg_card"], corner_radius=8)
-        sc.pack(fill="x", pady=(0, 12))
-        si = ctk.CTkFrame(sc, fg_color="transparent")
-        si.pack(fill="x", padx=16, pady=12)
-        ctk.CTkLabel(si, text="SUMMARY", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 8))
-        grid = ctk.CTkFrame(si, fg_color="transparent")
-        grid.pack(fill="x", pady=(0, 8))
-        for i in range(5): grid.columnconfigure(i, weight=1)
-        for col, (label, count, color) in enumerate([("Critical", review.critical_count, COLORS["critical"]), ("High", review.high_count, COLORS["high"]), ("Medium", review.medium_count, COLORS["medium"]), ("Gripes", review.gripe_count, COLORS["gripe"]), ("Total", review.total_count, COLORS["text_primary"])]):
-            cell = ctk.CTkFrame(grid, fg_color=COLORS["bg_input"], corner_radius=6)
-            cell.grid(row=0, column=col, padx=4, sticky="nsew")
-            ci = ctk.CTkFrame(cell, fg_color="transparent")
-            ci.pack(padx=12, pady=10)
-            ctk.CTkLabel(ci, text=str(count), font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"), text_color=color).pack()
-            ctk.CTkLabel(ci, text=label.upper(), font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"), text_color=COLORS["text_muted"]).pack()
-        ctk.CTkLabel(si, text=f"Tokens: {review.input_tokens:,} in \u2192 {review.output_tokens:,} out  \u2022  Time: {review.elapsed_seconds:.1f}s", font=ctk.CTkFont(family="Consolas", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
-
-        # Alerts
-        if leed_alerts or placeholder_alerts:
-            self._render_alerts(body, leed_alerts, placeholder_alerts)
-
-        # Findings
-        self._render_findings(body, review)
-
-        # Reviewer's Notes
+        _render_summary_grid(body, review, files_reviewed)
+        _render_alerts(body, leed_alerts, placeholder_alerts)
+        _render_findings_section(body, review, card_refs=self._card_refs)
         if review.thinking:
-            self._render_notes(body, review.thinking)
+            _render_notes(body, review.thinking)
 
         self.pack(fill="both", expand=True, pady=(16, 0))
 
-    def _render_alerts(self, parent, leed_alerts, placeholder_alerts):
-        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
-        card.pack(fill="x", pady=(0, 12))
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=16, pady=12)
-        ctk.CTkLabel(inner, text="ALERTS", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 8))
-        for label, alerts in [("LEED References Detected", leed_alerts), ("Unresolved Placeholders", placeholder_alerts)]:
-            if not alerts: continue
-            ctk.CTkLabel(inner, text=label, font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color=COLORS["warning"]).pack(anchor="w", pady=(4, 4))
-            by_file = {}
-            for a in alerts: by_file.setdefault(a["filename"], []).append(a)
-            for fname, fa in by_file.items():
-                ai = ctk.CTkFrame(inner, fg_color=COLORS["bg_input"], corner_radius=6)
-                ai.pack(fill="x", pady=2)
-                aii = ctk.CTkFrame(ai, fg_color="transparent")
-                aii.pack(fill="x", padx=12, pady=8)
-                ctk.CTkLabel(aii, text=fname, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
-                ctk.CTkLabel(aii, text=f"{len(fa)} found", font=ctk.CTkFont(family="Consolas", size=10), text_color=COLORS["text_muted"]).pack(anchor="w")
-
-    def _render_findings(self, parent, review):
-        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
-        card.pack(fill="x", pady=(0, 12))
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=16, pady=12)
-        ctk.CTkLabel(inner, text="FINDINGS", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 8))
-        if review.total_count == 0:
-            ctk.CTkLabel(inner, text="\u2713 No issues found", font=ctk.CTkFont(family="Segoe UI", size=14), text_color=COLORS["success"]).pack(pady=16)
-            return
-        for sev in ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]:
-            sf = [f for f in review.findings if f.severity == sev]
-            if not sf: continue
-            ctk.CTkLabel(inner, text=f"{sev} ({len(sf)})", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color=SEVERITY_COLORS.get(sev, COLORS["text_primary"])).pack(anchor="w", pady=(12, 6))
-            for f in sf:
-                self._render_card(inner, f)
-
-    def _render_card(self, parent, finding):
-        sc = SEVERITY_COLORS.get(finding.severity, COLORS["border"])
-        outer = ctk.CTkFrame(parent, fg_color=sc, corner_radius=8)
-        outer.pack(fill="x", pady=4)
-        card = ctk.CTkFrame(outer, fg_color=COLORS["bg_input"], corner_radius=6)
-        card.pack(fill="x", padx=(4, 0))
-        content = ctk.CTkFrame(card, fg_color="transparent")
-        content.pack(fill="x", padx=14, pady=12)
-
-        # Header: badge + filename
-        hr = ctk.CTkFrame(content, fg_color="transparent")
-        hr.pack(fill="x", pady=(0, 6))
-        ctk.CTkLabel(hr, text=finding.severity, font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color="white" if finding.severity != "MEDIUM" else "black", fg_color=sc, corner_radius=4, width=70, height=22).pack(side="left")
-        ctk.CTkLabel(hr, text=finding.fileName or "Unknown", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), text_color=COLORS["text_primary"]).pack(side="left", padx=(8, 0))
-
-        if finding.section:
-            ctk.CTkLabel(content, text=f"Section: {finding.section}", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_muted"], anchor="w").pack(fill="x", pady=(0, 4))
-
-        ctk.CTkLabel(content, text=finding.issue or "", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], anchor="w", justify="left", wraplength=700).pack(fill="x", pady=(0, 8))
-
-        if finding.existingText:
-            r = ctk.CTkFrame(content, fg_color="transparent"); r.pack(fill="x", pady=2)
-            ctk.CTkLabel(r, text="Existing:", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"], width=90, anchor="w").pack(side="left")
-            ctk.CTkLabel(r, text=finding.existingText, font=ctk.CTkFont(family="Consolas", size=11), text_color=COLORS["error"], anchor="w", justify="left", wraplength=600).pack(side="left", fill="x", expand=True)
-
-        if finding.replacementText:
-            r = ctk.CTkFrame(content, fg_color="transparent"); r.pack(fill="x", pady=2)
-            ctk.CTkLabel(r, text="Replace with:", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"], width=90, anchor="w").pack(side="left")
-            ctk.CTkLabel(r, text=finding.replacementText, font=ctk.CTkFont(family="Consolas", size=11), text_color=COLORS["success"], anchor="w", justify="left", wraplength=600).pack(side="left", fill="x", expand=True)
-
-        if finding.codeReference:
-            ctk.CTkLabel(content, text=f"Reference: {finding.codeReference}", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["accent"], anchor="w").pack(fill="x", pady=(4, 0))
-
-    def _render_notes(self, parent, text):
-        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
-        card.pack(fill="x", pady=(0, 12))
-        inner = ctk.CTkFrame(card, fg_color="transparent")
-        inner.pack(fill="x", padx=16, pady=12)
-        ctk.CTkLabel(inner, text="REVIEWER'S NOTES", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(0, 8))
-        nf = ctk.CTkFrame(inner, fg_color=COLORS["bg_input"], corner_radius=6)
-        nf.pack(fill="x")
-        ctk.CTkLabel(nf, text=text, font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], anchor="w", justify="left", wraplength=750).pack(fill="x", padx=14, pady=14)
-
     def _export_json(self, review, files_reviewed, leed_alerts, placeholder_alerts):
-        data = {"meta": {"model": review.model, "input_tokens": review.input_tokens, "output_tokens": review.output_tokens, "elapsed_seconds": review.elapsed_seconds, "generated_at": datetime.now().isoformat()}, "files_reviewed": files_reviewed, "findings": [f.__dict__ for f in review.findings], "alerts": {"leed_alerts": leed_alerts, "placeholder_alerts": placeholder_alerts}, "analysis_summary": review.thinking}
-        path = ctk.filedialog.asksaveasfilename(title="Save findings JSON", defaultextension=".json", filetypes=[("JSON Files", "*.json")], initialfile=f"spec-review-{datetime.now().strftime('%Y-%m-%d')}.json")
-        if path: Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        data = {
+            "meta": {
+                "model": review.model,
+                "input_tokens": review.input_tokens,
+                "output_tokens": review.output_tokens,
+                "elapsed_seconds": review.elapsed_seconds,
+                "generated_at": datetime.now().isoformat(),
+            },
+            "files_reviewed": files_reviewed,
+            "findings": [f.__dict__ for f in review.findings],
+            "alerts": {"leed_alerts": leed_alerts, "placeholder_alerts": placeholder_alerts},
+            "analysis_summary": review.thinking,
+        }
+        path = ctk.filedialog.asksaveasfilename(
+            title="Save findings JSON", defaultextension=".json",
+            filetypes=[("JSON Files", "*.json")],
+            initialfile=f"spec-review-{datetime.now().strftime('%Y-%m-%d')}.json",
+        )
+        if path:
+            Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     def _copy_summary(self, text):
-        if text: self.clipboard_clear(); self.clipboard_append(text)
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
 
-    def hide(self): self.pack_forget()
+    def hide(self):
+        self.pack_forget()
+
     def clear(self):
-        for w in self.winfo_children(): w.destroy()
+        self._card_refs.clear()
+        for w in self.winfo_children():
+            w.destroy()
         self.pack_forget()

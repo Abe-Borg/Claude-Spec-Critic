@@ -1,7 +1,7 @@
 """
 MEP Spec Review - Modern GUI with CustomTkinter
 California K-12 DSA Projects
-v1.0.0 - In-app report with finding cards (no file output)
+v1.1.0 - Collapsible finding cards + pop-out report window
 """
 import os, sys, threading
 from pathlib import Path
@@ -17,7 +17,7 @@ from src.reviewer import MODEL_OPUS_46
 from src.extractor import extract_text_from_docx
 from src.tokenizer import RECOMMENDED_MAX
 from src.prompts import get_system_prompt
-from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportPanel)
+from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 
 API_KEY_FILENAME = "spec_critic_api_key.txt"
 
@@ -39,6 +39,7 @@ class SpecReviewApp(ctk.CTk):
         self.input_dir = None
         self.is_processing = False
         self._report_mode = False
+        self._report_window: Optional[ReportWindow] = None
         fk = load_api_key_from_file()
         ek = os.environ.get("ANTHROPIC_API_KEY", "")
         self.api_key = fk if fk else ek
@@ -177,6 +178,7 @@ class SpecReviewApp(ctk.CTk):
         self._selected_files_for_review = self.file_list_panel.get_selected_files()
         self.is_processing = True
         self.report_panel.clear()
+        self._close_report_window()
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
         self.run_button.set_processing()
         self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
@@ -214,7 +216,13 @@ class SpecReviewApp(ctk.CTk):
             # Collapse log so report gets maximum space
             if self.log._expanded:
                 self.log.collapse()
-            self.report_panel.show_report(result=rv, files_reviewed=result.files_reviewed, leed_alerts=result.leed_alerts, placeholder_alerts=result.placeholder_alerts)
+            # Render in-app report
+            self.report_panel.show_report(
+                result=rv, files_reviewed=result.files_reviewed,
+                leed_alerts=result.leed_alerts, placeholder_alerts=result.placeholder_alerts,
+            )
+            # Open pop-out report window
+            self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts)
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
 
@@ -225,6 +233,25 @@ class SpecReviewApp(ctk.CTk):
 
     def _reset_ui(self):
         self.run_button.set_ready(); self.progress_bar.pack_forget(); self.is_processing = False
+
+    # ----- Pop-out report window -----
+
+    def _open_report_window(self, review, files_reviewed, leed_alerts, placeholder_alerts):
+        """Open a detached report window with the full results."""
+        self._close_report_window()
+        self._report_window = ReportWindow(
+            self, review=review, files_reviewed=files_reviewed,
+            leed_alerts=leed_alerts, placeholder_alerts=placeholder_alerts,
+        )
+
+    def _close_report_window(self):
+        """Close the existing report window if one is open."""
+        if self._report_window is not None:
+            try:
+                self._report_window.destroy()
+            except Exception:
+                pass
+            self._report_window = None
 
     # ----- Report expand / collapse mode -----
 
@@ -260,6 +287,9 @@ class SpecReviewApp(ctk.CTk):
         if self._report_mode:
             self._report_mode = False
             self.report_toolbar.pack_forget()
+
+        # Close pop-out window
+        self._close_report_window()
 
         # Clear results
         self.report_panel.clear()
