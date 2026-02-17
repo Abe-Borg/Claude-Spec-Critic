@@ -213,15 +213,7 @@ class SpecReviewApp(ctk.CTk):
             rv = result.review_result
             self.log.log(f"Findings: {rv.critical_count} critical, {rv.high_count} high, {rv.medium_count} medium, {rv.gripe_count} gripes", level="info")
             self.log.log(f"Time: {rv.elapsed_seconds:.1f}s", level="muted")
-            # Collapse log so report gets maximum space
-            if self.log._expanded:
-                self.log.collapse()
-            # Render in-app report
-            self.report_panel.show_report(
-                result=rv, files_reviewed=result.files_reviewed,
-                leed_alerts=result.leed_alerts, placeholder_alerts=result.placeholder_alerts,
-            )
-            # Open pop-out report window
+            # Open pop-out report window (report no longer renders in the main UI)
             self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts)
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
