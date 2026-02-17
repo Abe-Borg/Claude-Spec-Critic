@@ -248,7 +248,11 @@ def get_system_prompt() -> str:
     return SYSTEM_PROMPT
 
 
-def get_user_message(combined_specs: str, file_count: int = 0) -> str:
+def get_user_message(
+    combined_specs: str,
+    file_count: int = 0,
+    project_context: str = "",
+) -> str:
     """Build the user message for the API call.
     
     The user message is the last thing Claude sees before generating, so
@@ -259,9 +263,21 @@ def get_user_message(combined_specs: str, file_count: int = 0) -> str:
     Args:
         combined_specs: All spec content concatenated with FILE headers
         file_count: Number of spec files included (for context)
+        project_context: Optional free-text project description from the user.
+            If non-empty, inserted as an XML-tagged block before spec content
+            so Claude has project-specific context for the review.
     """
     file_note = f" ({file_count} files)" if file_count > 0 else ""
     
+    context_block = ""
+    if project_context.strip():
+        context_block = f"""
+<project_context>
+{project_context.strip()}
+</project_context>
+
+"""
+
     return f"""Review the following M&P specification documents{file_note} for a California K-12 project under DSA jurisdiction.
 
 Current code cycle: CBC {CURRENT_CBC}, CMC {CURRENT_CMC}, CPC {CURRENT_CPC}, Energy Code {CURRENT_ENERGY_CODE}, CALGreen {CURRENT_CALGREEN}, ASCE {CURRENT_ASCE7}.
@@ -272,4 +288,4 @@ Reminders:
 - Each finding needs: severity, fileName, section, issue, actionType, existingText, replacementText, codeReference.
 - Flag issues you are confident about. Note uncertainty for moderate-confidence findings. Skip low-confidence hunches.
 
-{combined_specs}"""
+{context_block}{combined_specs}"""

@@ -1,12 +1,12 @@
 # CLAUDE.md
 
-This file provides guidance for AI assistants working on the **MEP Spec Review** codebase.
+This file provides guidance for AI assistants working on the **Spec Critic** codebase.
 
 ## Project Overview
 
-MEP Spec Review is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.6 for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
+Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.6 for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
 
-- **Version**: 1.2.0
+- **Version**: 1.3.0
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
 - **Model**: Claude Opus 4.6 (`claude-opus-4-6`), hardcoded — no model selection flags
 - **Output**: In-app only. No files are written during a review. The only file output is the optional Export JSON button.
@@ -17,7 +17,7 @@ MEP Spec Review is a GUI tool for reviewing Mechanical & Plumbing specifications
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.2.0")
+│   ├── __init__.py          # Package version ("1.3.0")
 │   ├── gui.py               # CustomTkinter app window, input handling, threading
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
 │   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
@@ -52,7 +52,7 @@ spec-review/
 
 | Module | Responsibility |
 |--------|---------------|
-| `gui.py` | App window, input handling, threading, review orchestration, report expand/collapse mode, pop-out report window lifecycle |
+| `gui.py` | App window, input handling (including project context field), threading, review orchestration, report expand/collapse mode, pop-out report window lifecycle |
 | `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel |
 | `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult` |
 | `extractor.py` | `.docx` → plain text (paragraphs + tables) |
@@ -124,6 +124,11 @@ The user message (`get_user_message`) reinforces key behaviors at the end of the
 - Reminds about output format (summary + JSON, no code fences)
 - Reminds about confidence handling
 - Includes file count for context
+- Includes optional `<project_context>` XML block if the user provided project description text
+
+### Project Context
+
+The `get_user_message()` function accepts an optional `project_context` parameter. If non-empty, it is inserted as a `<project_context>` XML-tagged block in the user message, before the spec content. This gives Claude project-specific information (building type, systems, scope) to inform the review. The project context text is counted toward the token limit in the GUI.
 
 ## Token Limits
 
@@ -229,6 +234,14 @@ The GUI uses CustomTkinter with a dark theme. All custom widgets live in `widget
 - `ReportPanel` — In-app report with summary grid, alerts, collapsible severity-colored finding cards, reviewer's notes, Expand button, Export JSON, and Copy Summary
 - `ReportWindow` — Pop-out toplevel window with the full report (opens automatically on review completion)
 
+### Project Context Field (v1.3.0)
+
+The INPUTS card contains a "Project Context" row with a `CTkTextbox` (3-4 lines tall). It has placeholder behavior: muted hint text "Describe your project (optional)" is shown when the field is empty and unfocused. On focus-in the placeholder clears; on focus-out it restores if the field is empty. The text is:
+- Counted toward the token limit (via `_project_context_tokens`)
+- Passed through `pipeline.run_review()` → `reviewer.review_specs()` → `prompts.get_user_message()` as a `<project_context>` XML block
+- Included in Export JSON under `meta.project_context`
+- Cleared by `_reset_for_new_review()`
+
 ### Performance Notes (v1.2.0)
 
 Three optimizations reduce main-thread contention during reviews:
@@ -238,6 +251,10 @@ Three optimizations reduce main-thread contention during reviews:
 2. **EnhancedLog uses a single CTkTextbox**: Previous versions created one `CTkLabel` per log line, triggering layout passes on every entry. The rewritten log appends colored text to a single read-only `CTkTextbox` using Tk text tags. Widget creation drops from N labels to 1 textbox.
 
 3. **Batched token-analysis callbacks**: The background thread accumulates filenames and schedules a single `after(0)` callback via `log_file_batch()` instead of one callback per file.
+
+### EnhancedLog Collapse Fix (v1.3.0)
+
+The log's `collapse()` method previously hid `content_container` via `pack_forget()`, but the parent `CTkFrame` retained its expanded height because Tk's geometry propagation still sized it based on prior content. The fix sets `pack_propagate(False)` and `configure(height=48)` when collapsed, forcing the frame to shrink to just the header bar. On `expand()`, `pack_propagate(True)` is restored so the textbox can size the frame normally.
 
 ### Collapsible Finding Cards
 
@@ -273,6 +290,7 @@ All heavy operations (folder analysis, API calls) run in background threads. GUI
 7. **No document mutation** — This tool only analyzes specs. Document cleanup belongs in the separate SpecCleanse tool.
 8. **Advisory only** — This tool assists human reviewers. It is not an AHJ substitute.
 9. **Code cycle is parameterized** — Update the constants at the top of `prompts.py` when California adopts a new code cycle. All prompt references update automatically.
+10. **Project context is optional** — If the user leaves the field empty, the user message is unchanged from previous versions. The `<project_context>` block is only added when text is present.
 
 ## Common Development Tasks
 

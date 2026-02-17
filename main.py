@@ -1,4 +1,4 @@
-"""PyInstaller entry point for MEP Spec Review."""
+"""PyInstaller entry point for Spec Critic."""
 import sys
 import os
 from pathlib import Path

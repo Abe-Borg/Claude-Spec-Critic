@@ -1,10 +1,11 @@
 """
-Core orchestration pipeline for MEP Spec Review.
+Core orchestration pipeline for Spec Critic.
 
 This module is the SINGLE SOURCE OF TRUTH for the review workflow.
 The GUI calls run_review() and receives a PipelineResult containing
 all data needed to render the in-app report.
 
+v1.3.0 — project_context parameter plumbed through to user message.
 v1.1.0 — All output is in-app. No files emitted.
 
 Pipeline stages:
@@ -83,6 +84,7 @@ def run_review(
     *,
     input_dir: Path,
     files: Optional[list[Path]] = None,
+    project_context: str = "",
     dry_run: bool = False,
     verbose: bool = False,
     log: LogFn = _noop_log,
@@ -96,6 +98,8 @@ def run_review(
         input_dir: Directory containing .docx specification files
         files: Optional list of specific files to process. If None, all .docx
                files in input_dir are processed.
+        project_context: Optional free-text project description. If non-empty,
+            included in the user message as a <project_context> XML block.
         dry_run: If True, skip the API call.
         verbose: Passed to reviewer for additional stdout logging
         log: Callback for log messages.
@@ -181,6 +185,7 @@ def run_review(
     review_result = review_specs(
         combined_content=combined,
         file_count=len(specs),
+        project_context=project_context,
         verbose=verbose,
         stream_callback=stream_callback,
     )

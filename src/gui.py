@@ -1,7 +1,7 @@
 """
-MEP Spec Review - Modern GUI with CustomTkinter
-California K-12 DSA Projects
-v1.2.0 - Performance optimizations (animation frame rates, log textbox, batched callbacks)
+Spec Critic - Modern GUI with CustomTkinter
+M&P Specification Review • California K-12 DSA • Claude Opus 4.6
+v1.3.0 - Project context field, log collapse fix, app rename
 """
 import os, sys, threading
 from pathlib import Path
@@ -21,6 +21,10 @@ from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, Animate
 
 API_KEY_FILENAME = "spec_critic_api_key.txt"
 
+# Placeholder hint shown in the project context textbox when empty
+_CONTEXT_PLACEHOLDER = "Describe your project (optional)"
+
+
 def load_api_key_from_file():
     kf = exe_dir / API_KEY_FILENAME
     if kf.exists():
@@ -32,7 +36,7 @@ def load_api_key_from_file():
 class SpecReviewApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("MEP Spec Review")
+        self.title("Spec Critic")
         self.geometry("900x950")
         self.minsize(750, 700)
         self.configure(fg_color=COLORS["bg_dark"])
@@ -40,6 +44,7 @@ class SpecReviewApp(ctk.CTk):
         self.is_processing = False
         self._report_mode = False
         self._report_window: Optional[ReportWindow] = None
+        self._project_context_tokens = 0
         fk = load_api_key_from_file()
         ek = os.environ.get("ANTHROPIC_API_KEY", "")
         self.api_key = fk if fk else ek
@@ -59,8 +64,8 @@ class SpecReviewApp(ctk.CTk):
         # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
         self.hdr.pack(fill="x", pady=(0, 20))
-        ctk.CTkLabel(self.hdr, text="Mechanical & Plumbing Spec Review", font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
-        ctk.CTkLabel(self.hdr, text="California K-12 DSA Projects  \u2022  Claude Opus 4.6", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(self.hdr, text="Spec Critic", font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
+        ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Claude Opus 4.6", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
         self._create_inputs_card(c)
         self.file_list_panel = FileListPanel(c, on_selection_change=self._on_file_selection_change, pack_after=self.inputs_card)
@@ -90,11 +95,13 @@ class SpecReviewApp(ctk.CTk):
         self.inputs_content = ctk.CTkFrame(self.inputs_card, fg_color="transparent")
         self.inputs_content.pack(fill="x", padx=16, pady=(0, 16))
 
+        # --- Row 0: API Key ---
         ctk.CTkLabel(self.inputs_content, text="API Key", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=8)
         self.api_key_entry = ctk.CTkEntry(self.inputs_content, placeholder_text="sk-ant-...", font=ctk.CTkFont(family="Consolas", size=12), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36, show="\u2022")
         self.api_key_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=8)
         if self.api_key: self.api_key_entry.insert(0, self.api_key)
 
+        # --- Row 1: Specs ---
         ctk.CTkLabel(self.inputs_content, text="Specs", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=8)
         ef = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ef.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=8)
@@ -103,7 +110,69 @@ class SpecReviewApp(ctk.CTk):
         self.input_dir_entry.grid(row=0, column=0, sticky="ew")
         bkw = {"height": 36, "font": ctk.CTkFont(size=12), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
         ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
+
+        # --- Row 2: Project Context ---
+        ctk.CTkLabel(self.inputs_content, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="nw").grid(row=2, column=0, sticky="nw", pady=8)
+        self.context_textbox = ctk.CTkTextbox(
+            self.inputs_content,
+            fg_color=COLORS["bg_input"],
+            border_color=COLORS["border"],
+            border_width=2,
+            text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(family="Consolas", size=12),
+            height=80,
+            wrap="word",
+        )
+        self.context_textbox.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=8)
+
+        # Placeholder behavior: show muted hint when empty
+        self._context_has_placeholder = True
+        self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
+        self.context_textbox.configure(text_color=COLORS["text_muted"])
+        self.context_textbox.bind("<FocusIn>", self._context_focus_in)
+        self.context_textbox.bind("<FocusOut>", self._context_focus_out)
+        # Recount tokens when project context changes
+        self.context_textbox.bind("<KeyRelease>", self._on_context_change)
+
         self.inputs_content.columnconfigure(1, weight=1)
+
+    # --- Project context placeholder helpers ---
+
+    def _context_focus_in(self, event=None):
+        """Clear placeholder text when the user clicks into the textbox."""
+        if self._context_has_placeholder:
+            self.context_textbox.delete("1.0", "end")
+            self.context_textbox.configure(text_color=COLORS["text_primary"])
+            self._context_has_placeholder = False
+
+    def _context_focus_out(self, event=None):
+        """Restore placeholder text if the user leaves the textbox empty."""
+        text = self.context_textbox.get("1.0", "end").strip()
+        if not text:
+            self._context_has_placeholder = True
+            self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
+            self.context_textbox.configure(text_color=COLORS["text_muted"])
+
+    def _get_project_context(self) -> str:
+        """Return the project context text, or empty string if placeholder is showing."""
+        if self._context_has_placeholder:
+            return ""
+        return self.context_textbox.get("1.0", "end").strip()
+
+    def _on_context_change(self, event=None):
+        """Recount tokens when the project context text changes."""
+        if not hasattr(self, "_loaded_file_data") or not self._loaded_file_data:
+            return
+        # Recompute project context tokens
+        ctx = self._get_project_context()
+        if ctx:
+            from tiktoken import get_encoding
+            enc = get_encoding("cl100k_base")
+            self._project_context_tokens = len(enc.encode(ctx))
+        else:
+            self._project_context_tokens = 0
+        # Trigger a full recount
+        self._on_file_selection_change()
 
     def _toggle_inputs_card(self, event=None):
         if self._inputs_expanded:
@@ -128,6 +197,8 @@ class SpecReviewApp(ctk.CTk):
         v1.2.0: filenames are accumulated and logged in a single batched
         callback instead of one after(0) per file, reducing main-thread
         scheduling pressure during rapid file processing.
+
+        v1.3.0: includes project context tokens in the total.
         """
         if not file_paths:
             self.log.log_warning("No .docx files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
@@ -139,6 +210,11 @@ class SpecReviewApp(ctk.CTk):
                 from tiktoken import get_encoding
                 enc = get_encoding("cl100k_base")
                 self._system_prompt_tokens = len(enc.encode(get_system_prompt()))
+
+                # Count project context tokens
+                ctx = self._get_project_context()
+                self._project_context_tokens = len(enc.encode(ctx)) if ctx else 0
+
                 for f in file_paths:
                     try:
                         spec = extract_text_from_docx(f)
@@ -154,7 +230,7 @@ class SpecReviewApp(ctk.CTk):
 
                 if file_data:
                     self._loaded_file_data = file_data
-                    total = self._system_prompt_tokens + sum(d["tokens"] for d in file_data)
+                    total = self._system_prompt_tokens + self._project_context_tokens + sum(d["tokens"] for d in file_data)
                     self.after(0, lambda: self.file_list_panel.load_files(file_data))
                     self.after(0, lambda: self.token_gauge.update_gauge(total, len(file_data)))
                     self.after(0, lambda: self.log.log_success(f"Token analysis complete: {total:,} tokens"))
@@ -168,7 +244,11 @@ class SpecReviewApp(ctk.CTk):
     def _on_file_selection_change(self):
         if not hasattr(self, "_loaded_file_data") or not self._loaded_file_data: return
         sel = set(self.file_list_panel.get_selected_files())
-        total = getattr(self, "_system_prompt_tokens", 0) + sum(d["tokens"] for d in self._loaded_file_data if d["path"] in sel)
+        total = (
+            getattr(self, "_system_prompt_tokens", 0)
+            + getattr(self, "_project_context_tokens", 0)
+            + sum(d["tokens"] for d in self._loaded_file_data if d["path"] in sel)
+        )
         fc = len(sel)
         self.token_gauge.update_gauge(total, fc)
         wl = total <= RECOMMENDED_MAX
@@ -188,6 +268,7 @@ class SpecReviewApp(ctk.CTk):
         if self.is_processing: return
         if not self._validate_inputs(): return
         self._selected_files_for_review = self.file_list_panel.get_selected_files()
+        self._project_context_for_review = self._get_project_context()
         self.is_processing = True
         self.report_panel.clear()
         self._close_report_window()
@@ -208,6 +289,7 @@ class SpecReviewApp(ctk.CTk):
             result = run_review(
                 input_dir=self.input_dir,
                 files=self._selected_files_for_review,
+                project_context=self._project_context_for_review,
                 dry_run=False, verbose=False,
                 log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
                 progress=lambda pct, msg: self.after(0, lambda m=msg: self.log.log_step(m)),
@@ -246,6 +328,7 @@ class SpecReviewApp(ctk.CTk):
         self._report_window = ReportWindow(
             self, review=review, files_reviewed=files_reviewed,
             leed_alerts=leed_alerts, placeholder_alerts=placeholder_alerts,
+            project_context=getattr(self, "_project_context_for_review", ""),
         )
 
     def _close_report_window(self):
@@ -303,7 +386,14 @@ class SpecReviewApp(ctk.CTk):
         self.input_dir = None
         self._selected_files = []
         self._loaded_file_data = []
+        self._project_context_tokens = 0
         self.input_dir_entry.delete(0, "end")
+
+        # Clear project context and restore placeholder
+        self.context_textbox.delete("1.0", "end")
+        self._context_has_placeholder = True
+        self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
+        self.context_textbox.configure(text_color=COLORS["text_muted"])
 
         # Reset widgets
         self.token_gauge.reset()

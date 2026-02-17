@@ -120,6 +120,7 @@ def review_specs(
     combined_content: str,
     *,
     file_count: int = 0,
+    project_context: str = "",
     max_retries: int = 3,
     verbose: bool = False,
     stream_callback: Optional[StreamCallback] = None,
@@ -133,6 +134,7 @@ def review_specs(
     Args:
         combined_content: All spec text concatenated with FILE headers
         file_count: Number of spec files (passed to user message for context)
+        project_context: Optional free-text project description from the user
         max_retries: Maximum retry attempts for transient API errors
         verbose: If True, print debug info to stdout
         stream_callback: Optional callback invoked with each streaming text chunk
@@ -143,7 +145,11 @@ def review_specs(
     client = Anthropic(api_key=_get_api_key())
 
     system_prompt = get_system_prompt()
-    user_message = get_user_message(combined_content, file_count=file_count)
+    user_message = get_user_message(
+        combined_content,
+        file_count=file_count,
+        project_context=project_context,
+    )
 
     max_tokens = 32768
 

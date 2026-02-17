@@ -1,8 +1,14 @@
 """
-Custom widgets for MEP Spec Review GUI.
+Custom widgets for Spec Critic GUI.
 
 Contains: TokenGauge, FileListPanel, EnhancedLog,
 AnimatedButton, ReportPanel, ReportWindow.
+
+v1.3.0 changes:
+    - Fix: EnhancedLog collapse now fully reclaims vertical space by
+      disabling expand on the parent frame when collapsed
+    - Rename: App title references updated from "MEP Spec Review" / "Spec
+      Review Report" to "Spec Critic" / "Spec Critic Report"
 
 v1.2.0 changes:
     - Performance: animation frame rates reduced (pulse/glow 15fps, gauge 30fps)
@@ -328,6 +334,7 @@ class FileListPanel(ctk.CTkFrame):
 
 # ============================================================================
 # ENHANCED LOG  (v1.2.0 — single CTkTextbox replaces per-line CTkLabels)
+#               (v1.3.0 — collapse fix: pack_propagate(False) when collapsed)
 # ============================================================================
 
 class EnhancedLog(ctk.CTkFrame):
@@ -336,7 +343,15 @@ class EnhancedLog(ctk.CTkFrame):
     text tags.  Previous versions created one CTkLabel per log line, which
     caused layout churn during rapid logging (token analysis, review progress).
     A single textbox with append-only inserts is dramatically cheaper.
+
+    v1.3.0 fix: When collapsed, the frame now sets pack_propagate(False) and
+    shrinks to just the header height, reclaiming all vertical space. When
+    expanded, pack_propagate is re-enabled so the textbox can push the frame
+    to its natural height.
     """
+
+    # Height of the header bar alone (padx/border overhead included)
+    _COLLAPSED_HEIGHT = 48
 
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
@@ -386,12 +401,19 @@ class EnhancedLog(ctk.CTkFrame):
     def expand(self):
         self._expanded = True
         self.expand_label.configure(text="\u25bc")
+        # Re-enable geometry propagation so the textbox can size the frame
+        self.pack_propagate(True)
         self.content_container.pack(fill="both", expand=True)
 
     def collapse(self):
         self._expanded = False
         self.expand_label.configure(text="\u25b6")
         self.content_container.pack_forget()
+        # Disable propagation and fix height to just the header bar.
+        # Without this, the CTkFrame retains its expanded height even
+        # after the content_container is hidden.
+        self.configure(height=self._COLLAPSED_HEIGHT)
+        self.pack_propagate(False)
 
     # --- Paced queue (same mechanism as v1.1, new rendering backend) ---
 
@@ -525,7 +547,7 @@ def _render_summary_grid(parent, review, files_reviewed):
     hc.pack(fill="x", pady=(0, 12))
     hi = ctk.CTkFrame(hc, fg_color="transparent")
     hi.pack(fill="x", padx=16, pady=12)
-    ctk.CTkLabel(hi, text="Spec Review Report", font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
+    ctk.CTkLabel(hi, text="Spec Critic Report", font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
     ctk.CTkLabel(hi, text=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  \u2022  Model: {review.model}  \u2022  Files: {len(files_reviewed)}", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
 
     # Summary grid
@@ -799,9 +821,9 @@ class ReportWindow(ctk.CTkToplevel):
     Contains the full report: summary, alerts, collapsible findings, and notes.
     """
 
-    def __init__(self, master, review, files_reviewed, leed_alerts, placeholder_alerts, **kwargs):
+    def __init__(self, master, review, files_reviewed, leed_alerts, placeholder_alerts, project_context="", **kwargs):
         super().__init__(master, **kwargs)
-        self.title("Spec Review Report")
+        self.title("Spec Critic Report")
         self.geometry("960x800")
         self.minsize(700, 500)
         self.configure(fg_color=COLORS["bg_dark"])
@@ -810,6 +832,7 @@ class ReportWindow(ctk.CTkToplevel):
         self._files_reviewed = files_reviewed
         self._leed_alerts = leed_alerts
         self._placeholder_alerts = placeholder_alerts
+        self._project_context = project_context
         self._card_refs: list[dict] = []
 
         self._build_ui()
@@ -828,7 +851,7 @@ class ReportWindow(ctk.CTkToplevel):
         tb_inner.pack(fill="x", padx=16, pady=8)
 
         ctk.CTkLabel(
-            tb_inner, text="Spec Review Report",
+            tb_inner, text="Spec Critic Report",
             font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
             text_color=COLORS["text_primary"],
         ).pack(side="left")
@@ -871,6 +894,7 @@ class ReportWindow(ctk.CTkToplevel):
                 "output_tokens": review.output_tokens,
                 "elapsed_seconds": review.elapsed_seconds,
                 "generated_at": datetime.now().isoformat(),
+                "project_context": self._project_context,
             },
             "files_reviewed": files_reviewed,
             "findings": [f.__dict__ for f in review.findings],
@@ -881,7 +905,7 @@ class ReportWindow(ctk.CTkToplevel):
             parent=self,
             title="Save findings JSON", defaultextension=".json",
             filetypes=[("JSON Files", "*.json")],
-            initialfile=f"spec-review-{datetime.now().strftime('%Y-%m-%d')}.json",
+            initialfile=f"spec-critic-{datetime.now().strftime('%Y-%m-%d')}.json",
         )
         if path:
             Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -962,7 +986,7 @@ class ReportPanel(ctk.CTkFrame):
         path = ctk.filedialog.asksaveasfilename(
             title="Save findings JSON", defaultextension=".json",
             filetypes=[("JSON Files", "*.json")],
-            initialfile=f"spec-review-{datetime.now().strftime('%Y-%m-%d')}.json",
+            initialfile=f"spec-critic-{datetime.now().strftime('%Y-%m-%d')}.json",
         )
         if path:
             Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")

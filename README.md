@@ -1,4 +1,4 @@
-# MEP Spec Review v1.2.0
+# Spec Critic v1.3.0
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude Opus 4.6. Load `.docx` spec files, run the review, and see color-coded findings rendered directly in the app.
 
@@ -52,11 +52,22 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root. T
 1. Launch the app with `python main.py`
 2. Enter your API key (or let it auto-load from file)
 3. Click **Browse** to select `.docx` specs
-4. The token gauge fills to show capacity usage — stay under the 150k limit
-5. Expand the **FILES** panel to check/uncheck individual specs if needed
-6. Click **Run Review**
-7. When complete, the report renders in-app and a **pop-out report window** opens automatically
-8. Click **Expand** to view the in-app report full-screen, or **← Back to Review** to return
+4. (Optional) Enter project context in the **Project Context** field — describe the project so Claude has additional context for the review
+5. The token gauge fills to show capacity usage — stay under the 150k limit
+6. Expand the **FILES** panel to check/uncheck individual specs if needed
+7. Click **Run Review**
+8. When complete, the report renders in-app and a **pop-out report window** opens automatically
+9. Click **Expand** to view the in-app report full-screen, or **← Back to Review** to return
+
+### Project Context
+
+The Project Context field is an optional free-text area where you can describe your project. For example:
+
+- "New 2-story elementary school, 45,000 SF, gas heat pumps, VRF for admin wing"
+- "TI of existing middle school gymnasium, replacing RTUs"
+- "New K-8 school, central plant with CHW/HHW, classroom unit ventilators"
+
+When provided, this context is included in the message sent to Claude so the reviewer can tailor its analysis to your specific project. The project context text is counted toward the token limit. If left empty, the review proceeds without project-specific context (same behavior as previous versions).
 
 ### Collapsible Finding Cards
 
@@ -88,7 +99,7 @@ Click **Expand** to hide all input panels and give the report the full window. C
 
 ### Export Options
 
-- **Export JSON**: Opens a save dialog to write findings, alerts, and metadata to a `.json` file
+- **Export JSON**: Opens a save dialog to write findings, alerts, metadata (including project context), to a `.json` file
 - **Copy Summary**: Copies the reviewer's analysis summary text to your clipboard
 
 ## Project Structure
@@ -198,6 +209,12 @@ customtkinter      # Modern themed Tkinter widgets
 ```
 
 ## Changelog
+
+### v1.3.0
+
+- **Feature**: Project Context text field added to the INPUTS card. Optional free-text area where you describe your project (e.g., "New 2-story elementary school, 45,000 SF, gas heat pumps"). When provided, the context is included in the message to Claude as a `<project_context>` XML block. Project context tokens are counted toward the token limit. The field is included in Export JSON output under `meta.project_context`.
+- **Fix**: Activity Log collapse now fully reclaims vertical space. Previously, collapsing the log hid the textbox but the parent frame retained its expanded height, leaving a gap. The fix uses `pack_propagate(False)` with a fixed collapsed height so the frame shrinks to just the header bar.
+- **Rename**: App renamed from "MEP Spec Review" to "Spec Critic" throughout — window title, header, subtitle, report window title, report header card, and export filenames.
 
 ### v1.2.0
 
