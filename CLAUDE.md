@@ -6,7 +6,7 @@ This file provides guidance for AI assistants working on the **MEP Spec Review**
 
 MEP Spec Review is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.6 for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
 
-- **Version**: 1.1.0
+- **Version**: 1.2.0
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
 - **Model**: Claude Opus 4.6 (`claude-opus-4-6`), hardcoded — no model selection flags
 - **Output**: In-app only. No files are written during a review. The only file output is the optional Export JSON button.
@@ -17,7 +17,7 @@ MEP Spec Review is a GUI tool for reviewing Mechanical & Plumbing specifications
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.1.0")
+│   ├── __init__.py          # Package version ("1.2.0")
 │   ├── gui.py               # CustomTkinter app window, input handling, threading
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
 │   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
@@ -224,10 +224,20 @@ Findings are classified into four severity tiers:
 The GUI uses CustomTkinter with a dark theme. All custom widgets live in `widgets.py`:
 - `TokenGauge` — Animated fill gauge showing token capacity usage
 - `FileListPanel` — Checkbox list with per-file token counts
-- `EnhancedLog` — Scrollable log with paced entries and animations
+- `EnhancedLog` — Scrollable log using a single `CTkTextbox` with colored text tags (v1.2.0)
 - `AnimatedButton` — Run button with pulse/glow animations
 - `ReportPanel` — In-app report with summary grid, alerts, collapsible severity-colored finding cards, reviewer's notes, Expand button, Export JSON, and Copy Summary
 - `ReportWindow` — Pop-out toplevel window with the full report (opens automatically on review completion)
+
+### Performance Notes (v1.2.0)
+
+Three optimizations reduce main-thread contention during reviews:
+
+1. **Animation frame rates reduced**: The `AnimatedButton` pulse and `FileListPanel` glow animations run at 15fps (67ms intervals) instead of 60fps/20fps. The `TokenGauge` fill runs at 30fps (33ms) instead of 60fps. Each `configure()` call on a CTk widget is expensive because CTk widgets are composites of multiple underlying Tk widgets. Lower frame rates free the main thread for user interaction while remaining visually smooth for color transitions.
+
+2. **EnhancedLog uses a single CTkTextbox**: Previous versions created one `CTkLabel` per log line, triggering layout passes on every entry. The rewritten log appends colored text to a single read-only `CTkTextbox` using Tk text tags. Widget creation drops from N labels to 1 textbox.
+
+3. **Batched token-analysis callbacks**: The background thread accumulates filenames and schedules a single `after(0)` callback via `log_file_batch()` instead of one callback per file.
 
 ### Collapsible Finding Cards
 

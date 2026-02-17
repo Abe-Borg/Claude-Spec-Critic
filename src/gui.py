@@ -1,7 +1,7 @@
 """
 MEP Spec Review - Modern GUI with CustomTkinter
 California K-12 DSA Projects
-v1.1.0 - Collapsible finding cards + pop-out report window
+v1.2.0 - Performance optimizations (animation frame rates, log textbox, batched callbacks)
 """
 import os, sys, threading
 from pathlib import Path
@@ -123,12 +123,19 @@ class SpecReviewApp(ctk.CTk):
             self._analyze_tokens(paths)
 
     def _analyze_tokens(self, file_paths):
+        """Run token analysis in a background thread.
+
+        v1.2.0: filenames are accumulated and logged in a single batched
+        callback instead of one after(0) per file, reducing main-thread
+        scheduling pressure during rapid file processing.
+        """
         if not file_paths:
             self.log.log_warning("No .docx files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
         self.log.log_step(f"Analyzing {len(file_paths)} files...")
         def analyze():
             try:
                 file_data = []
+                processed_names: list[str] = []
                 from tiktoken import get_encoding
                 enc = get_encoding("cl100k_base")
                 self._system_prompt_tokens = len(enc.encode(get_system_prompt()))
@@ -137,9 +144,14 @@ class SpecReviewApp(ctk.CTk):
                         spec = extract_text_from_docx(f)
                         tokens = len(enc.encode(spec.content))
                         file_data.append({"path": f, "filename": spec.filename, "tokens": tokens, "content": spec.content})
-                        self.after(0, lambda n=f.name: self.log.log_file(n))
+                        processed_names.append(f.name)
                     except Exception as e:
                         self.after(0, lambda err=str(e), n=f.name: self.log.log_warning(f"Could not read {n}: {err}"))
+
+                # Batch-log all successfully processed filenames in one callback
+                if processed_names:
+                    self.after(0, lambda names=processed_names: self.log.log_file_batch(names))
+
                 if file_data:
                     self._loaded_file_data = file_data
                     total = self._system_prompt_tokens + sum(d["tokens"] for d in file_data)

@@ -4,6 +4,12 @@ Custom widgets for MEP Spec Review GUI.
 Contains: TokenGauge, FileListPanel, EnhancedLog,
 AnimatedButton, ReportPanel, ReportWindow.
 
+v1.2.0 changes:
+    - Performance: animation frame rates reduced (pulse/glow 15fps, gauge 30fps)
+    - Performance: EnhancedLog rewritten to use a single CTkTextbox with text
+      tags instead of creating one CTkLabel per log line
+    - Performance: log_file_batch() added for batched token-analysis callbacks
+
 v1.1.0 changes:
     - Finding cards are collapsible (click header to minimize/expand)
     - Collapse All / Expand All buttons in findings toolbar
@@ -64,11 +70,17 @@ LOG_COLORS = {
 ANIM = {
     "log_file_delay": 200,
     "log_status_delay": 400,
-    "gauge_step": 16,
+    # --- Performance-tuned intervals (v1.2.0) ---
+    # Gauge fill: 30fps (was 60fps). Short-lived animation, still smooth.
+    "gauge_step": 33,
     "gauge_duration": 700,
     "fade_duration": 200,
     "fade_steps": 8,
     "pulse_interval": 1500,
+    # Pulse & glow: 15fps (67ms). These run for minutes during API calls.
+    # CTk configure() is expensive; 15fps is plenty for color blends.
+    "pulse_step_ms": 67,
+    "glow_step_ms": 67,
     "expand_duration": 200,
     "expand_steps": 10,
 }
@@ -175,6 +187,7 @@ class TokenGauge(ctk.CTkFrame):
             self._animate_gauge(0)
 
     def _animate_gauge(self, step):
+        # Step count recalculated for 33ms interval (was 16ms)
         total = ANIM["gauge_duration"] // ANIM["gauge_step"]
         if step >= total:
             self._current_pct = self._target_pct
@@ -299,11 +312,12 @@ class FileListPanel(ctk.CTkFrame):
             self.title_label.configure(text_color=COLORS["text_muted"])
 
     def _animate_glow(self):
+        """Glow animation at 15fps (67ms) — was ~20fps (50ms)."""
         if not self._is_over_limit: return
         t = (math.sin(self._glow_step * 0.15) + 1) / 2
         self.title_label.configure(text_color=blend_colors(COLORS["error"], "#ff9999", t))
         self._glow_step += 1
-        self._glow_animation_id = self.after(50, self._animate_glow)
+        self._glow_animation_id = self.after(ANIM["glow_step_ms"], self._animate_glow)
 
     def reset(self):
         if self._glow_animation_id: self.after_cancel(self._glow_animation_id); self._glow_animation_id = None
@@ -313,16 +327,24 @@ class FileListPanel(ctk.CTkFrame):
 
 
 # ============================================================================
-# ENHANCED LOG
+# ENHANCED LOG  (v1.2.0 — single CTkTextbox replaces per-line CTkLabels)
 # ============================================================================
 
 class EnhancedLog(ctk.CTkFrame):
+    """
+    Scrollable activity log using a single read-only CTkTextbox with colored
+    text tags.  Previous versions created one CTkLabel per log line, which
+    caused layout churn during rapid logging (token analysis, review progress).
+    A single textbox with append-only inserts is dramatically cheaper.
+    """
+
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
-        self._log_queue = deque()
+        self._log_queue: deque = deque()
         self._processing_queue = False
         self._expanded = True
 
+        # Header bar
         self.header = ctk.CTkFrame(self, fg_color="transparent", height=36, cursor="hand2")
         self.header.pack(fill="x", padx=16, pady=(12, 0))
         self.header.pack_propagate(False)
@@ -334,53 +356,109 @@ class EnhancedLog(ctk.CTkFrame):
         ctk.CTkLabel(self.header, text="ACTIVITY LOG", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"]).pack(side="left", padx=(4, 0))
         ctk.CTkButton(self.header, text="Clear", width=50, height=24, font=ctk.CTkFont(size=11), fg_color="transparent", hover_color=COLORS["bg_input"], text_color=COLORS["text_muted"], command=self.clear).pack(side="right")
 
+        # Content area — single CTkTextbox instead of scrollable frame + labels
         self.content_container = ctk.CTkFrame(self, fg_color="transparent")
         self.content_container.pack(fill="both", expand=True)
-        self.log_frame = ctk.CTkScrollableFrame(self.content_container, fg_color=COLORS["bg_input"], corner_radius=4)
-        self.log_frame.pack(fill="both", expand=True, padx=16, pady=12)
-        self.entries = []
+
+        self._textbox = ctk.CTkTextbox(
+            self.content_container,
+            fg_color=COLORS["bg_input"],
+            corner_radius=4,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["text_secondary"],
+            wrap="word",
+            state="disabled",
+            activate_scrollbars=True,
+        )
+        self._textbox.pack(fill="both", expand=True, padx=16, pady=12)
+
+        # Configure text tags for each log level color.
+        # CTkTextbox wraps a plain Tk Text widget accessible via ._textbox
+        inner_text = self._textbox._textbox
+        for level, color in LOG_COLORS.items():
+            inner_text.tag_configure(level, foreground=color)
+
+    # --- Expand / Collapse ---
 
     def _toggle(self, event=None):
         self.collapse() if self._expanded else self.expand()
+
     def expand(self):
-        self._expanded = True; self.expand_label.configure(text="\u25bc"); self.content_container.pack(fill="both", expand=True)
+        self._expanded = True
+        self.expand_label.configure(text="\u25bc")
+        self.content_container.pack(fill="both", expand=True)
+
     def collapse(self):
-        self._expanded = False; self.expand_label.configure(text="\u25b6"); self.content_container.pack_forget()
+        self._expanded = False
+        self.expand_label.configure(text="\u25b6")
+        self.content_container.pack_forget()
+
+    # --- Paced queue (same mechanism as v1.1, new rendering backend) ---
 
     def _queue_log(self, msg, level, ts, delay):
         self._log_queue.append((msg, level, ts, delay))
-        if not self._processing_queue: self._process_queue()
+        if not self._processing_queue:
+            self._process_queue()
 
     def _process_queue(self):
-        if not self._log_queue: self._processing_queue = False; return
+        if not self._log_queue:
+            self._processing_queue = False
+            return
         self._processing_queue = True
         msg, level, ts, delay = self._log_queue.popleft()
-        self._create_entry(msg, level, ts)
+        self._append_line(msg, level, ts)
         self.after(delay, self._process_queue)
 
-    def _create_entry(self, msg, level, ts):
-        color = LOG_COLORS.get(level, COLORS["text_secondary"])
+    def _append_line(self, msg: str, level: str, ts: bool):
+        """Append a single line to the textbox with the appropriate color tag."""
         txt = f"[{datetime.now().strftime('%H:%M:%S')}]  {msg}" if ts else f"         {msg}"
-        entry = ctk.CTkLabel(self.log_frame, text=txt, font=ctk.CTkFont(family="Consolas", size=12), text_color=color, anchor="w", justify="left")
-        entry.pack(fill="x", anchor="w", pady=1)
-        self.entries.append(entry)
-        self.log_frame.update_idletasks()
-        self.log_frame._parent_canvas.yview_moveto(1.0)
+        self._textbox.configure(state="normal")
+        # Add newline separator if there's existing content
+        inner = self._textbox._textbox
+        if inner.index("end-1c") != "1.0":
+            inner.insert("end", "\n", ())
+        inner.insert("end", txt, (level,))
+        self._textbox.configure(state="disabled")
+        # Auto-scroll to bottom
+        inner.see("end")
+
+    # --- Public logging API (unchanged signatures) ---
 
     def log(self, msg, level="info", timestamp=True, paced=True):
-        if paced: self._queue_log(msg, level, timestamp, ANIM["log_status_delay"])
-        else: self._create_entry(msg, level, timestamp)
+        if paced:
+            self._queue_log(msg, level, timestamp, ANIM["log_status_delay"])
+        else:
+            self._append_line(msg, level, timestamp)
 
     def clear(self):
         self._log_queue.clear()
-        for e in self.entries: e.destroy()
-        self.entries.clear()
+        self._textbox.configure(state="normal")
+        self._textbox._textbox.delete("1.0", "end")
+        self._textbox.configure(state="disabled")
 
-    def log_step(self, msg): self._queue_log(f"\u25b8 {msg}", "step", True, ANIM["log_status_delay"])
-    def log_success(self, msg): self._queue_log(f"\u2713 {msg}", "success", True, ANIM["log_status_delay"])
-    def log_warning(self, msg): self._queue_log(f"\u26a0 {msg}", "warning", True, ANIM["log_status_delay"])
-    def log_error(self, msg): self._queue_log(f"\u2717 {msg}", "error", True, ANIM["log_status_delay"])
-    def log_file(self, fn): self._queue_log(f"  \u2192 {fn}", "file", False, ANIM["log_file_delay"])
+    def log_step(self, msg):
+        self._queue_log(f"\u25b8 {msg}", "step", True, ANIM["log_status_delay"])
+
+    def log_success(self, msg):
+        self._queue_log(f"\u2713 {msg}", "success", True, ANIM["log_status_delay"])
+
+    def log_warning(self, msg):
+        self._queue_log(f"\u26a0 {msg}", "warning", True, ANIM["log_status_delay"])
+
+    def log_error(self, msg):
+        self._queue_log(f"\u2717 {msg}", "error", True, ANIM["log_status_delay"])
+
+    def log_file(self, fn):
+        self._queue_log(f"  \u2192 {fn}", "file", False, ANIM["log_file_delay"])
+
+    def log_file_batch(self, filenames: list[str]):
+        """Log multiple filenames in a single main-thread callback.
+
+        Used by the token-analysis background thread to avoid scheduling
+        one after(0) callback per file.
+        """
+        for fn in filenames:
+            self._queue_log(f"  \u2192 {fn}", "file", False, ANIM["log_file_delay"])
 
 
 # ============================================================================
@@ -398,12 +476,25 @@ class AnimatedButton(ctk.CTkButton):
         self._pulse_active = True; self._pulse_step = 0; self._animate_pulse()
 
     def _animate_pulse(self):
-        if not self._pulse_active or self._state != "processing": return
-        spc = ANIM["pulse_interval"] // 16
+        """Pulse animation at 15fps (67ms) — was ~60fps (16ms).
+
+        This runs for the entire duration of the API call (potentially
+        minutes).  At 60fps every configure() call forces CTk layout
+        processing on the main thread, causing noticeable input lag.
+        15fps is visually smooth for a sinusoidal color blend and frees
+        the main thread for user interaction.
+        """
+        if not self._pulse_active or self._state != "processing":
+            return
+        # Steps-per-cycle recalculated for 67ms interval
+        spc = ANIM["pulse_interval"] // ANIM["pulse_step_ms"]
         t = (math.sin(self._pulse_step / spc * math.pi * 2) + 1) / 2
-        self.configure(fg_color=blend_colors(COLORS["bg_input"], COLORS["accent"], t), hover_color=blend_colors(COLORS["bg_input"], COLORS["accent"], t))
+        self.configure(
+            fg_color=blend_colors(COLORS["bg_input"], COLORS["accent"], t),
+            hover_color=blend_colors(COLORS["bg_input"], COLORS["accent"], t),
+        )
         self._pulse_step = (self._pulse_step + 1) % spc
-        self.after(16, self._animate_pulse)
+        self.after(ANIM["pulse_step_ms"], self._animate_pulse)
 
     def set_ready(self):
         self._pulse_active = self._glow_active = False; self._state = "ready"

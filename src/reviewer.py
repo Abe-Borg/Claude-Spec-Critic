@@ -80,14 +80,14 @@ def _extract_json_array(text: str) -> tuple[list, str]:
     """Extract the JSON findings array and analysis summary from Claude's response."""
     start_idx = text.find("[")
     end_idx = text.rfind("]")
-    
+
     if start_idx == -1 or end_idx == -1:
         if "no issues" in text.lower() or text.strip() == "[]":
             return [], text.strip()
         raise ValueError(f"Could not find JSON array in response: {text[:200]}...")
 
     thinking = text[:start_idx].strip()
-    
+
     json_str = text[start_idx:end_idx + 1]
     data = json.loads(json_str)
     if not isinstance(data, list):
@@ -126,10 +126,10 @@ def review_specs(
 ) -> ReviewResult:
     """
     Send specifications to Claude for review and parse the response.
-    
+
     Uses streaming API for real-time display. Retries on rate limit
     and connection errors with exponential backoff.
-    
+
     Args:
         combined_content: All spec text concatenated with FILE headers
         file_count: Number of spec files (passed to user message for context)
@@ -158,20 +158,20 @@ def review_specs(
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             ) as stream:
-                
+
                 response_chunks: list[str] = []
-                
+
                 for text in stream.text_stream:
                     response_chunks.append(text)
-                    
+
                     if stream_callback:
                         try:
                             stream_callback(text)
                         except Exception:
                             pass
-                
+
                 resp = stream.get_final_message()
-            
+
             response_text = "".join(response_chunks)
             result.raw_response = response_text
 
@@ -182,7 +182,7 @@ def review_specs(
                     result.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
             except Exception:
                 pass
-            
+
             data, thinking = _extract_json_array(response_text)
             result.findings = _parse_findings(data)
             result.thinking = thinking

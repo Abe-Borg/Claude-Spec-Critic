@@ -1,4 +1,4 @@
-# MEP Spec Review v1.1.0
+# MEP Spec Review v1.2.0
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude Opus 4.6. Load `.docx` spec files, run the review, and see color-coded findings rendered directly in the app.
 
@@ -198,6 +198,12 @@ customtkinter      # Modern themed Tkinter widgets
 ```
 
 ## Changelog
+
+### v1.2.0
+
+- **Performance**: Animation frame rates reduced — pulse and glow animations now run at 15fps (67ms) instead of 60fps (16ms); token gauge fill runs at 30fps (33ms). This frees the main thread during long API calls, eliminating noticeable UI lag when scrolling, clicking, or typing.
+- **Performance**: `EnhancedLog` rewritten to use a single read-only `CTkTextbox` with colored text tags instead of creating one `CTkLabel` per log line. Reduces widget creation from N labels to 1 textbox during token analysis and review progress.
+- **Performance**: Token analysis callbacks batched — the background thread accumulates filenames and schedules a single `after(0)` callback via `log_file_batch()` instead of one per file.
 
 ### v1.1.0
 
