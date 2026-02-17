@@ -242,3 +242,14 @@ customtkinter      # Modern themed Tkinter widgets
 - Updated system prompt (richer severity definitions, cross-discipline coordination, CRITICAL CHECKS section)
 - Hardcoded to Claude Opus 4.6
 - Simplified `pipeline.py` to return in-memory `PipelineResult` only
+- 
+
+## Copyright Notice
+
+**Copyright © 2025 Abraham Borg. All Rights Reserved.**
+
+This software and associated documentation files (the "Software") are the proprietary property of Andrew Gossman. 
+
+**Unauthorized copying, modification, distribution, or use of this Software, via any medium, is strictly prohibited without express written permission from the copyright holder.**
+
+This Software is provided for review and reference purposes only. No license or right to use, copy, modify, or distribute this Software for any purpose, commercial or non-commercial, is granted.
