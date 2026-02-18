@@ -104,6 +104,38 @@ Batch mode submits all specs as a single Anthropic Message Batch at 50% cost com
 - You can close and reopen the app while a batch is processing — however, the current version does not persist batch state, so you would need to manually check the Anthropic dashboard for results
 - Batch errors are handled gracefully — if some specs fail in the batch, the rest still produce results
 
+### Verification
+
+Verification is an optional post-review step that fact-checks findings using web search. When enabled, each CRITICAL, HIGH, and MEDIUM finding that references a specific code or standard is verified by a separate Claude Sonnet 4.5 call with web search enabled.
+
+**How to enable verification:**
+
+1. In the INPUTS card, check the **Web search fact-check** checkbox under Verify
+2. Run your review (real-time or batch)
+3. After the review completes, verification runs automatically on eligible findings
+4. Results appear in the finding cards as color-coded verdict badges
+
+**Verdict meanings:**
+
+- **CONFIRMED** (green) — The finding is factually correct. The code/standard says what the finding claims.
+- **CORRECTED** (amber) — The finding identifies a real issue, but the suggested replacement has an error (wrong section number, wrong edition year, etc.). A correction is provided.
+- **DISPUTED** (red) — The finding appears incorrect. The code/standard does NOT say what the finding claims.
+- **UNVERIFIED** (gray, not displayed) — Could not find evidence either way, or the finding was skipped.
+
+**What gets verified:**
+
+- Findings with a code reference (e.g., "CBC 2025 Section 1613", "ASHRAE 62.1-2022 Table 6-1")
+- CRITICAL, HIGH, and MEDIUM severity only
+- GRIPES are always skipped (not worth the API cost)
+- Findings without a code reference are skipped (nothing factual to check)
+
+**Cost notes:**
+
+- Verification uses Claude Sonnet 4.5 (cheaper than Opus) with web search
+- Each eligible finding makes one additional API call
+- A review with 20 findings might have 12-15 eligible for verification
+- In batch mode, verification runs after batch results are collected (not batched itself — runs sequentially)
+
 ### Report Panel
 
 After the review completes, the activity log collapses and the report panel renders with:
@@ -138,6 +170,7 @@ spec-review/
 │   │                    #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py      # Core orchestration (single source of truth)
 │   ├── batch.py         # Anthropic Message Batches API integration
+│   ├── verifier.py      # Web search self-verification (Sonnet + web_search)
 │   ├── extractor.py     # DOCX text extraction
 │   ├── preprocessor.py  # LEED/placeholder detection (no mutation)
 │   ├── tokenizer.py     # Token counting with tiktoken
@@ -259,8 +292,15 @@ customtkinter      # Modern themed Tkinter widgets
 - **Feature**: Automatic batch polling — after submission, the GUI polls every 15 seconds and updates the progress bar and activity log with batch status (succeeded/processing/errored counts)
 - **Feature**: Results are collected and displayed in the same report window as real-time mode — the report format is identical regardless of which mode was used
 
-**Upcoming:**
-- Phase 3: Web search self-verification of findings
+**Phase 3: Web Search Self-Verification**
+
+- **Feature**: Verification toggle in the Inputs card — a "Web search fact-check" checkbox enables post-review verification of findings. When enabled, each CRITICAL, HIGH, and MEDIUM finding with a code reference is fact-checked using Claude Sonnet 4.5 with the web search tool
+- **Feature**: `verifier.py` module — builds focused verification prompts, calls Sonnet with `web_search_20250305`, parses structured JSON verdicts (CONFIRMED, CORRECTED, UNVERIFIED, DISPUTED)
+- **Feature**: Verification verdicts displayed in finding cards — color-coded verdict badges (green CONFIRMED, amber CORRECTED, red DISPUTED), explanation text, correction text if applicable, and source URLs
+- **Feature**: Verification summary in report header — shows counts of confirmed/corrected/disputed findings
+- **Feature**: Verification results included in JSON export — full verdict, explanation, sources, and correction for each finding
+- **Feature**: GRIPES findings and findings without code references are automatically skipped (not worth the API cost)
+- **Feature**: Verification works in both real-time and batch modes — the `verify` parameter is available on both `run_review()` and `collect_batch_results()`
 
 ### v1.3.0
 

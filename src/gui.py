@@ -167,6 +167,33 @@ class SpecReviewApp(ctk.CTk):
         )
         self._mode_hint.pack(side="left", padx=(12, 0))
 
+        # --- Row 4: Verification toggle ---
+        ctk.CTkLabel(self.inputs_content, text="Verify", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
+        verify_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        verify_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
+        self._verify_enabled = ctk.BooleanVar(value=False)
+        self.verify_checkbox = ctk.CTkCheckBox(
+            verify_frame,
+            text="Web search fact-check",
+            variable=self._verify_enabled,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            border_color=COLORS["border"],
+            checkmark_color=COLORS["text_primary"],
+            text_color=COLORS["text_secondary"],
+            height=24,
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        self.verify_checkbox.pack(side="left")
+        ctk.CTkLabel(
+            verify_frame,
+            text="Verify CRITICAL/HIGH/MEDIUM findings with Sonnet + web search (adds cost)",
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=COLORS["text_muted"],
+        ).pack(side="left", padx=(8, 0))
+
         self.inputs_content.columnconfigure(1, weight=1)
 
     # --- Project context placeholder helpers ---
@@ -315,6 +342,7 @@ class SpecReviewApp(ctk.CTk):
         if not self._validate_inputs(): return
         self._selected_files_for_review = self.file_list_panel.get_selected_files()
         self._project_context_for_review = self._get_project_context()
+        self._verify_for_review = self._verify_enabled.get()
         self.is_processing = True
         self.report_panel.clear()
         self._close_report_window()
@@ -335,8 +363,12 @@ class SpecReviewApp(ctk.CTk):
     def _run_review_thread(self):
         try:
             n = len(self._selected_files_for_review)
+            v = self._verify_for_review
             self.after(0, lambda: self.log.log_step("Starting per-spec review..."))
-            self.after(0, lambda: self.log.log(f"Model: {MODEL_OPUS_46}  \u2022  {n} specs \u2022  1 API call per spec", level="muted"))
+            mode_info = f"Model: {MODEL_OPUS_46}  \u2022  {n} specs \u2022  1 API call per spec"
+            if v:
+                mode_info += "  \u2022  verification enabled"
+            self.after(0, lambda: self.log.log(mode_info, level="muted"))
 
             def _on_progress(pct, msg):
                 self.after(0, lambda m=msg: self.log.log_step(m))
@@ -347,6 +379,7 @@ class SpecReviewApp(ctk.CTk):
                 input_dir=self.input_dir,
                 files=self._selected_files_for_review,
                 project_context=self._project_context_for_review,
+                verify=v,
                 dry_run=False, verbose=False,
                 log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
                 progress=_on_progress,
@@ -454,7 +487,16 @@ class SpecReviewApp(ctk.CTk):
         """Retrieve results from the completed batch in a background thread."""
         def _do_collect():
             try:
-                result = collect_batch_results(self._batch_submission)
+                def _on_progress(pct, msg):
+                    self.after(0, lambda m=msg: self.log.log_step(m))
+                    self.after(0, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+
+                result = collect_batch_results(
+                    self._batch_submission,
+                    verify=self._verify_for_review,
+                    log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
+                    progress=_on_progress,
+                )
                 self.after(0, lambda: self._on_review_complete(result))
             except Exception as e:
                 import traceback
@@ -561,6 +603,7 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.configure(text="Run Review")
         self.mode_selector.set("Real-time")
         self._mode_hint.configure(text="")
+        self._verify_enabled.set(False)
         self.is_processing = False
 
         # Re-pack everything in original order

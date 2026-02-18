@@ -52,9 +52,11 @@ spec-review/
 
 | Module | Responsibility |
 |--------|---------------|
-| `gui.py` | App window, input handling (including project context field), threading, review orchestration, report expand/collapse mode, pop-out report window lifecycle |
+| `gui.py` | App window, input handling (including project context field, mode toggle), threading, review orchestration, batch polling, report expand/collapse mode, pop-out report window lifecycle |
 | `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel |
-| `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult` |
+| `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult`. Provides `run_review()` for real-time and `start_batch_review()` + `collect_batch_results()` for batch |
+| `batch.py` | Anthropic Message Batches API integration — submission, polling, result retrieval, cancellation |
+| `verifier.py` | Web search self-verification — builds verification prompts, calls Sonnet with web_search tool, parses verdicts |
 | `extractor.py` | `.docx` → plain text (paragraphs + tables) |
 | `preprocessor.py` | Local regex detection of LEED refs and placeholders |
 | `tokenizer.py` | Token counting (tiktoken cl100k_base) + limit enforcement |
@@ -293,19 +295,19 @@ All heavy operations (folder analysis, API calls) run in background threads. GUI
 
 The v1.4.0 release adds three major features ported from the SpecCheck web app:
 
-### Phase 1: Per-Spec Siloed Context (Steps 1A-1C)
+### Phase 1: Per-Spec Siloed Context (Steps 1A-1C) ✅ COMPLETE
 - **Step 1A** ✅ — `get_single_spec_user_message()` in prompts, `review_single_spec()` in reviewer, `Finding.verification` field, `_stream_review()` refactor
-- **Step 1B** — Refactor `pipeline.py` to loop over specs instead of combining them
-- **Step 1C** — GUI per-spec progress display, version bump, docs update
+- **Step 1B** ✅ — Pipeline refactored to loop over specs with `review_single_spec()`, per-spec token check, partial failure resilience
+- **Step 1C** ✅ — Determinate progress bar, per-spec log messages, version bump to 1.4.0
 
-### Phase 2: Batch Processing (Steps 2A-2B)
-- **Step 2A** — New `batch.py` module with Anthropic Message Batches API integration
-- **Step 2B** — Pipeline + GUI batch mode toggle, polling UI
+### Phase 2: Batch Processing (Steps 2A-2B) ✅ COMPLETE
+- **Step 2A** ✅ — `batch.py` module with `submit_review_batch()`, `poll_batch()`, `retrieve_review_results()`, `cancel_batch()`
+- **Step 2B** ✅ — Pipeline `start_batch_review()` + `collect_batch_results()`, GUI mode toggle, polling loop, shared `_prepare_specs()` helper
 
-### Phase 3: Web Search Self-Verification (Steps 3A-3C)
-- **Step 3A** — New `verifier.py` module with verification prompt and response parsing
-- **Step 3B** — Wire verification into pipeline (real-time and batch modes)
-- **Step 3C** — Verification UI: verdict badges, source links, correction display
+### Phase 3: Web Search Self-Verification (Steps 3A-3C) ✅ COMPLETE
+- **Step 3A** ✅ — `verifier.py` module with `verify_finding()`, `verify_findings()`, `VerificationResult` dataclass, `_build_verification_prompt()`, `_should_verify()` filter
+- **Step 3B** ✅ — `verify` parameter added to `run_review()` and `collect_batch_results()`. Verification runs as Stage 5 after review, before result aggregation
+- **Step 3C** ✅ — Verdict badges (color-coded CONFIRMED/CORRECTED/DISPUTED), explanation text, correction display, source URLs in finding cards. Verification summary in report header. `_finding_to_dict()` for JSON export. Verify checkbox in GUI inputs card
 
 ## Common Development Tasks
 

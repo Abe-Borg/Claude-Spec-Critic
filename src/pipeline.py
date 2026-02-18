@@ -51,6 +51,7 @@ from .reviewer import (
     StreamCallback,
 )
 from .batch import BatchJob, BatchStatus, submit_review_batch, poll_batch, retrieve_review_results
+from .verifier import verify_findings, VerificationResult
 
 # Type aliases for callback signatures
 LogFn = Callable[[str], None]
@@ -263,13 +264,22 @@ def start_batch_review(
     )
 
 
-def collect_batch_results(submission: BatchSubmission) -> PipelineResult:
+def collect_batch_results(
+    submission: BatchSubmission,
+    *,
+    verify: bool = False,
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+) -> PipelineResult:
     """Retrieve and aggregate results from a completed batch.
 
     Call this after poll_batch() shows status == "ended".
 
     Args:
         submission: BatchSubmission returned by start_batch_review()
+        verify: If True, run web search verification on eligible findings
+        log: Callback for log messages
+        progress: Callback for progress updates
 
     Returns:
         PipelineResult with aggregated findings, same shape as run_review()
@@ -321,6 +331,30 @@ def collect_batch_results(submission: BatchSubmission) -> PipelineResult:
             "\n".join(f"  - {e}" for e in errors)
         )
 
+    # Verification (optional)
+    if verify and all_findings:
+        verifiable_count = sum(
+            1 for f in all_findings
+            if f.severity != "GRIPES" and f.codeReference
+        )
+        if verifiable_count > 0:
+            progress(60.0, f"Verifying {verifiable_count} findings via web search...")
+            log(f"Verifying {verifiable_count} findings with Sonnet + web search...")
+
+            def _verify_progress(current: int, total: int, filename: str):
+                verify_pct = 60.0 + (current / total) * 35.0
+                progress(verify_pct, f"Verifying finding {current}/{total} ({filename})...")
+
+            verify_findings(all_findings, progress=_verify_progress)
+
+            verdicts = {}
+            for f in all_findings:
+                if f.verification:
+                    v = f.verification.verdict
+                    verdicts[v] = verdicts.get(v, 0) + 1
+            log(f"Verification complete: {', '.join(f'{v}: {c}' for v, c in sorted(verdicts.items()))}")
+
+    progress(100.0, "Done.")
     return PipelineResult(
         review_result=combined_result,
         files_reviewed=submission.files_reviewed,
@@ -334,6 +368,7 @@ def run_review(
     input_dir: Path,
     files: Optional[list[Path]] = None,
     project_context: str = "",
+    verify: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
     log: LogFn = _noop_log,
@@ -344,8 +379,8 @@ def run_review(
     Execute the full specification review pipeline.
 
     v1.4.0: Reviews each spec independently via review_single_spec() instead
-    of combining all specs into one API call. Findings, thinking, and token
-    counts are aggregated across all per-spec results.
+    of combining all specs into one API call. Optionally verifies findings
+    via web search after review.
 
     Args:
         input_dir: Directory containing .docx specification files
@@ -353,6 +388,8 @@ def run_review(
                files in input_dir are processed.
         project_context: Optional free-text project description. If non-empty,
             included in each per-spec user message as a <project_context> block.
+        verify: If True, run web search verification on eligible findings
+            after review (uses Sonnet, adds cost but confirms accuracy).
         dry_run: If True, skip the API call.
         verbose: Passed to reviewer for additional stdout logging
         log: Callback for log messages.
@@ -407,10 +444,13 @@ def run_review(
     total_output_tokens = 0
     errors: list[str] = []
 
+    # Progress allocation: review 35-75% if verifying, 35-95% if not
+    review_end_pct = 75.0 if verify else 95.0
+
     for i, spec in enumerate(specs):
         spec_num = i + 1
         progress_base = 35.0
-        progress_range = 60.0  # 35% to 95% of the bar is for reviews
+        progress_range = review_end_pct - progress_base
         spec_progress = progress_base + (i / total_files) * progress_range
 
         progress(spec_progress, f"Reviewing {spec.filename} ({spec_num}/{total_files})...")
@@ -439,7 +479,37 @@ def run_review(
         log(f"  {spec.filename}: {len(result.findings)} findings")
 
     # -------------------------------------------------------------------------
-    # Stage 5: Aggregate results
+    # Stage 5: Web search verification (optional)
+    # -------------------------------------------------------------------------
+    if verify and all_findings:
+        verifiable_count = sum(
+            1 for f in all_findings
+            if f.severity != "GRIPES" and f.codeReference
+        )
+        if verifiable_count > 0:
+            progress(review_end_pct, f"Verifying {verifiable_count} findings via web search...")
+            log(f"Verifying {verifiable_count} findings with Sonnet + web search...")
+
+            def _verify_progress(current: int, total: int, filename: str):
+                verify_pct = review_end_pct + (current / total) * (95.0 - review_end_pct)
+                progress(verify_pct, f"Verifying finding {current}/{total} ({filename})...")
+
+            verify_findings(all_findings, progress=_verify_progress)
+
+            # Count verification verdicts
+            verdicts = {}
+            for f in all_findings:
+                if f.verification:
+                    v = f.verification.verdict
+                    verdicts[v] = verdicts.get(v, 0) + 1
+
+            verdict_summary = ", ".join(f"{v}: {c}" for v, c in sorted(verdicts.items()))
+            log(f"Verification complete: {verdict_summary}")
+        else:
+            log("No findings eligible for verification (no code references).")
+
+    # -------------------------------------------------------------------------
+    # Stage 6: Aggregate results
     # -------------------------------------------------------------------------
     elapsed = time.time() - start_time
 
