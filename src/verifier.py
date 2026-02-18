@@ -43,7 +43,7 @@ from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 from .reviewer import Finding
 
 # Sonnet 4.6 for verification (cheaper, faster, sufficient for fact-checking)
-MODEL_SONNET = "claude-sonnet-4-6-20250610"
+MODEL_SONNET = "claude-sonnet-4-6"
 
 VerifyProgressFn = Callable[[int, int, str], None]  # current, total, filename
 
