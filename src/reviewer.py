@@ -7,6 +7,11 @@ Uses Claude Opus 4.6 exclusively.
 v1.4.0 — Added review_single_spec() for per-spec siloed review. Added
     optional verification field to Finding dataclass (populated by the
     verification pipeline in later steps).
+
+v1.5.0 — Added confidence field (0.0-1.0) to Finding dataclass. Findings
+    are now parsed with a numeric confidence score that indicates how sure
+    the model is about each issue. Used for sorting within severity tiers
+    and prioritizing verification order.
 """
 from __future__ import annotations
 
@@ -39,6 +44,10 @@ class Finding:
         existingText: Current problematic text (None for ADD)
         replacementText: Corrected text (None for DELETE)
         codeReference: Code/standard being violated (None if editorial)
+        confidence: Numeric confidence score (0.0-1.0) indicating how sure
+            the model is about this finding. Used for sorting within severity
+            tiers and prioritizing verification. Defaults to 0.5 if not
+            provided by the model.
         verification: Optional verification result from web search fact-check.
             Populated by the verification pipeline (verifier.py). None until
             verification has been run.
@@ -51,6 +60,7 @@ class Finding:
     existingText: str | None
     replacementText: str | None
     codeReference: str | None
+    confidence: float = 0.5
     verification: Any | None = None  # Will hold VerificationResult once verifier.py exists
 
 
@@ -115,11 +125,26 @@ def _extract_json_array(text: str) -> tuple[list, str]:
 
 
 def _parse_findings(data: list) -> list[Finding]:
-    """Parse raw JSON dicts into Finding dataclass instances."""
+    """Parse raw JSON dicts into Finding dataclass instances.
+
+    Confidence values are clamped to [0.0, 1.0]. If the model omits the
+    confidence field or provides an invalid value, defaults to 0.5.
+    """
     findings: list[Finding] = []
     for item in data:
         if not isinstance(item, dict):
             continue
+
+        # Parse and clamp confidence
+        raw_confidence = item.get("confidence")
+        if raw_confidence is not None:
+            try:
+                confidence = max(0.0, min(1.0, float(raw_confidence)))
+            except (TypeError, ValueError):
+                confidence = 0.5
+        else:
+            confidence = 0.5
+
         findings.append(
             Finding(
                 severity=str(item.get("severity", "")).strip(),
@@ -130,6 +155,7 @@ def _parse_findings(data: list) -> list[Finding]:
                 existingText=item.get("existingText", None),
                 replacementText=item.get("replacementText", None),
                 codeReference=item.get("codeReference", None),
+                confidence=confidence,
             )
         )
     return findings

@@ -4,6 +4,12 @@ Custom widgets for Spec Critic GUI.
 Contains: TokenGauge, FileListPanel, EnhancedLog,
 AnimatedButton, ReportPanel, ReportWindow.
 
+v1.5.0 changes:
+    - Confidence badge displayed in finding card headers (color-coded)
+    - Findings sorted by confidence (descending) within each severity tier
+    - Confidence included in JSON export via _finding_to_dict()
+    - Sonnet model reference updated to 4.6
+
 v1.3.0 changes:
     - Fix: EnhancedLog collapse now fully reclaims vertical space by
       disabling expand on the parent frame when collapsed
@@ -70,6 +76,13 @@ VERDICT_COLORS = {
     "DISPUTED": "#EF4444",     # red — finding appears incorrect
 }
 
+# Confidence badge colors — green for high, amber for moderate, red-ish for low
+CONFIDENCE_COLORS = {
+    "high": "#22C55E",      # 0.85-1.0
+    "moderate": "#F59E0B",  # 0.60-0.84
+    "low": "#EF4444",       # below 0.60
+}
+
 LOG_COLORS = {
     "info": COLORS["text_secondary"],
     "success": COLORS["success"],
@@ -116,6 +129,21 @@ def blend_colors(c1, c2, t):
     r1, g1, b1 = hex_to_rgb(c1)
     r2, g2, b2 = hex_to_rgb(c2)
     return rgb_to_hex(int(lerp(r1, r2, t)), int(lerp(g1, g2, t)), int(lerp(b1, b2, t)))
+
+
+def _confidence_color(confidence: float) -> str:
+    """Return color for a confidence score."""
+    if confidence >= 0.85:
+        return CONFIDENCE_COLORS["high"]
+    elif confidence >= 0.60:
+        return CONFIDENCE_COLORS["moderate"]
+    else:
+        return CONFIDENCE_COLORS["low"]
+
+
+def _confidence_label(confidence: float) -> str:
+    """Return a short label for a confidence score."""
+    return f"{confidence:.0%}"
 
 
 # ============================================================================
@@ -575,6 +603,12 @@ def _render_collapsible_card(parent, finding, card_refs: list | None = None):
         text_color="white" if finding.severity != "MEDIUM" else "black",
         fg_color=sc, corner_radius=4, width=70, height=22).pack(side="left", padx=(4, 0))
 
+    # Confidence badge
+    conf_color = _confidence_color(finding.confidence)
+    ctk.CTkLabel(header, text=_confidence_label(finding.confidence),
+        font=ctk.CTkFont(family="Consolas", size=9, weight="bold"),
+        text_color=conf_color, width=36, height=22).pack(side="left", padx=(6, 0))
+
     ctk.CTkLabel(header, text=finding.fileName or "Unknown", font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
         text_color=COLORS["text_primary"]).pack(side="left", padx=(8, 0))
 
@@ -700,7 +734,12 @@ def _render_findings_section(parent, review, card_refs: list | None = None):
         return
 
     for sev in ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]:
-        sf = [f for f in review.findings if f.severity == sev]
+        # Sort by confidence descending within each severity tier
+        sf = sorted(
+            [f for f in review.findings if f.severity == sev],
+            key=lambda f: f.confidence,
+            reverse=True,
+        )
         if not sf: continue
         ctk.CTkLabel(inner, text=f"{sev} ({len(sf)})", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
             text_color=SEVERITY_COLORS.get(sev, COLORS["text_primary"])).pack(anchor="w", pady=(12, 6))
@@ -720,7 +759,7 @@ def _render_notes(parent, text):
 
 
 def _finding_to_dict(finding) -> dict:
-    """Serialize a Finding to a JSON-safe dict, including verification."""
+    """Serialize a Finding to a JSON-safe dict, including confidence and verification."""
     d = {k: v for k, v in finding.__dict__.items() if k != "verification"}
     if finding.verification is not None:
         d["verification"] = {

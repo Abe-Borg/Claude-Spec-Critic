@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "spec-critic"
-version = "1.3.0"
+version = "1.5.0"
 description = "M&P specification review tool for California K-12 DSA projects"
 requires-python = ">=3.11"
 dependencies = [

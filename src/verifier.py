@@ -1,7 +1,7 @@
 """
 Web search self-verification for Spec Critic findings.
 
-Uses Claude Sonnet 4.5 with the web_search_20250305 tool to fact-check
+Uses Claude Sonnet 4.6 with the web_search_20250305 tool to fact-check
 each finding from the review. The verifier asks a focused question about
 the finding's claim, searches the web, and returns a structured verdict.
 
@@ -9,6 +9,10 @@ Verification uses Sonnet (not Opus) because:
     - Verification is a simpler task (binary fact-check, not nuanced review)
     - Sonnet is significantly cheaper and faster
     - The web search tool does the heavy lifting
+
+v1.5.0 — Updated to Sonnet 4.6. Verification now processes findings in
+    ascending confidence order (lowest confidence first) so the findings
+    most likely to be wrong get fact-checked first.
 
 Each finding produces a VerificationResult with:
     - verdict: CONFIRMED, CORRECTED, UNVERIFIED, or DISPUTED
@@ -23,6 +27,8 @@ Design decisions:
     - Verification is independent per finding — no cross-finding context
     - The verifier never modifies the original Finding; it populates the
       verification field with a VerificationResult
+    - Findings are verified in ascending confidence order — low-confidence
+      findings are checked first since they are most likely to be wrong
 """
 
 from __future__ import annotations
@@ -36,8 +42,8 @@ from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
 from .reviewer import Finding
 
-# Sonnet for verification (cheaper, faster, sufficient for fact-checking)
-MODEL_SONNET = "claude-sonnet-4-5-20250929"
+# Sonnet 4.6 for verification (cheaper, faster, sufficient for fact-checking)
+MODEL_SONNET = "claude-sonnet-4-6-20250610"
 
 VerifyProgressFn = Callable[[int, int, str], None]  # current, total, filename
 
@@ -98,6 +104,7 @@ def _build_verification_prompt(finding: Finding) -> str:
         f"  Severity: {finding.severity}",
         f"  Issue: {finding.issue}",
         f"  Code Reference: {finding.codeReference}",
+        f"  Confidence: {finding.confidence:.2f}",
     ]
 
     if finding.existingText:
@@ -265,6 +272,10 @@ def verify_findings(
     VerificationResult. Findings that are skipped (GRIPES, no code ref)
     get an UNVERIFIED result with a skip explanation.
 
+    Findings are verified in ascending confidence order — low-confidence
+    findings are checked first since they are most likely to be wrong and
+    benefit most from verification.
+
     Args:
         findings: List of Finding objects to verify
         progress: Callback for progress updates (current, total, filename)
@@ -273,6 +284,10 @@ def verify_findings(
         The same list of findings (modified in-place) for convenience
     """
     verifiable = [f for f in findings if _should_verify(f)]
+
+    # Sort by confidence ascending — verify least confident first
+    verifiable.sort(key=lambda f: f.confidence)
+
     total = len(verifiable)
 
     # Set skip results for non-verifiable findings
@@ -287,7 +302,7 @@ def verify_findings(
                 ),
             )
 
-    # Verify eligible findings sequentially
+    # Verify eligible findings sequentially (lowest confidence first)
     for i, f in enumerate(verifiable):
         progress(i + 1, total, f.fileName or "Unknown")
         f.verification = verify_finding(f)

@@ -1,4 +1,4 @@
-# Spec Critic v1.4.0
+# Spec Critic v1.5.0
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude Opus 4.6. Load `.docx` spec files, run the review, and see color-coded findings rendered directly in the app.
 
@@ -9,7 +9,7 @@ A desktop tool that reviews mechanical and plumbing construction specifications 
 3. Performs pre-flight token analysis with an animated visual gauge
 4. Sends combined spec content to Claude Opus 4.6 via streaming API
 5. Parses structured JSON findings from the response
-6. Renders a full report in-app: summary grid, alerts, severity-colored finding cards, reviewer's notes
+6. Renders a full report in-app: summary grid, alerts, severity-colored finding cards with confidence scores, reviewer's notes
 7. Opens the report in a separate pop-out window for dedicated viewing
 
 ## Running the Application
@@ -69,9 +69,24 @@ The Project Context field is an optional free-text area where you can describe y
 
 When provided, this context is included in the message sent to Claude so the reviewer can tailor its analysis to your specific project. The project context text is counted toward the token limit. If left empty, the review proceeds without project-specific context (same behavior as previous versions).
 
+### Confidence Scores
+
+Each finding now includes a confidence score (0.0–1.0) indicating how certain the model is about that issue. Confidence scores are displayed as color-coded badges in each finding card header:
+
+- **Green (85–100%)** — High confidence. The model is quite sure this is wrong and the fix is correct.
+- **Amber (60–84%)** — Moderate confidence. The issue likely exists but there may be uncertainty in the exact correction or applicable code section.
+- **Red (below 60%)** — Low-moderate confidence. The model suspects something may be off but cannot fully confirm.
+
+Findings below 35% confidence are not created — the model mentions these in the analysis summary narrative instead.
+
+Within each severity tier (CRITICAL, HIGH, MEDIUM, GRIPES), findings are sorted by confidence score in descending order, so the most certain findings appear first.
+
+**How confidence affects verification:**
+When verification is enabled, findings are verified in ascending confidence order — the least confident findings are fact-checked first, since they are most likely to be incorrect and benefit most from web search verification.
+
 ### Collapsible Finding Cards
 
-Each finding card in the report has a clickable header. Click the header row (severity badge, filename, section) to collapse that card down to a single line. Click again to expand it. This lets you dismiss findings you've already reviewed and focus on the ones that still need attention.
+Each finding card in the report has a clickable header. Click the header row (severity badge, confidence score, filename, section) to collapse that card down to a single line. Click again to expand it. This lets you dismiss findings you've already reviewed and focus on the ones that still need attention.
 
 Use the **Collapse All** and **Expand All** buttons in the findings toolbar to toggle all cards at once.
 
@@ -106,7 +121,7 @@ Batch mode submits all specs as a single Anthropic Message Batch at 50% cost com
 
 ### Verification
 
-Verification is an optional post-review step that fact-checks findings using web search. When enabled, each CRITICAL, HIGH, and MEDIUM finding that references a specific code or standard is verified by a separate Claude Sonnet 4.5 call with web search enabled.
+Verification is an optional post-review step that fact-checks findings using web search. When enabled, each CRITICAL, HIGH, and MEDIUM finding that references a specific code or standard is verified by a separate Claude Sonnet 4.6 call with web search enabled.
 
 **How to enable verification:**
 
@@ -114,6 +129,9 @@ Verification is an optional post-review step that fact-checks findings using web
 2. Run your review (real-time or batch)
 3. After the review completes, verification runs automatically on eligible findings
 4. Results appear in the finding cards as color-coded verdict badges
+
+**Verification order:**
+Findings are verified in ascending confidence order — the least confident findings are fact-checked first, since they benefit most from verification.
 
 **Verdict meanings:**
 
@@ -131,7 +149,7 @@ Verification is an optional post-review step that fact-checks findings using web
 
 **Cost notes:**
 
-- Verification uses Claude Sonnet 4.5 (cheaper than Opus) with web search
+- Verification uses Claude Sonnet 4.6 (cheaper than Opus) with web search
 - Each eligible finding makes one additional API call
 - A review with 20 findings might have 12-15 eligible for verification
 - In batch mode, verification runs after batch results are collected (not batched itself — runs sequentially)
@@ -143,20 +161,21 @@ After the review completes, the activity log collapses and the report panel rend
 - **Summary grid**: Five color-coded cards showing Critical, High, Medium, Gripes, and Total counts
 - **Token/time metadata**: Input/output token counts and processing duration
 - **Alerts**: LEED references and unresolved placeholders detected locally (grouped by file)
-- **Findings**: Cards grouped by severity (CRITICAL → HIGH → MEDIUM → GRIPES), each showing:
-  - Clickable header with severity badge and filename (click to collapse/expand)
+- **Findings**: Cards grouped by severity (CRITICAL → HIGH → MEDIUM → GRIPES), sorted by confidence within each tier, each showing:
+  - Clickable header with severity badge, confidence score, and filename (click to collapse/expand)
   - Section reference (CSI format)
   - Issue description
   - Existing text in red monospace
   - Replacement text in green monospace
   - Code reference in blue
+  - Verification verdict (if enabled)
 - **Reviewer's Notes**: Claude's personality-driven analysis summary
 
 Click **Expand** to hide all input panels and give the report the full window. Click **← Back to Review** to restore the normal layout.
 
 ### Export Options
 
-- **Export JSON**: Opens a save dialog to write findings, alerts, metadata (including project context), to a `.json` file
+- **Export JSON**: Opens a save dialog to write findings (including confidence scores and verification), alerts, metadata (including project context), to a `.json` file
 - **Copy Summary**: Copies the reviewer's analysis summary text to your clipboard
 
 ## Project Structure
@@ -170,7 +189,7 @@ spec-review/
 │   │                    #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py      # Core orchestration (single source of truth)
 │   ├── batch.py         # Anthropic Message Batches API integration
-│   ├── verifier.py      # Web search self-verification (Sonnet + web_search)
+│   ├── verifier.py      # Web search self-verification (Sonnet 4.6 + web_search)
 │   ├── extractor.py     # DOCX text extraction
 │   ├── preprocessor.py  # LEED/placeholder detection (no mutation)
 │   ├── tokenizer.py     # Token counting with tiktoken
@@ -186,13 +205,14 @@ spec-review/
 ### Design Decisions
 
 - **Single pipeline**: All workflow logic lives in `pipeline.py`. The GUI is a thin shell that calls `run_review()` and renders the result. This eliminates drift and makes testing straightforward.
-- **Single model**: Hardcoded to Claude Opus 4.6 (`claude-opus-4-6`). No model selection flags, no alternatives.
+- **Single model**: Hardcoded to Claude Opus 4.6 (`claude-opus-4-6`) for review. Claude Sonnet 4.6 for verification.
 - **No document mutation**: This repo only analyzes specs. Document cleanup belongs in the separate SpecCleanse tool.
 - **No file output**: All results render in-app. The only file output is the optional Export JSON button. No output directories, no intermediate files.
 - **Advisory only**: This tool assists human reviewers. It is not an AHJ substitute.
 - **Report expand mode**: After a review, the report renders below the input panels. The Expand button hides all input panels so the report fills the entire window.
 - **Pop-out window**: The report also opens in a separate `ReportWindow` toplevel for dedicated viewing.
 - **Collapsible cards**: Finding cards can be individually collapsed/expanded, with bulk Collapse All / Expand All controls.
+- **Confidence scoring**: Each finding includes a 0.0–1.0 confidence score displayed as a color-coded badge and used for sorting within severity tiers.
 
 ### Module Responsibilities
 
@@ -204,8 +224,8 @@ spec-review/
 | `extractor.py` | DOCX text extraction (paragraphs + tables) |
 | `preprocessor.py` | Local detection of LEED refs and placeholders |
 | `tokenizer.py` | Token counting via tiktoken, limit enforcement |
-| `prompts.py` | System prompt with personality and severity definitions |
-| `reviewer.py` | Anthropic API client, streaming, JSON parsing, retry logic |
+| `prompts.py` | System prompt with personality, severity definitions, and confidence scoring |
+| `reviewer.py` | Anthropic API client, streaming, JSON parsing (with confidence), retry logic |
 
 ### Data Flow
 
@@ -235,12 +255,18 @@ The system prompt instructs Claude to check:
 - Coordination: mechanical vs. plumbing, and cross-discipline if non-MEP specs are included
 - Constructability: issues that could cause delays or cost overruns
 
-Claude classifies findings into four severity levels:
+Claude classifies findings into four severity levels with confidence scores:
 
 - **CRITICAL**: DSA rejection risks, code violations, safety hazards
 - **HIGH**: Significant technical errors, outdated CSI formatting, coordination conflicts
 - **MEDIUM**: Wrong code years, discontinued products, minor inconsistencies
 - **GRIPES**: Typos, formatting issues, overly restrictive requirements
+
+Each finding includes a confidence score (0.0–1.0):
+- **0.85–1.0**: High confidence — the model is sure
+- **0.60–0.84**: Moderate confidence — likely correct but uncertain on details
+- **0.35–0.59**: Low-moderate confidence — suspected issue, flagged with caveats
+- **Below 0.35**: Not flagged — mentioned in analysis summary only
 
 LEED references and unresolved placeholders (`[INSERT]`, `[VERIFY]`, `[TBD]`, etc.) are detected locally by `preprocessor.py` and displayed as alerts — they are not sent to Claude.
 
@@ -269,6 +295,17 @@ customtkinter      # Modern themed Tkinter widgets
 
 ## Changelog
 
+### v1.5.0 — Confidence Scoring + Sonnet 4.6
+
+- **Feature**: Confidence scoring — each finding now includes a numeric `confidence` field (0.0–1.0) indicating how certain the model is about the issue. The system prompt includes detailed guidance on score ranges (HIGH 0.85–1.0, MODERATE 0.60–0.84, LOW-MODERATE 0.35–0.59, below 0.35 not flagged).
+- **Feature**: Confidence badges in finding cards — color-coded labels (green/amber/red) displayed in the card header next to the severity badge
+- **Feature**: Confidence-based sorting — findings within each severity tier are sorted by confidence (highest first) so the most certain findings appear at the top
+- **Feature**: Confidence-based verification ordering — when verification is enabled, findings are verified in ascending confidence order (least confident first) so the findings most likely to be wrong get fact-checked first
+- **Feature**: Confidence included in JSON export — the `confidence` field appears in each finding in the Export JSON output
+- **Update**: Verification model upgraded from Claude Sonnet 4.5 to Claude Sonnet 4.6
+- **Update**: Prompt examples updated to include confidence scores for all action types (ADD, EDIT, DELETE)
+- **Update**: Confidence guidance section in system prompt updated from qualitative-only to include numeric score ranges
+
 ### v1.4.0 — Per-Spec Siloed Review + Batch Processing
 
 **Phase 1: Per-Spec Siloed Review**
@@ -294,13 +331,9 @@ customtkinter      # Modern themed Tkinter widgets
 
 **Phase 3: Web Search Self-Verification**
 
-- **Feature**: Verification toggle in the Inputs card — a "Web search fact-check" checkbox enables post-review verification of findings. When enabled, each CRITICAL, HIGH, and MEDIUM finding with a code reference is fact-checked using Claude Sonnet 4.5 with the web search tool
+- **Feature**: Verification toggle in the Inputs card — a "Web search fact-check" checkbox enables post-review verification of findings. When enabled, each CRITICAL, HIGH, and MEDIUM finding with a code reference is fact-checked using Claude Sonnet with the web search tool
 - **Feature**: `verifier.py` module — builds focused verification prompts, calls Sonnet with `web_search_20250305`, parses structured JSON verdicts (CONFIRMED, CORRECTED, UNVERIFIED, DISPUTED)
-- **Feature**: Verification verdicts displayed in finding cards — color-coded verdict badges (green CONFIRMED, amber CORRECTED, red DISPUTED), explanation text, correction text if applicable, and source URLs
-- **Feature**: Verification summary in report header — shows counts of confirmed/corrected/disputed findings
-- **Feature**: Verification results included in JSON export — full verdict, explanation, sources, and correction for each finding
-- **Feature**: GRIPES findings and findings without code references are automatically skipped (not worth the API cost)
-- **Feature**: Verification works in both real-time and batch modes — the `verify` parameter is available on both `run_review()` and `collect_batch_results()`
+- **Feature**: Verification verdicts displayed in finding cards — color-coded verdict badges (green CONFIRMED, amber CORRECTED, red DISPUTED), explanation text, correction display, source URLs in finding cards. Verification summary in report header. `_finding_to_dict()` for JSON export. Verify checkbox in GUI inputs card
 
 ### v1.3.0
 
@@ -330,7 +363,6 @@ customtkinter      # Modern themed Tkinter widgets
 - Moved `gui.py` into `src/` package
 - No file output (no report.docx, findings.json, raw_response.txt, etc.)
 - No CLI mode, debug mode, or output folder picker
-- No executable build (PyInstaller removed)
 - Updated system prompt (richer severity definitions, cross-discipline coordination, CRITICAL CHECKS section)
 - Hardcoded to Claude Opus 4.6
 - Simplified `pipeline.py` to return in-memory `PipelineResult` only

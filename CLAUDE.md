@@ -6,9 +6,10 @@ This file provides guidance for AI assistants working on the **Spec Critic** cod
 
 Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.6 for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
 
-- **Version**: 1.4.0 (in progress — per-spec siloed review)
+- **Version**: 1.5.0 (confidence scoring + Sonnet 4.6 verification)
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
-- **Model**: Claude Opus 4.6 (`claude-opus-4-6`), hardcoded — no model selection flags
+- **Review Model**: Claude Opus 4.6 (`claude-opus-4-6`), hardcoded — no model selection flags
+- **Verification Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6-20250610`)
 - **Output**: In-app only. No files are written during a review. The only file output is the optional Export JSON button.
 
 ## Repository Structure
@@ -17,11 +18,13 @@ Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.4.0")
+│   ├── __init__.py          # Package version ("1.5.0")
 │   ├── gui.py               # CustomTkinter app window, input handling, threading
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
 │   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py          # SINGLE SOURCE OF TRUTH for review workflow
+│   ├── batch.py             # Anthropic Message Batches API integration
+│   ├── verifier.py          # Web search self-verification (Sonnet 4.6 + web_search)
 │   ├── extractor.py         # .docx text extraction (paragraphs + tables)
 │   ├── preprocessor.py      # Local LEED/placeholder detection (NOT sent to LLM)
 │   ├── tokenizer.py         # tiktoken-based token counting + limit enforcement
@@ -45,7 +48,7 @@ spec-review/
 3. Combine specs with `===== FILE:` header delimiters
 4. Enforce 150k token limit (hard stop, no silent truncation)
 5. Stream API call to Claude Opus 4.6
-6. Parse JSON findings + analysis summary from response
+6. Parse JSON findings (including confidence scores) + analysis summary from response
 7. Return `PipelineResult` to GUI for in-app rendering
 
 ### Module Responsibilities
@@ -53,15 +56,15 @@ spec-review/
 | Module | Responsibility |
 |--------|---------------|
 | `gui.py` | App window, input handling (including project context field, mode toggle), threading, review orchestration, batch polling, report expand/collapse mode, pop-out report window lifecycle |
-| `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel |
+| `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel, confidence badge rendering |
 | `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult`. Provides `run_review()` for real-time and `start_batch_review()` + `collect_batch_results()` for batch |
 | `batch.py` | Anthropic Message Batches API integration — submission, polling, result retrieval, cancellation |
-| `verifier.py` | Web search self-verification — builds verification prompts, calls Sonnet with web_search tool, parses verdicts |
+| `verifier.py` | Web search self-verification — builds verification prompts, calls Sonnet 4.6 with web_search tool, parses verdicts. Verifies in ascending confidence order. |
 | `extractor.py` | `.docx` → plain text (paragraphs + tables) |
 | `preprocessor.py` | Local regex detection of LEED refs and placeholders |
 | `tokenizer.py` | Token counting (tiktoken cl100k_base) + limit enforcement |
-| `prompts.py` | XML-structured system prompt with parameterized code cycle + enriched user message |
-| `reviewer.py` | Anthropic API streaming client with retry logic + JSON parsing |
+| `prompts.py` | XML-structured system prompt with parameterized code cycle, confidence scoring schema, + enriched user message |
+| `reviewer.py` | Anthropic API streaming client with retry logic + JSON parsing (including confidence field) |
 
 ### Data Flow
 
@@ -80,11 +83,29 @@ spec-review/
 - `ExtractedSpec` — filename, content, word_count (from extractor)
 - `PreprocessResult` — leed_alerts, placeholder_alerts (from preprocessor)
 - `TokenCount` / `TokenSummary` — per-file and total token analysis (from tokenizer)
-- `Finding` — severity, fileName, section, issue, actionType, etc., **plus optional `verification` field** (from reviewer)
+- `Finding` — severity, fileName, section, issue, actionType, **confidence (0.0-1.0)**, etc., **plus optional `verification` field** (from reviewer)
 - `ReviewResult` — findings, raw_response, thinking, model, tokens, etc. (from reviewer)
 - `PipelineResult` — review_result, files_reviewed, leed/placeholder alerts (from pipeline)
 
 All data containers use `@dataclass` decorators.
+
+## Confidence Scoring (v1.5.0)
+
+### How It Works
+
+Each finding includes a numeric `confidence` field (0.0–1.0):
+- **0.85–1.0**: HIGH — model is quite sure, can cite specific code section
+- **0.60–0.84**: MODERATE — fairly sure but uncertain on details
+- **0.35–0.59**: LOW-MODERATE — suspected issue, flagged with caveats
+- **Below 0.35**: Not flagged as a finding — mentioned in narrative summary only
+
+### Where Confidence Is Used
+
+1. **Parsing**: `_parse_findings()` in `reviewer.py` extracts and clamps confidence to [0.0, 1.0], defaults to 0.5 if missing or invalid
+2. **Card rendering**: `_render_collapsible_card()` in `widgets.py` shows a color-coded confidence badge (green/amber/red) in each card header
+3. **Sorting**: `_render_findings_section()` sorts findings by confidence descending within each severity tier
+4. **Verification priority**: `verify_findings()` in `verifier.py` processes findings in ascending confidence order (least confident first)
+5. **JSON export**: `_finding_to_dict()` includes the confidence field
 
 ## Prompt Architecture
 
@@ -94,16 +115,16 @@ The system prompt uses XML-tagged sections for clear structural hierarchy:
 
 | Section | Purpose |
 |---------|---------|
-| `<task>` | Core instruction: review specs, classify findings |
+| `<task>` | Core instruction: review specs, classify findings, assign confidence |
 | `<personality>` | Tone calibration with three example ranges + narrative budget (2-4 paragraphs) |
 | `<severity_definitions>` | CRITICAL / HIGH / MEDIUM / GRIPES with concrete examples |
 | `<review_priorities>` | Three-tier weighted checklist (Tier 1 = always check, Tier 3 = when relevant) |
 | `<what_not_to_flag>` | LEED, placeholders, low-confidence hunches |
-| `<confidence_guidance>` | High/moderate/low spectrum (not binary flag-or-skip) |
+| `<confidence_guidance>` | Numeric 0.0-1.0 spectrum with score ranges and examples |
 | `<edge_cases>` | Single spec, non-MEP only, very short specs, mixed disciplines |
 | `<duplicate_issues>` | Consolidation rule for repeated problems |
 | `<file_delimiters>` | How input files are separated |
-| `<output_format>` | JSON schema + examples showing ADD, EDIT, and DELETE action types |
+| `<output_format>` | JSON schema (including confidence field) + examples showing ADD, EDIT, DELETE with confidence scores |
 | `<critical_checks>` | Five mandatory verification steps |
 
 ### Code Cycle Parameters
@@ -127,13 +148,13 @@ There are two user message builders in `prompts.py`:
 
 2. **`get_single_spec_user_message()`** — Per-spec siloed mode (v1.4.0). Takes a single spec's content and filename. Analysis summary budget: 1-2 paragraphs. Used by `review_single_spec()` for per-spec siloed review.
 
-Both builders accept an optional `project_context` parameter that inserts a `<project_context>` XML block when non-empty.
+Both builders accept an optional `project_context` parameter and remind the model to include confidence scores.
 
 ### Project Context
 
 The `get_user_message()` and `get_single_spec_user_message()` functions accept an optional `project_context` parameter. If non-empty, it is inserted as a `<project_context>` XML-tagged block in the user message, before the spec content. This gives Claude project-specific information (building type, systems, scope) to inform the review. The project context text is counted toward the token limit in the GUI.
 
-## Reviewer Architecture (v1.4.0)
+## Reviewer Architecture (v1.4.0+)
 
 The reviewer module provides two public review functions and one internal helper:
 
@@ -141,7 +162,7 @@ The reviewer module provides two public review functions and one internal helper
 - **`review_single_spec()`** — Per-spec siloed review (v1.4.0). Sends one spec per API call.
 - **`_stream_review()`** — Internal helper that handles streaming, retry logic, response parsing, and token tracking. Both public functions delegate to this after constructing their respective user messages.
 
-This refactor eliminates duplication: retry logic, JSON parsing, and token counting exist in exactly one place (`_stream_review`).
+This refactor eliminates duplication: retry logic, JSON parsing (including confidence extraction), and token counting exist in exactly one place (`_stream_review`).
 
 ## Token Limits
 
@@ -203,6 +224,7 @@ The pipeline uses callback injection for decoupling from UI:
   - `RateLimitError`: 10s, 20s, 40s
   - `APIConnectionError`: 5s, 10s, 20s
 - Graceful fallbacks for missing optional fields (default to `None` or `""`)
+- Confidence defaults to 0.5 if missing or invalid, clamped to [0.0, 1.0]
 
 ### File Organization Pattern
 ```python
@@ -237,6 +259,8 @@ Findings are classified into four severity tiers:
 - **MEDIUM** — Best-practice deviations, unclear language
 - **GRIPES** — Formatting, style, minor nitpicks
 
+Each finding also carries a confidence score (0.0–1.0) that is independent of severity.
+
 ## GUI Architecture
 
 The GUI uses CustomTkinter with a dark theme. All custom widgets live in `widgets.py`:
@@ -244,37 +268,14 @@ The GUI uses CustomTkinter with a dark theme. All custom widgets live in `widget
 - `FileListPanel` — Checkbox list with per-file token counts
 - `EnhancedLog` — Scrollable log using a single `CTkTextbox` with colored text tags (v1.2.0)
 - `AnimatedButton` — Run button with pulse/glow animations
-- `ReportPanel` — In-app report with summary grid, alerts, collapsible severity-colored finding cards, reviewer's notes, Expand button, Export JSON, and Copy Summary
+- `ReportPanel` — In-app report with summary grid, alerts, collapsible severity-colored finding cards (with confidence badges), reviewer's notes, Expand button, Export JSON, and Copy Summary
 - `ReportWindow` — Pop-out toplevel window with the full report (opens automatically on review completion)
-
-### Project Context Field (v1.3.0)
-
-The INPUTS card contains a "Project Context" row with a `CTkTextbox` (3-4 lines tall). It has placeholder behavior: muted hint text "Describe your project (optional)" is shown when the field is empty and unfocused. On focus-in the placeholder clears; on focus-out it restores if the field is empty. The text is:
-- Counted toward the token limit (via `_project_context_tokens`)
-- Passed through `pipeline.run_review()` → `reviewer.review_specs()` → `prompts.get_user_message()` as a `<project_context>` XML block
-- Included in Export JSON under `meta.project_context`
-- Cleared by `_reset_for_new_review()`
 
 ### Collapsible Finding Cards
 
-Each finding card has a clickable header row (severity badge + filename + section). Clicking the header toggles the card body (issue, existing/replacement text, code reference) between visible and collapsed. The findings section includes Collapse All / Expand All buttons for bulk toggling.
+Each finding card has a clickable header row (severity badge + confidence badge + filename + section). Clicking the header toggles the card body (issue, existing/replacement text, code reference) between visible and collapsed. The findings section includes Collapse All / Expand All buttons for bulk toggling.
 
-### Report Expand Mode
-
-After a review completes, the activity log auto-collapses and the report renders below the input panels. The user can click **Expand** in the report toolbar to enter full-screen report mode, which hides all input panels (header, inputs card, file list, token gauge, run button, log) and lets the report fill the entire window. A **← Back to Review** button restores the normal layout.
-
-### Pop-Out Report Window
-
-When the review completes, a `ReportWindow` (CTkToplevel) opens automatically with the full report. It has its own toolbar with Export JSON and Copy Summary, the same collapsible cards and bulk toggle controls, and works independently from the main window. Starting a new review or clicking "New Review" closes it automatically.
-
-### Shared Report Rendering
-
-Report rendering logic is extracted into module-level helper functions in `widgets.py` to avoid duplication between `ReportPanel` and `ReportWindow`:
-- `_render_summary_grid()` — Header card and summary grid
-- `_render_alerts()` — LEED and placeholder alert cards
-- `_render_findings_section()` — Findings with collapsible cards and bulk toggle
-- `_render_collapsible_card()` — Individual finding card with toggle state
-- `_render_notes()` — Reviewer's Notes section
+Within each severity tier, findings are sorted by confidence in descending order (most confident first).
 
 All heavy operations (folder analysis, API calls) run in background threads. GUI updates are scheduled via `after()` to stay on the main thread.
 
@@ -285,29 +286,12 @@ All heavy operations (folder analysis, API calls) run in background threads. GUI
 3. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM. They are detected locally and displayed as alerts in the ReportPanel.
 4. **Token limits are enforced before API calls** — Never allow API calls that exceed the 150k recommended limit.
 5. **Streaming is used internally** — The reviewer always streams responses from the API. Streaming chunks are not displayed to the user; the complete response is parsed and rendered in the ReportPanel when finished.
-6. **No model selection** — Claude Opus 4.6 is hardcoded. There are no flags to change models.
+6. **No model selection** — Claude Opus 4.6 is hardcoded for review. Claude Sonnet 4.6 is hardcoded for verification. There are no flags to change models.
 7. **No document mutation** — This tool only analyzes specs. Document cleanup belongs in the separate SpecCleanse tool.
 8. **Advisory only** — This tool assists human reviewers. It is not an AHJ substitute.
 9. **Code cycle is parameterized** — Update the constants at the top of `prompts.py` when California adopts a new code cycle. All prompt references update automatically.
 10. **Project context is optional** — If the user leaves the field empty, the user message is unchanged from previous versions. The `<project_context>` block is only added when text is present.
-
-## v1.4.0 Upgrade Plan
-
-The v1.4.0 release adds three major features ported from the SpecCheck web app:
-
-### Phase 1: Per-Spec Siloed Context (Steps 1A-1C) ✅ COMPLETE
-- **Step 1A** ✅ — `get_single_spec_user_message()` in prompts, `review_single_spec()` in reviewer, `Finding.verification` field, `_stream_review()` refactor
-- **Step 1B** ✅ — Pipeline refactored to loop over specs with `review_single_spec()`, per-spec token check, partial failure resilience
-- **Step 1C** ✅ — Determinate progress bar, per-spec log messages, version bump to 1.4.0
-
-### Phase 2: Batch Processing (Steps 2A-2B) ✅ COMPLETE
-- **Step 2A** ✅ — `batch.py` module with `submit_review_batch()`, `poll_batch()`, `retrieve_review_results()`, `cancel_batch()`
-- **Step 2B** ✅ — Pipeline `start_batch_review()` + `collect_batch_results()`, GUI mode toggle, polling loop, shared `_prepare_specs()` helper
-
-### Phase 3: Web Search Self-Verification (Steps 3A-3C) ✅ COMPLETE
-- **Step 3A** ✅ — `verifier.py` module with `verify_finding()`, `verify_findings()`, `VerificationResult` dataclass, `_build_verification_prompt()`, `_should_verify()` filter
-- **Step 3B** ✅ — `verify` parameter added to `run_review()` and `collect_batch_results()`. Verification runs as Stage 5 after review, before result aggregation
-- **Step 3C** ✅ — Verdict badges (color-coded CONFIRMED/CORRECTED/DISPUTED), explanation text, correction display, source URLs in finding cards. Verification summary in report header. `_finding_to_dict()` for JSON export. Verify checkbox in GUI inputs card
+11. **Confidence defaults gracefully** — If the model omits confidence or returns an invalid value, it defaults to 0.5 and is clamped to [0.0, 1.0].
 
 ## Common Development Tasks
 
@@ -316,6 +300,7 @@ The v1.4.0 release adds three major features ported from the SpecCheck web app:
 2. Update JSON parsing in `reviewer._parse_findings()`
 3. Update the prompt schema in `prompts.py` `<output_format>` section
 4. Update card rendering in `widgets.py` `_render_collapsible_card()`
+5. Update `_finding_to_dict()` in `widgets.py` if the field should appear in JSON export
 
 ### Adding a new preprocessor check
 1. Add detection function in `preprocessor.py` (follow `detect_leed_references` pattern)
@@ -343,6 +328,7 @@ There is no formal test suite. Validation approaches:
 - **Verbose mode**: `verbose=True` parameter outputs detailed logs for debugging
 - **Modular design**: Each module is independently importable and testable
 - **Callback injection**: Log/progress callbacks can be replaced with test harnesses
+- **Confidence parsing tests**: `_parse_findings()` can be tested with synthetic JSON data to verify clamping, defaulting, and type coercion
 
 ## Files to Never Commit
 
