@@ -1,18 +1,26 @@
 """
 Web search self-verification for Spec Critic findings.
 
-Uses Claude Sonnet 4.6 with the web_search_20250305 tool to fact-check
-each finding from the review. The verifier asks a focused question about
-the finding's claim, searches the web, and returns a structured verdict.
+Uses Claude Sonnet 4.6 with the web_search_20250305 tool to verify
+each finding from the review. The verifier treats the entire finding —
+issue, suggested fix, and any code citation — as claims to be checked.
 
 Verification uses Sonnet (not Opus) because:
-    - Verification is a simpler task (binary fact-check, not nuanced review)
+    - Verification is a focused task (check one finding at a time)
     - Sonnet is significantly cheaper and faster
     - The web search tool does the heavy lifting
 
-v1.5.0 — Updated to Sonnet 4.6. Verification now processes findings in
-    ascending confidence order (lowest confidence first) so the findings
-    most likely to be wrong get fact-checked first.
+v1.5.0 — Broadened verification scope:
+    - All CRITICAL, HIGH, and MEDIUM findings are verified regardless of
+      whether they include a code reference. Findings without citations
+      are still checked for issue validity and fix correctness.
+    - The verification prompt now evaluates the full finding holistically:
+      is the issue real, is the suggested fix correct, and is any cited
+      code/standard accurate (with skepticism, since citations may be
+      hallucinated by the review model).
+    - GRIPES are still skipped (not worth the API cost).
+    - Findings are verified in ascending confidence order — low-confidence
+      findings are checked first since they are most likely to be wrong.
 
 Each finding produces a VerificationResult with:
     - verdict: CONFIRMED, CORRECTED, UNVERIFIED, or DISPUTED
@@ -21,9 +29,10 @@ Each finding produces a VerificationResult with:
     - correction: Updated replacement text if the finding was wrong
 
 Design decisions:
-    - Only findings with a codeReference are verified (editorial/formatting
-      findings skip verification since there's nothing factual to check)
     - GRIPES severity findings are skipped (not worth the API cost)
+    - All other findings are verified — with or without a code reference
+    - The verifier treats the review model's code citations with skepticism
+      since they may be hallucinated
     - Verification is independent per finding — no cross-finding context
     - The verifier never modifies the original Finding; it populates the
       verification field with a VerificationResult
@@ -72,40 +81,51 @@ class VerificationResult:
 
 
 def _should_verify(finding: Finding) -> bool:
-    """Determine if a finding is worth verifying via web search.
+    """Determine if a finding should be verified via web search.
 
-    Skip findings that are:
-        - GRIPES severity (editorial, not worth API cost)
-        - Missing a code reference (nothing factual to check)
+    All findings are verified except GRIPES (editorial/style issues
+    not worth the API cost).
     """
     if finding.severity == "GRIPES":
-        return False
-    if not finding.codeReference:
         return False
     return True
 
 
 def _build_verification_prompt(finding: Finding) -> str:
-    """Build a focused verification prompt for a single finding.
+    """Build a holistic verification prompt for a single finding.
 
-    The prompt instructs the model to:
-        1. Search the web for the specific code/standard claim
-        2. Verify whether the finding's assertion is correct
-        3. Return a structured JSON verdict
+    The prompt instructs the verifier to evaluate the ENTIRE finding:
+        1. Is the identified issue real and accurate?
+        2. Is the suggested fix (replacement text) correct?
+        3. If a code/standard is cited, is that citation accurate?
+           (Citations may be hallucinated — verify them, don't trust them.)
+
+    This is broader than the previous approach which only confirmed
+    code references.
     """
     parts = [
-        "You are a construction code verification assistant. Your job is to "
-        "fact-check a specific finding from a specification review by searching "
-        "the web for authoritative sources.",
+        "You are a construction specification verification assistant for "
+        "California projects. Another AI model reviewed a specification and "
+        "produced the finding below. Your job is to independently verify "
+        "whether this finding is correct by searching the web.",
         "",
+        "IMPORTANT: The review model may have hallucinated code references, "
+        "section numbers, standard editions, or requirements. Do NOT assume "
+        "any citation is accurate. Verify everything independently.",
+        "",
+        "═══════════════════════════════════════",
         "FINDING TO VERIFY:",
+        "═══════════════════════════════════════",
         f"  File: {finding.fileName}",
         f"  Section: {finding.section}",
         f"  Severity: {finding.severity}",
+        f"  Action: {finding.actionType}",
+        f"  Confidence: {finding.confidence:.0%}",
         f"  Issue: {finding.issue}",
-        f"  Code Reference: {finding.codeReference}",
-        f"  Confidence: {finding.confidence:.2f}",
     ]
+
+    if finding.codeReference:
+        parts.append(f"  Code Reference (UNVERIFIED — may be hallucinated): {finding.codeReference}")
 
     if finding.existingText:
         parts.append(f"  Existing Text: {finding.existingText}")
@@ -114,34 +134,50 @@ def _build_verification_prompt(finding: Finding) -> str:
 
     parts.extend([
         "",
-        "INSTRUCTIONS:",
-        "1. Use the web search tool to find the specific code section, standard, "
-        "or requirement referenced in this finding.",
-        "2. Verify whether the finding's claim is accurate — does the cited code "
-        "or standard actually say what the finding claims?",
-        "3. Pay attention to code editions/years — a requirement that exists in "
-        "one code cycle may not exist in another.",
-        "4. Focus on California-specific codes when CBC, CMC, CPC, or California "
-        "Energy Code is referenced.",
+        "═══════════════════════════════════════",
+        "YOUR TASK:",
+        "═══════════════════════════════════════",
+        "",
+        "Evaluate ALL of the following:",
+        "",
+        "1. IS THE ISSUE REAL?",
+        "   Is the problem described in the finding actually a problem?",
+        "   Search for the relevant code, standard, or best practice to confirm.",
+        "",
+        "2. IS THE SUGGESTED FIX CORRECT?",
+        "   If the finding suggests replacement text, is that replacement accurate?",
+        "   Check specific values (temperatures, pressures, dimensions, section numbers).",
+        "",
+        "3. IS THE CODE REFERENCE ACCURATE? (if one is cited)",
+        "   Does the cited code section, standard, or requirement actually exist?",
+        "   Does it say what the finding claims it says?",
+        "   Is the edition/year correct for the current California code cycle?",
+        "",
+        "CONTEXT:",
+        "- These are California construction projects under DSA jurisdiction",
+        "- Current code cycle: CBC 2025, CMC 2025, CPC 2025, CEC 2025, CALGreen 2025",
+        "- Current seismic standard: ASCE 7-22",
+        "- Focus on California-specific requirements when CBC, CMC, CPC, or ",
+        "  California Energy Code is referenced",
         "",
         "Respond with ONLY a JSON object (no other text) in this exact format:",
         '{',
         '  "verdict": "CONFIRMED" | "CORRECTED" | "UNVERIFIED" | "DISPUTED",',
-        '  "explanation": "Brief 1-2 sentence rationale",',
+        '  "explanation": "Brief 1-3 sentence rationale covering issue validity, fix correctness, and citation accuracy",',
         '  "sources": ["url1", "url2"],',
-        '  "correction": "Updated replacement text if CORRECTED/DISPUTED, else null"',
+        '  "correction": "Corrected replacement text if CORRECTED, or explanation of what is wrong if DISPUTED, else null"',
         '}',
         "",
-        "Verdict meanings:",
-        "- CONFIRMED: The finding is factually correct. The code/standard says "
-        "what the finding claims.",
-        "- CORRECTED: The finding identifies a real issue, but the suggested "
-        "replacement text has an error (wrong section number, wrong edition year, "
-        "etc.). Provide the corrected text in the correction field.",
-        "- UNVERIFIED: Could not find authoritative evidence to confirm or deny "
-        "the claim. The source may not be freely available online.",
-        "- DISPUTED: The finding appears to be incorrect. The code/standard does "
-        "NOT say what the finding claims, or the requirement doesn't exist.",
+        "VERDICT MEANINGS:",
+        "- CONFIRMED: The issue is real, the suggested fix is correct, and any "
+        "code citation is accurate.",
+        "- CORRECTED: The issue is real, but the suggested fix or code citation "
+        "has an error. Provide the corrected text in the correction field.",
+        "- UNVERIFIED: Could not find enough authoritative evidence to confirm "
+        "or deny. This is acceptable — not everything is freely available online.",
+        "- DISPUTED: The finding appears to be incorrect — the issue is not real, "
+        "the cited requirement does not exist, or the finding fundamentally "
+        "misinterprets the code/standard.",
     ])
 
     return "\n".join(parts)
@@ -195,8 +231,11 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
 def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationResult:
     """Verify a single finding using web search.
 
+    Evaluates the entire finding holistically: issue validity, fix
+    correctness, and citation accuracy (if any citation is present).
+
     Args:
-        finding: The Finding to fact-check
+        finding: The Finding to verify
         max_retries: Number of retries on transient errors
 
     Returns:
@@ -205,7 +244,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationRes
     if not _should_verify(finding):
         return VerificationResult(
             verdict="UNVERIFIED",
-            explanation="Skipped: no code reference to verify.",
+            explanation="Skipped: GRIPES findings are not verified.",
         )
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -269,8 +308,8 @@ def verify_findings(
     """Verify all eligible findings and populate their verification field.
 
     Modifies findings in-place by setting finding.verification to a
-    VerificationResult. Findings that are skipped (GRIPES, no code ref)
-    get an UNVERIFIED result with a skip explanation.
+    VerificationResult. GRIPES findings get an UNVERIFIED result with
+    a skip explanation.
 
     Findings are verified in ascending confidence order — low-confidence
     findings are checked first since they are most likely to be wrong and
@@ -290,16 +329,12 @@ def verify_findings(
 
     total = len(verifiable)
 
-    # Set skip results for non-verifiable findings
+    # Set skip results for GRIPES findings
     for f in findings:
         if not _should_verify(f):
             f.verification = VerificationResult(
                 verdict="UNVERIFIED",
-                explanation=(
-                    "Skipped: GRIPES findings are not verified."
-                    if f.severity == "GRIPES"
-                    else "Skipped: no code reference to verify."
-                ),
+                explanation="Skipped: GRIPES findings are not verified.",
             )
 
     # Verify eligible findings sequentially (lowest confidence first)

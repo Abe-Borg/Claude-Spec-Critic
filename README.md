@@ -127,10 +127,21 @@ Batch mode submits all specs as a single Anthropic Message Batch at 50% cost com
 
 ### Verification
 
-After the review and deduplication steps complete, all CRITICAL, HIGH, and MEDIUM findings that reference a specific code or standard are automatically verified by a Claude Sonnet 4.6 call with web search enabled. This step runs on every review — no configuration needed.
+After the review and deduplication steps complete, all CRITICAL, HIGH, and MEDIUM findings are automatically verified by a Claude Sonnet 4.6 call with web search enabled. This step runs on every review — no configuration needed.
+
+The verifier evaluates each finding holistically:
+
+1. **Is the issue real?** — Does the problem described actually exist based on current codes, standards, or best practices?
+2. **Is the suggested fix correct?** — Are specific values, section numbers, dimensions, and edition years in the replacement text accurate?
+3. **Is the code citation accurate?** — If the review model cited a code section or standard, does that reference actually exist and say what the finding claims? The verifier treats all citations with skepticism since the review model may hallucinate code references.
 
 **Verification order:**
 Findings are verified in ascending confidence order — the least confident findings are fact-checked first, since they benefit most from verification.
+
+**What gets verified:**
+
+- All CRITICAL, HIGH, and MEDIUM findings — with or without a code reference
+- GRIPES are always skipped (editorial/style issues, not worth the API cost)
 
 **Verdict meanings:**
 
@@ -138,13 +149,6 @@ Findings are verified in ascending confidence order — the least confident find
 - **CORRECTED** (amber) — The finding identifies a real issue, but the suggested replacement has an error (wrong section number, wrong edition year, etc.). A correction is provided.
 - **DISPUTED** (red) — The finding appears incorrect. The code/standard does NOT say what the finding claims.
 - **UNVERIFIED** (gray, not displayed) — Could not find evidence either way, or the finding was skipped.
-
-**What gets verified:**
-
-- Findings with a code reference (e.g., "CBC 2025 Section 1613", "ASHRAE 62.1-2022 Table 6-1")
-- CRITICAL, HIGH, and MEDIUM severity only
-- GRIPES are always skipped (not worth the API cost)
-- Findings without a code reference are skipped (nothing factual to check)
 
 **Cost notes:**
 

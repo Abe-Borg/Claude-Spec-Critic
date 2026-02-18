@@ -435,7 +435,7 @@ def collect_batch_results(
     if verify and all_findings:
         verifiable_count = sum(
             1 for f in all_findings
-            if f.severity != "GRIPES" and f.codeReference
+            if f.severity != "GRIPES"
         )
         if verifiable_count > 0:
             progress(60.0, f"Verifying {verifiable_count} findings via web search...")
@@ -597,7 +597,7 @@ def run_review(
     if verify and all_findings:
         verifiable_count = sum(
             1 for f in all_findings
-            if f.severity != "GRIPES" and f.codeReference
+            if f.severity != "GRIPES"
         )
         if verifiable_count > 0:
             progress(review_end_pct + 1, f"Verifying {verifiable_count} findings via web search...")
