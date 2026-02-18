@@ -79,6 +79,31 @@ Use the **Collapse All** and **Expand All** buttons in the findings toolbar to t
 
 When the review finishes, a separate report window opens automatically with the full results. This window has the same collapsible cards, export, and copy functionality as the embedded report. You can work with the pop-out window independently — close it any time, or keep it alongside the main app while you prepare a new review.
 
+### Batch Mode
+
+Batch mode submits all specs as a single Anthropic Message Batch at 50% cost compared to real-time streaming. The tradeoff is turnaround time: batches typically complete in 15-60 minutes instead of immediately.
+
+**How to use batch mode:**
+
+1. Select your specs and configure project context as normal
+2. In the INPUTS card, switch the **Mode** toggle from "Real-time" to "Batch (50% off)"
+3. The run button changes to **Submit Batch**
+4. Click Submit Batch — the app extracts specs, runs local checks, and submits the batch
+5. The app polls automatically every 15 seconds and updates the activity log with progress
+6. When the batch completes, results are collected and displayed in the same pop-out report window
+
+**When to use batch mode:**
+
+- Large reviews (5+ specs) where cost matters more than speed
+- Overnight or end-of-day reviews where you don't need results immediately
+- Any review where 50% cost savings justifies a 15-60 minute wait
+
+**Notes:**
+
+- The report format is identical between real-time and batch mode
+- You can close and reopen the app while a batch is processing — however, the current version does not persist batch state, so you would need to manually check the Anthropic dashboard for results
+- Batch errors are handled gracefully — if some specs fail in the batch, the rest still produce results
+
 ### Report Panel
 
 After the review completes, the activity log collapses and the report panel renders with:
@@ -112,6 +137,7 @@ spec-review/
 │   ├── widgets.py       # Custom UI widgets (TokenGauge, FileListPanel,
 │   │                    #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py      # Core orchestration (single source of truth)
+│   ├── batch.py         # Anthropic Message Batches API integration
 │   ├── extractor.py     # DOCX text extraction
 │   ├── preprocessor.py  # LEED/placeholder detection (no mutation)
 │   ├── tokenizer.py     # Token counting with tiktoken
@@ -210,9 +236,11 @@ customtkinter      # Modern themed Tkinter widgets
 
 ## Changelog
 
-### v1.4.0 — Per-Spec Siloed Review (Phase 1 Complete)
+### v1.4.0 — Per-Spec Siloed Review + Batch Processing
 
-- **Feature**: Per-spec siloed review — each spec file now gets its own API call instead of concatenating all specs into one giant context. This gives each spec the model's full attention, avoids token limit bottlenecks for large projects, and is the foundation for batch processing (coming in Phase 2)
+**Phase 1: Per-Spec Siloed Review**
+
+- **Feature**: Per-spec siloed review — each spec file now gets its own API call instead of concatenating all specs into one giant context. This gives each spec the model's full attention, avoids token limit bottlenecks for large projects, and is the foundation for batch processing
 - **Feature**: `get_single_spec_user_message()` in `prompts.py` — focused user message for single-spec review with a shorter analysis summary budget (1-2 paragraphs)
 - **Feature**: `review_single_spec()` in `reviewer.py` — reviews one spec per API call. Shares streaming, retry, and parsing logic with `review_specs()` via an internal `_stream_review()` helper
 - **Feature**: `Finding.verification` field — optional slot for web search verification results (populated in Phase 3)
@@ -220,9 +248,18 @@ customtkinter      # Modern themed Tkinter widgets
 - **Feature**: Partial failure resilience — if one spec's API call fails, the remaining specs are still reviewed. Errors are reported in the Reviewer's Notes section
 - **Refactor**: Pipeline token check is now per-spec instead of combined total. Each spec + system prompt must fit within 150k individually
 - **Refactor**: Core streaming/retry/parsing logic extracted into `_stream_review()` to eliminate duplication
+- **Refactor**: Shared `_prepare_specs()` helper extracts extraction + preprocessing + token checking logic used by both real-time and batch modes
 
-**Upcoming phases:**
-- Phase 2: Batch processing with Anthropic Message Batches API (50% cost savings)
+**Phase 2: Batch Processing**
+
+- **Feature**: Batch mode toggle in the Inputs card — a segmented button lets you switch between "Real-time" (streaming, immediate results) and "Batch (50% off)" (queued, 15-60 min turnaround). The run button text updates to "Submit Batch" when batch mode is selected
+- **Feature**: `batch.py` module — standalone Anthropic Message Batches API integration with `submit_review_batch()`, `poll_batch()`, `retrieve_review_results()`, and `cancel_batch()`
+- **Feature**: `start_batch_review()` in `pipeline.py` — extracts and validates specs, submits the batch, returns a `BatchSubmission` for the GUI to poll
+- **Feature**: `collect_batch_results()` in `pipeline.py` — retrieves and aggregates results from a completed batch into the same `PipelineResult` shape as real-time mode
+- **Feature**: Automatic batch polling — after submission, the GUI polls every 15 seconds and updates the progress bar and activity log with batch status (succeeded/processing/errored counts)
+- **Feature**: Results are collected and displayed in the same report window as real-time mode — the report format is identical regardless of which mode was used
+
+**Upcoming:**
 - Phase 3: Web search self-verification of findings
 
 ### v1.3.0

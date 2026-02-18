@@ -12,7 +12,8 @@ base_path = os.path.dirname(os.path.abspath(__file__))
 exe_dir = Path(base_path).parent
 sys.path.insert(0, str(exe_dir))
 
-from src.pipeline import run_review
+from src.pipeline import run_review, start_batch_review, collect_batch_results, BatchSubmission
+from src.batch import poll_batch, cancel_batch, BatchStatus
 from src.reviewer import MODEL_OPUS_46
 from src.extractor import extract_text_from_docx
 from src.tokenizer import RECOMMENDED_MAX
@@ -45,6 +46,8 @@ class SpecReviewApp(ctk.CTk):
         self._report_mode = False
         self._report_window: Optional[ReportWindow] = None
         self._project_context_tokens = 0
+        self._batch_submission: Optional[BatchSubmission] = None
+        self._batch_poll_id: Optional[str] = None  # after() ID for cancelling poll loop
         fk = load_api_key_from_file()
         ek = os.environ.get("ANTHROPIC_API_KEY", "")
         self.api_key = fk if fk else ek
@@ -134,6 +137,36 @@ class SpecReviewApp(ctk.CTk):
         # Recount tokens when project context changes
         self.context_textbox.bind("<KeyRelease>", self._on_context_change)
 
+        # --- Row 3: Review Mode ---
+        ctk.CTkLabel(self.inputs_content, text="Mode", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
+        mode_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        mode_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
+        self._review_mode = ctk.StringVar(value="realtime")
+        self.mode_selector = ctk.CTkSegmentedButton(
+            mode_frame,
+            values=["Real-time", "Batch (50% off)"],
+            variable=self._review_mode,
+            command=self._on_mode_change,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            selected_color=COLORS["accent"],
+            selected_hover_color=COLORS["accent_hover"],
+            unselected_color=COLORS["bg_input"],
+            unselected_hover_color=COLORS["border"],
+            fg_color=COLORS["bg_input"],
+            text_color=COLORS["text_secondary"],
+            text_color_disabled=COLORS["text_muted"],
+            height=32,
+        )
+        self.mode_selector.set("Real-time")
+        self.mode_selector.pack(side="left")
+        self._mode_hint = ctk.CTkLabel(
+            mode_frame,
+            text="",
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=COLORS["text_muted"],
+        )
+        self._mode_hint.pack(side="left", padx=(12, 0))
+
         self.inputs_content.columnconfigure(1, weight=1)
 
     # --- Project context placeholder helpers ---
@@ -173,6 +206,19 @@ class SpecReviewApp(ctk.CTk):
             self._project_context_tokens = 0
         # Trigger a full recount
         self._on_file_selection_change()
+
+    def _on_mode_change(self, value: str):
+        """Update hint text when review mode changes."""
+        if value == "Batch (50% off)":
+            self._mode_hint.configure(text="Queued processing \u2022 results in ~15-60 min")
+            self.run_button.configure(text="Submit Batch")
+        else:
+            self._mode_hint.configure(text="")
+            self.run_button.configure(text="Run Review")
+
+    @property
+    def _is_batch_mode(self) -> bool:
+        return self.mode_selector.get() == "Batch (50% off)"
 
     def _toggle_inputs_card(self, event=None):
         if self._inputs_expanded:
@@ -277,8 +323,14 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
         self.progress_bar.set(0); self.progress_bar.configure(mode="determinate")
         os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()
-        self.log.log_step(f"Reviewing {len(self._selected_files_for_review)} files...")
-        threading.Thread(target=self._run_review_thread, daemon=True).start()
+
+        n = len(self._selected_files_for_review)
+        if self._is_batch_mode:
+            self.log.log_step(f"Submitting {n} files for batch review...")
+            threading.Thread(target=self._submit_batch_thread, daemon=True).start()
+        else:
+            self.log.log_step(f"Reviewing {n} files...")
+            threading.Thread(target=self._run_review_thread, daemon=True).start()
 
     def _run_review_thread(self):
         try:
@@ -322,8 +374,103 @@ class SpecReviewApp(ctk.CTk):
         self.log.log_error(f"Review failed: {err}")
         self.run_button.set_ready(); self.is_processing = False
 
+    # ----- Batch mode -----
+
+    def _submit_batch_thread(self):
+        """Background thread: extract specs and submit the batch."""
+        try:
+            def _on_progress(pct, msg):
+                self.after(0, lambda m=msg: self.log.log_step(m))
+                self.after(0, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+
+            submission = start_batch_review(
+                input_dir=self.input_dir,
+                files=self._selected_files_for_review,
+                project_context=self._project_context_for_review,
+                log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
+                progress=_on_progress,
+            )
+            self.after(0, lambda: self._on_batch_submitted(submission))
+        except Exception as e:
+            import traceback
+            err = f"{e}\n{traceback.format_exc()}"
+            self.after(0, lambda: self._on_review_error(err))
+
+    def _on_batch_submitted(self, submission: BatchSubmission):
+        """Batch submitted successfully — start polling loop."""
+        self._batch_submission = submission
+        self.progress_bar.set(0.4)
+        self.log.log_success(f"Batch submitted: {submission.job.batch_id}")
+        self.log.log(f"  {len(submission.files_reviewed)} specs queued \u2022 50% cost savings", level="muted")
+        self.log.log_step("Polling for results (typically 15-60 min)...")
+        self.run_button.configure(text="Polling...")
+        # Start polling every 15 seconds
+        self._poll_batch()
+
+    def _poll_batch(self):
+        """Poll batch status and schedule next poll or collect results."""
+        if self._batch_submission is None:
+            return
+
+        def _do_poll():
+            try:
+                status = poll_batch(self._batch_submission.job.batch_id)
+                self.after(0, lambda: self._on_poll_result(status))
+            except Exception as e:
+                self.after(0, lambda: self.log.log_warning(f"Poll error (retrying): {e}"))
+                # Retry in 30s on transient error
+                self.after(0, lambda: self._schedule_next_poll(30_000))
+
+        threading.Thread(target=_do_poll, daemon=True).start()
+
+    def _on_poll_result(self, status: BatchStatus):
+        """Handle a poll result — update progress or collect results."""
+        # Update progress bar based on batch completion
+        # 40% is submission, 40-95% is batch processing, 95-100% is result collection
+        batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.55
+        self.progress_bar.set(min(batch_pct, 0.95))
+
+        self.log.log(
+            f"  Batch: {status.succeeded} done, {status.processing} processing, "
+            f"{status.errored} errors \u2022 {status.progress_pct:.0f}%",
+            level="info", paced=False,
+        )
+
+        if status.status == "ended":
+            self.log.log_success("Batch complete — collecting results...")
+            self._collect_batch_results()
+        elif status.status in ("canceling",):
+            self.log.log_warning("Batch is being canceled...")
+            self._schedule_next_poll(5_000)
+        else:
+            # Still in_progress — poll again
+            self._schedule_next_poll(15_000)
+
+    def _schedule_next_poll(self, delay_ms: int):
+        """Schedule next poll, saving the after() ID so it can be canceled."""
+        self._batch_poll_id = self.after(delay_ms, self._poll_batch)
+
+    def _collect_batch_results(self):
+        """Retrieve results from the completed batch in a background thread."""
+        def _do_collect():
+            try:
+                result = collect_batch_results(self._batch_submission)
+                self.after(0, lambda: self._on_review_complete(result))
+            except Exception as e:
+                import traceback
+                err = f"{e}\n{traceback.format_exc()}"
+                self.after(0, lambda: self._on_review_error(err))
+
+        threading.Thread(target=_do_collect, daemon=True).start()
+
     def _reset_ui(self):
-        self.run_button.set_ready(); self.progress_bar.pack_forget(); self.is_processing = False
+        self.run_button.set_ready()
+        # Restore button text for current mode
+        if self._is_batch_mode:
+            self.run_button.configure(text="Submit Batch")
+        self.progress_bar.pack_forget()
+        self.is_processing = False
+        self._batch_submission = None
 
     # ----- Pop-out report window -----
 
@@ -380,6 +527,12 @@ class SpecReviewApp(ctk.CTk):
             self._report_mode = False
             self.report_toolbar.pack_forget()
 
+        # Cancel any active batch polling
+        if self._batch_poll_id is not None:
+            self.after_cancel(self._batch_poll_id)
+            self._batch_poll_id = None
+        self._batch_submission = None
+
         # Close pop-out window
         self._close_report_window()
 
@@ -405,6 +558,9 @@ class SpecReviewApp(ctk.CTk):
         self.file_list_panel.reset()
         self.log.clear()
         self.run_button.set_ready()
+        self.run_button.configure(text="Run Review")
+        self.mode_selector.set("Real-time")
+        self._mode_hint.configure(text="")
         self.is_processing = False
 
         # Re-pack everything in original order
