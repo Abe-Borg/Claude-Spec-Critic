@@ -5,20 +5,19 @@ This module is the SINGLE SOURCE OF TRUTH for the review workflow.
 The GUI calls run_review() for real-time mode or start_batch_review()
 + collect_batch_results() for batch mode.
 
+v1.5.0 — Confidence scoring, always-on verification, finding deduplication.
+
+    Finding deduplication:
+        Per-spec siloed review can produce duplicate findings when the same
+        issue appears across multiple specs (e.g., "ASCE 7-16 instead of
+        7-22" flagged independently in 5 specs). The _deduplicate_findings()
+        post-processing step groups findings by (normalized issue, codeReference)
+        and consolidates duplicates into a single representative finding that
+        lists all affected files.
+
+    Verification is always enabled (v1.5.0).
+
 v1.4.0 — Per-spec siloed review + batch processing support.
-
-    Real-time mode (run_review):
-        Each spec gets its own streaming API call via review_single_spec().
-        Results return immediately when all calls complete.
-
-    Batch mode (start_batch_review → collect_batch_results):
-        All specs are submitted as a single Anthropic Message Batch for
-        50% cost savings. The GUI polls for completion, then calls
-        collect_batch_results() to parse and aggregate findings.
-
-    Both modes share the same extraction, preprocessing, and token
-    checking logic via _prepare_specs().
-
 v1.3.0 — project_context parameter plumbed through to user message.
 v1.1.0 — All output is in-app. No files emitted.
 
@@ -29,10 +28,13 @@ Design decisions:
     - No files are written — everything renders in the UI
     - Per-spec errors are collected, not raised immediately, so partial
       results can still be displayed
+    - Deduplication is local (no API call) and runs before verification
+      so duplicate findings don't waste verification API calls
 """
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +102,97 @@ def _combine_specs(specs: list[ExtractedSpec]) -> str:
     for s in specs:
         blocks.append(f"===== FILE: {s.filename} =====\n{s.content}")
     return "\n\n".join(blocks)
+
+
+# ---------------------------------------------------------------------------
+# Finding deduplication (v1.5.0)
+# ---------------------------------------------------------------------------
+
+def _normalize_issue_text(text: str) -> str:
+    """Normalize issue text for deduplication comparison.
+
+    Strips filenames, section references, and extra whitespace so that
+    findings describing the same underlying issue across different specs
+    can be grouped together.
+    """
+    # Remove common file references like "23 05 00.docx" or "23 21 13 - Hydronic Piping.docx"
+    normalized = re.sub(r"\d{2}\s?\d{2}\s?\d{2}[^.]*\.docx", "", text, flags=re.IGNORECASE)
+    # Remove section references like "Part 2, Article 2.3.A" or "Article 1.5.B"
+    normalized = re.sub(r"(?:Part\s+\d+,?\s*)?Article\s+[\d.]+[A-Z]*", "", normalized, flags=re.IGNORECASE)
+    # Collapse whitespace
+    normalized = re.sub(r"\s+", " ", normalized).strip().lower()
+    return normalized
+
+
+def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
+    """Consolidate duplicate findings across multiple specs.
+
+    Per-spec siloed review can produce the same finding independently in
+    multiple specs (e.g., "ASCE 7-16 instead of 7-22" in 5 specs). This
+    function groups findings by their normalized issue text and code reference,
+    then consolidates each group into a single representative finding.
+
+    The representative finding:
+        - Uses the highest severity from the group
+        - Uses the highest confidence from the group
+        - Lists all affected filenames in the issue text
+        - Keeps the existing/replacement text from the first occurrence
+        - Preserves the code reference
+
+    Findings that appear in only one spec are left unchanged.
+
+    Args:
+        findings: List of Finding objects from per-spec review
+
+    Returns:
+        Deduplicated list of Finding objects (potentially shorter)
+    """
+    if len(findings) <= 1:
+        return findings
+
+    # Build dedup key: (normalized_issue, codeReference or "")
+    groups: dict[tuple[str, str], list[Finding]] = {}
+    for f in findings:
+        key = (_normalize_issue_text(f.issue), (f.codeReference or "").strip().lower())
+        groups.setdefault(key, []).append(f)
+
+    # Severity ordering for picking the highest
+    severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
+
+    deduplicated: list[Finding] = []
+    for key, group in groups.items():
+        if len(group) == 1:
+            # Unique finding — pass through unchanged
+            deduplicated.append(group[0])
+            continue
+
+        # Sort by severity (most severe first), then confidence (highest first)
+        group.sort(key=lambda f: (severity_rank.get(f.severity, 99), -f.confidence))
+        representative = group[0]
+
+        # Collect all unique filenames
+        filenames = list(dict.fromkeys(f.fileName for f in group if f.fileName))
+        file_list = ", ".join(filenames)
+
+        # Build consolidated issue text
+        consolidated_issue = (
+            f"{representative.issue} "
+            f"(found in {len(filenames)} specs: {file_list})"
+        )
+
+        deduplicated.append(Finding(
+            severity=representative.severity,
+            fileName=filenames[0] if filenames else representative.fileName,
+            section=representative.section,
+            issue=consolidated_issue,
+            actionType=representative.actionType,
+            existingText=representative.existingText,
+            replacementText=representative.replacementText,
+            codeReference=representative.codeReference,
+            confidence=max(f.confidence for f in group),
+        ))
+
+    return deduplicated
 
 
 @dataclass
@@ -267,7 +360,7 @@ def start_batch_review(
 def collect_batch_results(
     submission: BatchSubmission,
     *,
-    verify: bool = False,
+    verify: bool = True,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> PipelineResult:
@@ -314,6 +407,13 @@ def collect_batch_results(
             "\n".join(f"  - {e}" for e in errors)
         )
 
+    # Deduplication (before verification to avoid wasting API calls)
+    pre_dedup_count = len(all_findings)
+    all_findings = _deduplicate_findings(all_findings)
+    post_dedup_count = len(all_findings)
+    if pre_dedup_count != post_dedup_count:
+        log(f"Deduplicated: {pre_dedup_count} findings → {post_dedup_count} unique findings")
+
     combined_result = ReviewResult(
         findings=all_findings,
         raw_response="",
@@ -321,7 +421,7 @@ def collect_batch_results(
         model=MODEL_OPUS_46,
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
-        elapsed_seconds=0.0,  # Batch doesn't have a meaningful single elapsed time
+        elapsed_seconds=0.0,
     )
 
     if errors:
@@ -331,7 +431,7 @@ def collect_batch_results(
             "\n".join(f"  - {e}" for e in errors)
         )
 
-    # Verification (optional)
+    # Verification (always enabled in v1.5.0)
     if verify and all_findings:
         verifiable_count = sum(
             1 for f in all_findings
@@ -368,7 +468,7 @@ def run_review(
     input_dir: Path,
     files: Optional[list[Path]] = None,
     project_context: str = "",
-    verify: bool = False,
+    verify: bool = True,
     dry_run: bool = False,
     verbose: bool = False,
     log: LogFn = _noop_log,
@@ -378,9 +478,12 @@ def run_review(
     """
     Execute the full specification review pipeline.
 
+    v1.5.0: Adds finding deduplication after per-spec review. Verification
+    is always enabled (verify parameter kept for API compatibility but
+    defaults to True).
+
     v1.4.0: Reviews each spec independently via review_single_spec() instead
-    of combining all specs into one API call. Optionally verifies findings
-    via web search after review.
+    of combining all specs into one API call.
 
     Args:
         input_dir: Directory containing .docx specification files
@@ -389,7 +492,7 @@ def run_review(
         project_context: Optional free-text project description. If non-empty,
             included in each per-spec user message as a <project_context> block.
         verify: If True, run web search verification on eligible findings
-            after review (uses Sonnet, adds cost but confirms accuracy).
+            after review. Defaults to True (always-on in v1.5.0).
         dry_run: If True, skip the API call.
         verbose: Passed to reviewer for additional stdout logging
         log: Callback for log messages.
@@ -444,8 +547,8 @@ def run_review(
     total_output_tokens = 0
     errors: list[str] = []
 
-    # Progress allocation: review 35-75% if verifying, 35-95% if not
-    review_end_pct = 75.0 if verify else 95.0
+    # Progress allocation: review 35-70%, dedup ~70%, verify 70-95%
+    review_end_pct = 70.0
 
     for i, spec in enumerate(specs):
         spec_num = i + 1
@@ -479,7 +582,17 @@ def run_review(
         log(f"  {spec.filename}: {len(result.findings)} findings")
 
     # -------------------------------------------------------------------------
-    # Stage 5: Web search verification (optional)
+    # Stage 4.5: Finding deduplication (before verification)
+    # -------------------------------------------------------------------------
+    pre_dedup_count = len(all_findings)
+    all_findings = _deduplicate_findings(all_findings)
+    post_dedup_count = len(all_findings)
+    if pre_dedup_count != post_dedup_count:
+        log(f"Deduplicated: {pre_dedup_count} findings → {post_dedup_count} unique findings")
+    progress(review_end_pct, f"Review complete — {post_dedup_count} unique findings")
+
+    # -------------------------------------------------------------------------
+    # Stage 5: Web search verification (always enabled in v1.5.0)
     # -------------------------------------------------------------------------
     if verify and all_findings:
         verifiable_count = sum(
@@ -487,7 +600,7 @@ def run_review(
             if f.severity != "GRIPES" and f.codeReference
         )
         if verifiable_count > 0:
-            progress(review_end_pct, f"Verifying {verifiable_count} findings via web search...")
+            progress(review_end_pct + 1, f"Verifying {verifiable_count} findings via web search...")
             log(f"Verifying {verifiable_count} findings with Sonnet + web search...")
 
             def _verify_progress(current: int, total: int, filename: str):
@@ -523,7 +636,7 @@ def run_review(
     # Combine per-spec results into a single ReviewResult for the GUI
     combined_result = ReviewResult(
         findings=all_findings,
-        raw_response="",  # No single raw response in per-spec mode
+        raw_response="",
         thinking="\n\n".join(all_thinking),
         model=MODEL_OPUS_46,
         input_tokens=total_input_tokens,

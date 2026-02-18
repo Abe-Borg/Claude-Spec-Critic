@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus 4.6
-v1.4.0 - Per-spec siloed review with determinate progress bar
+v1.5.0 - Confidence scoring, always-on verification
 """
 import os, sys, threading
 from pathlib import Path
@@ -167,32 +167,7 @@ class SpecReviewApp(ctk.CTk):
         )
         self._mode_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 4: Verification toggle ---
-        ctk.CTkLabel(self.inputs_content, text="Verify", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
-        verify_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        verify_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
-        self._verify_enabled = ctk.BooleanVar(value=False)
-        self.verify_checkbox = ctk.CTkCheckBox(
-            verify_frame,
-            text="Web search fact-check",
-            variable=self._verify_enabled,
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"],
-            border_color=COLORS["border"],
-            checkmark_color=COLORS["text_primary"],
-            text_color=COLORS["text_secondary"],
-            height=24,
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.verify_checkbox.pack(side="left")
-        ctk.CTkLabel(
-            verify_frame,
-            text="Verify CRITICAL/HIGH/MEDIUM findings with Sonnet + web search (adds cost)",
-            font=ctk.CTkFont(family="Segoe UI", size=10),
-            text_color=COLORS["text_muted"],
-        ).pack(side="left", padx=(8, 0))
+        # (Verify row removed in v1.5.0 — verification is always enabled)
 
         self.inputs_content.columnconfigure(1, weight=1)
 
@@ -265,14 +240,7 @@ class SpecReviewApp(ctk.CTk):
             self._analyze_tokens(paths)
 
     def _analyze_tokens(self, file_paths):
-        """Run token analysis in a background thread.
-
-        v1.2.0: filenames are accumulated and logged in a single batched
-        callback instead of one after(0) per file, reducing main-thread
-        scheduling pressure during rapid file processing.
-
-        v1.3.0: includes project context tokens in the total.
-        """
+        """Run token analysis in a background thread."""
         if not file_paths:
             self.log.log_warning("No .docx files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
         self.log.log_step(f"Analyzing {len(file_paths)} files...")
@@ -342,7 +310,6 @@ class SpecReviewApp(ctk.CTk):
         if not self._validate_inputs(): return
         self._selected_files_for_review = self.file_list_panel.get_selected_files()
         self._project_context_for_review = self._get_project_context()
-        self._verify_for_review = self._verify_enabled.get()
         self.is_processing = True
         self.report_panel.clear()
         self._close_report_window()
@@ -363,23 +330,19 @@ class SpecReviewApp(ctk.CTk):
     def _run_review_thread(self):
         try:
             n = len(self._selected_files_for_review)
-            v = self._verify_for_review
             self.after(0, lambda: self.log.log_step("Starting per-spec review..."))
-            mode_info = f"Model: {MODEL_OPUS_46}  \u2022  {n} specs \u2022  1 API call per spec"
-            if v:
-                mode_info += "  \u2022  verification enabled"
+            mode_info = f"Model: {MODEL_OPUS_46}  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled"
             self.after(0, lambda: self.log.log(mode_info, level="muted"))
 
             def _on_progress(pct, msg):
                 self.after(0, lambda m=msg: self.log.log_step(m))
-                # Drive the determinate progress bar from pipeline progress %
                 self.after(0, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
 
             result = run_review(
                 input_dir=self.input_dir,
                 files=self._selected_files_for_review,
                 project_context=self._project_context_for_review,
-                verify=v,
+                verify=True,
                 dry_run=False, verbose=False,
                 log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
                 progress=_on_progress,
@@ -397,7 +360,7 @@ class SpecReviewApp(ctk.CTk):
             rv = result.review_result
             self.log.log(f"Findings: {rv.critical_count} critical, {rv.high_count} high, {rv.medium_count} medium, {rv.gripe_count} gripes", level="info")
             self.log.log(f"Time: {rv.elapsed_seconds:.1f}s", level="muted")
-            # Open pop-out report window (report no longer renders in the main UI)
+            # Open pop-out report window
             self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts)
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
@@ -451,15 +414,12 @@ class SpecReviewApp(ctk.CTk):
                 self.after(0, lambda: self._on_poll_result(status))
             except Exception as e:
                 self.after(0, lambda: self.log.log_warning(f"Poll error (retrying): {e}"))
-                # Retry in 30s on transient error
                 self.after(0, lambda: self._schedule_next_poll(30_000))
 
         threading.Thread(target=_do_poll, daemon=True).start()
 
     def _on_poll_result(self, status: BatchStatus):
         """Handle a poll result — update progress or collect results."""
-        # Update progress bar based on batch completion
-        # 40% is submission, 40-95% is batch processing, 95-100% is result collection
         batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.55
         self.progress_bar.set(min(batch_pct, 0.95))
 
@@ -476,7 +436,6 @@ class SpecReviewApp(ctk.CTk):
             self.log.log_warning("Batch is being canceled...")
             self._schedule_next_poll(5_000)
         else:
-            # Still in_progress — poll again
             self._schedule_next_poll(15_000)
 
     def _schedule_next_poll(self, delay_ms: int):
@@ -493,7 +452,7 @@ class SpecReviewApp(ctk.CTk):
 
                 result = collect_batch_results(
                     self._batch_submission,
-                    verify=self._verify_for_review,
+                    verify=True,
                     log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
                     progress=_on_progress,
                 )
@@ -552,50 +511,40 @@ class SpecReviewApp(ctk.CTk):
         """Restore all input panels, keep report visible below."""
         self._report_mode = False
         self.report_toolbar.pack_forget()
-        # Re-pack all widgets in original order
         self.hdr.pack(fill="x", pady=(0, 20))
         self.inputs_card.pack(fill="x")
         if self.file_list_panel._file_data:
             self.file_list_panel.pack(fill="x", pady=(16, 0), after=self.inputs_card)
         self.token_gauge.pack(fill="x", pady=(16, 0))
         self.run_button.pack(fill="x", pady=(16, 0))
-        # Log stays collapsed so report keeps space
         self.log.pack(fill="x", pady=(16, 0))
 
     def _reset_for_new_review(self):
         """Clear all state and return to a fresh starting layout."""
-        # Exit report mode if active
         if self._report_mode:
             self._report_mode = False
             self.report_toolbar.pack_forget()
 
-        # Cancel any active batch polling
         if self._batch_poll_id is not None:
             self.after_cancel(self._batch_poll_id)
             self._batch_poll_id = None
         self._batch_submission = None
 
-        # Close pop-out window
         self._close_report_window()
-
-        # Clear results
         self.report_panel.clear()
         self.progress_bar.pack_forget()
 
-        # Reset input state
         self.input_dir = None
         self._selected_files = []
         self._loaded_file_data = []
         self._project_context_tokens = 0
         self.input_dir_entry.delete(0, "end")
 
-        # Clear project context and restore placeholder
         self.context_textbox.delete("1.0", "end")
         self._context_has_placeholder = True
         self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
         self.context_textbox.configure(text_color=COLORS["text_muted"])
 
-        # Reset widgets
         self.token_gauge.reset()
         self.file_list_panel.reset()
         self.log.clear()
@@ -603,10 +552,8 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.configure(text="Run Review")
         self.mode_selector.set("Real-time")
         self._mode_hint.configure(text="")
-        self._verify_enabled.set(False)
         self.is_processing = False
 
-        # Re-pack everything in original order
         self.hdr.pack(fill="x", pady=(0, 20))
         self.inputs_card.pack(fill="x")
         self.token_gauge.pack(fill="x", pady=(16, 0))

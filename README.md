@@ -84,6 +84,12 @@ Within each severity tier (CRITICAL, HIGH, MEDIUM, GRIPES), findings are sorted 
 **How confidence affects verification:**
 When verification is enabled, findings are verified in ascending confidence order — the least confident findings are fact-checked first, since they are most likely to be incorrect and benefit most from web search verification.
 
+### Finding Deduplication
+
+When reviewing multiple specs, the same issue often appears independently across several files (e.g., "ASCE 7-16 instead of 7-22" flagged in 5 different specs). The deduplication engine consolidates these into a single finding that lists all affected files, so your report isn't cluttered with repetitive entries.
+
+Deduplication is automatic and runs locally (no API call) after all per-spec reviews complete but before verification. This means duplicate findings don't waste verification API calls. The consolidated finding keeps the highest severity and highest confidence from the group.
+
 ### Collapsible Finding Cards
 
 Each finding card in the report has a clickable header. Click the header row (severity badge, confidence score, filename, section) to collapse that card down to a single line. Click again to expand it. This lets you dismiss findings you've already reviewed and focus on the ones that still need attention.
@@ -121,14 +127,7 @@ Batch mode submits all specs as a single Anthropic Message Batch at 50% cost com
 
 ### Verification
 
-Verification is an optional post-review step that fact-checks findings using web search. When enabled, each CRITICAL, HIGH, and MEDIUM finding that references a specific code or standard is verified by a separate Claude Sonnet 4.6 call with web search enabled.
-
-**How to enable verification:**
-
-1. In the INPUTS card, check the **Web search fact-check** checkbox under Verify
-2. Run your review (real-time or batch)
-3. After the review completes, verification runs automatically on eligible findings
-4. Results appear in the finding cards as color-coded verdict badges
+After the review and deduplication steps complete, all CRITICAL, HIGH, and MEDIUM findings that reference a specific code or standard are automatically verified by a Claude Sonnet 4.6 call with web search enabled. This step runs on every review — no configuration needed.
 
 **Verification order:**
 Findings are verified in ascending confidence order — the least confident findings are fact-checked first, since they benefit most from verification.
@@ -295,16 +294,16 @@ customtkinter      # Modern themed Tkinter widgets
 
 ## Changelog
 
-### v1.5.0 — Confidence Scoring + Sonnet 4.6
+### v1.5.0 — Confidence Scoring + Deduplication + Always-On Verification
 
 - **Feature**: Confidence scoring — each finding now includes a numeric `confidence` field (0.0–1.0) indicating how certain the model is about the issue. The system prompt includes detailed guidance on score ranges (HIGH 0.85–1.0, MODERATE 0.60–0.84, LOW-MODERATE 0.35–0.59, below 0.35 not flagged).
 - **Feature**: Confidence badges in finding cards — color-coded labels (green/amber/red) displayed in the card header next to the severity badge
 - **Feature**: Confidence-based sorting — findings within each severity tier are sorted by confidence (highest first) so the most certain findings appear at the top
-- **Feature**: Confidence-based verification ordering — when verification is enabled, findings are verified in ascending confidence order (least confident first) so the findings most likely to be wrong get fact-checked first
+- **Feature**: Confidence-based verification ordering — findings are verified in ascending confidence order (least confident first) so the findings most likely to be wrong get fact-checked first
+- **Feature**: Finding deduplication — per-spec siloed review can produce duplicate findings when the same issue appears across multiple specs. A local post-processing step groups findings by normalized issue text and code reference, then consolidates duplicates into a single representative finding listing all affected files. Runs before verification to avoid wasting API calls on duplicates.
+- **Feature**: Always-on verification — web search verification now runs automatically on every review. The verify checkbox has been removed from the GUI. All CRITICAL, HIGH, and MEDIUM findings with code references are always fact-checked.
 - **Feature**: Confidence included in JSON export — the `confidence` field appears in each finding in the Export JSON output
 - **Update**: Verification model upgraded from Claude Sonnet 4.5 to Claude Sonnet 4.6
-- **Update**: Prompt examples updated to include confidence scores for all action types (ADD, EDIT, DELETE)
-- **Update**: Confidence guidance section in system prompt updated from qualitative-only to include numeric score ranges
 
 ### v1.4.0 — Per-Spec Siloed Review + Batch Processing
 
