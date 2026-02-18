@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus 4.6
-v1.3.0 - Project context field, log collapse fix, app rename
+v1.4.0 - Per-spec siloed review with determinate progress bar
 """
 import os, sys, threading
 from pathlib import Path
@@ -275,16 +275,21 @@ class SpecReviewApp(ctk.CTk):
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
         self.run_button.set_processing()
         self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
-        self.progress_bar.set(0); self.progress_bar.configure(mode="indeterminate"); self.progress_bar.start()
+        self.progress_bar.set(0); self.progress_bar.configure(mode="determinate")
         os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()
         self.log.log_step(f"Reviewing {len(self._selected_files_for_review)} files...")
         threading.Thread(target=self._run_review_thread, daemon=True).start()
 
     def _run_review_thread(self):
         try:
-            self.after(0, lambda: self.log.log_step("Starting review..."))
-            self.after(0, lambda: self.log.log(f"Model: {MODEL_OPUS_46}", level="muted"))
-            self.after(0, lambda: self.log.log_step("Claude is analyzing..."))
+            n = len(self._selected_files_for_review)
+            self.after(0, lambda: self.log.log_step("Starting per-spec review..."))
+            self.after(0, lambda: self.log.log(f"Model: {MODEL_OPUS_46}  \u2022  {n} specs \u2022  1 API call per spec", level="muted"))
+
+            def _on_progress(pct, msg):
+                self.after(0, lambda m=msg: self.log.log_step(m))
+                # Drive the determinate progress bar from pipeline progress %
+                self.after(0, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
 
             result = run_review(
                 input_dir=self.input_dir,
@@ -292,7 +297,7 @@ class SpecReviewApp(ctk.CTk):
                 project_context=self._project_context_for_review,
                 dry_run=False, verbose=False,
                 log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
-                progress=lambda pct, msg: self.after(0, lambda m=msg: self.log.log_step(m)),
+                progress=_on_progress,
             )
             self.after(0, lambda: self._on_review_complete(result))
         except Exception as e:
@@ -301,7 +306,7 @@ class SpecReviewApp(ctk.CTk):
             self.after(0, lambda: self._on_review_error(err))
 
     def _on_review_complete(self, result):
-        self.progress_bar.stop(); self.progress_bar.configure(mode="determinate"); self.progress_bar.set(1.0)
+        self.progress_bar.set(1.0)
         self.log.log_success("Review complete!")
         if result.review_result:
             rv = result.review_result
@@ -313,7 +318,7 @@ class SpecReviewApp(ctk.CTk):
         self.after(2500, self._reset_ui)
 
     def _on_review_error(self, err):
-        self.progress_bar.stop(); self.progress_bar.pack_forget()
+        self.progress_bar.pack_forget()
         self.log.log_error(f"Review failed: {err}")
         self.run_button.set_ready(); self.is_processing = False
 

@@ -210,21 +210,20 @@ customtkinter      # Modern themed Tkinter widgets
 
 ## Changelog
 
-### v1.4.0 (In Progress — Per-Spec Siloed Review)
+### v1.4.0 — Per-Spec Siloed Review (Phase 1 Complete)
 
-**Step 1A complete: Prompts & Reviewer additions (no breaking changes)**
+- **Feature**: Per-spec siloed review — each spec file now gets its own API call instead of concatenating all specs into one giant context. This gives each spec the model's full attention, avoids token limit bottlenecks for large projects, and is the foundation for batch processing (coming in Phase 2)
+- **Feature**: `get_single_spec_user_message()` in `prompts.py` — focused user message for single-spec review with a shorter analysis summary budget (1-2 paragraphs)
+- **Feature**: `review_single_spec()` in `reviewer.py` — reviews one spec per API call. Shares streaming, retry, and parsing logic with `review_specs()` via an internal `_stream_review()` helper
+- **Feature**: `Finding.verification` field — optional slot for web search verification results (populated in Phase 3)
+- **Feature**: Determinate progress bar — the progress bar now shows actual per-spec progress instead of an indeterminate spinner. Log messages show which spec is being reviewed (e.g., "Reviewing 23 05 00.docx (2/5)")
+- **Feature**: Partial failure resilience — if one spec's API call fails, the remaining specs are still reviewed. Errors are reported in the Reviewer's Notes section
+- **Refactor**: Pipeline token check is now per-spec instead of combined total. Each spec + system prompt must fit within 150k individually
+- **Refactor**: Core streaming/retry/parsing logic extracted into `_stream_review()` to eliminate duplication
 
-- **Feature**: `get_single_spec_user_message()` added to `prompts.py` — builds a focused user message for reviewing a single spec in isolation, with a shorter analysis summary budget (1-2 paragraphs vs 2-4 for multi-spec)
-- **Feature**: `review_single_spec()` added to `reviewer.py` — reviews one spec file per API call using the single-spec user message. Shares the same streaming, retry, and parsing logic as `review_specs()` via a new internal `_stream_review()` helper
-- **Feature**: `Finding.verification` field added — optional slot for web search verification results (populated in a later step by `verifier.py`). Defaults to `None`
-- **Refactor**: Core streaming/retry/parsing logic extracted from `review_specs()` into `_stream_review()` to eliminate duplication between the combined and per-spec review paths
-- **No breaking changes**: The existing combined-review pipeline (`run_review()` → `review_specs()`) is unchanged and continues to work
-
-**Upcoming steps:**
-- Step 1B: Refactor `pipeline.py` to loop over specs using `review_single_spec()` instead of combining
-- Step 1C: Update GUI for per-spec progress display, update docs
-- Step 2A-2B: Batch processing with Anthropic Message Batches API (50% cost savings)
-- Step 3A-3C: Web search self-verification of findings
+**Upcoming phases:**
+- Phase 2: Batch processing with Anthropic Message Batches API (50% cost savings)
+- Phase 3: Web search self-verification of findings
 
 ### v1.3.0
 
