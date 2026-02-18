@@ -3,6 +3,10 @@ Claude API client for specification review.
 
 Handles streaming responses, JSON parsing, retry logic, and token tracking.
 Uses Claude Opus 4.6 exclusively.
+
+v1.4.0 — Added review_single_spec() for per-spec siloed review. Added
+    optional verification field to Finding dataclass (populated by the
+    verification pipeline in later steps).
 """
 from __future__ import annotations
 
@@ -10,11 +14,11 @@ import os
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
-from .prompts import get_system_prompt, get_user_message
+from .prompts import get_system_prompt, get_user_message, get_single_spec_user_message
 
 
 MODEL_OPUS_46 = "claude-opus-4-6"
@@ -24,7 +28,21 @@ StreamCallback = Callable[[str], None]
 
 @dataclass
 class Finding:
-    """A single review finding from Claude's analysis."""
+    """A single review finding from Claude's analysis.
+
+    Attributes:
+        severity: CRITICAL, HIGH, MEDIUM, or GRIPES
+        fileName: Source spec filename (verbatim from FILE delimiter)
+        section: CSI-format location in the spec
+        issue: Description of the problem
+        actionType: ADD, EDIT, or DELETE
+        existingText: Current problematic text (None for ADD)
+        replacementText: Corrected text (None for DELETE)
+        codeReference: Code/standard being violated (None if editorial)
+        verification: Optional verification result from web search fact-check.
+            Populated by the verification pipeline (verifier.py). None until
+            verification has been run.
+    """
     severity: str
     fileName: str
     section: str
@@ -33,6 +51,7 @@ class Finding:
     existingText: str | None
     replacementText: str | None
     codeReference: str | None
+    verification: Any | None = None  # Will hold VerificationResult once verifier.py exists
 
 
 @dataclass
@@ -116,41 +135,34 @@ def _parse_findings(data: list) -> list[Finding]:
     return findings
 
 
-def review_specs(
-    combined_content: str,
+def _stream_review(
+    client: Anthropic,
+    system_prompt: str,
+    user_message: str,
     *,
-    file_count: int = 0,
-    project_context: str = "",
     max_retries: int = 3,
     verbose: bool = False,
     stream_callback: Optional[StreamCallback] = None,
 ) -> ReviewResult:
-    """
-    Send specifications to Claude for review and parse the response.
+    """Core streaming review logic shared by review_specs() and review_single_spec().
 
-    Uses streaming API for real-time display. Retries on rate limit
-    and connection errors with exponential backoff.
+    Handles the streaming API call, retry logic, response parsing, and token
+    tracking. Callers are responsible for constructing the appropriate
+    system_prompt and user_message.
 
     Args:
-        combined_content: All spec text concatenated with FILE headers
-        file_count: Number of spec files (passed to user message for context)
-        project_context: Optional free-text project description from the user
+        client: Anthropic API client instance
+        system_prompt: Full system prompt string
+        user_message: Full user message string
         max_retries: Maximum retry attempts for transient API errors
         verbose: If True, print debug info to stdout
         stream_callback: Optional callback invoked with each streaming text chunk
+
+    Returns:
+        ReviewResult with findings, thinking, token counts, and timing
     """
     start_time = time.time()
     result = ReviewResult(model=MODEL_OPUS_46)
-
-    client = Anthropic(api_key=_get_api_key())
-
-    system_prompt = get_system_prompt()
-    user_message = get_user_message(
-        combined_content,
-        file_count=file_count,
-        project_context=project_context,
-    )
-
     max_tokens = 32768
 
     for attempt in range(max_retries):
@@ -220,3 +232,94 @@ def review_specs(
     result.error = f"Failed after {max_retries} attempts."
     result.elapsed_seconds = time.time() - start_time
     return result
+
+
+def review_specs(
+    combined_content: str,
+    *,
+    file_count: int = 0,
+    project_context: str = "",
+    max_retries: int = 3,
+    verbose: bool = False,
+    stream_callback: Optional[StreamCallback] = None,
+) -> ReviewResult:
+    """
+    Send combined specifications to Claude for review (multi-spec mode).
+
+    This is the original review path where all specs are concatenated into
+    a single input string. Used when batch_mode is False and the combined
+    approach is preferred.
+
+    Uses streaming API for real-time display. Retries on rate limit
+    and connection errors with exponential backoff.
+
+    Args:
+        combined_content: All spec text concatenated with FILE headers
+        file_count: Number of spec files (passed to user message for context)
+        project_context: Optional free-text project description from the user
+        max_retries: Maximum retry attempts for transient API errors
+        verbose: If True, print debug info to stdout
+        stream_callback: Optional callback invoked with each streaming text chunk
+    """
+    client = Anthropic(api_key=_get_api_key())
+    system_prompt = get_system_prompt()
+    user_message = get_user_message(
+        combined_content,
+        file_count=file_count,
+        project_context=project_context,
+    )
+
+    return _stream_review(
+        client,
+        system_prompt,
+        user_message,
+        max_retries=max_retries,
+        verbose=verbose,
+        stream_callback=stream_callback,
+    )
+
+
+def review_single_spec(
+    spec_content: str,
+    filename: str,
+    *,
+    project_context: str = "",
+    max_retries: int = 3,
+    verbose: bool = False,
+    stream_callback: Optional[StreamCallback] = None,
+) -> ReviewResult:
+    """
+    Review a single spec file via streaming API call (per-spec siloed mode).
+
+    Each spec gets its own API call with the full system prompt and a
+    focused user message. This gives the model's full attention to one
+    document at a time, avoids token limit bottlenecks from combining
+    many specs, and enables batch processing (one batch request per spec).
+
+    Args:
+        spec_content: Full extracted text of a single specification
+        filename: Original filename (used in FILE delimiter and findings)
+        project_context: Optional free-text project description
+        max_retries: Maximum retry attempts for transient API errors
+        verbose: If True, print debug info to stdout
+        stream_callback: Optional callback invoked with each streaming text chunk
+
+    Returns:
+        ReviewResult with findings for this single spec
+    """
+    client = Anthropic(api_key=_get_api_key())
+    system_prompt = get_system_prompt()
+    user_message = get_single_spec_user_message(
+        spec_content,
+        filename,
+        project_context=project_context,
+    )
+
+    return _stream_review(
+        client,
+        system_prompt,
+        user_message,
+        max_retries=max_retries,
+        verbose=verbose,
+        stream_callback=stream_callback,
+    )

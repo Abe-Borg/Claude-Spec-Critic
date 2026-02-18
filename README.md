@@ -1,4 +1,4 @@
-# Spec Critic v1.3.0
+# Spec Critic v1.4.0
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude Opus 4.6. Load `.docx` spec files, run the review, and see color-coded findings rendered directly in the app.
 
@@ -210,6 +210,22 @@ customtkinter      # Modern themed Tkinter widgets
 
 ## Changelog
 
+### v1.4.0 (In Progress — Per-Spec Siloed Review)
+
+**Step 1A complete: Prompts & Reviewer additions (no breaking changes)**
+
+- **Feature**: `get_single_spec_user_message()` added to `prompts.py` — builds a focused user message for reviewing a single spec in isolation, with a shorter analysis summary budget (1-2 paragraphs vs 2-4 for multi-spec)
+- **Feature**: `review_single_spec()` added to `reviewer.py` — reviews one spec file per API call using the single-spec user message. Shares the same streaming, retry, and parsing logic as `review_specs()` via a new internal `_stream_review()` helper
+- **Feature**: `Finding.verification` field added — optional slot for web search verification results (populated in a later step by `verifier.py`). Defaults to `None`
+- **Refactor**: Core streaming/retry/parsing logic extracted from `review_specs()` into `_stream_review()` to eliminate duplication between the combined and per-spec review paths
+- **No breaking changes**: The existing combined-review pipeline (`run_review()` → `review_specs()`) is unchanged and continues to work
+
+**Upcoming steps:**
+- Step 1B: Refactor `pipeline.py` to loop over specs using `review_single_spec()` instead of combining
+- Step 1C: Update GUI for per-spec progress display, update docs
+- Step 2A-2B: Batch processing with Anthropic Message Batches API (50% cost savings)
+- Step 3A-3C: Web search self-verification of findings
+
 ### v1.3.0
 
 - **Feature**: Project Context text field added to the INPUTS card. Optional free-text area where you describe your project (e.g., "New 2-story elementary school, 45,000 SF, gas heat pumps"). When provided, the context is included in the message to Claude as a `<project_context>` XML block. Project context tokens are counted toward the token limit. The field is included in Export JSON output under `meta.project_context`.
@@ -242,7 +258,6 @@ customtkinter      # Modern themed Tkinter widgets
 - Updated system prompt (richer severity definitions, cross-discipline coordination, CRITICAL CHECKS section)
 - Hardcoded to Claude Opus 4.6
 - Simplified `pipeline.py` to return in-memory `PipelineResult` only
-- 
 
 ## Copyright Notice
 

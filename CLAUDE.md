@@ -6,7 +6,7 @@ This file provides guidance for AI assistants working on the **Spec Critic** cod
 
 Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.6 for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
 
-- **Version**: 1.3.0
+- **Version**: 1.4.0 (in progress — per-spec siloed review)
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
 - **Model**: Claude Opus 4.6 (`claude-opus-4-6`), hardcoded — no model selection flags
 - **Output**: In-app only. No files are written during a review. The only file output is the optional Export JSON button.
@@ -17,7 +17,7 @@ Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.3.0")
+│   ├── __init__.py          # Package version ("1.4.0")
 │   ├── gui.py               # CustomTkinter app window, input handling, threading
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
 │   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
@@ -78,7 +78,7 @@ spec-review/
 - `ExtractedSpec` — filename, content, word_count (from extractor)
 - `PreprocessResult` — leed_alerts, placeholder_alerts (from preprocessor)
 - `TokenCount` / `TokenSummary` — per-file and total token analysis (from tokenizer)
-- `Finding` — severity, fileName, section, issue, actionType, etc. (from reviewer)
+- `Finding` — severity, fileName, section, issue, actionType, etc., **plus optional `verification` field** (from reviewer)
 - `ReviewResult` — findings, raw_response, thinking, model, tokens, etc. (from reviewer)
 - `PipelineResult` — review_result, files_reviewed, leed/placeholder alerts (from pipeline)
 
@@ -117,18 +117,29 @@ PREVIOUS_ASCE7 = "7-16"
 
 When California adopts a new code cycle, update these constants. All references in the system prompt and user message update automatically via f-string interpolation.
 
-### User Message
+### User Messages
 
-The user message (`get_user_message`) reinforces key behaviors at the end of the context (recency bias = stronger influence):
-- States the current code cycle explicitly
-- Reminds about output format (summary + JSON, no code fences)
-- Reminds about confidence handling
-- Includes file count for context
-- Includes optional `<project_context>` XML block if the user provided project description text
+There are two user message builders in `prompts.py`:
+
+1. **`get_user_message()`** — Multi-spec combined mode (original). Takes concatenated spec content with FILE delimiters, file count, and optional project context. Analysis summary budget: 2-4 paragraphs.
+
+2. **`get_single_spec_user_message()`** — Per-spec siloed mode (v1.4.0). Takes a single spec's content and filename. Analysis summary budget: 1-2 paragraphs. Used by `review_single_spec()` for per-spec siloed review.
+
+Both builders accept an optional `project_context` parameter that inserts a `<project_context>` XML block when non-empty.
 
 ### Project Context
 
-The `get_user_message()` function accepts an optional `project_context` parameter. If non-empty, it is inserted as a `<project_context>` XML-tagged block in the user message, before the spec content. This gives Claude project-specific information (building type, systems, scope) to inform the review. The project context text is counted toward the token limit in the GUI.
+The `get_user_message()` and `get_single_spec_user_message()` functions accept an optional `project_context` parameter. If non-empty, it is inserted as a `<project_context>` XML-tagged block in the user message, before the spec content. This gives Claude project-specific information (building type, systems, scope) to inform the review. The project context text is counted toward the token limit in the GUI.
+
+## Reviewer Architecture (v1.4.0)
+
+The reviewer module provides two public review functions and one internal helper:
+
+- **`review_specs()`** — Original combined-review path. Sends all specs in one API call.
+- **`review_single_spec()`** — Per-spec siloed review (v1.4.0). Sends one spec per API call.
+- **`_stream_review()`** — Internal helper that handles streaming, retry logic, response parsing, and token tracking. Both public functions delegate to this after constructing their respective user messages.
+
+This refactor eliminates duplication: retry logic, JSON parsing, and token counting exist in exactly one place (`_stream_review`).
 
 ## Token Limits
 
@@ -242,20 +253,6 @@ The INPUTS card contains a "Project Context" row with a `CTkTextbox` (3-4 lines 
 - Included in Export JSON under `meta.project_context`
 - Cleared by `_reset_for_new_review()`
 
-### Performance Notes (v1.2.0)
-
-Three optimizations reduce main-thread contention during reviews:
-
-1. **Animation frame rates reduced**: The `AnimatedButton` pulse and `FileListPanel` glow animations run at 15fps (67ms intervals) instead of 60fps/20fps. The `TokenGauge` fill runs at 30fps (33ms) instead of 60fps. Each `configure()` call on a CTk widget is expensive because CTk widgets are composites of multiple underlying Tk widgets. Lower frame rates free the main thread for user interaction while remaining visually smooth for color transitions.
-
-2. **EnhancedLog uses a single CTkTextbox**: Previous versions created one `CTkLabel` per log line, triggering layout passes on every entry. The rewritten log appends colored text to a single read-only `CTkTextbox` using Tk text tags. Widget creation drops from N labels to 1 textbox.
-
-3. **Batched token-analysis callbacks**: The background thread accumulates filenames and schedules a single `after(0)` callback via `log_file_batch()` instead of one callback per file.
-
-### EnhancedLog Collapse Fix (v1.3.0)
-
-The log's `collapse()` method previously hid `content_container` via `pack_forget()`, but the parent `CTkFrame` retained its expanded height because Tk's geometry propagation still sized it based on prior content. The fix sets `pack_propagate(False)` and `configure(height=48)` when collapsed, forcing the frame to shrink to just the header bar. On `expand()`, `pack_propagate(True)` is restored so the textbox can size the frame normally.
-
 ### Collapsible Finding Cards
 
 Each finding card has a clickable header row (severity badge + filename + section). Clicking the header toggles the card body (issue, existing/replacement text, code reference) between visible and collapsed. The findings section includes Collapse All / Expand All buttons for bulk toggling.
@@ -291,6 +288,24 @@ All heavy operations (folder analysis, API calls) run in background threads. GUI
 8. **Advisory only** — This tool assists human reviewers. It is not an AHJ substitute.
 9. **Code cycle is parameterized** — Update the constants at the top of `prompts.py` when California adopts a new code cycle. All prompt references update automatically.
 10. **Project context is optional** — If the user leaves the field empty, the user message is unchanged from previous versions. The `<project_context>` block is only added when text is present.
+
+## v1.4.0 Upgrade Plan
+
+The v1.4.0 release adds three major features ported from the SpecCheck web app:
+
+### Phase 1: Per-Spec Siloed Context (Steps 1A-1C)
+- **Step 1A** ✅ — `get_single_spec_user_message()` in prompts, `review_single_spec()` in reviewer, `Finding.verification` field, `_stream_review()` refactor
+- **Step 1B** — Refactor `pipeline.py` to loop over specs instead of combining them
+- **Step 1C** — GUI per-spec progress display, version bump, docs update
+
+### Phase 2: Batch Processing (Steps 2A-2B)
+- **Step 2A** — New `batch.py` module with Anthropic Message Batches API integration
+- **Step 2B** — Pipeline + GUI batch mode toggle, polling UI
+
+### Phase 3: Web Search Self-Verification (Steps 3A-3C)
+- **Step 3A** — New `verifier.py` module with verification prompt and response parsing
+- **Step 3B** — Wire verification into pipeline (real-time and batch modes)
+- **Step 3C** — Verification UI: verdict badges, source links, correction display
 
 ## Common Development Tasks
 

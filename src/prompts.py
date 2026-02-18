@@ -9,6 +9,10 @@ Design decisions:
     - User message reinforces key behaviors (last-seen = strongest influence)
     - Edge cases (single spec, non-MEP only, tiny spec) are handled explicitly
 
+v1.4.0 — Added get_single_spec_user_message() for per-spec siloed review.
+    Each spec gets its own API call with a focused user message instead of
+    being concatenated into one giant combined input.
+
 2025 Code Cycle (effective January 1, 2026):
     - CBC 2025 (based on 2024 IBC)
     - CMC 2025 (based on 2024 UMC)
@@ -253,7 +257,7 @@ def get_user_message(
     file_count: int = 0,
     project_context: str = "",
 ) -> str:
-    """Build the user message for the API call.
+    """Build the user message for the API call (multi-spec combined mode).
     
     The user message is the last thing Claude sees before generating, so
     it reinforces key behaviors: output format, thoroughness, and the
@@ -289,3 +293,49 @@ Reminders:
 - Flag issues you are confident about. Note uncertainty for moderate-confidence findings. Skip low-confidence hunches.
 
 {context_block}{combined_specs}"""
+
+
+def get_single_spec_user_message(
+    spec_content: str,
+    filename: str,
+    project_context: str = "",
+) -> str:
+    """Build user message for reviewing a single spec in isolation.
+
+    Used by the per-spec siloed review pipeline (v1.4.0+). Each spec gets
+    its own API call instead of being concatenated into one combined input.
+
+    The message structure mirrors get_user_message() but is tailored for a
+    single document: the analysis summary budget is shorter (1-2 paragraphs)
+    and the file count note is omitted since there's always exactly one file.
+
+    Args:
+        spec_content: Full extracted text of the specification
+        filename: Original filename (used in the FILE delimiter header)
+        project_context: Optional free-text project description from the user.
+            If non-empty, inserted as an XML-tagged block before spec content.
+
+    Returns:
+        Formatted user message string ready for the API call
+    """
+    context_block = ""
+    if project_context.strip():
+        context_block = f"""
+<project_context>
+{project_context.strip()}
+</project_context>
+
+"""
+
+    return f"""Review the following specification document for a California K-12 project under DSA jurisdiction.
+
+Current code cycle: CBC {CURRENT_CBC}, CMC {CURRENT_CMC}, CPC {CURRENT_CPC}, Energy Code {CURRENT_ENERGY_CODE}, CALGreen {CURRENT_CALGREEN}, ASCE {CURRENT_ASCE7}.
+
+Reminders:
+- Review every section in the file. Do not stop early.
+- Analysis summary first (1-2 paragraphs for a single spec), then the JSON findings array (no code fences).
+- Each finding needs: severity, fileName, section, issue, actionType, existingText, replacementText, codeReference.
+- Flag issues you are confident about. Note uncertainty for moderate-confidence findings. Skip low-confidence hunches.
+
+{context_block}===== FILE: {filename} =====
+{spec_content}"""
