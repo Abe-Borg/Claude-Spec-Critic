@@ -5,6 +5,20 @@ This module is the SINGLE SOURCE OF TRUTH for the review workflow.
 The GUI calls run_review() for real-time mode or start_batch_review()
 + collect_batch_results() for batch mode.
 
+v1.7.0 — Verification batching + model selection.
+
+    Verification batching:
+        In batch mode, verification now routes through the Anthropic Message
+        Batches API via verify_findings_batch() instead of making sequential
+        real-time API calls. This saves 50% on verification costs. The
+        real-time path continues using sequential verify_findings().
+
+    Model selection:
+        The user can now choose between Claude Opus 4.6 and Claude Sonnet 4.6
+        for the first-stage review. The model parameter flows through
+        run_review(), start_batch_review(), and collect_batch_results().
+        Verification and cross-check always use Sonnet 4.6.
+
 v1.6.0 — Cross-spec coordination pass (optional).
 
     After per-spec review and deduplication, an optional cross-spec
@@ -42,6 +56,8 @@ Design decisions:
     - Cross-check is optional and uses Sonnet 4.6 (cheaper than Opus)
     - Cross-check findings are kept separate from per-spec findings
       for distinct rendering in the report
+    - In batch mode, verification also goes through the Batches API
+      for 50% cost savings (v1.7.0)
 """
 
 from __future__ import annotations
@@ -62,10 +78,11 @@ from .reviewer import (
     ReviewResult,
     Finding,
     MODEL_OPUS_46,
+    MODEL_SONNET_46,
     StreamCallback,
 )
 from .batch import BatchJob, BatchStatus, submit_review_batch, poll_batch, retrieve_review_results
-from .verifier import verify_findings, VerificationResult
+from .verifier import verify_findings, verify_findings_batch, VerificationResult
 from .cross_checker import run_cross_check
 
 # Type aliases for callback signatures
@@ -311,11 +328,13 @@ class BatchSubmission:
         files_reviewed: List of filenames submitted for review
         leed_alerts: Locally detected LEED alerts
         placeholder_alerts: Locally detected placeholder alerts
+        model: Model ID used for the review batch
     """
     job: BatchJob
     files_reviewed: list[str] = field(default_factory=list)
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
+    model: str = MODEL_OPUS_46
 
 
 def start_batch_review(
@@ -323,6 +342,7 @@ def start_batch_review(
     input_dir: Path,
     files: Optional[list[Path]] = None,
     project_context: str = "",
+    model: str = MODEL_OPUS_46,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> BatchSubmission:
@@ -337,6 +357,7 @@ def start_batch_review(
         input_dir: Directory containing .docx specification files
         files: Optional list of specific files to process
         project_context: Optional project description for each review
+        model: Model ID for review (default: Claude Opus 4.6)
         log: Callback for log messages
         progress: Callback for progress updates
 
@@ -360,6 +381,7 @@ def start_batch_review(
     job = submit_review_batch(
         prepared.specs,
         project_context=project_context,
+        model=model,
     )
 
     log(f"Batch submitted: {job.batch_id}")
@@ -370,6 +392,7 @@ def start_batch_review(
         files_reviewed=[s.filename for s in prepared.specs],
         leed_alerts=prepared.leed_alerts,
         placeholder_alerts=prepared.placeholder_alerts,
+        model=model,
     )
 
 
@@ -387,6 +410,9 @@ def collect_batch_results(
 
     Call this after poll_batch() shows status == "ended".
 
+    v1.7.0: Verification now routes through the Batches API for 50% cost
+    savings. Uses verify_findings_batch() instead of sequential verify_findings().
+
     Args:
         submission: BatchSubmission returned by start_batch_review()
         verify: If True, run web search verification on eligible findings
@@ -400,7 +426,8 @@ def collect_batch_results(
     Returns:
         PipelineResult with aggregated findings, same shape as run_review()
     """
-    results_by_file = retrieve_review_results(submission.job)
+    model = getattr(submission, "model", MODEL_OPUS_46)
+    results_by_file = retrieve_review_results(submission.job, model=model)
 
     all_findings: list[Finding] = []
     all_thinking: list[str] = []
@@ -441,7 +468,7 @@ def collect_batch_results(
         findings=all_findings,
         raw_response="",
         thinking="\n\n".join(all_thinking),
-        model=MODEL_OPUS_46,
+        model=model,
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
         elapsed_seconds=0.0,
@@ -473,7 +500,7 @@ def collect_batch_results(
         else:
             log("Cross-check found no coordination issues")
 
-    # Verification (always enabled in v1.5.0)
+    # Verification — batch mode uses batched verification (v1.7.0)
     # Verify both per-spec findings and cross-check findings
     all_verifiable = list(all_findings)
     if cross_check_result and cross_check_result.findings:
@@ -485,14 +512,19 @@ def collect_batch_results(
             if f.severity != "GRIPES"
         )
         if verifiable_count > 0:
-            progress(60.0, f"Verifying {verifiable_count} findings via web search...")
-            log(f"Verifying {verifiable_count} findings with Sonnet + web search...")
+            progress(60.0, f"Submitting {verifiable_count} findings for batch verification...")
+            log(f"Submitting {verifiable_count} findings for batch verification (50% savings)...")
 
-            def _verify_progress(current: int, total: int, filename: str):
-                verify_pct = 60.0 + (current / total) * 35.0
-                progress(verify_pct, f"Verifying finding {current}/{total} ({filename})...")
+            def _batch_verify_progress(pct: float, msg: str):
+                # Map verification's 0-100% into 60-95% of overall progress
+                overall_pct = 60.0 + (pct / 100.0) * 35.0
+                progress(overall_pct, msg)
 
-            verify_findings(all_verifiable, progress=_verify_progress)
+            verify_findings_batch(
+                all_verifiable,
+                log=log,
+                progress=_batch_verify_progress,
+            )
 
             verdicts = {}
             for f in all_verifiable:
@@ -516,6 +548,7 @@ def run_review(
     input_dir: Path,
     files: Optional[list[Path]] = None,
     project_context: str = "",
+    model: str = MODEL_OPUS_46,
     verify: bool = True,
     cross_check: bool = False,
     dry_run: bool = False,
@@ -526,6 +559,8 @@ def run_review(
 ) -> PipelineResult:
     """
     Execute the full specification review pipeline.
+
+    v1.7.0: Adds model parameter for review model selection (Opus or Sonnet).
 
     v1.6.0: Adds optional cross-spec coordination pass after per-spec review
     and deduplication, before verification. Controlled by cross_check param.
@@ -543,6 +578,8 @@ def run_review(
                files in input_dir are processed.
         project_context: Optional free-text project description. If non-empty,
             included in each per-spec user message as a <project_context> block.
+        model: Model ID for review (default: Claude Opus 4.6). Also supports
+            Claude Sonnet 4.6 for faster/cheaper reviews.
         verify: If True, run web search verification on eligible findings
             after review. Defaults to True (always-on in v1.5.0).
         cross_check: If True, run cross-spec coordination check after per-spec
@@ -583,7 +620,7 @@ def run_review(
     # -------------------------------------------------------------------------
     if dry_run:
         log("Dry-run enabled: skipping API calls.")
-        dummy = ReviewResult(findings=[], raw_response="", model=MODEL_OPUS_46)
+        dummy = ReviewResult(findings=[], raw_response="", model=model)
         progress(100.0, "Dry run complete.")
         return PipelineResult(
             review_result=dummy,
@@ -618,6 +655,7 @@ def run_review(
             spec_content=spec.content,
             filename=spec.filename,
             project_context=project_context,
+            model=model,
             verbose=verbose,
             stream_callback=stream_callback,
         )
@@ -728,7 +766,7 @@ def run_review(
         findings=all_findings,
         raw_response="",
         thinking="\n\n".join(all_thinking),
-        model=MODEL_OPUS_46,
+        model=model,
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
         elapsed_seconds=elapsed,

@@ -4,11 +4,11 @@ This file provides guidance for AI assistants working on the **Spec Critic** cod
 
 ## Project Overview
 
-Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.6 for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
+Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
 
-- **Version**: 1.6.0 (cross-spec coordination check)
+- **Version**: 1.7.0 (verification batching + model selection + persistent batch state)
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
-- **Review Model**: Claude Opus 4.6 (`claude-opus-4-6`), hardcoded — no model selection flags
+- **Review Model**: User-selectable — Claude Opus 4.6 (`claude-opus-4-6`) or Claude Sonnet 4.6 (`claude-sonnet-4-6`)
 - **Verification Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
 - **Cross-Check Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
 - **Output**: In-app only. No files are written during a review. The only file output is the optional Export JSON button.
@@ -19,21 +19,24 @@ Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.6.0")
-│   ├── gui.py               # CustomTkinter app window, input handling, threading
+│   ├── __init__.py          # Package version ("1.7.0")
+│   ├── gui.py               # CustomTkinter app window, input handling, threading,
+│   │                        #   persistent batch state, model selector
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
 │   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py          # SINGLE SOURCE OF TRUTH for review workflow
 │   ├── cross_checker.py     # Cross-spec coordination check (Sonnet 4.6)
 │   ├── batch.py             # Anthropic Message Batches API integration
+│   │                        #   (review batches + verification batches)
 │   ├── verifier.py          # Web search self-verification (Sonnet 4.6 + web_search)
+│   │                        #   Sequential mode + batch mode
 │   ├── extractor.py         # .docx text extraction (paragraphs + tables)
 │   ├── preprocessor.py      # Local LEED/placeholder detection (NOT sent to LLM)
 │   ├── tokenizer.py         # tiktoken-based token counting + limit enforcement
 │   ├── prompts.py           # System prompt and user message construction
 │   └── reviewer.py          # Anthropic API client with streaming + retry logic
 ├── pyproject.toml           # Modern Python packaging config
-├── .gitignore               # Excludes specs/, venv/, build/, dist/
+├── .gitignore               # Excludes specs/, venv/, build/, dist/, batch_state.json
 └── README.md                # User-facing documentation
 ```
 
@@ -48,28 +51,30 @@ spec-review/
 1. Extract text from `.docx` files → `ExtractedSpec` objects
 2. Detect LEED references and placeholders locally (regex, not sent to LLM)
 3. Per-spec token limit check (hard stop, no silent truncation)
-4. Per-spec siloed review via streaming API calls to Claude Opus 4.6
+4. Per-spec siloed review via streaming API calls to the selected model (Opus or Sonnet)
 5. Parse JSON findings (including confidence scores) + analysis summary
 6. Deduplicate findings across specs
 7. **Optional**: Cross-spec coordination check via Sonnet 4.6 (if enabled and 2+ specs)
 8. Web search verification of all CRITICAL/HIGH/MEDIUM findings via Sonnet 4.6
+   - Real-time mode: Sequential API calls (`verify_findings()`)
+   - Batch mode: Single verification batch via Batches API (`verify_findings_batch()`)
 9. Return `PipelineResult` to GUI for in-app rendering
 
 ### Module Responsibilities
 
 | Module | Responsibility |
 |--------|---------------|
-| `gui.py` | App window, input handling (project context, mode toggle, cross-check checkbox), threading, review orchestration, batch polling, report expand/collapse, pop-out window lifecycle |
+| `gui.py` | App window, input handling (project context, model selector, mode toggle, cross-check checkbox), threading, review orchestration, batch polling, batch state persistence, report expand/collapse, pop-out window lifecycle |
 | `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel, confidence badge rendering, cross-check section rendering |
-| `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult`. Provides `run_review()` for real-time and `start_batch_review()` + `collect_batch_results()` for batch |
+| `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult`. Provides `run_review()` for real-time and `start_batch_review()` + `collect_batch_results()` for batch. Model parameter flows through all review calls. |
 | `cross_checker.py` | Cross-spec coordination check — extracts section headers, builds condensed input, calls Sonnet 4.6, parses coordination findings |
-| `batch.py` | Anthropic Message Batches API integration — submission, polling, result retrieval, cancellation |
-| `verifier.py` | Web search self-verification — builds verification prompts, calls Sonnet 4.6 with web_search tool, parses verdicts. Verifies in ascending confidence order. |
+| `batch.py` | Anthropic Message Batches API integration — review batch submission/polling/retrieval, verification batch submission/retrieval, cancellation |
+| `verifier.py` | Web search self-verification — builds verification prompts, calls Sonnet 4.6 with web_search tool. Two modes: `verify_findings()` (sequential) and `verify_findings_batch()` (batched via Batches API) |
 | `extractor.py` | `.docx` → plain text (paragraphs + tables) |
 | `preprocessor.py` | Local regex detection of LEED refs and placeholders |
 | `tokenizer.py` | Token counting (tiktoken cl100k_base) + limit enforcement |
 | `prompts.py` | XML-structured system prompt with parameterized code cycle, confidence scoring schema, + enriched user message |
-| `reviewer.py` | Anthropic API streaming client with retry logic + JSON parsing (including confidence field) |
+| `reviewer.py` | Anthropic API streaming client with retry logic + JSON parsing (including confidence field). Exports `MODEL_OPUS_46`, `MODEL_SONNET_46`, and `REVIEW_MODELS` dict for GUI model selector. |
 
 ### Data Flow
 
@@ -78,10 +83,12 @@ spec-review/
     → extractor.py (text extraction)
     → preprocessor.py (LEED/placeholder detection, local only)
     → tokenizer.py (token counting, limit check)
-    → reviewer.py (per-spec streaming API calls to Claude Opus 4.6)
+    → reviewer.py (per-spec streaming API calls to selected model)
     → pipeline.py (deduplication)
     → cross_checker.py (optional: coordination check via Sonnet 4.6)
     → verifier.py (web search verification via Sonnet 4.6)
+        ├── Real-time: sequential verify_findings()
+        └── Batch: verify_findings_batch() → batch.py Batches API
     → pipeline.py (aggregation, returns PipelineResult)
     → gui.py (renders ReportPanel + opens ReportWindow)
 ```
@@ -94,8 +101,92 @@ spec-review/
 - `Finding` — severity, fileName, section, issue, actionType, **confidence (0.0-1.0)**, etc., **plus optional `verification` field** (from reviewer)
 - `ReviewResult` — findings, raw_response, thinking, model, tokens, etc. (from reviewer)
 - `PipelineResult` — review_result, files_reviewed, leed/placeholder alerts, **cross_check_result** (from pipeline)
+- `BatchSubmission` — job, files_reviewed, alerts, **model** (from pipeline)
 
 All data containers use `@dataclass` decorators.
+
+## Model Selection (v1.7.0)
+
+### How It Works
+
+Users can choose between two models for the first-stage review:
+
+- **Opus 4.6** (default): Most thorough analysis, recommended for final reviews
+- **Sonnet 4.6**: Faster and cheaper, good for quick reviews or draft specs
+
+The model selector is a segmented button in Row 3 of the INPUTS card. The selected model flows through:
+1. `gui.py` → captures `self._model_for_review` at review start
+2. `pipeline.run_review()` / `pipeline.start_batch_review()` → `model` parameter
+3. `reviewer.review_single_spec()` / `batch.submit_review_batch()` → API calls use selected model
+
+**Verification and cross-check always use Sonnet 4.6** regardless of the review model selection.
+
+### Where Model Data Lives
+
+- `reviewer.py`: `MODEL_OPUS_46`, `MODEL_SONNET_46` constants and `REVIEW_MODELS` dict
+- `gui.py`: `_review_model_var` (StringVar), `model_selector` (CTkSegmentedButton), `_selected_review_model` property
+- `pipeline.py`: `model` parameter on `run_review()`, `start_batch_review()`, `BatchSubmission.model`
+
+## Verification Batching (v1.7.0)
+
+### How It Works
+
+In batch mode, verification now routes through the Anthropic Message Batches API instead of making sequential real-time API calls. This saves 50% on verification costs.
+
+**Real-time mode**: Uses `verify_findings()` — sequential API calls (unchanged from v1.6.0)
+**Batch mode**: Uses `verify_findings_batch()` — submits all verifiable findings as a single batch, polls until complete, collects results
+
+### Key Design Decisions
+
+- **Automatic fallback**: If batch verification submission fails, falls back to sequential verification
+- **Same verification logic**: Both modes use the same `_build_verification_prompt()` and `_parse_verification_response()` functions
+- **Web search in batch**: Uses `tools=[{"type": "web_search_20250305", "name": "web_search"}]` in each batch request
+- **Confidence ordering preserved**: Batch submission orders findings by ascending confidence for custom_id sequencing
+
+### Where Verification Batch Data Lives
+
+1. **`batch.py`**: `submit_verification_batch()` and `retrieve_verification_results()`
+2. **`verifier.py`**: `verify_findings_batch()` orchestrates submit → poll → collect
+3. **`pipeline.py`**: `collect_batch_results()` calls `verify_findings_batch()` instead of `verify_findings()`
+
+## Persistent Batch State (v1.7.0)
+
+### How It Works
+
+When a user submits a batch and closes the app, they can reopen it and resume polling / collect results. A `batch_state.json` file in the project root persists the batch metadata.
+
+### State File Lifecycle
+
+1. **Created**: After `start_batch_review()` returns successfully
+2. **Checked on launch**: `_check_pending_batch()` runs 500ms after GUI init
+3. **Resume dialog**: Shows batch ID, file count, model, age, and phase with Resume/Discard buttons
+4. **Deleted**: After `_on_review_complete()` succeeds, or if user clicks Discard, or if state is stale (>24 hours)
+
+### Key Design Decisions
+
+- **Single active batch**: Only one batch state file at a time
+- **Cross-check skipped on resume**: No `ExtractedSpec` objects available after restart, so cross-check is disabled for resumed batches
+- **24-hour expiry**: State files older than 24 hours are automatically discarded
+- **API key validation**: Resume requires a valid API key — if missing, shows error and doesn't resume
+- **Non-modal dialog**: The resume/discard dialog is a transient toplevel that grabs focus
+
+### State File Format
+
+```json
+{
+  "version": "1.7.0",
+  "saved_at": "2025-02-19T19:30:00+00:00",
+  "phase": "review",
+  "batch_id": "msgbatch_abc123",
+  "job_type": "review",
+  "request_map": { ... },
+  "created_at": 1739907000.0,
+  "files_reviewed": ["23 05 00.docx", "23 21 13.docx"],
+  "leed_alerts": [],
+  "placeholder_alerts": [],
+  "model": "claude-opus-4-6"
+}
+```
 
 ## Cross-Spec Coordination Check (v1.6.0)
 
@@ -118,13 +209,7 @@ After per-spec reviews complete and findings are deduplicated, an optional coord
 - **Requires 2+ specs**: Automatically skipped if only 1 spec is loaded
 - **Token limit check**: If the condensed input exceeds 150k tokens, cross-check is gracefully skipped
 - **Verification included**: Cross-check findings go through the same web search verification as per-spec findings
-
-### Where Cross-Check Data Lives
-
-1. **`cross_checker.py`**: `run_cross_check()` returns a `ReviewResult` with coordination findings
-2. **`pipeline.py`**: `PipelineResult.cross_check_result` holds the cross-check `ReviewResult`
-3. **`widgets.py`**: `_render_cross_check_section()` renders the dedicated report section
-4. **JSON export**: Cross-check findings appear in `cross_check_findings` and `cross_check_summary` fields
+- **Not available on resume**: Cross-check is skipped when resuming a batch (no ExtractedSpec objects available)
 
 ## Confidence Scoring (v1.5.0)
 
@@ -166,16 +251,7 @@ The system prompt uses XML-tagged sections for clear structural hierarchy:
 
 ### Cross-Check System Prompt (`cross_checker.py`)
 
-The cross-check prompt is embedded in `cross_checker.py` (not in `prompts.py`) because it is a fundamentally different task with different instructions:
-
-| Section | Purpose |
-|---------|---------|
-| `<task>` | Find ONLY cross-spec coordination issues |
-| `<what_to_look_for>` | Seven specific coordination problem types |
-| `<what_NOT_to_flag>` | Already-identified issues, within-spec issues |
-| `<severity_guidance>` | Coordination issues are typically HIGH or CRITICAL |
-| `<confidence_guidance>` | Same 0.0-1.0 scale as per-spec review |
-| `<output_format>` | Same Finding JSON schema for seamless integration |
+The cross-check prompt is embedded in `cross_checker.py` (not in `prompts.py`) because it is a fundamentally different task with different instructions.
 
 ### Code Cycle Parameters
 
@@ -188,7 +264,7 @@ PREVIOUS_CBC = "2022"
 PREVIOUS_ASCE7 = "7-16"
 ```
 
-When California adopts a new code cycle, update these constants. All references in the system prompt and user message update automatically via f-string interpolation.
+When California adopts a new code cycle, update these constants.
 
 ## Token Limits
 
@@ -244,6 +320,7 @@ The pipeline uses callback injection for decoupling from UI:
 - Retry with exponential backoff for API errors
 - Graceful fallbacks for missing optional fields
 - Cross-check gracefully skips if token limit exceeded or <2 specs
+- Verification batch falls back to sequential on submission failure
 
 ## Severity Levels
 
@@ -263,9 +340,13 @@ The GUI uses CustomTkinter with a dark theme. Key widgets in `widgets.py`:
 - `ReportPanel` — In-app report with summary grid, alerts, findings, cross-check section, notes
 - `ReportWindow` — Pop-out toplevel window with the full report
 
+### Model Selector (v1.7.0)
+
+Row 3 of the INPUTS card contains a segmented button for selecting the review model (Opus 4.6 / Sonnet 4.6) with a hint label that updates based on selection.
+
 ### Cross-Check Checkbox (v1.6.0)
 
-Row 4 of the INPUTS card contains a "Cross-spec coordination check" checkbox with a hint label ("Sonnet 4.6 • finds inter-spec conflicts"). When checked, the pipeline runs the coordination pass after per-spec review. The checkbox state is captured at review start and passed through as `cross_check=True/False`.
+Row 5 of the INPUTS card contains a "Cross-spec coordination check" checkbox with a hint label.
 
 ## Important Patterns to Preserve
 
@@ -274,12 +355,14 @@ Row 4 of the INPUTS card contains a "Cross-spec coordination check" checkbox wit
 3. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM.
 4. **Token limits are enforced before API calls** — Never allow calls exceeding 150k.
 5. **Streaming is used internally** — Complete response is parsed when finished.
-6. **No model selection** — Opus for review, Sonnet for verification and cross-check. Hardcoded.
+6. **Model selection for review only** — Verification and cross-check always use Sonnet 4.6.
 7. **No document mutation** — Analysis only. Document cleanup belongs in SpecCleanse.
 8. **Advisory only** — This tool assists human reviewers. Not an AHJ substitute.
 9. **Code cycle is parameterized** — Update constants in `prompts.py`.
 10. **Cross-check is optional** — Controlled by GUI checkbox, default off.
 11. **Cross-check findings are separate** — Rendered in their own section, not mixed with per-spec findings.
+12. **Batch state persists across restarts** — `batch_state.json` enables resume after app close.
+13. **Verification batching in batch mode** — Sequential in real-time, batched in batch mode.
 
 ## Common Development Tasks
 
@@ -303,9 +386,15 @@ CURRENT_CBC = "2025"    # ← update this
 CURRENT_ASCE7 = "7-22"  # ← and this
 ```
 
+### Adding a new review model
+1. Add the model string constant to `reviewer.py`
+2. Add it to the `REVIEW_MODELS` dict in `reviewer.py`
+3. The GUI model selector auto-populates from `REVIEW_MODELS`
+
 ## Files to Never Commit
 
 - `specs/` — Contains user specification files
 - `spec_critic_api_key.txt` — Contains API credentials
+- `batch_state.json` — Contains transient batch state
 - `.env` files — May contain secrets
 - `build/`, `dist/` — Build artifacts

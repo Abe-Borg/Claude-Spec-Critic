@@ -10,6 +10,12 @@ Verification uses Sonnet (not Opus) because:
     - Sonnet is significantly cheaper and faster
     - The web search tool does the heavy lifting
 
+v1.7.0 — Verification batching.
+    Added verify_findings_batch() as the batch-mode alternative to
+    verify_findings(). Submits all verifiable findings as a single
+    Anthropic Message Batch, polls until complete, then collects results.
+    Used by pipeline.collect_batch_results() when running in batch mode.
+
 v1.5.0 — Broadened verification scope:
     - All CRITICAL, HIGH, and MEDIUM findings are verified regardless of
       whether they include a code reference. Findings without citations
@@ -44,6 +50,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -282,7 +289,6 @@ def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationRes
 
         except RateLimitError:
             if attempt < max_retries:
-                import time
                 time.sleep(10 * (attempt + 1))
                 continue
             return VerificationResult(
@@ -291,7 +297,6 @@ def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationRes
             )
         except (APIConnectionError, APIError) as e:
             if attempt < max_retries:
-                import time
                 time.sleep(5 * (attempt + 1))
                 continue
             return VerificationResult(
@@ -342,4 +347,117 @@ def verify_findings(
         progress(i + 1, total, f.fileName or "Unknown")
         f.verification = verify_finding(f)
 
+    return findings
+
+
+def verify_findings_batch(
+    findings: list[Finding],
+    *,
+    log: Callable[[str], None] = lambda _: None,
+    progress: Callable[[float, str], None] = lambda _p, _m: None,
+    poll_interval: int = 15,
+) -> list[Finding]:
+    """Verify findings via the Anthropic Message Batches API (50% cost savings).
+
+    Batch-mode alternative to verify_findings(). Submits all verifiable
+    findings as a single batch, polls until complete, then collects results.
+    Used by pipeline.collect_batch_results() when running in batch mode.
+
+    The batch verification follows the same logic as sequential verification:
+    GRIPES are skipped, and findings are ordered by ascending confidence
+    in the batch submission.
+
+    Args:
+        findings: List of Finding objects to verify (modified in-place)
+        log: Callback for log messages
+        progress: Callback for progress updates (percent, message)
+        poll_interval: Seconds between poll requests (default: 15)
+
+    Returns:
+        The same list of findings (modified in-place) for convenience
+    """
+    from .batch import (
+        submit_verification_batch,
+        poll_batch,
+        retrieve_verification_results,
+    )
+
+    verifiable_count = sum(1 for f in findings if _should_verify(f))
+    if verifiable_count == 0:
+        log("No findings eligible for batch verification.")
+        # Set skip results for GRIPES
+        for f in findings:
+            if not _should_verify(f):
+                f.verification = VerificationResult(
+                    verdict="UNVERIFIED",
+                    explanation="Skipped: GRIPES findings are not verified.",
+                )
+        return findings
+
+    # Submit verification batch
+    log(f"Submitting {verifiable_count} findings for batch verification (50% savings)...")
+    progress(0.0, f"Submitting {verifiable_count} verification requests...")
+
+    try:
+        job = submit_verification_batch(
+            findings,
+            build_prompt_fn=_build_verification_prompt,
+        )
+    except Exception as e:
+        log(f"Batch verification submission failed: {e}. Falling back to sequential.")
+        # Fall back to sequential verification
+        def _seq_progress(current: int, total: int, filename: str):
+            pct = (current / total) * 100.0 if total > 0 else 100.0
+            progress(pct, f"Verifying finding {current}/{total} ({filename})...")
+        return verify_findings(findings, progress=_seq_progress)
+
+    log(f"Verification batch submitted: {job.batch_id}")
+    progress(5.0, "Verification batch submitted — polling...")
+
+    # Poll until complete
+    while True:
+        try:
+            status = poll_batch(job.batch_id)
+        except Exception as e:
+            log(f"Poll error (retrying): {e}")
+            time.sleep(poll_interval * 2)
+            continue
+
+        batch_pct = 5.0 + (status.progress_pct / 100.0) * 85.0
+        progress(batch_pct, f"Verification: {status.succeeded}/{status.total} done")
+
+        log(
+            f"  Verify batch: {status.succeeded} done, "
+            f"{status.processing} processing, {status.errored} errors "
+            f"• {status.progress_pct:.0f}%"
+        )
+
+        if status.status == "ended":
+            break
+        elif status.status in ("canceling",):
+            log("Verification batch is being canceled...")
+
+        time.sleep(poll_interval)
+
+    # Collect results
+    progress(92.0, "Collecting verification results...")
+    log("Collecting verification batch results...")
+
+    try:
+        retrieve_verification_results(
+            job,
+            findings,
+            parse_response_fn=_parse_verification_response,
+        )
+    except Exception as e:
+        log(f"Error collecting verification results: {e}")
+        # Set UNVERIFIED for any findings without a result
+        for f in findings:
+            if f.verification is None:
+                f.verification = VerificationResult(
+                    verdict="UNVERIFIED",
+                    explanation=f"Batch result collection failed: {e}",
+                )
+
+    progress(100.0, "Verification complete")
     return findings

@@ -6,13 +6,19 @@ and finding verifications. Provides 50% cost savings over real-time API calls
 at the cost of asynchronous processing (typically under 1 hour).
 
 The batch pipeline supports two types of requests:
-    1. Per-spec review requests — one per spec file (Phase 1 foundation)
-    2. Verification requests — one per finding (Phase 3, web search fact-check)
+    1. Per-spec review requests — one per spec file
+    2. Verification requests — one per finding (web search fact-check)
 
 Since verification depends on review results, batch mode requires two
 sequential batches:
     - Batch 1: All per-spec review requests
     - Batch 2: All verification requests (built from Batch 1 results)
+
+v1.7.0 — Verification batching + model selection.
+    Added submit_verification_batch() and retrieve_verification_results()
+    for routing verification through the Batches API at 50% cost savings.
+    Added model parameter to submit_review_batch() so the user can choose
+    between Opus and Sonnet for the review stage.
 
 Usage:
     from batch import submit_review_batch, poll_batch, retrieve_review_results
@@ -34,7 +40,7 @@ Design decisions:
     - Each batch request uses the same system prompt and per-spec user message
       as the real-time review path (consistency)
     - custom_id format: "review__{sanitized_filename}__{index}" for reviews,
-      "verify__{sanitized_filename}__{index}" for verifications
+      "verify__{index}" for verifications
     - Partial failures are handled gracefully — errored/expired/canceled
       requests produce empty ReviewResults with error messages
     - The module is stateless — BatchJob dataclass holds all metadata needed
@@ -59,6 +65,7 @@ from .reviewer import (
     _parse_findings,
     _get_api_key,
     MODEL_OPUS_46,
+    MODEL_SONNET_46,
 )
 
 
@@ -122,6 +129,10 @@ def _sanitize_custom_id(filename: str, max_len: int = 50) -> str:
     return safe[:max_len]
 
 
+# ---------------------------------------------------------------------------
+# Review batch
+# ---------------------------------------------------------------------------
+
 def submit_review_batch(
     specs: list,
     *,
@@ -137,7 +148,7 @@ def submit_review_batch(
     Args:
         specs: List of ExtractedSpec objects to review
         project_context: Optional project description (included in each request)
-        model: Model ID to use (default: Claude Opus 4.6)
+        model: Model ID to use (default: Claude Opus 4.6, also supports Sonnet 4.6)
 
     Returns:
         BatchJob with batch_id and request mapping for result retrieval
@@ -218,7 +229,7 @@ def poll_batch(batch_id: str) -> BatchStatus:
     )
 
 
-def retrieve_review_results(job: BatchJob) -> dict[str, ReviewResult]:
+def retrieve_review_results(job: BatchJob, model: str = MODEL_OPUS_46) -> dict[str, ReviewResult]:
     """
     Retrieve and parse review results from a completed batch.
 
@@ -228,6 +239,7 @@ def retrieve_review_results(job: BatchJob) -> dict[str, ReviewResult]:
 
     Args:
         job: BatchJob returned by submit_review_batch()
+        model: Model ID used for the review (for ReviewResult metadata)
 
     Returns:
         Dict mapping filename -> ReviewResult. Errored/expired/canceled
@@ -270,7 +282,7 @@ def retrieve_review_results(job: BatchJob) -> dict[str, ReviewResult]:
                 findings=findings,
                 raw_response=response_text,
                 thinking=thinking,
-                model=MODEL_OPUS_46,
+                model=model,
                 input_tokens=int(input_tokens or 0),
                 output_tokens=int(output_tokens or 0),
             )
@@ -286,6 +298,160 @@ def retrieve_review_results(job: BatchJob) -> dict[str, ReviewResult]:
             )
 
     return results_by_file
+
+
+# ---------------------------------------------------------------------------
+# Verification batch (v1.7.0)
+# ---------------------------------------------------------------------------
+
+def submit_verification_batch(
+    findings: list[Finding],
+    build_prompt_fn,
+) -> BatchJob:
+    """Submit verification requests as a single Anthropic Message Batch.
+
+    Each finding gets its own batch request using Sonnet 4.6 with the
+    web_search tool. GRIPES findings are excluded (not worth verifying).
+
+    Args:
+        findings: List of Finding objects to verify. GRIPES are skipped.
+        build_prompt_fn: Function that takes a Finding and returns the
+            verification prompt string. Injected from verifier.py to
+            avoid circular imports.
+
+    Returns:
+        BatchJob with batch_id and request mapping for result retrieval.
+        The request_map maps custom_id -> {"index": int, "finding_index": int}
+        where finding_index is the position in the original findings list.
+
+    Raises:
+        ValueError: If no verifiable findings
+        anthropic.APIError: If batch submission fails
+    """
+    # Build list of (original_index, finding) for verifiable findings
+    verifiable: list[tuple[int, Finding]] = []
+    for i, f in enumerate(findings):
+        if f.severity != "GRIPES":
+            verifiable.append((i, f))
+
+    if not verifiable:
+        raise ValueError("No findings eligible for verification")
+
+    # Sort by confidence ascending (least confident first) for custom_id ordering
+    verifiable.sort(key=lambda pair: pair[1].confidence)
+
+    client = Anthropic(api_key=_get_api_key())
+
+    batch_requests = []
+    request_map = {}
+
+    for batch_idx, (finding_idx, finding) in enumerate(verifiable):
+        custom_id = f"verify__{batch_idx}"
+        prompt = build_prompt_fn(finding)
+
+        batch_requests.append({
+            "custom_id": custom_id,
+            "params": {
+                "model": MODEL_SONNET_46,
+                "max_tokens": 1024,
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        })
+
+        request_map[custom_id] = {
+            "batch_idx": batch_idx,
+            "finding_idx": finding_idx,
+        }
+
+    message_batch = client.messages.batches.create(requests=batch_requests)
+
+    return BatchJob(
+        batch_id=message_batch.id,
+        job_type="verify",
+        request_map=request_map,
+        created_at=time.time(),
+    )
+
+
+def retrieve_verification_results(
+    job: BatchJob,
+    findings: list[Finding],
+    parse_response_fn,
+) -> list[Finding]:
+    """Retrieve verification results from a completed batch and populate findings.
+
+    Iterates over batch results, parses each response using the verifier's
+    parsing function, and sets finding.verification for each finding.
+
+    Args:
+        job: BatchJob returned by submit_verification_batch()
+        findings: The original findings list (modified in-place)
+        parse_response_fn: Function that takes response text and returns a
+            VerificationResult. Injected from verifier.py to avoid circular imports.
+
+    Returns:
+        The same findings list (modified in-place) for convenience.
+    """
+    from .verifier import VerificationResult
+
+    client = Anthropic(api_key=_get_api_key())
+
+    # Set default UNVERIFIED for GRIPES findings
+    for f in findings:
+        if f.severity == "GRIPES" and f.verification is None:
+            f.verification = VerificationResult(
+                verdict="UNVERIFIED",
+                explanation="Skipped: GRIPES findings are not verified.",
+            )
+
+    for result in client.messages.batches.results(job.batch_id):
+        custom_id = result.custom_id
+        meta = job.request_map.get(custom_id)
+        if not meta:
+            continue
+
+        finding_idx = meta["finding_idx"]
+        if finding_idx < 0 or finding_idx >= len(findings):
+            continue
+
+        finding = findings[finding_idx]
+
+        if result.result.type == "succeeded":
+            message = result.result.message
+
+            # Extract text from response content blocks
+            response_text = ""
+            for block in message.content:
+                if hasattr(block, "text"):
+                    response_text += block.text
+
+            if response_text:
+                finding.verification = parse_response_fn(response_text)
+            else:
+                finding.verification = VerificationResult(
+                    verdict="UNVERIFIED",
+                    explanation="Verification produced no text response.",
+                )
+        else:
+            error_msg = f"Batch verification {result.result.type}"
+            if hasattr(result.result, "error") and result.result.error:
+                error_msg += f": {result.result.error}"
+
+            finding.verification = VerificationResult(
+                verdict="UNVERIFIED",
+                explanation=f"Verification failed: {error_msg}",
+            )
+
+    # Set UNVERIFIED for any findings that weren't in the batch results
+    for f in findings:
+        if f.verification is None:
+            f.verification = VerificationResult(
+                verdict="UNVERIFIED",
+                explanation="No verification result returned from batch.",
+            )
+
+    return findings
 
 
 def cancel_batch(batch_id: str) -> str:

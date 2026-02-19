@@ -37,3 +37,6 @@ htmlcov/
 output/
 
 specs/
+
+# Batch state (contains batch IDs, not secrets, but transient)
+batch_state.json

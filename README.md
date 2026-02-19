@@ -1,13 +1,13 @@
-# Spec Critic v1.6.0
+# Spec Critic v1.7.0
 
-A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude Opus 4.6. Load `.docx` spec files, run the review, and see color-coded findings rendered directly in the app.
+A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` spec files, run the review, and see color-coded findings rendered directly in the app.
 
 ## What It Does
 
 1. Extracts text from `.docx` specification files (paragraphs + tables)
 2. Detects LEED references and unresolved placeholders locally (no API call needed)
 3. Performs pre-flight token analysis with an animated visual gauge
-4. Reviews each spec independently via streaming API calls to Claude Opus 4.6
+4. Reviews each spec independently via streaming API calls to the selected model (Opus 4.6 or Sonnet 4.6)
 5. Deduplicates findings that appear across multiple specs
 6. Optionally runs a cross-spec coordination check (Sonnet 4.6) to catch inter-spec conflicts
 7. Verifies all CRITICAL/HIGH/MEDIUM findings via web search (Sonnet 4.6)
@@ -55,12 +55,22 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root. T
 2. Enter your API key (or let it auto-load from file)
 3. Click **Browse** to select `.docx` specs
 4. (Optional) Enter project context in the **Project Context** field
-5. (Optional) Check **Cross-spec coordination check** to enable inter-spec analysis
-6. The token gauge fills to show capacity usage — stay under the 150k limit
-7. Expand the **FILES** panel to check/uncheck individual specs if needed
-8. Click **Run Review**
-9. When complete, the report renders in-app and a **pop-out report window** opens automatically
-10. Click **Expand** to view the in-app report full-screen, or **← Back to Review** to return
+5. Select the **Review Model**: Opus 4.6 (thorough) or Sonnet 4.6 (fast/cheap)
+6. (Optional) Check **Cross-spec coordination check** to enable inter-spec analysis
+7. The token gauge fills to show capacity usage — stay under the 150k limit
+8. Expand the **FILES** panel to check/uncheck individual specs if needed
+9. Click **Run Review** (or **Submit Batch** in batch mode)
+10. When complete, the report renders in-app and a **pop-out report window** opens automatically
+11. Click **Expand** to view the in-app report full-screen, or **← Back to Review** to return
+
+### Review Model Selection
+
+Choose between two models for the first-stage review:
+
+- **Opus 4.6** (default): Most thorough analysis. Recommended for final reviews, DSA submittals, and when you want the highest quality findings.
+- **Sonnet 4.6**: Faster and cheaper. Good for quick reviews, draft specs, or when you're iterating on spec content.
+
+Verification and cross-spec coordination checks always use Sonnet 4.6 regardless of your model selection.
 
 ### Cross-Spec Coordination Check
 
@@ -122,11 +132,17 @@ When the review finishes, a separate report window opens automatically with the 
 
 ### Batch Mode
 
-Batch mode submits all specs as a single Anthropic Message Batch at 50% cost. The cross-spec coordination check is not batched — it runs as a real-time call after batch results are collected.
+Batch mode submits all specs as a single Anthropic Message Batch at 50% cost. Both the review stage and the verification stage are batched for maximum cost savings. The cross-spec coordination check (if enabled) runs as a real-time call between the two batches.
+
+**Persistent batch state**: If you close the app while a batch is processing, the batch state is saved to `batch_state.json`. When you reopen the app, a dialog offers to resume polling or discard the batch. Batch state expires after 24 hours.
+
+**Note**: When resuming a batch after app restart, the cross-spec coordination check is not available (spec content is not preserved in the state file).
 
 ### Verification
 
 All CRITICAL, HIGH, and MEDIUM findings are automatically verified by Sonnet 4.6 with web search. This includes both per-spec findings and cross-check coordination findings.
+
+In batch mode, verification is also batched via the Batches API for 50% cost savings. If batch verification submission fails, it falls back to sequential verification automatically.
 
 **Verdict meanings:**
 - **CONFIRMED** (green) — Finding is correct
@@ -158,7 +174,7 @@ spec-review/
 │   ├── widgets.py         # Custom UI widgets
 │   ├── pipeline.py        # Core orchestration (single source of truth)
 │   ├── cross_checker.py   # Cross-spec coordination check (Sonnet 4.6)
-│   ├── batch.py           # Anthropic Message Batches API
+│   ├── batch.py           # Anthropic Message Batches API (review + verification)
 │   ├── verifier.py        # Web search verification (Sonnet 4.6)
 │   ├── extractor.py       # DOCX text extraction
 │   ├── preprocessor.py    # LEED/placeholder detection
@@ -175,8 +191,10 @@ spec-review/
 ### Design Decisions
 
 - **Single pipeline**: All workflow logic lives in `pipeline.py`.
-- **Single review model**: Hardcoded to Claude Opus 4.6 for review.
-- **Sonnet for support tasks**: Verification and cross-check use Sonnet 4.6.
+- **User-selectable review model**: Opus 4.6 or Sonnet 4.6 for the first-stage review.
+- **Sonnet for support tasks**: Verification and cross-check always use Sonnet 4.6.
+- **Verification batching**: In batch mode, verification is also batched for 50% savings.
+- **Persistent batch state**: Batch state survives app restarts via `batch_state.json`.
 - **No document mutation**: Analysis only. Document cleanup belongs in SpecCleanse.
 - **No file output**: All results render in-app. Only Export JSON writes files.
 - **Advisory only**: This tool assists human reviewers. Not an AHJ substitute.
@@ -211,27 +229,35 @@ customtkinter      # Modern themed Tkinter widgets
 
 ## Changelog
 
+### v1.7.0 — Verification Batching + Model Selection + Persistent Batch State
+
+- **Feature**: Review model selection — users can choose between Opus 4.6 (thorough) and Sonnet 4.6 (fast/cheap) for the first-stage review via a segmented button in the INPUTS card
+- **Feature**: Verification batching — in batch mode, verification requests are submitted as a second Anthropic Message Batch (50% cost savings), with automatic fallback to sequential if batch submission fails
+- **Feature**: Persistent batch state — batch metadata is saved to `batch_state.json` on submission and loaded on app launch, enabling resume after app restart
+- **Feature**: Resume dialog on launch — if a pending batch is detected, a dialog offers Resume or Discard options with batch ID, file count, model, and age information
+- **Feature**: 24-hour batch state expiry — stale state files are automatically discarded
+- **Update**: `reviewer.py` exports `MODEL_SONNET_46` and `REVIEW_MODELS` dict for GUI model selector
+- **Update**: `batch.py` gains `submit_verification_batch()` and `retrieve_verification_results()` for verification batching
+- **Update**: `verifier.py` gains `verify_findings_batch()` as batch-mode alternative to `verify_findings()`
+- **Update**: `pipeline.py` `collect_batch_results()` uses `verify_findings_batch()` for verification in batch mode
+- **Update**: `pipeline.py` `BatchSubmission` gains `model` field
+- **Update**: Model parameter flows through `run_review()`, `start_batch_review()`, `review_single_spec()`
+- **Update**: GUI INPUTS card reorganized: Row 3 = Review Model, Row 4 = Mode, Row 5 = Options
+- **Update**: Header subtitle simplified (no longer hardcodes model name)
+- **Update**: `batch_state.json` added to `.gitignore`
+
 ### v1.6.0 — Cross-Spec Coordination Check
 
-- **Feature**: Optional cross-spec coordination check — after per-spec reviews, a single Sonnet 4.6 call analyzes section headers and existing findings to catch inter-spec coordination issues (contradictions, missing references, division-of-work gaps, terminology conflicts)
-- **Feature**: New `cross_checker.py` module with `run_cross_check()`, `extract_section_headers()`, dedicated system prompt, and condensed input builder
-- **Feature**: "Cross-spec coordination check" checkbox in the INPUTS card (Row 4) with hint label ("Sonnet 4.6 • finds inter-spec conflicts")
-- **Feature**: Dedicated "CROSS-SPEC COORDINATION" section in report with cyan accent, separate from per-spec findings
-- **Feature**: Cross-check count card in summary grid (cyan, only shown when cross-check produces findings)
-- **Feature**: Cross-check findings included in JSON export (`cross_check_findings` and `cross_check_summary` fields)
-- **Feature**: Cross-check findings go through web search verification alongside per-spec findings
-- **Feature**: Graceful skip when <2 specs or token limit exceeded
-- **Update**: `PipelineResult` gains `cross_check_result` field
-- **Update**: `ReportWindow` and `ReportPanel` accept and render `cross_check_result`
-- **Update**: `pipeline.run_review()` and `pipeline.collect_batch_results()` accept `cross_check` parameter
-- **Update**: Progress allocation adjusted: review 35-55%, cross-check 55-65%, verification 65-95%
+- **Feature**: Optional cross-spec coordination check — after per-spec reviews, a single Sonnet 4.6 call analyzes section headers and existing findings to catch inter-spec coordination issues
+- **Feature**: New `cross_checker.py` module with dedicated system prompt and condensed input builder
+- **Feature**: "Cross-spec coordination check" checkbox in the INPUTS card
+- **Feature**: Dedicated "CROSS-SPEC COORDINATION" section in report with cyan accent
+- **Feature**: Cross-check findings included in JSON export and web search verification
 
 ### v1.5.0 — Confidence Scoring + Deduplication + Always-On Verification
 
 - **Feature**: Confidence scoring — each finding includes a numeric `confidence` field (0.0–1.0)
 - **Feature**: Confidence badges in finding cards (green/amber/red)
-- **Feature**: Confidence-based sorting within severity tiers
-- **Feature**: Confidence-based verification ordering (least confident first)
 - **Feature**: Finding deduplication across specs
 - **Feature**: Always-on verification (checkbox removed)
 - **Update**: Verification model upgraded to Claude Sonnet 4.6

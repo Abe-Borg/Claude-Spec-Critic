@@ -2,16 +2,21 @@
 Claude API client for specification review.
 
 Handles streaming responses, JSON parsing, retry logic, and token tracking.
-Uses Claude Opus 4.6 exclusively.
 
-v1.4.0 — Added review_single_spec() for per-spec siloed review. Added
-    optional verification field to Finding dataclass (populated by the
-    verification pipeline in later steps).
+v1.7.0 — Model selection. The review model is no longer hardcoded to Opus.
+    Users can choose between Claude Opus 4.6 and Claude Sonnet 4.6 for the
+    first-stage review via a GUI selector. Verification and cross-check
+    continue to use Sonnet 4.6 exclusively. Added MODEL_SONNET_46 constant.
+    review_single_spec() and review_specs() accept an optional model param.
 
 v1.5.0 — Added confidence field (0.0-1.0) to Finding dataclass. Findings
     are now parsed with a numeric confidence score that indicates how sure
     the model is about each issue. Used for sorting within severity tiers
     and prioritizing verification order.
+
+v1.4.0 — Added review_single_spec() for per-spec siloed review. Added
+    optional verification field to Finding dataclass (populated by the
+    verification pipeline in later steps).
 """
 from __future__ import annotations
 
@@ -27,6 +32,13 @@ from .prompts import get_system_prompt, get_user_message, get_single_spec_user_m
 
 
 MODEL_OPUS_46 = "claude-opus-4-6"
+MODEL_SONNET_46 = "claude-sonnet-4-6"
+
+# Available models for review (displayed in GUI selector)
+REVIEW_MODELS = {
+    "Opus 4.6": MODEL_OPUS_46,
+    "Sonnet 4.6": MODEL_SONNET_46,
+}
 
 StreamCallback = Callable[[str], None]
 
@@ -166,6 +178,7 @@ def _stream_review(
     system_prompt: str,
     user_message: str,
     *,
+    model: str = MODEL_OPUS_46,
     max_retries: int = 3,
     verbose: bool = False,
     stream_callback: Optional[StreamCallback] = None,
@@ -180,6 +193,7 @@ def _stream_review(
         client: Anthropic API client instance
         system_prompt: Full system prompt string
         user_message: Full user message string
+        model: Model ID to use for the review (default: Claude Opus 4.6)
         max_retries: Maximum retry attempts for transient API errors
         verbose: If True, print debug info to stdout
         stream_callback: Optional callback invoked with each streaming text chunk
@@ -188,16 +202,16 @@ def _stream_review(
         ReviewResult with findings, thinking, token counts, and timing
     """
     start_time = time.time()
-    result = ReviewResult(model=MODEL_OPUS_46)
+    result = ReviewResult(model=model)
     max_tokens = 32768
 
     for attempt in range(max_retries):
         try:
             if verbose:
-                print(f"Calling Claude (attempt {attempt + 1}/{max_retries})...")
+                print(f"Calling Claude {model} (attempt {attempt + 1}/{max_retries})...")
 
             with client.messages.stream(
-                model=MODEL_OPUS_46,
+                model=model,
                 max_tokens=max_tokens,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
@@ -265,6 +279,7 @@ def review_specs(
     *,
     file_count: int = 0,
     project_context: str = "",
+    model: str = MODEL_OPUS_46,
     max_retries: int = 3,
     verbose: bool = False,
     stream_callback: Optional[StreamCallback] = None,
@@ -283,6 +298,7 @@ def review_specs(
         combined_content: All spec text concatenated with FILE headers
         file_count: Number of spec files (passed to user message for context)
         project_context: Optional free-text project description from the user
+        model: Model ID for review (default: Claude Opus 4.6)
         max_retries: Maximum retry attempts for transient API errors
         verbose: If True, print debug info to stdout
         stream_callback: Optional callback invoked with each streaming text chunk
@@ -299,6 +315,7 @@ def review_specs(
         client,
         system_prompt,
         user_message,
+        model=model,
         max_retries=max_retries,
         verbose=verbose,
         stream_callback=stream_callback,
@@ -310,6 +327,7 @@ def review_single_spec(
     filename: str,
     *,
     project_context: str = "",
+    model: str = MODEL_OPUS_46,
     max_retries: int = 3,
     verbose: bool = False,
     stream_callback: Optional[StreamCallback] = None,
@@ -326,6 +344,7 @@ def review_single_spec(
         spec_content: Full extracted text of a single specification
         filename: Original filename (used in FILE delimiter and findings)
         project_context: Optional free-text project description
+        model: Model ID for review (default: Claude Opus 4.6)
         max_retries: Maximum retry attempts for transient API errors
         verbose: If True, print debug info to stdout
         stream_callback: Optional callback invoked with each streaming text chunk
@@ -345,6 +364,7 @@ def review_single_spec(
         client,
         system_prompt,
         user_message,
+        model=model,
         max_retries=max_retries,
         verbose=verbose,
         stream_callback=stream_callback,
