@@ -5,6 +5,15 @@ This module is the SINGLE SOURCE OF TRUTH for the review workflow.
 The GUI calls run_review() for real-time mode or start_batch_review()
 + collect_batch_results() for batch mode.
 
+v1.6.0 — Cross-spec coordination pass (optional).
+
+    After per-spec review and deduplication, an optional cross-spec
+    coordination check runs a single Sonnet 4.6 call with section headers
+    and existing findings to catch inter-spec coordination issues. This is
+    controlled by the cross_check parameter (default False). Cross-check
+    findings are returned separately in PipelineResult.cross_check_result
+    and rendered in their own report section.
+
 v1.5.0 — Confidence scoring, always-on verification, finding deduplication.
 
     Finding deduplication:
@@ -30,6 +39,9 @@ Design decisions:
       results can still be displayed
     - Deduplication is local (no API call) and runs before verification
       so duplicate findings don't waste verification API calls
+    - Cross-check is optional and uses Sonnet 4.6 (cheaper than Opus)
+    - Cross-check findings are kept separate from per-spec findings
+      for distinct rendering in the report
 """
 
 from __future__ import annotations
@@ -54,6 +66,7 @@ from .reviewer import (
 )
 from .batch import BatchJob, BatchStatus, submit_review_batch, poll_batch, retrieve_review_results
 from .verifier import verify_findings, VerificationResult
+from .cross_checker import run_cross_check
 
 # Type aliases for callback signatures
 LogFn = Callable[[str], None]
@@ -80,11 +93,14 @@ class PipelineResult:
         files_reviewed: List of filenames that were reviewed
         leed_alerts: List of LEED alert dicts
         placeholder_alerts: List of placeholder alert dicts
+        cross_check_result: Optional ReviewResult from cross-spec coordination
+            check. None if cross-check was not run or only 1 spec was provided.
     """
     review_result: Optional[ReviewResult]
     files_reviewed: list[str] = field(default_factory=list)
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
+    cross_check_result: Optional[ReviewResult] = None
 
 
 def _get_docx_files(input_dir: Path) -> list[Path]:
@@ -361,6 +377,9 @@ def collect_batch_results(
     submission: BatchSubmission,
     *,
     verify: bool = True,
+    cross_check: bool = False,
+    specs: list[ExtractedSpec] | None = None,
+    project_context: str = "",
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> PipelineResult:
@@ -371,6 +390,10 @@ def collect_batch_results(
     Args:
         submission: BatchSubmission returned by start_batch_review()
         verify: If True, run web search verification on eligible findings
+        cross_check: If True, run cross-spec coordination check after review
+        specs: ExtractedSpec objects (needed for cross-check). If None and
+            cross_check is True, cross-check is skipped.
+        project_context: Project description for cross-check prompt
         log: Callback for log messages
         progress: Callback for progress updates
 
@@ -407,7 +430,7 @@ def collect_batch_results(
             "\n".join(f"  - {e}" for e in errors)
         )
 
-    # Deduplication (before verification to avoid wasting API calls)
+    # Deduplication (before cross-check and verification)
     pre_dedup_count = len(all_findings)
     all_findings = _deduplicate_findings(all_findings)
     post_dedup_count = len(all_findings)
@@ -431,10 +454,34 @@ def collect_batch_results(
             "\n".join(f"  - {e}" for e in errors)
         )
 
+    # Cross-spec coordination check (optional, v1.6.0)
+    cross_check_result = None
+    if cross_check and specs and len(specs) >= 2:
+        progress(55.0, "Running cross-spec coordination check...")
+        log(f"Running cross-spec coordination check across {len(specs)} specs...")
+
+        cross_check_result = run_cross_check(
+            specs,
+            all_findings,
+            project_context=project_context,
+        )
+
+        if cross_check_result.error:
+            log(f"Cross-check error: {cross_check_result.error}")
+        elif cross_check_result.findings:
+            log(f"Cross-check found {len(cross_check_result.findings)} coordination issues")
+        else:
+            log("Cross-check found no coordination issues")
+
     # Verification (always enabled in v1.5.0)
-    if verify and all_findings:
+    # Verify both per-spec findings and cross-check findings
+    all_verifiable = list(all_findings)
+    if cross_check_result and cross_check_result.findings:
+        all_verifiable.extend(cross_check_result.findings)
+
+    if verify and all_verifiable:
         verifiable_count = sum(
-            1 for f in all_findings
+            1 for f in all_verifiable
             if f.severity != "GRIPES"
         )
         if verifiable_count > 0:
@@ -445,10 +492,10 @@ def collect_batch_results(
                 verify_pct = 60.0 + (current / total) * 35.0
                 progress(verify_pct, f"Verifying finding {current}/{total} ({filename})...")
 
-            verify_findings(all_findings, progress=_verify_progress)
+            verify_findings(all_verifiable, progress=_verify_progress)
 
             verdicts = {}
-            for f in all_findings:
+            for f in all_verifiable:
                 if f.verification:
                     v = f.verification.verdict
                     verdicts[v] = verdicts.get(v, 0) + 1
@@ -460,6 +507,7 @@ def collect_batch_results(
         files_reviewed=submission.files_reviewed,
         leed_alerts=submission.leed_alerts,
         placeholder_alerts=submission.placeholder_alerts,
+        cross_check_result=cross_check_result,
     )
 
 
@@ -469,6 +517,7 @@ def run_review(
     files: Optional[list[Path]] = None,
     project_context: str = "",
     verify: bool = True,
+    cross_check: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
     log: LogFn = _noop_log,
@@ -477,6 +526,9 @@ def run_review(
 ) -> PipelineResult:
     """
     Execute the full specification review pipeline.
+
+    v1.6.0: Adds optional cross-spec coordination pass after per-spec review
+    and deduplication, before verification. Controlled by cross_check param.
 
     v1.5.0: Adds finding deduplication after per-spec review. Verification
     is always enabled (verify parameter kept for API compatibility but
@@ -493,6 +545,8 @@ def run_review(
             included in each per-spec user message as a <project_context> block.
         verify: If True, run web search verification on eligible findings
             after review. Defaults to True (always-on in v1.5.0).
+        cross_check: If True, run cross-spec coordination check after per-spec
+            review and deduplication. Requires 2+ specs. Defaults to False.
         dry_run: If True, skip the API call.
         verbose: Passed to reviewer for additional stdout logging
         log: Callback for log messages.
@@ -547,8 +601,9 @@ def run_review(
     total_output_tokens = 0
     errors: list[str] = []
 
-    # Progress allocation: review 35-70%, dedup ~70%, verify 70-95%
-    review_end_pct = 70.0
+    # Progress allocation:
+    #   review 35-55%, dedup ~55%, cross-check 55-65%, verify 65-95%
+    review_end_pct = 55.0
 
     for i, spec in enumerate(specs):
         spec_num = i + 1
@@ -582,7 +637,7 @@ def run_review(
         log(f"  {spec.filename}: {len(result.findings)} findings")
 
     # -------------------------------------------------------------------------
-    # Stage 4.5: Finding deduplication (before verification)
+    # Stage 4.5: Finding deduplication (before cross-check and verification)
     # -------------------------------------------------------------------------
     pre_dedup_count = len(all_findings)
     all_findings = _deduplicate_findings(all_findings)
@@ -592,26 +647,61 @@ def run_review(
     progress(review_end_pct, f"Review complete — {post_dedup_count} unique findings")
 
     # -------------------------------------------------------------------------
-    # Stage 5: Web search verification (always enabled in v1.5.0)
+    # Stage 5: Cross-spec coordination check (optional, v1.6.0)
     # -------------------------------------------------------------------------
-    if verify and all_findings:
+    cross_check_result = None
+    if cross_check and len(specs) >= 2:
+        cross_check_start_pct = 56.0
+        cross_check_end_pct = 65.0
+        progress(cross_check_start_pct, f"Running cross-spec coordination check across {len(specs)} specs...")
+        log(f"Running cross-spec coordination check across {len(specs)} specs (Sonnet 4.6)...")
+
+        cross_check_result = run_cross_check(
+            specs,
+            all_findings,
+            project_context=project_context,
+            verbose=verbose,
+        )
+
+        if cross_check_result.error:
+            log(f"Cross-check error: {cross_check_result.error}")
+        elif cross_check_result.findings:
+            log(f"Cross-check found {len(cross_check_result.findings)} coordination issues")
+        else:
+            log("Cross-check found no coordination issues")
+
+        progress(cross_check_end_pct, "Cross-check complete")
+    elif cross_check and len(specs) < 2:
+        log("Cross-spec coordination skipped: need 2+ specs")
+
+    # -------------------------------------------------------------------------
+    # Stage 6: Web search verification (always enabled in v1.5.0)
+    # -------------------------------------------------------------------------
+    # Verify both per-spec findings and cross-check findings
+    all_verifiable = list(all_findings)
+    if cross_check_result and cross_check_result.findings:
+        all_verifiable.extend(cross_check_result.findings)
+
+    verify_start_pct = 66.0
+
+    if verify and all_verifiable:
         verifiable_count = sum(
-            1 for f in all_findings
+            1 for f in all_verifiable
             if f.severity != "GRIPES"
         )
         if verifiable_count > 0:
-            progress(review_end_pct + 1, f"Verifying {verifiable_count} findings via web search...")
+            progress(verify_start_pct, f"Verifying {verifiable_count} findings via web search...")
             log(f"Verifying {verifiable_count} findings with Sonnet + web search...")
 
             def _verify_progress(current: int, total: int, filename: str):
-                verify_pct = review_end_pct + (current / total) * (95.0 - review_end_pct)
+                verify_pct = verify_start_pct + (current / total) * (95.0 - verify_start_pct)
                 progress(verify_pct, f"Verifying finding {current}/{total} ({filename})...")
 
-            verify_findings(all_findings, progress=_verify_progress)
+            verify_findings(all_verifiable, progress=_verify_progress)
 
             # Count verification verdicts
             verdicts = {}
-            for f in all_findings:
+            for f in all_verifiable:
                 if f.verification:
                     v = f.verification.verdict
                     verdicts[v] = verdicts.get(v, 0) + 1
@@ -622,7 +712,7 @@ def run_review(
             log("No findings eligible for verification (no code references).")
 
     # -------------------------------------------------------------------------
-    # Stage 6: Aggregate results
+    # Stage 7: Aggregate results
     # -------------------------------------------------------------------------
     elapsed = time.time() - start_time
 
@@ -659,4 +749,5 @@ def run_review(
         files_reviewed=[s.filename for s in specs],
         leed_alerts=leed_alerts,
         placeholder_alerts=placeholder_alerts,
+        cross_check_result=cross_check_result,
     )

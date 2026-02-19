@@ -6,10 +6,11 @@ This file provides guidance for AI assistants working on the **Spec Critic** cod
 
 Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude Opus 4.6 for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
 
-- **Version**: 1.5.0 (confidence scoring + Sonnet 4.6 verification)
+- **Version**: 1.6.0 (cross-spec coordination check)
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
 - **Review Model**: Claude Opus 4.6 (`claude-opus-4-6`), hardcoded — no model selection flags
-- **Verification Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6-20250610`)
+- **Verification Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
+- **Cross-Check Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
 - **Output**: In-app only. No files are written during a review. The only file output is the optional Export JSON button.
 
 ## Repository Structure
@@ -18,11 +19,12 @@ Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.5.0")
+│   ├── __init__.py          # Package version ("1.6.0")
 │   ├── gui.py               # CustomTkinter app window, input handling, threading
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
 │   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py          # SINGLE SOURCE OF TRUTH for review workflow
+│   ├── cross_checker.py     # Cross-spec coordination check (Sonnet 4.6)
 │   ├── batch.py             # Anthropic Message Batches API integration
 │   ├── verifier.py          # Web search self-verification (Sonnet 4.6 + web_search)
 │   ├── extractor.py         # .docx text extraction (paragraphs + tables)
@@ -45,19 +47,22 @@ spec-review/
 
 1. Extract text from `.docx` files → `ExtractedSpec` objects
 2. Detect LEED references and placeholders locally (regex, not sent to LLM)
-3. Combine specs with `===== FILE:` header delimiters
-4. Enforce 150k token limit (hard stop, no silent truncation)
-5. Stream API call to Claude Opus 4.6
-6. Parse JSON findings (including confidence scores) + analysis summary from response
-7. Return `PipelineResult` to GUI for in-app rendering
+3. Per-spec token limit check (hard stop, no silent truncation)
+4. Per-spec siloed review via streaming API calls to Claude Opus 4.6
+5. Parse JSON findings (including confidence scores) + analysis summary
+6. Deduplicate findings across specs
+7. **Optional**: Cross-spec coordination check via Sonnet 4.6 (if enabled and 2+ specs)
+8. Web search verification of all CRITICAL/HIGH/MEDIUM findings via Sonnet 4.6
+9. Return `PipelineResult` to GUI for in-app rendering
 
 ### Module Responsibilities
 
 | Module | Responsibility |
 |--------|---------------|
-| `gui.py` | App window, input handling (including project context field, mode toggle), threading, review orchestration, batch polling, report expand/collapse mode, pop-out report window lifecycle |
-| `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel, confidence badge rendering |
+| `gui.py` | App window, input handling (project context, mode toggle, cross-check checkbox), threading, review orchestration, batch polling, report expand/collapse, pop-out window lifecycle |
+| `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel, confidence badge rendering, cross-check section rendering |
 | `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult`. Provides `run_review()` for real-time and `start_batch_review()` + `collect_batch_results()` for batch |
+| `cross_checker.py` | Cross-spec coordination check — extracts section headers, builds condensed input, calls Sonnet 4.6, parses coordination findings |
 | `batch.py` | Anthropic Message Batches API integration — submission, polling, result retrieval, cancellation |
 | `verifier.py` | Web search self-verification — builds verification prompts, calls Sonnet 4.6 with web_search tool, parses verdicts. Verifies in ascending confidence order. |
 | `extractor.py` | `.docx` → plain text (paragraphs + tables) |
@@ -73,8 +78,11 @@ spec-review/
     → extractor.py (text extraction)
     → preprocessor.py (LEED/placeholder detection, local only)
     → tokenizer.py (token counting, limit check)
-    → reviewer.py (streaming API call to Claude Opus 4.6)
-    → pipeline.py (orchestration, returns PipelineResult)
+    → reviewer.py (per-spec streaming API calls to Claude Opus 4.6)
+    → pipeline.py (deduplication)
+    → cross_checker.py (optional: coordination check via Sonnet 4.6)
+    → verifier.py (web search verification via Sonnet 4.6)
+    → pipeline.py (aggregation, returns PipelineResult)
     → gui.py (renders ReportPanel + opens ReportWindow)
 ```
 
@@ -85,9 +93,38 @@ spec-review/
 - `TokenCount` / `TokenSummary` — per-file and total token analysis (from tokenizer)
 - `Finding` — severity, fileName, section, issue, actionType, **confidence (0.0-1.0)**, etc., **plus optional `verification` field** (from reviewer)
 - `ReviewResult` — findings, raw_response, thinking, model, tokens, etc. (from reviewer)
-- `PipelineResult` — review_result, files_reviewed, leed/placeholder alerts (from pipeline)
+- `PipelineResult` — review_result, files_reviewed, leed/placeholder alerts, **cross_check_result** (from pipeline)
 
 All data containers use `@dataclass` decorators.
+
+## Cross-Spec Coordination Check (v1.6.0)
+
+### How It Works
+
+After per-spec reviews complete and findings are deduplicated, an optional coordination check looks across ALL specs for inter-spec issues:
+
+1. **Section headers** are extracted from each spec (PART lines, numbered articles, all-caps titles)
+2. These headers plus a summary of existing per-spec findings are sent to **Sonnet 4.6** in a single API call
+3. Sonnet looks exclusively for cross-spec coordination problems (contradictions, missing references, division-of-work gaps)
+4. Coordination findings are returned as a separate `ReviewResult` and rendered in their own report section
+
+### Key Design Decisions
+
+- **Optional**: Controlled by a checkbox in the GUI (default off)
+- **Sonnet 4.6**: Uses the cheaper/faster model since this is a focused analytical task
+- **Condensed input**: Section headers + existing findings, NOT full spec text — keeps token usage low
+- **Separate section**: Cross-check findings render in a distinct "CROSS-SPEC COORDINATION" section with cyan accent
+- **No batch mode**: Cross-check is always a real-time streaming call (even when review uses batch mode)
+- **Requires 2+ specs**: Automatically skipped if only 1 spec is loaded
+- **Token limit check**: If the condensed input exceeds 150k tokens, cross-check is gracefully skipped
+- **Verification included**: Cross-check findings go through the same web search verification as per-spec findings
+
+### Where Cross-Check Data Lives
+
+1. **`cross_checker.py`**: `run_cross_check()` returns a `ReviewResult` with coordination findings
+2. **`pipeline.py`**: `PipelineResult.cross_check_result` holds the cross-check `ReviewResult`
+3. **`widgets.py`**: `_render_cross_check_section()` renders the dedicated report section
+4. **JSON export**: Cross-check findings appear in `cross_check_findings` and `cross_check_summary` fields
 
 ## Confidence Scoring (v1.5.0)
 
@@ -127,6 +164,19 @@ The system prompt uses XML-tagged sections for clear structural hierarchy:
 | `<output_format>` | JSON schema (including confidence field) + examples showing ADD, EDIT, DELETE with confidence scores |
 | `<critical_checks>` | Five mandatory verification steps |
 
+### Cross-Check System Prompt (`cross_checker.py`)
+
+The cross-check prompt is embedded in `cross_checker.py` (not in `prompts.py`) because it is a fundamentally different task with different instructions:
+
+| Section | Purpose |
+|---------|---------|
+| `<task>` | Find ONLY cross-spec coordination issues |
+| `<what_to_look_for>` | Seven specific coordination problem types |
+| `<what_NOT_to_flag>` | Already-identified issues, within-spec issues |
+| `<severity_guidance>` | Coordination issues are typically HIGH or CRITICAL |
+| `<confidence_guidance>` | Same 0.0-1.0 scale as per-spec review |
+| `<output_format>` | Same Finding JSON schema for seamless integration |
+
 ### Code Cycle Parameters
 
 Code references are parameterized at the top of `prompts.py`:
@@ -139,30 +189,6 @@ PREVIOUS_ASCE7 = "7-16"
 ```
 
 When California adopts a new code cycle, update these constants. All references in the system prompt and user message update automatically via f-string interpolation.
-
-### User Messages
-
-There are two user message builders in `prompts.py`:
-
-1. **`get_user_message()`** — Multi-spec combined mode (original). Takes concatenated spec content with FILE delimiters, file count, and optional project context. Analysis summary budget: 2-4 paragraphs.
-
-2. **`get_single_spec_user_message()`** — Per-spec siloed mode (v1.4.0). Takes a single spec's content and filename. Analysis summary budget: 1-2 paragraphs. Used by `review_single_spec()` for per-spec siloed review.
-
-Both builders accept an optional `project_context` parameter and remind the model to include confidence scores.
-
-### Project Context
-
-The `get_user_message()` and `get_single_spec_user_message()` functions accept an optional `project_context` parameter. If non-empty, it is inserted as a `<project_context>` XML-tagged block in the user message, before the spec content. This gives Claude project-specific information (building type, systems, scope) to inform the review. The project context text is counted toward the token limit in the GUI.
-
-## Reviewer Architecture (v1.4.0+)
-
-The reviewer module provides two public review functions and one internal helper:
-
-- **`review_specs()`** — Original combined-review path. Sends all specs in one API call.
-- **`review_single_spec()`** — Per-spec siloed review (v1.4.0). Sends one spec per API call.
-- **`_stream_review()`** — Internal helper that handles streaming, retry logic, response parsing, and token tracking. Both public functions delegate to this after constructing their respective user messages.
-
-This refactor eliminates duplication: retry logic, JSON parsing (including confidence extraction), and token counting exist in exactly one place (`_stream_review`).
 
 ## Token Limits
 
@@ -185,11 +211,6 @@ python main.py
 - `python-docx` — Word document reading
 - `tiktoken` — Token counting (cl100k_base encoding)
 
-### Install
-```bash
-pip install -e .
-```
-
 ## API Key Configuration
 
 The Anthropic API key is resolved in this order:
@@ -210,7 +231,7 @@ The Anthropic API key is resolved in this order:
 Type hints are used throughout with Python 3.10+ union syntax (`str | None` rather than `Optional[str]`). All public functions have type-annotated signatures.
 
 ### Docstrings
-Google-style docstrings with `Args:`, `Returns:`, `Raises:`, `Example:` sections. Module-level docstrings explain purpose, design decisions, and usage.
+Google-style docstrings with `Args:`, `Returns:`, `Raises:`, `Example:` sections.
 
 ### Callback Pattern
 The pipeline uses callback injection for decoupling from UI:
@@ -220,36 +241,9 @@ The pipeline uses callback injection for decoupling from UI:
 ### Error Handling
 - Early validation with `FileNotFoundError` / `ValueError`
 - Hard stop on token limit exceeded (no silent truncation)
-- Retry with exponential backoff for API errors:
-  - `RateLimitError`: 10s, 20s, 40s
-  - `APIConnectionError`: 5s, 10s, 20s
-- Graceful fallbacks for missing optional fields (default to `None` or `""`)
-- Confidence defaults to 0.5 if missing or invalid, clamped to [0.0, 1.0]
-
-### File Organization Pattern
-```python
-"""Module docstring."""
-
-from __future__ import annotations
-
-import stdlib_modules
-from .relative_imports import internal_modules
-
-# Constants
-UPPER_SNAKE = value
-
-# Type aliases
-MyCallback = Callable[[str], None]
-
-# Private helpers
-def _helper(): ...
-
-# Public classes
-class MainClass: ...
-
-# Public functions
-def public_function(): ...
-```
+- Retry with exponential backoff for API errors
+- Graceful fallbacks for missing optional fields
+- Cross-check gracefully skips if token limit exceeded or <2 specs
 
 ## Severity Levels
 
@@ -259,39 +253,33 @@ Findings are classified into four severity tiers:
 - **MEDIUM** — Best-practice deviations, unclear language
 - **GRIPES** — Formatting, style, minor nitpicks
 
-Each finding also carries a confidence score (0.0–1.0) that is independent of severity.
-
 ## GUI Architecture
 
-The GUI uses CustomTkinter with a dark theme. All custom widgets live in `widgets.py`:
+The GUI uses CustomTkinter with a dark theme. Key widgets in `widgets.py`:
 - `TokenGauge` — Animated fill gauge showing token capacity usage
 - `FileListPanel` — Checkbox list with per-file token counts
-- `EnhancedLog` — Scrollable log using a single `CTkTextbox` with colored text tags (v1.2.0)
+- `EnhancedLog` — Scrollable log with colored text tags
 - `AnimatedButton` — Run button with pulse/glow animations
-- `ReportPanel` — In-app report with summary grid, alerts, collapsible severity-colored finding cards (with confidence badges), reviewer's notes, Expand button, Export JSON, and Copy Summary
-- `ReportWindow` — Pop-out toplevel window with the full report (opens automatically on review completion)
+- `ReportPanel` — In-app report with summary grid, alerts, findings, cross-check section, notes
+- `ReportWindow` — Pop-out toplevel window with the full report
 
-### Collapsible Finding Cards
+### Cross-Check Checkbox (v1.6.0)
 
-Each finding card has a clickable header row (severity badge + confidence badge + filename + section). Clicking the header toggles the card body (issue, existing/replacement text, code reference) between visible and collapsed. The findings section includes Collapse All / Expand All buttons for bulk toggling.
-
-Within each severity tier, findings are sorted by confidence in descending order (most confident first).
-
-All heavy operations (folder analysis, API calls) run in background threads. GUI updates are scheduled via `after()` to stay on the main thread.
+Row 4 of the INPUTS card contains a "Cross-spec coordination check" checkbox with a hint label ("Sonnet 4.6 • finds inter-spec conflicts"). When checked, the pipeline runs the coordination pass after per-spec review. The checkbox state is captured at review start and passed through as `cross_check=True/False`.
 
 ## Important Patterns to Preserve
 
-1. **Pipeline is the single source of truth** — Do not add workflow logic to `gui.py`. All review logic goes through `pipeline.run_review()`.
-2. **No file output** — All results render in-app. The only file output is the optional Export JSON button.
-3. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM. They are detected locally and displayed as alerts in the ReportPanel.
-4. **Token limits are enforced before API calls** — Never allow API calls that exceed the 150k recommended limit.
-5. **Streaming is used internally** — The reviewer always streams responses from the API. Streaming chunks are not displayed to the user; the complete response is parsed and rendered in the ReportPanel when finished.
-6. **No model selection** — Claude Opus 4.6 is hardcoded for review. Claude Sonnet 4.6 is hardcoded for verification. There are no flags to change models.
-7. **No document mutation** — This tool only analyzes specs. Document cleanup belongs in the separate SpecCleanse tool.
-8. **Advisory only** — This tool assists human reviewers. It is not an AHJ substitute.
-9. **Code cycle is parameterized** — Update the constants at the top of `prompts.py` when California adopts a new code cycle. All prompt references update automatically.
-10. **Project context is optional** — If the user leaves the field empty, the user message is unchanged from previous versions. The `<project_context>` block is only added when text is present.
-11. **Confidence defaults gracefully** — If the model omits confidence or returns an invalid value, it defaults to 0.5 and is clamped to [0.0, 1.0].
+1. **Pipeline is the single source of truth** — Do not add workflow logic to `gui.py`.
+2. **No file output** — All results render in-app. Only Export JSON writes files.
+3. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM.
+4. **Token limits are enforced before API calls** — Never allow calls exceeding 150k.
+5. **Streaming is used internally** — Complete response is parsed when finished.
+6. **No model selection** — Opus for review, Sonnet for verification and cross-check. Hardcoded.
+7. **No document mutation** — Analysis only. Document cleanup belongs in SpecCleanse.
+8. **Advisory only** — This tool assists human reviewers. Not an AHJ substitute.
+9. **Code cycle is parameterized** — Update constants in `prompts.py`.
+10. **Cross-check is optional** — Controlled by GUI checkbox, default off.
+11. **Cross-check findings are separate** — Rendered in their own section, not mixed with per-spec findings.
 
 ## Common Development Tasks
 
@@ -302,37 +290,22 @@ All heavy operations (folder analysis, API calls) run in background threads. GUI
 4. Update card rendering in `widgets.py` `_render_collapsible_card()`
 5. Update `_finding_to_dict()` in `widgets.py` if the field should appear in JSON export
 
-### Adding a new preprocessor check
-1. Add detection function in `preprocessor.py` (follow `detect_leed_references` pattern)
-2. Add results to `PreprocessResult` dataclass
-3. Wire into `preprocess_spec()` / `preprocess_specs()`
-4. Add alerts rendering in `widgets.py` `_render_alerts()`
-5. Update summary stats in `pipeline.py`
-
-### Modifying the system prompt
-Edit `prompts.py`. The system prompt is organized into XML-tagged sections. Each section has a clear purpose documented in this file under "Prompt Architecture." Changes to the prompt affect all review behavior.
+### Modifying the cross-check behavior
+1. Edit the system prompt in `cross_checker.py` (`_CROSS_CHECK_SYSTEM_PROMPT`)
+2. Edit `_build_spec_summary()` to change what data is sent
+3. Edit `extract_section_headers()` to change what headers are extracted
+4. Wire any new parameters through `pipeline.py` → `gui.py`
 
 ### Updating the code cycle
 Edit the constants at the top of `prompts.py`:
 ```python
 CURRENT_CBC = "2025"    # ← update this
 CURRENT_ASCE7 = "7-22"  # ← and this
-PREVIOUS_CBC = "2022"   # ← and these for comparison references
-PREVIOUS_ASCE7 = "7-16"
 ```
-
-## Testing
-
-There is no formal test suite. Validation approaches:
-- **Dry-run mode**: `dry_run=True` parameter skips the API call but exercises all other pipeline stages
-- **Verbose mode**: `verbose=True` parameter outputs detailed logs for debugging
-- **Modular design**: Each module is independently importable and testable
-- **Callback injection**: Log/progress callbacks can be replaced with test harnesses
-- **Confidence parsing tests**: `_parse_findings()` can be tested with synthetic JSON data to verify clamping, defaulting, and type coercion
 
 ## Files to Never Commit
 
 - `specs/` — Contains user specification files
 - `spec_critic_api_key.txt` — Contains API credentials
 - `.env` files — May contain secrets
-- `build/`, `dist/` — Build artifacts (if any)
+- `build/`, `dist/` — Build artifacts

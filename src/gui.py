@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus 4.6
-v1.5.0 - Confidence scoring, always-on verification
+v1.6.0 - Cross-spec coordination check (optional)
 """
 import os, sys, threading
 from pathlib import Path
@@ -15,7 +15,7 @@ sys.path.insert(0, str(exe_dir))
 from src.pipeline import run_review, start_batch_review, collect_batch_results, BatchSubmission
 from src.batch import poll_batch, cancel_batch, BatchStatus
 from src.reviewer import MODEL_OPUS_46
-from src.extractor import extract_text_from_docx
+from src.extractor import extract_text_from_docx, ExtractedSpec
 from src.tokenizer import RECOMMENDED_MAX
 from src.prompts import get_system_prompt
 from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
@@ -48,6 +48,7 @@ class SpecReviewApp(ctk.CTk):
         self._project_context_tokens = 0
         self._batch_submission: Optional[BatchSubmission] = None
         self._batch_poll_id: Optional[str] = None  # after() ID for cancelling poll loop
+        self._extracted_specs: list[ExtractedSpec] = []  # Cached for cross-check
         fk = load_api_key_from_file()
         ek = os.environ.get("ANTHROPIC_API_KEY", "")
         self.api_key = fk if fk else ek
@@ -167,7 +168,32 @@ class SpecReviewApp(ctk.CTk):
         )
         self._mode_hint.pack(side="left", padx=(12, 0))
 
-        # (Verify row removed in v1.5.0 — verification is always enabled)
+        # --- Row 4: Cross-spec coordination checkbox ---
+        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
+        options_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        options_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
+        self._cross_check_var = ctk.BooleanVar(value=False)
+        self._cross_check_cb = ctk.CTkCheckBox(
+            options_frame,
+            text="Cross-spec coordination check",
+            variable=self._cross_check_var,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            border_color=COLORS["border"],
+            checkmark_color=COLORS["text_primary"],
+            text_color=COLORS["text_secondary"],
+            checkbox_width=20,
+            checkbox_height=20,
+        )
+        self._cross_check_cb.pack(side="left")
+        self._cross_check_hint = ctk.CTkLabel(
+            options_frame,
+            text="Sonnet 4.6 • finds inter-spec conflicts",
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=COLORS["text_muted"],
+        )
+        self._cross_check_hint.pack(side="left", padx=(12, 0))
 
         self.inputs_content.columnconfigure(1, weight=1)
 
@@ -310,6 +336,7 @@ class SpecReviewApp(ctk.CTk):
         if not self._validate_inputs(): return
         self._selected_files_for_review = self.file_list_panel.get_selected_files()
         self._project_context_for_review = self._get_project_context()
+        self._cross_check_for_review = self._cross_check_var.get()
         self.is_processing = True
         self.report_panel.clear()
         self._close_report_window()
@@ -331,7 +358,8 @@ class SpecReviewApp(ctk.CTk):
         try:
             n = len(self._selected_files_for_review)
             self.after(0, lambda: self.log.log_step("Starting per-spec review..."))
-            mode_info = f"Model: {MODEL_OPUS_46}  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled"
+            cross_check_note = " + cross-check" if self._cross_check_for_review else ""
+            mode_info = f"Model: {MODEL_OPUS_46}  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled{cross_check_note}"
             self.after(0, lambda: self.log.log(mode_info, level="muted"))
 
             def _on_progress(pct, msg):
@@ -343,6 +371,7 @@ class SpecReviewApp(ctk.CTk):
                 files=self._selected_files_for_review,
                 project_context=self._project_context_for_review,
                 verify=True,
+                cross_check=self._cross_check_for_review,
                 dry_run=False, verbose=False,
                 log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
                 progress=_on_progress,
@@ -359,9 +388,12 @@ class SpecReviewApp(ctk.CTk):
         if result.review_result:
             rv = result.review_result
             self.log.log(f"Findings: {rv.critical_count} critical, {rv.high_count} high, {rv.medium_count} medium, {rv.gripe_count} gripes", level="info")
+            if result.cross_check_result and result.cross_check_result.findings:
+                cc = result.cross_check_result
+                self.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
             self.log.log(f"Time: {rv.elapsed_seconds:.1f}s", level="muted")
             # Open pop-out report window
-            self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts)
+            self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
 
@@ -453,6 +485,8 @@ class SpecReviewApp(ctk.CTk):
                 result = collect_batch_results(
                     self._batch_submission,
                     verify=True,
+                    cross_check=self._cross_check_for_review,
+                    project_context=self._project_context_for_review,
                     log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
                     progress=_on_progress,
                 )
@@ -475,13 +509,14 @@ class SpecReviewApp(ctk.CTk):
 
     # ----- Pop-out report window -----
 
-    def _open_report_window(self, review, files_reviewed, leed_alerts, placeholder_alerts):
+    def _open_report_window(self, review, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result=None):
         """Open a detached report window with the full results."""
         self._close_report_window()
         self._report_window = ReportWindow(
             self, review=review, files_reviewed=files_reviewed,
             leed_alerts=leed_alerts, placeholder_alerts=placeholder_alerts,
             project_context=getattr(self, "_project_context_for_review", ""),
+            cross_check_result=cross_check_result,
         )
 
     def _close_report_window(self):
@@ -537,6 +572,7 @@ class SpecReviewApp(ctk.CTk):
         self.input_dir = None
         self._selected_files = []
         self._loaded_file_data = []
+        self._extracted_specs = []
         self._project_context_tokens = 0
         self.input_dir_entry.delete(0, "end")
 
@@ -552,6 +588,7 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.configure(text="Run Review")
         self.mode_selector.set("Real-time")
         self._mode_hint.configure(text="")
+        self._cross_check_var.set(False)
         self.is_processing = False
 
         self.hdr.pack(fill="x", pady=(0, 20))
