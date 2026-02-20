@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus / Sonnet
-v1.7.0 - Verification batching + model selection + persistent batch state
+v1.8.0 - Export Report to Word document
 """
 import os, sys, json, time, threading
 from datetime import datetime, timezone
@@ -19,6 +19,7 @@ from src.reviewer import MODEL_OPUS_46, MODEL_SONNET_46, REVIEW_MODELS
 from src.extractor import extract_text_from_docx, ExtractedSpec
 from src.tokenizer import RECOMMENDED_MAX
 from src.prompts import get_system_prompt
+from src.report_exporter import export_report
 from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 
 API_KEY_FILENAME = "spec_critic_api_key.txt"
@@ -56,7 +57,7 @@ def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None
         phase: Current phase — "review" or "verify"
     """
     state = {
-        "version": "1.7.0",
+        "version": "1.8.0",
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "phase": phase,
         "batch_id": submission.job.batch_id,
@@ -270,10 +271,31 @@ class SpecReviewApp(ctk.CTk):
             font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
         self._mode_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 5: Options (cross-check) ---
-        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
+        # --- Row 5: Output ---
+        ctk.CTkLabel(self.inputs_content, text="Output", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
+        output_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        output_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
+        self._output_mode_var = ctk.StringVar(value="View in App")
+        self.output_selector = ctk.CTkSegmentedButton(
+            output_frame, values=["View in App", "Export Report"],
+            variable=self._output_mode_var,
+            command=self._on_output_mode_change,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
+            unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
+            fg_color=COLORS["bg_input"], text_color=COLORS["text_secondary"],
+            text_color_disabled=COLORS["text_muted"], height=32,
+        )
+        self.output_selector.set("View in App")
+        self.output_selector.pack(side="left")
+        self._output_hint = ctk.CTkLabel(output_frame, text="",
+            font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
+        self._output_hint.pack(side="left", padx=(12, 0))
+
+        # --- Row 6: Options (cross-check) ---
+        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=6, column=0, sticky="w", pady=8)
         options_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        options_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
+        options_frame.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=8)
         self._cross_check_var = ctk.BooleanVar(value=False)
         self._cross_check_cb = ctk.CTkCheckBox(
             options_frame, text="Cross-spec coordination check", variable=self._cross_check_var,
@@ -302,6 +324,18 @@ class SpecReviewApp(ctk.CTk):
     def _selected_review_model(self) -> str:
         label = self._review_model_var.get()
         return REVIEW_MODELS.get(label, MODEL_OPUS_46)
+
+    # --- Output mode helpers ---
+
+    def _on_output_mode_change(self, value: str):
+        if value == "Export Report":
+            self._output_hint.configure(text="Saves .docx report \u2022 no in-app rendering")
+        else:
+            self._output_hint.configure(text="")
+
+    @property
+    def _is_export_mode(self) -> bool:
+        return self.output_selector.get() == "Export Report"
 
     # --- Project context placeholder helpers ---
 
@@ -430,6 +464,7 @@ class SpecReviewApp(ctk.CTk):
         self._project_context_for_review = self._get_project_context()
         self._cross_check_for_review = self._cross_check_var.get()
         self._model_for_review = self._selected_review_model
+        self._export_mode_for_review = self._is_export_mode
         self.is_processing = True
         self.report_panel.clear()
         self._close_report_window()
@@ -441,11 +476,12 @@ class SpecReviewApp(ctk.CTk):
 
         n = len(self._selected_files_for_review)
         model_label = self._review_model_var.get()
+        output_label = " → Export Report" if self._export_mode_for_review else ""
         if self._is_batch_mode:
-            self.log.log_step(f"Submitting {n} files for batch review ({model_label})...")
+            self.log.log_step(f"Submitting {n} files for batch review ({model_label}){output_label}...")
             threading.Thread(target=self._submit_batch_thread, daemon=True).start()
         else:
-            self.log.log_step(f"Reviewing {n} files ({model_label})...")
+            self.log.log_step(f"Reviewing {n} files ({model_label}){output_label}...")
             threading.Thread(target=self._run_review_thread, daemon=True).start()
 
     def _run_review_thread(self):
@@ -488,10 +524,49 @@ class SpecReviewApp(ctk.CTk):
                 cc = result.cross_check_result
                 self.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
             self.log.log(f"Time: {rv.elapsed_seconds:.1f}s", level="muted")
-            self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
+
+            # Route to export or in-app rendering based on output mode
+            if getattr(self, "_export_mode_for_review", False):
+                self._export_report_to_file(result)
+            else:
+                self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
+
         delete_batch_state()
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
+
+    def _export_report_to_file(self, result):
+        """Show save dialog and export the report to a .docx file.
+
+        Called instead of _open_report_window() when Export Report mode
+        is active. The in-app ReportPanel and pop-out ReportWindow are
+        NOT rendered — this is the key performance fix for large reviews.
+
+        Args:
+            result: PipelineResult from the review pipeline
+        """
+        default_name = f"spec-critic-report-{datetime.now().strftime('%Y-%m-%d')}.docx"
+        path = ctk.filedialog.asksaveasfilename(
+            title="Save Review Report",
+            defaultextension=".docx",
+            filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")],
+            initialfile=default_name,
+        )
+        if not path:
+            self.log.log_warning("Export canceled — no file saved")
+            return
+
+        try:
+            output_path = Path(path)
+            self.log.log_step(f"Exporting report to {output_path.name}...")
+            export_report(
+                result,
+                output_path,
+                project_context=getattr(self, "_project_context_for_review", ""),
+            )
+            self.log.log_success(f"Report saved: {output_path}")
+        except Exception as e:
+            self.log.log_error(f"Export failed: {e}")
 
     def _on_review_error(self, err):
         self.progress_bar.pack_forget()
@@ -683,6 +758,8 @@ class SpecReviewApp(ctk.CTk):
         # Cross-check is not available for resumed batches (no ExtractedSpec objects)
         self._cross_check_for_review = False
         self._project_context_for_review = ""
+        # Resumed batches default to export mode (safest for potentially large results)
+        self._export_mode_for_review = self._is_export_mode
         self.is_processing = True
 
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
@@ -774,6 +851,8 @@ class SpecReviewApp(ctk.CTk):
         self._model_hint.configure(text="Most thorough \u2022 recommended")
         self.mode_selector.set("Real-time")
         self._mode_hint.configure(text="")
+        self.output_selector.set("View in App")
+        self._output_hint.configure(text="")
         self._cross_check_var.set(False)
         self.is_processing = False
 

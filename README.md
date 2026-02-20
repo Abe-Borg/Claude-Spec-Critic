@@ -1,6 +1,6 @@
-# Spec Critic v1.7.0
+# Spec Critic v1.8.0
 
-A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` spec files, run the review, and see color-coded findings rendered directly in the app.
+A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
 
 ## What It Does
 
@@ -11,8 +11,9 @@ A desktop tool that reviews mechanical and plumbing construction specifications 
 5. Deduplicates findings that appear across multiple specs
 6. Optionally runs a cross-spec coordination check (Sonnet 4.6) to catch inter-spec conflicts
 7. Verifies all CRITICAL/HIGH/MEDIUM findings via web search (Sonnet 4.6)
-8. Renders a full report in-app: summary grid, alerts, per-spec findings, coordination findings, reviewer's notes
-9. Opens the report in a separate pop-out window for dedicated viewing
+8. Outputs results based on user selection:
+   - **View in App**: Renders a full report in-app with a pop-out window
+   - **Export Report**: Saves a formatted Word document (.docx) with all findings
 
 ## Running the Application
 
@@ -57,11 +58,20 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root. T
 4. (Optional) Enter project context in the **Project Context** field
 5. Select the **Review Model**: Opus 4.6 (thorough) or Sonnet 4.6 (fast/cheap)
 6. (Optional) Check **Cross-spec coordination check** to enable inter-spec analysis
-7. The token gauge fills to show capacity usage — stay under the 150k limit
-8. Expand the **FILES** panel to check/uncheck individual specs if needed
-9. Click **Run Review** (or **Submit Batch** in batch mode)
-10. When complete, the report renders in-app and a **pop-out report window** opens automatically
-11. Click **Expand** to view the in-app report full-screen, or **← Back to Review** to return
+7. Select the **Output** mode: View in App or Export Report
+8. The token gauge fills to show capacity usage — stay under the 150k limit
+9. Expand the **FILES** panel to check/uncheck individual specs if needed
+10. Click **Run Review** (or **Submit Batch** in batch mode)
+11. When complete:
+    - **View in App**: The report renders in-app and a pop-out window opens automatically
+    - **Export Report**: A save dialog appears — choose where to save the `.docx` report
+
+### Output Mode
+
+Choose how you want to receive the review results:
+
+- **View in App** (default): Results render in the app as interactive collapsible cards with a pop-out report window. Best for small reviews (1-5 specs).
+- **Export Report**: Results are saved to a Word document (.docx) without rendering in the app. Best for large reviews where in-app rendering would be slow. The exported report contains everything the in-app report shows.
 
 ### Review Model Selection
 
@@ -128,7 +138,7 @@ Each finding card has a clickable header. Click to collapse/expand. Use **Collap
 
 ### Pop-Out Report Window
 
-When the review finishes, a separate report window opens automatically with the full results.
+When the review finishes in "View in App" mode, a separate report window opens automatically with the full results.
 
 ### Batch Mode
 
@@ -152,17 +162,28 @@ In batch mode, verification is also batched via the Batches API for 50% cost sav
 
 ### Report Panel
 
-After review, the report renders with:
+After review (in "View in App" mode), the report renders with:
 - **Summary grid**: Severity counts plus cross-check count (if applicable)
 - **Alerts**: LEED references and placeholders detected locally
 - **Findings**: Per-spec findings grouped by severity, sorted by confidence
 - **Cross-Spec Coordination**: Dedicated section for coordination findings (cyan accent)
 - **Reviewer's Notes**: Claude's personality-driven analysis summary
 
+### Exported Report (.docx)
+
+When using "Export Report" mode, the Word document contains the same information:
+- **Title block**: Model, file count, tokens, time, project context
+- **Summary table**: Color-coded severity counts
+- **Alerts**: LEED references and placeholders
+- **Findings**: Grouped by severity, sorted by confidence, with verification verdicts
+- **Cross-Spec Coordination**: Dedicated section (if cross-check was enabled)
+- **Reviewer's Notes**: Analysis summary
+
 ### Export Options
 
-- **Export JSON**: Saves findings, cross-check findings, alerts, and metadata to `.json`
-- **Copy Summary**: Copies the analysis summary to clipboard
+- **Export Report**: Full Word document via the Output mode selector (before review)
+- **Export JSON**: Saves findings, cross-check findings, alerts, and metadata to `.json` (after review)
+- **Copy Summary**: Copies the analysis summary to clipboard (after review)
 
 ## Project Structure
 
@@ -173,6 +194,7 @@ spec-review/
 │   ├── gui.py             # Main application window
 │   ├── widgets.py         # Custom UI widgets
 │   ├── pipeline.py        # Core orchestration (single source of truth)
+│   ├── report_exporter.py # Word document report generation
 │   ├── cross_checker.py   # Cross-spec coordination check (Sonnet 4.6)
 │   ├── batch.py           # Anthropic Message Batches API (review + verification)
 │   ├── verifier.py        # Web search verification (Sonnet 4.6)
@@ -192,14 +214,15 @@ spec-review/
 
 - **Single pipeline**: All workflow logic lives in `pipeline.py`.
 - **User-selectable review model**: Opus 4.6 or Sonnet 4.6 for the first-stage review.
+- **User-selectable output mode**: View in App or Export Report (.docx).
 - **Sonnet for support tasks**: Verification and cross-check always use Sonnet 4.6.
 - **Verification batching**: In batch mode, verification is also batched for 50% savings.
 - **Persistent batch state**: Batch state survives app restarts via `batch_state.json`.
 - **No document mutation**: Analysis only. Document cleanup belongs in SpecCleanse.
-- **No file output**: All results render in-app. Only Export JSON writes files.
 - **Advisory only**: This tool assists human reviewers. Not an AHJ substitute.
 - **Cross-check is optional**: Controlled by checkbox, default off.
 - **Cross-check is separate**: Dedicated report section, not mixed with per-spec findings.
+- **Export report is separate**: `report_exporter.py` accepts `PipelineResult` — pipeline is output-agnostic.
 
 ## What Claude Reviews
 
@@ -222,12 +245,23 @@ Claude classifies findings into four severity levels with confidence scores:
 
 ```
 anthropic          # Claude API client
-python-docx        # DOCX text extraction
+python-docx        # DOCX text extraction + report export
 tiktoken           # Token counting (cl100k_base encoding)
 customtkinter      # Modern themed Tkinter widgets
 ```
 
 ## Changelog
+
+### v1.8.0 — Export Report to Word Document
+
+- **Feature**: Output mode selector — users can choose between "View in App" (in-app rendering) and "Export Report" (saves .docx file) via a segmented button in the INPUTS card
+- **Feature**: New `report_exporter.py` module generates formatted Word documents from PipelineResult data
+- **Feature**: Exported report contains everything the in-app report shows: summary table, alerts, per-spec findings, verification verdicts, cross-check findings, reviewer's notes
+- **Feature**: Color-coded severity indicators in the Word document (cell shading + colored text)
+- **Feature**: Save dialog with default filename when export completes
+- **Performance**: Export mode skips all in-app widget rendering — no GUI freezing for large reviews
+- **Update**: GUI INPUTS card reorganized: Row 5 = Output, Row 6 = Options
+- **Update**: `CLAUDE.md` and `README.md` fully updated for v1.8.0
 
 ### v1.7.0 — Verification Batching + Model Selection + Persistent Batch State
 

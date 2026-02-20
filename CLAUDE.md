@@ -4,14 +4,14 @@ This file provides guidance for AI assistants working on the **Spec Critic** cod
 
 ## Project Overview
 
-Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards.
+Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards or exports them to a Word document report.
 
-- **Version**: 1.7.0 (verification batching + model selection + persistent batch state)
+- **Version**: 1.8.0 (export report to Word + verification batching + model selection + persistent batch state)
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
 - **Review Model**: User-selectable — Claude Opus 4.6 (`claude-opus-4-6`) or Claude Sonnet 4.6 (`claude-sonnet-4-6`)
 - **Verification Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
 - **Cross-Check Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
-- **Output**: In-app only. No files are written during a review. The only file output is the optional Export JSON button.
+- **Output**: User-selectable — "View in App" (in-app rendering) or "Export Report" (saves .docx file)
 
 ## Repository Structure
 
@@ -19,12 +19,13 @@ Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.7.0")
+│   ├── __init__.py          # Package version ("1.8.0")
 │   ├── gui.py               # CustomTkinter app window, input handling, threading,
-│   │                        #   persistent batch state, model selector
+│   │                        #   persistent batch state, model selector, output mode selector
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
 │   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py          # SINGLE SOURCE OF TRUTH for review workflow
+│   ├── report_exporter.py   # Word document (.docx) report generation from PipelineResult
 │   ├── cross_checker.py     # Cross-spec coordination check (Sonnet 4.6)
 │   ├── batch.py             # Anthropic Message Batches API integration
 │   │                        #   (review batches + verification batches)
@@ -44,7 +45,7 @@ spec-review/
 
 ### Core Design Principle
 
-`pipeline.py` is the **single source of truth** for the review workflow. The GUI (`gui.py`) calls `pipeline.run_review()` and receives a `PipelineResult` containing all data needed to render the in-app report. Never duplicate pipeline logic in the GUI module.
+`pipeline.py` is the **single source of truth** for the review workflow. The GUI (`gui.py`) calls `pipeline.run_review()` and receives a `PipelineResult` containing all data needed to render the in-app report **or** export a Word document. Never duplicate pipeline logic in the GUI module.
 
 ### Pipeline Stages (in order)
 
@@ -58,15 +59,19 @@ spec-review/
 8. Web search verification of all CRITICAL/HIGH/MEDIUM findings via Sonnet 4.6
    - Real-time mode: Sequential API calls (`verify_findings()`)
    - Batch mode: Single verification batch via Batches API (`verify_findings_batch()`)
-9. Return `PipelineResult` to GUI for in-app rendering
+9. Return `PipelineResult` to GUI
+10. GUI routes output based on user selection:
+    - "View in App": Renders ReportPanel + opens ReportWindow (existing behavior)
+    - "Export Report": Calls `report_exporter.export_report()` → saves .docx file
 
 ### Module Responsibilities
 
 | Module | Responsibility |
 |--------|---------------|
-| `gui.py` | App window, input handling (project context, model selector, mode toggle, cross-check checkbox), threading, review orchestration, batch polling, batch state persistence, report expand/collapse, pop-out window lifecycle |
+| `gui.py` | App window, input handling (project context, model selector, output mode selector, mode toggle, cross-check checkbox), threading, review orchestration, batch polling, batch state persistence, report expand/collapse, pop-out window lifecycle, export routing |
 | `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel, confidence badge rendering, cross-check section rendering |
 | `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult`. Provides `run_review()` for real-time and `start_batch_review()` + `collect_batch_results()` for batch. Model parameter flows through all review calls. |
+| `report_exporter.py` | Word document generation from `PipelineResult`. Produces a formatted .docx with summary table, alerts, color-coded findings, verification verdicts, cross-check section, and reviewer's notes. |
 | `cross_checker.py` | Cross-spec coordination check — extracts section headers, builds condensed input, calls Sonnet 4.6, parses coordination findings |
 | `batch.py` | Anthropic Message Batches API integration — review batch submission/polling/retrieval, verification batch submission/retrieval, cancellation |
 | `verifier.py` | Web search self-verification — builds verification prompts, calls Sonnet 4.6 with web_search tool. Two modes: `verify_findings()` (sequential) and `verify_findings_batch()` (batched via Batches API) |
@@ -90,7 +95,9 @@ spec-review/
         ├── Real-time: sequential verify_findings()
         └── Batch: verify_findings_batch() → batch.py Batches API
     → pipeline.py (aggregation, returns PipelineResult)
-    → gui.py (renders ReportPanel + opens ReportWindow)
+    → gui.py (routes output based on user selection)
+        ├── "View in App": renders ReportPanel + opens ReportWindow
+        └── "Export Report": calls report_exporter.export_report() → .docx file
 ```
 
 ### Data Flow Classes
@@ -104,6 +111,44 @@ spec-review/
 - `BatchSubmission` — job, files_reviewed, alerts, **model** (from pipeline)
 
 All data containers use `@dataclass` decorators.
+
+## Export Report (v1.8.0)
+
+### How It Works
+
+Users can choose between two output modes via a segmented button in Row 5 of the INPUTS card:
+
+- **View in App** (default): Renders results in the ReportPanel and opens a ReportWindow (existing behavior)
+- **Export Report**: Writes results to a `.docx` file via a save dialog, skipping all in-app rendering
+
+The export mode solves the GUI freezing problem when reviewing large numbers of specs. The CustomTkinter widgets (collapsible cards, confidence badges, verification verdicts) are expensive to render at scale, so exporting directly to Word bypasses this bottleneck.
+
+### What the Export Contains
+
+The exported `.docx` report contains everything the in-app report shows:
+- Title block with generation metadata (model, file count, tokens, time, project context)
+- Summary table with color-coded severity counts
+- LEED and placeholder alerts
+- Per-spec findings grouped by severity, sorted by confidence descending
+- Each finding: severity badge, confidence score, file name, section, issue description, existing/replacement text, code reference, verification verdict + explanation + correction
+- Cross-spec coordination findings (if cross-check was enabled)
+- Reviewer's notes / analysis summary
+
+### Key Design Decisions
+
+- **Separate module**: Export logic lives in `report_exporter.py`, not in `gui.py` or `pipeline.py`
+- **Same data source**: The exporter accepts the same `PipelineResult` that the GUI receives
+- **Pipeline unchanged**: The pipeline itself doesn't change — only what happens after it returns
+- **No in-app rendering**: When export mode is active, neither ReportPanel nor ReportWindow is rendered
+- **python-docx**: Uses the existing `python-docx` dependency (already required for text extraction)
+- **Save dialog**: User chooses the save location via a standard file dialog
+- **Both modes available**: "View in App" remains the default for small reviews
+
+### Where Export Data Lives
+
+- `report_exporter.py`: `export_report()` function — accepts `PipelineResult`, writes `.docx`
+- `gui.py`: `_output_mode_var` (StringVar), `output_selector` (CTkSegmentedButton), `_is_export_mode` property, `_export_report_to_file()` method
+- `gui.py`: `_export_mode_for_review` — captured at review start, checked in `_on_review_complete()`
 
 ## Model Selection (v1.7.0)
 
@@ -174,7 +219,7 @@ When a user submits a batch and closes the app, they can reopen it and resume po
 
 ```json
 {
-  "version": "1.7.0",
+  "version": "1.8.0",
   "saved_at": "2025-02-19T19:30:00+00:00",
   "phase": "review",
   "batch_id": "msgbatch_abc123",
@@ -225,9 +270,10 @@ Each finding includes a numeric `confidence` field (0.0–1.0):
 
 1. **Parsing**: `_parse_findings()` in `reviewer.py` extracts and clamps confidence to [0.0, 1.0], defaults to 0.5 if missing or invalid
 2. **Card rendering**: `_render_collapsible_card()` in `widgets.py` shows a color-coded confidence badge (green/amber/red) in each card header
-3. **Sorting**: `_render_findings_section()` sorts findings by confidence descending within each severity tier
-4. **Verification priority**: `verify_findings()` in `verifier.py` processes findings in ascending confidence order (least confident first)
-5. **JSON export**: `_finding_to_dict()` includes the confidence field
+3. **Report export**: `_write_finding()` in `report_exporter.py` shows confidence percentage with color coding
+4. **Sorting**: Both in-app and export sort findings by confidence descending within each severity tier
+5. **Verification priority**: `verify_findings()` in `verifier.py` processes findings in ascending confidence order (least confident first)
+6. **JSON export**: `_finding_to_dict()` includes the confidence field
 
 ## Prompt Architecture
 
@@ -284,7 +330,7 @@ python main.py
 ### Core (from pyproject.toml)
 - `anthropic` — Claude API client with streaming
 - `customtkinter` — Modern dark-theme GUI toolkit
-- `python-docx` — Word document reading
+- `python-docx` — Word document reading AND report export
 - `tiktoken` — Token counting (cl100k_base encoding)
 
 ## API Key Configuration
@@ -344,14 +390,18 @@ The GUI uses CustomTkinter with a dark theme. Key widgets in `widgets.py`:
 
 Row 3 of the INPUTS card contains a segmented button for selecting the review model (Opus 4.6 / Sonnet 4.6) with a hint label that updates based on selection.
 
+### Output Mode Selector (v1.8.0)
+
+Row 5 of the INPUTS card contains a segmented button for selecting the output mode (View in App / Export Report) with a hint label.
+
 ### Cross-Check Checkbox (v1.6.0)
 
-Row 5 of the INPUTS card contains a "Cross-spec coordination check" checkbox with a hint label.
+Row 6 of the INPUTS card contains a "Cross-spec coordination check" checkbox with a hint label.
 
 ## Important Patterns to Preserve
 
 1. **Pipeline is the single source of truth** — Do not add workflow logic to `gui.py`.
-2. **No file output** — All results render in-app. Only Export JSON writes files.
+2. **Output routing is in the GUI** — The GUI decides whether to render in-app or export to .docx based on user selection. The pipeline itself is output-agnostic.
 3. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM.
 4. **Token limits are enforced before API calls** — Never allow calls exceeding 150k.
 5. **Streaming is used internally** — Complete response is parsed when finished.
@@ -363,6 +413,7 @@ Row 5 of the INPUTS card contains a "Cross-spec coordination check" checkbox wit
 11. **Cross-check findings are separate** — Rendered in their own section, not mixed with per-spec findings.
 12. **Batch state persists across restarts** — `batch_state.json` enables resume after app close.
 13. **Verification batching in batch mode** — Sequential in real-time, batched in batch mode.
+14. **Export report uses same data** — `report_exporter.export_report()` accepts the same `PipelineResult` as the in-app renderer.
 
 ## Common Development Tasks
 
@@ -372,6 +423,7 @@ Row 5 of the INPUTS card contains a "Cross-spec coordination check" checkbox wit
 3. Update the prompt schema in `prompts.py` `<output_format>` section
 4. Update card rendering in `widgets.py` `_render_collapsible_card()`
 5. Update `_finding_to_dict()` in `widgets.py` if the field should appear in JSON export
+6. Update `_write_finding()` in `report_exporter.py` to include the field in Word export
 
 ### Modifying the cross-check behavior
 1. Edit the system prompt in `cross_checker.py` (`_CROSS_CHECK_SYSTEM_PROMPT`)
@@ -390,6 +442,16 @@ CURRENT_ASCE7 = "7-22"  # ← and this
 1. Add the model string constant to `reviewer.py`
 2. Add it to the `REVIEW_MODELS` dict in `reviewer.py`
 3. The GUI model selector auto-populates from `REVIEW_MODELS`
+
+### Modifying the Word report layout
+Edit the `_write_*()` functions in `report_exporter.py`. The report structure mirrors the in-app rendering helpers in `widgets.py`:
+- `_write_title_block()` → metadata header
+- `_write_summary_table()` → severity count grid
+- `_write_alerts()` → LEED/placeholder alerts
+- `_write_findings_section()` → per-spec findings by severity
+- `_write_finding()` → individual finding entry
+- `_write_cross_check_section()` → coordination findings
+- `_write_notes()` → reviewer's analysis summary
 
 ## Files to Never Commit
 
