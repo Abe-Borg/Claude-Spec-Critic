@@ -6,7 +6,7 @@ This file provides guidance for AI assistants working on the **Spec Critic** cod
 
 Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards or exports them to a Word document report.
 
-- **Version**: 1.8.0 (export report to Word + verification batching + model selection + persistent batch state)
+- **Version**: 1.8.1 (restyled Word report + export report to Word + verification batching + model selection + persistent batch state)
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
 - **Review Model**: User-selectable — Claude Opus 4.6 (`claude-opus-4-6`) or Claude Sonnet 4.6 (`claude-sonnet-4-6`)
 - **Verification Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
@@ -19,13 +19,14 @@ Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.8.0")
+│   ├── __init__.py          # Package version ("1.8.1")
 │   ├── gui.py               # CustomTkinter app window, input handling, threading,
 │   │                        #   persistent batch state, model selector, output mode selector
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
 │   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
 │   ├── pipeline.py          # SINGLE SOURCE OF TRUTH for review workflow
 │   ├── report_exporter.py   # Word document (.docx) report generation from PipelineResult
+│   │                        #   Uses Word-native formatting (headings, Table Grid, List Bullet)
 │   ├── cross_checker.py     # Cross-spec coordination check (Sonnet 4.6)
 │   ├── batch.py             # Anthropic Message Batches API integration
 │   │                        #   (review batches + verification batches)
@@ -71,7 +72,7 @@ spec-review/
 | `gui.py` | App window, input handling (project context, model selector, output mode selector, mode toggle, cross-check checkbox), threading, review orchestration, batch polling, batch state persistence, report expand/collapse, pop-out window lifecycle, export routing |
 | `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel, confidence badge rendering, cross-check section rendering |
 | `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult`. Provides `run_review()` for real-time and `start_batch_review()` + `collect_batch_results()` for batch. Model parameter flows through all review calls. |
-| `report_exporter.py` | Word document generation from `PipelineResult`. Produces a formatted .docx with summary table, alerts, color-coded findings, verification verdicts, cross-check section, and reviewer's notes. |
+| `report_exporter.py` | Word document generation from `PipelineResult`. Uses Word-native formatting (real heading styles, Table Grid, List Bullet, Arial 11pt) to produce a clean .docx with files reviewed list, summary table with colored cell shading, alerts, structured per-spec findings with labeled rows, verification verdicts, cross-check section, and reviewer's notes. |
 | `cross_checker.py` | Cross-spec coordination check — extracts section headers, builds condensed input, calls Sonnet 4.6, parses coordination findings |
 | `batch.py` | Anthropic Message Batches API integration — review batch submission/polling/retrieval, verification batch submission/retrieval, cancellation |
 | `verifier.py` | Web search self-verification — builds verification prompts, calls Sonnet 4.6 with web_search tool. Two modes: `verify_findings()` (sequential) and `verify_findings_batch()` (batched via Batches API) |
@@ -112,7 +113,7 @@ spec-review/
 
 All data containers use `@dataclass` decorators.
 
-## Export Report (v1.8.0)
+## Export Report (v1.8.0, restyled v1.8.1)
 
 ### How It Works
 
@@ -126,16 +127,18 @@ The export mode solves the GUI freezing problem when reviewing large numbers of 
 ### What the Export Contains
 
 The exported `.docx` report contains everything the in-app report shows:
-- Title block with generation metadata (model, file count, tokens, time, project context)
-- Summary table with color-coded severity counts
-- LEED and placeholder alerts
-- Per-spec findings grouped by severity, sorted by confidence descending
-- Each finding: severity badge, confidence score, file name, section, issue description, existing/replacement text, code reference, verification verdict + explanation + correction
-- Cross-spec coordination findings (if cross-check was enabled)
-- Reviewer's notes / analysis summary
+- Title block (centered heading) with generation metadata (model, file count, project context)
+- Files reviewed bullet list
+- Summary table (Table Grid style with colored cell shading) and token/time stats
+- LEED and placeholder alerts with sub-headings and bullet lists
+- Per-spec findings grouped by severity (colored sub-headings), sorted by confidence descending
+- Each finding: numbered header with severity badge + confidence + filename, then labeled rows for section, issue, action, existing text (red), replacement text (green), code reference (blue), verification verdict + explanation + correction
+- Cross-spec coordination findings on their own page (if cross-check was enabled)
+- Reviewer's notes / analysis summary on its own page with italic subtitle
 
 ### Key Design Decisions
 
+- **Word-native formatting**: Uses `doc.add_heading()`, `'Table Grid'` style, `'List Bullet'` style, and Arial 11pt instead of custom low-level helpers
 - **Separate module**: Export logic lives in `report_exporter.py`, not in `gui.py` or `pipeline.py`
 - **Same data source**: The exporter accepts the same `PipelineResult` that the GUI receives
 - **Pipeline unchanged**: The pipeline itself doesn't change — only what happens after it returns
@@ -219,7 +222,7 @@ When a user submits a batch and closes the app, they can reopen it and resume po
 
 ```json
 {
-  "version": "1.8.0",
+  "version": "1.8.1",
   "saved_at": "2025-02-19T19:30:00+00:00",
   "phase": "review",
   "batch_id": "msgbatch_abc123",
@@ -270,7 +273,7 @@ Each finding includes a numeric `confidence` field (0.0–1.0):
 
 1. **Parsing**: `_parse_findings()` in `reviewer.py` extracts and clamps confidence to [0.0, 1.0], defaults to 0.5 if missing or invalid
 2. **Card rendering**: `_render_collapsible_card()` in `widgets.py` shows a color-coded confidence badge (green/amber/red) in each card header
-3. **Report export**: `_write_finding()` in `report_exporter.py` shows confidence percentage with color coding
+3. **Report export**: `_write_finding_entry()` in `report_exporter.py` shows confidence percentage with color coding in the finding header
 4. **Sorting**: Both in-app and export sort findings by confidence descending within each severity tier
 5. **Verification priority**: `verify_findings()` in `verifier.py` processes findings in ascending confidence order (least confident first)
 6. **JSON export**: `_finding_to_dict()` includes the confidence field
@@ -423,7 +426,7 @@ Row 6 of the INPUTS card contains a "Cross-spec coordination check" checkbox wit
 3. Update the prompt schema in `prompts.py` `<output_format>` section
 4. Update card rendering in `widgets.py` `_render_collapsible_card()`
 5. Update `_finding_to_dict()` in `widgets.py` if the field should appear in JSON export
-6. Update `_write_finding()` in `report_exporter.py` to include the field in Word export
+6. Update `_write_finding_entry()` in `report_exporter.py` to include the field in Word export
 
 ### Modifying the cross-check behavior
 1. Edit the system prompt in `cross_checker.py` (`_CROSS_CHECK_SYSTEM_PROMPT`)
@@ -444,14 +447,16 @@ CURRENT_ASCE7 = "7-22"  # ← and this
 3. The GUI model selector auto-populates from `REVIEW_MODELS`
 
 ### Modifying the Word report layout
-Edit the `_write_*()` functions in `report_exporter.py`. The report structure mirrors the in-app rendering helpers in `widgets.py`:
-- `_write_title_block()` → metadata header
-- `_write_summary_table()` → severity count grid
-- `_write_alerts()` → LEED/placeholder alerts
-- `_write_findings_section()` → per-spec findings by severity
-- `_write_finding()` → individual finding entry
-- `_write_cross_check_section()` → coordination findings
-- `_write_notes()` → reviewer's analysis summary
+Edit the `_write_*()` functions in `report_exporter.py`. The report uses Word-native heading styles, Table Grid, and List Bullet rather than custom styling helpers:
+- `_write_title_block()` → centered title heading + metadata
+- `_write_files_reviewed()` → bullet list of spec filenames
+- `_write_summary_table()` → Table Grid table with colored cell shading
+- `_write_alerts()` → LEED/placeholder alerts with sub-headings and bullet lists
+- `_write_findings_section()` → per-spec findings by severity with colored sub-headings
+- `_write_finding_entry()` → individual finding with labeled rows (Section, Issue, Action, etc.)
+- `_write_cross_check_section()` → coordination findings (page break, own heading)
+- `_write_notes()` → page break + reviewer's analysis summary with italic subtitle
+- `_write_narrative_text()` → shared helper for multi-paragraph text blocks
 
 ## Files to Never Commit
 

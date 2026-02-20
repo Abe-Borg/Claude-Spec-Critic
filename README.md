@@ -1,4 +1,4 @@
-# Spec Critic v1.8.0
+# Spec Critic v1.8.1
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
 
@@ -171,13 +171,15 @@ After review (in "View in App" mode), the report renders with:
 
 ### Exported Report (.docx)
 
-When using "Export Report" mode, the Word document contains the same information:
-- **Title block**: Model, file count, tokens, time, project context
-- **Summary table**: Color-coded severity counts
-- **Alerts**: LEED references and placeholders
-- **Findings**: Grouped by severity, sorted by confidence, with verification verdicts
-- **Cross-Spec Coordination**: Dedicated section (if cross-check was enabled)
-- **Reviewer's Notes**: Analysis summary
+When using "Export Report" mode, the Word document contains the same information with clean Word-native formatting:
+- **Title**: Centered heading with generation metadata
+- **Files Reviewed**: Bullet list of all spec filenames
+- **Summary table**: Table Grid style with color-coded severity cell shading
+- **Token usage & time**: Separate labeled lines
+- **Alerts**: LEED references and placeholders with sub-headings and bullet lists
+- **Findings**: Grouped by severity (colored sub-headings), sorted by confidence, with structured labeled rows per finding (Section, Issue, Action, Existing Text in red, Replace With in green, Reference in blue, Verification verdict)
+- **Cross-Spec Coordination**: Own page with findings and coordination summary (if cross-check was enabled)
+- **Reviewer's Notes**: Own page with italic subtitle and multi-paragraph analysis summary
 
 ### Export Options
 
@@ -223,6 +225,7 @@ spec-review/
 - **Cross-check is optional**: Controlled by checkbox, default off.
 - **Cross-check is separate**: Dedicated report section, not mixed with per-spec findings.
 - **Export report is separate**: `report_exporter.py` accepts `PipelineResult` — pipeline is output-agnostic.
+- **Word-native formatting**: Export uses real heading styles, Table Grid, List Bullet, and Arial 11pt.
 
 ## What Claude Reviews
 
@@ -251,6 +254,21 @@ customtkinter      # Modern themed Tkinter widgets
 ```
 
 ## Changelog
+
+### v1.8.1 — Restyled Word Report
+
+- **Improvement**: Report now uses Word-native formatting — real heading styles (`doc.add_heading()`), `'Table Grid'` table style, `'List Bullet'` style, and Arial 11pt default font
+- **Improvement**: Added "Files Reviewed" section with bullet list of spec filenames
+- **Improvement**: Summary table uses colored cell shading with Table Grid borders for professional appearance
+- **Improvement**: Token usage and processing time displayed as separate labeled lines instead of cramped metadata
+- **Improvement**: Alerts section uses proper Word sub-headings and bullet lists
+- **Improvement**: Each finding uses structured labeled rows on separate lines (Section, Issue, Action, Existing Text in red, Replace With in green, Reference in blue) — much more scannable
+- **Improvement**: Finding headers show numbered index + severity badge + confidence + filename
+- **Improvement**: Cross-check section and Reviewer's Notes each start on their own page with italic subtitles
+- **Improvement**: Multi-paragraph narrative text properly split on double newlines
+- **Improvement**: Removed hacky thin-rule border separators between findings — clean spacing instead
+- **Improvement**: Margins widened from 0.8" to 1.0" sides for better readability
+- **Removed**: Generic `_add_paragraph()` and `_add_run()` helpers replaced with purpose-built functions
 
 ### v1.8.0 — Export Report to Word Document
 

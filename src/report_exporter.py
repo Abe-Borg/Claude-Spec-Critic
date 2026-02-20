@@ -4,7 +4,8 @@ Word document report exporter for Spec Critic.
 Generates a formatted .docx report from a PipelineResult, replicating
 everything the in-app ReportPanel / ReportWindow shows:
     - Title block with generation metadata
-    - Summary table (severity counts)
+    - Files reviewed list
+    - Summary table (severity counts) with colored cell shading
     - LEED and placeholder alerts
     - Per-spec findings grouped by severity, sorted by confidence
     - Verification verdicts and corrections inline with findings
@@ -19,12 +20,17 @@ instead of being rendered in CustomTkinter widgets.
 Design decisions:
     - Uses python-docx (already a project dependency) for .docx generation
     - Accepts the same PipelineResult that the GUI receives — no pipeline changes
-    - Color-coded severity via table cell shading (matching app colors)
+    - Uses real Word heading styles (doc.add_heading) for proper structure
+    - Uses 'Table Grid' style and colored cell shading for the summary table
+    - Uses 'List Bullet' style for file lists and alert details
+    - Findings use the old structured layout with labeled rows on separate lines
     - Verification verdicts shown inline beneath each finding
     - The exporter is stateless — one function call, one file written
     - No GUI dependencies — can be called from any context
 
 v1.8.0 — Initial implementation.
+v1.8.1 — Restyled to use Word-native formatting (real headings, Table Grid,
+    Arial 11pt, structured finding entries with labeled rows).
 
 Usage:
     from report_exporter import export_report
@@ -43,45 +49,60 @@ from pathlib import Path
 from typing import Optional
 
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor, Emu
+from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
 
 
 # ---------------------------------------------------------------------------
-# Color constants (match the app's COLORS dict as closely as possible)
+# Color constants
 # ---------------------------------------------------------------------------
 
-_SEVERITY_RGB = {
-    "CRITICAL": RGBColor(0xDC, 0x26, 0x26),  # #DC2626
-    "HIGH":     RGBColor(0xF9, 0x73, 0x16),  # #F97316
-    "MEDIUM":   RGBColor(0xEA, 0xB3, 0x08),  # #EAB308
-    "GRIPES":   RGBColor(0xA8, 0x55, 0xF7),  # #A855F7
+SEVERITY_COLORS = {
+    "CRITICAL": RGBColor(192, 0, 0),      # Dark red
+    "HIGH": RGBColor(255, 102, 0),         # Orange
+    "MEDIUM": RGBColor(192, 152, 0),       # Dark yellow/gold
+    "GRIPES": RGBColor(128, 0, 128),       # Purple
 }
 
-_SEVERITY_SHADING = {
-    "CRITICAL": "DC2626",
-    "HIGH":     "F97316",
-    "MEDIUM":   "EAB308",
-    "GRIPES":   "A855F7",
+# Hex versions for cell shading (no # prefix)
+SEVERITY_SHADING = {
+    "CRITICAL": "C00000",
+    "HIGH": "FF6600",
+    "MEDIUM": "C09800",
+    "GRIPES": "800080",
 }
 
-_VERDICT_RGB = {
-    "CONFIRMED":  RGBColor(0x22, 0xC5, 0x5E),  # green
-    "CORRECTED":  RGBColor(0xF5, 0x9E, 0x0B),  # amber
-    "UNVERIFIED": RGBColor(0x6B, 0x72, 0x80),  # gray
-    "DISPUTED":   RGBColor(0xEF, 0x44, 0x44),  # red
+VERDICT_COLORS = {
+    "CONFIRMED": RGBColor(0, 128, 0),     # Green
+    "CORRECTED": RGBColor(204, 132, 0),    # Amber
+    "UNVERIFIED": RGBColor(128, 128, 128), # Gray
+    "DISPUTED": RGBColor(192, 0, 0),       # Red
 }
 
-_CONFIDENCE_RGB = {
-    "high":     RGBColor(0x22, 0xC5, 0x5E),
-    "moderate": RGBColor(0xF5, 0x9E, 0x0B),
-    "low":      RGBColor(0xEF, 0x44, 0x44),
+VERDICT_ICONS = {
+    "CONFIRMED": "✓",
+    "CORRECTED": "✎",
+    "DISPUTED": "✗",
+    "UNVERIFIED": "—",
 }
 
-_COORDINATION_RGB = RGBColor(0x06, 0xB6, 0xD4)  # cyan
+CONFIDENCE_COLORS = {
+    "high": RGBColor(0, 128, 0),           # Green
+    "moderate": RGBColor(204, 132, 0),     # Amber
+    "low": RGBColor(192, 0, 0),            # Red
+}
 
+COORDINATION_COLOR = RGBColor(6, 182, 212)  # Cyan
+
+SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _confidence_tier(confidence: float) -> str:
     """Return 'high', 'moderate', or 'low' for a confidence score."""
@@ -92,346 +113,453 @@ def _confidence_tier(confidence: float) -> str:
     return "low"
 
 
-# ---------------------------------------------------------------------------
-# Styling helpers
-# ---------------------------------------------------------------------------
-
 def _set_cell_shading(cell, hex_color: str) -> None:
-    """Apply background shading to a table cell.
-
-    Args:
-        cell: A python-docx table cell object
-        hex_color: 6-character hex color string (no #)
-    """
-    shading = cell._element.get_or_add_tcPr()
-    shd = shading.makeelement(
-        qn("w:shd"),
-        {
-            qn("w:val"): "clear",
-            qn("w:color"): "auto",
-            qn("w:fill"): hex_color,
-        },
-    )
-    shading.append(shd)
+    """Set background shading for a table cell."""
+    shading = OxmlElement('w:shd')
+    shading.set(qn('w:fill'), hex_color)
+    cell._tc.get_or_add_tcPr().append(shading)
 
 
-def _add_run(paragraph, text: str, *, bold: bool = False, italic: bool = False,
-             size: int = 10, color: RGBColor | None = None, font: str = "Calibri") -> None:
-    """Add a formatted text run to a paragraph.
+def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
+                          bold: bool = False, color: RGBColor | None = None,
+                          size: int | None = None, space_after: int | None = None,
+                          italic: bool = False):
+    """Add a paragraph with optional styling. Returns the paragraph."""
+    para = doc.add_paragraph()
+    if style:
+        para.style = style
 
-    Args:
-        paragraph: A python-docx Paragraph object
-        text: Text content
-        bold: Bold flag
-        italic: Italic flag
-        size: Font size in points
-        color: Optional RGBColor
-        font: Font name
-    """
-    run = paragraph.add_run(text)
-    run.font.size = Pt(size)
-    run.font.name = font
-    run.font.bold = bold
-    run.font.italic = italic
+    run = para.add_run(text)
+    if bold:
+        run.bold = True
+    if italic:
+        run.font.italic = True
     if color:
         run.font.color.rgb = color
+    if size:
+        run.font.size = Pt(size)
+    if space_after is not None:
+        para.paragraph_format.space_after = Pt(space_after)
 
-
-def _add_paragraph(doc_or_container, text: str = "", *, style: str | None = None,
-                   bold: bool = False, size: int = 10, color: RGBColor | None = None,
-                   space_before: int = 0, space_after: int = 60,
-                   alignment=None, font: str = "Calibri"):
-    """Add a paragraph with a single formatted run.
-
-    Returns the paragraph for further modification.
-    """
-    p = doc_or_container.add_paragraph(style=style)
-    p.paragraph_format.space_before = Pt(space_before)
-    p.paragraph_format.space_after = Pt(space_after)
-    if alignment:
-        p.alignment = alignment
-    if text:
-        _add_run(p, text, bold=bold, size=size, color=color, font=font)
-    return p
+    return para
 
 
 # ---------------------------------------------------------------------------
-# Report sections
+# Title block
 # ---------------------------------------------------------------------------
 
 def _write_title_block(doc: Document, review, files_reviewed: list[str],
-                       project_context: str, cross_check_result) -> None:
+                       project_context: str) -> None:
     """Write the report title and metadata."""
-    _add_paragraph(doc, "Spec Critic Report", bold=True, size=20,
-                   space_before=0, space_after=4)
-    _add_paragraph(doc, "M&P Specification Review  •  California K-12 DSA",
-                   size=10, color=RGBColor(0x70, 0x70, 0x70), space_after=12)
+    title = doc.add_heading("Spec Critic — M&P Specification Review Report", level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    meta_lines = [
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        f"Model: {review.model}",
-        f"Files: {len(files_reviewed)}",
-        f"Tokens: {review.input_tokens:,} in → {review.output_tokens:,} out",
-        f"Time: {review.elapsed_seconds:.1f}s",
-    ]
+    # Metadata block (centered)
+    para = doc.add_paragraph()
+    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    para.add_run(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+    para.add_run(f"Model: {review.model}\n")
+    para.add_run(f"Files Reviewed: {len(files_reviewed)}")
     if project_context:
-        meta_lines.append(f"Project: {project_context}")
+        para.add_run(f"\nProject: {project_context}")
 
-    _add_paragraph(doc, "  •  ".join(meta_lines),
-                   size=9, color=RGBColor(0x70, 0x70, 0x70), space_after=12)
 
+# ---------------------------------------------------------------------------
+# Files reviewed
+# ---------------------------------------------------------------------------
+
+def _write_files_reviewed(doc: Document, files_reviewed: list[str]) -> None:
+    """Write the files reviewed section with a bullet list."""
+    doc.add_heading("Files Reviewed", level=1)
+    for filename in files_reviewed:
+        doc.add_paragraph(filename, style='List Bullet')
+
+
+# ---------------------------------------------------------------------------
+# Summary table
+# ---------------------------------------------------------------------------
 
 def _write_summary_table(doc: Document, review, cross_check_result) -> None:
-    """Write the severity counts summary table."""
-    _add_paragraph(doc, "SUMMARY", bold=True, size=12, space_before=6, space_after=6)
+    """Write the summary section with a styled severity counts table."""
+    doc.add_heading("Summary", level=1)
 
-    cc_count = len(cross_check_result.findings) if cross_check_result and cross_check_result.findings else 0
+    cc_count = (len(cross_check_result.findings)
+                if cross_check_result and cross_check_result.findings else 0)
 
+    # Build column definitions
     columns = [
-        ("Critical", review.critical_count, "DC2626"),
-        ("High", review.high_count, "F97316"),
-        ("Medium", review.medium_count, "EAB308"),
-        ("Gripes", review.gripe_count, "A855F7"),
-        ("Total", review.total_count, "333333"),
+        ("CRITICAL", review.critical_count, "C00000"),
+        ("HIGH", review.high_count, "FF6600"),
+        ("MEDIUM", review.medium_count, "C09800"),
+        ("GRIPES", review.gripe_count, "800080"),
+        ("TOTAL", review.total_count, "333333"),
     ]
     if cc_count > 0:
-        columns.append(("Cross-Check", cc_count, "06B6D4"))
+        columns.append(("CROSS-CHECK", cc_count, "06B6D4"))
 
+    # Create table: header row + count row
     table = doc.add_table(rows=2, cols=len(columns))
-    table.alignment = WD_TABLE_ALIGNMENT.LEFT
-    table.autofit = True
+    table.style = 'Table Grid'
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-    # Header row
+    # Header row (colored backgrounds with white text)
     for col_idx, (label, _count, hex_color) in enumerate(columns):
         cell = table.rows[0].cells[col_idx]
         _set_cell_shading(cell, hex_color)
+        # Clear default paragraph and write header text
+        cell.text = ""
         p = cell.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        # Use white text for darker backgrounds, black for medium yellow
-        text_color = RGBColor(0x00, 0x00, 0x00) if label == "Medium" else RGBColor(0xFF, 0xFF, 0xFF)
-        _add_run(p, label.upper(), bold=True, size=9, color=text_color)
+        run = p.add_run(label)
+        run.bold = True
+        run.font.size = Pt(9)
+        # White text on all dark backgrounds, black on medium yellow
+        if label == "MEDIUM":
+            run.font.color.rgb = RGBColor(0, 0, 0)
+        else:
+            run.font.color.rgb = RGBColor(255, 255, 255)
 
     # Count row
-    for col_idx, (_label, count, _hex_color) in enumerate(columns):
+    for col_idx, (_label, count, _hex) in enumerate(columns):
         cell = table.rows[1].cells[col_idx]
+        cell.text = ""
         p = cell.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _add_run(p, str(count), bold=True, size=14)
+        run = p.add_run(str(count))
+        run.bold = True
+        run.font.size = Pt(14)
 
-    # Verification summary line
-    all_findings_for_verdicts = list(review.findings)
+    doc.add_paragraph()  # Spacer
+
+    # Token usage
+    para = doc.add_paragraph()
+    para.add_run("Token Usage: ").bold = True
+    para.add_run(
+        f"{review.input_tokens:,} input → "
+        f"{review.output_tokens:,} output"
+    )
+
+    # Processing time
+    para = doc.add_paragraph()
+    para.add_run("Processing Time: ").bold = True
+    para.add_run(f"{review.elapsed_seconds:.1f} seconds")
+
+    # Verification summary
+    all_findings = list(review.findings)
     if cross_check_result and cross_check_result.findings:
-        all_findings_for_verdicts.extend(cross_check_result.findings)
+        all_findings.extend(cross_check_result.findings)
 
     verdicts: dict[str, int] = {}
-    for f in all_findings_for_verdicts:
+    for f in all_findings:
         if f.verification and f.verification.verdict != "UNVERIFIED":
             v = f.verification.verdict
             verdicts[v] = verdicts.get(v, 0) + 1
 
     if verdicts:
+        para = doc.add_paragraph()
+        para.add_run("Verification: ").bold = True
         verdict_parts = [
             f"{verdicts[v]} {v.lower()}"
             for v in ["CONFIRMED", "CORRECTED", "DISPUTED"]
             if v in verdicts
         ]
-        _add_paragraph(doc, f"Verification: {', '.join(verdict_parts)}",
-                       size=9, color=RGBColor(0x70, 0x70, 0x70),
-                       space_before=4, space_after=6)
+        para.add_run(", ".join(verdict_parts))
 
-    doc.add_paragraph()  # spacer
 
+# ---------------------------------------------------------------------------
+# Alerts
+# ---------------------------------------------------------------------------
 
 def _write_alerts(doc: Document, leed_alerts: list[dict],
                   placeholder_alerts: list[dict]) -> None:
-    """Write LEED and placeholder alert sections."""
+    """Write LEED and placeholder alert sections with bullet lists."""
     if not leed_alerts and not placeholder_alerts:
         return
 
-    _add_paragraph(doc, "ALERTS", bold=True, size=12, space_before=6, space_after=6)
+    doc.add_heading("Alerts", level=1)
 
-    for label, alerts in [("LEED References Detected", leed_alerts),
-                          ("Unresolved Placeholders", placeholder_alerts)]:
-        if not alerts:
-            continue
-
-        _add_paragraph(doc, label, bold=True, size=11,
-                       color=RGBColor(0xF5, 0x9E, 0x0B), space_after=4)
+    if leed_alerts:
+        doc.add_heading("LEED References Detected", level=2)
+        _add_styled_paragraph(
+            doc,
+            "The following LEED references were found. "
+            "Since this is not a LEED project, these should be removed:",
+            size=10,
+            space_after=6,
+        )
 
         by_file: dict[str, list[dict]] = {}
-        for a in alerts:
-            by_file.setdefault(a["filename"], []).append(a)
+        for alert in leed_alerts:
+            by_file.setdefault(alert["filename"], []).append(alert)
 
-        for fname, file_alerts in by_file.items():
-            p = _add_paragraph(doc, "", space_after=2)
-            _add_run(p, f"{fname}: ", bold=True, size=10)
-            _add_run(p, f"{len(file_alerts)} found", size=9,
-                     color=RGBColor(0x70, 0x70, 0x70))
+        for filename, alerts in by_file.items():
+            para = doc.add_paragraph()
+            para.add_run(f"{filename}").bold = True
+            for alert in alerts[:5]:
+                context = alert.get("context", alert.get("match", ""))
+                doc.add_paragraph(context, style='List Bullet')
+            if len(alerts) > 5:
+                doc.add_paragraph(
+                    f"... and {len(alerts) - 5} more",
+                    style='List Bullet',
+                )
 
-    doc.add_paragraph()  # spacer
+    if placeholder_alerts:
+        doc.add_heading("Unresolved Placeholders", level=2)
+        _add_styled_paragraph(
+            doc,
+            "The following placeholders need to be resolved:",
+            size=10,
+            space_after=6,
+        )
+
+        by_file: dict[str, list[dict]] = {}
+        for alert in placeholder_alerts:
+            by_file.setdefault(alert["filename"], []).append(alert)
+
+        for filename, alerts in by_file.items():
+            para = doc.add_paragraph()
+            para.add_run(f"{filename}").bold = True
+            for alert in alerts[:5]:
+                context = alert.get("context", alert.get("match", ""))
+                doc.add_paragraph(context, style='List Bullet')
+            if len(alerts) > 5:
+                doc.add_paragraph(
+                    f"... and {len(alerts) - 5} more",
+                    style='List Bullet',
+                )
 
 
-def _write_finding(doc: Document, finding, index: int) -> None:
-    """Write a single finding entry.
+# ---------------------------------------------------------------------------
+# Single finding entry
+# ---------------------------------------------------------------------------
 
-    Each finding is a small table: one header row (severity badge + location)
-    and detail rows for the issue, existing/replacement text, code reference,
-    and verification verdict.
+def _write_finding_entry(doc: Document, finding, index: int) -> None:
+    """Write a single finding with structured labeled rows.
+
+    Layout mirrors the old report style:
+        1. [SEVERITY] 92% — filename.docx
+        Section: ...
+        Issue: ...
+        Action: ...
+        Existing Text: ... (red)
+        Replace With: ... (green)
+        Reference: ... (blue)
+        Verification: ... (if applicable)
     """
-    sev = finding.severity
-    sev_hex = _SEVERITY_SHADING.get(sev, "333333")
+    severity_color = SEVERITY_COLORS.get(finding.severity, RGBColor(0, 0, 0))
     conf_tier = _confidence_tier(finding.confidence)
-    conf_color = _CONFIDENCE_RGB[conf_tier]
+    conf_color = CONFIDENCE_COLORS[conf_tier]
 
-    # --- Header line ---
-    p = _add_paragraph(doc, "", space_before=6, space_after=2)
-    _add_run(p, f"  {sev}  ", bold=True, size=9,
-             color=RGBColor(0x00, 0x00, 0x00) if sev == "MEDIUM" else RGBColor(0xFF, 0xFF, 0xFF))
-    # Severity background via a highlight (approximation — python-docx doesn't
-    # have direct inline background, so we use the approach of writing the badge
-    # as text and relying on the section header color for grouping)
-    _add_run(p, f"  {finding.confidence:.0%}", bold=True, size=9, color=conf_color)
-    _add_run(p, f"  •  ", size=9, color=RGBColor(0x70, 0x70, 0x70))
-    _add_run(p, finding.fileName or "Unknown", bold=True, size=10)
+    # --- Finding header ---
+    para = doc.add_paragraph()
+    # Index + severity badge
+    run = para.add_run(f"{index}. [{finding.severity}] ")
+    run.bold = True
+    run.font.color.rgb = severity_color
+    # Confidence
+    run = para.add_run(f"{finding.confidence:.0%} ")
+    run.bold = True
+    run.font.size = Pt(10)
+    run.font.color.rgb = conf_color
+    # Separator
+    run = para.add_run("— ")
+    run.font.color.rgb = RGBColor(128, 128, 128)
+    # Filename
+    run = para.add_run(finding.fileName or "Unknown")
+    run.bold = True
+
+    # --- Section ---
     if finding.section:
-        _add_run(p, f"  •  {finding.section}", size=9,
-                 color=RGBColor(0x70, 0x70, 0x70))
+        para = doc.add_paragraph()
+        para.add_run("Section: ").bold = True
+        para.add_run(finding.section)
+        para.paragraph_format.space_after = Pt(3)
 
-    # --- Issue description ---
-    _add_paragraph(doc, finding.issue or "", size=10, space_after=2)
+    # --- Issue ---
+    para = doc.add_paragraph()
+    para.add_run("Issue: ").bold = True
+    para.add_run(finding.issue or "")
+    para.paragraph_format.space_after = Pt(3)
 
-    # --- Existing text ---
+    # --- Action type ---
+    para = doc.add_paragraph()
+    para.add_run("Action: ").bold = True
+    para.add_run(finding.actionType or "")
+    para.paragraph_format.space_after = Pt(3)
+
+    # --- Existing text (red) ---
     if finding.existingText:
-        p = _add_paragraph(doc, "", space_after=2)
-        _add_run(p, "Existing: ", bold=True, size=9, color=RGBColor(0x70, 0x70, 0x70))
-        _add_run(p, finding.existingText, size=9, color=RGBColor(0xDC, 0x26, 0x26),
-                 font="Consolas")
+        para = doc.add_paragraph()
+        para.add_run("Existing Text: ").bold = True
+        run = para.add_run(finding.existingText)
+        run.font.color.rgb = RGBColor(192, 0, 0)
+        para.paragraph_format.space_after = Pt(3)
 
-    # --- Replacement text ---
+    # --- Replacement text (green) ---
     if finding.replacementText:
-        p = _add_paragraph(doc, "", space_after=2)
-        _add_run(p, "Replace with: ", bold=True, size=9,
-                 color=RGBColor(0x70, 0x70, 0x70))
-        _add_run(p, finding.replacementText, size=9, color=RGBColor(0x22, 0xC5, 0x5E),
-                 font="Consolas")
+        para = doc.add_paragraph()
+        para.add_run("Replace With: ").bold = True
+        run = para.add_run(finding.replacementText)
+        run.font.color.rgb = RGBColor(0, 128, 0)
+        para.paragraph_format.space_after = Pt(3)
 
-    # --- Code reference ---
+    # --- Code reference (blue) ---
     if finding.codeReference:
-        _add_paragraph(doc, f"Reference: {finding.codeReference}",
-                       size=9, color=RGBColor(0x3B, 0x82, 0xF6), space_after=2)
+        para = doc.add_paragraph()
+        para.add_run("Reference: ").bold = True
+        run = para.add_run(finding.codeReference)
+        run.font.color.rgb = RGBColor(59, 130, 246)
+        para.paragraph_format.space_after = Pt(3)
 
     # --- Verification verdict ---
     if finding.verification and finding.verification.verdict != "UNVERIFIED":
         vr = finding.verification
-        verdict_color = _VERDICT_RGB.get(vr.verdict, _VERDICT_RGB["UNVERIFIED"])
-        verdict_icon = {
-            "CONFIRMED": "✓", "CORRECTED": "✎", "DISPUTED": "✗"
-        }.get(vr.verdict, "—")
+        verdict_color = VERDICT_COLORS.get(vr.verdict, VERDICT_COLORS["UNVERIFIED"])
+        verdict_icon = VERDICT_ICONS.get(vr.verdict, "—")
 
-        p = _add_paragraph(doc, "", space_after=2)
-        _add_run(p, f"{verdict_icon} {vr.verdict}", bold=True, size=9,
-                 color=verdict_color)
+        para = doc.add_paragraph()
+        run = para.add_run(f"Verification: {verdict_icon} {vr.verdict}")
+        run.bold = True
+        run.font.color.rgb = verdict_color
+        para.paragraph_format.space_after = Pt(3)
+
         if vr.explanation:
-            _add_run(p, f"  — {vr.explanation}", size=9,
-                     color=RGBColor(0x70, 0x70, 0x70))
+            para = doc.add_paragraph()
+            run = para.add_run(vr.explanation)
+            run.font.size = Pt(10)
+            run.font.color.rgb = RGBColor(100, 100, 100)
+            para.paragraph_format.space_after = Pt(3)
 
         if vr.correction:
-            p2 = _add_paragraph(doc, "", space_after=2)
-            _add_run(p2, "Correction: ", bold=True, size=9,
-                     color=RGBColor(0xF5, 0x9E, 0x0B))
-            _add_run(p2, vr.correction, size=9, color=RGBColor(0xF5, 0x9E, 0x0B),
-                     font="Consolas")
+            para = doc.add_paragraph()
+            para.add_run("Correction: ").bold = True
+            run = para.add_run(vr.correction)
+            run.font.color.rgb = RGBColor(204, 132, 0)  # Amber
+            para.paragraph_format.space_after = Pt(3)
 
-    # Thin separator line after each finding
-    p_sep = doc.add_paragraph()
-    p_sep.paragraph_format.space_before = Pt(2)
-    p_sep.paragraph_format.space_after = Pt(2)
-    # Add a bottom border to simulate a thin rule
-    pPr = p_sep._element.get_or_add_pPr()
-    pBdr = pPr.makeelement(qn("w:pBdr"), {})
-    bottom = pBdr.makeelement(
-        qn("w:bottom"),
-        {
-            qn("w:val"): "single",
-            qn("w:sz"): "4",
-            qn("w:space"): "1",
-            qn("w:color"): "DDDDDD",
-        },
-    )
-    pBdr.append(bottom)
-    pPr.append(pBdr)
+    # Spacer between findings
+    doc.add_paragraph()
 
+
+# ---------------------------------------------------------------------------
+# Findings section
+# ---------------------------------------------------------------------------
 
 def _write_findings_section(doc: Document, review) -> None:
     """Write per-spec findings grouped by severity, sorted by confidence."""
-    _add_paragraph(doc, "FINDINGS", bold=True, size=12, space_before=6, space_after=6)
+    doc.add_heading("Findings", level=0)
 
     if review.total_count == 0:
-        _add_paragraph(doc, "✓ No issues found", size=12,
-                       color=RGBColor(0x22, 0xC5, 0x5E))
+        _add_styled_paragraph(
+            doc,
+            "No issues found.",
+            size=12,
+            color=RGBColor(0, 128, 0),
+        )
         return
 
-    severity_order = ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]
-    finding_index = 0
-
-    for sev in severity_order:
-        sev_findings = sorted(
-            [f for f in review.findings if f.severity == sev],
+    for severity in SEVERITY_ORDER:
+        severity_findings = sorted(
+            [f for f in review.findings if f.severity == severity],
             key=lambda f: f.confidence,
             reverse=True,
         )
-        if not sev_findings:
+        if not severity_findings:
             continue
 
-        sev_color = _SEVERITY_RGB.get(sev, RGBColor(0x70, 0x70, 0x70))
-        _add_paragraph(doc, f"{sev} ({len(sev_findings)})", bold=True, size=11,
-                       color=sev_color, space_before=8, space_after=4)
+        # Severity sub-heading with colored text
+        heading = doc.add_heading(
+            f"{severity} ({len(severity_findings)})", level=1,
+        )
+        for run in heading.runs:
+            run.font.color.rgb = SEVERITY_COLORS.get(severity, RGBColor(0, 0, 0))
 
-        for f in sev_findings:
-            finding_index += 1
-            _write_finding(doc, f, finding_index)
+        for i, finding in enumerate(severity_findings, 1):
+            _write_finding_entry(doc, finding, i)
 
+
+# ---------------------------------------------------------------------------
+# Cross-spec coordination section
+# ---------------------------------------------------------------------------
 
 def _write_cross_check_section(doc: Document, cross_check_result) -> None:
-    """Write cross-spec coordination findings."""
+    """Write cross-spec coordination findings as a distinct section."""
     if not cross_check_result or not cross_check_result.findings:
         return
 
-    _add_paragraph(doc, "CROSS-SPEC COORDINATION", bold=True, size=12,
-                   color=_COORDINATION_RGB, space_before=12, space_after=4)
+    doc.add_page_break()
+
+    heading = doc.add_heading("Cross-Spec Coordination", level=0)
+    heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     count = len(cross_check_result.findings)
-    _add_paragraph(
-        doc,
-        f"{count} coordination issue{'s' if count != 1 else ''} found (Sonnet 4.6)",
-        size=9, color=RGBColor(0x70, 0x70, 0x70), space_after=6,
+    subtitle = doc.add_paragraph()
+    run = subtitle.add_run(
+        f"Sonnet 4.6 coordination analysis — "
+        f"{count} issue{'s' if count != 1 else ''} found."
     )
+    run.font.size = Pt(11)
+    run.font.italic = True
+    run.font.color.rgb = RGBColor(128, 128, 128)
+    subtitle.paragraph_format.space_after = Pt(12)
 
+    # Sort by severity then confidence
     severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
     sorted_findings = sorted(
         cross_check_result.findings,
         key=lambda f: (severity_rank.get(f.severity, 99), -f.confidence),
     )
 
-    for idx, f in enumerate(sorted_findings, start=1):
-        _write_finding(doc, f, idx)
+    for idx, finding in enumerate(sorted_findings, 1):
+        _write_finding_entry(doc, finding, idx)
 
-    # Cross-check narrative summary
+    # Coordination summary narrative
     if cross_check_result.thinking:
-        _add_paragraph(doc, "Coordination Summary", bold=True, size=10,
-                       space_before=8, space_after=4)
-        _add_paragraph(doc, cross_check_result.thinking, size=10,
-                       color=RGBColor(0x50, 0x50, 0x50))
+        doc.add_heading("Coordination Summary", level=2)
+        _write_narrative_text(doc, cross_check_result.thinking)
 
+
+# ---------------------------------------------------------------------------
+# Reviewer's notes
+# ---------------------------------------------------------------------------
 
 def _write_notes(doc: Document, thinking: str) -> None:
     """Write the reviewer's analysis summary / notes."""
     if not thinking:
         return
 
-    _add_paragraph(doc, "REVIEWER'S NOTES", bold=True, size=12,
-                   space_before=12, space_after=6)
-    _add_paragraph(doc, thinking, size=10, color=RGBColor(0x50, 0x50, 0x50))
+    doc.add_page_break()
+
+    heading = doc.add_heading("Reviewer's Notes", level=0)
+    heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    subtitle = doc.add_paragraph()
+    run = subtitle.add_run(
+        "Claude's analysis summary — the reviewer's take on these specifications."
+    )
+    run.font.size = Pt(11)
+    run.font.italic = True
+    run.font.color.rgb = RGBColor(128, 128, 128)
+    subtitle.paragraph_format.space_after = Pt(12)
+
+    _write_narrative_text(doc, thinking)
+
+
+def _write_narrative_text(doc: Document, text: str) -> None:
+    """Write multi-paragraph narrative text, splitting on double newlines."""
+    if '\n\n' in text:
+        paragraphs = text.split('\n\n')
+    else:
+        paragraphs = text.split('\n')
+
+    for para_text in paragraphs:
+        para_text = para_text.strip()
+        if para_text:
+            para = doc.add_paragraph()
+            run = para.add_run(para_text)
+            run.font.size = Pt(11)
+            para.paragraph_format.space_after = Pt(8)
 
 
 # ---------------------------------------------------------------------------
@@ -447,8 +575,8 @@ def export_report(
     """Export a complete review report to a Word document.
 
     Generates a formatted .docx file containing everything the in-app
-    report shows: summary grid, alerts, per-spec findings, cross-check
-    findings, and reviewer's notes.
+    report shows: files reviewed, summary grid, alerts, per-spec findings,
+    cross-check findings, and reviewer's notes.
 
     Args:
         pipeline_result: PipelineResult from the review pipeline
@@ -470,22 +598,22 @@ def export_report(
 
     doc = Document()
 
-    # Set default font for the document
-    style = doc.styles["Normal"]
-    style.font.name = "Calibri"
-    style.font.size = Pt(10)
-    style.paragraph_format.space_after = Pt(4)
+    # Set default font (Arial 11pt — clean and professional)
+    style = doc.styles['Normal']
+    style.font.name = 'Arial'
+    style.font.size = Pt(11)
 
-    # Set narrow margins for more content per page
+    # Set margins (1 inch sides, 0.75 top/bottom)
     for section in doc.sections:
         section.top_margin = Inches(0.75)
         section.bottom_margin = Inches(0.75)
-        section.left_margin = Inches(0.8)
-        section.right_margin = Inches(0.8)
+        section.left_margin = Inches(1.0)
+        section.right_margin = Inches(1.0)
 
     # Build the report
     _write_title_block(doc, review, pipeline_result.files_reviewed,
-                       project_context, cross_check)
+                       project_context)
+    _write_files_reviewed(doc, pipeline_result.files_reviewed)
     _write_summary_table(doc, review, cross_check)
     _write_alerts(doc, pipeline_result.leed_alerts,
                   pipeline_result.placeholder_alerts)
