@@ -4,12 +4,11 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "spec-critic"
-version = "1.8.1"
-description = "M&P specification review tool for California K-12 DSA projects"
-requires-python = ">=3.11"
+version = "1.8.2"
 dependencies = [
     "anthropic",
     "python-docx",
     "tiktoken",
     "customtkinter",
+    "platformdirs",
 ]

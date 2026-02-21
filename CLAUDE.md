@@ -6,7 +6,7 @@ This file provides guidance for AI assistants working on the **Spec Critic** cod
 
 Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards or exports them to a Word document report.
 
-- **Version**: 1.8.1 (restyled Word report + export report to Word + verification batching + model selection + persistent batch state)
+- **Version**: 1.8.2 (corrective PR — reliability, correctness, and UX fixes)
 - **Python**: >= 3.11 (uses `X | Y` union type syntax)
 - **Review Model**: User-selectable — Claude Opus 4.6 (`claude-opus-4-6`) or Claude Sonnet 4.6 (`claude-sonnet-4-6`)
 - **Verification Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
@@ -19,7 +19,7 @@ Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for
 spec-review/
 ├── main.py                  # Entry point
 ├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.8.1")
+│   ├── __init__.py          # Package version ("1.8.2")
 │   ├── gui.py               # CustomTkinter app window, input handling, threading,
 │   │                        #   persistent batch state, model selector, output mode selector
 │   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
@@ -187,6 +187,7 @@ In batch mode, verification now routes through the Anthropic Message Batches API
 ### Key Design Decisions
 
 - **Automatic fallback**: If batch verification submission fails, falls back to sequential verification
+- **Terminal state handling (v1.8.2)**: If a verification batch enters a terminal failure state (`failed`, `expired`, `canceled`), polling stops and falls back to sequential verification instead of looping forever
 - **Same verification logic**: Both modes use the same `_build_verification_prompt()` and `_parse_verification_response()` functions
 - **Web search in batch**: Uses `tools=[{"type": "web_search_20250305", "name": "web_search"}]` in each batch request
 - **Confidence ordering preserved**: Batch submission orders findings by ascending confidence for custom_id sequencing
@@ -197,32 +198,42 @@ In batch mode, verification now routes through the Anthropic Message Batches API
 2. **`verifier.py`**: `verify_findings_batch()` orchestrates submit → poll → collect
 3. **`pipeline.py`**: `collect_batch_results()` calls `verify_findings_batch()` instead of `verify_findings()`
 
-## Persistent Batch State (v1.7.0)
+## Persistent Batch State (v1.7.0, updated v1.8.2)
 
 ### How It Works
 
-When a user submits a batch and closes the app, they can reopen it and resume polling / collect results. A `batch_state.json` file in the project root persists the batch metadata.
+When a user submits a batch and closes the app, they can reopen it and resume polling / collect results. A `batch_state.json` file persists the batch metadata.
+
+### Storage Location (v1.8.2)
+
+Batch state and API key files are stored in OS-appropriate user-writable directories via `platformdirs`:
+- **Config** (API key): `platformdirs.user_config_dir("SpecCritic")` — e.g., `%LOCALAPPDATA%\SpecCritic` on Windows
+- **State** (batch state): `platformdirs.user_state_dir("SpecCritic")` — e.g., `%LOCALAPPDATA%\SpecCritic` on Windows
+
+This ensures writes succeed in frozen PyInstaller builds where the exe directory may be read-only. Legacy locations (project root / exe_dir) are checked as fallback for API key loading.
 
 ### State File Lifecycle
 
 1. **Created**: After `start_batch_review()` returns successfully
 2. **Checked on launch**: `_check_pending_batch()` runs 500ms after GUI init
 3. **Resume dialog**: Shows batch ID, file count, model, age, and phase with Resume/Discard buttons
-4. **Deleted**: After `_on_review_complete()` succeeds, or if user clicks Discard, or if state is stale (>24 hours)
+4. **Deleted**: After `_on_review_complete()` succeeds, or if user clicks Discard, or if state is stale (>24 hours), or if batch enters terminal failure state
 
 ### Key Design Decisions
 
 - **Single active batch**: Only one batch state file at a time
-- **Cross-check skipped on resume**: No `ExtractedSpec` objects available after restart, so cross-check is disabled for resumed batches
+- **Cross-check on batch collect (v1.8.2)**: `ExtractedSpec` objects are stored during token analysis and passed to `collect_batch_results()` so cross-check can run in batch mode
+- **Cross-check skipped on resume**: No `ExtractedSpec` objects available after restart, so cross-check is disabled for resumed batches (user is informed via log)
 - **24-hour expiry**: State files older than 24 hours are automatically discarded
 - **API key validation**: Resume requires a valid API key — if missing, shows error and doesn't resume
 - **Non-modal dialog**: The resume/discard dialog is a transient toplevel that grabs focus
+- **Terminal state cleanup (v1.8.2)**: If batch enters `failed`, `expired`, or `canceled` state, polling stops and state file is deleted
 
 ### State File Format
 
 ```json
 {
-  "version": "1.8.1",
+  "version": "1.8.2",
   "saved_at": "2025-02-19T19:30:00+00:00",
   "phase": "review",
   "batch_id": "msgbatch_abc123",
@@ -236,7 +247,7 @@ When a user submits a batch and closes the app, they can reopen it and resume po
 }
 ```
 
-## Cross-Spec Coordination Check (v1.6.0)
+## Cross-Spec Coordination Check (v1.6.0, batch wiring fixed v1.8.2)
 
 ### How It Works
 
@@ -254,10 +265,38 @@ After per-spec reviews complete and findings are deduplicated, an optional coord
 - **Condensed input**: Section headers + existing findings, NOT full spec text — keeps token usage low
 - **Separate section**: Cross-check findings render in a distinct "CROSS-SPEC COORDINATION" section with cyan accent
 - **No batch mode**: Cross-check is always a real-time streaming call (even when review uses batch mode)
+- **Works in batch mode (v1.8.2)**: `ExtractedSpec` objects are now stored during token analysis and passed through to `collect_batch_results()`, enabling cross-check after batch review collection
 - **Requires 2+ specs**: Automatically skipped if only 1 spec is loaded
 - **Token limit check**: If the condensed input exceeds 150k tokens, cross-check is gracefully skipped
 - **Verification included**: Cross-check findings go through the same web search verification as per-spec findings
-- **Not available on resume**: Cross-check is skipped when resuming a batch (no ExtractedSpec objects available)
+- **Not available on resume**: Cross-check is skipped when resuming a batch (no ExtractedSpec objects available) — user is informed via log
+
+## JSON Parsing (v1.8.2 — improved robustness)
+
+### How It Works
+
+The review model's response contains a narrative analysis summary followed by a JSON findings array. The parser extracts the JSON using a two-strategy approach:
+
+1. **Sentinel tags (preferred)**: The prompt instructs the model to wrap JSON in `<FINDINGS_JSON>...</FINDINGS_JSON>` tags. The parser looks for these first.
+2. **Heuristic fallback**: If tags aren't found (e.g., backward compatibility with in-flight responses), falls back to finding the first `[` and last `]` in the response.
+3. **Empty detection**: If neither strategy works, checks for "no issues" language and returns an empty array.
+
+### Key Design Decisions
+
+- **Backward compatible**: The heuristic fallback ensures responses without sentinel tags still parse correctly
+- **Graceful failure**: `JSONDecodeError` is caught at each strategy level — parse failures don't crash the run
+- **Both prompts updated**: Main review prompt (`prompts.py`) and cross-check prompt (`cross_checker.py`) both request sentinel tags
+- **User message reinforcement**: The sentinel tag instruction appears in both the system prompt `<output_format>` section and the user message reminders
+
+## Token Gating (v1.8.2 — per-file logic)
+
+### How It Works
+
+Since each spec gets its own API call, the hard constraint is per-file tokens (system prompt + project context + single file), not total tokens across all files. The GUI now reflects this:
+
+- **Run is disabled** only if any single selected file exceeds the per-call limit (system + context + file > 150k tokens)
+- **Total tokens** are still displayed in the gauge as a cost/time estimate but do not block the run
+- **Over-limit files** are named in the log so the user knows which file is too large
 
 ## Confidence Scoring (v1.5.0)
 
@@ -295,12 +334,12 @@ The system prompt uses XML-tagged sections for clear structural hierarchy:
 | `<edge_cases>` | Single spec, non-MEP only, very short specs, mixed disciplines |
 | `<duplicate_issues>` | Consolidation rule for repeated problems |
 | `<file_delimiters>` | How input files are separated |
-| `<output_format>` | JSON schema (including confidence field) + examples showing ADD, EDIT, DELETE with confidence scores |
+| `<output_format>` | JSON schema (including confidence field) + sentinel tag wrapping (`<FINDINGS_JSON>`) + examples showing ADD, EDIT, DELETE with confidence scores |
 | `<critical_checks>` | Five mandatory verification steps |
 
 ### Cross-Check System Prompt (`cross_checker.py`)
 
-The cross-check prompt is embedded in `cross_checker.py` (not in `prompts.py`) because it is a fundamentally different task with different instructions.
+The cross-check prompt is embedded in `cross_checker.py` (not in `prompts.py`) because it is a fundamentally different task with different instructions. It also uses `<FINDINGS_JSON>` sentinel tags for JSON output.
 
 ### Code Cycle Parameters
 
@@ -318,9 +357,10 @@ When California adopts a new code cycle, update these constants.
 ## Token Limits
 
 - **Max context**: 200,000 tokens (hard)
-- **Recommended max input**: 150,000 tokens (enforced)
+- **Recommended max input**: 150,000 tokens (enforced per-file)
 - **Safety buffer**: 50,000 tokens (for system prompt ~2-3k, max output 32,768, tokenizer variance)
 - **Warning levels**: CRITICAL (>200k), WARNING (>150k), NOTE (>80% of 150k)
+- **GUI gating (v1.8.2)**: Run/Submit blocked only if any single file exceeds per-call limit (system + context + file > 150k)
 
 ## Entry Point
 
@@ -335,13 +375,15 @@ python main.py
 - `customtkinter` — Modern dark-theme GUI toolkit
 - `python-docx` — Word document reading AND report export
 - `tiktoken` — Token counting (cl100k_base encoding)
+- `platformdirs` — OS-appropriate user config/state directories (v1.8.2)
 
 ## API Key Configuration
 
 The Anthropic API key is resolved in this order:
-1. File: `spec_critic_api_key.txt` (in project root)
-2. Environment variable: `ANTHROPIC_API_KEY`
-3. Manual entry via GUI dialog
+1. File: `spec_critic_api_key.txt` in `platformdirs.user_config_dir("SpecCritic")` (v1.8.2)
+2. File: `spec_critic_api_key.txt` in project root (legacy fallback)
+3. Environment variable: `ANTHROPIC_API_KEY`
+4. Manual entry via GUI dialog
 
 ## Code Conventions
 
@@ -369,7 +411,10 @@ The pipeline uses callback injection for decoupling from UI:
 - Retry with exponential backoff for API errors
 - Graceful fallbacks for missing optional fields
 - Cross-check gracefully skips if token limit exceeded or <2 specs
-- Verification batch falls back to sequential on submission failure
+- Verification batch falls back to sequential on submission failure or terminal batch state
+- Batch polling handles terminal failure states (`failed`, `expired`, `canceled`) without infinite loops
+- JSON parsing uses sentinel tags with heuristic fallback — parse failures don't crash the run
+- Batch state save failures are logged (not silently swallowed)
 
 ## Severity Levels
 
@@ -381,7 +426,7 @@ Findings are classified into four severity tiers:
 
 ## GUI Architecture
 
-The GUI uses CustomTkinter with a dark theme. Key widgets in `widgets.py`:
+The GUI uses CustomTkinter with a dark theme. File dialogs use `tkinter.filedialog` (not `ctk.filedialog`). Key widgets in `widgets.py`:
 - `TokenGauge` — Animated fill gauge showing token capacity usage
 - `FileListPanel` — Checkbox list with per-file token counts
 - `EnhancedLog` — Scrollable log with colored text tags
@@ -406,7 +451,7 @@ Row 6 of the INPUTS card contains a "Cross-spec coordination check" checkbox wit
 1. **Pipeline is the single source of truth** — Do not add workflow logic to `gui.py`.
 2. **Output routing is in the GUI** — The GUI decides whether to render in-app or export to .docx based on user selection. The pipeline itself is output-agnostic.
 3. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM.
-4. **Token limits are enforced before API calls** — Never allow calls exceeding 150k.
+4. **Token limits are enforced per-file before API calls** — Never allow calls exceeding 150k per individual spec.
 5. **Streaming is used internally** — Complete response is parsed when finished.
 6. **Model selection for review only** — Verification and cross-check always use Sonnet 4.6.
 7. **No document mutation** — Analysis only. Document cleanup belongs in SpecCleanse.
@@ -414,9 +459,13 @@ Row 6 of the INPUTS card contains a "Cross-spec coordination check" checkbox wit
 9. **Code cycle is parameterized** — Update constants in `prompts.py`.
 10. **Cross-check is optional** — Controlled by GUI checkbox, default off.
 11. **Cross-check findings are separate** — Rendered in their own section, not mixed with per-spec findings.
-12. **Batch state persists across restarts** — `batch_state.json` enables resume after app close.
+12. **Batch state persists across restarts** — `batch_state.json` in user state dir enables resume after app close.
 13. **Verification batching in batch mode** — Sequential in real-time, batched in batch mode.
 14. **Export report uses same data** — `report_exporter.export_report()` accepts the same `PipelineResult` as the in-app renderer.
+15. **File dialogs use tkinter.filedialog** — Not `ctk.filedialog` (CustomTkinter does not expose filedialog).
+16. **Batch polling handles terminal states** — `failed`, `expired`, `canceled` stop polling immediately.
+17. **JSON parsing uses sentinel tags** — `<FINDINGS_JSON>` tags with heuristic fallback.
+18. **Extracted specs are stored** — `_extracted_specs` populated during token analysis for batch cross-check.
 
 ## Common Development Tasks
 

@@ -118,22 +118,50 @@ def _get_api_key() -> str:
 
 
 def _extract_json_array(text: str) -> tuple[list, str]:
-    """Extract the JSON findings array and analysis summary from Claude's response."""
+    """Extract the JSON findings array and analysis summary from Claude's response.
+
+    Extraction strategy (in order):
+        1. Look for <FINDINGS_JSON>...</FINDINGS_JSON> sentinel tags (preferred)
+        2. Fall back to first [ / last ] heuristic (backward compatibility)
+        3. Detect "no issues" language and return empty array
+
+    Returns:
+        Tuple of (parsed list of finding dicts, analysis summary text)
+
+    Raises:
+        ValueError: If no JSON array can be extracted by any strategy
+    """
+    # Strategy 1: Sentinel tags
+    tag_start = text.find("<FINDINGS_JSON>")
+    tag_end = text.find("</FINDINGS_JSON>")
+    if tag_start != -1 and tag_end != -1 and tag_end > tag_start:
+        thinking = text[:tag_start].strip()
+        json_str = text[tag_start + len("<FINDINGS_JSON>"):tag_end].strip()
+        try:
+            data = json.loads(json_str)
+            if isinstance(data, list):
+                return data, thinking
+        except json.JSONDecodeError:
+            pass  # Fall through to heuristic
+
+    # Strategy 2: First [ / last ] heuristic (backward compatibility)
     start_idx = text.find("[")
     end_idx = text.rfind("]")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        thinking = text[:start_idx].strip()
+        json_str = text[start_idx:end_idx + 1]
+        try:
+            data = json.loads(json_str)
+            if isinstance(data, list):
+                return data, thinking
+        except json.JSONDecodeError:
+            pass  # Fall through to empty check
 
-    if start_idx == -1 or end_idx == -1:
-        if "no issues" in text.lower() or text.strip() == "[]":
-            return [], text.strip()
-        raise ValueError(f"Could not find JSON array in response: {text[:200]}...")
+    # Strategy 3: No findings detected
+    if "no issues" in text.lower() or text.strip() == "[]":
+        return [], text.strip()
 
-    thinking = text[:start_idx].strip()
-
-    json_str = text[start_idx:end_idx + 1]
-    data = json.loads(json_str)
-    if not isinstance(data, list):
-        raise ValueError(f"Expected JSON array, got: {type(data)}")
-    return data, thinking
+    raise ValueError(f"Could not extract JSON findings from response: {text[:200]}...")
 
 
 def _parse_findings(data: list) -> list[Finding]:

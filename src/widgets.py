@@ -26,7 +26,7 @@ from typing import Optional
 from collections import deque
 
 import customtkinter as ctk
-
+from tkinter import filedialog
 
 # ============================================================================
 # SHARED CONFIG
@@ -634,7 +634,7 @@ class ReportWindow(ctk.CTkToplevel):
             "analysis_summary": review.thinking,
             "cross_check_summary": self._cross_check_result.thinking if self._cross_check_result else None,
         }
-        path = ctk.filedialog.asksaveasfilename(parent=self, title="Save findings JSON", defaultextension=".json",
+        path = filedialog.asksaveasfilename(parent=self, title="Save findings JSON", defaultextension=".json",
             filetypes=[("JSON Files", "*.json")], initialfile=f"spec-critic-{datetime.now().strftime('%Y-%m-%d')}.json")
         if path: Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -683,7 +683,7 @@ class ReportPanel(ctk.CTkFrame):
             "analysis_summary": review.thinking,
             "cross_check_summary": cross_check_result.thinking if cross_check_result else None,
         }
-        path = ctk.filedialog.asksaveasfilename(title="Save findings JSON", defaultextension=".json",
+        path = filedialog.asksaveasfilename(title="Save findings JSON", defaultextension=".json",
             filetypes=[("JSON Files", "*.json")], initialfile=f"spec-critic-{datetime.now().strftime('%Y-%m-%d')}.json")
         if path: Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 

@@ -204,7 +204,7 @@ Include a confidence score (0.0-1.0) for each finding:
 <output_format>
 First, provide a brief COORDINATION SUMMARY (1-2 paragraphs). Focus on the big picture: how well do these specs coordinate? Are there major gaps or conflicts?
 
-Then output findings as a JSON array (no code fences). Each finding:
+Then output findings as a JSON array wrapped in <FINDINGS_JSON></FINDINGS_JSON> tags (no code fences). Each finding:
 - severity: "CRITICAL" | "HIGH" | "MEDIUM"
 - fileName: The primary file where the issue manifests (use the filename from the FILE headers)
 - section: Best guess at section location, or "Cross-spec coordination" if not specific
@@ -215,8 +215,13 @@ Then output findings as a JSON array (no code fences). Each finding:
 - codeReference: Applicable code or standard if relevant (null otherwise)
 - confidence: 0.0-1.0
 
-If no coordination issues are found, return an empty array: []
-</output_format>"""
+If no coordination issues are found, return an empty array:
+
+<FINDINGS_JSON>
+[]
+</FINDINGS_JSON>
+
+"""
 
 
 def _get_cross_check_user_message(

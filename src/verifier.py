@@ -436,6 +436,13 @@ def verify_findings_batch(
             break
         elif status.status in ("canceling",):
             log("Verification batch is being canceled...")
+        elif status.status in ("failed", "expired", "canceled"):
+            # Terminal failure — stop polling, fall back to sequential
+            log(f"Verification batch terminated: {status.status}. Falling back to sequential.")
+            def _seq_progress(current: int, total: int, filename: str):
+                pct = (current / total) * 100.0 if total > 0 else 100.0
+                progress(pct, f"Verifying finding {current}/{total} ({filename})...")
+            return verify_findings(findings, progress=_seq_progress)
 
         time.sleep(poll_interval)
 

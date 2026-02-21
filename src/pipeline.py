@@ -471,7 +471,7 @@ def collect_batch_results(
         model=model,
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
-        elapsed_seconds=0.0,
+        elapsed_seconds=time.time() - submission.job.created_at,
     )
 
     if errors:

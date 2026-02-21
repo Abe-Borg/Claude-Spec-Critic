@@ -1,4 +1,4 @@
-# Spec Critic v1.8.1
+# Spec Critic v1.8.2
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
 
@@ -44,11 +44,12 @@ python main.py
 
 The tool looks for your Anthropic API key in this order:
 
-1. `spec_critic_api_key.txt` file in the project root containing just your key
-2. `ANTHROPIC_API_KEY` environment variable
-3. Manual entry in the API Key field within the app
+1. `spec_critic_api_key.txt` file in the Spec Critic config directory (`%LOCALAPPDATA%\SpecCritic` on Windows)
+2. `spec_critic_api_key.txt` file in the project root (legacy location)
+3. `ANTHROPIC_API_KEY` environment variable
+4. Manual entry in the API Key field within the app
 
-For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root. The app will auto-load it on launch.
+For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root or the config directory. The app will auto-load it on launch.
 
 ## How to Use
 
@@ -59,7 +60,7 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root. T
 5. Select the **Review Model**: Opus 4.6 (thorough) or Sonnet 4.6 (fast/cheap)
 6. (Optional) Check **Cross-spec coordination check** to enable inter-spec analysis
 7. Select the **Output** mode: View in App or Export Report
-8. The token gauge fills to show capacity usage — stay under the 150k limit
+8. The token gauge fills to show capacity usage — the run is blocked only if any single file exceeds the 150k per-call limit
 9. Expand the **FILES** panel to check/uncheck individual specs if needed
 10. Click **Run Review** (or **Submit Batch** in batch mode)
 11. When complete:
@@ -107,6 +108,8 @@ The cross-spec coordination check is an optional pass that runs after the per-sp
 - Coordination findings go through web search verification like any other finding
 - Requires 2+ specs — automatically skipped with only 1 spec
 - Gracefully skips if the condensed input exceeds the token limit
+- Works in both real-time and batch mode (v1.8.2)
+- Not available when resuming a batch after app restart (spec content not preserved in state file)
 
 ### Project Context
 
@@ -144,7 +147,9 @@ When the review finishes in "View in App" mode, a separate report window opens a
 
 Batch mode submits all specs as a single Anthropic Message Batch at 50% cost. Both the review stage and the verification stage are batched for maximum cost savings. The cross-spec coordination check (if enabled) runs as a real-time call between the two batches.
 
-**Persistent batch state**: If you close the app while a batch is processing, the batch state is saved to `batch_state.json`. When you reopen the app, a dialog offers to resume polling or discard the batch. Batch state expires after 24 hours.
+**Persistent batch state**: If you close the app while a batch is processing, the batch state is saved. When you reopen the app, a dialog offers to resume polling or discard the batch. Batch state expires after 24 hours.
+
+**Terminal failure handling**: If a batch enters a terminal failure state (failed, expired, or canceled), polling stops automatically and the user is informed. No infinite polling loops.
 
 **Note**: When resuming a batch after app restart, the cross-spec coordination check is not available (spec content is not preserved in the state file).
 
@@ -152,7 +157,7 @@ Batch mode submits all specs as a single Anthropic Message Batch at 50% cost. Bo
 
 All CRITICAL, HIGH, and MEDIUM findings are automatically verified by Sonnet 4.6 with web search. This includes both per-spec findings and cross-check coordination findings.
 
-In batch mode, verification is also batched via the Batches API for 50% cost savings. If batch verification submission fails, it falls back to sequential verification automatically.
+In batch mode, verification is also batched via the Batches API for 50% cost savings. If batch verification fails (submission error or terminal batch state), it falls back to sequential verification automatically.
 
 **Verdict meanings:**
 - **CONFIRMED** (green) — Finding is correct
@@ -219,13 +224,17 @@ spec-review/
 - **User-selectable output mode**: View in App or Export Report (.docx).
 - **Sonnet for support tasks**: Verification and cross-check always use Sonnet 4.6.
 - **Verification batching**: In batch mode, verification is also batched for 50% savings.
-- **Persistent batch state**: Batch state survives app restarts via `batch_state.json`.
+- **Persistent batch state**: Batch state survives app restarts via `batch_state.json` in user state directory.
+- **Terminal batch handling**: Failed/expired/canceled batches stop polling immediately.
 - **No document mutation**: Analysis only. Document cleanup belongs in SpecCleanse.
 - **Advisory only**: This tool assists human reviewers. Not an AHJ substitute.
-- **Cross-check is optional**: Controlled by checkbox, default off.
+- **Cross-check is optional**: Controlled by checkbox, default off. Works in both real-time and batch mode.
 - **Cross-check is separate**: Dedicated report section, not mixed with per-spec findings.
 - **Export report is separate**: `report_exporter.py` accepts `PipelineResult` — pipeline is output-agnostic.
 - **Word-native formatting**: Export uses real heading styles, Table Grid, List Bullet, and Arial 11pt.
+- **Per-file token gating**: Run is blocked only if any single file exceeds the per-call limit, not by total across files.
+- **Robust JSON parsing**: Sentinel tags with heuristic fallback for reliable extraction.
+- **Frozen build support**: Config and state files stored in user-writable directories via `platformdirs`.
 
 ## What Claude Reviews
 
@@ -251,9 +260,25 @@ anthropic          # Claude API client
 python-docx        # DOCX text extraction + report export
 tiktoken           # Token counting (cl100k_base encoding)
 customtkinter      # Modern themed Tkinter widgets
+platformdirs       # OS-appropriate config/state directories
 ```
 
 ## Changelog
+
+### v1.8.2 — Reliability, Correctness, and UX Fixes
+
+- **Fix**: File dialogs now use `tkinter.filedialog` instead of `ctk.filedialog` — Browse, Export JSON, and Export Report dialogs no longer crash with `AttributeError`
+- **Fix**: Batch polling handles terminal failure states (`failed`, `expired`, `canceled`) — no more infinite polling loops
+- **Fix**: Verification batch polling also handles terminal states — falls back to sequential verification on failure
+- **Fix**: Exiting report mode now restores the log with `fill="both", expand=True` — log properly fills available space
+- **Fix**: Batch results now report accurate elapsed time using the batch creation timestamp instead of hardcoded 0.0
+- **Fix**: Cross-spec coordination check now works in batch mode — `ExtractedSpec` objects are stored during token analysis and passed to `collect_batch_results()`
+- **Fix**: Token gating uses per-file logic — multiple medium files no longer falsely blocked when each fits within the per-call limit; over-limit files are identified by name
+- **Improvement**: JSON parsing uses `<FINDINGS_JSON>` sentinel tags for reliable extraction with heuristic fallback for backward compatibility
+- **Improvement**: Config and state files (API key, batch state) stored in OS-appropriate user-writable directories via `platformdirs` — frozen PyInstaller builds no longer silently fail to persist data
+- **Improvement**: Batch state save failures are logged instead of silently swallowed
+- **Improvement**: Unknown batch statuses are handled defensively with a warning instead of silent continuation
+- **Dependency**: Added `platformdirs` for cross-platform config/state directory resolution
 
 ### v1.8.1 — Restyled Word Report
 

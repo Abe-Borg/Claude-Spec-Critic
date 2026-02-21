@@ -188,7 +188,11 @@ Use the <fileName> from that header verbatim in the "fileName" field of each fin
 <output_format>
 First, provide your ANALYSIS SUMMARY (2 to 4 paragraphs with personality).
 
-Then output your findings as a JSON array. No markdown formatting or code fences around the JSON — just the raw array starting with [ and ending with ].
+Then output your findings as a JSON array wrapped in sentinel tags. No markdown formatting or code fences — wrap the array in <FINDINGS_JSON> and </FINDINGS_JSON> tags like this:
+
+<FINDINGS_JSON>
+[...your findings array...]
+</FINDINGS_JSON>
 
 The response MUST be valid JSON:
 - A single top-level array
@@ -312,7 +316,7 @@ Current code cycle: CBC {CURRENT_CBC}, CMC {CURRENT_CMC}, CPC {CURRENT_CPC}, Ene
 
 Reminders:
 - Review every section in every file. Do not stop early.
-- Analysis summary first (2-4 paragraphs), then the JSON findings array (no code fences).
+- Analysis summary first (2-4 paragraphs), then the JSON findings array wrapped in <FINDINGS_JSON></FINDINGS_JSON> tags (no code fences).
 - Each finding needs: severity, fileName, section, issue, actionType, existingText, replacementText, codeReference, confidence.
 - Include a confidence score (0.0-1.0) for each finding.
 - Flag issues you are confident about. Note uncertainty for moderate-confidence findings. Skip low-confidence hunches.
@@ -358,7 +362,7 @@ Current code cycle: CBC {CURRENT_CBC}, CMC {CURRENT_CMC}, CPC {CURRENT_CPC}, Ene
 
 Reminders:
 - Review every section in the file. Do not stop early.
-- Analysis summary first (1-2 paragraphs for a single spec), then the JSON findings array (no code fences).
+- Analysis summary first (1-2 paragraphs for a single spec), then the JSON findings array wrapped in <FINDINGS_JSON></FINDINGS_JSON> tags (no code fences).
 - Each finding needs: severity, fileName, section, issue, actionType, existingText, replacementText, codeReference, confidence.
 - Include a confidence score (0.0-1.0) for each finding.
 - Flag issues you are confident about. Note uncertainty for moderate-confidence findings. Skip low-confidence hunches.

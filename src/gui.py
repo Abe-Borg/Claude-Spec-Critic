@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import customtkinter as ctk
+from tkinter import filedialog
 
 base_path = os.path.dirname(os.path.abspath(__file__))
 exe_dir = Path(base_path).parent
@@ -20,7 +21,10 @@ from src.extractor import extract_text_from_docx, ExtractedSpec
 from src.tokenizer import RECOMMENDED_MAX
 from src.prompts import get_system_prompt
 from src.report_exporter import export_report
+
 from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
+
+from platformdirs import user_config_dir, user_state_dir
 
 API_KEY_FILENAME = "spec_critic_api_key.txt"
 BATCH_STATE_FILENAME = "batch_state.json"
@@ -32,11 +36,40 @@ BATCH_STATE_MAX_AGE_HOURS = 24
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
 
+def _app_config_dir() -> Path:
+    """Return a user-writable config directory for Spec Critic.
+
+    Uses platformdirs so this works correctly in frozen PyInstaller
+    builds where the exe directory may be read-only.
+    """
+    d = Path(user_config_dir("SpecCritic", appauthor=False))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _app_state_dir() -> Path:
+    """Return a user-writable state directory for Spec Critic."""
+    d = Path(user_state_dir("SpecCritic", appauthor=False))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def load_api_key_from_file():
+    """Load API key, checking platformdirs config dir first, then legacy exe_dir."""
+    # Check new location first
+    kf = _app_config_dir() / API_KEY_FILENAME
+    if kf.exists():
+        try:
+            return kf.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    # Fall back to legacy location (project root / exe_dir)
     kf = exe_dir / API_KEY_FILENAME
     if kf.exists():
-        try: return kf.read_text(encoding="utf-8").strip()
-        except Exception: pass
+        try:
+            return kf.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
     return ""
 
 
@@ -45,8 +78,8 @@ def load_api_key_from_file():
 # ---------------------------------------------------------------------------
 
 def _batch_state_path() -> Path:
-    """Return the path to the batch state file."""
-    return exe_dir / BATCH_STATE_FILENAME
+    """Return the path to the batch state file in user-writable state dir."""
+    return _app_state_dir() / BATCH_STATE_FILENAME
 
 
 def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None:
@@ -71,8 +104,9 @@ def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None
     }
     try:
         _batch_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
-    except Exception:
-        pass  # Non-critical — don't crash if we can't save state
+    except Exception as e:
+        # Log will be available once GUI is running; print as fallback
+        print(f"[SpecCritic] Warning: Could not save batch state: {e}")
 
 
 def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
@@ -388,7 +422,7 @@ class SpecReviewApp(ctk.CTk):
             self.inputs_content.pack(fill="x", padx=16, pady=(0, 16)); self.inputs_expand_label.configure(text="\u25bc"); self._inputs_expanded = True
 
     def _browse_files(self):
-        files = ctk.filedialog.askopenfilenames(title="Select .docx specification files", filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")])
+        files = filedialog.askopenfilenames(title="Select .docx specification files", filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")])
         if files:
             paths = [Path(f) for f in files if f.lower().endswith(".docx")]
             if not paths: self.log.log_warning("No .docx files selected"); return
@@ -402,6 +436,7 @@ class SpecReviewApp(ctk.CTk):
         if not file_paths:
             self.log.log_warning("No .docx files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
         self.log.log_step(f"Analyzing {len(file_paths)} files...")
+
         def analyze():
             try:
                 file_data = []
@@ -411,42 +446,65 @@ class SpecReviewApp(ctk.CTk):
                 self._system_prompt_tokens = len(enc.encode(get_system_prompt()))
                 ctx = self._get_project_context()
                 self._project_context_tokens = len(enc.encode(ctx)) if ctx else 0
+
+                extracted_specs: list[ExtractedSpec] = []
                 for f in file_paths:
                     try:
                         spec = extract_text_from_docx(f)
                         tokens = len(enc.encode(spec.content))
                         file_data.append({"path": f, "filename": spec.filename, "tokens": tokens, "content": spec.content})
                         processed_names.append(f.name)
+                        extracted_specs.append(spec)
                     except Exception as e:
                         self.after(0, lambda err=str(e), n=f.name: self.log.log_warning(f"Could not read {n}: {err}"))
+                
                 if processed_names:
                     self.after(0, lambda names=processed_names: self.log.log_file_batch(names))
+
                 if file_data:
                     self._loaded_file_data = file_data
-                    total = self._system_prompt_tokens + self._project_context_tokens + sum(d["tokens"] for d in file_data)
+                    self._extracted_specs = extracted_specs
+                    overhead = self._system_prompt_tokens + self._project_context_tokens
+                    total = overhead + sum(d["tokens"] for d in file_data)
+                    max_per_file = max(d["tokens"] for d in file_data)
+                    per_file_limit_exceeded = (overhead + max_per_file) > RECOMMENDED_MAX
                     self.after(0, lambda: self.file_list_panel.load_files(file_data))
                     self.after(0, lambda: self.token_gauge.update_gauge(total, len(file_data)))
                     self.after(0, lambda: self.log.log_success(f"Token analysis complete: {total:,} tokens"))
-                    wl = total <= RECOMMENDED_MAX
-                    self.after(0, lambda: self.run_button.configure(state="normal" if wl else "disabled"))
-                    self.after(0, lambda w=wl: self.file_list_panel.set_over_limit(not w))
+                    if per_file_limit_exceeded:
+                        # Find the offending file(s) for a clear message
+                        over_files = [d["filename"] for d in file_data if (overhead + d["tokens"]) > RECOMMENDED_MAX]
+                        self.after(0, lambda of=over_files: self.log.log_warning(
+                            f"File too large for single API call: {', '.join(of)}"
+                        ))
+                    self.after(0, lambda b=per_file_limit_exceeded: self.run_button.configure(
+                        state="disabled" if b else "normal"
+                    ))
+                    self.after(0, lambda b=per_file_limit_exceeded: self.file_list_panel.set_over_limit(b))
             except Exception as e:
                 self.after(0, lambda: self.log.log_error(f"Analysis failed: {e}"))
+        
         threading.Thread(target=analyze, daemon=True).start()
 
     def _on_file_selection_change(self):
         if not hasattr(self, "_loaded_file_data") or not self._loaded_file_data: return
         sel = set(self.file_list_panel.get_selected_files())
-        total = (
+        selected_data = [d for d in self._loaded_file_data if d["path"] in sel]
+        overhead = (
             getattr(self, "_system_prompt_tokens", 0)
             + getattr(self, "_project_context_tokens", 0)
-            + sum(d["tokens"] for d in self._loaded_file_data if d["path"] in sel)
         )
-        fc = len(sel)
+        total = overhead + sum(d["tokens"] for d in selected_data)
+        fc = len(selected_data)
         self.token_gauge.update_gauge(total, fc)
-        wl = total <= RECOMMENDED_MAX
-        self.run_button.configure(state="normal" if (wl and fc > 0) else "disabled")
-        self.file_list_panel.set_over_limit(not wl)
+        # Block only if any single file exceeds the per-call limit
+        if fc > 0:
+            max_per_file = max(d["tokens"] for d in selected_data)
+            per_file_exceeded = (overhead + max_per_file) > RECOMMENDED_MAX
+        else:
+            per_file_exceeded = False
+        self.run_button.configure(state="normal" if (fc > 0 and not per_file_exceeded) else "disabled")
+        self.file_list_panel.set_over_limit(per_file_exceeded)
 
     def _validate_inputs(self):
         if not self.api_key_entry.get().strip(): self.log.log_error("API key is required"); return False
@@ -546,7 +604,7 @@ class SpecReviewApp(ctk.CTk):
             result: PipelineResult from the review pipeline
         """
         default_name = f"spec-critic-report-{datetime.now().strftime('%Y-%m-%d')}.docx"
-        path = ctk.filedialog.asksaveasfilename(
+        path = filedialog.asksaveasfilename(
             title="Save Review Report",
             defaultextension=".docx",
             filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")],
@@ -631,7 +689,16 @@ class SpecReviewApp(ctk.CTk):
         elif status.status in ("canceling",):
             self.log.log_warning("Batch is being canceled...")
             self._schedule_next_poll(5_000)
+        elif status.status in ("failed", "expired", "canceled"):
+            # Terminal failure — stop polling, inform user, clean up
+            self.log.log_error(f"Batch terminated with status: {status.status}")
+            self.log.log_warning("No results to collect. Clearing batch state.")
+            delete_batch_state()
+            self._batch_submission = None
+            self._reset_ui()
         else:
+            # Unknown status — keep polling but warn so we notice new statuses
+            self.log.log_warning(f"Unexpected batch status: {status.status} — continuing to poll...")
             self._schedule_next_poll(15_000)
 
     def _schedule_next_poll(self, delay_ms: int):
@@ -644,18 +711,34 @@ class SpecReviewApp(ctk.CTk):
                     self.after(0, lambda m=msg: self.log.log_step(m))
                     self.after(0, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
 
-                # Cross-check is skipped for resumed batches (no ExtractedSpec objects available)
                 cross_check = getattr(self, "_cross_check_for_review", False)
                 project_context = getattr(self, "_project_context_for_review", "")
+
+                # Build specs list for cross-check, filtered to reviewed files
+                specs_for_cross_check = None
+                if cross_check:
+                    available_specs = getattr(self, "_extracted_specs", [])
+                    if available_specs:
+                        reviewed_set = set(self._batch_submission.files_reviewed)
+                        specs_for_cross_check = [
+                            s for s in available_specs
+                            if s.filename in reviewed_set
+                        ]
+                    if not specs_for_cross_check:
+                        self.after(0, lambda: self.log.log_warning(
+                            "Cross-check skipped: spec content not available (resumed batch or files changed)."
+                        ))
 
                 result = collect_batch_results(
                     self._batch_submission,
                     verify=True,
                     cross_check=cross_check,
+                    specs=specs_for_cross_check,
                     project_context=project_context,
                     log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
                     progress=_on_progress,
                 )
+
                 self.after(0, lambda: self._on_review_complete(result))
             except Exception as e:
                 import traceback
@@ -814,7 +897,7 @@ class SpecReviewApp(ctk.CTk):
             self.file_list_panel.pack(fill="x", pady=(16, 0), after=self.inputs_card)
         self.token_gauge.pack(fill="x", pady=(16, 0))
         self.run_button.pack(fill="x", pady=(16, 0))
-        self.log.pack(fill="x", pady=(16, 0))
+        self.log.pack(fill="both", expand=True, pady=(16, 0))
 
     def _reset_for_new_review(self):
         if self._report_mode:
