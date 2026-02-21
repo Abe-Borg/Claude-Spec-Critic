@@ -218,7 +218,16 @@ class SpecReviewApp(ctk.CTk):
         # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
         self.hdr.pack(fill="x", pady=(0, 20))
-        ctk.CTkLabel(self.hdr, text="Spec Critic", font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"), text_color=COLORS["text_primary"]).pack(anchor="w")
+        hdr_title_row = ctk.CTkFrame(self.hdr, fg_color="transparent")
+        hdr_title_row.pack(fill="x")
+        ctk.CTkLabel(hdr_title_row, text="Spec Critic", font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"), text_color=COLORS["text_primary"]).pack(side="left")
+        ctk.CTkButton(
+            hdr_title_row, text="How It Works", width=110, height=30,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            fg_color=COLORS["bg_card"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"], command=self._show_about_dialog,
+        ).pack(side="right", pady=(4, 0))
         ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
         self._create_inputs_card(c)
@@ -962,6 +971,116 @@ class SpecReviewApp(ctk.CTk):
         self.log.pack(fill="both", expand=True, pady=(16, 0))
         if not self._inputs_expanded:
             self._toggle_inputs_card()
+
+    # ----- About / How It Works dialog -----
+
+    def _show_about_dialog(self):
+        """Show a modal dialog explaining how Spec Critic works."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("How Spec Critic Works")
+        dialog.geometry("620x640")
+        dialog.configure(fg_color=COLORS["bg_dark"])
+        dialog.resizable(True, True)
+        dialog.minsize(500, 500)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.lift()
+        dialog.focus_force()
+
+        outer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
+        outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+        ctk.CTkLabel(
+            outer, text="How Spec Critic Works",
+            font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", padx=20, pady=(20, 4))
+
+        ctk.CTkLabel(
+            outer, text="AI-assisted M&P specification review for California K-12 DSA projects",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_muted"],
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        # Scrollable content
+        scroll = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        sections = [
+            ("1.  Text Extraction", (
+                "Your .docx and .pdf files are read locally. Paragraphs and tables are "
+                "extracted \u2014 nothing is sent to Claude yet."
+            )),
+            ("2.  Local Pre-Screening", (
+                "Before any API calls, the tool scans for LEED references and unresolved "
+                "placeholders (like [EDIT] or [VERIFY]). These are flagged as alerts and "
+                "don\u2019t cost any tokens."
+            )),
+            ("3.  Per-Spec Review", (
+                "Each specification is sent individually to Claude (Opus 4.6 or Sonnet 4.6, "
+                "your choice). Claude checks for code compliance issues (CBC, CMC, CPC, "
+                "Energy Code, CALGreen), DSA-specific requirements, outdated standards, "
+                "coordination problems, and constructability concerns. Each finding is "
+                "assigned a severity (Critical, High, Medium, or Gripe) and a confidence score."
+            )),
+            ("4.  Deduplication", (
+                "When the same issue appears across multiple specs \u2014 like an outdated "
+                "seismic code reference \u2014 duplicates are consolidated into a single "
+                "finding that lists all affected files."
+            )),
+            ("5.  Cross-Spec Coordination  (optional)", (
+                "If enabled, a separate pass analyzes how your specs relate to each other. "
+                "It catches contradictions between specs, missing cross-references, scope "
+                "gaps and overlaps, and inconsistent equipment data. This uses a cheaper "
+                "model (Sonnet 4.6) and only looks at section headers and existing "
+                "findings \u2014 not the full spec text."
+            )),
+            ("6.  Verification", (
+                "Every Critical, High, and Medium finding is independently verified by a "
+                "second Claude call with web search access. The verifier checks whether "
+                "the cited code or standard actually says what the finding claims. Each "
+                "finding gets a verdict: Confirmed, Corrected, Disputed, or Unverified."
+            )),
+        ]
+
+        for title, body in sections:
+            ctk.CTkLabel(
+                scroll, text=title,
+                font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+                text_color=COLORS["text_primary"],
+            ).pack(anchor="w", padx=8, pady=(10, 2))
+            ctk.CTkLabel(
+                scroll, text=body,
+                font=ctk.CTkFont(family="Segoe UI", size=12),
+                text_color=COLORS["text_secondary"],
+                wraplength=520, justify="left",
+            ).pack(anchor="w", padx=8, pady=(0, 4))
+
+        # Disclaimer
+        ctk.CTkLabel(
+            scroll, text="What it doesn\u2019t do",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", padx=8, pady=(14, 2))
+        ctk.CTkLabel(
+            scroll,
+            text=(
+                "Spec Critic is a review assistant \u2014 it doesn\u2019t modify your "
+                "documents. It\u2019s advisory only and not a substitute for AHJ review. "
+                "Code citations should still be spot-checked by the engineer of record."
+            ),
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_secondary"],
+            wraplength=520, justify="left",
+        ).pack(anchor="w", padx=8, pady=(0, 10))
+
+        # Close button
+        ctk.CTkButton(
+            outer, text="Close", width=100, height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            command=dialog.destroy,
+        ).pack(pady=(0, 16))
 
 
 def main():
