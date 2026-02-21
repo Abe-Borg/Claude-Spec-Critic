@@ -1,516 +1,267 @@
-# CLAUDE.md
+# CLAUDE.md — Spec Critic v1.9.0
 
-This file provides guidance for AI assistants working on the **Spec Critic** codebase.
+Technical reference for AI-assisted development. This file describes the codebase architecture, module responsibilities, data flow, and conventions so that future sessions can pick up where the last one left off.
 
-## Project Overview
+## Application Overview
 
-Spec Critic is a GUI tool for reviewing Mechanical & Plumbing specifications for California K-12 projects under DSA (Division of the State Architect) jurisdiction. It uses Claude for AI-powered analysis of `.docx` specification files and renders results in-app as color-coded finding cards or exports them to a Word document report.
+Spec Critic is a Python desktop application that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude AI models. It extracts text from `.docx` and `.pdf` specification files, sends each spec to Claude for independent review, deduplicates findings across specs, optionally runs a cross-spec coordination check, verifies findings via web search, and presents results either in-app or as an exported Word document.
 
-- **Version**: 1.8.2 (corrective PR — reliability, correctness, and UX fixes)
-- **Python**: >= 3.11 (uses `X | Y` union type syntax)
-- **Review Model**: User-selectable — Claude Opus 4.6 (`claude-opus-4-6`) or Claude Sonnet 4.6 (`claude-sonnet-4-6`)
-- **Verification Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
-- **Cross-Check Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`)
-- **Output**: User-selectable — "View in App" (in-app rendering) or "Export Report" (saves .docx file)
-
-## Repository Structure
+## Module Map
 
 ```
-spec-review/
-├── main.py                  # Entry point
-├── src/                     # Core package
-│   ├── __init__.py          # Package version ("1.8.2")
-│   ├── gui.py               # CustomTkinter app window, input handling, threading,
-│   │                        #   persistent batch state, model selector, output mode selector
-│   ├── widgets.py           # Custom UI widgets (TokenGauge, FileListPanel,
-│   │                        #   EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
-│   ├── pipeline.py          # SINGLE SOURCE OF TRUTH for review workflow
-│   ├── report_exporter.py   # Word document (.docx) report generation from PipelineResult
-│   │                        #   Uses Word-native formatting (headings, Table Grid, List Bullet)
-│   ├── cross_checker.py     # Cross-spec coordination check (Sonnet 4.6)
-│   ├── batch.py             # Anthropic Message Batches API integration
-│   │                        #   (review batches + verification batches)
-│   ├── verifier.py          # Web search self-verification (Sonnet 4.6 + web_search)
-│   │                        #   Sequential mode + batch mode
-│   ├── extractor.py         # .docx text extraction (paragraphs + tables)
-│   ├── preprocessor.py      # Local LEED/placeholder detection (NOT sent to LLM)
-│   ├── tokenizer.py         # tiktoken-based token counting + limit enforcement
-│   ├── prompts.py           # System prompt and user message construction
-│   └── reviewer.py          # Anthropic API client with streaming + retry logic
-├── pyproject.toml           # Modern Python packaging config
-├── .gitignore               # Excludes specs/, venv/, build/, dist/, batch_state.json
-└── README.md                # User-facing documentation
+src/
+├── __init__.py          # Package version (1.9.0)
+├── gui.py               # CustomTkinter GUI — all user interaction
+├── widgets.py           # Reusable UI components (TokenGauge, FileListPanel, etc.)
+├── pipeline.py          # Core orchestration — SINGLE SOURCE OF TRUTH for workflow
+├── report_exporter.py   # Word document (.docx) report generation
+├── cross_checker.py     # Cross-spec coordination check (Sonnet 4.6)
+├── batch.py             # Anthropic Message Batches API wrapper
+├── verifier.py          # Web search verification (Sonnet 4.6)
+├── extractor.py         # Text extraction from DOCX and PDF files
+├── preprocessor.py      # Local LEED/placeholder detection (no API)
+├── tokenizer.py         # Token counting with tiktoken (cl100k_base)
+├── prompts.py           # System prompt for Claude review
+└── reviewer.py          # Anthropic API client with streaming + model constants
 ```
 
-## Architecture
-
-### Core Design Principle
-
-`pipeline.py` is the **single source of truth** for the review workflow. The GUI (`gui.py`) calls `pipeline.run_review()` and receives a `PipelineResult` containing all data needed to render the in-app report **or** export a Word document. Never duplicate pipeline logic in the GUI module.
-
-### Pipeline Stages (in order)
-
-1. Extract text from `.docx` files → `ExtractedSpec` objects
-2. Detect LEED references and placeholders locally (regex, not sent to LLM)
-3. Per-spec token limit check (hard stop, no silent truncation)
-4. Per-spec siloed review via streaming API calls to the selected model (Opus or Sonnet)
-5. Parse JSON findings (including confidence scores) + analysis summary
-6. Deduplicate findings across specs
-7. **Optional**: Cross-spec coordination check via Sonnet 4.6 (if enabled and 2+ specs)
-8. Web search verification of all CRITICAL/HIGH/MEDIUM findings via Sonnet 4.6
-   - Real-time mode: Sequential API calls (`verify_findings()`)
-   - Batch mode: Single verification batch via Batches API (`verify_findings_batch()`)
-9. Return `PipelineResult` to GUI
-10. GUI routes output based on user selection:
-    - "View in App": Renders ReportPanel + opens ReportWindow (existing behavior)
-    - "Export Report": Calls `report_exporter.export_report()` → saves .docx file
-
-### Module Responsibilities
-
-| Module | Responsibility |
-|--------|---------------|
-| `gui.py` | App window, input handling (project context, model selector, output mode selector, mode toggle, cross-check checkbox), threading, review orchestration, batch polling, batch state persistence, report expand/collapse, pop-out window lifecycle, export routing |
-| `widgets.py` | All custom CustomTkinter widgets with animations, shared report rendering helpers, ReportWindow toplevel, confidence badge rendering, cross-check section rendering |
-| `pipeline.py` | Orchestration — ties all modules together, returns `PipelineResult`. Provides `run_review()` for real-time and `start_batch_review()` + `collect_batch_results()` for batch. Model parameter flows through all review calls. |
-| `report_exporter.py` | Word document generation from `PipelineResult`. Uses Word-native formatting (real heading styles, Table Grid, List Bullet, Arial 11pt) to produce a clean .docx with files reviewed list, summary table with colored cell shading, alerts, structured per-spec findings with labeled rows, verification verdicts, cross-check section, and reviewer's notes. |
-| `cross_checker.py` | Cross-spec coordination check — extracts section headers, builds condensed input, calls Sonnet 4.6, parses coordination findings |
-| `batch.py` | Anthropic Message Batches API integration — review batch submission/polling/retrieval, verification batch submission/retrieval, cancellation |
-| `verifier.py` | Web search self-verification — builds verification prompts, calls Sonnet 4.6 with web_search tool. Two modes: `verify_findings()` (sequential) and `verify_findings_batch()` (batched via Batches API) |
-| `extractor.py` | `.docx` → plain text (paragraphs + tables) |
-| `preprocessor.py` | Local regex detection of LEED refs and placeholders |
-| `tokenizer.py` | Token counting (tiktoken cl100k_base) + limit enforcement |
-| `prompts.py` | XML-structured system prompt with parameterized code cycle, confidence scoring schema, + enriched user message |
-| `reviewer.py` | Anthropic API streaming client with retry logic + JSON parsing (including confidence field). Exports `MODEL_OPUS_46`, `MODEL_SONNET_46`, and `REVIEW_MODELS` dict for GUI model selector. |
-
-### Data Flow
+## Data Flow
 
 ```
-.docx files
-    → extractor.py (text extraction)
-    → preprocessor.py (LEED/placeholder detection, local only)
-    → tokenizer.py (token counting, limit check)
-    → reviewer.py (per-spec streaming API calls to selected model)
-    → pipeline.py (deduplication)
-    → cross_checker.py (optional: coordination check via Sonnet 4.6)
-    → verifier.py (web search verification via Sonnet 4.6)
-        ├── Real-time: sequential verify_findings()
-        └── Batch: verify_findings_batch() → batch.py Batches API
-    → pipeline.py (aggregation, returns PipelineResult)
-    → gui.py (routes output based on user selection)
-        ├── "View in App": renders ReportPanel + opens ReportWindow
-        └── "Export Report": calls report_exporter.export_report() → .docx file
+User selects .docx/.pdf files
+         │
+         ▼
+    extractor.py ─────────────────────────────────────────────────┐
+    extract_text(filepath) → ExtractedSpec                        │
+    Routes to extract_text_from_docx() or extract_text_from_pdf() │
+    based on file extension                                       │
+         │                                                        │
+         ▼                                                        │
+    preprocessor.py                                               │
+    preprocess_spec() → LEED alerts, placeholder alerts           │
+         │                                                        │
+         ▼                                                        │
+    tokenizer.py                                                  │
+    count_tokens() → per-spec token counts                        │
+         │                                                        │
+         ├──── Real-time path ────┐     ├──── Batch path ────┐   │
+         ▼                        │     ▼                     │   │
+    reviewer.py                   │  batch.py                 │   │
+    review_single_spec()          │  submit_review_batch()    │   │
+    Per-spec API calls            │  Single batch submission  │   │
+         │                        │     │                     │   │
+         ▼                        │     ▼                     │   │
+    pipeline.py                   │  poll_batch()             │   │
+    _deduplicate_findings()       │  retrieve_review_results()│   │
+         │                        │     │                     │   │
+         ├────────────────────────┘     ├─────────────────────┘   │
+         ▼                                                        │
+    cross_checker.py (optional)                                   │
+    run_cross_check() → coordination findings                     │
+         │                                                        │
+         ▼                                                        │
+    verifier.py                                                   │
+    verify_findings() or verify_findings_batch()                  │
+         │                                                        │
+         ▼                                                        │
+    PipelineResult                                                │
+         │                                                        │
+         ├──── View in App ──── widgets.py (ReportWindow)         │
+         └──── Export Report ── report_exporter.py (.docx)        │
 ```
 
-### Data Flow Classes
+## Key Data Structures
 
-- `ExtractedSpec` — filename, content, word_count (from extractor)
-- `PreprocessResult` — leed_alerts, placeholder_alerts (from preprocessor)
-- `TokenCount` / `TokenSummary` — per-file and total token analysis (from tokenizer)
-- `Finding` — severity, fileName, section, issue, actionType, **confidence (0.0-1.0)**, etc., **plus optional `verification` field** (from reviewer)
-- `ReviewResult` — findings, raw_response, thinking, model, tokens, etc. (from reviewer)
-- `PipelineResult` — review_result, files_reviewed, leed/placeholder alerts, **cross_check_result** (from pipeline)
-- `BatchSubmission` — job, files_reviewed, alerts, **model** (from pipeline)
-
-All data containers use `@dataclass` decorators.
-
-## Export Report (v1.8.0, restyled v1.8.1)
-
-### How It Works
-
-Users can choose between two output modes via a segmented button in Row 5 of the INPUTS card:
-
-- **View in App** (default): Renders results in the ReportPanel and opens a ReportWindow (existing behavior)
-- **Export Report**: Writes results to a `.docx` file via a save dialog, skipping all in-app rendering
-
-The export mode solves the GUI freezing problem when reviewing large numbers of specs. The CustomTkinter widgets (collapsible cards, confidence badges, verification verdicts) are expensive to render at scale, so exporting directly to Word bypasses this bottleneck.
-
-### What the Export Contains
-
-The exported `.docx` report contains everything the in-app report shows:
-- Title block (centered heading) with generation metadata (model, file count, project context)
-- Files reviewed bullet list
-- Summary table (Table Grid style with colored cell shading) and token/time stats
-- LEED and placeholder alerts with sub-headings and bullet lists
-- Per-spec findings grouped by severity (colored sub-headings), sorted by confidence descending
-- Each finding: numbered header with severity badge + confidence + filename, then labeled rows for section, issue, action, existing text (red), replacement text (green), code reference (blue), verification verdict + explanation + correction
-- Cross-spec coordination findings on their own page (if cross-check was enabled)
-- Reviewer's notes / analysis summary on its own page with italic subtitle
-
-### Key Design Decisions
-
-- **Word-native formatting**: Uses `doc.add_heading()`, `'Table Grid'` style, `'List Bullet'` style, and Arial 11pt instead of custom low-level helpers
-- **Separate module**: Export logic lives in `report_exporter.py`, not in `gui.py` or `pipeline.py`
-- **Same data source**: The exporter accepts the same `PipelineResult` that the GUI receives
-- **Pipeline unchanged**: The pipeline itself doesn't change — only what happens after it returns
-- **No in-app rendering**: When export mode is active, neither ReportPanel nor ReportWindow is rendered
-- **python-docx**: Uses the existing `python-docx` dependency (already required for text extraction)
-- **Save dialog**: User chooses the save location via a standard file dialog
-- **Both modes available**: "View in App" remains the default for small reviews
-
-### Where Export Data Lives
-
-- `report_exporter.py`: `export_report()` function — accepts `PipelineResult`, writes `.docx`
-- `gui.py`: `_output_mode_var` (StringVar), `output_selector` (CTkSegmentedButton), `_is_export_mode` property, `_export_report_to_file()` method
-- `gui.py`: `_export_mode_for_review` — captured at review start, checked in `_on_review_complete()`
-
-## Model Selection (v1.7.0)
-
-### How It Works
-
-Users can choose between two models for the first-stage review:
-
-- **Opus 4.6** (default): Most thorough analysis, recommended for final reviews
-- **Sonnet 4.6**: Faster and cheaper, good for quick reviews or draft specs
-
-The model selector is a segmented button in Row 3 of the INPUTS card. The selected model flows through:
-1. `gui.py` → captures `self._model_for_review` at review start
-2. `pipeline.run_review()` / `pipeline.start_batch_review()` → `model` parameter
-3. `reviewer.review_single_spec()` / `batch.submit_review_batch()` → API calls use selected model
-
-**Verification and cross-check always use Sonnet 4.6** regardless of the review model selection.
-
-### Where Model Data Lives
-
-- `reviewer.py`: `MODEL_OPUS_46`, `MODEL_SONNET_46` constants and `REVIEW_MODELS` dict
-- `gui.py`: `_review_model_var` (StringVar), `model_selector` (CTkSegmentedButton), `_selected_review_model` property
-- `pipeline.py`: `model` parameter on `run_review()`, `start_batch_review()`, `BatchSubmission.model`
-
-## Verification Batching (v1.7.0)
-
-### How It Works
-
-In batch mode, verification now routes through the Anthropic Message Batches API instead of making sequential real-time API calls. This saves 50% on verification costs.
-
-**Real-time mode**: Uses `verify_findings()` — sequential API calls (unchanged from v1.6.0)
-**Batch mode**: Uses `verify_findings_batch()` — submits all verifiable findings as a single batch, polls until complete, collects results
-
-### Key Design Decisions
-
-- **Automatic fallback**: If batch verification submission fails, falls back to sequential verification
-- **Terminal state handling (v1.8.2)**: If a verification batch enters a terminal failure state (`failed`, `expired`, `canceled`), polling stops and falls back to sequential verification instead of looping forever
-- **Same verification logic**: Both modes use the same `_build_verification_prompt()` and `_parse_verification_response()` functions
-- **Web search in batch**: Uses `tools=[{"type": "web_search_20250305", "name": "web_search"}]` in each batch request
-- **Confidence ordering preserved**: Batch submission orders findings by ascending confidence for custom_id sequencing
-
-### Where Verification Batch Data Lives
-
-1. **`batch.py`**: `submit_verification_batch()` and `retrieve_verification_results()`
-2. **`verifier.py`**: `verify_findings_batch()` orchestrates submit → poll → collect
-3. **`pipeline.py`**: `collect_batch_results()` calls `verify_findings_batch()` instead of `verify_findings()`
-
-## Persistent Batch State (v1.7.0, updated v1.8.2)
-
-### How It Works
-
-When a user submits a batch and closes the app, they can reopen it and resume polling / collect results. A `batch_state.json` file persists the batch metadata.
-
-### Storage Location (v1.8.2)
-
-Batch state and API key files are stored in OS-appropriate user-writable directories via `platformdirs`:
-- **Config** (API key): `platformdirs.user_config_dir("SpecCritic")` — e.g., `%LOCALAPPDATA%\SpecCritic` on Windows
-- **State** (batch state): `platformdirs.user_state_dir("SpecCritic")` — e.g., `%LOCALAPPDATA%\SpecCritic` on Windows
-
-This ensures writes succeed in frozen PyInstaller builds where the exe directory may be read-only. Legacy locations (project root / exe_dir) are checked as fallback for API key loading.
-
-### State File Lifecycle
-
-1. **Created**: After `start_batch_review()` returns successfully
-2. **Checked on launch**: `_check_pending_batch()` runs 500ms after GUI init
-3. **Resume dialog**: Shows batch ID, file count, model, age, and phase with Resume/Discard buttons
-4. **Deleted**: After `_on_review_complete()` succeeds, or if user clicks Discard, or if state is stale (>24 hours), or if batch enters terminal failure state
-
-### Key Design Decisions
-
-- **Single active batch**: Only one batch state file at a time
-- **Cross-check on batch collect (v1.8.2)**: `ExtractedSpec` objects are stored during token analysis and passed to `collect_batch_results()` so cross-check can run in batch mode
-- **Cross-check skipped on resume**: No `ExtractedSpec` objects available after restart, so cross-check is disabled for resumed batches (user is informed via log)
-- **24-hour expiry**: State files older than 24 hours are automatically discarded
-- **API key validation**: Resume requires a valid API key — if missing, shows error and doesn't resume
-- **Non-modal dialog**: The resume/discard dialog is a transient toplevel that grabs focus
-- **Terminal state cleanup (v1.8.2)**: If batch enters `failed`, `expired`, or `canceled` state, polling stops and state file is deleted
-
-### State File Format
-
-```json
-{
-  "version": "1.8.2",
-  "saved_at": "2025-02-19T19:30:00+00:00",
-  "phase": "review",
-  "batch_id": "msgbatch_abc123",
-  "job_type": "review",
-  "request_map": { ... },
-  "created_at": 1739907000.0,
-  "files_reviewed": ["23 05 00.docx", "23 21 13.docx"],
-  "leed_alerts": [],
-  "placeholder_alerts": [],
-  "model": "claude-opus-4-6"
-}
-```
-
-## Cross-Spec Coordination Check (v1.6.0, batch wiring fixed v1.8.2)
-
-### How It Works
-
-After per-spec reviews complete and findings are deduplicated, an optional coordination check looks across ALL specs for inter-spec issues:
-
-1. **Section headers** are extracted from each spec (PART lines, numbered articles, all-caps titles)
-2. These headers plus a summary of existing per-spec findings are sent to **Sonnet 4.6** in a single API call
-3. Sonnet looks exclusively for cross-spec coordination problems (contradictions, missing references, division-of-work gaps)
-4. Coordination findings are returned as a separate `ReviewResult` and rendered in their own report section
-
-### Key Design Decisions
-
-- **Optional**: Controlled by a checkbox in the GUI (default off)
-- **Sonnet 4.6**: Uses the cheaper/faster model since this is a focused analytical task
-- **Condensed input**: Section headers + existing findings, NOT full spec text — keeps token usage low
-- **Separate section**: Cross-check findings render in a distinct "CROSS-SPEC COORDINATION" section with cyan accent
-- **No batch mode**: Cross-check is always a real-time streaming call (even when review uses batch mode)
-- **Works in batch mode (v1.8.2)**: `ExtractedSpec` objects are now stored during token analysis and passed through to `collect_batch_results()`, enabling cross-check after batch review collection
-- **Requires 2+ specs**: Automatically skipped if only 1 spec is loaded
-- **Token limit check**: If the condensed input exceeds 150k tokens, cross-check is gracefully skipped
-- **Verification included**: Cross-check findings go through the same web search verification as per-spec findings
-- **Not available on resume**: Cross-check is skipped when resuming a batch (no ExtractedSpec objects available) — user is informed via log
-
-## JSON Parsing (v1.8.2 — improved robustness)
-
-### How It Works
-
-The review model's response contains a narrative analysis summary followed by a JSON findings array. The parser extracts the JSON using a two-strategy approach:
-
-1. **Sentinel tags (preferred)**: The prompt instructs the model to wrap JSON in `<FINDINGS_JSON>...</FINDINGS_JSON>` tags. The parser looks for these first.
-2. **Heuristic fallback**: If tags aren't found (e.g., backward compatibility with in-flight responses), falls back to finding the first `[` and last `]` in the response.
-3. **Empty detection**: If neither strategy works, checks for "no issues" language and returns an empty array.
-
-### Key Design Decisions
-
-- **Backward compatible**: The heuristic fallback ensures responses without sentinel tags still parse correctly
-- **Graceful failure**: `JSONDecodeError` is caught at each strategy level — parse failures don't crash the run
-- **Both prompts updated**: Main review prompt (`prompts.py`) and cross-check prompt (`cross_checker.py`) both request sentinel tags
-- **User message reinforcement**: The sentinel tag instruction appears in both the system prompt `<output_format>` section and the user message reminders
-
-## Token Gating (v1.8.2 — per-file logic)
-
-### How It Works
-
-Since each spec gets its own API call, the hard constraint is per-file tokens (system prompt + project context + single file), not total tokens across all files. The GUI now reflects this:
-
-- **Run is disabled** only if any single selected file exceeds the per-call limit (system + context + file > 150k tokens)
-- **Total tokens** are still displayed in the gauge as a cost/time estimate but do not block the run
-- **Over-limit files** are named in the log so the user knows which file is too large
-
-## Confidence Scoring (v1.5.0)
-
-### How It Works
-
-Each finding includes a numeric `confidence` field (0.0–1.0):
-- **0.85–1.0**: HIGH — model is quite sure, can cite specific code section
-- **0.60–0.84**: MODERATE — fairly sure but uncertain on details
-- **0.35–0.59**: LOW-MODERATE — suspected issue, flagged with caveats
-- **Below 0.35**: Not flagged as a finding — mentioned in narrative summary only
-
-### Where Confidence Is Used
-
-1. **Parsing**: `_parse_findings()` in `reviewer.py` extracts and clamps confidence to [0.0, 1.0], defaults to 0.5 if missing or invalid
-2. **Card rendering**: `_render_collapsible_card()` in `widgets.py` shows a color-coded confidence badge (green/amber/red) in each card header
-3. **Report export**: `_write_finding_entry()` in `report_exporter.py` shows confidence percentage with color coding in the finding header
-4. **Sorting**: Both in-app and export sort findings by confidence descending within each severity tier
-5. **Verification priority**: `verify_findings()` in `verifier.py` processes findings in ascending confidence order (least confident first)
-6. **JSON export**: `_finding_to_dict()` includes the confidence field
-
-## Prompt Architecture
-
-### System Prompt (`prompts.py`)
-
-The system prompt uses XML-tagged sections for clear structural hierarchy:
-
-| Section | Purpose |
-|---------|---------|
-| `<task>` | Core instruction: review specs, classify findings, assign confidence |
-| `<personality>` | Tone calibration with three example ranges + narrative budget (2-4 paragraphs) |
-| `<severity_definitions>` | CRITICAL / HIGH / MEDIUM / GRIPES with concrete examples |
-| `<review_priorities>` | Three-tier weighted checklist (Tier 1 = always check, Tier 3 = when relevant) |
-| `<what_not_to_flag>` | LEED, placeholders, low-confidence hunches |
-| `<confidence_guidance>` | Numeric 0.0-1.0 spectrum with score ranges and examples |
-| `<edge_cases>` | Single spec, non-MEP only, very short specs, mixed disciplines |
-| `<duplicate_issues>` | Consolidation rule for repeated problems |
-| `<file_delimiters>` | How input files are separated |
-| `<output_format>` | JSON schema (including confidence field) + sentinel tag wrapping (`<FINDINGS_JSON>`) + examples showing ADD, EDIT, DELETE with confidence scores |
-| `<critical_checks>` | Five mandatory verification steps |
-
-### Cross-Check System Prompt (`cross_checker.py`)
-
-The cross-check prompt is embedded in `cross_checker.py` (not in `prompts.py`) because it is a fundamentally different task with different instructions. It also uses `<FINDINGS_JSON>` sentinel tags for JSON output.
-
-### Code Cycle Parameters
-
-Code references are parameterized at the top of `prompts.py`:
-
+### ExtractedSpec (extractor.py)
 ```python
-CURRENT_CBC = "2025"
-CURRENT_ASCE7 = "7-22"
-PREVIOUS_CBC = "2022"
-PREVIOUS_ASCE7 = "7-16"
+@dataclass
+class ExtractedSpec:
+    filename: str   # e.g. "23 21 13 - Hydronic Piping.docx" or "23 05 00.pdf"
+    content: str    # Full text, paragraphs separated by \n\n
+    word_count: int  # Approximate (split on whitespace)
 ```
 
-When California adopts a new code cycle, update these constants.
+This is the **universal interface** between extraction and all downstream modules. The pipeline, preprocessor, tokenizer, reviewer, verifier, cross-checker, batch module, and report exporter all work with `ExtractedSpec` — they never need to know whether the source was DOCX or PDF.
 
-## Token Limits
-
-- **Max context**: 200,000 tokens (hard)
-- **Recommended max input**: 150,000 tokens (enforced per-file)
-- **Safety buffer**: 50,000 tokens (for system prompt ~2-3k, max output 32,768, tokenizer variance)
-- **Warning levels**: CRITICAL (>200k), WARNING (>150k), NOTE (>80% of 150k)
-- **GUI gating (v1.8.2)**: Run/Submit blocked only if any single file exceeds per-call limit (system + context + file > 150k)
-
-## Entry Point
-
-```bash
-python main.py
+### Finding (reviewer.py)
+```python
+@dataclass
+class Finding:
+    severity: str        # CRITICAL | HIGH | MEDIUM | GRIPES
+    fileName: str
+    section: str
+    issue: str
+    actionType: str      # FIX | VERIFY | CONSIDER
+    existingText: str
+    replacementText: str
+    codeReference: str
+    confidence: float    # 0.0–1.0
+    verification: Optional[VerificationResult] = None
 ```
+
+### ReviewResult (reviewer.py)
+```python
+@dataclass
+class ReviewResult:
+    findings: list[Finding]
+    raw_response: str
+    thinking: str = ""
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    elapsed_seconds: float = 0.0
+    error: str = ""
+```
+
+### PipelineResult (pipeline.py)
+```python
+@dataclass
+class PipelineResult:
+    review_result: Optional[ReviewResult]
+    files_reviewed: list[str]
+    leed_alerts: list[dict]
+    placeholder_alerts: list[dict]
+    cross_check_result: Optional[ReviewResult] = None
+```
+
+## Module Details
+
+### extractor.py — Text Extraction (DOCX + PDF)
+
+**Public API:**
+- `extract_text(filepath: Path) -> ExtractedSpec` — Format-agnostic dispatcher. Routes to DOCX or PDF based on extension.
+- `extract_text_from_docx(filepath: Path) -> ExtractedSpec` — DOCX extraction via python-docx
+- `extract_text_from_pdf(filepath: Path) -> ExtractedSpec` — PDF extraction via pymupdf
+- `extract_multiple_specs(filepaths: list[Path]) -> list[ExtractedSpec]` — Batch convenience wrapper
+- `SUPPORTED_EXTENSIONS: set[str]` — `{".docx", ".pdf"}`
+
+**DOCX extraction:**
+- Extracts paragraphs and table cells from `.docx` files
+- Tables flattened to pipe-delimited rows: `"Cell 1 | Cell 2 | Cell 3"`
+- Uses python-docx (`Document` class)
+
+**PDF extraction (v1.9.0):**
+- Extracts page text with reading-order preservation via pymupdf
+- Detects and extracts tables via `page.find_tables()`, flattened to the same pipe-delimited format as DOCX tables
+- Only native (text-selectable) PDFs are supported — no OCR
+- Scanned PDF detection: if >50% of pages yield fewer than 10 words, a warning is prepended to the content
+- pymupdf import is deferred (inside the function) to avoid import errors when pymupdf is not installed
+
+**Key constants:**
+- `_MIN_WORDS_PER_PAGE = 10` — threshold for scanned page detection
+- `SUPPORTED_EXTENSIONS = {".docx", ".pdf"}`
+
+### pipeline.py — Core Orchestration
+
+**Public API:**
+- `run_review()` — Real-time mode (streaming per-spec calls)
+- `start_batch_review()` → `BatchSubmission` — Submit batch
+- `collect_batch_results(submission)` → `PipelineResult` — Collect after polling
+
+**Internal flow:**
+1. `_prepare_specs()` — Extract, preprocess, token-check (shared by real-time and batch)
+2. Per-spec review (real-time: `review_single_spec()`, batch: `submit_review_batch()`)
+3. `_deduplicate_findings()` — Group by normalized issue + code reference
+4. Cross-check (optional): `run_cross_check()` with section headers + findings
+5. Verification: `verify_findings()` (real-time) or `verify_findings_batch()` (batch)
+6. Return `PipelineResult`
+
+**v1.9.0 changes:**
+- Uses `extract_text()` instead of `extract_text_from_docx()` — supports mixed DOCX/PDF reviews
+- `_get_spec_files()` discovers both `.docx` and `.pdf` files in a directory
+- Deduplication regex handles both `.docx` and `.pdf` filename references
+
+### gui.py — User Interface
+
+**v1.9.0 changes:**
+- File browser filter: `("Specifications", "*.docx *.pdf")` as primary filter
+- `_is_supported_spec()` helper uses `SUPPORTED_EXTENSIONS` from extractor
+- Placeholder text updated: "Select .docx or .pdf specification files"
+- Token analysis uses `extract_text()` dispatcher
+
+**Key patterns:**
+- All API calls run in `threading.Thread(daemon=True)` to avoid GUI freezing
+- Callbacks via `self.after(0, lambda: ...)` for thread-safe UI updates
+- Persistent batch state via `save_batch_state()` / `load_batch_state()` in user state directory
+
+### batch.py — Anthropic Batches API
+
+Wraps the Anthropic Message Batches API for both review and verification.
+
+- `submit_review_batch(specs, ...)` → `BatchJob`
+- `submit_verification_batch(findings)` → `BatchJob`
+- `poll_batch(batch_id)` → `BatchStatus`
+- `retrieve_review_results(job)` → `dict[str, ReviewResult]`
+- `retrieve_verification_results(job)` → `dict[str, VerificationResult]`
+- `cancel_batch(batch_id)` → `bool`
+
+### verifier.py — Finding Verification
+
+- `verify_findings(findings, ...)` — Sequential real-time verification (Sonnet 4.6 + web_search tool)
+- `verify_findings_batch(findings, ...)` — Batched verification via Batches API (50% savings), with fallback to sequential
+
+Skips GRIPES findings. Mutates `finding.verification` in-place.
+
+### cross_checker.py — Cross-Spec Coordination
+
+- `run_cross_check(specs, findings, ...)` → `ReviewResult` with coordination findings
+- Uses Sonnet 4.6 with condensed input (section headers + existing findings)
+- Returns empty result if <2 specs or input exceeds token limit
+
+### report_exporter.py — Word Document Export
+
+- `export_report(result: PipelineResult, output_path, ...)` — Generates formatted `.docx`
+- Accepts same `PipelineResult` as in-app rendering
+- Word-native formatting: heading styles, Table Grid, List Bullet, color-coded severity
+- Findings sorted by severity then confidence
+
+### reviewer.py — API Client
+
+- `review_single_spec(spec_content, filename, ...)` → `ReviewResult`
+- `review_specs(combined_content, ...)` → `ReviewResult` (legacy, kept for compatibility)
+- Model constants: `MODEL_OPUS_46`, `MODEL_SONNET_46`, `REVIEW_MODELS` (label→ID map)
+- JSON parsing: `<FINDINGS_JSON>` sentinel tags with heuristic fallback
+
+### preprocessor.py — Local Detection
+
+- `preprocess_spec(content, filename)` → `PreprocessResult` with LEED alerts and placeholder alerts
+- No API calls — pure regex/string matching
+- Runs before review to avoid wasting tokens on locally-detectable issues
+
+### tokenizer.py — Token Counting
+
+- `count_tokens(text)` → `int` using tiktoken cl100k_base
+- `RECOMMENDED_MAX = 150_000` — per-call token limit
+
+### prompts.py — System Prompt
+
+- `get_system_prompt()` → `str` — Returns the full system prompt for Claude review
+- California K-12 DSA focused, mechanical and plumbing scope
+- Instructs JSON output with `<FINDINGS_JSON>` sentinel tags
+
+## Conventions
+
+- **Version**: Bump in `__init__.py`, `pyproject.toml`, `CLAUDE.md`, `README.md`
+- **Imports**: Relative within `src/` package (e.g., `from .extractor import ...`)
+- **GUI threading**: All API/IO work in daemon threads, UI updates via `self.after(0, ...)`
+- **Error handling**: Per-spec errors collected in `errors` list, partial results still returned
+- **Config/state files**: Stored in OS-appropriate directories via `platformdirs`
+- **Dependencies**: Listed in `pyproject.toml` `[project.dependencies]`
 
 ## Dependencies
 
-### Core (from pyproject.toml)
-- `anthropic` — Claude API client with streaming
-- `customtkinter` — Modern dark-theme GUI toolkit
-- `python-docx` — Word document reading AND report export
-- `tiktoken` — Token counting (cl100k_base encoding)
-- `platformdirs` — OS-appropriate user config/state directories (v1.8.2)
-
-## API Key Configuration
-
-The Anthropic API key is resolved in this order:
-1. File: `spec_critic_api_key.txt` in `platformdirs.user_config_dir("SpecCritic")` (v1.8.2)
-2. File: `spec_critic_api_key.txt` in project root (legacy fallback)
-3. Environment variable: `ANTHROPIC_API_KEY`
-4. Manual entry via GUI dialog
-
-## Code Conventions
-
-### Naming
-- **Files**: `snake_case.py`
-- **Functions/variables**: `snake_case`
-- **Classes**: `PascalCase`
-- **Constants**: `UPPER_SNAKE_CASE`
-- **Private methods**: Leading underscore (`_toggle`, `_extract_json_array`)
-
-### Type Hints
-Type hints are used throughout with Python 3.10+ union syntax (`str | None` rather than `Optional[str]`). All public functions have type-annotated signatures.
-
-### Docstrings
-Google-style docstrings with `Args:`, `Returns:`, `Raises:`, `Example:` sections.
-
-### Callback Pattern
-The pipeline uses callback injection for decoupling from UI:
-- `LogFn = Callable[[str], None]` — log messages
-- `ProgressFn = Callable[[float, str], None]` — progress updates
-
-### Error Handling
-- Early validation with `FileNotFoundError` / `ValueError`
-- Hard stop on token limit exceeded (no silent truncation)
-- Retry with exponential backoff for API errors
-- Graceful fallbacks for missing optional fields
-- Cross-check gracefully skips if token limit exceeded or <2 specs
-- Verification batch falls back to sequential on submission failure or terminal batch state
-- Batch polling handles terminal failure states (`failed`, `expired`, `canceled`) without infinite loops
-- JSON parsing uses sentinel tags with heuristic fallback — parse failures don't crash the run
-- Batch state save failures are logged (not silently swallowed)
-
-## Severity Levels
-
-Findings are classified into four severity tiers:
-- **CRITICAL** — Code violations, life-safety issues, DSA compliance failures
-- **HIGH** — Significant technical errors, coordination problems
-- **MEDIUM** — Best-practice deviations, unclear language
-- **GRIPES** — Formatting, style, minor nitpicks
-
-## GUI Architecture
-
-The GUI uses CustomTkinter with a dark theme. File dialogs use `tkinter.filedialog` (not `ctk.filedialog`). Key widgets in `widgets.py`:
-- `TokenGauge` — Animated fill gauge showing token capacity usage
-- `FileListPanel` — Checkbox list with per-file token counts
-- `EnhancedLog` — Scrollable log with colored text tags
-- `AnimatedButton` — Run button with pulse/glow animations
-- `ReportPanel` — In-app report with summary grid, alerts, findings, cross-check section, notes
-- `ReportWindow` — Pop-out toplevel window with the full report
-
-### Model Selector (v1.7.0)
-
-Row 3 of the INPUTS card contains a segmented button for selecting the review model (Opus 4.6 / Sonnet 4.6) with a hint label that updates based on selection.
-
-### Output Mode Selector (v1.8.0)
-
-Row 5 of the INPUTS card contains a segmented button for selecting the output mode (View in App / Export Report) with a hint label.
-
-### Cross-Check Checkbox (v1.6.0)
-
-Row 6 of the INPUTS card contains a "Cross-spec coordination check" checkbox with a hint label.
-
-## Important Patterns to Preserve
-
-1. **Pipeline is the single source of truth** — Do not add workflow logic to `gui.py`.
-2. **Output routing is in the GUI** — The GUI decides whether to render in-app or export to .docx based on user selection. The pipeline itself is output-agnostic.
-3. **Preprocessor results are local-only** — LEED/placeholder alerts are NOT sent to the LLM.
-4. **Token limits are enforced per-file before API calls** — Never allow calls exceeding 150k per individual spec.
-5. **Streaming is used internally** — Complete response is parsed when finished.
-6. **Model selection for review only** — Verification and cross-check always use Sonnet 4.6.
-7. **No document mutation** — Analysis only. Document cleanup belongs in SpecCleanse.
-8. **Advisory only** — This tool assists human reviewers. Not an AHJ substitute.
-9. **Code cycle is parameterized** — Update constants in `prompts.py`.
-10. **Cross-check is optional** — Controlled by GUI checkbox, default off.
-11. **Cross-check findings are separate** — Rendered in their own section, not mixed with per-spec findings.
-12. **Batch state persists across restarts** — `batch_state.json` in user state dir enables resume after app close.
-13. **Verification batching in batch mode** — Sequential in real-time, batched in batch mode.
-14. **Export report uses same data** — `report_exporter.export_report()` accepts the same `PipelineResult` as the in-app renderer.
-15. **File dialogs use tkinter.filedialog** — Not `ctk.filedialog` (CustomTkinter does not expose filedialog).
-16. **Batch polling handles terminal states** — `failed`, `expired`, `canceled` stop polling immediately.
-17. **JSON parsing uses sentinel tags** — `<FINDINGS_JSON>` tags with heuristic fallback.
-18. **Extracted specs are stored** — `_extracted_specs` populated during token analysis for batch cross-check.
-
-## Common Development Tasks
-
-### Adding a new finding field
-1. Update the `Finding` dataclass in `reviewer.py`
-2. Update JSON parsing in `reviewer._parse_findings()`
-3. Update the prompt schema in `prompts.py` `<output_format>` section
-4. Update card rendering in `widgets.py` `_render_collapsible_card()`
-5. Update `_finding_to_dict()` in `widgets.py` if the field should appear in JSON export
-6. Update `_write_finding_entry()` in `report_exporter.py` to include the field in Word export
-
-### Modifying the cross-check behavior
-1. Edit the system prompt in `cross_checker.py` (`_CROSS_CHECK_SYSTEM_PROMPT`)
-2. Edit `_build_spec_summary()` to change what data is sent
-3. Edit `extract_section_headers()` to change what headers are extracted
-4. Wire any new parameters through `pipeline.py` → `gui.py`
-
-### Updating the code cycle
-Edit the constants at the top of `prompts.py`:
-```python
-CURRENT_CBC = "2025"    # ← update this
-CURRENT_ASCE7 = "7-22"  # ← and this
+```
+anthropic          # Claude API client
+python-docx        # DOCX text extraction + report export
+pymupdf            # PDF text and table extraction (v1.9.0)
+tiktoken           # Token counting
+customtkinter      # GUI framework
+platformdirs       # OS-appropriate config/state directories
 ```
 
-### Adding a new review model
-1. Add the model string constant to `reviewer.py`
-2. Add it to the `REVIEW_MODELS` dict in `reviewer.py`
-3. The GUI model selector auto-populates from `REVIEW_MODELS`
+## Future Development Notes
 
-### Modifying the Word report layout
-Edit the `_write_*()` functions in `report_exporter.py`. The report uses Word-native heading styles, Table Grid, and List Bullet rather than custom styling helpers:
-- `_write_title_block()` → centered title heading + metadata
-- `_write_files_reviewed()` → bullet list of spec filenames
-- `_write_summary_table()` → Table Grid table with colored cell shading
-- `_write_alerts()` → LEED/placeholder alerts with sub-headings and bullet lists
-- `_write_findings_section()` → per-spec findings by severity with colored sub-headings
-- `_write_finding_entry()` → individual finding with labeled rows (Section, Issue, Action, etc.)
-- `_write_cross_check_section()` → coordination findings (page break, own heading)
-- `_write_notes()` → page break + reviewer's analysis summary with italic subtitle
-- `_write_narrative_text()` → shared helper for multi-paragraph text blocks
-
-## Files to Never Commit
-
-- `specs/` — Contains user specification files
-- `spec_critic_api_key.txt` — Contains API credentials
-- `batch_state.json` — Contains transient batch state
-- `.env` files — May contain secrets
-- `build/`, `dist/` — Build artifacts
+- **OCR support**: Not currently supported. Scanned PDFs are detected and warned about. Adding OCR would require `pytesseract` or similar and would be a separate feature.
+- **PDF form fields**: Not extracted. If specs use fillable PDF forms, the form field content won't be captured.
+- **PDF annotations/comments**: Not extracted. Only the main page text content is processed.
+- **Encrypted PDFs**: Not supported. pymupdf will raise an error which is caught and reported as a ValueError.

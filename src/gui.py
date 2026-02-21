@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus / Sonnet
-v1.8.0 - Export Report to Word document
+v1.9.0 - PDF support for native (text-selectable) PDF files
 """
 import os, sys, json, time, threading
 from datetime import datetime, timezone
@@ -17,7 +17,7 @@ sys.path.insert(0, str(exe_dir))
 from src.pipeline import run_review, start_batch_review, collect_batch_results, BatchSubmission
 from src.batch import poll_batch, cancel_batch, BatchStatus, BatchJob
 from src.reviewer import MODEL_OPUS_46, MODEL_SONNET_46, REVIEW_MODELS
-from src.extractor import extract_text_from_docx, ExtractedSpec
+from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from src.tokenizer import RECOMMENDED_MAX
 from src.prompts import get_system_prompt
 from src.report_exporter import export_report
@@ -34,6 +34,14 @@ BATCH_STATE_MAX_AGE_HOURS = 24
 
 # Placeholder hint shown in the project context textbox when empty
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
+
+# File dialog filter for supported spec formats
+_SPEC_FILETYPES = [
+    ("Specifications", "*.docx *.pdf"),
+    ("Word Documents", "*.docx"),
+    ("PDF Documents", "*.pdf"),
+    ("All Files", "*.*"),
+]
 
 
 def _app_config_dir() -> Path:
@@ -90,7 +98,7 @@ def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None
         phase: Current phase — "review" or "verify"
     """
     state = {
-        "version": "1.8.0",
+        "version": "1.9.0",
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "phase": phase,
         "batch_id": submission.job.batch_id,
@@ -167,6 +175,11 @@ def delete_batch_state() -> None:
             path.unlink()
     except Exception:
         pass
+
+
+def _is_supported_spec(filepath: Path) -> bool:
+    """Check if a file has a supported spec extension."""
+    return filepath.suffix.lower() in SUPPORTED_EXTENSIONS
 
 
 class SpecReviewApp(ctk.CTk):
@@ -247,7 +260,7 @@ class SpecReviewApp(ctk.CTk):
         ef = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ef.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=8)
         ef.columnconfigure(0, weight=1)
-        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select .docx specification files", font=ctk.CTkFont(family="Consolas", size=12), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
+        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select .docx or .pdf specification files", font=ctk.CTkFont(family="Consolas", size=12), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
         self.input_dir_entry.grid(row=0, column=0, sticky="ew")
         bkw = {"height": 36, "font": ctk.CTkFont(size=12), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
         ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
@@ -422,10 +435,13 @@ class SpecReviewApp(ctk.CTk):
             self.inputs_content.pack(fill="x", padx=16, pady=(0, 16)); self.inputs_expand_label.configure(text="\u25bc"); self._inputs_expanded = True
 
     def _browse_files(self):
-        files = filedialog.askopenfilenames(title="Select .docx specification files", filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")])
+        files = filedialog.askopenfilenames(
+            title="Select specification files",
+            filetypes=_SPEC_FILETYPES,
+        )
         if files:
-            paths = [Path(f) for f in files if f.lower().endswith(".docx")]
-            if not paths: self.log.log_warning("No .docx files selected"); return
+            paths = [Path(f) for f in files if _is_supported_spec(Path(f))]
+            if not paths: self.log.log_warning("No supported files selected (.docx or .pdf)"); return
             self._selected_files = paths
             self.input_dir = paths[0].parent
             self.input_dir_entry.delete(0, "end")
@@ -434,7 +450,7 @@ class SpecReviewApp(ctk.CTk):
 
     def _analyze_tokens(self, file_paths):
         if not file_paths:
-            self.log.log_warning("No .docx files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
+            self.log.log_warning("No supported files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
         self.log.log_step(f"Analyzing {len(file_paths)} files...")
 
         def analyze():
@@ -450,14 +466,14 @@ class SpecReviewApp(ctk.CTk):
                 extracted_specs: list[ExtractedSpec] = []
                 for f in file_paths:
                     try:
-                        spec = extract_text_from_docx(f)
+                        spec = extract_text(f)
                         tokens = len(enc.encode(spec.content))
                         file_data.append({"path": f, "filename": spec.filename, "tokens": tokens, "content": spec.content})
                         processed_names.append(f.name)
                         extracted_specs.append(spec)
                     except Exception as e:
                         self.after(0, lambda err=str(e), n=f.name: self.log.log_warning(f"Could not read {n}: {err}"))
-                
+
                 if processed_names:
                     self.after(0, lambda names=processed_names: self.log.log_file_batch(names))
 
@@ -483,7 +499,7 @@ class SpecReviewApp(ctk.CTk):
                     self.after(0, lambda b=per_file_limit_exceeded: self.file_list_panel.set_over_limit(b))
             except Exception as e:
                 self.after(0, lambda: self.log.log_error(f"Analysis failed: {e}"))
-        
+
         threading.Thread(target=analyze, daemon=True).start()
 
     def _on_file_selection_change(self):
@@ -508,7 +524,7 @@ class SpecReviewApp(ctk.CTk):
 
     def _validate_inputs(self):
         if not self.api_key_entry.get().strip(): self.log.log_error("API key is required"); return False
-        if not hasattr(self, "_selected_files") or not self._selected_files: self.log.log_error("Select .docx specification files"); return False
+        if not hasattr(self, "_selected_files") or not self._selected_files: self.log.log_error("Select specification files (.docx or .pdf)"); return False
         missing = [f for f in self._selected_files if not f.exists()]
         if missing: self.log.log_error(f"File not found: {missing[0].name}"); return False
         if self.file_list_panel.get_selected_count() == 0: self.log.log_error("No files selected"); return False

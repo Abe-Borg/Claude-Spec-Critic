@@ -5,6 +5,12 @@ This module is the SINGLE SOURCE OF TRUTH for the review workflow.
 The GUI calls run_review() for real-time mode or start_batch_review()
 + collect_batch_results() for batch mode.
 
+v1.9.0 — PDF support.
+    Updated extraction to use format-agnostic extract_text() dispatcher
+    instead of extract_text_from_docx(). File discovery now includes
+    both .docx and .pdf files. No other pipeline changes needed — the
+    ExtractedSpec interface is unchanged.
+
 v1.7.0 — Verification batching + model selection.
 
     Verification batching:
@@ -68,7 +74,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .extractor import extract_text_from_docx, ExtractedSpec
+from .extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from .preprocessor import preprocess_spec
 from .prompts import get_system_prompt
 from .tokenizer import RECOMMENDED_MAX, count_tokens
@@ -120,9 +126,12 @@ class PipelineResult:
     cross_check_result: Optional[ReviewResult] = None
 
 
-def _get_docx_files(input_dir: Path) -> list[Path]:
-    """Get all .docx files from a directory, excluding temp files."""
-    return sorted([p for p in input_dir.glob("*.docx") if not p.name.startswith("~$")])
+def _get_spec_files(input_dir: Path) -> list[Path]:
+    """Get all supported spec files from a directory, excluding temp files."""
+    files = []
+    for ext in SUPPORTED_EXTENSIONS:
+        files.extend(input_dir.glob(f"*{ext}"))
+    return sorted([p for p in files if not p.name.startswith("~$")])
 
 
 def _combine_specs(specs: list[ExtractedSpec]) -> str:
@@ -149,7 +158,7 @@ def _normalize_issue_text(text: str) -> str:
     can be grouped together.
     """
     # Remove common file references like "23 05 00.docx" or "23 21 13 - Hydronic Piping.docx"
-    normalized = re.sub(r"\d{2}\s?\d{2}\s?\d{2}[^.]*\.docx", "", text, flags=re.IGNORECASE)
+    normalized = re.sub(r"\d{2}\s?\d{2}\s?\d{2}[^.]*\.(docx|pdf)", "", text, flags=re.IGNORECASE)
     # Remove section references like "Part 2, Article 2.3.A" or "Article 1.5.B"
     normalized = re.sub(r"(?:Part\s+\d+,?\s*)?Article\s+[\d.]+[A-Z]*", "", normalized, flags=re.IGNORECASE)
     # Collapse whitespace
@@ -247,12 +256,12 @@ def _prepare_specs(
 
     Handles:
         1. File discovery / validation
-        2. DOCX text extraction
+        2. Text extraction (DOCX and PDF via format-agnostic dispatcher)
         3. Local LEED/placeholder detection
         4. Per-spec token limit check
 
     Args:
-        input_dir: Directory containing .docx specification files
+        input_dir: Directory containing specification files
         files: Optional list of specific files to process
         log: Callback for log messages
         progress: Callback for progress updates
@@ -261,7 +270,7 @@ def _prepare_specs(
         _PreparedSpecs with extracted specs and alert lists
 
     Raises:
-        FileNotFoundError: If no .docx files found
+        FileNotFoundError: If no supported spec files found
         ValueError: If any single spec exceeds the token limit
     """
     input_dir = Path(input_dir)
@@ -269,13 +278,13 @@ def _prepare_specs(
     if files:
         docx_files = [Path(f) for f in files]
     else:
-        docx_files = _get_docx_files(input_dir)
+        docx_files = _get_spec_files(input_dir)
 
     if not docx_files:
-        raise FileNotFoundError(f"No .docx files found in: {input_dir}")
+        raise FileNotFoundError(f"No specification files found in: {input_dir}")
 
-    # Extract text from DOCX files
-    progress(0.0, "Extracting DOCX text...")
+    # Extract text from spec files (DOCX and/or PDF)
+    progress(0.0, "Extracting text from specifications...")
     specs: list[ExtractedSpec] = []
     leed_alerts: list[dict] = []
     placeholder_alerts: list[dict] = []
@@ -283,7 +292,7 @@ def _prepare_specs(
     total_files = len(docx_files)
     for i, p in enumerate(docx_files, start=1):
         log(f"Loading: {p.name}")
-        spec = extract_text_from_docx(p)
+        spec = extract_text(p)
         specs.append(spec)
 
         pre = preprocess_spec(spec.content, spec.filename)
@@ -354,7 +363,7 @@ def start_batch_review(
     results via collect_batch_results() when the batch completes.
 
     Args:
-        input_dir: Directory containing .docx specification files
+        input_dir: Directory containing specification files
         files: Optional list of specific files to process
         project_context: Optional project description for each review
         model: Model ID for review (default: Claude Opus 4.6)
@@ -365,7 +374,7 @@ def start_batch_review(
         BatchSubmission with the BatchJob and preprocessor alerts
 
     Raises:
-        FileNotFoundError: If no .docx files found
+        FileNotFoundError: If no spec files found
         ValueError: If any spec exceeds the token limit
     """
     prepared = _prepare_specs(
@@ -560,6 +569,9 @@ def run_review(
     """
     Execute the full specification review pipeline.
 
+    v1.9.0: Supports both .docx and .pdf input files via format-agnostic
+    text extraction.
+
     v1.7.0: Adds model parameter for review model selection (Opus or Sonnet).
 
     v1.6.0: Adds optional cross-spec coordination pass after per-spec review
@@ -573,9 +585,9 @@ def run_review(
     of combining all specs into one API call.
 
     Args:
-        input_dir: Directory containing .docx specification files
-        files: Optional list of specific files to process. If None, all .docx
-               files in input_dir are processed.
+        input_dir: Directory containing specification files (.docx and/or .pdf)
+        files: Optional list of specific files to process. If None, all
+               supported spec files in input_dir are processed.
         project_context: Optional free-text project description. If non-empty,
             included in each per-spec user message as a <project_context> block.
         model: Model ID for review (default: Claude Opus 4.6). Also supports
@@ -594,7 +606,7 @@ def run_review(
         PipelineResult with review data for GUI rendering
 
     Raises:
-        FileNotFoundError: If no .docx files found
+        FileNotFoundError: If no supported spec files found
         ValueError: If any single spec exceeds the token limit
         RuntimeError: If all API calls fail
     """

@@ -1,10 +1,10 @@
-# Spec Critic v1.8.2
+# Spec Critic v1.9.0
 
-A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
+A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` or `.pdf` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
 
 ## What It Does
 
-1. Extracts text from `.docx` specification files (paragraphs + tables)
+1. Extracts text from `.docx` and native `.pdf` specification files (paragraphs + tables)
 2. Detects LEED references and unresolved placeholders locally (no API call needed)
 3. Performs pre-flight token analysis with an animated visual gauge
 4. Reviews each spec independently via streaming API calls to the selected model (Opus 4.6 or Sonnet 4.6)
@@ -55,7 +55,7 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root or
 
 1. Launch the app with `python main.py`
 2. Enter your API key (or let it auto-load from file)
-3. Click **Browse** to select `.docx` specs
+3. Click **Browse** to select `.docx` or `.pdf` specs
 4. (Optional) Enter project context in the **Project Context** field
 5. Select the **Review Model**: Opus 4.6 (thorough) or Sonnet 4.6 (fast/cheap)
 6. (Optional) Check **Cross-spec coordination check** to enable inter-spec analysis
@@ -66,6 +66,15 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root or
 11. When complete:
     - **View in App**: The report renders in-app and a pop-out window opens automatically
     - **Export Report**: A save dialog appears — choose where to save the `.docx` report
+
+### Supported File Formats
+
+- **`.docx`** (Word documents) — Full support including table extraction
+- **`.pdf`** (native/text-selectable PDFs) — Full support including table detection via pymupdf
+
+**Note on PDFs**: Only native (text-selectable) PDFs are supported. Scanned or image-only PDFs will produce a warning indicating poor extraction quality. If you have a scanned PDF, convert it to a text-selectable PDF or `.docx` before reviewing.
+
+You can mix `.docx` and `.pdf` files in a single review — the extractor handles both formats and produces the same `ExtractedSpec` interface downstream.
 
 ### Output Mode
 
@@ -205,7 +214,7 @@ spec-review/
 │   ├── cross_checker.py   # Cross-spec coordination check (Sonnet 4.6)
 │   ├── batch.py           # Anthropic Message Batches API (review + verification)
 │   ├── verifier.py        # Web search verification (Sonnet 4.6)
-│   ├── extractor.py       # DOCX text extraction
+│   ├── extractor.py       # Text extraction (DOCX + PDF)
 │   ├── preprocessor.py    # LEED/placeholder detection
 │   ├── tokenizer.py       # Token counting with tiktoken
 │   ├── prompts.py         # System prompt for Claude
@@ -220,6 +229,7 @@ spec-review/
 ### Design Decisions
 
 - **Single pipeline**: All workflow logic lives in `pipeline.py`.
+- **Format-agnostic extraction**: `extractor.py` handles both `.docx` and `.pdf` via a dispatcher — downstream modules only see `ExtractedSpec`.
 - **User-selectable review model**: Opus 4.6 or Sonnet 4.6 for the first-stage review.
 - **User-selectable output mode**: View in App or Export Report (.docx).
 - **Sonnet for support tasks**: Verification and cross-check always use Sonnet 4.6.
@@ -235,6 +245,7 @@ spec-review/
 - **Per-file token gating**: Run is blocked only if any single file exceeds the per-call limit, not by total across files.
 - **Robust JSON parsing**: Sentinel tags with heuristic fallback for reliable extraction.
 - **Frozen build support**: Config and state files stored in user-writable directories via `platformdirs`.
+- **Native PDF only**: Scanned/image PDFs are detected and warned about but not OCR'd.
 
 ## What Claude Reviews
 
@@ -258,12 +269,26 @@ Claude classifies findings into four severity levels with confidence scores:
 ```
 anthropic          # Claude API client
 python-docx        # DOCX text extraction + report export
+pymupdf            # PDF text and table extraction
 tiktoken           # Token counting (cl100k_base encoding)
 customtkinter      # Modern themed Tkinter widgets
 platformdirs       # OS-appropriate config/state directories
 ```
 
 ## Changelog
+
+### v1.9.0 — PDF Support
+
+- **Feature**: Native PDF text extraction via pymupdf — load `.pdf` spec files alongside `.docx`
+- **Feature**: PDF table detection — tables in PDFs are extracted as pipe-delimited rows (same format as DOCX tables)
+- **Feature**: Format-agnostic `extract_text()` dispatcher in `extractor.py` — routes to the correct extractor based on file extension
+- **Feature**: Scanned PDF detection — warns when a PDF has very few words per page, suggesting it may be image-based
+- **Feature**: File browser now accepts both `.docx` and `.pdf` files with a combined filter
+- **Feature**: `SUPPORTED_EXTENSIONS` constant exported from `extractor.py` for use by GUI and pipeline
+- **Update**: `pipeline.py` uses `extract_text()` instead of `extract_text_from_docx()` — supports mixed `.docx`/`.pdf` reviews
+- **Update**: `pipeline._get_spec_files()` discovers both `.docx` and `.pdf` files in a directory
+- **Update**: Deduplication regex updated to handle both `.docx` and `.pdf` filename references
+- **Dependency**: Added `pymupdf` for PDF text and table extraction
 
 ### v1.8.2 — Reliability, Correctness, and UX Fixes
 
@@ -313,15 +338,6 @@ platformdirs       # OS-appropriate config/state directories
 - **Feature**: Persistent batch state — batch metadata is saved to `batch_state.json` on submission and loaded on app launch, enabling resume after app restart
 - **Feature**: Resume dialog on launch — if a pending batch is detected, a dialog offers Resume or Discard options with batch ID, file count, model, and age information
 - **Feature**: 24-hour batch state expiry — stale state files are automatically discarded
-- **Update**: `reviewer.py` exports `MODEL_SONNET_46` and `REVIEW_MODELS` dict for GUI model selector
-- **Update**: `batch.py` gains `submit_verification_batch()` and `retrieve_verification_results()` for verification batching
-- **Update**: `verifier.py` gains `verify_findings_batch()` as batch-mode alternative to `verify_findings()`
-- **Update**: `pipeline.py` `collect_batch_results()` uses `verify_findings_batch()` for verification in batch mode
-- **Update**: `pipeline.py` `BatchSubmission` gains `model` field
-- **Update**: Model parameter flows through `run_review()`, `start_batch_review()`, `review_single_spec()`
-- **Update**: GUI INPUTS card reorganized: Row 3 = Review Model, Row 4 = Mode, Row 5 = Options
-- **Update**: Header subtitle simplified (no longer hardcodes model name)
-- **Update**: `batch_state.json` added to `.gitignore`
 
 ### v1.6.0 — Cross-Spec Coordination Check
 
