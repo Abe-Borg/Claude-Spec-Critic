@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v1.9.0
+# CLAUDE.md — Spec Critic v1.9.1
 
 Technical reference for AI-assisted development. This file describes the codebase architecture, module responsibilities, data flow, and conventions so that future sessions can pick up where the last one left off.
 
@@ -10,7 +10,7 @@ Spec Critic is a Python desktop application that reviews mechanical and plumbing
 
 ```
 src/
-├── __init__.py          # Package version (1.9.0)
+├── __init__.py          # Package version (1.9.1)
 ├── gui.py               # CustomTkinter GUI — all user interaction
 ├── widgets.py           # Reusable UI components (TokenGauge, FileListPanel, etc.)
 ├── pipeline.py          # Core orchestration — SINGLE SOURCE OF TRUTH for workflow
@@ -201,6 +201,10 @@ Wraps the Anthropic Message Batches API for both review and verification.
 - `verify_findings_batch(findings, ...)` — Batched verification via Batches API (50% savings), with fallback to sequential
 
 Skips GRIPES findings. Mutates `finding.verification` in-place.
+
+**v1.9.1 error handling:**
+- `verify_finding()` has a generic `except Exception` catch-all so unexpected errors produce UNVERIFIED instead of crashing
+- `verify_findings()` wraps each individual finding verification in try/except so a single failure cannot abort the remaining findings
 
 ### cross_checker.py — Cross-Spec Coordination
 

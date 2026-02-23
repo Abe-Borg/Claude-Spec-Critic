@@ -10,6 +10,12 @@ Verification uses Sonnet (not Opus) because:
     - Sonnet is significantly cheaper and faster
     - The web search tool does the heavy lifting
 
+v1.9.1 — Bug fixes.
+    Added generic Exception handler to verify_finding() so unexpected
+    errors produce UNVERIFIED instead of crashing the entire verification
+    pass. Added per-finding try/except in verify_findings() so a single
+    finding failure doesn't abort verification of remaining findings.
+
 v1.7.0 — Verification batching.
     Added verify_findings_batch() as the batch-mode alternative to
     verify_findings(). Submits all verifiable findings as a single
@@ -303,6 +309,14 @@ def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationRes
                 verdict="UNVERIFIED",
                 explanation=f"API error during verification: {e}",
             )
+        except Exception as e:
+            # Catch-all for unexpected errors (TypeError, AttributeError,
+            # network-level exceptions, etc.) — return UNVERIFIED instead
+            # of crashing the entire verification pass.
+            return VerificationResult(
+                verdict="UNVERIFIED",
+                explanation=f"Unexpected error during verification: {e}",
+            )
 
 
 def verify_findings(
@@ -319,6 +333,12 @@ def verify_findings(
     Findings are verified in ascending confidence order — low-confidence
     findings are checked first since they are most likely to be wrong and
     benefit most from verification.
+
+    v1.9.1: Added per-finding try/except so a single verification failure
+    does not abort the remaining findings. Previously, an uncaught exception
+    from verify_finding() would propagate up through the loop and crash
+    the entire pipeline — all findings verified before the crash were lost
+    because PipelineResult was never constructed.
 
     Args:
         findings: List of Finding objects to verify
@@ -342,10 +362,21 @@ def verify_findings(
                 explanation="Skipped: GRIPES findings are not verified.",
             )
 
-    # Verify eligible findings sequentially (lowest confidence first)
+    # Verify eligible findings sequentially (lowest confidence first).
+    # Each finding is wrapped in its own try/except so a single failure
+    # does not abort verification of the remaining findings.
     for i, f in enumerate(verifiable):
         progress(i + 1, total, f.fileName or "Unknown")
-        f.verification = verify_finding(f)
+        try:
+            f.verification = verify_finding(f)
+        except Exception as e:
+            # This should rarely fire since verify_finding() now has its
+            # own catch-all, but belt-and-suspenders ensures we never
+            # lose the rest of the findings to a single error.
+            f.verification = VerificationResult(
+                verdict="UNVERIFIED",
+                explanation=f"Verification crashed: {e}",
+            )
 
     return findings
 

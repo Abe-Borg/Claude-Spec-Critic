@@ -1,4 +1,4 @@
-# Spec Critic v1.9.0
+# Spec Critic v1.9.1
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` or `.pdf` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
 
@@ -246,6 +246,7 @@ spec-review/
 - **Robust JSON parsing**: Sentinel tags with heuristic fallback for reliable extraction.
 - **Frozen build support**: Config and state files stored in user-writable directories via `platformdirs`.
 - **Native PDF only**: Scanned/image PDFs are detected and warned about but not OCR'd.
+- **Fault-tolerant verification**: Individual verification failures cannot crash the remaining findings (v1.9.1).
 
 ## What Claude Reviews
 
@@ -276,6 +277,11 @@ platformdirs       # OS-appropriate config/state directories
 ```
 
 ## Changelog
+
+### v1.9.1 — Verification Reliability Fix
+
+- **Fix**: `verify_finding()` now catches all exception types (not just Anthropic-specific ones) — unexpected errors during a single verification no longer crash the entire pipeline
+- **Fix**: `verify_findings()` sequential loop wraps each finding in its own try/except — a single verification failure cannot abort the remaining findings; previously, an uncaught exception from finding #3 would lose all work (findings #1–#2 verified, #4–#N never attempted, PipelineResult never constructed)
 
 ### v1.9.0 — PDF Support
 
