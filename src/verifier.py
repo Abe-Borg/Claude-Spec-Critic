@@ -30,7 +30,6 @@ v1.5.0 — Broadened verification scope:
       is the issue real, is the suggested fix correct, and is any cited
       code/standard accurate (with skepticism, since citations may be
       hallucinated by the review model).
-    - GRIPES are still skipped (not worth the API cost).
     - Findings are verified in ascending confidence order — low-confidence
       findings are checked first since they are most likely to be wrong.
 
@@ -41,7 +40,6 @@ Each finding produces a VerificationResult with:
     - correction: Updated replacement text if the finding was wrong
 
 Design decisions:
-    - GRIPES severity findings are skipped (not worth the API cost)
     - All other findings are verified — with or without a code reference
     - The verifier treats the review model's code citations with skepticism
       since they may be hallucinated
@@ -96,11 +94,8 @@ class VerificationResult:
 def _should_verify(finding: Finding) -> bool:
     """Determine if a finding should be verified via web search.
 
-    All findings are verified except GRIPES (editorial/style issues
-    not worth the API cost).
+    All findings are verified
     """
-    if finding.severity == "GRIPES":
-        return False
     return True
 
 
@@ -176,14 +171,14 @@ def _build_verification_prompt(finding: Finding) -> str:
         "Respond with ONLY a JSON object (no other text) in this exact format:",
         '{',
         '  "verdict": "CONFIRMED" | "CORRECTED" | "UNVERIFIED" | "DISPUTED",',
-        '  "explanation": "Brief 1-3 sentence rationale covering issue validity, fix correctness, and citation accuracy",',
+        '  "explanation": "Brief 1-3 sentence rationale - null if verdict is CONFIRMED,',
         '  "sources": ["url1", "url2"],',
         '  "correction": "Corrected replacement text if CORRECTED, or explanation of what is wrong if DISPUTED, else null"',
         '}',
         "",
         "VERDICT MEANINGS:",
         "- CONFIRMED: The issue is real, the suggested fix is correct, and any "
-        "code citation is accurate.",
+        "code citation is accurate. Set explanation to null.",
         "- CORRECTED: The issue is real, but the suggested fix or code citation "
         "has an error. Provide the corrected text in the correction field.",
         "- UNVERIFIED: Could not find enough authoritative evidence to confirm "
@@ -254,12 +249,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationRes
     Returns:
         VerificationResult with verdict, explanation, sources, and optional correction
     """
-    if not _should_verify(finding):
-        return VerificationResult(
-            verdict="UNVERIFIED",
-            explanation="Skipped: GRIPES findings are not verified.",
-        )
-
+    
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return VerificationResult(
@@ -327,8 +317,7 @@ def verify_findings(
     """Verify all eligible findings and populate their verification field.
 
     Modifies findings in-place by setting finding.verification to a
-    VerificationResult. GRIPES findings get an UNVERIFIED result with
-    a skip explanation.
+    VerificationResult. 
 
     Findings are verified in ascending confidence order — low-confidence
     findings are checked first since they are most likely to be wrong and
@@ -353,14 +342,6 @@ def verify_findings(
     verifiable.sort(key=lambda f: f.confidence)
 
     total = len(verifiable)
-
-    # Set skip results for GRIPES findings
-    for f in findings:
-        if not _should_verify(f):
-            f.verification = VerificationResult(
-                verdict="UNVERIFIED",
-                explanation="Skipped: GRIPES findings are not verified.",
-            )
 
     # Verify eligible findings sequentially (lowest confidence first).
     # Each finding is wrapped in its own try/except so a single failure
@@ -395,7 +376,7 @@ def verify_findings_batch(
     Used by pipeline.collect_batch_results() when running in batch mode.
 
     The batch verification follows the same logic as sequential verification:
-    GRIPES are skipped, and findings are ordered by ascending confidence
+    findings are ordered by ascending confidence
     in the batch submission.
 
     Args:
@@ -416,13 +397,6 @@ def verify_findings_batch(
     verifiable_count = sum(1 for f in findings if _should_verify(f))
     if verifiable_count == 0:
         log("No findings eligible for batch verification.")
-        # Set skip results for GRIPES
-        for f in findings:
-            if not _should_verify(f):
-                f.verification = VerificationResult(
-                    verdict="UNVERIFIED",
-                    explanation="Skipped: GRIPES findings are not verified.",
-                )
         return findings
 
     # Submit verification batch

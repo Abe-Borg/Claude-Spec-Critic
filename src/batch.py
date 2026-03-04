@@ -397,14 +397,6 @@ def retrieve_verification_results(
 
     client = Anthropic(api_key=_get_api_key())
 
-    # Set default UNVERIFIED for GRIPES findings
-    for f in findings:
-        if f.severity == "GRIPES" and f.verification is None:
-            f.verification = VerificationResult(
-                verdict="UNVERIFIED",
-                explanation="Skipped: GRIPES findings are not verified.",
-            )
-
     for result in client.messages.batches.results(job.batch_id):
         custom_id = result.custom_id
         meta = job.request_map.get(custom_id)
