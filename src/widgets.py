@@ -2,12 +2,12 @@
 Custom widgets for Spec Critic GUI.
 
 Contains: TokenGauge, FileListPanel, EnhancedLog,
-AnimatedButton, ReportPanel, ReportWindow.
+AnimatedButton, ReportWindow.
 
 v1.6.0 changes:
     - Cross-spec coordination section rendered in report (separate from
       per-spec findings)
-    - ReportWindow and ReportPanel accept optional cross_check_result
+    - ReportWindow accepts optional cross_check_result
     - _render_cross_check_section() added for coordination findings
     - Cross-check findings included in JSON export
     - "coordination" color added to COLORS dict
@@ -344,7 +344,7 @@ class AnimatedButton(ctk.CTkButton):
 
 
 # ============================================================================
-# REPORT RENDERING HELPERS (shared between ReportPanel and ReportWindow)
+# REPORT RENDERING HELPERS (used by ReportWindow)
 # ============================================================================
 
 def _render_summary_grid(parent, review, files_reviewed, cross_check_result=None):
@@ -384,10 +384,10 @@ def _render_summary_grid(parent, review, files_reviewed, cross_check_result=None
     if all_findings_for_verdicts:
         verdicts = {}
         for f in all_findings_for_verdicts:
-            if f.verification and f.verification.verdict != "UNVERIFIED":
+            if f.verification:
                 v = f.verification.verdict; verdicts[v] = verdicts.get(v, 0) + 1
         if verdicts:
-            verdict_parts = [f"{verdicts[v]} {v.lower()}" for v in ["CONFIRMED", "CORRECTED", "DISPUTED"] if v in verdicts]
+            verdict_parts = [f"{verdicts[v]} {v.lower()}" for v in ["CONFIRMED", "CORRECTED", "DISPUTED", "UNVERIFIED"] if v in verdicts]
             meta_text += f"  \u2022  Verified: {', '.join(verdict_parts)}"
     ctk.CTkLabel(si, text=meta_text, font=ctk.CTkFont(family="Consolas", size=11), text_color=COLORS["text_muted"]).pack(anchor="w", pady=(4, 0))
 
@@ -444,10 +444,10 @@ def _render_collapsible_card(parent, finding, card_refs: list | None = None):
         ctk.CTkLabel(body, text=f"Reference: {finding.codeReference}", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["accent"], anchor="w").pack(fill="x", pady=(4, 0))
 
     # Verification verdict
-    if finding.verification and finding.verification.verdict != "UNVERIFIED":
+    if finding.verification:
         vr = finding.verification; vc = VERDICT_COLORS.get(vr.verdict, VERDICT_COLORS["UNVERIFIED"])
         vf = ctk.CTkFrame(body, fg_color="transparent"); vf.pack(fill="x", pady=(8, 0))
-        verdict_icon = {"CONFIRMED": "\u2713", "CORRECTED": "\u270e", "DISPUTED": "\u2717"}.get(vr.verdict, "\u2014")
+        verdict_icon = {"CONFIRMED": "\u2713", "CORRECTED": "\u270e", "DISPUTED": "\u2717", "UNVERIFIED": "\u2014"}.get(vr.verdict, "\u2014")
         ctk.CTkLabel(vf, text=f"{verdict_icon} {vr.verdict}", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
             text_color="white" if vr.verdict != "CORRECTED" else "black",
             fg_color=vc, corner_radius=4, width=100, height=22).pack(side="left")
@@ -642,55 +642,3 @@ class ReportWindow(ctk.CTkToplevel):
         if text: self.clipboard_clear(); self.clipboard_append(text)
 
 
-# ============================================================================
-# REPORT PANEL (embedded in main window)
-# ============================================================================
-
-class ReportPanel(ctk.CTkFrame):
-    def __init__(self, master, on_fullscreen=None, **kwargs):
-        super().__init__(master, fg_color="transparent", **kwargs)
-        self._on_fullscreen = on_fullscreen; self._card_refs: list[dict] = []; self.pack_forget()
-
-    def show_report(self, result, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result=None):
-        for w in self.winfo_children(): w.destroy()
-        self._card_refs.clear(); review = result
-
-        ebar = ctk.CTkFrame(self, fg_color="transparent"); ebar.pack(fill="x", pady=(0, 12))
-        btn_kw = {"width": 120, "height": 32, "font": ctk.CTkFont(size=12), "fg_color": COLORS["bg_input"],
-            "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
-        if self._on_fullscreen:
-            ctk.CTkButton(ebar, text="\u26f6  Expand", command=self._on_fullscreen, **btn_kw).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(ebar, text="Export JSON",
-            command=lambda: self._export_json(review, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result), **btn_kw).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(ebar, text="Copy Summary", command=lambda: self._copy_summary(review.thinking), **btn_kw).pack(side="left")
-
-        body = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0); body.pack(fill="both", expand=True)
-        _render_summary_grid(body, review, files_reviewed, cross_check_result=cross_check_result)
-        _render_alerts(body, leed_alerts, placeholder_alerts)
-        _render_findings_section(body, review, card_refs=self._card_refs)
-        _render_cross_check_section(body, cross_check_result, card_refs=self._card_refs)
-        if review.thinking: _render_notes(body, review.thinking)
-        self.pack(fill="both", expand=True, pady=(16, 0))
-
-    def _export_json(self, review, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result=None):
-        data = {
-            "meta": {"model": review.model, "input_tokens": review.input_tokens, "output_tokens": review.output_tokens,
-                "elapsed_seconds": review.elapsed_seconds, "generated_at": datetime.now().isoformat()},
-            "files_reviewed": files_reviewed,
-            "findings": [_finding_to_dict(f) for f in review.findings],
-            "cross_check_findings": [_finding_to_dict(f) for f in cross_check_result.findings] if cross_check_result and cross_check_result.findings else [],
-            "alerts": {"leed_alerts": leed_alerts, "placeholder_alerts": placeholder_alerts},
-            "analysis_summary": review.thinking,
-            "cross_check_summary": cross_check_result.thinking if cross_check_result else None,
-        }
-        path = filedialog.asksaveasfilename(title="Save findings JSON", defaultextension=".json",
-            filetypes=[("JSON Files", "*.json")], initialfile=f"spec-critic-{datetime.now().strftime('%Y-%m-%d')}.json")
-        if path: Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-    def _copy_summary(self, text):
-        if text: self.clipboard_clear(); self.clipboard_append(text)
-    def hide(self): self.pack_forget()
-    def clear(self):
-        self._card_refs.clear()
-        for w in self.winfo_children(): w.destroy()
-        self.pack_forget()

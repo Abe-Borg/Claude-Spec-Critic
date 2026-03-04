@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v1.9.1
+# CLAUDE.md — Spec Critic v2.0.0
 
 Technical reference for AI-assisted development. This file describes the codebase architecture, module responsibilities, data flow, and conventions so that future sessions can pick up where the last one left off.
 
@@ -10,7 +10,7 @@ Spec Critic is a Python desktop application that reviews mechanical and plumbing
 
 ```
 src/
-├── __init__.py          # Package version (1.9.1)
+├── __init__.py          # Package version (2.0.0)
 ├── gui.py               # CustomTkinter GUI — all user interaction
 ├── widgets.py           # Reusable UI components (TokenGauge, FileListPanel, etc.)
 ├── pipeline.py          # Core orchestration — SINGLE SOURCE OF TRUTH for workflow
@@ -91,7 +91,7 @@ class Finding:
     fileName: str
     section: str
     issue: str
-    actionType: str      # FIX | VERIFY | CONSIDER
+    actionType: str      # ADD | EDIT | DELETE
     existingText: str
     replacementText: str
     codeReference: str
@@ -136,13 +136,13 @@ class PipelineResult:
 - `SUPPORTED_EXTENSIONS: set[str]` — `{".docx", ".pdf"}`
 
 **DOCX extraction:**
-- Extracts paragraphs and table cells from `.docx` files
+- Iterates `doc.element.body` children to preserve document order (paragraphs and tables interleaved correctly)
 - Tables flattened to pipe-delimited rows: `"Cell 1 | Cell 2 | Cell 3"`
-- Uses python-docx (`Document` class)
+- Uses python-docx (`Document` class, `Paragraph`, `Table`)
 
-**PDF extraction (v1.9.0):**
-- Extracts page text with reading-order preservation via pymupdf
-- Detects and extracts tables via `page.find_tables()`, flattened to the same pipe-delimited format as DOCX tables
+**PDF extraction (v1.9.0, simplified in v2.0.0):**
+- Extracts page text via `page.get_text("text")` (pymupdf)
+- Table extraction via `find_tables()` removed in v2.0.0 (was duplicating content already captured by `get_text`)
 - Only native (text-selectable) PDFs are supported — no OCR
 - Scanned PDF detection: if >50% of pages yield fewer than 10 words, a warning is prepended to the content
 - pymupdf import is deferred (inside the function) to avoid import errors when pymupdf is not installed
@@ -166,18 +166,20 @@ class PipelineResult:
 5. Verification: `verify_findings()` (real-time) or `verify_findings_batch()` (batch)
 6. Return `PipelineResult`
 
-**v1.9.0 changes:**
-- Uses `extract_text()` instead of `extract_text_from_docx()` — supports mixed DOCX/PDF reviews
-- `_get_spec_files()` discovers both `.docx` and `.pdf` files in a directory
-- Deduplication regex handles both `.docx` and `.pdf` filename references
+**v2.0.0 changes:**
+- GRIPES findings are now verified (no longer excluded from verification)
+- Verification wrapped in try/except — failures produce UNVERIFIED verdicts instead of crashing
+- Removed dead `_combine_specs()` and `review_specs` import
 
 ### gui.py — User Interface
 
-**v1.9.0 changes:**
-- File browser filter: `("Specifications", "*.docx *.pdf")` as primary filter
-- `_is_supported_spec()` helper uses `SUPPORTED_EXTENSIONS` from extractor
-- Placeholder text updated: "Select .docx or .pdf specification files"
-- Token analysis uses `extract_text()` dispatcher
+**v2.0.0 changes:**
+- Removed dead `ReportPanel` references and report expand/collapse mode
+- Widget state snapshotted before threads (thread-safe reads)
+- Batch polling bounded (max 300 attempts, 5 consecutive error limit)
+- Batch ID validated on resume (must start with "msgbatch_")
+- Export cancel/failure falls back to pop-out window instead of losing data
+- Combined-total token gate removed (only per-file gating remains)
 
 **Key patterns:**
 - All API calls run in `threading.Thread(daemon=True)` to avoid GUI freezing
@@ -191,7 +193,7 @@ Wraps the Anthropic Message Batches API for both review and verification.
 - `submit_review_batch(specs, ...)` → `BatchJob`
 - `submit_verification_batch(findings)` → `BatchJob`
 - `poll_batch(batch_id)` → `BatchStatus`
-- `retrieve_review_results(job)` → `dict[str, ReviewResult]`
+- `retrieve_review_results(job, *, model)` → `dict[str, ReviewResult]` (model is required keyword arg)
 - `retrieve_verification_results(job)` → `dict[str, VerificationResult]`
 - `cancel_batch(batch_id)` → `bool`
 
@@ -200,17 +202,22 @@ Wraps the Anthropic Message Batches API for both review and verification.
 - `verify_findings(findings, ...)` — Sequential real-time verification (Sonnet 4.6 + web_search tool)
 - `verify_findings_batch(findings, ...)` — Batched verification via Batches API (50% savings), with fallback to sequential
 
-Skips GRIPES findings. Mutates `finding.verification` in-place.
+Verifies ALL findings (including GRIPES as of v2.0.0). Mutates `finding.verification` in-place.
 
-**v1.9.1 error handling:**
+**Error handling (v1.9.1+):**
 - `verify_finding()` has a generic `except Exception` catch-all so unexpected errors produce UNVERIFIED instead of crashing
 - `verify_findings()` wraps each individual finding verification in try/except so a single failure cannot abort the remaining findings
+
+**Batch polling (v2.0.0):**
+- `verify_findings_batch()` bounded to `max_poll_attempts=240` with consecutive error tracking
+- Falls back to sequential verification after 5 consecutive poll errors or timeout
 
 ### cross_checker.py — Cross-Spec Coordination
 
 - `run_cross_check(specs, findings, ...)` → `ReviewResult` with coordination findings
-- Uses Sonnet 4.6 with condensed input (section headers + existing findings)
+- Uses Sonnet 4.6 with enriched condensed input (section headers + key numeric values + cross-references + existing findings)
 - Returns empty result if <2 specs or input exceeds token limit
+- Header pattern tightened in v2.0.0 (excludes body text with "shall"/"must"/etc.)
 
 ### report_exporter.py — Word Document Export
 
@@ -222,9 +229,9 @@ Skips GRIPES findings. Mutates `finding.verification` in-place.
 ### reviewer.py — API Client
 
 - `review_single_spec(spec_content, filename, ...)` → `ReviewResult`
-- `review_specs(combined_content, ...)` → `ReviewResult` (legacy, kept for compatibility)
 - Model constants: `MODEL_OPUS_46`, `MODEL_SONNET_46`, `REVIEW_MODELS` (label→ID map)
 - JSON parsing: `<FINDINGS_JSON>` sentinel tags with heuristic fallback
+- Field validation in `_parse_findings()`: severity must be valid, actionType defaults to EDIT, text fields coerced to str (v2.0.0)
 
 ### preprocessor.py — Local Detection
 

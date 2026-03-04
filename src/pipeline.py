@@ -80,7 +80,6 @@ from .prompts import get_system_prompt
 from .tokenizer import RECOMMENDED_MAX, count_tokens
 from .reviewer import (
     review_single_spec,
-    review_specs,
     ReviewResult,
     Finding,
     MODEL_OPUS_46,
@@ -132,18 +131,6 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
     for ext in SUPPORTED_EXTENSIONS:
         files.extend(input_dir.glob(f"*{ext}"))
     return sorted([p for p in files if not p.name.startswith("~$")])
-
-
-def _combine_specs(specs: list[ExtractedSpec]) -> str:
-    """Combine multiple specs into a single string with file delimiters.
-
-    Preserved for potential future use (e.g., cross-spec coordination pass)
-    but no longer used in the default review pipeline as of v1.4.0.
-    """
-    blocks = []
-    for s in specs:
-        blocks.append(f"===== FILE: {s.filename} =====\n{s.content}")
-    return "\n\n".join(blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -516,11 +503,8 @@ def collect_batch_results(
         all_verifiable.extend(cross_check_result.findings)
 
     if verify and all_verifiable:
-        verifiable_count = sum(
-            1 for f in all_verifiable
-            if f.severity != "GRIPES"
-        )
-        if verifiable_count > 0:
+        try:
+            verifiable_count = len(all_verifiable)
             progress(60.0, f"Submitting {verifiable_count} findings for batch verification...")
             log(f"Submitting {verifiable_count} findings for batch verification (50% savings)...")
 
@@ -541,6 +525,14 @@ def collect_batch_results(
                     v = f.verification.verdict
                     verdicts[v] = verdicts.get(v, 0) + 1
             log(f"Verification complete: {', '.join(f'{v}: {c}' for v, c in sorted(verdicts.items()))}")
+        except Exception as e:
+            log(f"Verification failed: {e}. Returning results without verification.")
+            for f in all_verifiable:
+                if f.verification is None:
+                    f.verification = VerificationResult(
+                        verdict="UNVERIFIED",
+                        explanation=f"Verification unavailable: {e}",
+                    )
 
     progress(100.0, "Done.")
     return PipelineResult(
@@ -735,11 +727,8 @@ def run_review(
     verify_start_pct = 66.0
 
     if verify and all_verifiable:
-        verifiable_count = sum(
-            1 for f in all_verifiable
-            if f.severity != "GRIPES"
-        )
-        if verifiable_count > 0:
+        try:
+            verifiable_count = len(all_verifiable)
             progress(verify_start_pct, f"Verifying {verifiable_count} findings via web search...")
             log(f"Verifying {verifiable_count} findings with Sonnet + web search...")
 
@@ -758,8 +747,14 @@ def run_review(
 
             verdict_summary = ", ".join(f"{v}: {c}" for v, c in sorted(verdicts.items()))
             log(f"Verification complete: {verdict_summary}")
-        else:
-            log("No findings eligible for verification (no code references).")
+        except Exception as e:
+            log(f"Verification failed: {e}. Returning results without verification.")
+            for f in all_verifiable:
+                if f.verification is None:
+                    f.verification = VerificationResult(
+                        verdict="UNVERIFIED",
+                        explanation=f"Verification unavailable: {e}",
+                    )
 
     # -------------------------------------------------------------------------
     # Stage 7: Aggregate results

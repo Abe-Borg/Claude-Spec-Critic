@@ -28,7 +28,7 @@ from typing import Any, Callable, Optional
 
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
-from .prompts import get_system_prompt, get_user_message, get_single_spec_user_message
+from .prompts import get_system_prompt, get_single_spec_user_message
 
 
 MODEL_OPUS_46 = "claude-opus-4-6"
@@ -150,15 +150,17 @@ def _extract_json_array(text: str) -> tuple[list, str]:
     if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
         thinking = text[:start_idx].strip()
         json_str = text[start_idx:end_idx + 1]
-        try:
-            data = json.loads(json_str)
-            if isinstance(data, list):
-                return data, thinking
-        except json.JSONDecodeError:
-            pass  # Fall through to empty check
+        stripped = json_str.lstrip()
+        if stripped.startswith("[{") or stripped.strip() == "[]":
+            try:
+                data = json.loads(json_str)
+                if isinstance(data, list):
+                    return data, thinking
+            except json.JSONDecodeError:
+                pass  # Fall through to empty check
 
-    # Strategy 3: No findings detected
-    if "no issues" in text.lower() or text.strip() == "[]":
+    # Strategy 3: Explicit empty array
+    if text.strip() == "[]":
         return [], text.strip()
 
     raise ValueError(f"Could not extract JSON findings from response: {text[:200]}...")
@@ -185,16 +187,34 @@ def _parse_findings(data: list) -> list[Finding]:
         else:
             confidence = 0.5
 
+        # Validate severity
+        severity = str(item.get("severity", "")).strip().upper()
+        if severity not in {"CRITICAL", "HIGH", "MEDIUM", "GRIPES"}:
+            continue  # Skip findings with invalid severity
+
+        # Validate actionType
+        action_type = str(item.get("actionType", "")).strip().upper()
+        if action_type not in {"ADD", "EDIT", "DELETE"}:
+            action_type = "EDIT"
+
+        # Coerce optional text fields to str if not None
+        existing = item.get("existingText")
+        existing_text = str(existing) if existing is not None else None
+        replacement = item.get("replacementText")
+        replacement_text = str(replacement) if replacement is not None else None
+        code_ref = item.get("codeReference")
+        code_reference = str(code_ref) if code_ref is not None else None
+
         findings.append(
             Finding(
-                severity=str(item.get("severity", "")).strip(),
+                severity=severity,
                 fileName=str(item.get("fileName", "")).strip(),
                 section=str(item.get("section", "")).strip(),
                 issue=str(item.get("issue", "")).strip(),
-                actionType=str(item.get("actionType", "")).strip(),
-                existingText=item.get("existingText", None),
-                replacementText=item.get("replacementText", None),
-                codeReference=item.get("codeReference", None),
+                actionType=action_type,
+                existingText=existing_text,
+                replacementText=replacement_text,
+                codeReference=code_reference,
                 confidence=confidence,
             )
         )
@@ -300,54 +320,6 @@ def _stream_review(
     result.error = f"Failed after {max_retries} attempts."
     result.elapsed_seconds = time.time() - start_time
     return result
-
-
-def review_specs(
-    combined_content: str,
-    *,
-    file_count: int = 0,
-    project_context: str = "",
-    model: str = MODEL_OPUS_46,
-    max_retries: int = 3,
-    verbose: bool = False,
-    stream_callback: Optional[StreamCallback] = None,
-) -> ReviewResult:
-    """
-    Send combined specifications to Claude for review (multi-spec mode).
-
-    This is the original review path where all specs are concatenated into
-    a single input string. Used when batch_mode is False and the combined
-    approach is preferred.
-
-    Uses streaming API for real-time display. Retries on rate limit
-    and connection errors with exponential backoff.
-
-    Args:
-        combined_content: All spec text concatenated with FILE headers
-        file_count: Number of spec files (passed to user message for context)
-        project_context: Optional free-text project description from the user
-        model: Model ID for review (default: Claude Opus 4.6)
-        max_retries: Maximum retry attempts for transient API errors
-        verbose: If True, print debug info to stdout
-        stream_callback: Optional callback invoked with each streaming text chunk
-    """
-    client = Anthropic(api_key=_get_api_key())
-    system_prompt = get_system_prompt()
-    user_message = get_user_message(
-        combined_content,
-        file_count=file_count,
-        project_context=project_context,
-    )
-
-    return _stream_review(
-        client,
-        system_prompt,
-        user_message,
-        model=model,
-        max_retries=max_retries,
-        verbose=verbose,
-        stream_callback=stream_callback,
-    )
 
 
 def review_single_spec(

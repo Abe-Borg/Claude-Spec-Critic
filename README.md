@@ -1,4 +1,4 @@
-# Spec Critic v1.9.1
+# Spec Critic v2.0.0
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` or `.pdf` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
 
@@ -10,7 +10,7 @@ A desktop tool that reviews mechanical and plumbing construction specifications 
 4. Reviews each spec independently via streaming API calls to the selected model (Opus 4.6 or Sonnet 4.6)
 5. Deduplicates findings that appear across multiple specs
 6. Optionally runs a cross-spec coordination check (Sonnet 4.6) to catch inter-spec conflicts
-7. Verifies all CRITICAL/HIGH/MEDIUM findings via web search (Sonnet 4.6)
+7. Verifies all findings (CRITICAL/HIGH/MEDIUM/GRIPES) via web search (Sonnet 4.6)
 8. Outputs results based on user selection:
    - **View in App**: Renders a full report in-app with a pop-out window
    - **Export Report**: Saves a formatted Word document (.docx) with all findings
@@ -164,7 +164,7 @@ Batch mode submits all specs as a single Anthropic Message Batch at 50% cost. Bo
 
 ### Verification
 
-All CRITICAL, HIGH, and MEDIUM findings are automatically verified by Sonnet 4.6 with web search. This includes both per-spec findings and cross-check coordination findings.
+All findings (CRITICAL, HIGH, MEDIUM, and GRIPES) are automatically verified by Sonnet 4.6 with web search. This includes both per-spec findings and cross-check coordination findings.
 
 In batch mode, verification is also batched via the Batches API for 50% cost savings. If batch verification fails (submission error or terminal batch state), it falls back to sequential verification automatically.
 
@@ -174,9 +174,9 @@ In batch mode, verification is also batched via the Batches API for 50% cost sav
 - **DISPUTED** (red) — Finding appears incorrect
 - **UNVERIFIED** (gray) — Could not find evidence either way
 
-### Report Panel
+### Report Window
 
-After review (in "View in App" mode), the report renders with:
+After review (in "View in App" mode), the report renders in a pop-out window with:
 - **Summary grid**: Severity counts plus cross-check count (if applicable)
 - **Alerts**: LEED references and placeholders detected locally
 - **Findings**: Per-spec findings grouped by severity, sorted by confidence
@@ -246,7 +246,9 @@ spec-review/
 - **Robust JSON parsing**: Sentinel tags with heuristic fallback for reliable extraction.
 - **Frozen build support**: Config and state files stored in user-writable directories via `platformdirs`.
 - **Native PDF only**: Scanned/image PDFs are detected and warned about but not OCR'd.
-- **Fault-tolerant verification**: Individual verification failures cannot crash the remaining findings (v1.9.1).
+- **Fault-tolerant verification**: Individual verification failures cannot crash the remaining findings (v1.9.1). Pipeline-level try/except added in v2.0.0.
+- **All findings verified**: GRIPES findings are now verified like any other severity (v2.0.0).
+- **Bounded polling**: Both GUI and verification batch polling have maximum attempt limits (v2.0.0).
 
 ## What Claude Reviews
 
@@ -277,6 +279,34 @@ platformdirs       # OS-appropriate config/state directories
 ```
 
 ## Changelog
+
+### v2.0.0 — Correctness, Parse Hardening, Extraction Fidelity, and Cleanup
+
+- **Fix**: `pyproject.toml` build-backend changed from invalid `setuptools.backends._legacy:_Backend` to `setuptools.build_meta` — `pip install -e .` now works
+- **Fix**: DOCX extraction preserves document body order — paragraphs and tables interleaved correctly via `doc.element.body` iteration instead of two-pass approach
+- **Fix**: PDF table extraction via `find_tables()` removed — was duplicating content already captured by `get_text("text")`
+- **Fix**: Loose "no issues" heuristic removed from JSON parser — only `"[]"` treated as empty, preventing false negatives when model text happens to contain "no issues"
+- **Fix**: Parse fallback (Strategy 2) validates bracket structure before `json.loads()` — prevents garbage parses
+- **Fix**: Field validation in `_parse_findings()` — invalid severity skips finding, invalid actionType defaults to EDIT, text fields coerced to str
+- **Fix**: GRIPES findings now verified in both real-time and batch mode — removed exclusion filter in pipeline
+- **Fix**: Verification failures wrapped in try/except at pipeline level — errors produce UNVERIFIED verdicts instead of crashing
+- **Fix**: Export cancel/failure now falls back to pop-out ReportWindow instead of losing results
+- **Fix**: Widget state snapshotted before threads — eliminates thread-unsafe widget reads
+- **Fix**: Combined-total token gate removed — only per-file gating remains (as documented)
+- **Fix**: LEED detection deduplication — specific patterns (LEED-NC) no longer produce duplicate generic LEED alerts
+- **Improvement**: Cross-checker input enriched with key numeric values and cross-references per spec
+- **Improvement**: Cross-checker header patterns tightened — excludes body text lines containing "shall"/"must"/etc.
+- **Improvement**: Cross-checker prompt adds anti-hallucination guidance (cite specific values, don't infer from absence)
+- **Improvement**: Batch verification polling bounded (`max_poll_attempts=240`) with fallback to sequential after 5 consecutive errors
+- **Improvement**: GUI batch polling bounded (max 300 attempts, 5 consecutive error limit)
+- **Improvement**: Batch ID validated on resume (must start with "msgbatch_")
+- **Improvement**: UNVERIFIED verdicts now displayed in both in-app and exported reports
+- **Improvement**: `retrieve_review_results()` surfaces parse failures as error messages instead of silently swallowing
+- **Removed**: Dead `review_specs()` function from `reviewer.py`
+- **Removed**: Dead `_combine_specs()` function from `pipeline.py`
+- **Removed**: Dead `preprocess_specs()` function from `preprocessor.py`
+- **Removed**: Dead `ReportPanel` class and report expand/collapse mode from `widgets.py` and `gui.py`
+- **Breaking**: `retrieve_review_results()` `model` parameter is now required (keyword-only)
 
 ### v1.9.1 — Verification Reliability Fix
 
@@ -387,7 +417,7 @@ platformdirs       # OS-appropriate config/state directories
 
 ### v1.0.0
 
-- Initial release with in-app ReportPanel
+- Initial release
 
 ## Copyright Notice
 
