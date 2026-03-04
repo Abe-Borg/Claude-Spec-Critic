@@ -69,11 +69,25 @@ _HEADER_PATTERNS = [
     re.compile(r"^PART\s+\d+\s*[-–—]\s*.+", re.IGNORECASE),
     # "1.1 SUMMARY", "2.3 PIPE HANGERS AND SUPPORTS"
     re.compile(r"^\d+\.\d+(?:\.\d+)?\s+[A-Z].*"),
-    # "A. Section Includes:", "B. Related Sections:"
-    re.compile(r"^[A-Z]\.\s+.{10,}"),
-    # All-caps lines that look like section titles (min 3 words, max 80 chars)
-    re.compile(r"^[A-Z][A-Z\s,/&()-]{8,78}$"),
+    # "A. Section Includes:" — lettered subsection titles (exclude body text
+    # containing verbs like "shall", "must", "provide", "is required")
+    re.compile(r"^[A-Z]\.\s+(?!.*\b(?:shall|must|provide|is required)\b).{10,}"),
+    # All-caps lines that look like section titles (require ≥2 words)
+    re.compile(r"^[A-Z]{2,}(?:\s+[A-Z][A-Z\s,/&()-]*){1,}$"),
 ]
+
+# Pattern for extracting lines with numeric values relevant to MEP coordination
+_VALUE_PATTERN = re.compile(
+    r'\d+(?:\.\d+)?\s*(?:°F|°C|psi|psig|GPM|gpm|CFM|cfm|inches|inch|feet|ft|in\.'
+    r'|lbs|tons|HP|hp|kW|kw|BTU|Btu|MBH|gallons|gallon|GPH|FPM|fpm)',
+    re.IGNORECASE,
+)
+
+# Pattern for cross-references to other spec sections
+_XREF_PATTERN = re.compile(
+    r'(?:refer\s+to|see\s+|per\s+)?(?:Section|Division)\s+\d{2}\s*\d{2}\s*\d{2}',
+    re.IGNORECASE,
+)
 
 
 def _is_section_header(line: str) -> bool:
@@ -137,6 +151,25 @@ def _build_spec_summary(
         else:
             parts.append("  (no section headers detected)")
 
+        # Extract lines with numeric values (temperatures, pressures, etc.)
+        value_lines: list[str] = []
+        xref_lines: list[str] = []
+        for line in spec.content.split("\n"):
+            stripped = line.strip()
+            if not stripped or len(stripped) > 200:
+                continue
+            if _VALUE_PATTERN.search(stripped) and len(value_lines) < 30:
+                value_lines.append(f"  {stripped}")
+            if _XREF_PATTERN.search(stripped) and len(xref_lines) < 15:
+                xref_lines.append(f"  {stripped}")
+
+        if value_lines:
+            parts.append("  --- KEY VALUES ---")
+            parts.extend(value_lines)
+        if xref_lines:
+            parts.append("  --- CROSS-REFERENCES ---")
+            parts.extend(xref_lines)
+
     # Section 2: Existing findings summary (so cross-checker doesn't repeat them)
     if existing_findings:
         parts.append("")
@@ -160,7 +193,7 @@ def _build_spec_summary(
 _CROSS_CHECK_SYSTEM_PROMPT = """You are a specification coordination reviewer for mechanical and plumbing disciplines. Your ONLY job is to identify cross-spec coordination issues — problems that exist BETWEEN specifications, not within a single spec.
 
 <task>
-You are given the section-level structure of multiple specification files and a list of issues that have already been identified by a per-spec reviewer. Your job is to find coordination problems that a single-spec review would miss.
+You are given the section-level structure, key numeric values, and cross-references from multiple specification files, along with a list of issues that have already been identified by a per-spec reviewer. Your job is to find coordination problems that a single-spec review would miss. Flag contradictions only when you can cite the specific conflicting values from the excerpts provided.
 
 DO NOT repeat any issues from the "ISSUES ALREADY IDENTIFIED" list. Those are already caught.
 DO NOT flag within-spec issues (wrong code years, formatting, etc.). Those are handled elsewhere.
@@ -183,6 +216,7 @@ ONLY flag issues that involve TWO OR MORE specifications interacting.
 - Missing specs that are clearly outside the MEP scope provided
 - Minor terminology differences that are clearly just abbreviations (CHW vs chilled water is fine if values match)
 - Issues you are not reasonably confident about (below 0.50 confidence)
+- Do not infer contradictions from the absence of information — only flag issues where you see explicit conflicting data in the excerpts provided
 </what_NOT_to_flag>
 
 <severity_guidance>

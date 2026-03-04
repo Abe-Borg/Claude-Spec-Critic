@@ -43,6 +43,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
+from docx.table import Table as DocxTable
+from docx.text.paragraph import Paragraph
 
 
 # Minimum words per page to consider a PDF page as having usable text.
@@ -107,21 +109,18 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         raise ValueError(f"Invalid or corrupted .docx file: {filepath}")
 
     paragraphs = []
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if text:
-            paragraphs.append(text)
-
-    # Also extract text from tables (specs often have tables)
-    for table in doc.tables:
-        for row in table.rows:
-            row_text = []
-            for cell in row.cells:
-                cell_text = cell.text.strip()
-                if cell_text:
-                    row_text.append(cell_text)
-            if row_text:
-                paragraphs.append(" | ".join(row_text))
+    for child in doc.element.body:
+        if child.tag.endswith('}p'):
+            para = Paragraph(child, doc)
+            text = para.text.strip()
+            if text:
+                paragraphs.append(text)
+        elif child.tag.endswith('}tbl'):
+            table = DocxTable(child, doc)
+            for row in table.rows:
+                row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if row_text:
+                    paragraphs.append(" | ".join(row_text))
 
     content = "\n\n".join(paragraphs)
     word_count = len(content.split())
@@ -182,25 +181,6 @@ def extract_text_from_pdf(filepath: Path) -> ExtractedSpec:
     low_text_pages = 0
 
     for page in doc:
-        # --- Table extraction first (so we can exclude table areas from text) ---
-        table_rects: list = []
-        table_rows: list[str] = []
-
-        try:
-            tables = page.find_tables()
-            for table in tables.tables:
-                table_rects.append(table.bbox)
-                for row in table.extract():
-                    # row is a list of cell strings (None for empty cells)
-                    cells = [str(cell).strip() if cell else "" for cell in row]
-                    cells = [c for c in cells if c]
-                    if cells:
-                        table_rows.append(" | ".join(cells))
-        except Exception:
-            # Table detection can fail on some PDFs — fall back to text only
-            pass
-
-        # --- Text extraction (full page) ---
         page_text = page.get_text("text").strip()
 
         # Check if this page has enough text to be considered native
@@ -210,10 +190,6 @@ def extract_text_from_pdf(filepath: Path) -> ExtractedSpec:
 
         if page_text:
             paragraphs.append(page_text)
-
-        # Append table rows after the page text
-        if table_rows:
-            paragraphs.extend(table_rows)
 
     doc.close()
 

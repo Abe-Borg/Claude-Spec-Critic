@@ -229,7 +229,7 @@ def poll_batch(batch_id: str) -> BatchStatus:
     )
 
 
-def retrieve_review_results(job: BatchJob, model: str = MODEL_OPUS_46) -> dict[str, ReviewResult]:
+def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewResult]:
     """
     Retrieve and parse review results from a completed batch.
 
@@ -265,18 +265,26 @@ def retrieve_review_results(job: BatchJob, model: str = MODEL_OPUS_46) -> dict[s
                 if hasattr(block, "text"):
                     response_text += block.text
 
-            # Parse findings using the same logic as the streaming path
-            try:
-                data, thinking = _extract_json_array(response_text)
-                findings = _parse_findings(data)
-            except Exception:
-                findings = []
-                thinking = response_text
-
             # Extract token usage
             usage = message.usage if hasattr(message, "usage") else None
             input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
             output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
+
+            # Parse findings using the same logic as the streaming path
+            try:
+                data, thinking = _extract_json_array(response_text)
+                findings = _parse_findings(data)
+            except Exception as e:
+                results_by_file[filename] = ReviewResult(
+                    findings=[],
+                    raw_response=response_text,
+                    thinking=response_text,
+                    model=model,
+                    input_tokens=int(input_tokens or 0),
+                    output_tokens=int(output_tokens or 0),
+                    error=f"Failed to parse review output: {e}",
+                )
+                continue
 
             results_by_file[filename] = ReviewResult(
                 findings=findings,

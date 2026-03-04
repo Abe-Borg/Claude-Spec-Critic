@@ -56,12 +56,13 @@ class PreprocessResult:
 # -----------------------------------------------------------------------------
 
 LEED_PATTERNS: list[tuple[str, str]] = [
-    (r"(?i)\bLEED\b", "LEED reference"),
+    # Specific patterns first so they claim spans before the generic \bLEED\b
     (r"(?i)\bLEED[-\s]?NC\b", "LEED-NC reference"),
     (r"(?i)\bLEED[-\s]?CI\b", "LEED-CI reference"),
     (r"(?i)\bLEED[-\s]?EB\b", "LEED-EB reference"),
     (r"(?i)\bUSGBC\b", "USGBC reference"),
     (r"(?i)\bGreen\s+Building\b", "Green Building reference"),
+    (r"(?i)\bLEED\b", "LEED reference"),  # Generic last
 ]
 
 PLACEHOLDER_PATTERNS: list[tuple[str, str]] = [
@@ -86,14 +87,27 @@ PLACEHOLDER_PATTERNS: list[tuple[str, str]] = [
 # Detection Functions
 # -----------------------------------------------------------------------------
 def _find_matches(patterns: Iterable[tuple[str, str]], content: str, filename: str, max_matches: int) -> list[dict]:
-    """Find all matches for a set of regex patterns in content."""
+    """Find all matches for a set of regex patterns in content.
+
+    Uses span-based deduplication: if a match's character range is fully
+    contained within an already-recorded span, it is skipped. This prevents
+    e.g. "LEED-NC" from producing both a "LEED-NC reference" alert and a
+    duplicate "LEED reference" alert for the "LEED" substring.
+    """
     alerts: list[dict] = []
+    seen_spans: list[tuple[int, int]] = []
     for pattern, description in patterns:
         try:
             for match in re.finditer(pattern, content):
-                start = max(0, match.start() - 60)
-                end = min(len(content), match.end() + 60)
-                ctx = content[start:end].replace("\n", " ").strip()
+                m_start, m_end = match.start(), match.end()
+                # Skip if this span overlaps with an already-seen span
+                if any(s <= m_start and m_end <= e for s, e in seen_spans):
+                    continue
+                seen_spans.append((m_start, m_end))
+
+                ctx_start = max(0, m_start - 60)
+                ctx_end = min(len(content), m_end + 60)
+                ctx = content[ctx_start:ctx_end].replace("\n", " ").strip()
 
                 alerts.append(
                     {
@@ -101,7 +115,7 @@ def _find_matches(patterns: Iterable[tuple[str, str]], content: str, filename: s
                         "type": description,
                         "match": match.group(0),
                         "context": ctx,
-                        "position": match.start(),
+                        "position": m_start,
                     }
                 )
 
@@ -128,24 +142,3 @@ def preprocess_spec(content: str, filename: str) -> PreprocessResult:
         leed_alerts=detect_leed_references(content, filename),
         placeholder_alerts=detect_placeholders(content, filename),
     )
-
-
-def preprocess_specs(specs: list[tuple[str, str]]) -> tuple[list[PreprocessResult], dict]:
-    """Process multiple specs and return per-spec results plus aggregate summary."""
-    results: list[PreprocessResult] = []
-    all_leed: list[dict] = []
-    all_ph: list[dict] = []
-
-    for filename, content in specs:
-        r = preprocess_spec(content, filename)
-        results.append(r)
-        all_leed.extend(r.leed_alerts)
-        all_ph.extend(r.placeholder_alerts)
-
-    summary = {
-        "leed_alert_count": len(all_leed),
-        "placeholder_alert_count": len(all_ph),
-        "all_leed_alerts": all_leed,
-        "all_placeholder_alerts": all_ph,
-    }
-    return results, summary

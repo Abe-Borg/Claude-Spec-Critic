@@ -2,7 +2,7 @@
 Word document report exporter for Spec Critic.
 
 Generates a formatted .docx report from a PipelineResult, replicating
-everything the in-app ReportPanel / ReportWindow shows:
+everything the in-app ReportWindow shows:
     - Title block with generation metadata
     - Files reviewed list
     - Summary table (severity counts) with colored cell shading
@@ -298,7 +298,7 @@ def _write_summary_table(doc: Document, review, cross_check_result) -> None:
 
     verdicts: dict[str, int] = {}
     for f in all_findings:
-        if f.verification and f.verification.verdict != "UNVERIFIED":
+        if f.verification:
             v = f.verification.verdict
             verdicts[v] = verdicts.get(v, 0) + 1
 
@@ -307,7 +307,7 @@ def _write_summary_table(doc: Document, review, cross_check_result) -> None:
         para.add_run("Verification: ").bold = True
         verdict_parts = [
             f"{verdicts[v]} {v.lower()}"
-            for v in ["CONFIRMED", "CORRECTED", "DISPUTED"]
+            for v in ["CONFIRMED", "CORRECTED", "DISPUTED", "UNVERIFIED"]
             if v in verdicts
         ]
         para.add_run(", ".join(verdict_parts))
@@ -460,7 +460,7 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         para.paragraph_format.space_after = Pt(3)
 
     # --- Verification verdict ---
-    if finding.verification and finding.verification.verdict != "UNVERIFIED":
+    if finding.verification:
         vr = finding.verification
         verdict_color = VERDICT_COLORS.get(vr.verdict, VERDICT_COLORS["UNVERIFIED"])
         verdict_icon = VERDICT_ICONS.get(vr.verdict, "—")

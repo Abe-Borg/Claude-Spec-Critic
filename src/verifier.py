@@ -228,11 +228,16 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
     if verdict not in ("CONFIRMED", "CORRECTED", "UNVERIFIED", "DISPUTED"):
         verdict = "UNVERIFIED"
 
+    raw_explanation = data.get("explanation", "")
+    explanation = str(raw_explanation) if raw_explanation is not None else ""
+    raw_correction = data.get("correction")
+    correction = str(raw_correction) if raw_correction is not None else None
+
     return VerificationResult(
         verdict=verdict,
-        explanation=str(data.get("explanation", "")),
+        explanation=explanation,
         sources=[str(s) for s in data.get("sources", []) if s],
-        correction=data.get("correction"),
+        correction=correction,
     )
 
 
@@ -368,6 +373,7 @@ def verify_findings_batch(
     log: Callable[[str], None] = lambda _: None,
     progress: Callable[[float, str], None] = lambda _p, _m: None,
     poll_interval: int = 15,
+    max_poll_attempts: int = 240,
 ) -> list[Finding]:
     """Verify findings via the Anthropic Message Batches API (50% cost savings).
 
@@ -419,11 +425,22 @@ def verify_findings_batch(
     log(f"Verification batch submitted: {job.batch_id}")
     progress(5.0, "Verification batch submitted — polling...")
 
-    # Poll until complete
-    while True:
+    # Poll until complete (bounded)
+    poll_count = 0
+    consecutive_errors = 0
+    while poll_count < max_poll_attempts:
+        poll_count += 1
         try:
             status = poll_batch(job.batch_id)
+            consecutive_errors = 0
         except Exception as e:
+            consecutive_errors += 1
+            if consecutive_errors >= 5:
+                log(f"5 consecutive poll errors. Falling back to sequential verification.")
+                def _seq_progress_err(current: int, total: int, filename: str):
+                    pct = (current / total) * 100.0 if total > 0 else 100.0
+                    progress(pct, f"Verifying finding {current}/{total} ({filename})...")
+                return verify_findings(findings, progress=_seq_progress_err)
             log(f"Poll error (retrying): {e}")
             time.sleep(poll_interval * 2)
             continue
@@ -450,6 +467,13 @@ def verify_findings_batch(
             return verify_findings(findings, progress=_seq_progress)
 
         time.sleep(poll_interval)
+    else:
+        # Timed out — fall back to sequential for remaining unverified
+        log(f"Verification polling timed out after {max_poll_attempts} attempts. Falling back to sequential.")
+        def _seq_progress_timeout(current: int, total: int, filename: str):
+            pct = (current / total) * 100.0 if total > 0 else 100.0
+            progress(pct, f"Verifying finding {current}/{total} ({filename})...")
+        return verify_findings(findings, progress=_seq_progress_timeout)
 
     # Collect results
     progress(92.0, "Collecting verification results...")

@@ -22,7 +22,7 @@ from src.tokenizer import RECOMMENDED_MAX
 from src.prompts import get_system_prompt
 from src.report_exporter import export_report
 
-from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportPanel, ReportWindow)
+from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportWindow)
 
 from platformdirs import user_config_dir, user_state_dir
 
@@ -145,10 +145,16 @@ def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
         delete_batch_state()
         return None
 
+    # Validate batch_id format
+    batch_id = state.get("batch_id", "")
+    if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
+        delete_batch_state()
+        return None
+
     # Reconstruct BatchSubmission
     try:
         job = BatchJob(
-            batch_id=state["batch_id"],
+            batch_id=batch_id,
             job_type=state.get("job_type", "review"),
             request_map=state["request_map"],
             created_at=state["created_at"],
@@ -191,7 +197,6 @@ class SpecReviewApp(ctk.CTk):
         self.configure(fg_color=COLORS["bg_dark"])
         self.input_dir = None
         self.is_processing = False
-        self._report_mode = False
         self._report_window: Optional[ReportWindow] = None
         self._project_context_tokens = 0
         self._batch_submission: Optional[BatchSubmission] = None
@@ -208,12 +213,6 @@ class SpecReviewApp(ctk.CTk):
         c = ctk.CTkFrame(self, fg_color="transparent")
         c.pack(fill="both", expand=True, padx=24, pady=24)
         self.container = c
-
-        # Report-mode toolbar (hidden by default)
-        self.report_toolbar = ctk.CTkFrame(c, fg_color="transparent")
-        tb_kw = {"height": 34, "font": ctk.CTkFont(family="Segoe UI", size=12), "fg_color": COLORS["bg_card"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
-        ctk.CTkButton(self.report_toolbar, text="\u2190  Back to Review", width=150, command=self._exit_report_mode, **tb_kw).pack(side="left")
-        ctk.CTkButton(self.report_toolbar, text="\u21bb  New Review", width=130, command=self._reset_for_new_review, **tb_kw).pack(side="left", padx=(8, 0))
 
         # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
@@ -238,7 +237,6 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.pack(fill="x", pady=(16, 0))
         self.progress_bar = ctk.CTkProgressBar(c, height=4, corner_radius=2, fg_color=COLORS["bg_input"], progress_color=COLORS["accent"], indeterminate_speed=0.5)
         self.progress_bar.set(0)
-        self.report_panel = ReportPanel(c, on_fullscreen=self._enter_report_mode)
         self.log = EnhancedLog(c)
         self.log.pack(fill="both", expand=True, pady=(16, 0))
 
@@ -407,6 +405,7 @@ class SpecReviewApp(ctk.CTk):
             self._context_has_placeholder = True
             self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
             self.context_textbox.configure(text_color=COLORS["text_muted"])
+            self._on_context_change()
 
     def _get_project_context(self) -> str:
         if self._context_has_placeholder:
@@ -462,6 +461,9 @@ class SpecReviewApp(ctk.CTk):
             self.log.log_warning("No supported files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
         self.log.log_step(f"Analyzing {len(file_paths)} files...")
 
+        # Snapshot widget state on main thread before spawning worker
+        project_context = self._get_project_context()
+
         def analyze():
             try:
                 file_data = []
@@ -469,8 +471,7 @@ class SpecReviewApp(ctk.CTk):
                 from tiktoken import get_encoding
                 enc = get_encoding("cl100k_base")
                 self._system_prompt_tokens = len(enc.encode(get_system_prompt()))
-                ctx = self._get_project_context()
-                self._project_context_tokens = len(enc.encode(ctx)) if ctx else 0
+                self._project_context_tokens = len(enc.encode(project_context)) if project_context else 0
 
                 extracted_specs: list[ExtractedSpec] = []
                 for f in file_paths:
@@ -537,7 +538,6 @@ class SpecReviewApp(ctk.CTk):
         missing = [f for f in self._selected_files if not f.exists()]
         if missing: self.log.log_error(f"File not found: {missing[0].name}"); return False
         if self.file_list_panel.get_selected_count() == 0: self.log.log_error("No files selected"); return False
-        if self.token_gauge.token_count > RECOMMENDED_MAX: self.log.log_error("Token limit exceeded"); return False
         return True
 
     def start_review(self):
@@ -549,7 +549,6 @@ class SpecReviewApp(ctk.CTk):
         self._model_for_review = self._selected_review_model
         self._export_mode_for_review = self._is_export_mode
         self.is_processing = True
-        self.report_panel.clear()
         self._close_report_window()
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
         self.run_button.set_processing()
@@ -600,6 +599,7 @@ class SpecReviewApp(ctk.CTk):
     def _on_review_complete(self, result):
         self.progress_bar.set(1.0)
         self.log.log_success("Review complete!")
+        self._last_result = result
         if result.review_result:
             rv = result.review_result
             self.log.log(f"Findings: {rv.critical_count} critical, {rv.high_count} high, {rv.medium_count} medium, {rv.gripe_count} gripes", level="info")
@@ -610,7 +610,11 @@ class SpecReviewApp(ctk.CTk):
 
             # Route to export or in-app rendering based on output mode
             if getattr(self, "_export_mode_for_review", False):
-                self._export_report_to_file(result)
+                exported = self._export_report_to_file(result)
+                if not exported:
+                    # Fall back to pop-out window so results aren't lost
+                    self.log.log_step("Opening results in pop-out window instead...")
+                    self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
             else:
                 self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
 
@@ -618,12 +622,10 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
 
-    def _export_report_to_file(self, result):
+    def _export_report_to_file(self, result) -> bool:
         """Show save dialog and export the report to a .docx file.
 
-        Called instead of _open_report_window() when Export Report mode
-        is active. The in-app ReportPanel and pop-out ReportWindow are
-        NOT rendered — this is the key performance fix for large reviews.
+        Returns True if export succeeded, False if canceled or failed.
 
         Args:
             result: PipelineResult from the review pipeline
@@ -636,8 +638,8 @@ class SpecReviewApp(ctk.CTk):
             initialfile=default_name,
         )
         if not path:
-            self.log.log_warning("Export canceled — no file saved")
-            return
+            self.log.log_warning("Export canceled")
+            return False
 
         try:
             output_path = Path(path)
@@ -648,8 +650,10 @@ class SpecReviewApp(ctk.CTk):
                 project_context=getattr(self, "_project_context_for_review", ""),
             )
             self.log.log_success(f"Report saved: {output_path}")
+            return True
         except Exception as e:
             self.log.log_error(f"Export failed: {e}")
+            return False
 
     def _on_review_error(self, err):
         self.progress_bar.pack_forget()
@@ -681,6 +685,8 @@ class SpecReviewApp(ctk.CTk):
 
     def _on_batch_submitted(self, submission: BatchSubmission):
         self._batch_submission = submission
+        self._poll_count = 0
+        self._poll_consecutive_errors = 0
         self.progress_bar.set(0.4)
         self.log.log_success(f"Batch submitted: {submission.job.batch_id}")
         self.log.log(f"  {len(submission.files_reviewed)} specs queued \u2022 50% cost savings", level="muted")
@@ -691,11 +697,20 @@ class SpecReviewApp(ctk.CTk):
     def _poll_batch(self):
         if self._batch_submission is None:
             return
+        self._poll_count = getattr(self, "_poll_count", 0) + 1
+        if self._poll_count > 300:
+            self.log.log_error("Batch polling timed out after extended waiting.")
+            self._on_review_error("Batch polling timed out")
+            return
         def _do_poll():
             try:
                 status = poll_batch(self._batch_submission.job.batch_id)
+                self._poll_consecutive_errors = 0
                 self.after(0, lambda: self._on_poll_result(status))
             except Exception as e:
+                self._poll_consecutive_errors = getattr(self, "_poll_consecutive_errors", 0) + 1
+                if self._poll_consecutive_errors >= 5:
+                    self.after(0, lambda: self.log.log_warning(f"5 consecutive poll errors — will keep trying"))
                 self.after(0, lambda: self.log.log_warning(f"Poll error (retrying): {e}"))
                 self.after(0, lambda: self._schedule_next_poll(30_000))
         threading.Thread(target=_do_poll, daemon=True).start()
@@ -866,7 +881,7 @@ class SpecReviewApp(ctk.CTk):
         # Cross-check is not available for resumed batches (no ExtractedSpec objects)
         self._cross_check_for_review = False
         self._project_context_for_review = ""
-        # Resumed batches default to export mode (safest for potentially large results)
+        # Use whatever output mode the user currently has selected
         self._export_mode_for_review = self._is_export_mode
         self.is_processing = True
 
@@ -900,42 +915,13 @@ class SpecReviewApp(ctk.CTk):
             except Exception: pass
             self._report_window = None
 
-    # ----- Report expand / collapse mode -----
-
-    def _enter_report_mode(self):
-        self._report_mode = True
-        self.hdr.pack_forget()
-        self.inputs_card.pack_forget()
-        self.file_list_panel.pack_forget()
-        self.token_gauge.pack_forget()
-        self.run_button.pack_forget()
-        self.progress_bar.pack_forget()
-        self.log.pack_forget()
-        self.report_toolbar.pack(fill="x", pady=(0, 8), before=self.report_panel)
-
-    def _exit_report_mode(self):
-        self._report_mode = False
-        self.report_toolbar.pack_forget()
-        self.hdr.pack(fill="x", pady=(0, 20))
-        self.inputs_card.pack(fill="x")
-        if self.file_list_panel._file_data:
-            self.file_list_panel.pack(fill="x", pady=(16, 0), after=self.inputs_card)
-        self.token_gauge.pack(fill="x", pady=(16, 0))
-        self.run_button.pack(fill="x", pady=(16, 0))
-        self.log.pack(fill="both", expand=True, pady=(16, 0))
-
     def _reset_for_new_review(self):
-        if self._report_mode:
-            self._report_mode = False
-            self.report_toolbar.pack_forget()
-
         if self._batch_poll_id is not None:
             self.after_cancel(self._batch_poll_id)
             self._batch_poll_id = None
         self._batch_submission = None
 
         self._close_report_window()
-        self.report_panel.clear()
         self.progress_bar.pack_forget()
 
         self.input_dir = None
