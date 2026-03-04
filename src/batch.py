@@ -311,10 +311,10 @@ def submit_verification_batch(
     """Submit verification requests as a single Anthropic Message Batch.
 
     Each finding gets its own batch request using Sonnet 4.6 with the
-    web_search tool. GRIPES findings are excluded (not worth verifying).
+    web_search tool. 
 
     Args:
-        findings: List of Finding objects to verify. GRIPES are skipped.
+        findings: List of Finding objects to verify. 
         build_prompt_fn: Function that takes a Finding and returns the
             verification prompt string. Injected from verifier.py to
             avoid circular imports.
@@ -331,8 +331,7 @@ def submit_verification_batch(
     # Build list of (original_index, finding) for verifiable findings
     verifiable: list[tuple[int, Finding]] = []
     for i, f in enumerate(findings):
-        if f.severity != "GRIPES":
-            verifiable.append((i, f))
+        verifiable.append((i, f))
 
     if not verifiable:
         raise ValueError("No findings eligible for verification")
