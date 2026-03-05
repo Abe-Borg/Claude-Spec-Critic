@@ -194,7 +194,7 @@ Wraps the Anthropic Message Batches API for both review and verification.
 - `submit_verification_batch(findings)` → `BatchJob`
 - `poll_batch(batch_id)` → `BatchStatus`
 - `retrieve_review_results(job, *, model)` → `dict[str, ReviewResult]` (model is required keyword arg)
-- `retrieve_verification_results(job)` → `dict[str, VerificationResult]`
+- `retrieve_verification_results(job, findings, parse_response_fn)` → `list[Finding]`
 - `cancel_batch(batch_id)` → `str` (processing status)
 
 ### verifier.py — Finding Verification
@@ -266,7 +266,7 @@ Verifies ALL findings (including GRIPES as of v2.0.0). Mutates `finding.verifica
 ```
 anthropic          # Claude API client
 python-docx        # DOCX text extraction + report export
-pymupdf            # PDF text and table extraction (v1.9.0)
+pymupdf            # PDF page-text extraction only (no OCR, no table reconstruction)
 tiktoken           # Token counting
 customtkinter      # GUI framework
 platformdirs       # OS-appropriate config/state directories
