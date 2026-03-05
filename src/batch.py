@@ -235,26 +235,24 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
 
     Iterates over all batch results, parses each response using the same
     JSON extraction logic as the real-time path, and returns a dict mapping
-    filename to ReviewResult.
+    request custom_id to ReviewResult.
 
     Args:
         job: BatchJob returned by submit_review_batch()
         model: Model ID used for the review (for ReviewResult metadata)
 
     Returns:
-        Dict mapping filename -> ReviewResult. Errored/expired/canceled
+        Dict mapping custom_id -> ReviewResult. Errored/expired/canceled
         requests produce ReviewResults with an error message and empty findings.
     """
     client = Anthropic(api_key=_get_api_key())
-    results_by_file: dict[str, ReviewResult] = {}
+    results_by_request: dict[str, ReviewResult] = {}
 
     for result in client.messages.batches.results(job.batch_id):
         custom_id = result.custom_id
         meta = job.request_map.get(custom_id)
         if not meta:
             continue
-
-        filename = meta["filename"]
 
         if result.result.type == "succeeded":
             message = result.result.message
@@ -275,7 +273,7 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
                 data, thinking = _extract_json_array(response_text)
                 findings = _parse_findings(data)
             except Exception as e:
-                results_by_file[filename] = ReviewResult(
+                results_by_request[custom_id] = ReviewResult(
                     findings=[],
                     raw_response=response_text,
                     thinking=response_text,
@@ -286,7 +284,7 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
                 )
                 continue
 
-            results_by_file[filename] = ReviewResult(
+            results_by_request[custom_id] = ReviewResult(
                 findings=findings,
                 raw_response=response_text,
                 thinking=thinking,
@@ -300,12 +298,12 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
             if hasattr(result.result, "error") and result.result.error:
                 error_msg += f": {result.result.error}"
 
-            results_by_file[filename] = ReviewResult(
+            results_by_request[custom_id] = ReviewResult(
                 findings=[],
                 error=error_msg,
             )
 
-    return results_by_file
+    return results_by_request
 
 
 # ---------------------------------------------------------------------------

@@ -112,6 +112,7 @@ def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None
         "request_map": submission.job.request_map,
         "created_at": submission.job.created_at,
         "files_reviewed": submission.files_reviewed,
+        "review_request_ids": submission.review_request_ids,
         "leed_alerts": submission.leed_alerts,
         "placeholder_alerts": submission.placeholder_alerts,
         "model": getattr(submission, "model", MODEL_OPUS_46),
@@ -169,6 +170,7 @@ def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
         submission = BatchSubmission(
             job=job,
             files_reviewed=state.get("files_reviewed", []),
+            review_request_ids=state.get("review_request_ids", []),
             leed_alerts=state.get("leed_alerts", []),
             placeholder_alerts=state.get("placeholder_alerts", []),
             model=state.get("model", MODEL_OPUS_46),
