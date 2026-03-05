@@ -278,12 +278,18 @@ def _write_summary_table(doc: Document, review, cross_check_result) -> None:
 
     doc.add_paragraph()  # Spacer
 
-    # Token usage
+    # Review-stage token usage only (excludes cross-check + verification)
     para = doc.add_paragraph()
-    para.add_run("Token Usage: ").bold = True
+    para.add_run("Review Stage Tokens: ").bold = True
     para.add_run(
         f"{review.input_tokens:,} input → "
         f"{review.output_tokens:,} output"
+    )
+
+    para = doc.add_paragraph()
+    para.add_run("Note: ").bold = True
+    para.add_run(
+        "Cross-check and verification token usage are not included in the totals above."
     )
 
     # Processing time
