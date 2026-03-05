@@ -345,16 +345,21 @@ class BatchSubmission:
     Attributes:
         job: BatchJob from the Anthropic Batches API
         files_reviewed: List of filenames submitted for review
+        review_request_ids: Ordered custom_id values for submitted review requests
         leed_alerts: Locally detected LEED alerts
         placeholder_alerts: Locally detected placeholder alerts
         model: Model ID used for the review batch
+        prepared_specs: In-memory extracted specs for optional cross-check
+            (not persisted to disk)
     """
     job: BatchJob
     files_reviewed: list[str] = field(default_factory=list)
+    review_request_ids: list[str] = field(default_factory=list)
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     model: str = MODEL_OPUS_46
     project_context: str = ""
+    prepared_specs: list[ExtractedSpec] | None = None
 
 
 def start_batch_review(
@@ -408,13 +413,23 @@ def start_batch_review(
     log(f"Batch submitted: {job.batch_id}")
     progress(40.0, f"Batch submitted — {len(prepared.specs)} specs queued")
 
+    ordered_request_ids = [
+        custom_id
+        for custom_id, _meta in sorted(
+            job.request_map.items(),
+            key=lambda item: item[1]["index"],
+        )
+    ]
+
     return BatchSubmission(
         job=job,
         files_reviewed=[s.filename for s in prepared.specs],
+        review_request_ids=ordered_request_ids,
         leed_alerts=prepared.leed_alerts,
         placeholder_alerts=prepared.placeholder_alerts,
         model=model,
         project_context=project_context,
+        prepared_specs=prepared.specs,
     )
 
 
@@ -449,7 +464,15 @@ def collect_batch_results(
         PipelineResult with aggregated findings, same shape as run_review()
     """
     model = getattr(submission, "model", MODEL_OPUS_46)
-    results_by_file = retrieve_review_results(submission.job, model=model)
+    if not submission.review_request_ids:
+        submission.review_request_ids = [
+            custom_id
+            for custom_id, _meta in sorted(
+                submission.job.request_map.items(),
+                key=lambda item: item[1]["index"],
+            )
+        ]
+    results_by_request = retrieve_review_results(submission.job, model=model)
 
     all_findings: list[Finding] = []
     all_thinking: list[str] = []
@@ -457,8 +480,14 @@ def collect_batch_results(
     total_output_tokens = 0
     errors: list[str] = []
 
-    for filename in submission.files_reviewed:
-        result = results_by_file.get(filename)
+    for request_id in submission.review_request_ids:
+        meta = submission.job.request_map.get(request_id)
+        if not meta:
+            errors.append(f"{request_id}: Missing request metadata")
+            continue
+
+        filename = meta["filename"]
+        result = results_by_request.get(request_id)
         if result is None:
             errors.append(f"{filename}: No result returned from batch")
             continue
