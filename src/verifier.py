@@ -60,6 +60,12 @@ from typing import Callable, Optional
 
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
+from .batch import (
+    submit_verification_batch,
+    poll_batch,
+    retrieve_verification_results,
+    cancel_batch,
+)
 from .reviewer import Finding, MODEL_SONNET_46
 
 VerifyProgressFn = Callable[[int, int, str], None]  # current, total, filename
@@ -204,18 +210,13 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
     start = text.find("{")
     end = text.rfind("}")
 
-    if start == -1 or end == -1:
-        # No JSON found — try to extract verdict from natural language
-        upper = text.upper()
-        for verdict in ("CONFIRMED", "CORRECTED", "DISPUTED"):
-            if verdict in upper:
-                return VerificationResult(
-                    verdict=verdict,
-                    explanation=text[:300].strip(),
-                )
+    if start == -1 or end == -1 or end < start:
+        explanation = text.strip()
+        if len(explanation) > 500:
+            explanation = explanation[:500].rsplit(" ", 1)[0] + "\u2026"
         return VerificationResult(
             verdict="UNVERIFIED",
-            explanation="Verification response did not contain structured output.",
+            explanation=explanation or "Verification response did not contain structured JSON.",
         )
 
     try:
@@ -249,6 +250,14 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
         sources=[str(s) for s in data.get("sources", []) if s],
         correction=correction,
     )
+
+
+def _cancel_batch_safely(batch_id: str, log: Callable[[str], None]) -> None:
+    try:
+        cancel_batch(batch_id)
+        log(f"Cancellation requested for verification batch {batch_id}.")
+    except Exception as e:
+        log(f"Could not cancel verification batch {batch_id}: {e}")
 
 
 def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationResult:
@@ -290,7 +299,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationRes
                 if hasattr(block, "text"):
                     response_text += block.text
 
-            if not response_text:
+            if not response_text.strip():
                 return VerificationResult(
                     verdict="UNVERIFIED",
                     explanation="Verification produced no text response.",
@@ -404,12 +413,6 @@ def verify_findings_batch(
     Returns:
         The same list of findings (modified in-place) for convenience
     """
-    from .batch import (
-        submit_verification_batch,
-        poll_batch,
-        retrieve_verification_results,
-    )
-
     verifiable_count = len(findings)
     if verifiable_count == 0:
         log("No findings eligible for batch verification.")
@@ -446,7 +449,8 @@ def verify_findings_batch(
         except Exception as e:
             consecutive_errors += 1
             if consecutive_errors >= 5:
-                log(f"5 consecutive poll errors. Falling back to sequential verification.")
+                log("5 consecutive poll errors. Canceling verification batch and falling back to sequential.")
+                _cancel_batch_safely(job.batch_id, log)
                 def _seq_progress_err(current: int, total: int, filename: str):
                     pct = (current / total) * 100.0 if total > 0 else 100.0
                     progress(pct, f"Verifying finding {current}/{total} ({filename})...")
@@ -474,6 +478,7 @@ def verify_findings_batch(
         elif normalized_status in ("failed", "expired", "canceled"):
             # Terminal failure — stop polling, fall back to sequential
             log(f"Verification batch terminated: {status.status}. Falling back to sequential.")
+            _cancel_batch_safely(job.batch_id, log)
             def _seq_progress(current: int, total: int, filename: str):
                 pct = (current / total) * 100.0 if total > 0 else 100.0
                 progress(pct, f"Verifying finding {current}/{total} ({filename})...")
@@ -482,7 +487,8 @@ def verify_findings_batch(
         time.sleep(poll_interval)
     else:
         # Timed out — fall back to sequential for remaining unverified
-        log(f"Verification polling timed out after {max_poll_attempts} attempts. Falling back to sequential.")
+        log("Verification batch polling timed out. Canceling remote batch and falling back to sequential.")
+        _cancel_batch_safely(job.batch_id, log)
         def _seq_progress_timeout(current: int, total: int, filename: str):
             pct = (current / total) * 100.0 if total > 0 else 100.0
             progress(pct, f"Verifying finding {current}/{total} ({filename})...")
