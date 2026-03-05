@@ -156,7 +156,7 @@ When the review finishes in "View in App" mode, a separate report window opens a
 
 Batch mode submits all specs as a single Anthropic Message Batch at 50% cost. Both the review stage and the verification stage are batched for maximum cost savings. The cross-spec coordination check (if enabled) runs as a real-time call between the two batches.
 
-**Persistent batch state**: If you close the app while a batch is processing, the batch state is saved. When you reopen the app, a dialog offers to resume polling or discard the batch. Batch state expires after 24 hours.
+**Persistent batch state**: Review-stage batch submissions are persisted for resume after app restart. Verification-stage resume is not fully persisted. Batch state expires after 24 hours.
 
 **Terminal failure handling**: If a batch enters a terminal failure state (failed, expired, or canceled), polling stops automatically and the user is informed. No infinite polling loops.
 
@@ -190,6 +190,7 @@ When using "Export Report" mode, the Word document contains the same information
 - **Files Reviewed**: Bullet list of all spec filenames
 - **Summary table**: Table Grid style with color-coded severity cell shading
 - **Token usage & time**: Separate labeled lines
+- **Token totals note**: Displayed token totals currently reflect the review stage unless otherwise noted.
 - **Alerts**: LEED references and placeholders with sub-headings and bullet lists
 - **Findings**: Grouped by severity (colored sub-headings), sorted by confidence, with structured labeled rows per finding (Section, Issue, Action, Existing Text in red, Replace With in green, Reference in blue, Verification verdict)
 - **Cross-Spec Coordination**: Own page with findings and coordination summary (if cross-check was enabled)
@@ -234,7 +235,7 @@ spec-review/
 - **User-selectable output mode**: View in App or Export Report (.docx).
 - **Sonnet for support tasks**: Verification and cross-check always use Sonnet 4.6.
 - **Verification batching**: In batch mode, verification is also batched for 50% savings.
-- **Persistent batch state**: Batch state survives app restarts via `batch_state.json` in user state directory.
+- **Persistent batch state**: Review-stage batch submissions are persisted in `batch_state.json` for resume after app restart. Verification-stage resume is not fully persisted.
 - **Terminal batch handling**: Failed/expired/canceled batches stop polling immediately.
 - **No document mutation**: Analysis only. Document cleanup belongs in SpecCleanse.
 - **Advisory only**: This tool assists human reviewers. Not an AHJ substitute.
