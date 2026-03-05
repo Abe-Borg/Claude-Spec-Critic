@@ -2,9 +2,9 @@
 Text extraction module for Spec Critic.
 
 Extracts text content from Word documents (.docx) and native PDF files for
-specification review. Handles both paragraph text and table content, which
-is important because MEP specifications frequently use tables for equipment
-schedules, pipe sizing charts, and product data.
+specification review. DOCX extraction handles both paragraph text and table
+content (tables flattened to pipe-delimited rows). PDF extraction uses
+pymupdf's page text extraction.
 
 Supported formats:
     - .docx (Office Open XML) via python-docx
@@ -18,7 +18,7 @@ Design notes:
     - Only native (text-selectable) PDFs are supported. Scanned/image-only
       PDFs will produce little or no text — a warning is logged.
     - Preserves paragraph structure with double-newline separation
-    - Tables are flattened to pipe-delimited rows (loses formatting but
+    - DOCX tables are flattened to pipe-delimited rows (loses formatting but
       retains content for LLM analysis)
     - Does NOT extract headers/footers, comments, or tracked changes
     - Does NOT preserve formatting (bold, italic, etc.) — plain text only
@@ -107,6 +107,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         doc = Document(filepath)
     except PackageNotFoundError:
         raise ValueError(f"Invalid or corrupted .docx file: {filepath}")
+    except Exception as e:
+        raise ValueError(f"Could not read .docx file: {filepath} — {e}")
 
     paragraphs = []
     for child in doc.element.body:
@@ -141,8 +143,6 @@ def extract_text_from_pdf(filepath: Path) -> ExtractedSpec:
     Extract text content from a native (text-selectable) PDF file.
 
     Uses pymupdf for text extraction with reading-order preservation.
-    Tables are detected and flattened to pipe-delimited rows, matching
-    the format used by the DOCX extractor.
 
     Only native PDFs are supported. If a PDF yields very few words
     relative to its page count, a warning is included at the top of
@@ -180,18 +180,21 @@ def extract_text_from_pdf(filepath: Path) -> ExtractedSpec:
     total_pages = len(doc)
     low_text_pages = 0
 
-    for page in doc:
-        page_text = page.get_text("text").strip()
+    try:
+        for page in doc:
+            page_text = page.get_text("text").strip()
 
-        # Check if this page has enough text to be considered native
-        page_words = len(page_text.split()) if page_text else 0
-        if page_words < _MIN_WORDS_PER_PAGE:
-            low_text_pages += 1
+            # Check if this page has enough text to be considered native
+            page_words = len(page_text.split()) if page_text else 0
+            if page_words < _MIN_WORDS_PER_PAGE:
+                low_text_pages += 1
 
-        if page_text:
-            paragraphs.append(page_text)
-
-    doc.close()
+            if page_text:
+                paragraphs.append(page_text)
+    except Exception as e:
+        raise ValueError(f"Error reading PDF content: {filepath} — {e}")
+    finally:
+        doc.close()
 
     # Build content
     content = "\n\n".join(paragraphs)

@@ -39,6 +39,15 @@ class TokenSummary:
         return sum(item.tokens for item in self.items)
 
 
+# Padding for per-call overhead (message framing, file delimiter, safety margin)
+PER_CALL_PADDING = 200
+
+
+def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
+    """Check if a single spec would exceed the per-call token limit."""
+    return (overhead_tokens + spec_tokens + PER_CALL_PADDING) > RECOMMENDED_MAX
+
+
 def get_encoder():
     """Get the tiktoken encoder for Claude models."""
     return tiktoken.get_encoding("cl100k_base")

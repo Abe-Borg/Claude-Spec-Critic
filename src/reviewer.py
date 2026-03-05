@@ -24,7 +24,10 @@ import os
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .verifier import VerificationResult
 
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
@@ -73,7 +76,7 @@ class Finding:
     replacementText: str | None
     codeReference: str | None
     confidence: float = 0.5
-    verification: Any | None = None  # Will hold VerificationResult once verifier.py exists
+    verification: VerificationResult | None = None
 
 
 @dataclass
@@ -213,6 +216,9 @@ def _parse_findings(data: list) -> list[Finding]:
         section = str(raw_sec).strip() if raw_sec is not None else ""
         raw_issue = item.get("issue")
         issue_text = str(raw_issue).strip() if raw_issue is not None else ""
+
+        if not issue_text:
+            continue
 
         findings.append(
             Finding(

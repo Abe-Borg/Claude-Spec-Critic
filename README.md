@@ -1,4 +1,4 @@
-# Spec Critic v2.0.1
+# Spec Critic v2.1.0
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` or `.pdf` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
 
@@ -70,7 +70,7 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root or
 ### Supported File Formats
 
 - **`.docx`** (Word documents) — Full support including table extraction
-- **`.pdf`** (native/text-selectable PDFs) — Full text extraction via pymupdf (includes table content)
+- **`.pdf`** (native/text-selectable PDFs) — Full text extraction via pymupdf
 
 **Note on PDFs**: Only native (text-selectable) PDFs are supported. Scanned or image-only PDFs will produce a warning indicating poor extraction quality. If you have a scanned PDF, convert it to a text-selectable PDF or `.docx` before reviewing.
 
@@ -272,13 +272,42 @@ Claude classifies findings into four severity levels with confidence scores:
 ```
 anthropic          # Claude API client
 python-docx        # DOCX text extraction + report export
-pymupdf            # PDF text and table extraction
+pymupdf            # PDF text extraction
 tiktoken           # Token counting (cl100k_base encoding)
 customtkinter      # Modern themed Tkinter widgets
 platformdirs       # OS-appropriate config/state directories
 ```
 
 ## Changelog
+
+### v2.1.0 — Robustness, Correctness, and Quality-of-Life Improvements
+
+- **Fix**: Prompt example now wraps JSON in `<FINDINGS_JSON>` sentinel tags matching the instructions — improves JSON parsing reliability
+- **Fix**: GUI and pipeline token gate use identical math via shared `exceeds_per_call_limit()` — eliminates files passing GUI gate but rejected at runtime
+- **Fix**: Stale file selection cleared when new analysis starts — prevents reviewing files from a previous selection if all new files fail extraction
+- **Fix**: Batch state cleared on polling timeout — prevents stale resume dialog on next app launch
+- **Fix**: Batch status string normalized (hyphens to underscores) — fixes "unexpected batch status: in-progress" log spam
+- **Fix**: `_on_review_error()` clears batch state as safety net
+- **Fix**: PDF `doc.close()` now in try/finally — prevents resource leak on extraction errors
+- **Fix**: Broader DOCX error handling — catches `BadZipFile` and other exceptions beyond `PackageNotFoundError`
+- **Fix**: Empty specs (zero extractable text) skipped in pipeline instead of wasting API calls
+- **Fix**: Finding numbering in exported reports now sequential across all severity groups (1, 2, 3...) instead of restarting per group
+- **Fix**: Findings with empty issue text dropped during parsing
+- **Fix**: Cross-checker scope excerpts bounded by next PART header — prevents Part 1 excerpts bleeding into Part 2
+- **Fix**: Thread-safe attribute writes in GUI token analysis — marshaled through `self.after()`
+- **Fix**: `Finding.verification` type annotation corrected to `VerificationResult | None`
+- **Improvement**: Extraction failures per-file are now fault-tolerant — one corrupted file no longer aborts the entire run
+- **Improvement**: Placeholder patterns now case-insensitive — catches `[insert]`, `[Verify]`, `<Edit>` etc.
+- **Improvement**: Dedup key includes `actionType` — prevents merging ADD and EDIT findings with similar wording
+- **Improvement**: Verification prompt tightened for brevity — responses truncated to 500 chars
+- **Improvement**: Verification response parser has natural-language fallback for non-JSON responses
+- **Improvement**: Verification batch status polling uses normalized status strings
+- **Improvement**: JSON export has error handling — shows dialog on write failure
+- **Improvement**: "New Review" button added to header bar — wired to `_reset_for_new_review()`
+- **Removed**: Dead `_should_verify()` function (always returned True)
+- **Docs**: `cancel_batch()` return type corrected to `str` in CLAUDE.md
+- **Docs**: Stale PDF table extraction references removed from README and extractor docstrings
+- **Docs**: `exceeds_per_call_limit()` and `PER_CALL_PADDING` documented in CLAUDE.md
 
 ### v2.0.0 — Correctness, Parse Hardening, Extraction Fidelity, and Cleanup
 

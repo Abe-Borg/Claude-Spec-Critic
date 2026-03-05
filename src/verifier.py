@@ -88,14 +88,6 @@ class VerificationResult:
     correction: str | None = None
 
 
-def _should_verify(finding: Finding) -> bool:
-    """Determine if a finding should be verified via web search.
-
-    All findings are verified
-    """
-    return True
-
-
 def _build_verification_prompt(finding: Finding) -> str:
     """Build a holistic verification prompt for a single finding.
 
@@ -165,13 +157,18 @@ def _build_verification_prompt(finding: Finding) -> str:
         "- Focus on California-specific requirements when CBC, CMC, CPC, or ",
         "  California Energy Code is referenced",
         "",
-        "Respond with ONLY a JSON object (no other text) in this exact format:",
+        "Respond with ONLY a JSON object (no other text, no preamble, no markdown fences):",
         '{',
         '  "verdict": "CONFIRMED" | "CORRECTED" | "UNVERIFIED" | "DISPUTED",',
-        '  "explanation": "Brief 1-3 sentence rationale - null if verdict is CONFIRMED,',
+        '  "explanation": "1-2 sentences MAXIMUM. Null if CONFIRMED. Do NOT repeat the original finding or restate the issue.",',
         '  "sources": ["url1", "url2"],',
-        '  "correction": "Corrected replacement text if CORRECTED, or explanation of what is wrong if DISPUTED, else null"',
+        '  "correction": "If CORRECTED: the corrected replacement text ONLY (not an explanation). If DISPUTED: 1 sentence why. Otherwise null."',
         '}',
+        "",
+        "CRITICAL FORMAT RULES:",
+        "- explanation must be 1-2 sentences. Do NOT write paragraphs.",
+        "- correction must contain ONLY the corrected text or a single sentence. Do NOT explain the code cycle or repeat context.",
+        "- Do NOT restate the original issue in your response.",
         "",
         "VERDICT MEANINGS:",
         "- CONFIRMED: The issue is real, the suggested fix is correct, and any "
@@ -208,9 +205,17 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
     end = text.rfind("}")
 
     if start == -1 or end == -1:
+        # No JSON found — try to extract verdict from natural language
+        upper = text.upper()
+        for verdict in ("CONFIRMED", "CORRECTED", "DISPUTED"):
+            if verdict in upper:
+                return VerificationResult(
+                    verdict=verdict,
+                    explanation=text[:300].strip(),
+                )
         return VerificationResult(
             verdict="UNVERIFIED",
-            explanation="Could not parse verification response.",
+            explanation="Verification response did not contain structured output.",
         )
 
     try:
@@ -225,10 +230,18 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
     if verdict not in ("CONFIRMED", "CORRECTED", "UNVERIFIED", "DISPUTED"):
         verdict = "UNVERIFIED"
 
+    MAX_EXPLANATION_CHARS = 500
+    MAX_CORRECTION_CHARS = 500
+
     raw_explanation = data.get("explanation", "")
     explanation = str(raw_explanation) if raw_explanation is not None else ""
+    if len(explanation) > MAX_EXPLANATION_CHARS:
+        explanation = explanation[:MAX_EXPLANATION_CHARS].rsplit(" ", 1)[0] + "\u2026"
+
     raw_correction = data.get("correction")
     correction = str(raw_correction) if raw_correction is not None else None
+    if correction and len(correction) > MAX_CORRECTION_CHARS:
+        correction = correction[:MAX_CORRECTION_CHARS].rsplit(" ", 1)[0] + "\u2026"
 
     return VerificationResult(
         verdict=verdict,
@@ -338,7 +351,7 @@ def verify_findings(
     Returns:
         The same list of findings (modified in-place) for convenience
     """
-    verifiable = [f for f in findings if _should_verify(f)]
+    verifiable = list(findings)
 
     # Sort by confidence ascending — verify least confident first
     verifiable.sort(key=lambda f: f.confidence)
@@ -397,7 +410,7 @@ def verify_findings_batch(
         retrieve_verification_results,
     )
 
-    verifiable_count = sum(1 for f in findings if _should_verify(f))
+    verifiable_count = len(findings)
     if verifiable_count == 0:
         log("No findings eligible for batch verification.")
         return findings
@@ -451,11 +464,14 @@ def verify_findings_batch(
             f"• {status.progress_pct:.0f}%"
         )
 
-        if status.status == "ended":
+        # Normalize status string (API may return hyphens or underscores)
+        normalized_status = status.status.replace("-", "_")
+
+        if normalized_status == "ended":
             break
-        elif status.status in ("canceling",):
+        elif normalized_status == "canceling":
             log("Verification batch is being canceled...")
-        elif status.status in ("failed", "expired", "canceled"):
+        elif normalized_status in ("failed", "expired", "canceled"):
             # Terminal failure — stop polling, fall back to sequential
             log(f"Verification batch terminated: {status.status}. Falling back to sequential.")
             def _seq_progress(current: int, total: int, filename: str):

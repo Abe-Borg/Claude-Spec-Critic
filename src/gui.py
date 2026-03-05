@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus / Sonnet
-v2.0.1 - Consolidated fix-up release
+v2.1.0 - Robustness, correctness, and quality-of-life improvements
 """
 import os, sys, json, time, threading
 from datetime import datetime, timezone
@@ -19,7 +19,7 @@ from src.pipeline import run_review, start_batch_review, collect_batch_results, 
 from src.batch import poll_batch, cancel_batch, BatchStatus, BatchJob
 from src.reviewer import MODEL_OPUS_46, MODEL_SONNET_46, REVIEW_MODELS
 from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
-from src.tokenizer import RECOMMENDED_MAX
+from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
 from src.prompts import get_system_prompt
 from src.report_exporter import export_report
 
@@ -235,6 +235,13 @@ class SpecReviewApp(ctk.CTk):
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._show_about_dialog,
         ).pack(side="right", pady=(4, 0))
+        ctk.CTkButton(
+            hdr_title_row, text="New Review", width=100, height=30,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            fg_color=COLORS["bg_card"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"], command=self._reset_for_new_review,
+        ).pack(side="right", padx=(8, 0), pady=(4, 0))
         ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
         self._create_inputs_card(c)
@@ -464,6 +471,21 @@ class SpecReviewApp(ctk.CTk):
             self.input_dir_entry.insert(0, str(paths[0]) if len(paths) == 1 else f"{len(paths)} files selected")
             self._analyze_tokens(paths)
 
+    def _clear_file_state(self):
+        """Clear all file-related state. Called at the start of new analysis."""
+        self._loaded_file_data = []
+        self._extracted_specs = []
+        self.file_list_panel.reset()
+        self.token_gauge.reset()
+        self.run_button.configure(state="disabled")
+
+    def _set_file_data(self, file_data, extracted_specs, sys_tokens, ctx_tokens):
+        """Set file data on the main thread (called via self.after from worker threads)."""
+        self._loaded_file_data = file_data
+        self._extracted_specs = extracted_specs
+        self._system_prompt_tokens = sys_tokens
+        self._project_context_tokens = ctx_tokens
+
     def _analyze_tokens(self, file_paths):
         if not file_paths:
             self.log.log_warning("No supported files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
@@ -474,12 +496,15 @@ class SpecReviewApp(ctk.CTk):
 
         def analyze():
             try:
+                # Clear previous state immediately so stale data can't persist
+                self.after(0, lambda: self._clear_file_state())
+
                 file_data = []
                 processed_names: list[str] = []
                 from tiktoken import get_encoding
                 enc = get_encoding("cl100k_base")
-                self._system_prompt_tokens = len(enc.encode(get_system_prompt()))
-                self._project_context_tokens = len(enc.encode(project_context)) if project_context else 0
+                sys_tokens = len(enc.encode(get_system_prompt()))
+                ctx_tokens = len(enc.encode(project_context)) if project_context else 0
 
                 extracted_specs: list[ExtractedSpec] = []
                 for f in file_paths:
@@ -496,18 +521,18 @@ class SpecReviewApp(ctk.CTk):
                     self.after(0, lambda names=processed_names: self.log.log_file_batch(names))
 
                 if file_data:
-                    self._loaded_file_data = file_data
-                    self._extracted_specs = extracted_specs
-                    overhead = self._system_prompt_tokens + self._project_context_tokens
+                    # Marshal all attribute writes through main thread
+                    self.after(0, lambda fd=file_data, es=extracted_specs, st=sys_tokens, ct=ctx_tokens:
+                        self._set_file_data(fd, es, st, ct))
+                    overhead = sys_tokens + ctx_tokens
                     total = overhead + sum(d["tokens"] for d in file_data)
                     max_per_file = max(d["tokens"] for d in file_data)
-                    per_file_limit_exceeded = (overhead + max_per_file) > RECOMMENDED_MAX
-                    self.after(0, lambda: self.file_list_panel.load_files(file_data))
-                    self.after(0, lambda: self.token_gauge.update_gauge(total, len(file_data)))
-                    self.after(0, lambda: self.log.log_success(f"Token analysis complete: {total:,} tokens"))
+                    per_file_limit_exceeded = exceeds_per_call_limit(max_per_file, overhead)
+                    self.after(0, lambda fd=file_data: self.file_list_panel.load_files(fd))
+                    self.after(0, lambda t=total, fc=len(file_data): self.token_gauge.update_gauge(t, fc))
+                    self.after(0, lambda t=total: self.log.log_success(f"Token analysis complete: {t:,} tokens"))
                     if per_file_limit_exceeded:
-                        # Find the offending file(s) for a clear message
-                        over_files = [d["filename"] for d in file_data if (overhead + d["tokens"]) > RECOMMENDED_MAX]
+                        over_files = [d["filename"] for d in file_data if exceeds_per_call_limit(d["tokens"], overhead)]
                         self.after(0, lambda of=over_files: self.log.log_warning(
                             f"File too large for single API call: {', '.join(of)}"
                         ))
@@ -516,7 +541,7 @@ class SpecReviewApp(ctk.CTk):
                     ))
                     self.after(0, lambda b=per_file_limit_exceeded: self.file_list_panel.set_over_limit(b))
             except Exception as e:
-                self.after(0, lambda: self.log.log_error(f"Analysis failed: {e}"))
+                self.after(0, lambda err=e: self.log.log_error(f"Analysis failed: {err}"))
 
         threading.Thread(target=analyze, daemon=True).start()
 
@@ -534,7 +559,7 @@ class SpecReviewApp(ctk.CTk):
         # Block only if any single file exceeds the per-call limit
         if fc > 0:
             max_per_file = max(d["tokens"] for d in selected_data)
-            per_file_exceeded = (overhead + max_per_file) > RECOMMENDED_MAX
+            per_file_exceeded = exceeds_per_call_limit(max_per_file, overhead)
         else:
             per_file_exceeded = False
         self.run_button.configure(state="normal" if (fc > 0 and not per_file_exceeded) else "disabled")
@@ -666,6 +691,7 @@ class SpecReviewApp(ctk.CTk):
     def _on_review_error(self, err):
         self.progress_bar.pack_forget()
         self.log.log_error(f"Review failed: {err}")
+        delete_batch_state()
         self.run_button.set_ready(); self.is_processing = False
 
     # ----- Batch mode -----
@@ -708,6 +734,7 @@ class SpecReviewApp(ctk.CTk):
         self._poll_count = getattr(self, "_poll_count", 0) + 1
         if self._poll_count > 300:
             self.log.log_error("Batch polling timed out after extended waiting.")
+            delete_batch_state()
             self._on_review_error("Batch polling timed out")
             return
         def _do_poll():
@@ -731,16 +758,19 @@ class SpecReviewApp(ctk.CTk):
             f"{status.errored} errors \u2022 {status.progress_pct:.0f}%",
             level="info", paced=False,
         )
-        if status.status == "ended":
+        # Normalize status string (API may return hyphens or underscores)
+        normalized_status = status.status.replace("-", "_")
+
+        if normalized_status == "ended":
             self.log.log_success("Batch complete — collecting results...")
             self._collect_batch_results()
-        elif status.status == "in_progress":
+        elif normalized_status == "in_progress":
             # Normal processing — schedule next poll silently
             self._schedule_next_poll(15_000)
-        elif status.status in ("canceling",):
+        elif normalized_status == "canceling":
             self.log.log_warning("Batch is being canceled...")
             self._schedule_next_poll(5_000)
-        elif status.status in ("failed", "expired", "canceled"):
+        elif normalized_status in ("failed", "expired", "canceled"):
             # Terminal failure — stop polling, inform user, clean up
             self.log.log_error(f"Batch terminated with status: {status.status}")
             self.log.log_warning("No results to collect. Clearing batch state.")

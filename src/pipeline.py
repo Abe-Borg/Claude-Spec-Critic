@@ -77,7 +77,7 @@ from typing import Callable, Optional
 from .extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from .preprocessor import preprocess_spec
 from .prompts import get_system_prompt
-from .tokenizer import RECOMMENDED_MAX, count_tokens
+from .tokenizer import RECOMMENDED_MAX, count_tokens, exceeds_per_call_limit
 from .reviewer import (
     review_single_spec,
     ReviewResult,
@@ -182,7 +182,7 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
     # Build dedup key: (normalized_issue, codeReference or "")
     groups: dict[tuple[str, str], list[Finding]] = {}
     for f in findings:
-        key = (_normalize_issue_text(f.issue), (f.codeReference or "").strip().lower())
+        key = (_normalize_issue_text(f.issue), (f.codeReference or "").strip().lower(), f.actionType)
         groups.setdefault(key, []).append(f)
 
     # Severity ordering for picking the highest
@@ -280,7 +280,18 @@ def _prepare_specs(
     total_files = len(docx_files)
     for i, p in enumerate(docx_files, start=1):
         log(f"Loading: {p.name}")
-        spec = extract_text(p)
+        try:
+            spec = extract_text(p)
+        except Exception as e:
+            log(f"Error extracting {p.name}: {e}")
+            progress((i / total_files) * 25.0, f"Skipped {p.name} (extraction error)")
+            continue
+
+        if spec.word_count == 0 or not spec.content.strip():
+            log(f"Skipping {p.name}: no extractable text content")
+            progress((i / total_files) * 25.0, f"Skipped {p.name} (empty)")
+            continue
+
         specs.append(spec)
 
         pre = preprocess_spec(spec.content, spec.filename)
@@ -288,6 +299,11 @@ def _prepare_specs(
         placeholder_alerts.extend(pre.placeholder_alerts)
 
         progress((i / total_files) * 25.0, f"Loaded {i}/{total_files}")
+
+    if not specs:
+        raise FileNotFoundError(
+            f"All {len(docx_files)} files failed extraction. No specs to review."
+        )
 
     # Per-spec token limit check
     progress(30.0, "Checking token limits...")
@@ -297,8 +313,7 @@ def _prepare_specs(
 
     for spec in specs:
         spec_tokens = count_tokens(spec.content)
-        estimated_call_tokens = system_prompt_tokens + context_tokens + spec_tokens + 200
-        if estimated_call_tokens > RECOMMENDED_MAX:
+        if exceeds_per_call_limit(spec_tokens, system_prompt_tokens + context_tokens):
             raise ValueError(
                 f"Spec '{spec.filename}' is too large for a single API call: "
                 f"~{estimated_call_tokens:,} tokens (limit: {RECOMMENDED_MAX:,}). "

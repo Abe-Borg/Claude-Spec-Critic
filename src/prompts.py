@@ -215,6 +215,7 @@ Example (showing ADD, EDIT, and DELETE action types with confidence scores):
 
 Alright, let's see what we've got here. This hydronic piping spec is mostly solid — someone clearly knows their way around a pipe schedule. But we've got a seismic problem that needs immediate attention: ASCE {PREVIOUS_ASCE7} instead of {CURRENT_ASCE7}. That's a DSA red flag right there. Also caught a missing certification requirement that could bite you during submittal review. The rest is minor stuff — a few outdated references and some formatting gripes. Overall, not bad, but that seismic issue needs fixing before this goes anywhere.
 
+<FINDINGS_JSON>
 [
   {{
     "severity": "CRITICAL",
@@ -261,8 +262,13 @@ Alright, let's see what we've got here. This hydronic piping spec is mostly soli
     "confidence": 0.90
   }}
 ]
+</FINDINGS_JSON>
 
-If no issues are found, return an empty array: []
+If no issues are found, return an empty array:
+
+<FINDINGS_JSON>
+[]
+</FINDINGS_JSON>
 </output_format>
 
 <critical_checks>
