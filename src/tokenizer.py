@@ -1,7 +1,8 @@
 """
 Token counting and limit management for Claude API calls.
 
-Uses tiktoken with cl100k_base encoding for accurate counts.
+Uses tiktoken with cl100k_base for approximate preflight estimates.
+These counts are used for guardrails, not exact billing.
 
 Token limits:
     - Claude Opus 4.6 context window: 200,000 tokens
@@ -49,7 +50,7 @@ def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
 
 
 def get_encoder():
-    """Get the tiktoken encoder for Claude models."""
+    """Get the tokenizer used for approximate token estimates."""
     return tiktoken.get_encoding("cl100k_base")
 
 
@@ -57,11 +58,6 @@ def count_tokens(text: str) -> int:
     """Count tokens in a text string."""
     encoder = get_encoder()
     return len(encoder.encode(text))
-
-
-def estimate_tokens_from_chars(char_count: int) -> int:
-    """Rough estimate of tokens from character count (~4 chars/token)."""
-    return char_count // 4
 
 
 def analyze_token_usage(
