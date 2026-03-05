@@ -49,7 +49,7 @@ from typing import Callable, Optional
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
 from .extractor import ExtractedSpec
-from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_api_key, MODEL_SONNET_46_46
+from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_api_key, MODEL_SONNET_46
 from .tokenizer import RECOMMENDED_MAX, count_tokens
 
 StreamCallback = Callable[[str], None]

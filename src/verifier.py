@@ -60,7 +60,7 @@ from typing import Callable, Optional
 
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
-from .reviewer import Finding, MODEL_SONNET_46_46
+from .reviewer import Finding, MODEL_SONNET_46
 
 VerifyProgressFn = Callable[[int, int, str], None]  # current, total, filename
 
