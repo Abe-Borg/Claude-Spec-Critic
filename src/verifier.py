@@ -60,10 +60,7 @@ from typing import Callable, Optional
 
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
-from .reviewer import Finding
-
-# Sonnet 4.6 for verification (cheaper, faster, sufficient for fact-checking)
-MODEL_SONNET = "claude-sonnet-4-6"
+from .reviewer import Finding, MODEL_SONNET_46_46
 
 VerifyProgressFn = Callable[[int, int, str], None]  # current, total, filename
 
@@ -268,7 +265,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationRes
     for attempt in range(max_retries + 1):
         try:
             response = client.messages.create(
-                model=MODEL_SONNET,
+                model=MODEL_SONNET_46,
                 max_tokens=1024,
                 tools=[{"type": "web_search_20250305", "name": "web_search"}],
                 messages=[{"role": "user", "content": prompt}],
