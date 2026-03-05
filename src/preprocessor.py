@@ -12,7 +12,7 @@ formatting, etc.), use the separate SpecCleanse tool:
 https://github.com/Abe-Borg/Spec_Cleanse
 
 Detection categories:
-    - LEED references: LEED, LEED-NC, LEED-CI, USGBC, Green Building
+    - LEED references: LEED, LEED-NC, LEED-CI, USGBC
       (K-12 DSA projects typically aren't LEED — these are likely copy/paste errors)
     - Placeholders: [INSERT...], [VERIFY...], [TBD], ___, etc.
       (Unresolved editorial markers that need attention before issuing)
@@ -33,7 +33,7 @@ from typing import Iterable
 
 @dataclass
 class PreprocessResult:
-    """"
+    """
     Result of detection-only preprocessing for a single spec.
     
     Attributes:
@@ -61,7 +61,6 @@ LEED_PATTERNS: list[tuple[str, str]] = [
     (r"(?i)\bLEED[-\s]?CI\b", "LEED-CI reference"),
     (r"(?i)\bLEED[-\s]?EB\b", "LEED-EB reference"),
     (r"(?i)\bUSGBC\b", "USGBC reference"),
-    (r"(?i)\bGreen\s+Building\b", "Green Building reference"),
     (r"(?i)\bLEED\b", "LEED reference"),  # Generic last
 ]
 
