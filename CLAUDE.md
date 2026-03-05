@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v2.0.1
+# CLAUDE.md — Spec Critic v2.1.0
 
 Technical reference for AI-assisted development. This file describes the codebase architecture, module responsibilities, data flow, and conventions so that future sessions can pick up where the last one left off.
 
@@ -195,7 +195,7 @@ Wraps the Anthropic Message Batches API for both review and verification.
 - `poll_batch(batch_id)` → `BatchStatus`
 - `retrieve_review_results(job, *, model)` → `dict[str, ReviewResult]` (model is required keyword arg)
 - `retrieve_verification_results(job)` → `dict[str, VerificationResult]`
-- `cancel_batch(batch_id)` → `bool`
+- `cancel_batch(batch_id)` → `str` (processing status)
 
 ### verifier.py — Finding Verification
 
@@ -243,6 +243,8 @@ Verifies ALL findings (including GRIPES as of v2.0.0). Mutates `finding.verifica
 
 - `count_tokens(text)` → `int` using tiktoken cl100k_base
 - `RECOMMENDED_MAX = 150_000` — per-call token limit
+- `PER_CALL_PADDING = 200` — overhead padding for message framing
+- `exceeds_per_call_limit(spec_tokens, overhead_tokens)` → `bool` — shared check used by GUI and pipeline
 
 ### prompts.py — System Prompt
 

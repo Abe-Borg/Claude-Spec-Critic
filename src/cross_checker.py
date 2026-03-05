@@ -152,9 +152,14 @@ def _build_spec_summary(
         part_matches = list(part_pattern.finditer(spec.content))
         if part_matches:
             parts.append("  --- SCOPE EXCERPTS ---")
-            for pm in part_matches:
+            for idx, pm in enumerate(part_matches):
                 part_title = pm.group(1).strip()
-                after_part = spec.content[pm.end():].strip()
+                # Limit excerpt to text before the next PART header
+                if idx + 1 < len(part_matches):
+                    excerpt_end = part_matches[idx + 1].start()
+                else:
+                    excerpt_end = len(spec.content)
+                after_part = spec.content[pm.end():excerpt_end].strip()
                 words = after_part.split()[:200]
                 excerpt = " ".join(words)
                 if excerpt:

@@ -636,7 +636,12 @@ class ReportWindow(ctk.CTkToplevel):
         }
         path = filedialog.asksaveasfilename(parent=self, title="Save findings JSON", defaultextension=".json",
             filetypes=[("JSON Files", "*.json")], initialfile=f"spec-critic-{datetime.now().strftime('%Y-%m-%d')}.json")
-        if path: Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        if path:
+            try:
+                Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+            except Exception as e:
+                from tkinter import messagebox
+                messagebox.showerror("Export Error", f"Could not save JSON file:\n{e}", parent=self)
 
     def _copy_summary(self, text):
         if text: self.clipboard_clear(); self.clipboard_append(text)

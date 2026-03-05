@@ -506,6 +506,8 @@ def _write_findings_section(doc: Document, review) -> None:
         )
         return
 
+    finding_number = 0  # Running counter across all severities
+
     for severity in SEVERITY_ORDER:
         severity_findings = sorted(
             [f for f in review.findings if f.severity == severity],
@@ -522,8 +524,9 @@ def _write_findings_section(doc: Document, review) -> None:
         for run in heading.runs:
             run.font.color.rgb = SEVERITY_COLORS.get(severity, RGBColor(0, 0, 0))
 
-        for i, finding in enumerate(severity_findings, 1):
-            _write_finding_entry(doc, finding, i)
+        for finding in severity_findings:
+            finding_number += 1
+            _write_finding_entry(doc, finding, finding_number)
 
 
 # ---------------------------------------------------------------------------
