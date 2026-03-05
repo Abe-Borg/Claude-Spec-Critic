@@ -211,6 +211,7 @@ class SpecReviewApp(ctk.CTk):
         self._project_context_tokens = 0
         self._batch_submission: Optional[BatchSubmission] = None
         self._batch_poll_id: Optional[str] = None
+        self._run_epoch = 0
         self._extracted_specs: list[ExtractedSpec] = []
         fk = load_api_key_from_file()
         ek = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -575,6 +576,13 @@ class SpecReviewApp(ctk.CTk):
         if self.file_list_panel.get_selected_count() == 0: self.log.log_error("No files selected"); return False
         return True
 
+    def _next_run_epoch(self) -> int:
+        self._run_epoch += 1
+        return self._run_epoch
+
+    def _dispatch_if_current(self, epoch: int, fn):
+        self.after(0, lambda: fn() if self._run_epoch == epoch else None)
+
     def start_review(self):
         if self.is_processing: return
         if not self._validate_inputs(): return
@@ -596,23 +604,25 @@ class SpecReviewApp(ctk.CTk):
         output_label = " → Export Report" if self._export_mode_for_review else ""
         if self._is_batch_mode:
             self.log.log_step(f"Submitting {n} files for batch review ({model_label}){output_label}...")
-            threading.Thread(target=self._submit_batch_thread, daemon=True).start()
+            run_epoch = self._next_run_epoch()
+            threading.Thread(target=self._submit_batch_thread, args=(run_epoch,), daemon=True).start()
         else:
             self.log.log_step(f"Reviewing {n} files ({model_label}){output_label}...")
-            threading.Thread(target=self._run_review_thread, daemon=True).start()
+            run_epoch = self._next_run_epoch()
+            threading.Thread(target=self._run_review_thread, args=(run_epoch,), daemon=True).start()
 
-    def _run_review_thread(self):
+    def _run_review_thread(self, run_epoch: int):
         try:
             n = len(self._selected_files_for_review)
-            self.after(0, lambda: self.log.log_step("Starting per-spec review..."))
+            self._dispatch_if_current(run_epoch, lambda: self.log.log_step("Starting per-spec review..."))
             model_label = [k for k, v in REVIEW_MODELS.items() if v == self._model_for_review][0]
             cross_check_note = " + cross-check" if self._cross_check_for_review else ""
             mode_info = f"Model: {model_label}  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled{cross_check_note}"
-            self.after(0, lambda: self.log.log(mode_info, level="muted"))
+            self._dispatch_if_current(run_epoch, lambda: self.log.log(mode_info, level="muted"))
 
             def _on_progress(pct, msg):
-                self.after(0, lambda m=msg: self.log.log_step(m))
-                self.after(0, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+                self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
+                self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
 
             result = run_review(
                 input_dir=self.input_dir,
@@ -622,14 +632,14 @@ class SpecReviewApp(ctk.CTk):
                 verify=True,
                 cross_check=self._cross_check_for_review,
                 dry_run=False, verbose=False,
-                log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
+                log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                 progress=_on_progress,
             )
-            self.after(0, lambda: self._on_review_complete(result))
+            self._dispatch_if_current(run_epoch, lambda: self._on_review_complete(result))
         except Exception as e:
             import traceback
             err = f"{e}\n{traceback.format_exc()}"
-            self.after(0, lambda: self._on_review_error(err))
+            self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
 
     def _on_review_complete(self, result):
         self.progress_bar.set(1.0)
@@ -698,26 +708,26 @@ class SpecReviewApp(ctk.CTk):
 
     # ----- Batch mode -----
 
-    def _submit_batch_thread(self):
+    def _submit_batch_thread(self, run_epoch: int):
         try:
             def _on_progress(pct, msg):
-                self.after(0, lambda m=msg: self.log.log_step(m))
-                self.after(0, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+                self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
+                self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
 
             submission = start_batch_review(
                 input_dir=self.input_dir,
                 files=self._selected_files_for_review,
                 project_context=self._project_context_for_review,
                 model=self._model_for_review,
-                log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
+                log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                 progress=_on_progress,
             )
             save_batch_state(submission, phase="review")
-            self.after(0, lambda: self._on_batch_submitted(submission))
+            self._dispatch_if_current(run_epoch, lambda: self._on_batch_submitted(submission))
         except Exception as e:
             import traceback
             err = f"{e}\n{traceback.format_exc()}"
-            self.after(0, lambda: self._on_review_error(err))
+            self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
 
     def _on_batch_submitted(self, submission: BatchSubmission):
         self._batch_submission = submission
@@ -736,20 +746,27 @@ class SpecReviewApp(ctk.CTk):
         self._poll_count = getattr(self, "_poll_count", 0) + 1
         if self._poll_count > 300:
             self.log.log_error("Batch polling timed out after extended waiting.")
+            if self._batch_submission is not None:
+                try:
+                    cancel_batch(self._batch_submission.job.batch_id)
+                    self.log.log_warning("Cancellation requested for timed-out batch.")
+                except Exception as e:
+                    self.log.log_warning(f"Could not cancel timed-out batch: {e}")
             delete_batch_state()
             self._on_review_error("Batch polling timed out")
             return
+        run_epoch = self._run_epoch
         def _do_poll():
             try:
                 status = poll_batch(self._batch_submission.job.batch_id)
                 self._poll_consecutive_errors = 0
-                self.after(0, lambda: self._on_poll_result(status))
+                self._dispatch_if_current(run_epoch, lambda: self._on_poll_result(status))
             except Exception as e:
                 self._poll_consecutive_errors = getattr(self, "_poll_consecutive_errors", 0) + 1
                 if self._poll_consecutive_errors >= 5:
-                    self.after(0, lambda: self.log.log_warning(f"5 consecutive poll errors — will keep trying"))
-                self.after(0, lambda: self.log.log_warning(f"Poll error (retrying): {e}"))
-                self.after(0, lambda: self._schedule_next_poll(30_000))
+                    self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(f"5 consecutive poll errors — will keep trying"))
+                self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(f"Poll error (retrying): {e}"))
+                self._dispatch_if_current(run_epoch, lambda: self._schedule_next_poll(30_000))
         threading.Thread(target=_do_poll, daemon=True).start()
 
     def _on_poll_result(self, status: BatchStatus):
@@ -788,11 +805,12 @@ class SpecReviewApp(ctk.CTk):
         self._batch_poll_id = self.after(delay_ms, self._poll_batch)
 
     def _collect_batch_results(self):
+        run_epoch = self._next_run_epoch()
         def _do_collect():
             try:
                 def _on_progress(pct, msg):
-                    self.after(0, lambda m=msg: self.log.log_step(m))
-                    self.after(0, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+                    self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
+                    self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
 
                 cross_check = getattr(self, "_cross_check_for_review", False)
                 project_context = getattr(self, "_project_context_for_review", "")
@@ -800,16 +818,10 @@ class SpecReviewApp(ctk.CTk):
                 # Build specs list for cross-check, filtered to reviewed files
                 specs_for_cross_check = None
                 if cross_check:
-                    available_specs = getattr(self, "_extracted_specs", [])
-                    if available_specs:
-                        reviewed_set = set(self._batch_submission.files_reviewed)
-                        specs_for_cross_check = [
-                            s for s in available_specs
-                            if s.filename in reviewed_set
-                        ]
+                    specs_for_cross_check = getattr(self._batch_submission, "prepared_specs", None)
                     if not specs_for_cross_check:
-                        self.after(0, lambda: self.log.log_warning(
-                            "Cross-check skipped: spec content not available (resumed batch or files changed)."
+                        self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(
+                            "Cross-check skipped: original extracted spec content is not available."
                         ))
 
                 result = collect_batch_results(
@@ -818,15 +830,15 @@ class SpecReviewApp(ctk.CTk):
                     cross_check=cross_check,
                     specs=specs_for_cross_check,
                     project_context=project_context,
-                    log=lambda msg: self.after(0, lambda m=msg: self.log.log(m, level="info")),
+                    log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                     progress=_on_progress,
                 )
 
-                self.after(0, lambda: self._on_review_complete(result))
+                self._dispatch_if_current(run_epoch, lambda: self._on_review_complete(result))
             except Exception as e:
                 import traceback
                 err = f"{e}\n{traceback.format_exc()}"
-                self.after(0, lambda: self._on_review_error(err))
+                self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
         threading.Thread(target=_do_collect, daemon=True).start()
 
     def _reset_ui(self):
@@ -959,10 +971,21 @@ class SpecReviewApp(ctk.CTk):
             self._report_window = None
 
     def _reset_for_new_review(self):
+        self._run_epoch += 1
+
         if self._batch_poll_id is not None:
             self.after_cancel(self._batch_poll_id)
             self._batch_poll_id = None
+
+        if self._batch_submission is not None:
+            try:
+                cancel_batch(self._batch_submission.job.batch_id)
+                self.log.log_warning("Cancellation requested for active batch.")
+            except Exception as e:
+                self.log.log_warning(f"Could not cancel active batch: {e}")
+
         self._batch_submission = None
+        delete_batch_state()
 
         self._close_report_window()
         self.progress_bar.pack_forget()
