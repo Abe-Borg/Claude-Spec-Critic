@@ -49,12 +49,8 @@ from typing import Callable, Optional
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
 from .extractor import ExtractedSpec
-from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_api_key
+from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_api_key, MODEL_SONNET_46_46
 from .tokenizer import RECOMMENDED_MAX, count_tokens
-
-
-# Cross-check uses Sonnet 4.6 (cheaper, faster, sufficient for coordination)
-MODEL_SONNET = "claude-sonnet-4-6"
 
 StreamCallback = Callable[[str], None]
 
@@ -150,6 +146,20 @@ def _build_spec_summary(
                 parts.append(f"  {h}")
         else:
             parts.append("  (no section headers detected)")
+
+        # Extract opening ~200 words of each Part (scope statements)
+        part_pattern = re.compile(r"^(PART\s+\d+\s*[-–—]\s*.+)", re.IGNORECASE | re.MULTILINE)
+        part_matches = list(part_pattern.finditer(spec.content))
+        if part_matches:
+            parts.append("  --- SCOPE EXCERPTS ---")
+            for pm in part_matches:
+                part_title = pm.group(1).strip()
+                after_part = spec.content[pm.end():].strip()
+                words = after_part.split()[:200]
+                excerpt = " ".join(words)
+                if excerpt:
+                    parts.append(f"  [{part_title}]")
+                    parts.append(f"  {excerpt}")
 
         # Extract lines with numeric values (temperatures, pressures, etc.)
         value_lines: list[str] = []
@@ -327,7 +337,7 @@ def run_cross_check(
         return ReviewResult(
             findings=[],
             thinking="Cross-spec coordination skipped: only 1 spec provided.",
-            model=MODEL_SONNET,
+            model=MODEL_SONNET_46,
         )
 
     # Build condensed input
@@ -349,13 +359,13 @@ def run_cross_check(
                 f"({total_input_tokens:,} tokens) exceeds limit "
                 f"({RECOMMENDED_MAX:,} tokens)."
             ),
-            model=MODEL_SONNET,
+            model=MODEL_SONNET_46,
         )
 
     # Make the API call
     client = Anthropic(api_key=_get_api_key())
     start_time = time.time()
-    result = ReviewResult(model=MODEL_SONNET)
+    result = ReviewResult(model=MODEL_SONNET_46)
 
     for attempt in range(max_retries):
         try:
@@ -363,7 +373,7 @@ def run_cross_check(
                 print(f"Cross-check call (attempt {attempt + 1}/{max_retries})...")
 
             with client.messages.stream(
-                model=MODEL_SONNET,
+                model=MODEL_SONNET_46,
                 max_tokens=16384,
                 system=_CROSS_CHECK_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],

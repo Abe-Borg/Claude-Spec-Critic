@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v2.0.0
+# CLAUDE.md — Spec Critic v2.0.1
 
 Technical reference for AI-assisted development. This file describes the codebase architecture, module responsibilities, data flow, and conventions so that future sessions can pick up where the last one left off.
 

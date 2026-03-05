@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus / Sonnet
-v1.9.0 - PDF support for native (text-selectable) PDF files
+v2.0.1 - Consolidated fix-up release
 """
 import os, sys, json, time, threading
 from datetime import datetime, timezone
@@ -14,6 +14,7 @@ base_path = os.path.dirname(os.path.abspath(__file__))
 exe_dir = Path(base_path).parent
 sys.path.insert(0, str(exe_dir))
 
+from src import __version__
 from src.pipeline import run_review, start_batch_review, collect_batch_results, BatchSubmission
 from src.batch import poll_batch, cancel_batch, BatchStatus, BatchJob
 from src.reviewer import MODEL_OPUS_46, MODEL_SONNET_46, REVIEW_MODELS
@@ -93,12 +94,17 @@ def _batch_state_path() -> Path:
 def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None:
     """Serialize a BatchSubmission to disk for recovery after app restart.
 
+    NOTE: Only review-phase batch state is persisted. If the app closes during
+    verification batch polling, verification state is lost and findings will
+    be returned without verification on next resume. Tracked as a known
+    limitation — see implementation plan for v2.1.
+
     Args:
         submission: The batch submission to save
         phase: Current phase — "review" or "verify"
     """
     state = {
-        "version": "1.9.0",
+        "version": __version__,
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "phase": phase,
         "batch_id": submission.job.batch_id,
@@ -109,6 +115,7 @@ def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None
         "leed_alerts": submission.leed_alerts,
         "placeholder_alerts": submission.placeholder_alerts,
         "model": getattr(submission, "model", MODEL_OPUS_46),
+        "project_context": getattr(submission, "project_context", ""),
     }
     try:
         _batch_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -165,6 +172,7 @@ def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
             leed_alerts=state.get("leed_alerts", []),
             placeholder_alerts=state.get("placeholder_alerts", []),
             model=state.get("model", MODEL_OPUS_46),
+            project_context=state.get("project_context", ""),
         )
         phase = state.get("phase", "review")
         return submission, phase
@@ -726,6 +734,9 @@ class SpecReviewApp(ctk.CTk):
         if status.status == "ended":
             self.log.log_success("Batch complete — collecting results...")
             self._collect_batch_results()
+        elif status.status == "in_progress":
+            # Normal processing — schedule next poll silently
+            self._schedule_next_poll(15_000)
         elif status.status in ("canceling",):
             self.log.log_warning("Batch is being canceled...")
             self._schedule_next_poll(5_000)
@@ -737,7 +748,7 @@ class SpecReviewApp(ctk.CTk):
             self._batch_submission = None
             self._reset_ui()
         else:
-            # Unknown status — keep polling but warn so we notice new statuses
+            # Truly unknown status — warn and keep polling
             self.log.log_warning(f"Unexpected batch status: {status.status} — continuing to poll...")
             self._schedule_next_poll(15_000)
 
@@ -880,7 +891,7 @@ class SpecReviewApp(ctk.CTk):
         self._batch_submission = submission
         # Cross-check is not available for resumed batches (no ExtractedSpec objects)
         self._cross_check_for_review = False
-        self._project_context_for_review = ""
+        self._project_context_for_review = getattr(submission, "project_context", "")
         # Use whatever output mode the user currently has selected
         self._export_mode_for_review = self._is_export_mode
         self.is_processing = True
@@ -1018,11 +1029,11 @@ class SpecReviewApp(ctk.CTk):
                 "If enabled, a separate pass analyzes how your specs relate to each other. "
                 "It catches contradictions between specs, missing cross-references, scope "
                 "gaps and overlaps, and inconsistent equipment data. This uses a cheaper "
-                "model (Sonnet 4.6) and only looks at section headers and existing "
-                "findings \u2014 not the full spec text."
+                "model (Sonnet 4.6) and analyzes section headers, scope excerpts, key "
+                "numeric values, and existing findings."
             )),
             ("6.  Verification", (
-                "Every Critical, High, and Medium finding is independently verified by a "
+                "Every finding is independently verified by a "
                 "second Claude call with web search access. The verifier checks whether "
                 "the cited code or standard actually says what the finding claims. Each "
                 "finding gets a verdict: Confirmed, Corrected, Disputed, or Unverified."

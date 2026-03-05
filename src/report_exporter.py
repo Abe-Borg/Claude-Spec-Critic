@@ -199,7 +199,7 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False) -> None:
     )
 
     para2_text = (
-        "All Critical, High, and Medium findings were independently verified "
+        "All findings were independently verified "
         "through a second AI pass with web search access, which checks cited "
         "codes and standards against current published requirements. Verification "
         "verdicts (Confirmed, Corrected, Disputed, or Unverified) are shown with "

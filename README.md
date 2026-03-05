@@ -1,4 +1,4 @@
-# Spec Critic v2.0.0
+# Spec Critic v2.0.1
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` or `.pdf` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
 
@@ -70,7 +70,7 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root or
 ### Supported File Formats
 
 - **`.docx`** (Word documents) — Full support including table extraction
-- **`.pdf`** (native/text-selectable PDFs) — Full support including table detection via pymupdf
+- **`.pdf`** (native/text-selectable PDFs) — Full text extraction via pymupdf (includes table content)
 
 **Note on PDFs**: Only native (text-selectable) PDFs are supported. Scanned or image-only PDFs will produce a warning indicating poor extraction quality. If you have a scanned PDF, convert it to a text-selectable PDF or `.docx` before reviewing.
 
@@ -112,7 +112,7 @@ The cross-spec coordination check is an optional pass that runs after the per-sp
 
 **How it works:**
 - Uses **Sonnet 4.6** (cheaper and faster than Opus)
-- Sends section headers + existing findings (not full spec text) to keep token usage low
+- Sends section headers, scope excerpts, key numeric values, cross-references, and existing findings to the model
 - Findings appear in a dedicated **CROSS-SPEC COORDINATION** section in the report
 - Coordination findings go through web search verification like any other finding
 - Requires 2+ specs — automatically skipped with only 1 spec

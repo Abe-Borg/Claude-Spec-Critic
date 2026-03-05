@@ -130,7 +130,7 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
     files = []
     for ext in SUPPORTED_EXTENSIONS:
         files.extend(input_dir.glob(f"*{ext}"))
-    return sorted([p for p in files if not p.name.startswith("~$")])
+    return sorted([p for p in files if not p.name.startswith("~$")], key=lambda p: p.name.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +236,7 @@ def _prepare_specs(
     *,
     input_dir: Path,
     files: Optional[list[Path]] = None,
+    project_context: str = "",
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> _PreparedSpecs:
@@ -292,10 +293,11 @@ def _prepare_specs(
     progress(30.0, "Checking token limits...")
     system_prompt = get_system_prompt()
     system_prompt_tokens = count_tokens(system_prompt)
+    context_tokens = count_tokens(project_context) if project_context else 0
 
     for spec in specs:
         spec_tokens = count_tokens(spec.content)
-        estimated_call_tokens = system_prompt_tokens + spec_tokens + 200
+        estimated_call_tokens = system_prompt_tokens + context_tokens + spec_tokens + 200
         if estimated_call_tokens > RECOMMENDED_MAX:
             raise ValueError(
                 f"Spec '{spec.filename}' is too large for a single API call: "
@@ -331,6 +333,7 @@ class BatchSubmission:
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     model: str = MODEL_OPUS_46
+    project_context: str = ""
 
 
 def start_batch_review(
@@ -367,6 +370,7 @@ def start_batch_review(
     prepared = _prepare_specs(
         input_dir=input_dir,
         files=files,
+        project_context=project_context,
         log=log,
         progress=progress,
     )
@@ -389,6 +393,7 @@ def start_batch_review(
         leed_alerts=prepared.leed_alerts,
         placeholder_alerts=prepared.placeholder_alerts,
         model=model,
+        project_context=project_context,
     )
 
 
@@ -611,6 +616,7 @@ def run_review(
     prepared = _prepare_specs(
         input_dir=input_dir,
         files=files,
+        project_context=project_context,
         log=log,
         progress=progress,
     )

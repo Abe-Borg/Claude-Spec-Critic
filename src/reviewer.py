@@ -205,12 +205,21 @@ def _parse_findings(data: list) -> list[Finding]:
         code_ref = item.get("codeReference")
         code_reference = str(code_ref) if code_ref is not None else None
 
+        # Coerce required text fields to str, guarding against None values
+        # (item.get("key", "") returns None if the key exists with value None)
+        raw_fn = item.get("fileName")
+        file_name = str(raw_fn).strip() if raw_fn is not None else ""
+        raw_sec = item.get("section")
+        section = str(raw_sec).strip() if raw_sec is not None else ""
+        raw_issue = item.get("issue")
+        issue_text = str(raw_issue).strip() if raw_issue is not None else ""
+
         findings.append(
             Finding(
                 severity=severity,
-                fileName=str(item.get("fileName", "")).strip(),
-                section=str(item.get("section", "")).strip(),
-                issue=str(item.get("issue", "")).strip(),
+                fileName=file_name,
+                section=section,
+                issue=issue_text,
                 actionType=action_type,
                 existingText=existing_text,
                 replacementText=replacement_text,
