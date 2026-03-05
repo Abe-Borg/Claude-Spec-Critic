@@ -377,7 +377,10 @@ def _render_summary_grid(parent, review, files_reviewed, cross_check_result=None
         ctk.CTkLabel(ci, text=str(count), font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"), text_color=color).pack()
         ctk.CTkLabel(ci, text=label.upper(), font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"), text_color=COLORS["text_muted"]).pack()
 
-    meta_text = f"Tokens: {review.input_tokens:,} in \u2192 {review.output_tokens:,} out  \u2022  Time: {review.elapsed_seconds:.1f}s"
+    meta_text = (
+        f"Review tokens: {review.input_tokens:,} in \u2192 {review.output_tokens:,} out"
+        f"  \u2022  Time: {review.elapsed_seconds:.1f}s"
+    )
     all_findings_for_verdicts = list(review.findings)
     if cross_check_result and cross_check_result.findings:
         all_findings_for_verdicts.extend(cross_check_result.findings)
