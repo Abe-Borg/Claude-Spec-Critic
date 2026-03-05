@@ -263,12 +263,9 @@ def _prepare_specs(
     """
     input_dir = Path(input_dir)
 
-    if files:
-        docx_files = [Path(f) for f in files]
-    else:
-        docx_files = _get_spec_files(input_dir)
+    spec_files = [Path(f) for f in files] if files else _get_spec_files(input_dir)
 
-    if not docx_files:
+    if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
 
     # Extract text from spec files (DOCX and/or PDF)
@@ -277,14 +274,20 @@ def _prepare_specs(
     leed_alerts: list[dict] = []
     placeholder_alerts: list[dict] = []
 
-    total_files = len(docx_files)
-    for i, p in enumerate(docx_files, start=1):
+    total_files = len(spec_files)
+    for i, p in enumerate(spec_files, start=1):
         log(f"Loading: {p.name}")
         try:
             spec = extract_text(p)
         except Exception as e:
             log(f"Error extracting {p.name}: {e}")
             progress((i / total_files) * 25.0, f"Skipped {p.name} (extraction error)")
+            continue
+
+        # Skip scanned/image PDFs with no usable extracted text
+        if getattr(spec, "is_probably_scanned", False) and spec.word_count == 0:
+            log(f"Skipping {p.name}: scanned/image PDF with no extractable text")
+            progress((i / total_files) * 25.0, f"Skipped {p.name} (scanned PDF)")
             continue
 
         if spec.word_count == 0 or not spec.content.strip():
@@ -302,7 +305,7 @@ def _prepare_specs(
 
     if not specs:
         raise FileNotFoundError(
-            f"All {len(docx_files)} files failed extraction. No specs to review."
+            f"All {len(spec_files)} files failed extraction. No specs to review."
         )
 
     # Per-spec token limit check
@@ -313,11 +316,14 @@ def _prepare_specs(
 
     for spec in specs:
         spec_tokens = count_tokens(spec.content)
+        estimated_call_tokens = system_prompt_tokens + context_tokens + spec_tokens
+
         if exceeds_per_call_limit(spec_tokens, system_prompt_tokens + context_tokens):
             raise ValueError(
                 f"Spec '{spec.filename}' is too large for a single API call: "
-                f"~{estimated_call_tokens:,} tokens (limit: {RECOMMENDED_MAX:,}). "
-                "This spec would need to be split to review."
+                f"~{estimated_call_tokens:,} input tokens before output/padding "
+                f"(recommended max: {RECOMMENDED_MAX:,}). "
+                "Split this spec before review."
             )
 
     return _PreparedSpecs(
@@ -699,6 +705,12 @@ def run_review(
 
         log(f"  {spec.filename}: {len(result.findings)} findings")
 
+    if errors and not all_findings and not all_thinking:
+        raise RuntimeError(
+            f"All {len(errors)} spec reviews failed:\n" +
+            "\n".join(f"  - {e}" for e in errors)
+        )
+
     # -------------------------------------------------------------------------
     # Stage 4.5: Finding deduplication (before cross-check and verification)
     # -------------------------------------------------------------------------
@@ -781,13 +793,6 @@ def run_review(
     # Stage 7: Aggregate results
     # -------------------------------------------------------------------------
     elapsed = time.time() - start_time
-
-    # If ALL specs failed, raise an error
-    if errors and not all_findings and not all_thinking:
-        raise RuntimeError(
-            f"All {len(errors)} spec reviews failed:\n" +
-            "\n".join(f"  - {e}" for e in errors)
-        )
 
     # Combine per-spec results into a single ReviewResult for the GUI
     combined_result = ReviewResult(

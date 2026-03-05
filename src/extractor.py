@@ -68,6 +68,10 @@ class ExtractedSpec:
     filename: str
     content: str
     word_count: int
+    source_path: str = ""
+    source_format: str = ""
+    extraction_warning: str | None = None
+    is_probably_scanned: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +134,9 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     return ExtractedSpec(
         filename=filepath.name,
         content=content,
-        word_count=word_count
+        word_count=word_count,
+        source_path=str(filepath),
+        source_format="docx",
     )
 
 
@@ -176,7 +182,7 @@ def extract_text_from_pdf(filepath: Path) -> ExtractedSpec:
     except Exception as e:
         raise ValueError(f"Could not open PDF file: {filepath} — {e}")
 
-    paragraphs: list[str] = []
+    pages_text: list[str] = []
     total_pages = len(doc)
     low_text_pages = 0
 
@@ -190,31 +196,37 @@ def extract_text_from_pdf(filepath: Path) -> ExtractedSpec:
                 low_text_pages += 1
 
             if page_text:
-                paragraphs.append(page_text)
+                pages_text.append(page_text)
     except Exception as e:
         raise ValueError(f"Error reading PDF content: {filepath} — {e}")
     finally:
         doc.close()
 
-    # Build content
-    content = "\n\n".join(paragraphs)
+    raw_content = "\n\n".join(pages_text).strip()
+    raw_word_count = len(raw_content.split())
 
-    # Warn if most pages had very little text (likely scanned)
-    if total_pages > 0 and low_text_pages > (total_pages * 0.5):
-        warning = (
-            f"[WARNING: {low_text_pages} of {total_pages} pages in this PDF "
-            f"yielded very little text. This document may be scanned or "
-            f"image-based. Extraction quality may be poor — consider using "
-            f"a text-selectable PDF or .docx version instead.]\n\n"
+    is_probably_scanned = total_pages > 0 and low_text_pages > (total_pages * 0.5)
+    extraction_warning = None
+    if is_probably_scanned:
+        extraction_warning = (
+            "[WARNING: This PDF appears to be scanned or image-based. "
+            "Little or no machine-readable text could be extracted. "
+            "Review skipped unless usable text is present.]"
         )
-        content = warning + content
 
-    word_count = len(content.split())
+    # Keep content warning-free when no extractable text exists so pipeline can skip it.
+    content = raw_content
+    if extraction_warning and raw_content:
+        content = f"{extraction_warning}\n\n{raw_content}"
 
     return ExtractedSpec(
         filename=filepath.name,
         content=content,
-        word_count=word_count
+        word_count=raw_word_count,
+        source_path=str(filepath),
+        source_format="pdf",
+        extraction_warning=extraction_warning,
+        is_probably_scanned=is_probably_scanned,
     )
 
 
