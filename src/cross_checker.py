@@ -6,19 +6,18 @@ that no single-spec review could find: contradictory values across specs,
 missing referenced sections, division-of-work gaps, inconsistent terminology,
 and conflicting equipment schedules.
 
-v2.2.0 — Opus 4.6 + full spec content + 1M context window + adaptive thinking.
-    Upgraded from Sonnet 4.6 with condensed headers to Opus 4.6 with
-    the full text of every specification. With the 1M token context
-    window (GA March 2026, no beta header required, standard pricing),
-    the cross-checker can now analyze complete spec content rather than
-    relying on section headers and excerpts. Adaptive thinking
-    (thinking: {"type": "adaptive"}) is enabled so the model can reason
-    deeply about cross-spec coordination before producing findings.
-    This enables detection of contradictions in body text, subtle scope
-    overlaps, and coordination issues that were invisible with
-    headers-only analysis.
+v2.3.0 — Opus-only. All pipeline stages use Opus 4.6.
 
-v1.6.0 — Initial implementation (Sonnet 4.6 + condensed headers).
+v2.2.0 — Opus 4.6 + full spec content + 1M context window + adaptive thinking.
+    Upgraded from condensed headers to full text of every specification.
+    With the 1M token context window (GA March 2026, no beta header
+    required, standard pricing), the cross-checker can now analyze
+    complete spec content rather than relying on section headers and
+    excerpts. Adaptive thinking (thinking: {"type": "adaptive"}) is
+    enabled so the model can reason deeply about cross-spec coordination
+    before producing findings.
+
+v1.6.0 — Initial implementation (condensed headers).
 
 The cross-checker receives:
     - Full text content of each specification (with file delimiters)
@@ -66,27 +65,13 @@ def _build_cross_check_input(
     specs: list[ExtractedSpec],
     existing_findings: list[Finding],
 ) -> str:
-    """Build the full-content input for the cross-checker.
-
-    Includes the complete text of each specification (with file delimiters
-    matching the per-spec review format) and a summary of existing per-spec
-    findings so the cross-checker doesn't repeat them.
-
-    Args:
-        specs: List of ExtractedSpec objects with full content
-        existing_findings: Per-spec findings already identified
-
-    Returns:
-        Formatted string with full spec content and existing findings summary
-    """
+    """Build the full-content input for the cross-checker."""
     parts: list[str] = []
 
-    # Section 1: Full spec content with file delimiters
     for spec in specs:
         parts.append(f"\n===== FILE: {spec.filename} =====")
         parts.append(spec.content)
 
-    # Section 2: Existing findings summary (so cross-checker doesn't repeat them)
     if existing_findings:
         parts.append("")
         parts.append("=" * 60)
@@ -191,16 +176,7 @@ def _get_cross_check_user_message(
     file_count: int,
     project_context: str = "",
 ) -> str:
-    """Build the user message for the cross-spec coordination check.
-
-    Args:
-        spec_input: Output of _build_cross_check_input() (full content + findings)
-        file_count: Number of spec files
-        project_context: Optional project description
-
-    Returns:
-        Formatted user message string
-    """
+    """Build the user message for the cross-spec coordination check."""
     context_block = ""
     if project_context.strip():
         context_block = f"""
@@ -232,26 +208,7 @@ def run_cross_check(
     verbose: bool = False,
     stream_callback: StreamCallback | None = None,
 ) -> ReviewResult:
-    """Run the cross-spec coordination check.
-
-    Sends full specification content and existing findings to Opus 4.6
-    and returns coordination-only findings. Uses the 1M token context
-    window for complete cross-spec analysis.
-
-    Args:
-        specs: List of ExtractedSpec objects (need 2+ for coordination)
-        existing_findings: Per-spec findings already identified
-        project_context: Optional project description
-        max_retries: Maximum retry attempts for transient API errors
-        verbose: If True, print debug info
-        stream_callback: Optional callback for streaming chunks
-
-    Returns:
-        ReviewResult with coordination findings. If fewer than 2 specs or
-        token limit exceeded, returns an empty ReviewResult with an
-        explanatory message in .thinking.
-    """
-    # Guard: need at least 2 specs for cross-spec coordination
+    """Run the cross-spec coordination check using Opus 4.6."""
     if len(specs) < 2:
         return ReviewResult(
             findings=[],
@@ -259,10 +216,8 @@ def run_cross_check(
             model=MODEL_OPUS_46,
         )
 
-    # Build full-content input
     spec_input = _build_cross_check_input(specs, existing_findings)
 
-    # Check token limit before calling API
     system_tokens = count_tokens(_CROSS_CHECK_SYSTEM_PROMPT)
     user_message = _get_cross_check_user_message(
         spec_input, len(specs), project_context=project_context,
@@ -288,10 +243,6 @@ def run_cross_check(
             f"({total_input_tokens / CROSS_CHECK_RECOMMENDED_MAX * 100:.1f}% of limit)"
         )
 
-    # Make the API call with adaptive thinking enabled.
-    # Thinking tokens + text output share the max_tokens budget.
-    # We use 65536 to give the model room for deep reasoning about
-    # cross-spec coordination while keeping input capacity high.
     client = Anthropic(api_key=_get_api_key())
     start_time = time.time()
     result = ReviewResult(model=MODEL_OPUS_46)

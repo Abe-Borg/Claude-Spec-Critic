@@ -1,70 +1,29 @@
 """
 Web search self-verification for Spec Critic findings.
 
-Uses Claude Sonnet 4.6 with the web_search_20250305 tool to verify
+Uses Claude Opus 4.6 with the web_search_20250305 tool to verify
 each finding from the review. The verifier treats the entire finding —
 issue, suggested fix, and any code citation — as claims to be checked.
 
-Verification uses Sonnet (not Opus) because:
-    - Verification is a focused task (check one finding at a time)
-    - Sonnet is significantly cheaper and faster
-    - The web search tool does the heavy lifting
+v2.3.0 — Opus-only verification.
+    All verification calls use Claude Opus 4.6.
+    The entire Spec Critic pipeline uses a single model.
 
 v2.2.0 — Removed artificial polling timeout.
-    The Anthropic batch API expires batches automatically after 24 hours.
-    There is no reason for the client to impose its own timeout — the
-    polling loop now runs until the batch reaches a terminal status
-    (ended, failed, expired, canceled) or hits persistent poll errors.
-    The user can cancel manually via the GUI at any time.
 
 v2.1.1 — Removed sequential fallbacks from batch verification.
-    When the user selects batch mode, verify_findings_batch() no longer
-    silently falls back to sequential verify_findings() on failure.
-    Instead, failures raise RuntimeError so the pipeline can return
-    findings as UNVERIFIED without incurring full-price sequential
-    API costs. This prevents cost blowups when batch verification
-    encounters transient errors or timeouts.
 
-v1.9.1 — Bug fixes.
-    Added generic Exception handler to verify_finding() so unexpected
-    errors produce UNVERIFIED instead of crashing the entire verification
-    pass. Added per-finding try/except in verify_findings() so a single
-    finding failure doesn't abort verification of remaining findings.
+v1.9.1 — Bug fixes (generic Exception handler in verify_finding).
 
-v1.7.0 — Verification batching.
-    Added verify_findings_batch() as the batch-mode alternative to
-    verify_findings(). Submits all verifiable findings as a single
-    Anthropic Message Batch, polls until complete, then collects results.
-    Used by pipeline.collect_batch_results() when running in batch mode.
+v1.7.0 — Verification batching via Anthropic Message Batches API.
 
-v1.5.0 — Broadened verification scope:
-    - All CRITICAL, HIGH, and MEDIUM findings are verified regardless of
-      whether they include a code reference. Findings without citations
-      are still checked for issue validity and fix correctness.
-    - The verification prompt now evaluates the full finding holistically:
-      is the issue real, is the suggested fix correct, and is any cited
-      code/standard accurate (with skepticism, since citations may be
-      hallucinated by the review model).
-    - Findings are verified in ascending confidence order — low-confidence
-      findings are checked first since they are most likely to be wrong.
+v1.5.0 — Broadened verification scope to all findings.
 
 Each finding produces a VerificationResult with:
     - verdict: CONFIRMED, CORRECTED, UNVERIFIED, or DISPUTED
     - explanation: Brief rationale for the verdict
     - sources: List of URLs consulted
     - correction: Updated replacement text if the finding was wrong
-
-Design decisions:
-    - All other findings are verified — with or without a code reference
-    - The verifier treats the review model's code citations with skepticism
-      since they may be hallucinated
-    - Verification is independent per finding — no cross-finding context
-    - The verifier never modifies the original Finding; it populates the
-      verification field with a VerificationResult
-    - Findings are verified in ascending confidence order — low-confidence
-      findings are checked first since they are most likely to be wrong
-    - Batch verification NEVER falls back to sequential — if batch fails,
-      findings are returned as UNVERIFIED (v2.1.1)
 """
 
 from __future__ import annotations
@@ -83,7 +42,7 @@ from .batch import (
     retrieve_verification_results,
     cancel_batch,
 )
-from .reviewer import Finding, MODEL_SONNET_46
+from .reviewer import Finding, MODEL_OPUS_46
 
 VerifyProgressFn = Callable[[int, int, str], None]  # current, total, filename
 
@@ -94,17 +53,7 @@ def _noop_verify_progress(_: int, __: int, ___: str) -> None:
 
 @dataclass
 class VerificationResult:
-    """Result of web search verification for a single finding.
-
-    Attributes:
-        verdict: CONFIRMED (finding is correct), CORRECTED (finding intent
-            is right but details need adjustment), UNVERIFIED (couldn't find
-            evidence either way), or DISPUTED (finding appears incorrect)
-        explanation: Brief rationale for the verdict (1-2 sentences)
-        sources: List of URLs that were consulted during verification
-        correction: If verdict is CORRECTED or DISPUTED, the updated
-            replacement text. None otherwise.
-    """
+    """Result of web search verification for a single finding."""
     verdict: str                        # CONFIRMED, CORRECTED, UNVERIFIED, DISPUTED
     explanation: str = ""
     sources: list[str] = field(default_factory=list)
@@ -112,17 +61,7 @@ class VerificationResult:
 
 
 def _build_verification_prompt(finding: Finding) -> str:
-    """Build a holistic verification prompt for a single finding.
-
-    The prompt instructs the verifier to evaluate the ENTIRE finding:
-        1. Is the identified issue real and accurate?
-        2. Is the suggested fix (replacement text) correct?
-        3. If a code/standard is cited, is that citation accurate?
-           (Citations may be hallucinated — verify them, don't trust them.)
-
-    This is broader than the previous approach which only confirmed
-    code references.
-    """
+    """Build a holistic verification prompt for a single finding."""
     parts = [
         "You are a construction specification verification assistant for "
         "California projects. Another AI model reviewed a specification and "
@@ -209,21 +148,14 @@ def _build_verification_prompt(finding: Finding) -> str:
 
 
 def _parse_verification_response(response_text: str) -> VerificationResult:
-    """Parse the verification model's JSON response into a VerificationResult.
-
-    Handles cases where the model wraps JSON in markdown code fences or
-    includes preamble text before the JSON.
-    """
+    """Parse the verification model's JSON response into a VerificationResult."""
     text = response_text.strip()
 
-    # Strip markdown code fences if present
     if text.startswith("```"):
         lines = text.split("\n")
-        # Remove first line (```json or ```) and last line (```)
         lines = [l for l in lines if not l.strip().startswith("```")]
         text = "\n".join(lines).strip()
 
-    # Find JSON object
     start = text.find("{")
     end = text.rfind("}")
 
@@ -278,18 +210,7 @@ def _cancel_batch_safely(batch_id: str, log: Callable[[str], None]) -> None:
 
 
 def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationResult:
-    """Verify a single finding using web search.
-
-    Evaluates the entire finding holistically: issue validity, fix
-    correctness, and citation accuracy (if any citation is present).
-
-    Args:
-        finding: The Finding to verify
-        max_retries: Number of retries on transient errors
-
-    Returns:
-        VerificationResult with verdict, explanation, sources, and optional correction
-    """
+    """Verify a single finding using Opus 4.6 with web search."""
     
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -304,13 +225,12 @@ def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationRes
     for attempt in range(max_retries + 1):
         try:
             response = client.messages.create(
-                model=MODEL_SONNET_46,
+                model=MODEL_OPUS_46,
                 max_tokens=1024,
                 tools=[{"type": "web_search_20250305", "name": "web_search"}],
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            # Extract text from response content blocks
             response_text = ""
             for block in response.content:
                 if hasattr(block, "text"):
@@ -341,9 +261,6 @@ def verify_finding(finding: Finding, *, max_retries: int = 2) -> VerificationRes
                 explanation=f"API error during verification: {e}",
             )
         except Exception as e:
-            # Catch-all for unexpected errors (TypeError, AttributeError,
-            # network-level exceptions, etc.) — return UNVERIFIED instead
-            # of crashing the entire verification pass.
             return VerificationResult(
                 verdict="UNVERIFIED",
                 explanation=f"Unexpected error during verification: {e}",
@@ -355,46 +272,17 @@ def verify_findings(
     *,
     progress: VerifyProgressFn = _noop_verify_progress,
 ) -> list[Finding]:
-    """Verify all eligible findings and populate their verification field.
-
-    Modifies findings in-place by setting finding.verification to a
-    VerificationResult. 
-
-    Findings are verified in ascending confidence order — low-confidence
-    findings are checked first since they are most likely to be wrong and
-    benefit most from verification.
-
-    v1.9.1: Added per-finding try/except so a single verification failure
-    does not abort the remaining findings. Previously, an uncaught exception
-    from verify_finding() would propagate up through the loop and crash
-    the entire pipeline — all findings verified before the crash were lost
-    because PipelineResult was never constructed.
-
-    Args:
-        findings: List of Finding objects to verify
-        progress: Callback for progress updates (current, total, filename)
-
-    Returns:
-        The same list of findings (modified in-place) for convenience
-    """
+    """Verify all findings sequentially (real-time mode). Modifies findings in-place."""
     verifiable = list(findings)
-
-    # Sort by confidence ascending — verify least confident first
     verifiable.sort(key=lambda f: f.confidence)
 
     total = len(verifiable)
 
-    # Verify eligible findings sequentially (lowest confidence first).
-    # Each finding is wrapped in its own try/except so a single failure
-    # does not abort verification of the remaining findings.
     for i, f in enumerate(verifiable):
         progress(i + 1, total, f.fileName or "Unknown")
         try:
             f.verification = verify_finding(f)
         except Exception as e:
-            # This should rarely fire since verify_finding() now has its
-            # own catch-all, but belt-and-suspenders ensures we never
-            # lose the rest of the findings to a single error.
             f.verification = VerificationResult(
                 verdict="UNVERIFIED",
                 explanation=f"Verification crashed: {e}",
@@ -412,42 +300,16 @@ def verify_findings_batch(
 ) -> list[Finding]:
     """Verify findings via the Anthropic Message Batches API (50% cost savings).
 
-    Batch-mode alternative to verify_findings(). Submits all verifiable
-    findings as a single batch, polls until complete, then collects results.
-    Used by pipeline.collect_batch_results() when running in batch mode.
-
     IMPORTANT (v2.1.1): This function NEVER falls back to sequential
-    verification. If batch verification fails for any reason, a RuntimeError
-    is raised. The calling pipeline catches this and marks all findings as
-    UNVERIFIED. This prevents silent cost blowups from 100+ individual
-    API calls when the user explicitly chose batch mode for cost savings.
+    verification. If batch verification fails, a RuntimeError is raised.
 
-    No artificial timeout (v2.2.0): The Anthropic batch API expires
-    batches automatically after 24 hours. The polling loop runs until
-    the batch reaches a terminal status (ended, failed, expired, canceled)
-    or encounters persistent errors. The user can cancel manually via
-    the GUI's "New Review" button at any time.
-
-    Args:
-        findings: List of Finding objects to verify (modified in-place)
-        log: Callback for log messages
-        progress: Callback for progress updates (percent, message)
-        poll_interval: Seconds between poll requests (default: 15)
-
-    Returns:
-        The same list of findings (modified in-place) for convenience
-
-    Raises:
-        RuntimeError: If batch submission, polling, or result collection
-            fails. The caller should catch this and mark findings as
-            UNVERIFIED rather than falling back to sequential verification.
+    No artificial timeout (v2.2.0): Polling runs until terminal status.
     """
     verifiable_count = len(findings)
     if verifiable_count == 0:
         log("No findings eligible for batch verification.")
         return findings
 
-    # Submit verification batch
     log(f"Submitting {verifiable_count} findings for batch verification (50% savings)...")
     progress(0.0, f"Submitting {verifiable_count} verification requests...")
 
@@ -465,9 +327,6 @@ def verify_findings_batch(
     log(f"Verification batch submitted: {job.batch_id}")
     progress(5.0, "Verification batch submitted — polling...")
 
-    # Poll until batch reaches a terminal status.
-    # No artificial timeout — the batch API expires batches after 24 hours
-    # automatically. The user can cancel manually via the GUI at any time.
     consecutive_errors = 0
     while True:
         try:
@@ -495,7 +354,6 @@ def verify_findings_batch(
             f"• {status.progress_pct:.0f}%"
         )
 
-        # Normalize status string (API may return hyphens or underscores)
         normalized_status = status.status.replace("-", "_")
 
         if normalized_status == "ended":
@@ -503,7 +361,6 @@ def verify_findings_batch(
         elif normalized_status == "canceling":
             log("Verification batch is being canceled...")
         elif normalized_status in ("failed", "expired", "canceled"):
-            # Terminal failure — stop polling, raise error (NO sequential fallback)
             log(f"Verification batch terminated with status: {status.status}")
             raise RuntimeError(
                 f"Batch verification terminated with status '{status.status}'. "
@@ -512,7 +369,6 @@ def verify_findings_batch(
 
         time.sleep(poll_interval)
 
-    # Collect results
     progress(92.0, "Collecting verification results...")
     log("Collecting verification batch results...")
 
@@ -524,7 +380,6 @@ def verify_findings_batch(
         )
     except Exception as e:
         log(f"Error collecting verification results: {e}")
-        # Set UNVERIFIED for any findings without a result
         for f in findings:
             if f.verification is None:
                 f.verification = VerificationResult(

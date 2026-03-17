@@ -4,10 +4,9 @@ Token counting and limit management for Claude API calls.
 Uses tiktoken with cl100k_base for approximate preflight estimates.
 These counts are used for guardrails, not exact billing.
 
-Token limits (v2.2.0):
-    - Claude Opus 4.6 / Sonnet 4.6 context window: 1,000,000 tokens
+Token limits (v2.3.0):
+    - Claude Opus 4.6 context window: 1,000,000 tokens
     - Opus 4.6 max output: 128,000 tokens
-    - Sonnet 4.6 max output: 64,000 tokens
     - Per-spec recommended input limit: 150,000 tokens
       (practical limit — individual specs are reviewed one at a time)
     - Cross-check recommended input limit: 900,000 tokens
@@ -17,7 +16,7 @@ The per-spec limit (RECOMMENDED_MAX) is intentionally conservative.
 Even though the model supports 1M tokens, per-spec review calls send
 a single spec at a time. Individual specs rarely exceed 50K tokens,
 and the 150K ceiling provides a comfortable guardrail. The token gauge
-in the GUI displays capacity against this per-spec limit.
+in the GUI displays the largest spec's call size against this limit.
 
 The cross-check limit (CROSS_CHECK_RECOMMENDED_MAX) is much higher
 because the cross-checker sends ALL spec content in a single call.
@@ -30,7 +29,7 @@ from dataclasses import dataclass
 # Model limits
 # ---------------------------------------------------------------------------
 
-# Claude Opus 4.6 / Sonnet 4.6 context window (GA as of March 13, 2026)
+# Claude Opus 4.6 context window (GA as of March 13, 2026)
 # No beta header required. Standard pricing across the full window.
 MAX_CONTEXT_TOKENS = 1_000_000
 

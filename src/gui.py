@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
-M&P Specification Review • California K-12 DSA • Claude Opus / Sonnet
-v2.2.0 - Opus cross-check, 1M context, no artificial timeouts
+M&P Specification Review • California K-12 DSA • Claude Opus 4.6
+v2.3.0 - Opus-only pipeline, real-time cost confirmation, updated mode labels
 """
 import os, sys, json, time, threading
 from datetime import datetime, timezone
@@ -17,7 +17,7 @@ sys.path.insert(0, str(exe_dir))
 from src import __version__
 from src.pipeline import run_review, start_batch_review, collect_batch_results, BatchSubmission
 from src.batch import poll_batch, cancel_batch, BatchStatus, BatchJob
-from src.reviewer import MODEL_OPUS_46, MODEL_SONNET_46, REVIEW_MODELS
+from src.reviewer import MODEL_OPUS_46, REVIEW_MODELS
 from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
 from src.prompts import get_system_prompt
@@ -30,19 +30,20 @@ from platformdirs import user_config_dir, user_state_dir
 API_KEY_FILENAME = "spec_critic_api_key.txt"
 BATCH_STATE_FILENAME = "batch_state.json"
 
-# Maximum age (hours) for a batch state file before it's considered stale
 BATCH_STATE_MAX_AGE_HOURS = 24
 
-# Placeholder hint shown in the project context textbox when empty
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
-# File dialog filter for supported spec formats
 _SPEC_FILETYPES = [
     ("Specifications", "*.docx *.pdf"),
     ("Word Documents", "*.docx"),
     ("PDF Documents", "*.pdf"),
     ("All Files", "*.*"),
 ]
+
+# Mode selector labels
+_MODE_REALTIME = "Real-time (FAST: Expensive!)"
+_MODE_BATCH = "Batch (SLOW: Cheap!)"
 
 
 def _app_config_dir() -> Path:
@@ -94,7 +95,7 @@ def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None
         "review_request_ids": submission.review_request_ids,
         "leed_alerts": submission.leed_alerts,
         "placeholder_alerts": submission.placeholder_alerts,
-        "model": getattr(submission, "model", MODEL_OPUS_46),
+        "model": MODEL_OPUS_46,
         "project_context": getattr(submission, "project_context", ""),
     }
     try:
@@ -138,7 +139,7 @@ def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
             review_request_ids=state.get("review_request_ids", []),
             leed_alerts=state.get("leed_alerts", []),
             placeholder_alerts=state.get("placeholder_alerts", []),
-            model=state.get("model", MODEL_OPUS_46),
+            model=MODEL_OPUS_46,
             project_context=state.get("project_context", ""),
         )
         phase = state.get("phase", "review")
@@ -207,7 +208,7 @@ class SpecReviewApp(ctk.CTk):
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._reset_for_new_review,
         ).pack(side="right", padx=(8, 0), pady=(4, 0))
-        ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.6", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
         self._create_inputs_card(c)
         self.file_list_panel = FileListPanel(c, on_selection_change=self._on_file_selection_change, pack_after=self.inputs_card)
@@ -267,48 +268,29 @@ class SpecReviewApp(ctk.CTk):
         self.context_textbox.bind("<FocusOut>", self._context_focus_out)
         self.context_textbox.bind("<KeyRelease>", self._on_context_change)
 
-        # --- Row 3: Review Model ---
-        ctk.CTkLabel(self.inputs_content, text="Review Model", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
-        model_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        model_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
-        self._review_model_var = ctk.StringVar(value="Opus 4.6")
-        self.model_selector = ctk.CTkSegmentedButton(
-            model_frame, values=list(REVIEW_MODELS.keys()), variable=self._review_model_var,
-            command=self._on_model_change, font=ctk.CTkFont(family="Segoe UI", size=11),
-            selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
-            unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
-            fg_color=COLORS["bg_input"], text_color=COLORS["text_secondary"],
-            text_color_disabled=COLORS["text_muted"], height=32,
-        )
-        self.model_selector.set("Opus 4.6")
-        self.model_selector.pack(side="left")
-        self._model_hint = ctk.CTkLabel(model_frame, text="Most thorough \u2022 recommended",
-            font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
-        self._model_hint.pack(side="left", padx=(12, 0))
-
-        # --- Row 4: Review Mode ---
-        ctk.CTkLabel(self.inputs_content, text="Mode", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
+        # --- Row 3: Review Mode ---
+        ctk.CTkLabel(self.inputs_content, text="Mode", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
         mode_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        mode_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
+        mode_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
         self._review_mode = ctk.StringVar(value="realtime")
         self.mode_selector = ctk.CTkSegmentedButton(
-            mode_frame, values=["Real-time", "Batch (50% off)"], variable=self._review_mode,
+            mode_frame, values=[_MODE_REALTIME, _MODE_BATCH], variable=self._review_mode,
             command=self._on_mode_change, font=ctk.CTkFont(family="Segoe UI", size=11),
             selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
             unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
             fg_color=COLORS["bg_input"], text_color=COLORS["text_secondary"],
             text_color_disabled=COLORS["text_muted"], height=32,
         )
-        self.mode_selector.set("Real-time")
+        self.mode_selector.set(_MODE_REALTIME)
         self.mode_selector.pack(side="left")
         self._mode_hint = ctk.CTkLabel(mode_frame, text="",
             font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
         self._mode_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 5: Output ---
-        ctk.CTkLabel(self.inputs_content, text="Output", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
+        # --- Row 4: Output ---
+        ctk.CTkLabel(self.inputs_content, text="Output", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
         output_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        output_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
+        output_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
         self._output_mode_var = ctk.StringVar(value="View in App")
         self.output_selector = ctk.CTkSegmentedButton(
             output_frame, values=["View in App", "Export Report"],
@@ -326,10 +308,10 @@ class SpecReviewApp(ctk.CTk):
             font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
         self._output_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 6: Options (cross-check) ---
-        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=6, column=0, sticky="w", pady=8)
+        # --- Row 5: Options (cross-check) ---
+        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
         options_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        options_frame.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=8)
+        options_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
         self._cross_check_var = ctk.BooleanVar(value=False)
         self._cross_check_cb = ctk.CTkCheckBox(
             options_frame, text="Cross-spec coordination check", variable=self._cross_check_var,
@@ -345,19 +327,6 @@ class SpecReviewApp(ctk.CTk):
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
         self.inputs_content.columnconfigure(1, weight=1)
-
-    # --- Model selector helpers ---
-
-    def _on_model_change(self, value: str):
-        if value == "Opus 4.6":
-            self._model_hint.configure(text="Most thorough \u2022 recommended")
-        else:
-            self._model_hint.configure(text="Faster \u2022 cheaper \u2022 good for quick reviews")
-
-    @property
-    def _selected_review_model(self) -> str:
-        label = self._review_model_var.get()
-        return REVIEW_MODELS.get(label, MODEL_OPUS_46)
 
     # --- Output mode helpers ---
 
@@ -405,7 +374,7 @@ class SpecReviewApp(ctk.CTk):
         self._on_file_selection_change()
 
     def _on_mode_change(self, value: str):
-        if value == "Batch (50% off)":
+        if value == _MODE_BATCH:
             self._mode_hint.configure(text="Queued processing \u2022 results in ~15-60 min")
             self.run_button.configure(text="Submit Batch")
         else:
@@ -414,7 +383,7 @@ class SpecReviewApp(ctk.CTk):
 
     @property
     def _is_batch_mode(self) -> bool:
-        return self.mode_selector.get() == "Batch (50% off)"
+        return self.mode_selector.get() == _MODE_BATCH
 
     def _toggle_inputs_card(self, event=None):
         if self._inputs_expanded:
@@ -480,12 +449,12 @@ class SpecReviewApp(ctk.CTk):
                     self.after(0, lambda fd=file_data, es=extracted_specs, st=sys_tokens, ct=ctx_tokens:
                         self._set_file_data(fd, es, st, ct))
                     overhead = sys_tokens + ctx_tokens
-                    total = overhead + sum(d["tokens"] for d in file_data)
                     max_per_file = max(d["tokens"] for d in file_data)
+                    largest_call = overhead + max_per_file
                     per_file_limit_exceeded = exceeds_per_call_limit(max_per_file, overhead)
                     self.after(0, lambda fd=file_data: self.file_list_panel.load_files(fd))
-                    self.after(0, lambda t=total, fc=len(file_data): self.token_gauge.update_gauge(t, fc))
-                    self.after(0, lambda t=total: self.log.log_success(f"Token analysis complete: {t:,} tokens"))
+                    self.after(0, lambda lc=largest_call, fc=len(file_data): self.token_gauge.update_gauge(lc, fc))
+                    self.after(0, lambda lc=largest_call: self.log.log_success(f"Token analysis complete: largest spec call ~{lc:,} tokens"))
                     if per_file_limit_exceeded:
                         over_files = [d["filename"] for d in file_data if exceeds_per_call_limit(d["tokens"], overhead)]
                         self.after(0, lambda of=over_files: self.log.log_warning(
@@ -508,14 +477,15 @@ class SpecReviewApp(ctk.CTk):
             getattr(self, "_system_prompt_tokens", 0)
             + getattr(self, "_project_context_tokens", 0)
         )
-        total = overhead + sum(d["tokens"] for d in selected_data)
         fc = len(selected_data)
-        self.token_gauge.update_gauge(total, fc)
         if fc > 0:
             max_per_file = max(d["tokens"] for d in selected_data)
+            largest_call = overhead + max_per_file
             per_file_exceeded = exceeds_per_call_limit(max_per_file, overhead)
         else:
+            largest_call = 0
             per_file_exceeded = False
+        self.token_gauge.update_gauge(largest_call, fc)
         self.run_button.configure(state="normal" if (fc > 0 and not per_file_exceeded) else "disabled")
         self.file_list_panel.set_over_limit(per_file_exceeded)
 
@@ -534,13 +504,108 @@ class SpecReviewApp(ctk.CTk):
     def _dispatch_if_current(self, epoch: int, fn):
         self.after(0, lambda: fn() if self._run_epoch == epoch else None)
 
+    # ----- Real-time cost confirmation dialog -----
+
+    def _confirm_realtime_cost(self, num_specs: int) -> bool:
+        """Show a confirmation dialog warning about real-time mode costs.
+
+        Returns True if the user confirms, False if they cancel.
+        Uses wait_window to block until the dialog is closed.
+        """
+        self._realtime_confirmed = False
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Real-Time Mode — Cost Warning")
+        dialog.geometry("520x340")
+        dialog.configure(fg_color=COLORS["bg_dark"])
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.lift()
+        dialog.focus_force()
+
+        inner = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
+        inner.pack(fill="both", expand=True, padx=16, pady=16)
+
+        # Warning icon + title
+        ctk.CTkLabel(inner, text="\u26a0  Real-Time Mode Cost Warning",
+            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+            text_color=COLORS["warning"]).pack(anchor="w", padx=16, pady=(16, 8))
+
+        # Warning text
+        warning_text = (
+            f"You are about to run a real-time review of {num_specs} spec{'s' if num_specs != 1 else ''} "
+            f"using Claude Opus 4.6.\n\n"
+            f"Real-time mode uses full-price API calls for every stage: "
+            f"per-spec review, verification (one call per finding), and "
+            f"cross-spec coordination (if enabled). Depending on the number "
+            f"of specs and findings, this can cost anywhere from dozens to "
+            f"hundreds to thousands of dollars.\n\n"
+        )
+
+        if num_specs > 5:
+            warning_text += (
+                f"\u26a0  You have {num_specs} specs selected. For more than 5 specs, "
+                f"batch mode is strongly recommended — it provides 50% cost savings "
+                f"and identical results."
+            )
+        else:
+            warning_text += (
+                f"Batch mode provides identical results at 50% cost savings "
+                f"(results in ~15-60 minutes instead of real-time streaming)."
+            )
+
+        ctk.CTkLabel(inner, text=warning_text,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_secondary"],
+            wraplength=460, justify="left").pack(anchor="w", padx=16, pady=(0, 16))
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(inner, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=16, pady=(0, 16))
+        btn_kw = {"height": 36, "font": ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), "corner_radius": 6}
+
+        def _confirm():
+            self._realtime_confirmed = True
+            dialog.destroy()
+
+        def _cancel():
+            self._realtime_confirmed = False
+            dialog.destroy()
+
+        ctk.CTkButton(btn_frame, text="Switch to Batch Mode", width=180,
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            command=_cancel, **btn_kw).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(btn_frame, text="Proceed (Real-Time)", width=160,
+            fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["warning"],
+            text_color=COLORS["warning"], command=_confirm, **btn_kw).pack(side="left")
+
+        # Block until dialog is closed
+        dialog.wait_window()
+        return self._realtime_confirmed
+
     def start_review(self):
         if self.is_processing: return
         if not self._validate_inputs(): return
-        self._selected_files_for_review = self.file_list_panel.get_selected_files()
+
+        selected_files = self.file_list_panel.get_selected_files()
+        num_specs = len(selected_files)
+
+        # Show cost confirmation for real-time mode
+        if not self._is_batch_mode:
+            confirmed = self._confirm_realtime_cost(num_specs)
+            if not confirmed:
+                # User chose to switch to batch mode
+                self.mode_selector.set(_MODE_BATCH)
+                self._on_mode_change(_MODE_BATCH)
+                self.log.log("Switched to batch mode.", level="info")
+                return
+
+        self._selected_files_for_review = selected_files
         self._project_context_for_review = self._get_project_context()
         self._cross_check_for_review = self._cross_check_var.get()
-        self._model_for_review = self._selected_review_model
         self._export_mode_for_review = self._is_export_mode
         self.is_processing = True
         self._close_report_window()
@@ -550,15 +615,14 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.set(0); self.progress_bar.configure(mode="determinate")
         os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()
 
-        n = len(self._selected_files_for_review)
-        model_label = self._review_model_var.get()
-        output_label = " → Export Report" if self._export_mode_for_review else ""
+        n = num_specs
+        output_label = " \u2192 Export Report" if self._export_mode_for_review else ""
         if self._is_batch_mode:
-            self.log.log_step(f"Submitting {n} files for batch review ({model_label}){output_label}...")
+            self.log.log_step(f"Submitting {n} files for batch review (Opus 4.6){output_label}...")
             run_epoch = self._next_run_epoch()
             threading.Thread(target=self._submit_batch_thread, args=(run_epoch,), daemon=True).start()
         else:
-            self.log.log_step(f"Reviewing {n} files ({model_label}){output_label}...")
+            self.log.log_step(f"Reviewing {n} files (Opus 4.6){output_label}...")
             run_epoch = self._next_run_epoch()
             threading.Thread(target=self._run_review_thread, args=(run_epoch,), daemon=True).start()
 
@@ -566,9 +630,8 @@ class SpecReviewApp(ctk.CTk):
         try:
             n = len(self._selected_files_for_review)
             self._dispatch_if_current(run_epoch, lambda: self.log.log_step("Starting per-spec review..."))
-            model_label = [k for k, v in REVIEW_MODELS.items() if v == self._model_for_review][0]
             cross_check_note = " + cross-check" if self._cross_check_for_review else ""
-            mode_info = f"Model: {model_label}  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled{cross_check_note}"
+            mode_info = f"Model: Opus 4.6  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled{cross_check_note}"
             self._dispatch_if_current(run_epoch, lambda: self.log.log(mode_info, level="muted"))
 
             def _on_progress(pct, msg):
@@ -579,7 +642,7 @@ class SpecReviewApp(ctk.CTk):
                 input_dir=self.input_dir,
                 files=self._selected_files_for_review,
                 project_context=self._project_context_for_review,
-                model=self._model_for_review,
+                model=MODEL_OPUS_46,
                 verify=True,
                 cross_check=self._cross_check_for_review,
                 dry_run=False, verbose=False,
@@ -657,7 +720,7 @@ class SpecReviewApp(ctk.CTk):
                 input_dir=self.input_dir,
                 files=self._selected_files_for_review,
                 project_context=self._project_context_for_review,
-                model=self._model_for_review,
+                model=MODEL_OPUS_46,
                 log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                 progress=_on_progress,
             )
@@ -679,12 +742,6 @@ class SpecReviewApp(ctk.CTk):
         self._poll_batch()
 
     def _poll_batch(self):
-        """Poll the review batch for completion.
-
-        No artificial timeout — the Anthropic batch API expires batches
-        after 24 hours automatically. Polling continues until the batch
-        reaches a terminal status. The user can cancel via "New Review".
-        """
         if self._batch_submission is None:
             return
         run_epoch = self._run_epoch
@@ -696,7 +753,7 @@ class SpecReviewApp(ctk.CTk):
             except Exception as e:
                 self._poll_consecutive_errors = getattr(self, "_poll_consecutive_errors", 0) + 1
                 if self._poll_consecutive_errors >= 5:
-                    self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(f"5 consecutive poll errors — will keep trying"))
+                    self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(f"5 consecutive poll errors \u2014 will keep trying"))
                 self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(f"Poll error (retrying): {e}"))
                 self._dispatch_if_current(run_epoch, lambda: self._schedule_next_poll(30_000))
         threading.Thread(target=_do_poll, daemon=True).start()
@@ -712,7 +769,7 @@ class SpecReviewApp(ctk.CTk):
         normalized_status = status.status.replace("-", "_")
 
         if normalized_status == "ended":
-            self.log.log_success("Batch complete — collecting results...")
+            self.log.log_success("Batch complete \u2014 collecting results...")
             self._collect_batch_results()
         elif normalized_status == "in_progress":
             self._schedule_next_poll(15_000)
@@ -726,7 +783,7 @@ class SpecReviewApp(ctk.CTk):
             self._batch_submission = None
             self._reset_ui()
         else:
-            self.log.log_warning(f"Unexpected batch status: {status.status} — continuing to poll...")
+            self.log.log_warning(f"Unexpected batch status: {status.status} \u2014 continuing to poll...")
             self._schedule_next_poll(15_000)
 
     def _schedule_next_poll(self, delay_ms: int):
@@ -802,11 +859,9 @@ class SpecReviewApp(ctk.CTk):
             font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
             text_color=COLORS["text_primary"]).pack(anchor="w", padx=16, pady=(16, 4))
 
-        model_label = [k for k, v in REVIEW_MODELS.items() if v == getattr(submission, "model", MODEL_OPUS_46)]
-        model_str = model_label[0] if model_label else "Unknown"
         info_text = (
             f"Batch ID: {submission.job.batch_id[:30]}...\n"
-            f"Files: {len(submission.files_reviewed)} specs  \u2022  Model: {model_str}\n"
+            f"Files: {len(submission.files_reviewed)} specs  \u2022  Model: Opus 4.6\n"
             f"Submitted: {age_str}  \u2022  Phase: {phase}"
         )
         ctk.CTkLabel(inner, text=info_text, font=ctk.CTkFont(family="Consolas", size=11),
@@ -925,9 +980,7 @@ class SpecReviewApp(ctk.CTk):
         self.log.clear()
         self.run_button.set_ready()
         self.run_button.configure(text="Run Review")
-        self.model_selector.set("Opus 4.6")
-        self._model_hint.configure(text="Most thorough \u2022 recommended")
-        self.mode_selector.set("Real-time")
+        self.mode_selector.set(_MODE_REALTIME)
         self._mode_hint.configure(text="")
         self.output_selector.set("View in App")
         self._output_hint.configure(text="")
@@ -985,8 +1038,8 @@ class SpecReviewApp(ctk.CTk):
                 "don\u2019t cost any tokens."
             )),
             ("3.  Per-Spec Review", (
-                "Each specification is sent individually to Claude (Opus 4.6 or Sonnet 4.6, "
-                "your choice). Claude checks for code compliance issues (CBC, CMC, CPC, "
+                "Each specification is sent individually to Claude Opus 4.6. "
+                "Claude checks for code compliance issues (CBC, CMC, CPC, "
                 "Energy Code, CALGreen), DSA-specific requirements, outdated standards, "
                 "coordination problems, and constructability concerns. Each finding is "
                 "assigned a severity (Critical, High, Medium, or Gripe) and a confidence score."
@@ -1006,7 +1059,7 @@ class SpecReviewApp(ctk.CTk):
             )),
             ("6.  Verification", (
                 "Every finding is independently verified by a "
-                "second Claude call with web search access. The verifier checks whether "
+                "second Opus 4.6 call with web search access. The verifier checks whether "
                 "the cited code or standard actually says what the finding claims. Each "
                 "finding gets a verdict: Confirmed, Corrected, Disputed, or Unverified."
             )),

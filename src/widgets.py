@@ -4,6 +4,14 @@ Custom widgets for Spec Critic GUI.
 Contains: TokenGauge, FileListPanel, EnhancedLog,
 AnimatedButton, ReportWindow.
 
+v2.3.0 changes:
+    - TokenGauge relabeled to "LARGEST SPEC CAPACITY" and updated to show
+      the largest single spec's estimated API call size against the per-call
+      limit. Since specs are reviewed one at a time, this is the actual
+      bottleneck — total tokens across all specs is irrelevant.
+    - Model selector references removed from ReportWindow and summary grid
+      (Opus 4.6 is now the only review model)
+
 v1.6.0 changes:
     - Cross-spec coordination section rendered in report (separate from
       per-spec findings)
@@ -16,7 +24,7 @@ v1.5.0 changes:
     - Confidence badge displayed in finding card headers (color-coded)
     - Findings sorted by confidence (descending) within each severity tier
     - Confidence included in JSON export via _finding_to_dict()
-    - Sonnet model reference updated to 4.6
+    - Model references updated to Opus 4.6
 """
 import json
 import math
@@ -118,6 +126,15 @@ def _confidence_label(confidence: float) -> str: return f"{confidence:.0%}"
 # ============================================================================
 
 class TokenGauge(ctk.CTkFrame):
+    """Displays the largest single spec's estimated API call size against the
+    per-call token limit.
+
+    Since specs are reviewed one at a time (per-spec siloed review), the
+    bottleneck is the largest individual spec, not the total across all specs.
+    The gauge shows: (system prompt + project context + largest spec tokens)
+    vs. RECOMMENDED_MAX, which is the per-call input budget.
+    """
+
     def __init__(self, master, max_tokens, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
         self.token_count = 0; self.max_tokens = max_tokens
@@ -129,7 +146,7 @@ class TokenGauge(ctk.CTkFrame):
         self.header_frame.bind("<Button-1>", self._toggle)
         self.expand_label = ctk.CTkLabel(self.header_frame, text="\u25bc", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"], width=20)
         self.expand_label.pack(side="left"); self.expand_label.bind("<Button-1>", self._toggle)
-        self.title_label = ctk.CTkLabel(self.header_frame, text="TOKEN CAPACITY", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"])
+        self.title_label = ctk.CTkLabel(self.header_frame, text="LARGEST SPEC CAPACITY", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"])
         self.title_label.pack(side="left", padx=(4, 0)); self.title_label.bind("<Button-1>", self._toggle)
         self.count_label = ctk.CTkLabel(self.header_frame, text=f"\u2014 / {max_tokens:,}", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_secondary"])
         self.count_label.pack(side="right"); self.count_label.bind("<Button-1>", self._toggle)
@@ -146,12 +163,19 @@ class TokenGauge(ctk.CTkFrame):
     def expand(self): self._expanded = True; self.expand_label.configure(text="\u25bc"); self.content_container.pack(fill="x")
     def collapse(self): self._expanded = False; self.expand_label.configure(text="\u25b6"); self.content_container.pack_forget()
 
-    def update_gauge(self, tokens, file_count=0):
-        self.token_count = tokens; raw_pct = tokens / self.max_tokens
+    def update_gauge(self, largest_call_tokens, file_count=0):
+        """Update the gauge to show the largest spec's call estimate.
+
+        Args:
+            largest_call_tokens: Estimated input tokens for the largest single
+                spec API call (overhead + spec content tokens).
+            file_count: Number of selected files (shown in status text).
+        """
+        self.token_count = largest_call_tokens; raw_pct = largest_call_tokens / self.max_tokens
         self._target_pct = min(raw_pct, 1.0); self.is_over_limit = raw_pct > 1.0
-        self.count_label.configure(text=f"{tokens:,} / {self.max_tokens:,}")
-        if raw_pct > 1.0: self._target_color, status, sc = COLORS["error"], "\u26a0 Capacity Exceeded!", COLORS["error"]
-        elif raw_pct > 0.9: self._target_color, status, sc = COLORS["warning"], f"\u26a0 {raw_pct*100:.0f}% \u2014 Approaching limit", COLORS["warning"]
+        self.count_label.configure(text=f"{largest_call_tokens:,} / {self.max_tokens:,}")
+        if raw_pct > 1.0: self._target_color, status, sc = COLORS["error"], "\u26a0 Largest spec exceeds per-call limit!", COLORS["error"]
+        elif raw_pct > 0.9: self._target_color, status, sc = COLORS["warning"], f"\u26a0 {raw_pct*100:.0f}% \u2014 largest spec approaching limit \u2022 {file_count} files", COLORS["warning"]
         elif raw_pct > 0.7: self._target_color, status, sc = COLORS["warning"], f"\u2713 {raw_pct*100:.0f}% \u2014 {file_count} files ready", COLORS["text_secondary"]
         else: self._target_color, status, sc = COLORS["success"], f"\u2713 {raw_pct*100:.0f}% \u2014 {file_count} files ready", COLORS["text_secondary"]
         self.status_label.configure(text=status, text_color=sc)
@@ -648,5 +672,3 @@ class ReportWindow(ctk.CTkToplevel):
 
     def _copy_summary(self, text):
         if text: self.clipboard_clear(); self.clipboard_append(text)
-
-

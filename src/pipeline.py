@@ -5,49 +5,15 @@ This module is the SINGLE SOURCE OF TRUTH for the review workflow.
 The GUI calls run_review() for real-time mode or start_batch_review()
 + collect_batch_results() for batch mode.
 
+v2.3.0 — Opus-only pipeline. All stages (review, cross-check, verification)
+    use Claude Opus 4.6.
+
 v1.9.0 — PDF support.
-    Updated extraction to use format-agnostic extract_text() dispatcher
-    instead of extract_text_from_docx(). File discovery now includes
-    both .docx and .pdf files. No other pipeline changes needed — the
-    ExtractedSpec interface is unchanged.
-
 v1.7.0 — Verification batching + model selection.
-
-    Verification batching:
-        In batch mode, verification now routes through the Anthropic Message
-        Batches API via verify_findings_batch() instead of making sequential
-        real-time API calls. This saves 50% on verification costs. The
-        real-time path continues using sequential verify_findings().
-
-    Model selection:
-        The user can now choose between Claude Opus 4.6 and Claude Sonnet 4.6
-        for the first-stage review. The model parameter flows through
-        run_review(), start_batch_review(), and collect_batch_results().
-        Verification and cross-check always use Sonnet 4.6.
-
 v1.6.0 — Cross-spec coordination pass (optional).
-
-    After per-spec review and deduplication, an optional cross-spec
-    coordination check runs a single Sonnet 4.6 call with section headers
-    and existing findings to catch inter-spec coordination issues. This is
-    controlled by the cross_check parameter (default False). Cross-check
-    findings are returned separately in PipelineResult.cross_check_result
-    and rendered in their own report section.
-
 v1.5.0 — Confidence scoring, always-on verification, finding deduplication.
-
-    Finding deduplication:
-        Per-spec siloed review can produce duplicate findings when the same
-        issue appears across multiple specs (e.g., "ASCE 7-16 instead of
-        7-22" flagged independently in 5 specs). The _deduplicate_findings()
-        post-processing step groups findings by (normalized issue, codeReference)
-        and consolidates duplicates into a single representative finding that
-        lists all affected files.
-
-    Verification is always enabled (v1.5.0).
-
 v1.4.0 — Per-spec siloed review + batch processing support.
-v1.3.0 — project_context parameter plumbed through to user message.
+v1.3.0 — project_context parameter.
 v1.1.0 — All output is in-app. No files emitted.
 
 Design decisions:
@@ -55,15 +21,12 @@ Design decisions:
     - LEED/placeholder detection is LOCAL, not sent to LLM (saves tokens)
     - Streaming callback enables real-time GUI updates
     - No files are written — everything renders in the UI
-    - Per-spec errors are collected, not raised immediately, so partial
-      results can still be displayed
+    - Per-spec errors are collected, not raised immediately
     - Deduplication is local (no API call) and runs before verification
-      so duplicate findings don't waste verification API calls
-    - Cross-check is optional and uses Sonnet 4.6 (cheaper than Opus)
-    - Cross-check findings are kept separate from per-spec findings
-      for distinct rendering in the report
+    - Cross-check is optional and uses Opus 4.6
+    - Cross-check findings are kept separate for distinct rendering
     - In batch mode, verification also goes through the Batches API
-      for 50% cost savings (v1.7.0)
+      for 50% cost savings
 """
 
 from __future__ import annotations
@@ -83,7 +46,6 @@ from .reviewer import (
     ReviewResult,
     Finding,
     MODEL_OPUS_46,
-    MODEL_SONNET_46,
     StreamCallback,
 )
 from .batch import BatchJob, BatchStatus, submit_review_batch, poll_batch, retrieve_review_results
@@ -105,19 +67,7 @@ def _noop_progress(_: float, __: str) -> None:
 
 @dataclass
 class PipelineResult:
-    """
-    Container for all results from a pipeline run.
-
-    No file paths — everything is in-memory for GUI rendering.
-
-    Attributes:
-        review_result: Parsed ReviewResult from Claude (None if dry_run)
-        files_reviewed: List of filenames that were reviewed
-        leed_alerts: List of LEED alert dicts
-        placeholder_alerts: List of placeholder alert dicts
-        cross_check_result: Optional ReviewResult from cross-spec coordination
-            check. None if cross-check was not run or only 1 spec was provided.
-    """
+    """Container for all results from a pipeline run."""
     review_result: Optional[ReviewResult]
     files_reviewed: list[str] = field(default_factory=list)
     leed_alerts: list[dict] = field(default_factory=list)
@@ -138,72 +88,36 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 def _normalize_issue_text(text: str) -> str:
-    """Normalize issue text for deduplication comparison.
-
-    Strips filenames, section references, and extra whitespace so that
-    findings describing the same underlying issue across different specs
-    can be grouped together.
-    """
-    # Remove common file references like "23 05 00.docx" or "23 21 13 - Hydronic Piping.docx"
     normalized = re.sub(r"\d{2}\s?\d{2}\s?\d{2}[^.]*\.(docx|pdf)", "", text, flags=re.IGNORECASE)
-    # Remove section references like "Part 2, Article 2.3.A" or "Article 1.5.B"
     normalized = re.sub(r"(?:Part\s+\d+,?\s*)?Article\s+[\d.]+[A-Z]*", "", normalized, flags=re.IGNORECASE)
-    # Collapse whitespace
     normalized = re.sub(r"\s+", " ", normalized).strip().lower()
     return normalized
 
 
 def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
-    """Consolidate duplicate findings across multiple specs.
-
-    Per-spec siloed review can produce the same finding independently in
-    multiple specs (e.g., "ASCE 7-16 instead of 7-22" in 5 specs). This
-    function groups findings by their normalized issue text and code reference,
-    then consolidates each group into a single representative finding.
-
-    The representative finding:
-        - Uses the highest severity from the group
-        - Uses the highest confidence from the group
-        - Lists all affected filenames in the issue text
-        - Keeps the existing/replacement text from the first occurrence
-        - Preserves the code reference
-
-    Findings that appear in only one spec are left unchanged.
-
-    Args:
-        findings: List of Finding objects from per-spec review
-
-    Returns:
-        Deduplicated list of Finding objects (potentially shorter)
-    """
+    """Consolidate duplicate findings across multiple specs."""
     if len(findings) <= 1:
         return findings
 
-    # Build dedup key: (normalized_issue, codeReference or "")
     groups: dict[tuple[str, str], list[Finding]] = {}
     for f in findings:
         key = (_normalize_issue_text(f.issue), (f.codeReference or "").strip().lower(), f.actionType)
         groups.setdefault(key, []).append(f)
 
-    # Severity ordering for picking the highest
     severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
 
     deduplicated: list[Finding] = []
     for key, group in groups.items():
         if len(group) == 1:
-            # Unique finding — pass through unchanged
             deduplicated.append(group[0])
             continue
 
-        # Sort by severity (most severe first), then confidence (highest first)
         group.sort(key=lambda f: (severity_rank.get(f.severity, 99), -f.confidence))
         representative = group[0]
 
-        # Collect all unique filenames
         filenames = list(dict.fromkeys(f.fileName for f in group if f.fileName))
         file_list = ", ".join(filenames)
 
-        # Build consolidated issue text
         consolidated_issue = (
             f"{representative.issue} "
             f"(found in {len(filenames)} specs: {file_list})"
@@ -240,27 +154,7 @@ def _prepare_specs(
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> _PreparedSpecs:
-    """Extract, preprocess, and validate specs. Shared by real-time and batch modes.
-
-    Handles:
-        1. File discovery / validation
-        2. Text extraction (DOCX and PDF via format-agnostic dispatcher)
-        3. Local LEED/placeholder detection
-        4. Per-spec token limit check
-
-    Args:
-        input_dir: Directory containing specification files
-        files: Optional list of specific files to process
-        log: Callback for log messages
-        progress: Callback for progress updates
-
-    Returns:
-        _PreparedSpecs with extracted specs and alert lists
-
-    Raises:
-        FileNotFoundError: If no supported spec files found
-        ValueError: If any single spec exceeds the token limit
-    """
+    """Extract, preprocess, and validate specs. Shared by real-time and batch modes."""
     input_dir = Path(input_dir)
 
     spec_files = [Path(f) for f in files] if files else _get_spec_files(input_dir)
@@ -268,7 +162,6 @@ def _prepare_specs(
     if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
 
-    # Extract text from spec files (DOCX and/or PDF)
     progress(0.0, "Extracting text from specifications...")
     specs: list[ExtractedSpec] = []
     leed_alerts: list[dict] = []
@@ -284,7 +177,6 @@ def _prepare_specs(
             progress((i / total_files) * 25.0, f"Skipped {p.name} (extraction error)")
             continue
 
-        # Skip scanned/image PDFs with no usable extracted text
         if getattr(spec, "is_probably_scanned", False) and spec.word_count == 0:
             log(f"Skipping {p.name}: scanned/image PDF with no extractable text")
             progress((i / total_files) * 25.0, f"Skipped {p.name} (scanned PDF)")
@@ -308,7 +200,6 @@ def _prepare_specs(
             f"All {len(spec_files)} files failed extraction. No specs to review."
         )
 
-    # Per-spec token limit check
     progress(30.0, "Checking token limits...")
     system_prompt = get_system_prompt()
     system_prompt_tokens = count_tokens(system_prompt)
@@ -339,19 +230,7 @@ def _prepare_specs(
 
 @dataclass
 class BatchSubmission:
-    """Returned by start_batch_review() — holds everything the GUI needs to
-    poll and eventually collect results.
-
-    Attributes:
-        job: BatchJob from the Anthropic Batches API
-        files_reviewed: List of filenames submitted for review
-        review_request_ids: Ordered custom_id values for submitted review requests
-        leed_alerts: Locally detected LEED alerts
-        placeholder_alerts: Locally detected placeholder alerts
-        model: Model ID used for the review batch
-        prepared_specs: In-memory extracted specs for optional cross-check
-            (not persisted to disk)
-    """
+    """Returned by start_batch_review()."""
     job: BatchJob
     files_reviewed: list[str] = field(default_factory=list)
     review_request_ids: list[str] = field(default_factory=list)
@@ -371,28 +250,7 @@ def start_batch_review(
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> BatchSubmission:
-    """Extract specs and submit them as a Message Batch (50% cost savings).
-
-    This function runs extraction, preprocessing, and token checking
-    synchronously, then submits the batch and returns immediately.
-    The GUI is responsible for polling via poll_batch() and collecting
-    results via collect_batch_results() when the batch completes.
-
-    Args:
-        input_dir: Directory containing specification files
-        files: Optional list of specific files to process
-        project_context: Optional project description for each review
-        model: Model ID for review (default: Claude Opus 4.6)
-        log: Callback for log messages
-        progress: Callback for progress updates
-
-    Returns:
-        BatchSubmission with the BatchJob and preprocessor alerts
-
-    Raises:
-        FileNotFoundError: If no spec files found
-        ValueError: If any spec exceeds the token limit
-    """
+    """Extract specs and submit them as a Message Batch (50% cost savings)."""
     prepared = _prepare_specs(
         input_dir=input_dir,
         files=files,
@@ -443,26 +301,7 @@ def collect_batch_results(
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> PipelineResult:
-    """Retrieve and aggregate results from a completed batch.
-
-    Call this after poll_batch() shows status == "ended".
-
-    v1.7.0: Verification now routes through the Batches API for 50% cost
-    savings. Uses verify_findings_batch() instead of sequential verify_findings().
-
-    Args:
-        submission: BatchSubmission returned by start_batch_review()
-        verify: If True, run web search verification on eligible findings
-        cross_check: If True, run cross-spec coordination check after review
-        specs: ExtractedSpec objects (needed for cross-check). If None and
-            cross_check is True, cross-check is skipped.
-        project_context: Project description for cross-check prompt
-        log: Callback for log messages
-        progress: Callback for progress updates
-
-    Returns:
-        PipelineResult with aggregated findings, same shape as run_review()
-    """
+    """Retrieve and aggregate results from a completed batch."""
     model = getattr(submission, "model", MODEL_OPUS_46)
     if not submission.review_request_ids:
         submission.review_request_ids = [
@@ -508,7 +347,6 @@ def collect_batch_results(
             "\n".join(f"  - {e}" for e in errors)
         )
 
-    # Deduplication (before cross-check and verification)
     pre_dedup_count = len(all_findings)
     all_findings = _deduplicate_findings(all_findings)
     post_dedup_count = len(all_findings)
@@ -532,11 +370,11 @@ def collect_batch_results(
             "\n".join(f"  - {e}" for e in errors)
         )
 
-    # Cross-spec coordination check (optional, v1.6.0)
+    # Cross-spec coordination check (optional)
     cross_check_result = None
     if cross_check and specs and len(specs) >= 2:
         progress(55.0, "Running cross-spec coordination check...")
-        log(f"Running cross-spec coordination check across {len(specs)} specs...")
+        log(f"Running cross-spec coordination check across {len(specs)} specs (Opus 4.6)...")
 
         cross_check_result = run_cross_check(
             specs,
@@ -551,8 +389,7 @@ def collect_batch_results(
         else:
             log("Cross-check found no coordination issues")
 
-    # Verification — batch mode uses batched verification (v1.7.0)
-    # Verify both per-spec findings and cross-check findings
+    # Verification — batch mode uses batched verification
     all_verifiable = list(all_findings)
     if cross_check_result and cross_check_result.findings:
         all_verifiable.extend(cross_check_result.findings)
@@ -561,10 +398,9 @@ def collect_batch_results(
         try:
             verifiable_count = len(all_verifiable)
             progress(60.0, f"Submitting {verifiable_count} findings for batch verification...")
-            log(f"Submitting {verifiable_count} findings for batch verification (50% savings)...")
+            log(f"Submitting {verifiable_count} findings for batch verification (Opus 4.6, 50% savings)...")
 
             def _batch_verify_progress(pct: float, msg: str):
-                # Map verification's 0-100% into 60-95% of overall progress
                 overall_pct = 60.0 + (pct / 100.0) * 35.0
                 progress(overall_pct, msg)
 
@@ -613,56 +449,10 @@ def run_review(
     progress: ProgressFn = _noop_progress,
     stream_callback: Optional[StreamCallback] = None,
 ) -> PipelineResult:
-    """
-    Execute the full specification review pipeline.
-
-    v1.9.0: Supports both .docx and .pdf input files via format-agnostic
-    text extraction.
-
-    v1.7.0: Adds model parameter for review model selection (Opus or Sonnet).
-
-    v1.6.0: Adds optional cross-spec coordination pass after per-spec review
-    and deduplication, before verification. Controlled by cross_check param.
-
-    v1.5.0: Adds finding deduplication after per-spec review. Verification
-    is always enabled (verify parameter kept for API compatibility but
-    defaults to True).
-
-    v1.4.0: Reviews each spec independently via review_single_spec() instead
-    of combining all specs into one API call.
-
-    Args:
-        input_dir: Directory containing specification files (.docx and/or .pdf)
-        files: Optional list of specific files to process. If None, all
-               supported spec files in input_dir are processed.
-        project_context: Optional free-text project description. If non-empty,
-            included in each per-spec user message as a <project_context> block.
-        model: Model ID for review (default: Claude Opus 4.6). Also supports
-            Claude Sonnet 4.6 for faster/cheaper reviews.
-        verify: If True, run web search verification on eligible findings
-            after review. Defaults to True (always-on in v1.5.0).
-        cross_check: If True, run cross-spec coordination check after per-spec
-            review and deduplication. Requires 2+ specs. Defaults to False.
-        dry_run: If True, skip the API call.
-        verbose: Passed to reviewer for additional stdout logging
-        log: Callback for log messages.
-        progress: Callback for progress updates (percent, message).
-        stream_callback: Optional callback for real-time streaming chunks.
-
-    Returns:
-        PipelineResult with review data for GUI rendering
-
-    Raises:
-        FileNotFoundError: If no supported spec files found
-        ValueError: If any single spec exceeds the token limit
-        RuntimeError: If all API calls fail
-    """
+    """Execute the full specification review pipeline."""
     start_time = time.time()
     input_dir = Path(input_dir)
 
-    # -------------------------------------------------------------------------
-    # Stages 1-2: Extract, preprocess, validate (shared with batch mode)
-    # -------------------------------------------------------------------------
     prepared = _prepare_specs(
         input_dir=input_dir,
         files=files,
@@ -675,9 +465,6 @@ def run_review(
     placeholder_alerts = prepared.placeholder_alerts
     total_files = len(specs)
 
-    # -------------------------------------------------------------------------
-    # Stage 3: Dry run exit point
-    # -------------------------------------------------------------------------
     if dry_run:
         log("Dry-run enabled: skipping API calls.")
         dummy = ReviewResult(findings=[], raw_response="", model=model)
@@ -689,17 +476,13 @@ def run_review(
             placeholder_alerts=placeholder_alerts,
         )
 
-    # -------------------------------------------------------------------------
-    # Stage 4: Per-spec siloed review
-    # -------------------------------------------------------------------------
+    # Per-spec siloed review
     all_findings: list[Finding] = []
     all_thinking: list[str] = []
     total_input_tokens = 0
     total_output_tokens = 0
     errors: list[str] = []
 
-    # Progress allocation:
-    #   review 35-55%, dedup ~55%, cross-check 55-65%, verify 65-95%
     review_end_pct = 55.0
 
     for i, spec in enumerate(specs):
@@ -740,9 +523,7 @@ def run_review(
             "\n".join(f"  - {e}" for e in errors)
         )
 
-    # -------------------------------------------------------------------------
-    # Stage 4.5: Finding deduplication (before cross-check and verification)
-    # -------------------------------------------------------------------------
+    # Finding deduplication
     pre_dedup_count = len(all_findings)
     all_findings = _deduplicate_findings(all_findings)
     post_dedup_count = len(all_findings)
@@ -750,15 +531,13 @@ def run_review(
         log(f"Deduplicated: {pre_dedup_count} findings → {post_dedup_count} unique findings")
     progress(review_end_pct, f"Review complete — {post_dedup_count} unique findings")
 
-    # -------------------------------------------------------------------------
-    # Stage 5: Cross-spec coordination check (optional, v1.6.0)
-    # -------------------------------------------------------------------------
+    # Cross-spec coordination check (optional)
     cross_check_result = None
     if cross_check and len(specs) >= 2:
         cross_check_start_pct = 56.0
         cross_check_end_pct = 65.0
         progress(cross_check_start_pct, f"Running cross-spec coordination check across {len(specs)} specs...")
-        log(f"Running cross-spec coordination check across {len(specs)} specs (Sonnet 4.6)...")
+        log(f"Running cross-spec coordination check across {len(specs)} specs (Opus 4.6)...")
 
         cross_check_result = run_cross_check(
             specs,
@@ -778,10 +557,7 @@ def run_review(
     elif cross_check and len(specs) < 2:
         log("Cross-spec coordination skipped: need 2+ specs")
 
-    # -------------------------------------------------------------------------
-    # Stage 6: Web search verification (always enabled in v1.5.0)
-    # -------------------------------------------------------------------------
-    # Verify both per-spec findings and cross-check findings
+    # Web search verification (always enabled)
     all_verifiable = list(all_findings)
     if cross_check_result and cross_check_result.findings:
         all_verifiable.extend(cross_check_result.findings)
@@ -792,7 +568,7 @@ def run_review(
         try:
             verifiable_count = len(all_verifiable)
             progress(verify_start_pct, f"Verifying {verifiable_count} findings via web search...")
-            log(f"Verifying {verifiable_count} findings with Sonnet + web search...")
+            log(f"Verifying {verifiable_count} findings with Opus 4.6 + web search...")
 
             def _verify_progress(current: int, total: int, filename: str):
                 verify_pct = verify_start_pct + (current / total) * (95.0 - verify_start_pct)
@@ -800,7 +576,6 @@ def run_review(
 
             verify_findings(all_verifiable, progress=_verify_progress)
 
-            # Count verification verdicts
             verdicts = {}
             for f in all_verifiable:
                 if f.verification:
@@ -818,12 +593,9 @@ def run_review(
                         explanation=f"Verification unavailable: {e}",
                     )
 
-    # -------------------------------------------------------------------------
-    # Stage 7: Aggregate results
-    # -------------------------------------------------------------------------
+    # Aggregate results
     elapsed = time.time() - start_time
 
-    # Combine per-spec results into a single ReviewResult for the GUI
     combined_result = ReviewResult(
         findings=all_findings,
         raw_response="",
@@ -834,7 +606,6 @@ def run_review(
         elapsed_seconds=elapsed,
     )
 
-    # If some (but not all) specs had errors, note it in the thinking
     if errors:
         error_note = (
             f"\n\n--- Review Errors ---\n"
