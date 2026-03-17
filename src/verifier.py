@@ -10,6 +10,21 @@ Verification uses Sonnet (not Opus) because:
     - Sonnet is significantly cheaper and faster
     - The web search tool does the heavy lifting
 
+v2.2.0 — Removed artificial polling timeout.
+    The Anthropic batch API expires batches automatically after 24 hours.
+    There is no reason for the client to impose its own timeout — the
+    polling loop now runs until the batch reaches a terminal status
+    (ended, failed, expired, canceled) or hits persistent poll errors.
+    The user can cancel manually via the GUI at any time.
+
+v2.1.1 — Removed sequential fallbacks from batch verification.
+    When the user selects batch mode, verify_findings_batch() no longer
+    silently falls back to sequential verify_findings() on failure.
+    Instead, failures raise RuntimeError so the pipeline can return
+    findings as UNVERIFIED without incurring full-price sequential
+    API costs. This prevents cost blowups when batch verification
+    encounters transient errors or timeouts.
+
 v1.9.1 — Bug fixes.
     Added generic Exception handler to verify_finding() so unexpected
     errors produce UNVERIFIED instead of crashing the entire verification
@@ -48,6 +63,8 @@ Design decisions:
       verification field with a VerificationResult
     - Findings are verified in ascending confidence order — low-confidence
       findings are checked first since they are most likely to be wrong
+    - Batch verification NEVER falls back to sequential — if batch fails,
+      findings are returned as UNVERIFIED (v2.1.1)
 """
 
 from __future__ import annotations
@@ -392,7 +409,6 @@ def verify_findings_batch(
     log: Callable[[str], None] = lambda _: None,
     progress: Callable[[float, str], None] = lambda _p, _m: None,
     poll_interval: int = 15,
-    max_poll_attempts: int = 240,
 ) -> list[Finding]:
     """Verify findings via the Anthropic Message Batches API (50% cost savings).
 
@@ -400,9 +416,17 @@ def verify_findings_batch(
     findings as a single batch, polls until complete, then collects results.
     Used by pipeline.collect_batch_results() when running in batch mode.
 
-    The batch verification follows the same logic as sequential verification:
-    findings are ordered by ascending confidence
-    in the batch submission.
+    IMPORTANT (v2.1.1): This function NEVER falls back to sequential
+    verification. If batch verification fails for any reason, a RuntimeError
+    is raised. The calling pipeline catches this and marks all findings as
+    UNVERIFIED. This prevents silent cost blowups from 100+ individual
+    API calls when the user explicitly chose batch mode for cost savings.
+
+    No artificial timeout (v2.2.0): The Anthropic batch API expires
+    batches automatically after 24 hours. The polling loop runs until
+    the batch reaches a terminal status (ended, failed, expired, canceled)
+    or encounters persistent errors. The user can cancel manually via
+    the GUI's "New Review" button at any time.
 
     Args:
         findings: List of Finding objects to verify (modified in-place)
@@ -412,6 +436,11 @@ def verify_findings_batch(
 
     Returns:
         The same list of findings (modified in-place) for convenience
+
+    Raises:
+        RuntimeError: If batch submission, polling, or result collection
+            fails. The caller should catch this and mark findings as
+            UNVERIFIED rather than falling back to sequential verification.
     """
     verifiable_count = len(findings)
     if verifiable_count == 0:
@@ -428,33 +457,31 @@ def verify_findings_batch(
             build_prompt_fn=_build_verification_prompt,
         )
     except Exception as e:
-        log(f"Batch verification submission failed: {e}. Falling back to sequential.")
-        # Fall back to sequential verification
-        def _seq_progress(current: int, total: int, filename: str):
-            pct = (current / total) * 100.0 if total > 0 else 100.0
-            progress(pct, f"Verifying finding {current}/{total} ({filename})...")
-        return verify_findings(findings, progress=_seq_progress)
+        raise RuntimeError(
+            f"Batch verification submission failed: {e}. "
+            f"Findings will be returned without verification."
+        ) from e
 
     log(f"Verification batch submitted: {job.batch_id}")
     progress(5.0, "Verification batch submitted — polling...")
 
-    # Poll until complete (bounded)
-    poll_count = 0
+    # Poll until batch reaches a terminal status.
+    # No artificial timeout — the batch API expires batches after 24 hours
+    # automatically. The user can cancel manually via the GUI at any time.
     consecutive_errors = 0
-    while poll_count < max_poll_attempts:
-        poll_count += 1
+    while True:
         try:
             status = poll_batch(job.batch_id)
             consecutive_errors = 0
         except Exception as e:
             consecutive_errors += 1
             if consecutive_errors >= 5:
-                log("5 consecutive poll errors. Canceling verification batch and falling back to sequential.")
+                log("5 consecutive poll errors. Canceling verification batch.")
                 _cancel_batch_safely(job.batch_id, log)
-                def _seq_progress_err(current: int, total: int, filename: str):
-                    pct = (current / total) * 100.0 if total > 0 else 100.0
-                    progress(pct, f"Verifying finding {current}/{total} ({filename})...")
-                return verify_findings(findings, progress=_seq_progress_err)
+                raise RuntimeError(
+                    f"Batch verification failed after 5 consecutive poll errors. "
+                    f"Last error: {e}. Findings will be returned without verification."
+                ) from e
             log(f"Poll error (retrying): {e}")
             time.sleep(poll_interval * 2)
             continue
@@ -476,23 +503,14 @@ def verify_findings_batch(
         elif normalized_status == "canceling":
             log("Verification batch is being canceled...")
         elif normalized_status in ("failed", "expired", "canceled"):
-            # Terminal failure — stop polling, fall back to sequential
-            log(f"Verification batch terminated: {status.status}. Falling back to sequential.")
-            _cancel_batch_safely(job.batch_id, log)
-            def _seq_progress(current: int, total: int, filename: str):
-                pct = (current / total) * 100.0 if total > 0 else 100.0
-                progress(pct, f"Verifying finding {current}/{total} ({filename})...")
-            return verify_findings(findings, progress=_seq_progress)
+            # Terminal failure — stop polling, raise error (NO sequential fallback)
+            log(f"Verification batch terminated with status: {status.status}")
+            raise RuntimeError(
+                f"Batch verification terminated with status '{status.status}'. "
+                f"Findings will be returned without verification."
+            )
 
         time.sleep(poll_interval)
-    else:
-        # Timed out — fall back to sequential for remaining unverified
-        log("Verification batch polling timed out. Canceling remote batch and falling back to sequential.")
-        _cancel_batch_safely(job.batch_id, log)
-        def _seq_progress_timeout(current: int, total: int, filename: str):
-            pct = (current / total) * 100.0 if total > 0 else 100.0
-            progress(pct, f"Verifying finding {current}/{total} ({filename})...")
-        return verify_findings(findings, progress=_seq_progress_timeout)
 
     # Collect results
     progress(92.0, "Collecting verification results...")

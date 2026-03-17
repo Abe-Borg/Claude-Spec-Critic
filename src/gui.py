@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus / Sonnet
-v2.1.0 - Robustness, correctness, and quality-of-life improvements
+v2.2.0 - Opus cross-check, 1M context, no artificial timeouts
 """
 import os, sys, json, time, threading
 from datetime import datetime, timezone
@@ -46,33 +46,24 @@ _SPEC_FILETYPES = [
 
 
 def _app_config_dir() -> Path:
-    """Return a user-writable config directory for Spec Critic.
-
-    Uses platformdirs so this works correctly in frozen PyInstaller
-    builds where the exe directory may be read-only.
-    """
     d = Path(user_config_dir("SpecCritic", appauthor=False))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def _app_state_dir() -> Path:
-    """Return a user-writable state directory for Spec Critic."""
     d = Path(user_state_dir("SpecCritic", appauthor=False))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def load_api_key_from_file():
-    """Load API key, checking platformdirs config dir first, then legacy exe_dir."""
-    # Check new location first
     kf = _app_config_dir() / API_KEY_FILENAME
     if kf.exists():
         try:
             return kf.read_text(encoding="utf-8").strip()
         except Exception:
             pass
-    # Fall back to legacy location (project root / exe_dir)
     kf = exe_dir / API_KEY_FILENAME
     if kf.exists():
         try:
@@ -83,26 +74,14 @@ def load_api_key_from_file():
 
 
 # ---------------------------------------------------------------------------
-# Persistent batch state (Chunk 5)
+# Persistent batch state
 # ---------------------------------------------------------------------------
 
 def _batch_state_path() -> Path:
-    """Return the path to the batch state file in user-writable state dir."""
     return _app_state_dir() / BATCH_STATE_FILENAME
 
 
 def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None:
-    """Serialize a BatchSubmission to disk for recovery after app restart.
-
-    NOTE: Only review-phase batch state is persisted. If the app closes during
-    verification batch polling, verification state is lost and findings will
-    be returned without verification on next resume. Tracked as a known
-    limitation — see implementation plan for v2.1.
-
-    Args:
-        submission: The batch submission to save
-        phase: Current phase — "review" or "verify"
-    """
     state = {
         "version": __version__,
         "saved_at": datetime.now(timezone.utc).isoformat(),
@@ -121,28 +100,18 @@ def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None
     try:
         _batch_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
     except Exception as e:
-        # Log will be available once GUI is running; print as fallback
         print(f"[SpecCritic] Warning: Could not save batch state: {e}")
 
 
 def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
-    """Load a saved batch state from disk.
-
-    Returns:
-        Tuple of (BatchSubmission, phase) if a valid state file exists,
-        or None if no state file or it's invalid/stale.
-    """
     path = _batch_state_path()
     if not path.exists():
         return None
-
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         delete_batch_state()
         return None
-
-    # Check staleness
     try:
         saved_at = datetime.fromisoformat(state["saved_at"])
         age_hours = (datetime.now(timezone.utc) - saved_at).total_seconds() / 3600
@@ -152,14 +121,10 @@ def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
     except Exception:
         delete_batch_state()
         return None
-
-    # Validate batch_id format
     batch_id = state.get("batch_id", "")
     if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
         delete_batch_state()
         return None
-
-    # Reconstruct BatchSubmission
     try:
         job = BatchJob(
             batch_id=batch_id,
@@ -184,7 +149,6 @@ def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
 
 
 def delete_batch_state() -> None:
-    """Remove the batch state file."""
     try:
         path = _batch_state_path()
         if path.exists():
@@ -194,7 +158,6 @@ def delete_batch_state() -> None:
 
 
 def _is_supported_spec(filepath: Path) -> bool:
-    """Check if a file has a supported spec extension."""
     return filepath.suffix.lower() in SUPPORTED_EXTENSIONS
 
 
@@ -217,7 +180,6 @@ class SpecReviewApp(ctk.CTk):
         ek = os.environ.get("ANTHROPIC_API_KEY", "")
         self.api_key = fk if fk else ek
         self._create_ui()
-        # Check for pending batch state after UI is ready
         self.after(500, self._check_pending_batch)
 
     def _create_ui(self):
@@ -378,7 +340,7 @@ class SpecReviewApp(ctk.CTk):
         )
         self._cross_check_cb.pack(side="left")
         self._cross_check_hint = ctk.CTkLabel(options_frame,
-            text="Sonnet 4.6 \u2022 finds inter-spec conflicts",
+            text="Opus 4.6 \u2022 full content \u2022 finds inter-spec conflicts",
             font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
@@ -475,7 +437,6 @@ class SpecReviewApp(ctk.CTk):
             self._analyze_tokens(paths)
 
     def _clear_file_state(self):
-        """Clear all file-related state. Called at the start of new analysis."""
         self._loaded_file_data = []
         self._extracted_specs = []
         self.file_list_panel.reset()
@@ -483,7 +444,6 @@ class SpecReviewApp(ctk.CTk):
         self.run_button.configure(state="disabled")
 
     def _set_file_data(self, file_data, extracted_specs, sys_tokens, ctx_tokens):
-        """Set file data on the main thread (called via self.after from worker threads)."""
         self._loaded_file_data = file_data
         self._extracted_specs = extracted_specs
         self._system_prompt_tokens = sys_tokens
@@ -493,22 +453,17 @@ class SpecReviewApp(ctk.CTk):
         if not file_paths:
             self.log.log_warning("No supported files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
         self.log.log_step(f"Analyzing {len(file_paths)} files...")
-
-        # Snapshot widget state on main thread before spawning worker
         project_context = self._get_project_context()
 
         def analyze():
             try:
-                # Clear previous state immediately so stale data can't persist
                 self.after(0, lambda: self._clear_file_state())
-
                 file_data = []
                 processed_names: list[str] = []
                 from tiktoken import get_encoding
                 enc = get_encoding("cl100k_base")
                 sys_tokens = len(enc.encode(get_system_prompt()))
                 ctx_tokens = len(enc.encode(project_context)) if project_context else 0
-
                 extracted_specs: list[ExtractedSpec] = []
                 for f in file_paths:
                     try:
@@ -519,12 +474,9 @@ class SpecReviewApp(ctk.CTk):
                         extracted_specs.append(spec)
                     except Exception as e:
                         self.after(0, lambda err=str(e), n=f.name: self.log.log_warning(f"Could not read {n}: {err}"))
-
                 if processed_names:
                     self.after(0, lambda names=processed_names: self.log.log_file_batch(names))
-
                 if file_data:
-                    # Marshal all attribute writes through main thread
                     self.after(0, lambda fd=file_data, es=extracted_specs, st=sys_tokens, ct=ctx_tokens:
                         self._set_file_data(fd, es, st, ct))
                     overhead = sys_tokens + ctx_tokens
@@ -559,7 +511,6 @@ class SpecReviewApp(ctk.CTk):
         total = overhead + sum(d["tokens"] for d in selected_data)
         fc = len(selected_data)
         self.token_gauge.update_gauge(total, fc)
-        # Block only if any single file exceeds the per-call limit
         if fc > 0:
             max_per_file = max(d["tokens"] for d in selected_data)
             per_file_exceeded = exceeds_per_call_limit(max_per_file, overhead)
@@ -652,29 +603,18 @@ class SpecReviewApp(ctk.CTk):
                 cc = result.cross_check_result
                 self.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
             self.log.log(f"Time: {rv.elapsed_seconds:.1f}s", level="muted")
-
-            # Route to export or in-app rendering based on output mode
             if getattr(self, "_export_mode_for_review", False):
                 exported = self._export_report_to_file(result)
                 if not exported:
-                    # Fall back to pop-out window so results aren't lost
                     self.log.log_step("Opening results in pop-out window instead...")
                     self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
             else:
                 self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
-
         delete_batch_state()
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
 
     def _export_report_to_file(self, result) -> bool:
-        """Show save dialog and export the report to a .docx file.
-
-        Returns True if export succeeded, False if canceled or failed.
-
-        Args:
-            result: PipelineResult from the review pipeline
-        """
         default_name = f"spec-critic-report-{datetime.now().strftime('%Y-%m-%d')}.docx"
         path = filedialog.asksaveasfilename(
             title="Save Review Report",
@@ -685,7 +625,6 @@ class SpecReviewApp(ctk.CTk):
         if not path:
             self.log.log_warning("Export canceled")
             return False
-
         try:
             output_path = Path(path)
             self.log.log_step(f"Exporting report to {output_path.name}...")
@@ -731,7 +670,6 @@ class SpecReviewApp(ctk.CTk):
 
     def _on_batch_submitted(self, submission: BatchSubmission):
         self._batch_submission = submission
-        self._poll_count = 0
         self._poll_consecutive_errors = 0
         self.progress_bar.set(0.4)
         self.log.log_success(f"Batch submitted: {submission.job.batch_id}")
@@ -741,19 +679,13 @@ class SpecReviewApp(ctk.CTk):
         self._poll_batch()
 
     def _poll_batch(self):
+        """Poll the review batch for completion.
+
+        No artificial timeout — the Anthropic batch API expires batches
+        after 24 hours automatically. Polling continues until the batch
+        reaches a terminal status. The user can cancel via "New Review".
+        """
         if self._batch_submission is None:
-            return
-        self._poll_count = getattr(self, "_poll_count", 0) + 1
-        if self._poll_count > 300:
-            self.log.log_error("Batch polling timed out after extended waiting.")
-            if self._batch_submission is not None:
-                try:
-                    cancel_batch(self._batch_submission.job.batch_id)
-                    self.log.log_warning("Cancellation requested for timed-out batch.")
-                except Exception as e:
-                    self.log.log_warning(f"Could not cancel timed-out batch: {e}")
-            delete_batch_state()
-            self._on_review_error("Batch polling timed out")
             return
         run_epoch = self._run_epoch
         def _do_poll():
@@ -777,27 +709,23 @@ class SpecReviewApp(ctk.CTk):
             f"{status.errored} errors \u2022 {status.progress_pct:.0f}%",
             level="info", paced=False,
         )
-        # Normalize status string (API may return hyphens or underscores)
         normalized_status = status.status.replace("-", "_")
 
         if normalized_status == "ended":
             self.log.log_success("Batch complete — collecting results...")
             self._collect_batch_results()
         elif normalized_status == "in_progress":
-            # Normal processing — schedule next poll silently
             self._schedule_next_poll(15_000)
         elif normalized_status == "canceling":
             self.log.log_warning("Batch is being canceled...")
             self._schedule_next_poll(5_000)
         elif normalized_status in ("failed", "expired", "canceled"):
-            # Terminal failure — stop polling, inform user, clean up
             self.log.log_error(f"Batch terminated with status: {status.status}")
             self.log.log_warning("No results to collect. Clearing batch state.")
             delete_batch_state()
             self._batch_submission = None
             self._reset_ui()
         else:
-            # Truly unknown status — warn and keep polling
             self.log.log_warning(f"Unexpected batch status: {status.status} — continuing to poll...")
             self._schedule_next_poll(15_000)
 
@@ -815,7 +743,6 @@ class SpecReviewApp(ctk.CTk):
                 cross_check = getattr(self, "_cross_check_for_review", False)
                 project_context = getattr(self, "_project_context_for_review", "")
 
-                # Build specs list for cross-check, filtered to reviewed files
                 specs_for_cross_check = None
                 if cross_check:
                     specs_for_cross_check = getattr(self._batch_submission, "prepared_specs", None)
@@ -849,14 +776,12 @@ class SpecReviewApp(ctk.CTk):
         self.is_processing = False
         self._batch_submission = None
 
-    # ----- Persistent batch state (Chunk 5) -----
+    # ----- Persistent batch state -----
 
     def _check_pending_batch(self):
-        """Check for a saved batch state file on app launch."""
         loaded = load_batch_state()
         if loaded is None:
             return
-
         submission, phase = loaded
         age_str = self._format_batch_age(submission.job.created_at)
 
@@ -921,8 +846,6 @@ class SpecReviewApp(ctk.CTk):
             return "unknown time"
 
     def _resume_batch(self, submission: BatchSubmission, phase: str):
-        """Resume polling a previously submitted batch."""
-        # Ensure API key is set
         api_key = self.api_key_entry.get().strip()
         if not api_key:
             api_key = load_api_key_from_file() or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -931,12 +854,9 @@ class SpecReviewApp(ctk.CTk):
             return
 
         os.environ["ANTHROPIC_API_KEY"] = api_key
-
         self._batch_submission = submission
-        # Cross-check is not available for resumed batches (no ExtractedSpec objects)
         self._cross_check_for_review = False
         self._project_context_for_review = getattr(submission, "project_context", "")
-        # Use whatever output mode the user currently has selected
         self._export_mode_for_review = self._is_export_mode
         self.is_processing = True
 
@@ -949,8 +869,6 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
         self.progress_bar.set(0.4)
         self.progress_bar.configure(mode="determinate")
-
-        # Start polling
         self._poll_batch()
 
     # ----- Pop-out report window -----
@@ -1027,7 +945,6 @@ class SpecReviewApp(ctk.CTk):
     # ----- About / How It Works dialog -----
 
     def _show_about_dialog(self):
-        """Show a modal dialog explaining how Spec Critic works."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("How Spec Critic Works")
         dialog.geometry("620x640")
@@ -1054,7 +971,6 @@ class SpecReviewApp(ctk.CTk):
             text_color=COLORS["text_muted"],
         ).pack(anchor="w", padx=20, pady=(0, 12))
 
-        # Scrollable content
         scroll = ctk.CTkScrollableFrame(outer, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
@@ -1081,11 +997,12 @@ class SpecReviewApp(ctk.CTk):
                 "finding that lists all affected files."
             )),
             ("5.  Cross-Spec Coordination  (optional)", (
-                "If enabled, a separate pass analyzes how your specs relate to each other. "
-                "It catches contradictions between specs, missing cross-references, scope "
-                "gaps and overlaps, and inconsistent equipment data. This uses a cheaper "
-                "model (Sonnet 4.6) and analyzes section headers, scope excerpts, key "
-                "numeric values, and existing findings."
+                "If enabled, a separate Opus 4.6 call analyzes the full text of all your "
+                "specs together using the 1M token context window. It catches contradictions "
+                "between specs, missing cross-references, scope gaps and overlaps, "
+                "inconsistent equipment data, and division-of-work conflicts. Because it "
+                "has the complete content of every spec, it can find coordination issues "
+                "that are invisible to per-spec review."
             )),
             ("6.  Verification", (
                 "Every finding is independently verified by a "
@@ -1108,7 +1025,6 @@ class SpecReviewApp(ctk.CTk):
                 wraplength=520, justify="left",
             ).pack(anchor="w", padx=8, pady=(0, 4))
 
-        # Disclaimer
         ctk.CTkLabel(
             scroll, text="What it doesn\u2019t do",
             font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
@@ -1126,7 +1042,6 @@ class SpecReviewApp(ctk.CTk):
             wraplength=520, justify="left",
         ).pack(anchor="w", padx=8, pady=(0, 10))
 
-        # Close button
         ctk.CTkButton(
             outer, text="Close", width=100, height=32,
             font=ctk.CTkFont(family="Segoe UI", size=12),

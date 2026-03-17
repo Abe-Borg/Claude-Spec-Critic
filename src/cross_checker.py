@@ -6,36 +6,39 @@ that no single-spec review could find: contradictory values across specs,
 missing referenced sections, division-of-work gaps, inconsistent terminology,
 and conflicting equipment schedules.
 
-Uses Claude Sonnet 4.6 (not Opus) — coordination checking is a focused
-task that doesn't require the full power of Opus, and the input is a
-condensed summary (section headers + per-spec findings) rather than full
-spec text.
+v2.2.0 — Opus 4.6 + full spec content + 1M context window + adaptive thinking.
+    Upgraded from Sonnet 4.6 with condensed headers to Opus 4.6 with
+    the full text of every specification. With the 1M token context
+    window (GA March 2026, no beta header required, standard pricing),
+    the cross-checker can now analyze complete spec content rather than
+    relying on section headers and excerpts. Adaptive thinking
+    (thinking: {"type": "adaptive"}) is enabled so the model can reason
+    deeply about cross-spec coordination before producing findings.
+    This enables detection of contradictions in body text, subtle scope
+    overlaps, and coordination issues that were invisible with
+    headers-only analysis.
+
+v1.6.0 — Initial implementation (Sonnet 4.6 + condensed headers).
 
 The cross-checker receives:
-    - File names and section headers extracted from each spec
+    - Full text content of each specification (with file delimiters)
     - Per-spec findings from the review pass (so it knows what was already caught)
 
-This keeps token usage low and lets the cross-checker focus exclusively on
-inter-spec coordination rather than repeating within-spec analysis.
-
 Design decisions:
-    - Sonnet 4.6 for cost/speed (coordination is a focused analytical task)
-    - Input is condensed (headers + findings, not full spec text)
+    - Opus 4.6 for maximum analytical depth on cross-spec coordination
+    - Full spec content instead of headers-only (1M context makes this feasible)
     - Only runs when 2+ specs are loaded (single-spec has nothing to coordinate)
     - Optional — controlled by a GUI checkbox
     - Findings use the same Finding dataclass for seamless report integration
     - Rendered in a separate "CROSS-SPEC COORDINATION" section in the report
     - Coordination findings go through deduplication and verification like
       any other findings
-    - Graceful skip if combined input exceeds token limit
-
-v1.6.0 — Initial implementation.
+    - Graceful skip if combined input exceeds the 1M token limit
 
 Usage:
-    from cross_checker import run_cross_check, extract_section_headers
+    from cross_checker import run_cross_check
 
-    headers = extract_section_headers(specs)
-    result = run_cross_check(headers, existing_findings, project_context="...")
+    result = run_cross_check(specs, existing_findings, project_context="...")
 """
 
 from __future__ import annotations
@@ -49,153 +52,51 @@ from typing import Callable, Optional
 from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
 from .extractor import ExtractedSpec
-from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_api_key, MODEL_SONNET_46
-from .tokenizer import RECOMMENDED_MAX, count_tokens
+from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_api_key, MODEL_OPUS_46
+from .tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 
 StreamCallback = Callable[[str], None]
 
 
 # ---------------------------------------------------------------------------
-# Section header extraction
+# Input construction
 # ---------------------------------------------------------------------------
 
-# Common CSI section header patterns in spec documents
-_HEADER_PATTERNS = [
-    # "PART 1 - GENERAL", "PART 2 - PRODUCTS", "PART 3 - EXECUTION"
-    re.compile(r"^PART\s+\d+\s*[-–—]\s*.+", re.IGNORECASE),
-    # "1.1 SUMMARY", "2.3 PIPE HANGERS AND SUPPORTS"
-    re.compile(r"^\d+\.\d+(?:\.\d+)?\s+[A-Z].*"),
-    # "A. Section Includes:" — lettered subsection titles (exclude body text
-    # containing verbs like "shall", "must", "provide", "is required")
-    re.compile(r"^[A-Z]\.\s+(?!.*\b(?:shall|must|provide|is required)\b).{10,}"),
-    # All-caps lines that look like section titles (require ≥2 words)
-    re.compile(r"^[A-Z]{2,}(?:\s+[A-Z][A-Z\s,/&()-]*){1,}$"),
-]
-
-# Pattern for extracting lines with numeric values relevant to MEP coordination
-_VALUE_PATTERN = re.compile(
-    r'\d+(?:\.\d+)?\s*(?:°F|°C|psi|psig|GPM|gpm|CFM|cfm|inches|inch|feet|ft|in\.'
-    r'|lbs|tons|HP|hp|kW|kw|BTU|Btu|MBH|gallons|gallon|GPH|FPM|fpm)',
-    re.IGNORECASE,
-)
-
-# Pattern for cross-references to other spec sections
-_XREF_PATTERN = re.compile(
-    r'(?:refer\s+to|see\s+|per\s+)?(?:Section|Division)\s+\d{2}\s*\d{2}\s*\d{2}',
-    re.IGNORECASE,
-)
-
-
-def _is_section_header(line: str) -> bool:
-    """Check if a line looks like a CSI specification section header."""
-    stripped = line.strip()
-    if not stripped or len(stripped) < 4:
-        return False
-    return any(p.match(stripped) for p in _HEADER_PATTERNS)
-
-
-def extract_section_headers(spec: ExtractedSpec, max_headers: int = 150) -> list[str]:
-    """Extract section headers and structural lines from a spec.
-
-    Returns lines that appear to be CSI section headers (PART lines,
-    numbered articles, lettered subsections, all-caps titles). This
-    gives the cross-checker enough structural context to identify
-    coordination issues without needing full spec text.
-
-    Args:
-        spec: Extracted specification content
-        max_headers: Maximum number of headers to extract per spec
-
-    Returns:
-        List of header strings in document order
-    """
-    headers: list[str] = []
-    for line in spec.content.split("\n"):
-        stripped = line.strip()
-        if _is_section_header(stripped):
-            headers.append(stripped)
-            if len(headers) >= max_headers:
-                break
-    return headers
-
-
-def _build_spec_summary(
+def _build_cross_check_input(
     specs: list[ExtractedSpec],
     existing_findings: list[Finding],
 ) -> str:
-    """Build the condensed input for the cross-checker.
+    """Build the full-content input for the cross-checker.
 
-    Combines section headers from each spec and a summary of per-spec
-    findings so the cross-checker knows what's already been flagged.
+    Includes the complete text of each specification (with file delimiters
+    matching the per-spec review format) and a summary of existing per-spec
+    findings so the cross-checker doesn't repeat them.
+
+    Args:
+        specs: List of ExtractedSpec objects with full content
+        existing_findings: Per-spec findings already identified
 
     Returns:
-        Formatted string with per-spec headers and existing findings summary
+        Formatted string with full spec content and existing findings summary
     """
     parts: list[str] = []
 
-    # Section 1: Per-spec structural summaries
-    parts.append("=" * 60)
-    parts.append("SPECIFICATION STRUCTURE (section headers per file)")
-    parts.append("=" * 60)
-
+    # Section 1: Full spec content with file delimiters
     for spec in specs:
-        headers = extract_section_headers(spec)
         parts.append(f"\n===== FILE: {spec.filename} =====")
-        if headers:
-            for h in headers:
-                parts.append(f"  {h}")
-        else:
-            parts.append("  (no section headers detected)")
-
-        # Extract opening ~200 words of each Part (scope statements)
-        part_pattern = re.compile(r"^(PART\s+\d+\s*[-–—]\s*.+)", re.IGNORECASE | re.MULTILINE)
-        part_matches = list(part_pattern.finditer(spec.content))
-        if part_matches:
-            parts.append("  --- SCOPE EXCERPTS ---")
-            for idx, pm in enumerate(part_matches):
-                part_title = pm.group(1).strip()
-                # Limit excerpt to text before the next PART header
-                if idx + 1 < len(part_matches):
-                    excerpt_end = part_matches[idx + 1].start()
-                else:
-                    excerpt_end = len(spec.content)
-                after_part = spec.content[pm.end():excerpt_end].strip()
-                words = after_part.split()[:200]
-                excerpt = " ".join(words)
-                if excerpt:
-                    parts.append(f"  [{part_title}]")
-                    parts.append(f"  {excerpt}")
-
-        # Extract lines with numeric values (temperatures, pressures, etc.)
-        value_lines: list[str] = []
-        xref_lines: list[str] = []
-        for line in spec.content.split("\n"):
-            stripped = line.strip()
-            if not stripped or len(stripped) > 200:
-                continue
-            if _VALUE_PATTERN.search(stripped) and len(value_lines) < 30:
-                value_lines.append(f"  {stripped}")
-            if _XREF_PATTERN.search(stripped) and len(xref_lines) < 15:
-                xref_lines.append(f"  {stripped}")
-
-        if value_lines:
-            parts.append("  --- KEY VALUES ---")
-            parts.extend(value_lines)
-        if xref_lines:
-            parts.append("  --- CROSS-REFERENCES ---")
-            parts.extend(xref_lines)
+        parts.append(spec.content)
 
     # Section 2: Existing findings summary (so cross-checker doesn't repeat them)
     if existing_findings:
         parts.append("")
         parts.append("=" * 60)
-        parts.append("ISSUES ALREADY IDENTIFIED (do NOT repeat these)")
+        parts.append("ISSUES ALREADY IDENTIFIED BY PER-SPEC REVIEW (do NOT repeat these)")
         parts.append("=" * 60)
 
         for f in existing_findings:
             parts.append(
                 f"  [{f.severity}] {f.fileName} — {f.section}: "
-                f"{f.issue[:120]}{'...' if len(f.issue) > 120 else ''}"
+                f"{f.issue[:150]}{'...' if len(f.issue) > 150 else ''}"
             )
 
     return "\n".join(parts)
@@ -208,7 +109,9 @@ def _build_spec_summary(
 _CROSS_CHECK_SYSTEM_PROMPT = """You are a specification coordination reviewer for mechanical and plumbing disciplines. Your ONLY job is to identify cross-spec coordination issues — problems that exist BETWEEN specifications, not within a single spec.
 
 <task>
-You are given the section-level structure, key numeric values, and cross-references from multiple specification files, along with a list of issues that have already been identified by a per-spec reviewer. Your job is to find coordination problems that a single-spec review would miss. Flag contradictions only when you can cite the specific conflicting values from the excerpts provided.
+You are given the full text of multiple specification files for a California K-12 project under DSA jurisdiction, along with a list of issues that have already been identified by a per-spec reviewer. Your job is to find coordination problems that a single-spec review would miss.
+
+You have the complete specification content — read it thoroughly. Look for contradictions, gaps, and inconsistencies that only become visible when comparing two or more specs side by side.
 
 DO NOT repeat any issues from the "ISSUES ALREADY IDENTIFIED" list. Those are already caught.
 DO NOT flag within-spec issues (wrong code years, formatting, etc.). Those are handled elsewhere.
@@ -216,48 +119,58 @@ ONLY flag issues that involve TWO OR MORE specifications interacting.
 </task>
 
 <what_to_look_for>
-1. CROSS-REFERENCES TO MISSING SPECS — Spec A says "refer to Section 23 64 00" but no 23 64 00 spec is in the set.
-2. CONTRADICTORY VALUES — Spec A specifies 42°F CHW supply temp, Spec B specifies 44°F for the same system.
-3. DIVISION OF WORK GAPS — Neither the mechanical nor plumbing spec covers a particular scope item (e.g., condensate drain piping, glycol fill systems, expansion tanks).
-4. DIVISION OF WORK OVERLAPS — Both specs claim responsibility for the same scope item, creating conflict.
-5. INCONSISTENT TERMINOLOGY — Spec A calls it "chilled water" while Spec B calls it "CHW" with different parameters, or Spec A says "air handling unit" while Spec B says "fan coil unit" for what appears to be the same equipment.
-6. EQUIPMENT SCHEDULE CONFLICTS — Equipment referenced in one spec doesn't match what's specified in another.
-7. MISSING COORDINATION SECTIONS — Specs that should reference each other but don't (e.g., HVAC piping spec should reference the testing spec).
+1. CONTRADICTORY VALUES — Spec A specifies 42°F CHW supply temp, Spec B specifies 44°F for the same system. Spec A says 125 psi working pressure, Spec B says 150 psi for the same piping system. One spec says Schedule 40, another says Schedule 80 for the same service.
+
+2. CROSS-REFERENCES TO MISSING SPECS — Spec A says "refer to Section 23 64 00" but no 23 64 00 spec is in the set. Spec A references products "specified in Section 23 21 13" but that section doesn't exist in the submitted documents.
+
+3. DIVISION OF WORK GAPS — Neither the mechanical nor plumbing spec covers a particular scope item (e.g., condensate drain piping from HVAC equipment, glycol fill and test systems, expansion tanks, PRV discharge piping, equipment pads/curbs, roof penetration flashing/curbs).
+
+4. DIVISION OF WORK OVERLAPS — Both specs claim responsibility for the same scope item, creating conflict. For example, both HVAC and plumbing specs specify natural gas piping, or both claim condensate piping.
+
+5. INCONSISTENT EQUIPMENT REFERENCES — Equipment tag numbers, capacities, or counts in one spec don't match another. A schedule in one spec lists different equipment than what's specified in another.
+
+6. CONTRADICTORY REQUIREMENTS — Different installation, testing, or quality requirements for the same type of work. For example, Spec A requires hydrostatic testing at 1.5x working pressure while Spec B says 2x for the same piping system.
+
+7. MISSING COORDINATION SECTIONS — Specs that should reference each other but don't. For example, the HVAC piping spec doesn't reference the testing/balancing spec, or the plumbing spec doesn't reference the common work results spec.
+
+8. INCONSISTENT TERMINOLOGY — Specs using different names for the same system or component in ways that could cause confusion during construction (not just abbreviation differences like CHW vs. chilled water, which are fine).
+
+9. SCOPE BOUNDARY CONFLICTS — Unclear or conflicting points of connection between mechanical and plumbing systems (e.g., where does the plumber's responsibility end and the mechanical contractor's begin for a dual-temperature system).
 </what_to_look_for>
 
 <what_NOT_to_flag>
 - Any issue already in the "ISSUES ALREADY IDENTIFIED" list
-- Within-spec issues (code years, formatting, internal contradictions)
+- Within-spec issues (code years, formatting, internal contradictions, missing DSA requirements)
 - Missing specs that are clearly outside the MEP scope provided
 - Minor terminology differences that are clearly just abbreviations (CHW vs chilled water is fine if values match)
 - Issues you are not reasonably confident about (below 0.50 confidence)
-- Do not infer contradictions from the absence of information — only flag issues where you see explicit conflicting data in the excerpts provided
+- Do not infer contradictions from the absence of information — only flag issues where you see explicit conflicting data or a clear scope gap
 </what_NOT_to_flag>
 
 <severity_guidance>
 Coordination issues are typically HIGH or CRITICAL:
-- CRITICAL: Contradictions that could cause construction conflicts, safety issues, or DSA rejection (e.g., conflicting fire ratings, contradictory seismic requirements across specs)
-- HIGH: Coordination gaps that will cause RFIs, change orders, or confusion during construction (e.g., missing referenced specs, division of work gaps, contradictory equipment parameters)
-- MEDIUM: Inconsistencies that should be cleaned up but won't block construction (e.g., terminology differences, minor parameter mismatches)
+- CRITICAL: Contradictions that could cause construction conflicts, safety issues, or DSA rejection (e.g., conflicting fire ratings, contradictory seismic requirements across specs, equipment sizing mismatches that affect life safety)
+- HIGH: Coordination gaps that will cause RFIs, change orders, or confusion during construction (e.g., missing referenced specs, division of work gaps, contradictory equipment parameters, scope boundary conflicts)
+- MEDIUM: Inconsistencies that should be cleaned up but won't block construction (e.g., terminology differences, minor parameter mismatches, missing cross-references that are nice-to-have)
 - Do NOT use GRIPES for coordination issues — if it's worth flagging cross-spec, it's at least MEDIUM.
 </severity_guidance>
 
 <confidence_guidance>
 Include a confidence score (0.0-1.0) for each finding:
-- 0.85-1.0: You can clearly see the contradiction or gap across specific specs
-- 0.60-0.84: You suspect a coordination issue but can't fully confirm from headers alone
-- 0.50-0.59: Possible issue, flag with clear caveats
+- 0.85-1.0: You can clearly see the contradiction or gap with specific text from both specs
+- 0.60-0.84: You see a likely coordination issue but the conflict isn't 100% explicit
+- 0.50-0.59: Possible issue, flag with clear caveats about what you're uncertain about
 - Below 0.50: Do NOT flag. Mention in narrative only if important.
 </confidence_guidance>
 
 <output_format>
-First, provide a brief COORDINATION SUMMARY (1-2 paragraphs). Focus on the big picture: how well do these specs coordinate? Are there major gaps or conflicts?
+First, provide a COORDINATION SUMMARY (1-3 paragraphs). Assess how well these specs coordinate overall. Are there major structural gaps? Do the specs reference each other properly? Is the division of work clear? Be specific — cite the actual spec filenames and what you observed.
 
 Then output findings as a JSON array wrapped in <FINDINGS_JSON></FINDINGS_JSON> tags (no code fences). Each finding:
 - severity: "CRITICAL" | "HIGH" | "MEDIUM"
 - fileName: The primary file where the issue manifests (use the filename from the FILE headers)
-- section: Best guess at section location, or "Cross-spec coordination" if not specific
-- issue: Clear description of the coordination problem, referencing BOTH specs involved
+- section: Best guess at section location (e.g., "Part 2, Article 2.3"), or "Cross-spec coordination" if not specific to a section
+- issue: Clear description of the coordination problem, referencing BOTH specs involved by filename
 - actionType: "ADD" | "EDIT" | "DELETE"
 - existingText: The conflicting text from the primary file (null if ADD)
 - replacementText: Suggested fix or what should be added (null if DELETE)
@@ -274,14 +187,14 @@ If no coordination issues are found, return an empty array:
 
 
 def _get_cross_check_user_message(
-    spec_summary: str,
+    spec_input: str,
     file_count: int,
     project_context: str = "",
 ) -> str:
     """Build the user message for the cross-spec coordination check.
 
     Args:
-        spec_summary: Output of _build_spec_summary()
+        spec_input: Output of _build_cross_check_input() (full content + findings)
         file_count: Number of spec files
         project_context: Optional project description
 
@@ -299,11 +212,11 @@ def _get_cross_check_user_message(
 
     return f"""Review the following {file_count} specification documents for cross-spec coordination issues.
 
-This is a COORDINATION-ONLY review. Focus exclusively on issues that exist BETWEEN specs — contradictions, missing references, division-of-work gaps, and inconsistencies across files.
+This is a COORDINATION-ONLY review. Focus exclusively on issues that exist BETWEEN specs — contradictions, missing references, division-of-work gaps, and inconsistencies across files. You have the FULL text of each specification.
 
 Do NOT repeat any issues from the "ISSUES ALREADY IDENTIFIED" section.
 
-{context_block}{spec_summary}"""
+{context_block}{spec_input}"""
 
 
 # ---------------------------------------------------------------------------
@@ -321,8 +234,9 @@ def run_cross_check(
 ) -> ReviewResult:
     """Run the cross-spec coordination check.
 
-    Sends a condensed summary (section headers + existing findings) to
-    Sonnet 4.6 and returns coordination-only findings.
+    Sends full specification content and existing findings to Opus 4.6
+    and returns coordination-only findings. Uses the 1M token context
+    window for complete cross-spec analysis.
 
     Args:
         specs: List of ExtractedSpec objects (need 2+ for coordination)
@@ -342,35 +256,45 @@ def run_cross_check(
         return ReviewResult(
             findings=[],
             thinking="Cross-spec coordination skipped: only 1 spec provided.",
-            model=MODEL_SONNET_46,
+            model=MODEL_OPUS_46,
         )
 
-    # Build condensed input
-    spec_summary = _build_spec_summary(specs, existing_findings)
+    # Build full-content input
+    spec_input = _build_cross_check_input(specs, existing_findings)
 
     # Check token limit before calling API
     system_tokens = count_tokens(_CROSS_CHECK_SYSTEM_PROMPT)
     user_message = _get_cross_check_user_message(
-        spec_summary, len(specs), project_context=project_context,
+        spec_input, len(specs), project_context=project_context,
     )
     user_tokens = count_tokens(user_message)
     total_input_tokens = system_tokens + user_tokens
 
-    if total_input_tokens > RECOMMENDED_MAX:
+    if total_input_tokens > CROSS_CHECK_RECOMMENDED_MAX:
         return ReviewResult(
             findings=[],
             thinking=(
                 f"Cross-spec coordination skipped: combined input "
-                f"({total_input_tokens:,} tokens) exceeds limit "
-                f"({RECOMMENDED_MAX:,} tokens)."
+                f"({total_input_tokens:,} tokens) exceeds the cross-check limit "
+                f"({CROSS_CHECK_RECOMMENDED_MAX:,} tokens). "
+                f"Try reviewing fewer specs at once."
             ),
-            model=MODEL_SONNET_46,
+            model=MODEL_OPUS_46,
         )
 
-    # Make the API call
+    if verbose:
+        print(
+            f"Cross-check input: {total_input_tokens:,} tokens "
+            f"({total_input_tokens / CROSS_CHECK_RECOMMENDED_MAX * 100:.1f}% of limit)"
+        )
+
+    # Make the API call with adaptive thinking enabled.
+    # Thinking tokens + text output share the max_tokens budget.
+    # We use 65536 to give the model room for deep reasoning about
+    # cross-spec coordination while keeping input capacity high.
     client = Anthropic(api_key=_get_api_key())
     start_time = time.time()
-    result = ReviewResult(model=MODEL_SONNET_46)
+    result = ReviewResult(model=MODEL_OPUS_46)
 
     for attempt in range(max_retries):
         try:
@@ -378,8 +302,9 @@ def run_cross_check(
                 print(f"Cross-check call (attempt {attempt + 1}/{max_retries})...")
 
             with client.messages.stream(
-                model=MODEL_SONNET_46,
-                max_tokens=16384,
+                model=MODEL_OPUS_46,
+                max_tokens=65536,
+                thinking={"type": "adaptive"},
                 system=_CROSS_CHECK_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             ) as stream:
