@@ -552,7 +552,7 @@ def _write_cross_check_section(doc: Document, cross_check_result) -> None:
     count = len(cross_check_result.findings)
     subtitle = doc.add_paragraph()
     run = subtitle.add_run(
-        f"Sonnet 4.6 coordination analysis — "
+        f"Opus 4.6 coordination analysis — "
         f"{count} issue{'s' if count != 1 else ''} found."
     )
     run.font.size = Pt(11)
