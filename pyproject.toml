@@ -10,8 +10,7 @@ dependencies = [
     "python-docx",
     "tiktoken",
     "customtkinter",
-    "platformdirs",
-    "pymupdf",
+    "platformdirs"
 ]
 
 [tool.setuptools.packages.find]
