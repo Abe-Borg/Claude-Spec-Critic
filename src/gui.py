@@ -1015,7 +1015,6 @@ class SpecReviewApp(ctk.CTk):
         self._project_context_for_review = getattr(submission, "project_context", "")
         self._selected_cycle_label = getattr(submission, "cycle_label", DEFAULT_CYCLE.label)
         self._export_mode_for_review = self._is_export_mode
-        self._selected_cycle_label = self.cycle_selector.get()
         self.is_processing = True
 
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
