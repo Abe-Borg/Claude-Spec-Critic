@@ -542,7 +542,7 @@ def _render_cross_check_section(parent, cross_check_result, card_refs: list | No
         cross_check_result: ReviewResult from the cross-check pass (may be None)
         card_refs: Shared card reference list for collapse/expand all
     """
-    if not cross_check_result or not cross_check_result.findings:
+    if not cross_check_result:
         return
 
     card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -561,7 +561,17 @@ def _render_cross_check_section(parent, cross_check_result, card_refs: list | No
         text_color=COLORS["coordination"],
     ).pack(side="left")
 
+    status = getattr(cross_check_result, "cross_check_status", None)
     count = len(cross_check_result.findings)
+    if status == "skipped":
+        ctk.CTkLabel(inner, text=f"Cross-check was skipped: {cross_check_result.thinking}", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["warning"], wraplength=750, justify="left").pack(anchor="w", pady=(0, 8))
+        return
+    if status == "failed":
+        ctk.CTkLabel(inner, text=f"Cross-check failed: {cross_check_result.error}", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["warning"], wraplength=750, justify="left").pack(anchor="w", pady=(0, 8))
+        return
+    if status == "completed" and count == 0:
+        ctk.CTkLabel(inner, text="Cross-check completed — no coordination issues found.", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["success"]).pack(anchor="w", pady=(0, 8))
+        return
     ctk.CTkLabel(
         header_frame,
         text=f"({count} issue{'s' if count != 1 else ''})",

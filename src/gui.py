@@ -21,6 +21,7 @@ from src.reviewer import MODEL_OPUS_46, REVIEW_MODELS
 from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
 from src.prompts import get_system_prompt
+from src.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
 from src.report_exporter import export_report
 
 from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportWindow)
@@ -35,9 +36,7 @@ BATCH_STATE_MAX_AGE_HOURS = 24
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
 _SPEC_FILETYPES = [
-    ("Specifications", "*.docx *.pdf"),
-    ("Word Documents", "*.docx"),
-    ("PDF Documents", "*.pdf"),
+    ("Word Specifications", "*.docx"),
     ("All Files", "*.*"),
 ]
 
@@ -97,6 +96,13 @@ def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None
         "placeholder_alerts": submission.placeholder_alerts,
         "model": MODEL_OPUS_46,
         "project_context": getattr(submission, "project_context", ""),
+        "code_cycle": getattr(submission, "cycle_label", DEFAULT_CYCLE.label),
+        "cross_check_enabled": getattr(submission, "cross_check_enabled", False),
+        "export_mode": getattr(submission, "export_mode", False),
+        "prepared_specs": [
+            {"filename": s.filename, "content": s.content, "word_count": s.word_count, "source_path": s.source_path, "source_format": s.source_format}
+            for s in (getattr(submission, "prepared_specs", None) or [])
+        ] if getattr(submission, "cross_check_enabled", False) else None,
     }
     try:
         _batch_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -141,6 +147,10 @@ def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
             placeholder_alerts=state.get("placeholder_alerts", []),
             model=MODEL_OPUS_46,
             project_context=state.get("project_context", ""),
+            cycle_label=state.get("code_cycle", DEFAULT_CYCLE.label),
+            cross_check_enabled=state.get("cross_check_enabled", False),
+            export_mode=state.get("export_mode", False),
+            prepared_specs=[ExtractedSpec(**s) for s in (state.get("prepared_specs") or [])] if state.get("prepared_specs") else None,
         )
         phase = state.get("phase", "review")
         return submission, phase
@@ -180,6 +190,18 @@ class SpecReviewApp(ctk.CTk):
         fk = load_api_key_from_file()
         ek = os.environ.get("ANTHROPIC_API_KEY", "")
         self.api_key = fk if fk else ek
+        self._selected_files: list[Path] = []
+        self._loaded_file_data: list[dict] = []
+        self._system_prompt_tokens: int = 0
+        self._selected_files_for_review: list[Path] = []
+        self._project_context_for_review: str = ""
+        self._cross_check_for_review: bool = False
+        self._export_mode_for_review: bool = False
+        self._last_result = None
+        self._poll_consecutive_errors: int = 0
+        self._realtime_confirmed: bool = False
+        self._context_debounce_id: str | None = None
+        self._selected_cycle_label: str = DEFAULT_CYCLE.label
         self._create_ui()
         self.after(500, self._check_pending_batch)
 
@@ -248,7 +270,7 @@ class SpecReviewApp(ctk.CTk):
         ef = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ef.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=8)
         ef.columnconfigure(0, weight=1)
-        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select .docx or .pdf specification files", font=ctk.CTkFont(family="Consolas", size=12), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
+        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select .docx specification files", font=ctk.CTkFont(family="Consolas", size=12), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
         self.input_dir_entry.grid(row=0, column=0, sticky="ew")
         bkw = {"height": 36, "font": ctk.CTkFont(size=12), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
         ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
@@ -275,9 +297,8 @@ class SpecReviewApp(ctk.CTk):
         ctk.CTkLabel(self.inputs_content, text="Mode", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
         mode_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         mode_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
-        self._review_mode = ctk.StringVar(value="realtime")
         self.mode_selector = ctk.CTkSegmentedButton(
-            mode_frame, values=[_MODE_REALTIME, _MODE_BATCH], variable=self._review_mode,
+            mode_frame, values=[_MODE_REALTIME, _MODE_BATCH],
             command=self._on_mode_change, font=ctk.CTkFont(family="Segoe UI", size=11),
             selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
             unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
@@ -290,7 +311,15 @@ class SpecReviewApp(ctk.CTk):
             font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
         self._mode_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 4: Output ---
+        # --- Row 4: Code Cycle ---
+        ctk.CTkLabel(self.inputs_content, text="Code Cycle", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=6, column=0, sticky="w", pady=8)
+        cycle_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        cycle_frame.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=8)
+        self.cycle_selector = ctk.CTkSegmentedButton(cycle_frame, values=["2022", "2025"], font=ctk.CTkFont(family="Segoe UI", size=11), selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"], unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"], fg_color=COLORS["bg_input"], text_color=COLORS["text_secondary"], height=32)
+        self.cycle_selector.set(DEFAULT_CYCLE.label)
+        self.cycle_selector.pack(side="left")
+
+        # --- Row 5: Output ---
         ctk.CTkLabel(self.inputs_content, text="Output", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
         output_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         output_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
@@ -365,7 +394,13 @@ class SpecReviewApp(ctk.CTk):
         return self.context_textbox.get("1.0", "end").strip()
 
     def _on_context_change(self, event=None):
-        if not hasattr(self, "_loaded_file_data") or not self._loaded_file_data:
+        if self._context_debounce_id is not None:
+            self.after_cancel(self._context_debounce_id)
+        self._context_debounce_id = self.after(300, self._do_context_change)
+
+    def _do_context_change(self):
+        self._context_debounce_id = None
+        if not self._loaded_file_data:
             return
         ctx = self._get_project_context()
         if ctx:
@@ -454,7 +489,7 @@ class SpecReviewApp(ctk.CTk):
         )
         if files:
             paths = [Path(f) for f in files if _is_supported_spec(Path(f))]
-            if not paths: self.log.log_warning("No supported files selected (.docx or .pdf)"); return
+            if not paths: self.log.log_warning("No supported .docx files selected"); return
             self._selected_files = paths
             self.input_dir = paths[0].parent
             self.input_dir_entry.delete(0, "end")
@@ -487,7 +522,7 @@ class SpecReviewApp(ctk.CTk):
                 processed_names: list[str] = []
                 from tiktoken import get_encoding
                 enc = get_encoding("cl100k_base")
-                sys_tokens = len(enc.encode(get_system_prompt()))
+                sys_tokens = len(enc.encode(get_system_prompt(AVAILABLE_CYCLES.get(self.cycle_selector.get(), DEFAULT_CYCLE))))
                 ctx_tokens = len(enc.encode(project_context)) if project_context else 0
                 extracted_specs: list[ExtractedSpec] = []
                 for f in file_paths:
@@ -526,7 +561,7 @@ class SpecReviewApp(ctk.CTk):
         threading.Thread(target=analyze, daemon=True).start()
 
     def _on_file_selection_change(self):
-        if not hasattr(self, "_loaded_file_data") or not self._loaded_file_data: return
+        if not self._loaded_file_data: return
         sel = set(self.file_list_panel.get_selected_files())
         selected_data = [d for d in self._loaded_file_data if d["path"] in sel]
         overhead = (
@@ -547,7 +582,7 @@ class SpecReviewApp(ctk.CTk):
 
     def _validate_inputs(self):
         if not self.api_key_entry.get().strip(): self.log.log_error("API key is required"); return False
-        if not hasattr(self, "_selected_files") or not self._selected_files: self.log.log_error("Select specification files (.docx or .pdf)"); return False
+        if not self._selected_files: self.log.log_error("Select .docx specification files"); return False
         missing = [f for f in self._selected_files if not f.exists()]
         if missing: self.log.log_error(f"File not found: {missing[0].name}"); return False
         if self.file_list_panel.get_selected_count() == 0: self.log.log_error("No files selected"); return False
@@ -663,6 +698,7 @@ class SpecReviewApp(ctk.CTk):
         self._project_context_for_review = self._get_project_context()
         self._cross_check_for_review = self._cross_check_var.get()
         self._export_mode_for_review = self._is_export_mode
+        self._selected_cycle_label = self.cycle_selector.get()
         self.is_processing = True
         self._close_report_window()
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
@@ -702,6 +738,7 @@ class SpecReviewApp(ctk.CTk):
                 verify=True,
                 cross_check=self._cross_check_for_review,
                 dry_run=False, verbose=False,
+                cycle=AVAILABLE_CYCLES.get(self._selected_cycle_label, DEFAULT_CYCLE),
                 log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                 progress=_on_progress,
             )
@@ -751,6 +788,7 @@ class SpecReviewApp(ctk.CTk):
                 result,
                 output_path,
                 project_context=getattr(self, "_project_context_for_review", ""),
+                cycle_label=getattr(self, "_selected_cycle_label", DEFAULT_CYCLE.label),
             )
             self.log.log_success(f"Report saved: {output_path}")
             return True
@@ -777,6 +815,9 @@ class SpecReviewApp(ctk.CTk):
                 files=self._selected_files_for_review,
                 project_context=self._project_context_for_review,
                 model=MODEL_OPUS_46,
+                cycle=AVAILABLE_CYCLES.get(self._selected_cycle_label, DEFAULT_CYCLE),
+                cross_check_enabled=self._cross_check_for_review,
+                export_mode=self._export_mode_for_review,
                 log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                 progress=_on_progress,
             )
@@ -872,6 +913,7 @@ class SpecReviewApp(ctk.CTk):
                     project_context=project_context,
                     log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                     progress=_on_progress,
+                    cycle=AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE),
                 )
 
                 self._dispatch_if_current(run_epoch, lambda: self._on_review_complete(result))
@@ -966,9 +1008,14 @@ class SpecReviewApp(ctk.CTk):
 
         os.environ["ANTHROPIC_API_KEY"] = api_key
         self._batch_submission = submission
-        self._cross_check_for_review = False
+        self._cross_check_for_review = getattr(submission, "cross_check_enabled", False)
+        if self._cross_check_for_review and not getattr(submission, "prepared_specs", None):
+            self.log.log_warning("Cross-check was enabled but spec content could not be restored from saved state. Cross-check will be skipped for this resumed batch.")
+            self._cross_check_for_review = False
         self._project_context_for_review = getattr(submission, "project_context", "")
+        self._selected_cycle_label = getattr(submission, "cycle_label", DEFAULT_CYCLE.label)
         self._export_mode_for_review = self._is_export_mode
+        self._selected_cycle_label = self.cycle_selector.get()
         self.is_processing = True
 
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
@@ -1085,7 +1132,7 @@ class SpecReviewApp(ctk.CTk):
 
         sections = [
             ("1.  Text Extraction", (
-                "Your .docx and .pdf files are read locally. Paragraphs and tables are "
+                "Your .docx files are read locally. Paragraphs and tables are "
                 "extracted \u2014 nothing is sent to Claude yet."
             )),
             ("2.  Local Pre-Screening", (
@@ -1114,10 +1161,9 @@ class SpecReviewApp(ctk.CTk):
                 "that are invisible to per-spec review."
             )),
             ("6.  Verification", (
-                "Every finding is independently verified by a "
-                "second Opus 4.6 call with web search access. The verifier checks whether "
-                "the cited code or standard actually says what the finding claims. Each "
-                "finding gets a verdict: Confirmed, Corrected, Disputed, or Unverified."
+                "Every finding is checked in a secondary AI verification pass using Claude Opus 4.6 with web search. "
+                "The verifier searches for the cited codes and standards and returns a verdict: Confirmed, Corrected, "
+                "Disputed, or Unverified. This is an AI-assisted check, not a substitute for engineer review."
             )),
         ]
 
