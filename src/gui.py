@@ -14,8 +14,18 @@ base_path = os.path.dirname(os.path.abspath(__file__))
 exe_dir = Path(base_path).parent
 sys.path.insert(0, str(exe_dir))
 
-from src import __version__
-from src.pipeline import run_review, start_batch_review, collect_batch_results, BatchSubmission
+from src.pipeline import (
+    run_review,
+    start_batch_review,
+    collect_review_batch_results,
+    run_cross_check_for_batch,
+    prepare_verification_work,
+    start_batch_verification,
+    collect_batch_verification_results,
+    finalize_batch_result,
+    BatchSubmission,
+    CollectedBatchState,
+)
 from src.batch import poll_batch, cancel_batch, BatchStatus, BatchJob
 from src.reviewer import MODEL_OPUS_46, REVIEW_MODELS
 from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
@@ -23,6 +33,15 @@ from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
 from src.prompts import get_system_prompt
 from src.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
 from src.report_exporter import export_report
+from src.resume_state import (
+    PHASE_REVIEW_POLL,
+    PHASE_REVIEW_COLLECT,
+    PHASE_VERIFICATION_POLL,
+    PHASE_FINALIZE,
+    SUPPORTED_PHASES,
+    build_resume_state,
+    deserialize_resume_state,
+)
 
 from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportWindow)
 
@@ -81,36 +100,14 @@ def _batch_state_path() -> Path:
     return _app_state_dir() / BATCH_STATE_FILENAME
 
 
-def save_batch_state(submission: BatchSubmission, phase: str = "review") -> None:
-    state = {
-        "version": __version__,
-        "saved_at": datetime.now(timezone.utc).isoformat(),
-        "phase": phase,
-        "batch_id": submission.job.batch_id,
-        "job_type": submission.job.job_type,
-        "request_map": submission.job.request_map,
-        "created_at": submission.job.created_at,
-        "files_reviewed": submission.files_reviewed,
-        "review_request_ids": submission.review_request_ids,
-        "leed_alerts": submission.leed_alerts,
-        "placeholder_alerts": submission.placeholder_alerts,
-        "model": MODEL_OPUS_46,
-        "project_context": getattr(submission, "project_context", ""),
-        "code_cycle": getattr(submission, "cycle_label", DEFAULT_CYCLE.label),
-        "cross_check_enabled": getattr(submission, "cross_check_enabled", False),
-        "export_mode": getattr(submission, "export_mode", False),
-        "prepared_specs": [
-            {"filename": s.filename, "content": s.content, "word_count": s.word_count, "source_path": s.source_path, "source_format": s.source_format}
-            for s in (getattr(submission, "prepared_specs", None) or [])
-        ] if getattr(submission, "cross_check_enabled", False) else None,
-    }
+def save_batch_state(state: dict) -> None:
     try:
         _batch_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
     except Exception as e:
         print(f"[SpecCritic] Warning: Could not save batch state: {e}")
 
 
-def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
+def load_batch_state() -> Optional[dict]:
     path = _batch_state_path()
     if not path.exists():
         return None
@@ -128,35 +125,45 @@ def load_batch_state() -> Optional[tuple[BatchSubmission, str]]:
     except Exception:
         delete_batch_state()
         return None
-    batch_id = state.get("batch_id", "")
-    if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
-        delete_batch_state()
-        return None
     try:
-        job = BatchJob(
-            batch_id=batch_id,
-            job_type=state.get("job_type", "review"),
-            request_map=state["request_map"],
-            created_at=state["created_at"],
-        )
-        submission = BatchSubmission(
-            job=job,
-            files_reviewed=state.get("files_reviewed", []),
-            review_request_ids=state.get("review_request_ids", []),
-            leed_alerts=state.get("leed_alerts", []),
-            placeholder_alerts=state.get("placeholder_alerts", []),
-            model=MODEL_OPUS_46,
-            project_context=state.get("project_context", ""),
-            cycle_label=state.get("code_cycle", DEFAULT_CYCLE.label),
-            cross_check_enabled=state.get("cross_check_enabled", False),
-            export_mode=state.get("export_mode", False),
-            prepared_specs=[ExtractedSpec(**s) for s in (state.get("prepared_specs") or [])] if state.get("prepared_specs") else None,
-        )
-        phase = state.get("phase", "review")
-        return submission, phase
-    except (KeyError, TypeError):
-        delete_batch_state()
-        return None
+        restored = deserialize_resume_state(state)
+        submission = restored["submission"]
+        if not isinstance(submission.job.batch_id, str) or not submission.job.batch_id.startswith("msgbatch_"):
+            delete_batch_state()
+            return None
+        return restored
+    except (KeyError, TypeError, ValueError):
+        # Legacy v1 state compatibility
+        try:
+            batch_id = state.get("batch_id", "")
+            if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
+                delete_batch_state()
+                return None
+            legacy_submission = BatchSubmission(
+                job=BatchJob(
+                    batch_id=batch_id,
+                    job_type=state.get("job_type", "review"),
+                    request_map=state["request_map"],
+                    created_at=state["created_at"],
+                ),
+                files_reviewed=state.get("files_reviewed", []),
+                review_request_ids=state.get("review_request_ids", []),
+                leed_alerts=state.get("leed_alerts", []),
+                placeholder_alerts=state.get("placeholder_alerts", []),
+                model=MODEL_OPUS_46,
+                project_context=state.get("project_context", ""),
+                cycle_label=state.get("code_cycle", DEFAULT_CYCLE.label),
+                cross_check_enabled=state.get("cross_check_enabled", False),
+                export_mode=state.get("export_mode", False),
+                prepared_specs=[ExtractedSpec(**s) for s in (state.get("prepared_specs") or [])] if state.get("prepared_specs") else None,
+            )
+            phase = state.get("phase", "review")
+            phase_map = {"review": PHASE_REVIEW_POLL}
+            migrated_phase = phase_map.get(phase, phase)
+            return {"phase": migrated_phase, "submission": legacy_submission, "resume_flags": {}}
+        except Exception:
+            delete_batch_state()
+            return None
 
 
 def delete_batch_state() -> None:
@@ -799,7 +806,6 @@ class SpecReviewApp(ctk.CTk):
     def _on_review_error(self, err):
         self.progress_bar.pack_forget()
         self.log.log_error(f"Review failed: {err}")
-        delete_batch_state()
         self.run_button.set_ready(); self.is_processing = False
 
     # ----- Batch mode -----
@@ -821,7 +827,7 @@ class SpecReviewApp(ctk.CTk):
                 log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                 progress=_on_progress,
             )
-            save_batch_state(submission, phase="review")
+            save_batch_state(build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission))
             self._dispatch_if_current(run_epoch, lambda: self._on_batch_submitted(submission))
         except Exception as e:
             import traceback
@@ -867,6 +873,8 @@ class SpecReviewApp(ctk.CTk):
 
         if normalized_status == "ended":
             self.log.log_success("Batch complete \u2014 collecting results...")
+            if self._batch_submission is not None:
+                save_batch_state(build_resume_state(phase=PHASE_REVIEW_COLLECT, submission=self._batch_submission))
             self._collect_batch_results()
         elif normalized_status == "in_progress":
             self._schedule_next_poll(15_000)
@@ -893,30 +901,62 @@ class SpecReviewApp(ctk.CTk):
                 def _on_progress(pct, msg):
                     self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
                     self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
-
-                cross_check = getattr(self, "_cross_check_for_review", False)
-                project_context = getattr(self, "_project_context_for_review", "")
-
-                specs_for_cross_check = None
-                if cross_check:
-                    specs_for_cross_check = getattr(self._batch_submission, "prepared_specs", None)
-                    if not specs_for_cross_check:
-                        self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(
-                            "Cross-check skipped: original extracted spec content is not available."
-                        ))
-
-                result = collect_batch_results(
+                if self._batch_submission is None:
+                    raise RuntimeError("No active batch submission to collect.")
+                cycle = AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
+                review_state = collect_review_batch_results(
                     self._batch_submission,
-                    verify=True,
-                    cross_check=cross_check,
-                    specs=specs_for_cross_check,
-                    project_context=project_context,
                     log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                    progress=_on_progress,
-                    cycle=AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE),
                 )
+                review_state = run_cross_check_for_batch(
+                    review_state,
+                    specs=getattr(self._batch_submission, "prepared_specs", None),
+                    project_context=getattr(self, "_project_context_for_review", ""),
+                    cycle=cycle,
+                    log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                )
+                if review_state.cross_check_skipped_due_to_missing_specs:
+                    self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(
+                        "Cross-check skipped due to missing resumable extracted specs."
+                    ))
 
-                self._dispatch_if_current(run_epoch, lambda: self._on_review_complete(result))
+                verifiable_findings = prepare_verification_work(review_state)
+                verification_completed = False
+                if verifiable_findings:
+                    verification_job = start_batch_verification(
+                        verifiable_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
+                    save_batch_state(build_resume_state(
+                        phase=PHASE_VERIFICATION_POLL,
+                        submission=self._batch_submission,
+                        review_state=review_state,
+                        verification_batch=verification_job,
+                        verification_started=True,
+                    ))
+                    collect_batch_verification_results(
+                        verification_job,
+                        verifiable_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
+                    verification_completed = True
+
+                final_result = finalize_batch_result(review_state)
+                save_batch_state(build_resume_state(
+                    phase=PHASE_FINALIZE,
+                    submission=self._batch_submission,
+                    review_state=review_state,
+                    final_review_result=final_result.review_result,
+                    cross_check_result=final_result.cross_check_result,
+                    cross_check_skipped_due_to_missing_specs=review_state.cross_check_skipped_due_to_missing_specs,
+                    verification_started=bool(verifiable_findings),
+                    verification_completed=verification_completed,
+                ))
+                self._dispatch_if_current(run_epoch, lambda r=final_result: self._on_review_complete(r))
             except Exception as e:
                 import traceback
                 err = f"{e}\n{traceback.format_exc()}"
@@ -937,7 +977,8 @@ class SpecReviewApp(ctk.CTk):
         loaded = load_batch_state()
         if loaded is None:
             return
-        submission, phase = loaded
+        submission = loaded["submission"]
+        phase = loaded.get("phase", PHASE_REVIEW_POLL)
         age_str = self._format_batch_age(submission.job.created_at)
 
         dialog = ctk.CTkToplevel(self)
@@ -971,7 +1012,7 @@ class SpecReviewApp(ctk.CTk):
 
         def _resume():
             dialog.destroy()
-            self._resume_batch(submission, phase)
+            self._resume_batch(loaded)
 
         def _discard():
             dialog.destroy()
@@ -998,23 +1039,36 @@ class SpecReviewApp(ctk.CTk):
         except Exception:
             return "unknown time"
 
-    def _resume_batch(self, submission: BatchSubmission, phase: str):
+    def _resume_batch(self, loaded_state: dict):
+        submission: BatchSubmission = loaded_state["submission"]
+        phase = loaded_state.get("phase", PHASE_REVIEW_POLL)
         api_key = self.api_key_entry.get().strip()
         if not api_key:
             api_key = load_api_key_from_file() or os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:
             self.log.log_error("API key is required to resume batch. Enter your key and try again.")
             return
+        if phase not in SUPPORTED_PHASES:
+            self.log.log_error("Saved batch state has unsupported phase. Discarding it.")
+            delete_batch_state()
+            return
 
         os.environ["ANTHROPIC_API_KEY"] = api_key
         self._batch_submission = submission
         self._cross_check_for_review = getattr(submission, "cross_check_enabled", False)
+        cross_check_skipped = False
         if self._cross_check_for_review and not getattr(submission, "prepared_specs", None):
             self.log.log_warning("Cross-check was enabled but spec content could not be restored from saved state. Cross-check will be skipped for this resumed batch.")
             self._cross_check_for_review = False
+            cross_check_skipped = True
         self._project_context_for_review = getattr(submission, "project_context", "")
         self._selected_cycle_label = getattr(submission, "cycle_label", DEFAULT_CYCLE.label)
-        self._export_mode_for_review = self._is_export_mode
+        self._export_mode_for_review = bool(getattr(submission, "export_mode", False))
+        self.output_selector.set("Export Report" if self._export_mode_for_review else "View in App")
+        self._on_output_mode_change(self.output_selector.get())
+        if submission.cycle_label in AVAILABLE_CYCLES:
+            self.cycle_selector.set(submission.cycle_label)
+        self._cross_check_var.set(bool(getattr(submission, "cross_check_enabled", False)))
         self.is_processing = True
 
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
@@ -1026,7 +1080,70 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
         self.progress_bar.set(0.4)
         self.progress_bar.configure(mode="determinate")
-        self._poll_batch()
+        if phase == PHASE_REVIEW_POLL:
+            self._poll_batch()
+            return
+        if phase == PHASE_REVIEW_COLLECT:
+            self._collect_batch_results()
+            return
+        if phase == PHASE_VERIFICATION_POLL:
+            if not loaded_state.get("review_state") or not loaded_state.get("verification_batch"):
+                self.log.log_error("Saved verification resume state is incomplete. Discarding it.")
+                delete_batch_state()
+                self._reset_ui()
+                return
+            self._resume_verification_poll(loaded_state)
+            return
+        if phase == PHASE_FINALIZE:
+            review_state: CollectedBatchState | None = loaded_state.get("review_state")
+            if review_state is None:
+                self.log.log_error("Saved finalize resume state is incomplete. Discarding it.")
+                delete_batch_state()
+                self._reset_ui()
+                return
+            if cross_check_skipped:
+                review_state.cross_check_skipped_due_to_missing_specs = True
+            result = finalize_batch_result(review_state)
+            self._on_review_complete(result)
+            return
+
+    def _resume_verification_poll(self, loaded_state: dict):
+        run_epoch = self._next_run_epoch()
+        review_state: CollectedBatchState = loaded_state["review_state"]
+        verification_job = loaded_state["verification_batch"]
+        cycle = AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
+        verifiable_findings = prepare_verification_work(review_state)
+
+        def _do_resume_verification():
+            try:
+                def _on_progress(pct, msg):
+                    self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
+                    self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+
+                collect_batch_verification_results(
+                    verification_job,
+                    verifiable_findings,
+                    cycle=cycle,
+                    log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                    progress=_on_progress,
+                )
+                result = finalize_batch_result(review_state)
+                save_batch_state(build_resume_state(
+                    phase=PHASE_FINALIZE,
+                    submission=self._batch_submission,
+                    review_state=review_state,
+                    final_review_result=result.review_result,
+                    cross_check_result=result.cross_check_result,
+                    cross_check_skipped_due_to_missing_specs=review_state.cross_check_skipped_due_to_missing_specs,
+                    verification_started=True,
+                    verification_completed=True,
+                ))
+                self._dispatch_if_current(run_epoch, lambda r=result: self._on_review_complete(r))
+            except Exception as e:
+                import traceback
+                err = f"{e}\n{traceback.format_exc()}"
+                self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
+        threading.Thread(target=_do_resume_verification, daemon=True).start()
 
     # ----- Pop-out report window -----
 
