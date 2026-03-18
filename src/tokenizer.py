@@ -7,16 +7,16 @@ These counts are used for guardrails, not exact billing.
 Token limits (v2.3.0):
     - Claude Opus 4.6 context window: 1,000,000 tokens
     - Opus 4.6 max output: 128,000 tokens
-    - Per-spec recommended input limit: 150,000 tokens
+    - Sonnet 4.6 max output: 64,000 tokens
+    - Per-spec recommended input limit: 500,000 tokens
       (practical limit — individual specs are reviewed one at a time)
-    - Cross-check recommended input limit: 900,000 tokens
-      (uses the full 1M context for multi-spec coordination analysis)
+    - Cross-check recommended input limit: ~822,000 tokens
+      (1,000,000 context - 128,000 output reserve - 50,000 overhead)
 
-The per-spec limit (RECOMMENDED_MAX) is intentionally conservative.
-Even though the model supports 1M tokens, per-spec review calls send
-a single spec at a time. Individual specs rarely exceed 50K tokens,
-and the 150K ceiling provides a comfortable guardrail. The token gauge
-in the GUI displays the largest spec's call size against this limit.
+The per-spec limit (RECOMMENDED_MAX) is intentionally conservative
+relative to the 1M context window. Per-spec review calls send a single
+spec at a time, and the token gauge in the GUI displays the largest
+spec's call size against this limit.
 
 The cross-check limit (CROSS_CHECK_RECOMMENDED_MAX) is much higher
 because the cross-checker sends ALL spec content in a single call.
@@ -35,6 +35,8 @@ MAX_CONTEXT_TOKENS = 1_000_000
 
 # Opus 4.6 max output tokens
 MAX_OUTPUT_TOKENS_OPUS = 128_000
+# Sonnet 4.6 max output tokens
+MAX_OUTPUT_TOKENS_SONNET = 64_000
 
 
 # ---------------------------------------------------------------------------
@@ -44,13 +46,8 @@ MAX_OUTPUT_TOKENS_OPUS = 128_000
 # Practical per-call input limit for per-spec reviews.
 # Individual specs are reviewed one at a time — this is the budget for a
 # single (system prompt + project context + spec content) API call.
-# Conservative relative to the 1M window, but individual specs rarely
-# exceed 50K tokens and this provides a sensible guardrail.
-PER_SPEC_SAFETY_BUFFER = 50_000
-RECOMMENDED_MAX = 150_000
-
-# Padding for per-call overhead (message framing, file delimiter, safety margin)
-PER_CALL_PADDING = 200
+# Conservative relative to the 1M window and intended as a practical guardrail.
+RECOMMENDED_MAX = 500_000
 
 
 # ---------------------------------------------------------------------------
@@ -59,12 +56,11 @@ PER_CALL_PADDING = 200
 
 # Cross-check uses Opus 4.6 with full spec content and adaptive thinking.
 # With thinking enabled, thinking tokens + text output share the max_tokens budget.
-# Opus 4.6 supports up to 128K output tokens. We use 64K to balance thinking
-# depth with input capacity (more input room = more spec content).
-# Budget: 1M context - 64K output reserve - 50K overhead = ~886K
-# Rounded down to 880K for safety.
-CROSS_CHECK_OUTPUT_BUDGET = 65_536
+# Opus 4.6 supports up to 128K output tokens. Cross-check reserves the
+# full output budget so adaptive thinking + text output can use it.
+# Budget: 1M context - 128K output reserve - 50K overhead = 822K
 CROSS_CHECK_OVERHEAD = 50_000
+CROSS_CHECK_OUTPUT_BUDGET = 128_000
 CROSS_CHECK_RECOMMENDED_MAX = (
     MAX_CONTEXT_TOKENS - CROSS_CHECK_OUTPUT_BUDGET - CROSS_CHECK_OVERHEAD
 )
@@ -72,7 +68,7 @@ CROSS_CHECK_RECOMMENDED_MAX = (
 
 def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
     """Check if a single spec would exceed the per-call token limit."""
-    return (overhead_tokens + spec_tokens + PER_CALL_PADDING) > RECOMMENDED_MAX
+    return (overhead_tokens + spec_tokens) > RECOMMENDED_MAX
 
 
 def get_encoder():

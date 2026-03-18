@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from .prompts import get_system_prompt, get_single_spec_user_message
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_46
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
+from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET
 
 
 @dataclass
@@ -46,12 +47,13 @@ def submit_review_batch(specs: list, *, project_context: str = "", model: str = 
         raise ValueError("No specs to submit for batch review")
     client = _get_client()
     system_prompt = get_system_prompt(cycle)
+    output_limit = MAX_OUTPUT_TOKENS_OPUS if model == MODEL_OPUS_46 else MAX_OUTPUT_TOKENS_SONNET
     batch_requests = []
     request_map = {}
     for idx, spec in enumerate(specs):
         custom_id = f"review__{_sanitize_custom_id(spec.filename)}__{idx}"
         user_message = get_single_spec_user_message(spec.content, spec.filename, project_context=project_context, cycle=cycle)
-        batch_requests.append({"custom_id": custom_id, "params": {"model": model, "max_tokens": 32768, "system": system_prompt, "messages": [{"role": "user", "content": user_message}]}})
+        batch_requests.append({"custom_id": custom_id, "params": {"model": model, "max_tokens": output_limit, "system": system_prompt, "messages": [{"role": "user", "content": user_message}]}})
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}
     mb = client.messages.batches.create(requests=batch_requests)
     return BatchJob(batch_id=mb.id, job_type="review", request_map=request_map, created_at=time.time())
@@ -106,7 +108,7 @@ def submit_verification_batch(findings: list[Finding], build_prompt_fn) -> Batch
     request_map = {}
     for batch_idx, (finding_idx, finding) in enumerate(verifiable):
         custom_id = f"verify__{batch_idx}"
-        reqs.append({"custom_id": custom_id, "params": {"model": MODEL_OPUS_46, "max_tokens": 1024, "tools": [{"type": "web_search_20250305", "name": "web_search"}], "messages": [{"role": "user", "content": build_prompt_fn(finding)}]}})
+        reqs.append({"custom_id": custom_id, "params": {"model": MODEL_OPUS_46, "max_tokens": 32_000, "tools": [{"type": "web_search_20250305", "name": "web_search"}], "messages": [{"role": "user", "content": build_prompt_fn(finding)}]}})
         request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx}
     mb = client.messages.batches.create(requests=reqs)
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())

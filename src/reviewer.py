@@ -14,6 +14,7 @@ from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
 
 from .prompts import get_system_prompt, get_single_spec_user_message
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
+from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET
 
 MODEL_OPUS_46 = "claude-opus-4-6"
 REVIEW_MODELS = {"Opus 4.6": MODEL_OPUS_46}
@@ -147,11 +148,12 @@ def _parse_findings(data: list) -> list[Finding]:
 def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = MODEL_OPUS_46, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
     start_time = time.time()
     result = ReviewResult(model=model)
+    output_limit = MAX_OUTPUT_TOKENS_OPUS if model == MODEL_OPUS_46 else MAX_OUTPUT_TOKENS_SONNET
     for attempt in range(max_retries):
         try:
             if verbose:
                 print(f"Calling Claude {model} (attempt {attempt + 1}/{max_retries})...")
-            with client.messages.stream(model=model, max_tokens=32768, system=system_prompt, messages=[{"role": "user", "content": user_message}]) as stream:
+            with client.messages.stream(model=model, max_tokens=output_limit, system=system_prompt, messages=[{"role": "user", "content": user_message}]) as stream:
                 chunks: list[str] = []
                 for text in stream.text_stream:
                     chunks.append(text)

@@ -58,7 +58,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
 
     for attempt in range(max_retries):
         try:
-            with client.messages.stream(model=MODEL_OPUS_46, max_tokens=65536, thinking={"type": "adaptive"}, system=system_prompt, messages=[{"role": "user", "content": user_message}]) as stream:
+            with client.messages.stream(model=MODEL_OPUS_46, max_tokens=128_000, thinking={"type": "adaptive"}, system=system_prompt, messages=[{"role": "user", "content": user_message}]) as stream:
                 chunks: list[str] = []
                 for text in stream.text_stream:
                     chunks.append(text)

@@ -102,7 +102,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
 
     for attempt in range(max_retries + 1):
         try:
-            response = client.messages.create(model=MODEL_OPUS_46, max_tokens=1024, tools=[{"type": "web_search_20250305", "name": "web_search"}], messages=[{"role": "user", "content": prompt}])
+            response = client.messages.create(model=MODEL_OPUS_46, max_tokens=32_000, tools=[{"type": "web_search_20250305", "name": "web_search"}], messages=[{"role": "user", "content": prompt}])
             stop_reason = getattr(response, "stop_reason", None)
             if stop_reason != "end_turn":
                 return VerificationResult(verdict="UNVERIFIED", explanation=f"Verification response incomplete (stop_reason: {stop_reason}).")

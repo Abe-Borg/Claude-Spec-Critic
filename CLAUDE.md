@@ -15,9 +15,9 @@ src/
 ├── widgets.py           # Reusable UI components (TokenGauge, FileListPanel, etc.)
 ├── pipeline.py          # Core orchestration — SINGLE SOURCE OF TRUTH for workflow
 ├── report_exporter.py   # Word document (.docx) report generation
-├── cross_checker.py     # Cross-spec coordination check (Sonnet 4.6)
+├── cross_checker.py     # Cross-spec coordination check (Opus 4.6)
 ├── batch.py             # Anthropic Message Batches API wrapper
-├── verifier.py          # Web search verification (Sonnet 4.6)
+├── verifier.py          # Web search verification (Opus 4.6)
 ├── extractor.py         # Text extraction from DOCX and PDF files
 ├── preprocessor.py      # Local LEED/placeholder detection (no API)
 ├── tokenizer.py         # Token counting with tiktoken (cl100k_base)
@@ -199,7 +199,7 @@ Wraps the Anthropic Message Batches API for both review and verification.
 
 ### verifier.py — Finding Verification
 
-- `verify_findings(findings, ...)` — Sequential real-time verification (Sonnet 4.6 + web_search tool)
+- `verify_findings(findings, ...)` — Sequential real-time verification (Opus 4.6 + web_search tool)
 - `verify_findings_batch(findings, ...)` — Batched verification via Batches API (50% savings), with fallback to sequential
 
 Verifies ALL findings (including GRIPES as of v2.0.0). Mutates `finding.verification` in-place.
@@ -208,16 +208,15 @@ Verifies ALL findings (including GRIPES as of v2.0.0). Mutates `finding.verifica
 - `verify_finding()` has a generic `except Exception` catch-all so unexpected errors produce UNVERIFIED instead of crashing
 - `verify_findings()` wraps each individual finding verification in try/except so a single failure cannot abort the remaining findings
 
-**Batch polling (v2.0.0):**
-- `verify_findings_batch()` bounded to `max_poll_attempts=240` with consecutive error tracking
-- Falls back to sequential verification after 5 consecutive poll errors or timeout
+**Batch polling:**
+- `verify_findings_batch()` tracks consecutive poll errors
+- Cancels the verification batch and raises after 5 consecutive poll failures
 
 ### cross_checker.py — Cross-Spec Coordination
 
 - `run_cross_check(specs, findings, ...)` → `ReviewResult` with coordination findings
-- Uses Sonnet 4.6 with enriched condensed input (section headers + key numeric values + cross-references + existing findings)
+- Uses Opus 4.6 with full combined spec input and adaptive thinking
 - Returns empty result if <2 specs or input exceeds token limit
-- Header pattern tightened in v2.0.0 (excludes body text with "shall"/"must"/etc.)
 
 ### report_exporter.py — Word Document Export
 
@@ -229,7 +228,7 @@ Verifies ALL findings (including GRIPES as of v2.0.0). Mutates `finding.verifica
 ### reviewer.py — API Client
 
 - `review_single_spec(spec_content, filename, ...)` → `ReviewResult`
-- Model constants: `MODEL_OPUS_46`, `MODEL_SONNET_46`, `REVIEW_MODELS` (label→ID map)
+- Model constants: `MODEL_OPUS_46`, `REVIEW_MODELS` (label→ID map; currently Opus-only)
 - JSON parsing: `<FINDINGS_JSON>` sentinel tags with heuristic fallback
 - Field validation in `_parse_findings()`: severity must be valid, actionType defaults to EDIT, text fields coerced to str (v2.0.0)
 
@@ -242,9 +241,11 @@ Verifies ALL findings (including GRIPES as of v2.0.0). Mutates `finding.verifica
 ### tokenizer.py — Token Counting
 
 - `count_tokens(text)` → `int` using tiktoken cl100k_base
-- `RECOMMENDED_MAX = 150_000` — per-call token limit
-- `PER_CALL_PADDING = 200` — overhead padding for message framing
+- `RECOMMENDED_MAX = 500_000` — per-call recommended input limit
+- `MAX_OUTPUT_TOKENS_OPUS = 128_000` and `MAX_OUTPUT_TOKENS_SONNET = 64_000`
+- `CROSS_CHECK_OUTPUT_BUDGET = 128_000`
 - `exceeds_per_call_limit(spec_tokens, overhead_tokens)` → `bool` — shared check used by GUI and pipeline
+- `PER_CALL_PADDING` and `PER_SPEC_SAFETY_BUFFER` were removed
 
 ### prompts.py — System Prompt
 
