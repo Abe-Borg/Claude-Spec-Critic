@@ -254,7 +254,10 @@ class SpecReviewApp(ctk.CTk):
         ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
 
         # --- Row 2: Project Context ---
-        ctk.CTkLabel(self.inputs_content, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="nw").grid(row=2, column=0, sticky="nw", pady=8)
+        ctx_label_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        ctx_label_frame.grid(row=2, column=0, sticky="nw", pady=8)
+        ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
+        ctk.CTkButton(ctx_label_frame, text="Expand", width=60, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._open_context_modal).pack(anchor="nw", pady=(4, 0))
         self.context_textbox = ctk.CTkTextbox(
             self.inputs_content, fg_color=COLORS["bg_input"], border_color=COLORS["border"],
             border_width=2, text_color=COLORS["text_primary"],
@@ -372,6 +375,59 @@ class SpecReviewApp(ctk.CTk):
         else:
             self._project_context_tokens = 0
         self._on_file_selection_change()
+
+    def _open_context_modal(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Project Context")
+        dialog.geometry("700x500")
+        dialog.configure(fg_color=COLORS["bg_dark"])
+        dialog.resizable(True, True)
+        dialog.minsize(400, 300)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.lift()
+        dialog.focus_force()
+
+        outer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
+        outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+        ctk.CTkLabel(
+            outer, text="Project Context",
+            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", padx=16, pady=(16, 8))
+
+        modal_textbox = ctk.CTkTextbox(
+            outer, fg_color=COLORS["bg_input"], border_color=COLORS["border"],
+            border_width=2, text_color=COLORS["text_primary"],
+            font=ctk.CTkFont(family="Consolas", size=13), wrap="word",
+        )
+        modal_textbox.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        current = self._get_project_context()
+        if current:
+            modal_textbox.insert("1.0", current)
+
+        def _save_and_close():
+            new_text = modal_textbox.get("1.0", "end").strip()
+            self.context_textbox.delete("1.0", "end")
+            if new_text:
+                self._context_has_placeholder = False
+                self.context_textbox.configure(text_color=COLORS["text_primary"])
+                self.context_textbox.insert("1.0", new_text)
+            else:
+                self._context_has_placeholder = True
+                self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
+                self.context_textbox.configure(text_color=COLORS["text_muted"])
+            self._on_context_change()
+            dialog.destroy()
+
+        ctk.CTkButton(
+            outer, text="Save & Close", width=120, height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            command=_save_and_close,
+        ).pack(anchor="e", padx=16, pady=(0, 16))
 
     def _on_mode_change(self, value: str):
         if value == _MODE_BATCH:
