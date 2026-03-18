@@ -7,10 +7,10 @@ A desktop tool that reviews mechanical and plumbing construction specifications 
 1. Extracts text from `.docx` and native `.pdf` specification files (paragraphs + tables)
 2. Detects LEED references and unresolved placeholders locally (no API call needed)
 3. Performs pre-flight token analysis with an animated visual gauge
-4. Reviews each spec independently via streaming API calls to the selected model (Opus 4.6 or Sonnet 4.6)
+4. Reviews each spec independently via streaming API calls (Opus 4.6)
 5. Deduplicates findings that appear across multiple specs
-6. Optionally runs a cross-spec coordination check (Sonnet 4.6) to catch inter-spec conflicts
-7. Verifies all findings (CRITICAL/HIGH/MEDIUM/GRIPES) via web search (Sonnet 4.6)
+6. Optionally runs a cross-spec coordination check (Opus 4.6) to catch inter-spec conflicts
+7. Verifies all findings (CRITICAL/HIGH/MEDIUM/GRIPES) via web search (Opus 4.6)
 8. Outputs results based on user selection:
    - **View in App**: Renders a full report in-app with a pop-out window
    - **Export Report**: Saves a formatted Word document (.docx) with all findings
@@ -57,10 +57,10 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root or
 2. Enter your API key (or let it auto-load from file)
 3. Click **Browse** to select `.docx` or `.pdf` specs
 4. (Optional) Enter project context in the **Project Context** field
-5. Select the **Review Model**: Opus 4.6 (thorough) or Sonnet 4.6 (fast/cheap)
+5. Review model is **Opus 4.6** (currently fixed)
 6. (Optional) Check **Cross-spec coordination check** to enable inter-spec analysis
 7. Select the **Output** mode: View in App or Export Report
-8. The token gauge fills to show capacity usage — the run is blocked only if any single file exceeds the 150k per-call limit
+8. The token gauge fills to show capacity usage — the run is blocked only if any single file exceeds the 500k per-call limit
 9. Expand the **FILES** panel to check/uncheck individual specs if needed
 10. Click **Run Review** (or **Submit Batch** in batch mode)
 11. When complete:
@@ -83,18 +83,14 @@ Choose how you want to receive the review results:
 - **View in App** (default): Results render in the app as interactive collapsible cards with a pop-out report window. Best for small reviews (1-5 specs).
 - **Export Report**: Results are saved to a Word document (.docx) without rendering in the app. Best for large reviews where in-app rendering would be slow. The exported report contains everything the in-app report shows.
 
-### Review Model Selection
+### Review Model
 
-Choose between two models for the first-stage review:
-
-- **Opus 4.6** (default): Most thorough analysis. Recommended for final reviews, DSA submittals, and when you want the highest quality findings.
-- **Sonnet 4.6**: Faster and cheaper. Good for quick reviews, draft specs, or when you're iterating on spec content.
-
-Verification and cross-spec coordination checks always use Sonnet 4.6 regardless of your model selection.
+The first-stage review currently uses **Opus 4.6**.
+Verification and cross-spec coordination checks also use **Opus 4.6**.
 
 ### Cross-Spec Coordination Check
 
-The cross-spec coordination check is an optional pass that runs after the per-spec reviews. When enabled (via the checkbox in the INPUTS card), it sends a condensed summary of all specs — section headers and existing findings — to Claude Sonnet 4.6 in a single API call.
+The cross-spec coordination check is an optional pass that runs after the per-spec reviews. When enabled (via the checkbox in the INPUTS card), it sends the combined full spec text and existing findings to Claude Opus 4.6 in a single API call.
 
 **What it catches:**
 - Cross-references to specs that aren't in the submitted set
@@ -111,8 +107,8 @@ The cross-spec coordination check is an optional pass that runs after the per-sp
 - When you want to check that specs reference each other correctly
 
 **How it works:**
-- Uses **Sonnet 4.6** (cheaper and faster than Opus)
-- Sends section headers, scope excerpts, key numeric values, cross-references, and existing findings to the model
+- Uses **Opus 4.6** with adaptive thinking
+- Sends all submitted spec content and existing findings to the model
 - Findings appear in a dedicated **CROSS-SPEC COORDINATION** section in the report
 - Coordination findings go through web search verification like any other finding
 - Requires 2+ specs — automatically skipped with only 1 spec
@@ -164,7 +160,7 @@ Batch mode submits all specs as a single Anthropic Message Batch at 50% cost. Bo
 
 ### Verification
 
-All findings (CRITICAL, HIGH, MEDIUM, and GRIPES) are automatically verified by Sonnet 4.6 with web search. This includes both per-spec findings and cross-check coordination findings.
+All findings (CRITICAL, HIGH, MEDIUM, and GRIPES) are automatically verified by Opus 4.6 with web search. This includes both per-spec findings and cross-check coordination findings.
 
 In batch mode, verification is also batched via the Batches API for 50% cost savings. If batch verification fails (submission error or terminal batch state), it falls back to sequential verification automatically.
 
@@ -212,9 +208,9 @@ spec-review/
 │   ├── widgets.py         # Custom UI widgets
 │   ├── pipeline.py        # Core orchestration (single source of truth)
 │   ├── report_exporter.py # Word document report generation
-│   ├── cross_checker.py   # Cross-spec coordination check (Sonnet 4.6)
+│   ├── cross_checker.py   # Cross-spec coordination check (Opus 4.6)
 │   ├── batch.py           # Anthropic Message Batches API (review + verification)
-│   ├── verifier.py        # Web search verification (Sonnet 4.6)
+│   ├── verifier.py        # Web search verification (Opus 4.6)
 │   ├── extractor.py       # Text extraction (DOCX + PDF)
 │   ├── preprocessor.py    # LEED/placeholder detection
 │   ├── tokenizer.py       # Token counting with tiktoken
@@ -231,9 +227,9 @@ spec-review/
 
 - **Single pipeline**: All workflow logic lives in `pipeline.py`.
 - **Format-agnostic extraction**: `extractor.py` handles both `.docx` and `.pdf` via a dispatcher — downstream modules only see `ExtractedSpec`.
-- **User-selectable review model**: Opus 4.6 or Sonnet 4.6 for the first-stage review.
+- **Review model**: Opus 4.6 for the first-stage review.
 - **User-selectable output mode**: View in App or Export Report (.docx).
-- **Sonnet for support tasks**: Verification and cross-check always use Sonnet 4.6.
+- **Opus for support tasks**: Verification and cross-check use Opus 4.6.
 - **Verification batching**: In batch mode, verification is also batched for 50% savings.
 - **Persistent batch state**: Review-stage batch submissions are persisted in `batch_state.json` for resume after app restart. Verification-stage resume is not fully persisted.
 - **Terminal batch handling**: Failed/expired/canceled batches stop polling immediately.
