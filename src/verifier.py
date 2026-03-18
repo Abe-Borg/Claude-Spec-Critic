@@ -10,7 +10,7 @@ from typing import Callable
 
 from anthropic import APIError, APIConnectionError, RateLimitError
 
-from .batch import submit_verification_batch, poll_batch, retrieve_verification_results, cancel_batch
+from .batch import BatchJob, submit_verification_batch, poll_batch, retrieve_verification_results, cancel_batch
 from .reviewer import Finding, MODEL_OPUS_46, _get_client
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 
@@ -161,8 +161,21 @@ def verify_findings_batch(findings: list[Finding], *, log: Callable[[str], None]
         return findings
 
     progress(0.0, f"Submitting {len(findings)} verification requests...")
-    job = submit_verification_batch(findings, build_prompt_fn=lambda finding: _build_verification_prompt(finding, cycle=cycle))
+    job = start_verification_batch(findings, cycle=cycle)
     log(f"Verification batch submitted: {job.batch_id}")
+
+    collect_verification_batch_results(job, findings, log=log, progress=progress, poll_interval=poll_interval, cycle=cycle)
+    progress(100.0, "Verification complete")
+    return findings
+
+
+def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
+    return submit_verification_batch(findings, build_prompt_fn=lambda finding: _build_verification_prompt(finding, cycle=cycle))
+
+
+def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *, log: Callable[[str], None] = lambda _: None, progress: Callable[[float, str], None] = lambda _p, _m: None, poll_interval: int = 15, cycle: CodeCycle = DEFAULT_CYCLE) -> list[Finding]:
+    if not findings:
+        return findings
 
     consecutive_errors = 0
     while True:
@@ -186,5 +199,4 @@ def verify_findings_batch(findings: list[Finding], *, log: Callable[[str], None]
         time.sleep(poll_interval)
 
     retrieve_verification_results(job, findings, parse_response_fn=_parse_verification_response)
-    progress(100.0, "Verification complete")
     return findings

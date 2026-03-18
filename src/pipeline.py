@@ -13,7 +13,13 @@ from .preprocessor import preprocess_spec
 from .tokenizer import RECOMMENDED_MAX, count_tokens, exceeds_per_call_limit
 from .reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_46, StreamCallback
 from .batch import BatchJob, submit_review_batch, retrieve_review_results
-from .verifier import verify_findings, verify_findings_batch, VerificationResult
+from .verifier import (
+    verify_findings,
+    verify_findings_batch,
+    start_verification_batch,
+    collect_verification_batch_results,
+    VerificationResult,
+)
 from .cross_checker import run_cross_check
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .prompts import get_system_prompt
@@ -34,6 +40,17 @@ class PipelineResult:
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
+
+
+@dataclass
+class CollectedBatchState:
+    submission: BatchSubmission
+    review_result: ReviewResult
+    files_reviewed: list[str] = field(default_factory=list)
+    leed_alerts: list[dict] = field(default_factory=list)
+    placeholder_alerts: list[dict] = field(default_factory=list)
+    cross_check_result: Optional[ReviewResult] = None
+    cross_check_skipped_due_to_missing_specs: bool = False
 
 
 def _get_spec_files(input_dir: Path) -> list[Path]:
@@ -168,6 +185,27 @@ def _log_cross_check_status(log: LogFn, cross: ReviewResult):
 
 
 def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, cross_check: bool = False, specs: list[ExtractedSpec] | None = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE) -> PipelineResult:
+    state = collect_review_batch_results(submission, log=log)
+    if cross_check:
+        state = run_cross_check_for_batch(state, specs=specs, project_context=project_context, cycle=cycle, log=log)
+
+    if verify:
+        verifiable = prepare_verification_work(state)
+        if verifiable:
+            try:
+                verification_submission = start_batch_verification(verifiable, cycle=cycle, log=log, progress=progress)
+                collect_batch_verification_results(verification_submission, verifiable, cycle=cycle, log=log, progress=progress)
+            except Exception as e:
+                log(f"Verification failed: {e}. Returning results without verification.")
+                for f in verifiable:
+                    if f.verification is None:
+                        f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
+
+    progress(100.0, "Done.")
+    return finalize_batch_result(state)
+
+
+def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _noop_log) -> CollectedBatchState:
     results_by_request = retrieve_review_results(submission.job, model=submission.model)
     all_findings: list[Finding] = []
     all_thinking: list[str] = []
@@ -197,25 +235,63 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
     if errors:
         combined.thinking += "\n\n--- Batch Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
 
-    cross = None
-    if cross_check:
-        cross = run_cross_check(specs or [], all_findings, project_context=project_context, cycle=cycle)
-        _log_cross_check_status(log, cross)
+    return CollectedBatchState(
+        submission=submission,
+        review_result=combined,
+        files_reviewed=submission.files_reviewed,
+        leed_alerts=submission.leed_alerts,
+        placeholder_alerts=submission.placeholder_alerts,
+    )
 
-    all_verifiable = list(all_findings)
-    if cross and cross.findings:
-        all_verifiable.extend(cross.findings)
-    if verify and all_verifiable:
-        try:
-            verify_findings_batch(all_verifiable, log=log, progress=lambda p, m: progress(60.0 + (p / 100.0) * 35.0, m), cycle=cycle)
-        except Exception as e:
-            log(f"Verification failed: {e}. Returning results without verification.")
-            for f in all_verifiable:
-                if f.verification is None:
-                    f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
 
-    progress(100.0, "Done.")
-    return PipelineResult(review_result=combined, files_reviewed=submission.files_reviewed, leed_alerts=submission.leed_alerts, placeholder_alerts=submission.placeholder_alerts, cross_check_result=cross)
+def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[ExtractedSpec] | None, project_context: str = "", cycle: CodeCycle = DEFAULT_CYCLE, log: LogFn = _noop_log) -> CollectedBatchState:
+    if not state.submission.cross_check_enabled:
+        return state
+    if not specs:
+        state.cross_check_skipped_due_to_missing_specs = True
+        skipped = ReviewResult(findings=[], cross_check_status="skipped", thinking="Cross-check skipped: original extracted spec content is not available.")
+        state.cross_check_result = skipped
+        _log_cross_check_status(log, skipped)
+        return state
+    cross = run_cross_check(specs, state.review_result.findings, project_context=project_context, cycle=cycle)
+    state.cross_check_result = cross
+    _log_cross_check_status(log, cross)
+    return state
+
+
+def prepare_verification_work(state: CollectedBatchState) -> list[Finding]:
+    all_verifiable = list(state.review_result.findings)
+    if state.cross_check_result and state.cross_check_result.findings:
+        all_verifiable.extend(state.cross_check_result.findings)
+    return all_verifiable
+
+
+def start_batch_verification(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress) -> BatchJob:
+    progress(60.0, f"Submitting {len(findings)} verification requests...")
+    job = start_verification_batch(findings, cycle=cycle)
+    log(f"Verification batch submitted: {job.batch_id}")
+    return job
+
+
+def collect_batch_verification_results(job: BatchJob, findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, poll_interval: int = 15) -> list[Finding]:
+    return collect_verification_batch_results(
+        job,
+        findings,
+        cycle=cycle,
+        log=log,
+        progress=lambda p, m: progress(60.0 + (p / 100.0) * 35.0, m),
+        poll_interval=poll_interval,
+    )
+
+
+def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
+    return PipelineResult(
+        review_result=state.review_result,
+        files_reviewed=state.files_reviewed,
+        leed_alerts=state.leed_alerts,
+        placeholder_alerts=state.placeholder_alerts,
+        cross_check_result=state.cross_check_result,
+    )
 
 
 def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_46, verify: bool = True, cross_check: bool = False, dry_run: bool = False, verbose: bool = False, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE) -> PipelineResult:
