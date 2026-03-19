@@ -1,10 +1,10 @@
-# Spec Critic v2.1.0
+# Spec Critic v2.3.0
 
-A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` or `.pdf` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
+A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
 
 ## What It Does
 
-1. Extracts text from `.docx` and native `.pdf` specification files (paragraphs + tables)
+1. Extracts text from `.docx` specification files (paragraphs + tables)
 2. Detects LEED references and unresolved placeholders locally (no API call needed)
 3. Performs pre-flight token analysis with an animated visual gauge
 4. Reviews each spec independently via streaming API calls (Opus 4.6)
@@ -35,6 +35,8 @@ source venv/bin/activate     # macOS/Linux
 
 # Install dependencies
 pip install -e .
+# or
+pip install -r requirements.txt
 
 # Run
 python main.py
@@ -55,33 +57,30 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root or
 
 1. Launch the app with `python main.py`
 2. Enter your API key (or let it auto-load from file)
-3. Click **Browse** to select `.docx` or `.pdf` specs
+3. Click **Browse** to select `.docx` specs
 4. (Optional) Enter project context in the **Project Context** field
 5. Review model is **Opus 4.6** (currently fixed)
 6. (Optional) Check **Cross-spec coordination check** to enable inter-spec analysis
 7. Select the **Output** mode: View in App or Export Report
 8. The token gauge fills to show capacity usage — the run is blocked only if any single file exceeds the 500k per-call limit
 9. Expand the **FILES** panel to check/uncheck individual specs if needed
-10. Click **Run Review** (or **Submit Batch** in batch mode)
+10. Click **Run Review**
 11. When complete:
     - **View in App**: The report renders in-app and a pop-out window opens automatically
     - **Export Report**: A save dialog appears — choose where to save the `.docx` report
-
-### Supported File Formats
-
-- **`.docx`** (Word documents) — Full support including table extraction
-- **`.pdf`** (native/text-selectable PDFs) — Full text extraction via pymupdf
-
-**Note on PDFs**: Only native (text-selectable) PDFs are supported. Scanned or image-only PDFs will produce a warning indicating poor extraction quality. If you have a scanned PDF, convert it to a text-selectable PDF or `.docx` before reviewing.
-
-You can mix `.docx` and `.pdf` files in a single review — the extractor handles both formats and produces the same `ExtractedSpec` interface downstream.
 
 ### Output Mode
 
 Choose how you want to receive the review results:
 
-- **View in App** (default): Results render in the app as interactive collapsible cards with a pop-out report window. Best for small reviews (1-5 specs).
-- **Export Report**: Results are saved to a Word document (.docx) without rendering in the app. Best for large reviews where in-app rendering would be slow. The exported report contains everything the in-app report shows.
+- **Real-time (FAST: Expensive!)**: Runs per-spec streaming review calls. Selecting this mode prompts a confirmation dialog warning about higher cost, with a one-click option to switch to batch.
+- **Batch (SLOW: Cheap!)**: Submits the review and verification phases through the Anthropic Message Batches API for lower cost.
+- **View in App** (default output): Results render in the app as interactive collapsible cards with a pop-out report window.
+- **Export Report**: Results are saved to a Word document (.docx) without rendering in the app.
+
+### Code Cycle
+
+Select the California code cycle (2022 or 2025) via the segmented button in the INPUTS card. The default is 2025. This controls which code edition references (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) the reviewer uses when checking specifications.
 
 ### Review Model
 
@@ -152,11 +151,11 @@ When the review finishes in "View in App" mode, a separate report window opens a
 
 Batch mode submits all specs as a single Anthropic Message Batch at 50% cost. Both the review stage and the verification stage are batched for maximum cost savings. The cross-spec coordination check (if enabled) runs as a real-time call between the two batches.
 
-**Persistent batch state**: Review-stage batch submissions are persisted for resume after app restart. Verification-stage resume is not fully persisted. Batch state expires after 24 hours.
+**Persistent batch state**: Resume is durable across review-poll, review-collect, verification-poll, and finalize phases using `resume_state.py` serialization. Batch state expires after 24 hours.
 
 **Terminal failure handling**: If a batch enters a terminal failure state (failed, expired, or canceled), polling stops automatically and the user is informed. No infinite polling loops.
 
-**Note**: When resuming a batch after app restart, the cross-spec coordination check is not available (spec content is not preserved in the state file).
+**Note**: Cross-check requires preserved extracted spec content; if unavailable in resume payload, cross-check is skipped safely with an explicit status.
 
 ### Verification
 
@@ -210,12 +209,14 @@ spec-review/
 │   ├── report_exporter.py # Word document report generation
 │   ├── cross_checker.py   # Cross-spec coordination check (Opus 4.6)
 │   ├── batch.py           # Anthropic Message Batches API (review + verification)
+│   ├── code_cycles.py     # California code cycle definitions (2022/2025)
 │   ├── verifier.py        # Web search verification (Opus 4.6)
-│   ├── extractor.py       # Text extraction (DOCX + PDF)
+│   ├── extractor.py       # Text extraction (DOCX-only)
 │   ├── preprocessor.py    # LEED/placeholder detection
 │   ├── tokenizer.py       # Token counting with tiktoken
-│   ├── prompts.py         # System prompt for Claude
-│   └── reviewer.py        # Anthropic API client with streaming
+│   ├── prompts.py         # System + user prompt builders
+│   ├── reviewer.py        # Anthropic API client with streaming
+│   ├── resume_state.py    # Durable batch resume-state serialization
 ├── main.py                # Entry point
 ├── pyproject.toml         # Project metadata & dependencies
 └── README.md
@@ -226,12 +227,12 @@ spec-review/
 ### Design Decisions
 
 - **Single pipeline**: All workflow logic lives in `pipeline.py`.
-- **Format-agnostic extraction**: `extractor.py` handles both `.docx` and `.pdf` via a dispatcher — downstream modules only see `ExtractedSpec`.
+- **DOCX-only extraction**: `extractor.py` supports `.docx` via a dispatcher — downstream modules only see `ExtractedSpec`.
 - **Review model**: Opus 4.6 for the first-stage review.
 - **User-selectable output mode**: View in App or Export Report (.docx).
 - **Opus for support tasks**: Verification and cross-check use Opus 4.6.
 - **Verification batching**: In batch mode, verification is also batched for 50% savings.
-- **Persistent batch state**: Review-stage batch submissions are persisted in `batch_state.json` for resume after app restart. Verification-stage resume is not fully persisted.
+- **Persistent batch state**: Durable resume-state persists review and verification phases via `resume_state.py`.
 - **Terminal batch handling**: Failed/expired/canceled batches stop polling immediately.
 - **No document mutation**: Analysis only. Document cleanup belongs in SpecCleanse.
 - **Advisory only**: This tool assists human reviewers. Not an AHJ substitute.
@@ -242,7 +243,7 @@ spec-review/
 - **Per-file token gating**: Run is blocked only if any single file exceeds the per-call limit, not by total across files.
 - **Robust JSON parsing**: Sentinel tags with heuristic fallback for reliable extraction.
 - **Frozen build support**: Config and state files stored in user-writable directories via `platformdirs`.
-- **Native PDF only**: Scanned/image PDFs are detected and warned about but not OCR'd.
+- **DOCX-only input**: `.pdf` extraction and `pymupdf` dependency were removed in v2.3.0.
 - **Fault-tolerant verification**: Individual verification failures cannot crash the remaining findings (v1.9.1). Pipeline-level try/except added in v2.0.0.
 - **All findings verified**: GRIPES findings are now verified like any other severity (v2.0.0).
 - **Bounded polling**: Both GUI and verification batch polling have maximum attempt limits (v2.0.0).
@@ -269,13 +270,30 @@ Claude classifies findings into four severity levels with confidence scores:
 ```
 anthropic          # Claude API client
 python-docx        # DOCX text extraction + report export
-pymupdf            # PDF text extraction
 tiktoken           # Token counting (cl100k_base encoding)
 customtkinter      # Modern themed Tkinter widgets
 platformdirs       # OS-appropriate config/state directories
 ```
 
 ## Changelog
+
+### v2.3.0 — DOCX-only extraction + UX clarity updates
+
+- **Feature**: Real-time mode cost confirmation dialog with one-click switch to batch mode
+- **Feature**: Updated mode labels to **Real-time (FAST: Expensive!)** and **Batch (SLOW: Cheap!)**
+- **Removed**: PDF support removed — extractor now supports `.docx` only
+- **Removed**: `pymupdf` dependency removed
+- **Docs**: TokenGauge label updated to **LARGEST SPEC CAPACITY**
+
+### v2.2.0 — Code cycles + phased batch resume architecture
+
+- **Feature**: Code cycle selector (2022 / 2025) added to INPUTS card
+- **Feature**: New `code_cycles.py` module with `CodeCycle`, `CALIFORNIA_2022`, and `CALIFORNIA_2025`
+- **Feature**: New `resume_state.py` module for durable batch resume-state serialization/deserialization
+- **Feature**: Phased batch pipeline APIs: review collect, cross-check phase, verification prep/start/collect, and finalize
+- **Feature**: Batch resume expanded beyond review polling to verification-poll and finalize phases
+- **Improvement**: Prompt and verification code references parameterized by selected cycle
+- **Improvement**: Cross-check token budget refined to `CROSS_CHECK_RECOMMENDED_MAX = 822,000`
 
 ### v2.1.0 — Robustness, Correctness, and Quality-of-Life Improvements
 
@@ -285,7 +303,6 @@ platformdirs       # OS-appropriate config/state directories
 - **Fix**: Batch state cleared on polling timeout — prevents stale resume dialog on next app launch
 - **Fix**: Batch status string normalized (hyphens to underscores) — fixes "unexpected batch status: in-progress" log spam
 - **Fix**: `_on_review_error()` clears batch state as safety net
-- **Fix**: PDF `doc.close()` now in try/finally — prevents resource leak on extraction errors
 - **Fix**: Broader DOCX error handling — catches `BadZipFile` and other exceptions beyond `PackageNotFoundError`
 - **Fix**: Empty specs (zero extractable text) skipped in pipeline instead of wasting API calls
 - **Fix**: Finding numbering in exported reports now sequential across all severity groups (1, 2, 3...) instead of restarting per group
@@ -303,14 +320,12 @@ platformdirs       # OS-appropriate config/state directories
 - **Improvement**: "New Review" button added to header bar — wired to `_reset_for_new_review()`
 - **Removed**: Dead `_should_verify()` function (always returned True)
 - **Docs**: `cancel_batch()` return type corrected to `str` in CLAUDE.md
-- **Docs**: Stale PDF table extraction references removed from README and extractor docstrings
 - **Docs**: `exceeds_per_call_limit()` and `PER_CALL_PADDING` documented in CLAUDE.md
 
 ### v2.0.0 — Correctness, Parse Hardening, Extraction Fidelity, and Cleanup
 
 - **Fix**: `pyproject.toml` build-backend changed from invalid `setuptools.backends._legacy:_Backend` to `setuptools.build_meta` — `pip install -e .` now works
 - **Fix**: DOCX extraction preserves document body order — paragraphs and tables interleaved correctly via `doc.element.body` iteration instead of two-pass approach
-- **Fix**: PDF table extraction via `find_tables()` removed — was duplicating content already captured by `get_text("text")`
 - **Fix**: Loose "no issues" heuristic removed from JSON parser — only `"[]"` treated as empty, preventing false negatives when model text happens to contain "no issues"
 - **Fix**: Parse fallback (Strategy 2) validates bracket structure before `json.loads()` — prevents garbage parses
 - **Fix**: Field validation in `_parse_findings()` — invalid severity skips finding, invalid actionType defaults to EDIT, text fields coerced to str
@@ -338,19 +353,6 @@ platformdirs       # OS-appropriate config/state directories
 
 - **Fix**: `verify_finding()` now catches all exception types (not just Anthropic-specific ones) — unexpected errors during a single verification no longer crash the entire pipeline
 - **Fix**: `verify_findings()` sequential loop wraps each finding in its own try/except — a single verification failure cannot abort the remaining findings; previously, an uncaught exception from finding #3 would lose all work (findings #1–#2 verified, #4–#N never attempted, PipelineResult never constructed)
-
-### v1.9.0 — PDF Support
-
-- **Feature**: Native PDF text extraction via pymupdf — load `.pdf` spec files alongside `.docx`
-- **Feature**: PDF table detection — tables in PDFs are extracted as pipe-delimited rows (same format as DOCX tables)
-- **Feature**: Format-agnostic `extract_text()` dispatcher in `extractor.py` — routes to the correct extractor based on file extension
-- **Feature**: Scanned PDF detection — warns when a PDF has very few words per page, suggesting it may be image-based
-- **Feature**: File browser now accepts both `.docx` and `.pdf` files with a combined filter
-- **Feature**: `SUPPORTED_EXTENSIONS` constant exported from `extractor.py` for use by GUI and pipeline
-- **Update**: `pipeline.py` uses `extract_text()` instead of `extract_text_from_docx()` — supports mixed `.docx`/`.pdf` reviews
-- **Update**: `pipeline._get_spec_files()` discovers both `.docx` and `.pdf` files in a directory
-- **Update**: Deduplication regex updated to handle both `.docx` and `.pdf` filename references
-- **Dependency**: Added `pymupdf` for PDF text and table extraction
 
 ### v1.8.2 — Reliability, Correctness, and UX Fixes
 
