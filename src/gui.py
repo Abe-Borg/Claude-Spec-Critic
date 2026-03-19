@@ -231,6 +231,13 @@ class SpecReviewApp(ctk.CTk):
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._show_about_dialog,
         ).pack(side="right", pady=(4, 0))
+        ctk.CTkButton(
+            hdr_title_row, text="How to Use", width=100, height=30,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            fg_color=COLORS["bg_card"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"], command=self._show_usage_dialog,
+        ).pack(side="right", padx=(0, 8), pady=(4, 0))
         ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.6", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
         self._create_inputs_card(c)
@@ -1258,6 +1265,137 @@ class SpecReviewApp(ctk.CTk):
                 "Spec Critic is a review assistant \u2014 it doesn\u2019t modify your "
                 "documents. It\u2019s advisory only and not a substitute for AHJ review. "
                 "Code citations should still be spot-checked by the engineer of record."
+            ),
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_secondary"],
+            wraplength=520, justify="left",
+        ).pack(anchor="w", padx=8, pady=(0, 10))
+
+        ctk.CTkButton(
+            outer, text="Close", width=100, height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            command=dialog.destroy,
+        ).pack(pady=(0, 16))
+
+    def _show_usage_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("How to Use Spec Critic")
+        dialog.geometry("620x640")
+        dialog.configure(fg_color=COLORS["bg_dark"])
+        dialog.resizable(True, True)
+        dialog.minsize(500, 500)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.lift()
+        dialog.focus_force()
+
+        outer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
+        outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+        ctk.CTkLabel(
+            outer, text="How to Use Spec Critic",
+            font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", padx=20, pady=(20, 4))
+
+        ctk.CTkLabel(
+            outer, text="Step-by-step guide to running a specification review",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_muted"],
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        scroll = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        sections = [
+            ("1.  Enter Your API Key", (
+                "Paste your Anthropic API key (starts with sk-ant-...) into the "
+                "API Key field. The key is used for all Claude API calls during "
+                "the review. You can also save it to a file named "
+                "'spec_critic_api_key.txt' next to the application — it will "
+                "be loaded automatically on startup."
+            )),
+            ("2.  Select Specification Files", (
+                "Click Browse and select one or more .docx specification files. "
+                "The tool will extract text and analyze token usage. The token "
+                "gauge shows the largest single spec's estimated API call size "
+                "against the per-call limit — if a spec is too large, it will "
+                "be flagged."
+            )),
+            ("3.  Add Project Context (Optional)", (
+                "Describe your project in the Project Context field — things "
+                "like building type, square footage, number of stories, or "
+                "any special conditions. This context is included with every "
+                "API call and helps Claude produce more relevant findings. "
+                "Click Expand for a larger editing area."
+            )),
+            ("4.  Choose Your Mode", (
+                "Real-time mode streams results as they come in — fast but "
+                "expensive. Batch mode queues all specs for processing at 50% "
+                "cost savings, with results typically ready in 15–60 minutes. "
+                "For more than a few specs, batch mode is strongly recommended."
+            )),
+            ("5.  Select Code Cycle", (
+                "Choose the California code cycle for your project (2022 or "
+                "2025). This determines which edition of CBC, CMC, CPC, Energy "
+                "Code, CALGreen, and ASCE 7 the reviewer checks against."
+            )),
+            ("6.  Enable Cross-Spec Coordination (Optional)", (
+                "Check this option to run a separate coordination analysis that "
+                "sends all spec content to Claude in a single call. This catches "
+                "contradictions between specs, missing cross-references, and "
+                "scope gaps that per-spec review cannot detect. Requires the "
+                "combined content to fit within the cross-check token limit."
+            )),
+            ("7.  Choose Output Mode", (
+                "'View in App' renders results in a pop-out report window with "
+                "collapsible finding cards. 'Export Report' saves a formatted "
+                ".docx file — useful for large reviews that would slow down "
+                "in-app rendering, or for sharing with your team."
+            )),
+            ("8.  Run the Review", (
+                "Click Run Review (real-time) or Submit Batch (batch mode). "
+                "The activity log shows progress. In batch mode, you can close "
+                "the app and reopen it later — the pending batch state is saved "
+                "and you will be prompted to resume."
+            )),
+            ("9.  Review the Results", (
+                "Findings are grouped by severity (Critical, High, Medium, "
+                "Gripe) and sorted by confidence within each tier. Each finding "
+                "includes a verification verdict from a secondary AI pass with "
+                "web search. Use Export JSON from the report window to save "
+                "structured results for further processing."
+            )),
+        ]
+
+        for title, body in sections:
+            ctk.CTkLabel(
+                scroll, text=title,
+                font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+                text_color=COLORS["text_primary"],
+            ).pack(anchor="w", padx=8, pady=(10, 2))
+            ctk.CTkLabel(
+                scroll, text=body,
+                font=ctk.CTkFont(family="Segoe UI", size=12),
+                text_color=COLORS["text_secondary"],
+                wraplength=520, justify="left",
+            ).pack(anchor="w", padx=8, pady=(0, 4))
+
+        ctk.CTkLabel(
+            scroll, text="Tips",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", padx=8, pady=(14, 2))
+        ctk.CTkLabel(
+            scroll,
+            text=(
+                "Use batch mode for routine reviews — identical results at "
+                "half the cost. Save your API key to a file so you don’t "
+                "have to paste it every time. Write specific project context — "
+                "the more detail you provide, the more targeted the findings. "
+                "Always spot-check code citations against the actual code text "
+                "before acting on findings."
             ),
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color=COLORS["text_secondary"],
