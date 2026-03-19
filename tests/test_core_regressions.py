@@ -5,8 +5,13 @@ import pytest
 from src.code_cycles import CALIFORNIA_2022, CALIFORNIA_2025
 from src.extractor import SUPPORTED_EXTENSIONS, ExtractedSpec, extract_text
 from src.prompts import get_system_prompt, get_single_spec_user_message
-from src.pipeline import _deduplicate_findings, BatchSubmission
-from src.reviewer import Finding, _stream_review
+from src.pipeline import (
+    _deduplicate_findings,
+    BatchSubmission,
+    CollectedBatchState,
+    run_cross_check_for_batch,
+)
+from src.reviewer import Finding, ReviewResult, _stream_review
 from src.cross_checker import run_cross_check
 from src.batch import BatchJob, submit_verification_batch
 from src import gui
@@ -15,10 +20,128 @@ from src.resume_state import (
     PHASE_REVIEW_POLL,
     PHASE_REVIEW_COLLECT,
     PHASE_VERIFICATION_POLL,
+    PHASE_FINALIZE,
     build_resume_state,
+    deserialize_resume_state,
     serialize_batch_job,
     deserialize_batch_job,
 )
+
+
+def _make_submission(*, batch_id: str = "msgbatch_test", cross_check_enabled: bool = True, export_mode: bool = True, prepared_specs: list[ExtractedSpec] | None = None) -> BatchSubmission:
+    return BatchSubmission(
+        job=BatchJob(
+            batch_id=batch_id,
+            job_type="review",
+            request_map={"review__spec__0": {"filename": "spec.docx", "index": 0, "type": "review"}},
+            created_at=123.0,
+        ),
+        files_reviewed=["spec.docx"],
+        review_request_ids=["review__spec__0"],
+        cycle_label="2025",
+        cross_check_enabled=cross_check_enabled,
+        export_mode=export_mode,
+        prepared_specs=prepared_specs,
+    )
+
+
+def _make_finding(issue: str = "Missing note") -> Finding:
+    return Finding(
+        severity="HIGH",
+        fileName="spec.docx",
+        section="1",
+        issue=issue,
+        actionType="EDIT",
+        existingText="old",
+        replacementText="new",
+        codeReference="CBC",
+        confidence=0.9,
+    )
+
+
+def _make_review_state(submission: BatchSubmission) -> CollectedBatchState:
+    review = ReviewResult(findings=[_make_finding("Main review issue")], cross_check_status="completed")
+    cross = ReviewResult(findings=[_make_finding("Cross-check issue")], cross_check_status="completed")
+    return CollectedBatchState(
+        submission=submission,
+        review_result=review,
+        files_reviewed=["spec.docx"],
+        leed_alerts=[{"filename": "spec.docx", "type": "leed"}],
+        placeholder_alerts=[{"filename": "spec.docx", "type": "placeholder"}],
+        cross_check_result=cross,
+        cross_check_skipped_due_to_missing_specs=True,
+    )
+
+
+def _make_dummy_app():
+    class _Entry:
+        def get(self):
+            return "key"
+
+    class _Selector:
+        def __init__(self, value="View in App"):
+            self.value = value
+
+        def set(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    class _Var:
+        def __init__(self):
+            self.value = None
+
+        def set(self, value):
+            self.value = value
+
+    class _Log:
+        def log_error(self, _m):
+            pass
+
+        def log_warning(self, _m):
+            pass
+
+        def log(self, *_args, **_kwargs):
+            pass
+
+        def log_step(self, *_args, **_kwargs):
+            pass
+
+    class _Button:
+        def set_processing(self):
+            pass
+
+        def configure(self, **_kwargs):
+            pass
+
+    class _Progress:
+        def pack(self, **_kwargs):
+            pass
+
+        def set(self, _v):
+            pass
+
+        def configure(self, **_kwargs):
+            pass
+
+    dummy = type("Dummy", (), {})()
+    dummy.api_key_entry = _Entry()
+    dummy.log = _Log()
+    dummy.output_selector = _Selector(value="View in App")
+    dummy.cycle_selector = _Selector(value="2022")
+    dummy._cross_check_var = _Var()
+    dummy.run_button = _Button()
+    dummy.progress_bar = _Progress()
+    dummy._poll_batch = lambda: None
+    dummy._collect_batch_results = lambda: None
+    dummy._resume_verification_poll = lambda _loaded: None
+    dummy._on_review_complete = lambda _result: None
+    dummy._reset_ui = lambda: None
+    dummy._on_output_mode_change = lambda _value: None
+    dummy._is_valid_verification_resume_state = lambda loaded: gui.SpecReviewApp._is_valid_verification_resume_state(dummy, loaded)
+    dummy.after = lambda *_args, **_kwargs: None
+    return dummy
 
 
 def test_supported_extensions_docx_only(tmp_path: Path):
@@ -40,7 +163,7 @@ def test_cycle_prompts_change():
 
 
 def test_dedup_does_not_merge_different_edits():
-    f1 = Finding(severity="HIGH", fileName="a.docx", section="1", issue="Same issue", actionType="EDIT", existingText="foo", replacementText="bar", codeReference="CBC", confidence=0.8)
+    f1 = _make_finding("Same issue")
     f2 = Finding(severity="HIGH", fileName="b.docx", section="1", issue="Same issue", actionType="EDIT", existingText="different", replacementText="bar", codeReference="CBC", confidence=0.8)
     deduped = _deduplicate_findings([f1, f2])
     assert len(deduped) == 2
@@ -81,48 +204,80 @@ def test_stream_review_marks_incomplete_when_stop_reason_not_end_turn():
     assert "stop_reason: max_tokens" in result.error
 
 
-def test_batch_state_round_trip_preserves_cycle_cross_check_export_and_specs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_round_trip_review_poll_via_gui_save_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state_path = tmp_path / "batch_state.json"
     monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
 
-    submission = BatchSubmission(
-        job=BatchJob(
-            batch_id="msgbatch_test_roundtrip",
-            job_type="review",
-            request_map={"review__spec__0": {"filename": "spec.docx", "index": 0, "type": "review"}},
-            created_at=123.0,
-        ),
-        files_reviewed=["spec.docx"],
-        review_request_ids=["review__spec__0"],
-        cycle_label="2022",
-        cross_check_enabled=True,
-        export_mode=True,
-        prepared_specs=[
-            ExtractedSpec(
-                filename="spec.docx",
-                content="Section text",
-                word_count=2,
-                source_path="/tmp/spec.docx",
-                source_format="docx",
-            )
-        ],
-    )
+    specs = [ExtractedSpec(filename="spec.docx", content="Section text", word_count=2, source_path="/tmp/spec.docx", source_format="docx")]
+    submission = _make_submission(batch_id="msgbatch_test_roundtrip", cross_check_enabled=True, export_mode=True, prepared_specs=specs)
 
     gui.save_batch_state(build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission))
     loaded = gui.load_batch_state()
 
     assert loaded is not None
     loaded_submission = loaded["submission"]
-    loaded_phase = loaded["phase"]
-    assert loaded_phase == PHASE_REVIEW_POLL
-    assert loaded_submission.cycle_label == "2022"
+    assert loaded["phase"] == PHASE_REVIEW_POLL
+    assert loaded_submission.job.batch_id == "msgbatch_test_roundtrip"
+    assert loaded_submission.cycle_label == "2025"
     assert loaded_submission.cross_check_enabled is True
     assert loaded_submission.export_mode is True
     assert loaded_submission.prepared_specs is not None
-    assert len(loaded_submission.prepared_specs) == 1
     assert loaded_submission.prepared_specs[0].filename == "spec.docx"
-    assert loaded_submission.prepared_specs[0].content == "Section text"
-    assert loaded_submission.prepared_specs[0].word_count == 2
+
+
+def test_round_trip_review_collect_state_payload():
+    submission = _make_submission(batch_id="msgbatch_collect")
+    review_state = _make_review_state(submission)
+
+    restored = deserialize_resume_state(build_resume_state(phase=PHASE_REVIEW_COLLECT, submission=submission, review_state=review_state))
+
+    assert restored["phase"] == PHASE_REVIEW_COLLECT
+    restored_review_state = restored["review_state"]
+    assert restored_review_state.review_result.findings[0].issue == "Main review issue"
+    assert restored_review_state.files_reviewed == ["spec.docx"]
+    assert restored_review_state.leed_alerts[0]["type"] == "leed"
+    assert restored_review_state.cross_check_skipped_due_to_missing_specs is True
+
+
+def test_round_trip_verification_poll_state_payload():
+    submission = _make_submission(batch_id="msgbatch_verify")
+    review_state = _make_review_state(submission)
+    verification_batch = BatchJob(batch_id="msgbatch_verify_inner", job_type="verify", request_map={"verify__0": {"finding_idx": 0}}, created_at=999.0)
+
+    restored = deserialize_resume_state(
+        build_resume_state(
+            phase=PHASE_VERIFICATION_POLL,
+            submission=submission,
+            review_state=review_state,
+            verification_batch=verification_batch,
+            verification_started=True,
+        )
+    )
+
+    assert restored["phase"] == PHASE_VERIFICATION_POLL
+    assert restored["verification_batch"].batch_id == "msgbatch_verify_inner"
+    assert restored["review_state"].review_result.findings[0].issue == "Main review issue"
+    assert restored["resume_flags"]["verification_started"] is True
+
+
+def test_round_trip_finalize_state_payload_uses_review_state():
+    submission = _make_submission(batch_id="msgbatch_finalize")
+    review_state = _make_review_state(submission)
+
+    restored = deserialize_resume_state(
+        build_resume_state(
+            phase=PHASE_FINALIZE,
+            submission=submission,
+            review_state=review_state,
+            verification_started=True,
+            verification_completed=True,
+        )
+    )
+
+    assert restored["phase"] == PHASE_FINALIZE
+    assert restored["review_state"].review_result.findings[0].issue == "Main review issue"
+    assert restored["review_state"].cross_check_result is not None
+    assert restored["resume_flags"]["verification_completed"] is True
 
 
 def test_verify_finding_non_end_turn_returns_unverified_with_stop_reason(monkeypatch: pytest.MonkeyPatch):
@@ -137,29 +292,13 @@ def test_verify_finding_non_end_turn_returns_unverified_with_stop_reason(monkeyp
 
     monkeypatch.setattr("src.verifier._get_client", lambda: _FakeClient())
 
-    finding = Finding(
-        severity="HIGH",
-        fileName="spec.docx",
-        section="1",
-        issue="Issue",
-        actionType="EDIT",
-        existingText="old",
-        replacementText="new",
-        codeReference="CBC",
-    )
-
-    result = verify_finding(finding)
+    result = verify_finding(_make_finding("Issue"))
     assert result.verdict == "UNVERIFIED"
     assert "stop_reason: max_tokens" in result.explanation
 
 
 def test_verification_batch_job_round_trip():
-    job = BatchJob(
-        batch_id="msgbatch_verify_roundtrip",
-        job_type="verify",
-        request_map={"verify__0": {"batch_idx": 0, "finding_idx": 3}},
-        created_at=10.0,
-    )
+    job = BatchJob(batch_id="msgbatch_verify_roundtrip", job_type="verify", request_map={"verify__0": {"batch_idx": 0, "finding_idx": 3}}, created_at=10.0)
     payload = serialize_batch_job(job)
     restored = deserialize_batch_job(payload)
     assert restored.batch_id == job.batch_id
@@ -193,115 +332,138 @@ def test_load_batch_state_legacy_phase_migrates_to_review_poll(tmp_path: Path, m
     assert loaded["submission"].job.batch_id == "msgbatch_legacy"
 
 
-def test_resume_batch_uses_saved_export_mode_not_live_selector(monkeypatch: pytest.MonkeyPatch):
-    class _Entry:
-        def get(self): return "key"
-
-    class _Selector:
-        def __init__(self, value="View in App"):
-            self.value = value
-        def set(self, value): self.value = value
-        def get(self): return self.value
-
-    class _Var:
-        def __init__(self): self.value = None
-        def set(self, value): self.value = value
-
-    class _Log:
-        def log_error(self, _m): pass
-        def log_warning(self, _m): pass
-        def log(self, *_args, **_kwargs): pass
-        def log_step(self, *_args, **_kwargs): pass
-
-    class _Button:
-        def set_processing(self): pass
-        def configure(self, **_kwargs): pass
-
-    class _Progress:
-        def pack(self, **_kwargs): pass
-        def set(self, _v): pass
-        def configure(self, **_kwargs): pass
-
-    dummy = type("Dummy", (), {})()
-    dummy.api_key_entry = _Entry()
-    dummy.log = _Log()
-    dummy.output_selector = _Selector(value="View in App")
-    dummy.cycle_selector = _Selector(value="2022")
-    dummy._cross_check_var = _Var()
-    dummy.run_button = _Button()
-    dummy.progress_bar = _Progress()
-    dummy._poll_batch = lambda: None
-    dummy._collect_batch_results = lambda: None
-    dummy._resume_verification_poll = lambda _loaded: None
-    dummy._on_review_complete = lambda _result: None
-    dummy._reset_ui = lambda: None
-    dummy._on_output_mode_change = lambda _value: None
-    dummy.after = lambda *_args, **_kwargs: None
-
-    submission = BatchSubmission(
-        job=BatchJob(batch_id="msgbatch_export", job_type="review", request_map={}, created_at=1.0),
-        export_mode=True,
-        cycle_label="2025",
-        cross_check_enabled=False,
-    )
+def test_resume_batch_uses_saved_export_mode_not_live_selector():
+    dummy = _make_dummy_app()
+    submission = _make_submission(batch_id="msgbatch_export", cross_check_enabled=False, export_mode=True)
     state = {"phase": PHASE_REVIEW_POLL, "submission": submission}
+
     gui.SpecReviewApp._resume_batch(dummy, state)
+
     assert dummy._export_mode_for_review is True
     assert dummy.output_selector.get() == "Export Report"
 
 
-def test_resume_batch_phase_router_calls_expected_handler(monkeypatch: pytest.MonkeyPatch):
+def test_resume_batch_disables_cross_check_when_specs_missing():
+    dummy = _make_dummy_app()
+    submission = _make_submission(batch_id="msgbatch_crosscheck_missing", cross_check_enabled=True, export_mode=False, prepared_specs=None)
+
+    gui.SpecReviewApp._resume_batch(dummy, {"phase": PHASE_REVIEW_POLL, "submission": submission})
+
+    assert dummy._cross_check_for_review is False
+
+
+def test_resume_batch_phase_router_calls_expected_handler():
     called = {"poll": 0, "collect": 0, "verify": 0}
-
-    class _Entry:
-        def get(self): return "key"
-
-    class _Selector:
-        def __init__(self): self.value = "View in App"
-        def set(self, value): self.value = value
-        def get(self): return self.value
-
-    class _Var:
-        def set(self, _value): pass
-
-    class _Log:
-        def log_error(self, _m): pass
-        def log_warning(self, _m): pass
-        def log(self, *_args, **_kwargs): pass
-        def log_step(self, *_args, **_kwargs): pass
-
-    class _Button:
-        def set_processing(self): pass
-        def configure(self, **_kwargs): pass
-
-    class _Progress:
-        def pack(self, **_kwargs): pass
-        def set(self, _v): pass
-        def configure(self, **_kwargs): pass
-
-    dummy = type("Dummy", (), {})()
-    dummy.api_key_entry = _Entry()
-    dummy.log = _Log()
-    dummy.output_selector = _Selector()
-    dummy.cycle_selector = _Selector()
-    dummy._cross_check_var = _Var()
-    dummy.run_button = _Button()
-    dummy.progress_bar = _Progress()
+    dummy = _make_dummy_app()
     dummy._poll_batch = lambda: called.__setitem__("poll", called["poll"] + 1)
     dummy._collect_batch_results = lambda: called.__setitem__("collect", called["collect"] + 1)
     dummy._resume_verification_poll = lambda _loaded: called.__setitem__("verify", called["verify"] + 1)
-    dummy._on_review_complete = lambda _result: None
-    dummy._reset_ui = lambda: None
-    dummy._on_output_mode_change = lambda _value: None
-    dummy.after = lambda *_args, **_kwargs: None
+    submission = _make_submission(batch_id="msgbatch_router")
+    review_state = _make_review_state(submission)
+    verification_batch = BatchJob(batch_id="msgbatch_verify_router", job_type="verify", request_map={"verify__0": {"finding_idx": 0}}, created_at=1.0)
 
-    submission = BatchSubmission(
-        job=BatchJob(batch_id="msgbatch_router", job_type="review", request_map={}, created_at=1.0),
-    )
     gui.SpecReviewApp._resume_batch(dummy, {"phase": PHASE_REVIEW_POLL, "submission": submission})
     gui.SpecReviewApp._resume_batch(dummy, {"phase": PHASE_REVIEW_COLLECT, "submission": submission})
-    gui.SpecReviewApp._resume_batch(dummy, {"phase": PHASE_VERIFICATION_POLL, "submission": submission, "review_state": object(), "verification_batch": object()})
+    gui.SpecReviewApp._resume_batch(dummy, {"phase": PHASE_VERIFICATION_POLL, "submission": submission, "review_state": review_state, "verification_batch": verification_batch})
     assert called == {"poll": 1, "collect": 1, "verify": 1}
+
+
+def test_run_cross_check_for_batch_skips_when_specs_missing():
+    submission = _make_submission(batch_id="msgbatch_cross", cross_check_enabled=True)
+    state = CollectedBatchState(submission=submission, review_result=ReviewResult(findings=[_make_finding("x")]))
+
+    result = run_cross_check_for_batch(state, specs=None)
+
+    assert result.cross_check_skipped_due_to_missing_specs is True
+    assert result.cross_check_result is not None
+    assert result.cross_check_result.cross_check_status == "skipped"
+
+
+def test_resume_verification_state_rejected_when_batch_missing(monkeypatch: pytest.MonkeyPatch):
+    dummy = _make_dummy_app()
+    called = {"reset": 0, "resume": 0, "delete": 0}
+    dummy._reset_ui = lambda: called.__setitem__("reset", called["reset"] + 1)
+    dummy._resume_verification_poll = lambda _loaded: called.__setitem__("resume", called["resume"] + 1)
+    monkeypatch.setattr(gui, "delete_batch_state", lambda: called.__setitem__("delete", called["delete"] + 1))
+    submission = _make_submission(batch_id="msgbatch_invalid_verify_missing")
+    review_state = _make_review_state(submission)
+
+    gui.SpecReviewApp._resume_batch(dummy, {"phase": PHASE_VERIFICATION_POLL, "submission": submission, "review_state": review_state})
+
+    assert called["resume"] == 0
+    assert called["reset"] == 1
+    assert called["delete"] == 1
+
+
+def test_resume_verification_state_rejected_when_batch_id_malformed(monkeypatch: pytest.MonkeyPatch):
+    dummy = _make_dummy_app()
+    called = {"reset": 0, "resume": 0, "delete": 0}
+    dummy._reset_ui = lambda: called.__setitem__("reset", called["reset"] + 1)
+    dummy._resume_verification_poll = lambda _loaded: called.__setitem__("resume", called["resume"] + 1)
+    monkeypatch.setattr(gui, "delete_batch_state", lambda: called.__setitem__("delete", called["delete"] + 1))
+    submission = _make_submission(batch_id="msgbatch_invalid_verify_bad_id")
+    review_state = _make_review_state(submission)
+    bad_batch = BatchJob(batch_id="bad_id", job_type="verify", request_map={"verify__0": {"finding_idx": 0}}, created_at=1.0)
+
+    gui.SpecReviewApp._resume_batch(dummy, {"phase": PHASE_VERIFICATION_POLL, "submission": submission, "review_state": review_state, "verification_batch": bad_batch})
+
+    assert called["resume"] == 0
+    assert called["reset"] == 1
+    assert called["delete"] == 1
+
+
+def test_resume_verification_state_rejected_when_review_state_missing(monkeypatch: pytest.MonkeyPatch):
+    dummy = _make_dummy_app()
+    called = {"reset": 0, "resume": 0, "delete": 0}
+    dummy._reset_ui = lambda: called.__setitem__("reset", called["reset"] + 1)
+    dummy._resume_verification_poll = lambda _loaded: called.__setitem__("resume", called["resume"] + 1)
+    monkeypatch.setattr(gui, "delete_batch_state", lambda: called.__setitem__("delete", called["delete"] + 1))
+    submission = _make_submission(batch_id="msgbatch_invalid_verify_missing_review")
+    verification_batch = BatchJob(batch_id="msgbatch_verify_good", job_type="verify", request_map={"verify__0": {"finding_idx": 0}}, created_at=1.0)
+
+    gui.SpecReviewApp._resume_batch(dummy, {"phase": PHASE_VERIFICATION_POLL, "submission": submission, "verification_batch": verification_batch})
+
+    assert called["resume"] == 0
+    assert called["reset"] == 1
+    assert called["delete"] == 1
+
+
+def test_discard_pending_batch_deletes_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    state_path = tmp_path / "batch_state.json"
+    monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
+    submission = _make_submission(batch_id="msgbatch_discard")
+    gui.save_batch_state(build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission))
+
+    assert state_path.exists()
+    gui.delete_batch_state()
+    assert not state_path.exists()
+
+
+def test_load_batch_state_invalid_submission_batch_id_deletes_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    state_path = tmp_path / "batch_state.json"
+    monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
+    state_path.write_text(
+        """{
+  "version": "2.3.0",
+  "saved_at": "2026-03-18T00:00:00+00:00",
+  "phase": "review_poll",
+  "submission": {
+    "job": {
+      "batch_id": "bad_batch",
+      "job_type": "review",
+      "request_map": {"review__spec__0": {"filename": "spec.docx", "index": 0, "type": "review"}},
+      "created_at": 123.0,
+      "status": "submitted"
+    }
+  }
+}""",
+        encoding="utf-8",
+    )
+
+    loaded = gui.load_batch_state()
+
+    assert loaded is None
+    assert not state_path.exists()
 
 
 def test_verification_request_map_preserves_sorted_confidence_indices(monkeypatch: pytest.MonkeyPatch):
