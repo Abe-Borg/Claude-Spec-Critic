@@ -133,7 +133,8 @@ def load_batch_state() -> Optional[dict]:
             return None
         return restored
     except (KeyError, TypeError, ValueError):
-        # Legacy v1 state compatibility
+        # Intentionally retained for upgrade continuity with older installed versions
+        # that persisted pre-resume-state (v1) payloads.
         try:
             batch_id = state.get("batch_id", "")
             if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
@@ -950,8 +951,6 @@ class SpecReviewApp(ctk.CTk):
                     phase=PHASE_FINALIZE,
                     submission=self._batch_submission,
                     review_state=review_state,
-                    final_review_result=final_result.review_result,
-                    cross_check_result=final_result.cross_check_result,
                     cross_check_skipped_due_to_missing_specs=review_state.cross_check_skipped_due_to_missing_specs,
                     verification_started=bool(verifiable_findings),
                     verification_completed=verification_completed,
@@ -1087,7 +1086,7 @@ class SpecReviewApp(ctk.CTk):
             self._collect_batch_results()
             return
         if phase == PHASE_VERIFICATION_POLL:
-            if not loaded_state.get("review_state") or not loaded_state.get("verification_batch"):
+            if not self._is_valid_verification_resume_state(loaded_state):
                 self.log.log_error("Saved verification resume state is incomplete. Discarding it.")
                 delete_batch_state()
                 self._reset_ui()
@@ -1106,6 +1105,19 @@ class SpecReviewApp(ctk.CTk):
             result = finalize_batch_result(review_state)
             self._on_review_complete(result)
             return
+
+    def _is_valid_verification_resume_state(self, loaded_state: dict) -> bool:
+        review_state = loaded_state.get("review_state")
+        verification_batch = loaded_state.get("verification_batch")
+        if review_state is None or not isinstance(verification_batch, BatchJob):
+            return False
+        batch_id = getattr(verification_batch, "batch_id", None)
+        if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_") or len(batch_id) <= len("msgbatch_"):
+            return False
+        request_map = getattr(verification_batch, "request_map", None)
+        if not isinstance(request_map, dict) or not request_map:
+            return False
+        return True
 
     def _resume_verification_poll(self, loaded_state: dict):
         run_epoch = self._next_run_epoch()
@@ -1132,8 +1144,6 @@ class SpecReviewApp(ctk.CTk):
                     phase=PHASE_FINALIZE,
                     submission=self._batch_submission,
                     review_state=review_state,
-                    final_review_result=result.review_result,
-                    cross_check_result=result.cross_check_result,
                     cross_check_skipped_due_to_missing_specs=review_state.cross_check_skipped_due_to_missing_specs,
                     verification_started=True,
                     verification_completed=True,

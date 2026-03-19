@@ -210,7 +210,7 @@ def deserialize_collected_batch_state(payload: dict[str, Any], submission: Batch
     )
 
 
-def build_resume_state(*, phase: str, submission: BatchSubmission, review_state: CollectedBatchState | None = None, verification_batch: BatchJob | None = None, final_review_result: ReviewResult | None = None, cross_check_result: ReviewResult | None = None, cross_check_skipped_due_to_missing_specs: bool = False, verification_started: bool = False, verification_completed: bool = False) -> dict[str, Any]:
+def build_resume_state(*, phase: str, submission: BatchSubmission, review_state: CollectedBatchState | None = None, verification_batch: BatchJob | None = None, cross_check_skipped_due_to_missing_specs: bool = False, verification_started: bool = False, verification_completed: bool = False) -> dict[str, Any]:
     state: dict[str, Any] = {
         "version": __version__,
         "saved_at": datetime.now(timezone.utc).isoformat(),
@@ -224,12 +224,8 @@ def build_resume_state(*, phase: str, submission: BatchSubmission, review_state:
     }
     if review_state is not None:
         state["review_findings_payload"] = serialize_collected_batch_state(review_state)
-    if cross_check_result is not None:
-        state["cross_check_result_payload"] = serialize_review_result(cross_check_result)
     if verification_batch is not None:
         state["verification_batch"] = serialize_batch_job(verification_batch)
-    if final_review_result is not None:
-        state["final_review_result_payload"] = serialize_review_result(final_review_result)
     return state
 
 
@@ -248,10 +244,6 @@ def deserialize_resume_state(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if payload.get("review_findings_payload"):
         out["review_state"] = deserialize_collected_batch_state(payload["review_findings_payload"], submission)
-    if payload.get("cross_check_result_payload"):
-        out["cross_check_result"] = deserialize_review_result(payload["cross_check_result_payload"])
     if payload.get("verification_batch"):
         out["verification_batch"] = deserialize_batch_job(payload["verification_batch"])
-    if payload.get("final_review_result_payload"):
-        out["final_review_result"] = deserialize_review_result(payload["final_review_result_payload"])
     return out
