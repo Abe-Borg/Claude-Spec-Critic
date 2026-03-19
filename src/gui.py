@@ -26,7 +26,7 @@ from src.pipeline import (
     BatchSubmission,
     CollectedBatchState,
 )
-from src.batch import poll_batch, cancel_batch, BatchStatus, BatchJob
+from src.batch import poll_batch, BatchStatus, BatchJob
 from src.reviewer import MODEL_OPUS_46, REVIEW_MODELS
 from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
@@ -231,13 +231,6 @@ class SpecReviewApp(ctk.CTk):
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._show_about_dialog,
         ).pack(side="right", pady=(4, 0))
-        ctk.CTkButton(
-            hdr_title_row, text="New Review", width=100, height=30,
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            fg_color=COLORS["bg_card"], hover_color=COLORS["border"],
-            border_width=1, border_color=COLORS["border"],
-            text_color=COLORS["text_secondary"], command=self._reset_for_new_review,
-        ).pack(side="right", padx=(8, 0), pady=(4, 0))
         ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.6", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
         self._create_inputs_card(c)
@@ -1171,58 +1164,6 @@ class SpecReviewApp(ctk.CTk):
             try: self._report_window.destroy()
             except Exception: pass
             self._report_window = None
-
-    def _reset_for_new_review(self):
-        self._run_epoch += 1
-
-        if self._batch_poll_id is not None:
-            self.after_cancel(self._batch_poll_id)
-            self._batch_poll_id = None
-
-        if self._batch_submission is not None:
-            try:
-                cancel_batch(self._batch_submission.job.batch_id)
-                self.log.log_warning("Cancellation requested for active batch.")
-            except Exception as e:
-                self.log.log_warning(f"Could not cancel active batch: {e}")
-
-        self._batch_submission = None
-        delete_batch_state()
-
-        self._close_report_window()
-        self.progress_bar.pack_forget()
-
-        self.input_dir = None
-        self._selected_files = []
-        self._loaded_file_data = []
-        self._extracted_specs = []
-        self._project_context_tokens = 0
-        self.input_dir_entry.delete(0, "end")
-
-        self.context_textbox.delete("1.0", "end")
-        self._context_has_placeholder = True
-        self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
-        self.context_textbox.configure(text_color=COLORS["text_muted"])
-
-        self.token_gauge.reset()
-        self.file_list_panel.reset()
-        self.log.clear()
-        self.run_button.set_ready()
-        self.run_button.configure(text="Run Review")
-        self.mode_selector.set(_MODE_REALTIME)
-        self._mode_hint.configure(text="")
-        self.output_selector.set("View in App")
-        self._output_hint.configure(text="")
-        self._cross_check_var.set(False)
-        self.is_processing = False
-
-        self.hdr.pack(fill="x", pady=(0, 20))
-        self.inputs_card.pack(fill="x")
-        self.token_gauge.pack(fill="x", pady=(16, 0))
-        self.run_button.pack(fill="x", pady=(16, 0))
-        self.log.pack(fill="both", expand=True, pady=(16, 0))
-        if not self._inputs_expanded:
-            self._toggle_inputs_card()
 
     # ----- About / How It Works dialog -----
 
