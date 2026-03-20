@@ -600,13 +600,40 @@ def _render_cross_check_section(parent, cross_check_result, card_refs: list | No
     if cross_check_result.thinking:
         nf = ctk.CTkFrame(inner, fg_color=COLORS["bg_input"], corner_radius=6)
         nf.pack(fill="x", pady=(8, 0))
+
+        # Section label
         ctk.CTkLabel(
             nf,
-            text=cross_check_result.thinking,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
-            text_color=COLORS["text_secondary"],
-            anchor="w", justify="left", wraplength=750,
-        ).pack(fill="x", padx=14, pady=14)
+            text="COORDINATION SUMMARY",
+            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+            text_color=COLORS["text_muted"],
+        ).pack(anchor="w", padx=14, pady=(14, 6))
+
+        # Render each paragraph separately for readability
+        raw_text = cross_check_result.thinking
+        if '\n\n' in raw_text:
+            paragraphs = raw_text.split('\n\n')
+        else:
+            paragraphs = raw_text.split('\n')
+
+        for para_text in paragraphs:
+            # Strip markdown headers
+            stripped = para_text.strip()
+            while stripped.startswith('#'):
+                stripped = stripped[1:]
+            stripped = stripped.strip()
+            if not stripped:
+                continue
+            ctk.CTkLabel(
+                nf,
+                text=stripped,
+                font=ctk.CTkFont(family="Segoe UI", size=12),
+                text_color=COLORS["text_secondary"],
+                anchor="w", justify="left", wraplength=720,
+            ).pack(fill="x", padx=14, pady=(0, 10))
+
+        # Bottom padding for the frame
+        ctk.CTkFrame(nf, fg_color="transparent", height=4).pack()
 
 
 def _render_notes(parent, text):

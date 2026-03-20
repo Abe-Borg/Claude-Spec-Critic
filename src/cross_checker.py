@@ -15,6 +15,31 @@ from .code_cycles import CodeCycle, DEFAULT_CYCLE
 StreamCallback = Callable[[str], None]
 
 
+def _sanitize_narrative(text: str) -> str:
+    """Strip markdown formatting artifacts from narrative text.
+
+    The cross-check prompt explicitly requests plain text, but models
+    sometimes emit markdown headers or formatting anyway. This strips
+    common markdown artifacts so the text renders cleanly in Word and GUI.
+    """
+    if not text:
+        return text
+    lines = text.split('\n')
+    cleaned = []
+    for line in lines:
+        # Strip markdown headers: "## HEADING" -> "HEADING"
+        stripped = line
+        while stripped.startswith('#'):
+            stripped = stripped[1:]
+        stripped = stripped.strip()
+        # Skip lines that were ONLY a markdown header with no content after stripping
+        # (e.g., "##" by itself). Keep lines that had content after the #s.
+        if line.startswith('#') and not stripped:
+            continue
+        cleaned.append(stripped if line.startswith('#') else line)
+    return '\n'.join(cleaned)
+
+
 def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list[Finding]) -> str:
     parts: list[str] = []
     for spec in specs:
@@ -47,8 +72,20 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
         "GRIPES — minor coordination polish items.\n"
         "</severity_definitions>\n\n"
         "<output_format>\n"
-        "First provide a 1-2 paragraph COORDINATION SUMMARY, then wrap findings JSON "
+        "First provide a COORDINATION SUMMARY, then wrap findings JSON "
         "in <FINDINGS_JSON>...</FINDINGS_JSON> tags.\n\n"
+        "COORDINATION SUMMARY requirements:\n"
+        "- Organize by coordination theme (e.g., 'Seismic Scope Overlap', "
+        "'Equipment Cross-Reference Gaps', 'TAB Coordination Issues').\n"
+        "- Write one paragraph per theme. Each paragraph should name the specific "
+        "specs involved (by CSI number and short title), describe the conflict or gap, "
+        "and state the practical consequence.\n"
+        "- Use plain text only. Do NOT use markdown headers (##), bullet points, "
+        "bold (**), or any other markdown formatting. The summary is rendered in "
+        "contexts that do not support markdown.\n"
+        "- Separate paragraphs with a blank line.\n"
+        "- Be thorough. Cover every coordination theme represented in your findings. "
+        "A 13-spec review with 10+ findings should produce at least 4-6 themed paragraphs.\n\n"
         "Each finding must be a JSON object with these fields:\n"
         '- severity: "CRITICAL" | "HIGH" | "MEDIUM" | "GRIPES"\n'
         "- fileName: primary file where the issue is most visible\n"
@@ -113,6 +150,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 return result
 
             data, thinking = _extract_json_array(result.raw_response, stop_reason=result.stop_reason)
+            thinking = _sanitize_narrative(thinking)
             result.findings = _parse_findings(data)
             result.thinking = thinking
             result.parse_status = "ok"
