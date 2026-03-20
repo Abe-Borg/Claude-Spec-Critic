@@ -677,11 +677,29 @@ def export_report(
         section.right_margin = Inches(1.0)
 
     # Build the report
-    _write_title_block(doc, review, pipeline_result.files_reviewed,
-                       project_context)
+    cycle_label = getattr(pipeline_result, "cycle_label", "2025") or "2025"
+    _write_title_block(
+        doc,
+        review,
+        pipeline_result.files_reviewed,
+        project_context,
+        cycle_label=cycle_label,
+    )
     
     _write_files_reviewed(doc, pipeline_result.files_reviewed)
-    _write_methodology_note(doc, cross_check_enabled=(cross_check is not None))
+    cross_check_status = getattr(cross_check, "cross_check_status", None) if cross_check else None
+    cross_check_reason = ""
+    if cross_check and cross_check_status == "skipped":
+        cross_check_reason = cross_check.thinking or ""
+    elif cross_check and cross_check_status == "failed":
+        cross_check_reason = cross_check.error or ""
+    _write_methodology_note(
+        doc,
+        cross_check_enabled=(cross_check is not None),
+        cycle_label=cycle_label,
+        cross_check_status=cross_check_status,
+        cross_check_reason=cross_check_reason,
+    )
     _write_summary_table(doc, review, cross_check)
     
     _write_alerts(doc, pipeline_result.leed_alerts,

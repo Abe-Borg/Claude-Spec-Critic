@@ -19,7 +19,6 @@ from src.pipeline import (
     start_batch_review,
     collect_review_batch_results,
     run_cross_check_for_batch,
-    prepare_verification_work,
     start_batch_verification,
     collect_batch_verification_results,
     finalize_batch_result,
@@ -37,6 +36,7 @@ from src.resume_state import (
     PHASE_REVIEW_POLL,
     PHASE_REVIEW_COLLECT,
     PHASE_VERIFICATION_POLL,
+    PHASE_CROSS_CHECK,
     PHASE_FINALIZE,
     SUPPORTED_PHASES,
     build_resume_state,
@@ -50,7 +50,7 @@ from platformdirs import user_config_dir, user_state_dir
 API_KEY_FILENAME = "spec_critic_api_key.txt"
 BATCH_STATE_FILENAME = "batch_state.json"
 
-BATCH_STATE_MAX_AGE_HOURS = 24
+BATCH_STATE_MAX_AGE_HOURS = 72
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
@@ -946,19 +946,7 @@ class SpecReviewApp(ctk.CTk):
                     self._batch_submission,
                     log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                 )
-                review_state = run_cross_check_for_batch(
-                    review_state,
-                    specs=getattr(self._batch_submission, "prepared_specs", None),
-                    project_context=getattr(self, "_project_context_for_review", ""),
-                    cycle=cycle,
-                    log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                )
-                if review_state.cross_check_skipped_due_to_missing_specs:
-                    self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(
-                        "Cross-check skipped due to missing resumable extracted specs."
-                    ))
-
-                verifiable_findings = prepare_verification_work(review_state)
+                verifiable_findings = list(review_state.review_result.findings)
                 verification_completed = False
                 if verifiable_findings:
                     verification_job = start_batch_verification(
@@ -982,6 +970,39 @@ class SpecReviewApp(ctk.CTk):
                         progress=_on_progress,
                     )
                     verification_completed = True
+
+                save_batch_state(build_resume_state(
+                    phase=PHASE_CROSS_CHECK,
+                    submission=self._batch_submission,
+                    review_state=review_state,
+                    verification_started=bool(verifiable_findings),
+                    verification_completed=verification_completed,
+                ))
+                review_state = run_cross_check_for_batch(
+                    review_state,
+                    specs=getattr(self._batch_submission, "prepared_specs", None),
+                    project_context=getattr(self, "_project_context_for_review", ""),
+                    cycle=cycle,
+                    log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                )
+                if review_state.cross_check_skipped_due_to_missing_specs:
+                    self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(
+                        "Cross-check skipped due to missing resumable extracted specs."
+                    ))
+                cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []
+                if cross_check_findings:
+                    collect_batch_verification_results(
+                        start_batch_verification(
+                            cross_check_findings,
+                            cycle=cycle,
+                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                            progress=_on_progress,
+                        ),
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
 
                 final_result = finalize_batch_result(review_state)
                 save_batch_state(build_resume_state(
@@ -1142,6 +1163,24 @@ class SpecReviewApp(ctk.CTk):
             result = finalize_batch_result(review_state)
             self._on_review_complete(result)
             return
+        if phase == PHASE_CROSS_CHECK:
+            review_state: CollectedBatchState | None = loaded_state.get("review_state")
+            if review_state is None:
+                self.log.log_error("Saved cross-check resume state is incomplete. Discarding it.")
+                delete_batch_state()
+                self._reset_ui()
+                return
+            cycle = AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
+            review_state = run_cross_check_for_batch(
+                review_state,
+                specs=getattr(self._batch_submission, "prepared_specs", None),
+                project_context=getattr(self, "_project_context_for_review", ""),
+                cycle=cycle,
+                log=lambda msg: self.log.log(msg, level="info"),
+            )
+            result = finalize_batch_result(review_state)
+            self._on_review_complete(result)
+            return
 
     def _is_valid_verification_resume_state(self, loaded_state: dict) -> bool:
         review_state = loaded_state.get("review_state")
@@ -1161,7 +1200,7 @@ class SpecReviewApp(ctk.CTk):
         review_state: CollectedBatchState = loaded_state["review_state"]
         verification_job = loaded_state["verification_batch"]
         cycle = AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
-        verifiable_findings = prepare_verification_work(review_state)
+        verifiable_findings = list(review_state.review_result.findings)
 
         def _do_resume_verification():
             try:
@@ -1176,15 +1215,22 @@ class SpecReviewApp(ctk.CTk):
                     log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                     progress=_on_progress,
                 )
-                result = finalize_batch_result(review_state)
                 save_batch_state(build_resume_state(
-                    phase=PHASE_FINALIZE,
+                    phase=PHASE_CROSS_CHECK,
                     submission=self._batch_submission,
                     review_state=review_state,
                     cross_check_skipped_due_to_missing_specs=review_state.cross_check_skipped_due_to_missing_specs,
                     verification_started=True,
                     verification_completed=True,
                 ))
+                review_state_local = run_cross_check_for_batch(
+                    review_state,
+                    specs=getattr(self._batch_submission, "prepared_specs", None),
+                    project_context=getattr(self, "_project_context_for_review", ""),
+                    cycle=cycle,
+                    log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                )
+                result = finalize_batch_result(review_state_local)
                 self._dispatch_if_current(run_epoch, lambda r=result: self._on_review_complete(r))
             except Exception as e:
                 import traceback

@@ -20,10 +20,14 @@ def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list
     for spec in specs:
         parts.append(f"\n===== FILE: {spec.filename} =====")
         parts.append(spec.content)
-    if existing_findings:
+    verified_existing = [
+        f for f in existing_findings
+        if f.verification and f.verification.verdict in ("CONFIRMED", "CORRECTED")
+    ]
+    if verified_existing:
         parts.append("\n" + "=" * 40)
         parts.append("ISSUES ALREADY IDENTIFIED (do NOT repeat)")
-        for f in existing_findings:
+        for f in verified_existing:
             parts.append(f"[{f.severity}] {f.fileName} — {f.issue[:160]}")
     return "\n".join(parts)
 

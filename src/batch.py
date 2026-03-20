@@ -11,6 +11,7 @@ from .prompts import get_system_prompt, get_single_spec_user_message
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_46
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET
+from .verification_config import VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
 
 
 @dataclass
@@ -53,7 +54,7 @@ def submit_review_batch(specs: list, *, project_context: str = "", model: str = 
     for idx, spec in enumerate(specs):
         custom_id = f"review__{_sanitize_custom_id(spec.filename)}__{idx}"
         user_message = get_single_spec_user_message(spec.content, spec.filename, project_context=project_context, cycle=cycle)
-        batch_requests.append({"custom_id": custom_id, "params": {"model": model, "max_tokens": output_limit, "system": system_prompt, "messages": [{"role": "user", "content": user_message}]}})
+        batch_requests.append({"custom_id": custom_id, "params": {"model": model, "max_tokens": output_limit, "thinking": {"type": "adaptive"}, "system": system_prompt, "messages": [{"role": "user", "content": user_message}]}})
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}
     mb = client.messages.batches.create(requests=batch_requests)
     return BatchJob(batch_id=mb.id, job_type="review", request_map=request_map, created_at=time.time())
@@ -98,7 +99,7 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
     return results
 
 
-def submit_verification_batch(findings: list[Finding], build_prompt_fn) -> BatchJob:
+def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_prompt_fn=None, *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
     if not findings:
         raise ValueError("No findings eligible for verification")
     verifiable = list(enumerate(findings))
@@ -106,16 +107,18 @@ def submit_verification_batch(findings: list[Finding], build_prompt_fn) -> Batch
     client = _get_client()
     reqs = []
     request_map = {}
+    if system_prompt_fn is None:
+        system_prompt_fn = lambda _: "Verify each finding using web search and return JSON only."
     for batch_idx, (finding_idx, finding) in enumerate(verifiable):
         custom_id = f"verify__{batch_idx}"
-        reqs.append({"custom_id": custom_id, "params": {"model": MODEL_OPUS_46, "max_tokens": 32_000, "tools": [{"type": "web_search_20250305", "name": "web_search"}], "messages": [{"role": "user", "content": build_prompt_fn(finding)}]}})
+        reqs.append({"custom_id": custom_id, "params": {"model": VERIFICATION_MODEL, "max_tokens": VERIFICATION_MAX_TOKENS, "system": system_prompt_fn(cycle), "tools": [WEB_SEARCH_TOOL], "messages": [{"role": "user", "content": build_prompt_fn(finding)}]}})
         request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx}
     mb = client.messages.batches.create(requests=reqs)
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
 
 def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_response_fn) -> list[Finding]:
-    from .verifier import VerificationResult
+    from .verifier import VerificationResult, _collect_search_evidence, _search_gate_failure
     client = _get_client()
     for result in client.messages.batches.results(job.batch_id):
         meta = job.request_map.get(result.custom_id)
@@ -130,20 +133,22 @@ def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_
             continue
         message = result.result.message
         stop_reason = getattr(message, "stop_reason", None)
+        if stop_reason == "pause_turn":
+            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation="Verification returned pause_turn in batch mode; retry via real-time verification path.")
+            continue
         if stop_reason != "end_turn":
             finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification response incomplete (stop_reason: {stop_reason}).")
             continue
 
         response_text = ""
-        search_urls: list[str] = []
         for block in message.content:
             if hasattr(block, "text"):
                 response_text += block.text
-            if getattr(block, "type", None) == "web_search_tool_result":
-                for r in (getattr(block, "results", []) or []):
-                    url = getattr(r, "url", None)
-                    if url:
-                        search_urls.append(url)
+        search_gate_failure = _search_gate_failure(message)
+        if search_gate_failure:
+            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=search_gate_failure)
+            continue
+        search_urls, _, _ = _collect_search_evidence(message)
 
         if response_text.strip():
             parsed = parse_response_fn(response_text)

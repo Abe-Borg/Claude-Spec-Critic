@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional, TYPE_CHECKING
@@ -83,29 +84,39 @@ def _get_client() -> Anthropic:
 
 
 def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[list, str]:
-    tag_start = text.find("<FINDINGS_JSON>")
-    tag_end = text.find("</FINDINGS_JSON>")
-    if tag_start != -1 and tag_end != -1 and tag_end > tag_start:
-        thinking = text[:tag_start].strip()
-        json_str = text[tag_start + len("<FINDINGS_JSON>"):tag_end].strip()
+    tagged = re.search(r"<\s*findings_json\s*>(.*?)<\s*/\s*findings_json\s*>", text, flags=re.IGNORECASE | re.DOTALL)
+    if tagged:
+        json_str = tagged.group(1).strip()
+        thinking = text[:tagged.start()].strip()
         try:
             data = json.loads(json_str)
-            if isinstance(data, list):
+            if (
+                isinstance(data, list)
+                and all(isinstance(item, dict) for item in data)
+                and all(("severity" in item and "issue" in item) for item in data)
+            ):
                 return data, thinking
         except json.JSONDecodeError:
             pass
 
-    start_idx = text.find("[")
     end_idx = text.rfind("]")
-    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-        thinking = text[:start_idx].strip()
+    while end_idx != -1:
+        start_idx = text.rfind("[", 0, end_idx + 1)
+        if start_idx == -1:
+            break
         json_str = text[start_idx:end_idx + 1]
+        thinking = text[:start_idx].strip()
         try:
             data = json.loads(json_str)
-            if isinstance(data, list):
+            if (
+                isinstance(data, list)
+                and all(isinstance(item, dict) for item in data)
+                and all(("severity" in item and "issue" in item) for item in data)
+            ):
                 return data, thinking
         except json.JSONDecodeError:
             pass
+        end_idx = text.rfind("]", 0, end_idx)
 
     if text.strip() == "[]":
         return [], text.strip()
@@ -153,7 +164,7 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
         try:
             if verbose:
                 print(f"Calling Claude {model} (attempt {attempt + 1}/{max_retries})...")
-            with client.messages.stream(model=model, max_tokens=output_limit, system=system_prompt, messages=[{"role": "user", "content": user_message}]) as stream:
+            with client.messages.stream(model=model, max_tokens=output_limit, thinking={"type": "adaptive"}, system=system_prompt, messages=[{"role": "user", "content": user_message}]) as stream:
                 chunks: list[str] = []
                 for text in stream.text_stream:
                     chunks.append(text)

@@ -45,7 +45,7 @@ If none, return [] inside tags.
 2. Verify edition alignment to current cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, Energy {cycle.energy_code}, CALGreen {cycle.calgreen}, ASCE {cycle.asce7}.
 3. Verify referenced sections/standards exist.
 4. Check seismic references are current (ASCE {cycle.asce7}, not {cycle.asce7_previous}).
-5. If multiple specs are provided, check cross-spec coordination.
+5. Flag explicit references to other CSI sections, equipment tags, or cross-reference dependencies that imply coordination requirements.
 </critical_checks>"""
 
 
