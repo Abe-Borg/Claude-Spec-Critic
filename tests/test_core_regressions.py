@@ -225,6 +225,134 @@ def test_round_trip_review_poll_via_gui_save_load(tmp_path: Path, monkeypatch: p
     assert loaded_submission.prepared_specs[0].filename == "spec.docx"
 
 
+def test_verify_finding_accumulates_pause_turn_search_evidence(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    class _Block:
+        def __init__(self, block_type, text=None, results=None):
+            self.type = block_type
+            if text is not None:
+                self.text = text
+            if results is not None:
+                self.results = results
+
+    class _UrlResult:
+        def __init__(self, url: str):
+            self.url = url
+
+    class _Response:
+        def __init__(self, stop_reason: str, content: list):
+            self.stop_reason = stop_reason
+            self.content = content
+
+    class _Messages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return _Response(
+                    "pause_turn",
+                    [
+                        _Block("web_search_tool_result", results=[_UrlResult("https://iccsafe.org/a")]),
+                    ],
+                )
+            return _Response(
+                "end_turn",
+                [_Block("text", text='{"verdict":"CONFIRMED","explanation":"ok","sources":[],"correction":null}')],
+            )
+
+    class _Client:
+        messages = _Messages()
+
+    monkeypatch.setattr("src.verifier._get_client", lambda: _Client())
+    finding = _make_finding("Outdated reference")
+    result = verify_finding(finding)
+
+    assert result.verdict == "CONFIRMED"
+    assert "https://iccsafe.org/a" in result.sources
+
+
+def test_verify_finding_search_gate_passes_when_search_only_in_earlier_turn(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    class _Block:
+        def __init__(self, block_type, text=None, results=None):
+            self.type = block_type
+            if text is not None:
+                self.text = text
+            if results is not None:
+                self.results = results
+
+    class _UrlResult:
+        def __init__(self, url: str):
+            self.url = url
+
+    class _Response:
+        def __init__(self, stop_reason: str, content: list):
+            self.stop_reason = stop_reason
+            self.content = content
+
+    class _Messages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return _Response("pause_turn", [_Block("web_search_tool_result", results=[_UrlResult("https://nfpa.org/b")])])
+            return _Response("end_turn", [_Block("text", text='{"verdict":"DISPUTED","explanation":"nope","sources":[],"correction":null}')])
+
+    class _Client:
+        messages = _Messages()
+
+    monkeypatch.setattr("src.verifier._get_client", lambda: _Client())
+    finding = _make_finding("Claim that should be disputed")
+    result = verify_finding(finding)
+
+    assert result.verdict == "DISPUTED"
+    assert "did not perform web search" not in (result.explanation or "").lower()
+
+
+def test_verify_finding_single_response_still_works(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    class _Block:
+        def __init__(self, block_type, text=None, results=None):
+            self.type = block_type
+            if text is not None:
+                self.text = text
+            if results is not None:
+                self.results = results
+
+    class _UrlResult:
+        def __init__(self, url: str):
+            self.url = url
+
+    class _Response:
+        def __init__(self):
+            self.stop_reason = "end_turn"
+            self.content = [
+                _Block("web_search_tool_result", results=[_UrlResult("https://ashrae.org/c")]),
+                _Block("text", text='{"verdict":"CORRECTED","explanation":"adjust text","sources":[],"correction":"new text"}'),
+            ]
+
+    class _Messages:
+        def create(self, **_kwargs):
+            return _Response()
+
+    class _Client:
+        messages = _Messages()
+
+    monkeypatch.setattr("src.verifier._get_client", lambda: _Client())
+    finding = _make_finding("Minor wording issue")
+    result = verify_finding(finding)
+
+    assert result.verdict == "CORRECTED"
+    assert "https://ashrae.org/c" in result.sources
+
+
 def test_round_trip_review_collect_state_payload():
     submission = _make_submission(batch_id="msgbatch_collect")
     review_state = _make_review_state(submission)

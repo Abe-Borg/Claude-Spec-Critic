@@ -1,6 +1,14 @@
-# Spec Critic v2.3.0
+# Spec Critic v2.4.1
 
 A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
+
+## Changelog
+
+### v2.4.1
+
+- Fixed: Verification now accumulates web search evidence across multi-turn `pause_turn` continuations instead of only checking the final turn.
+- Fixed: Cross-check dedup context is correctly populated again because verification now returns real verdicts instead of cascading all findings to `UNVERIFIED`.
+- Added: Batch verification now retries `pause_turn` findings via real-time verification, capped at 20 findings.
 
 ## What It Does
 
