@@ -62,6 +62,13 @@ _SPEC_FILETYPES = [
 # Mode selector labels
 _MODE_REALTIME = "Real-time (FAST: Expensive!)"
 _MODE_BATCH = "Batch (SLOW: Cheap!)"
+_BATCH_TIMING_COPY = "Usually 15 to 30 min, 24 hrs maximum (Extremely Rare)"
+
+_FONT_SCALE_OPTIONS = {
+    "Default (100%)": 1.0,
+    "Large (+10%)": 1.1,
+    "Larger (+20%)": 1.2,
+}
 
 
 def _app_config_dir() -> Path:
@@ -210,6 +217,7 @@ class SpecReviewApp(ctk.CTk):
         self._realtime_confirmed: bool = False
         self._context_debounce_id: str | None = None
         self._selected_cycle_label: str = DEFAULT_CYCLE.label
+        self._font_scale_label: str = "Default (100%)"
         self._create_ui()
         self.after(500, self._check_pending_batch)
 
@@ -366,6 +374,25 @@ class SpecReviewApp(ctk.CTk):
             font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
+        # --- Row 7: Accessibility / Font scaling ---
+        ctk.CTkLabel(self.inputs_content, text="Accessibility", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=7, column=0, sticky="w", pady=8)
+        accessibility_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        accessibility_frame.grid(row=7, column=1, sticky="w", padx=(8, 0), pady=8)
+        self._font_scale_var = ctk.StringVar(value=self._font_scale_label)
+        self.font_size_selector = ctk.CTkSegmentedButton(
+            accessibility_frame,
+            values=list(_FONT_SCALE_OPTIONS.keys()),
+            variable=self._font_scale_var,
+            command=self._on_font_scale_change,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
+            unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
+            fg_color=COLORS["bg_input"], text_color=COLORS["text_secondary"],
+            text_color_disabled=COLORS["text_muted"], height=32,
+        )
+        self.font_size_selector.set(self._font_scale_label)
+        self.font_size_selector.pack(side="left")
+
         self.inputs_content.columnconfigure(1, weight=1)
 
     # --- Output mode helpers ---
@@ -375,6 +402,11 @@ class SpecReviewApp(ctk.CTk):
             self._output_hint.configure(text="Saves .docx report \u2022 no in-app rendering")
         else:
             self._output_hint.configure(text="")
+
+    def _on_font_scale_change(self, value: str):
+        scale = _FONT_SCALE_OPTIONS.get(value, 1.0)
+        ctk.set_widget_scaling(scale)
+        self._font_scale_label = value
 
     @property
     def _is_export_mode(self) -> bool:
@@ -474,7 +506,7 @@ class SpecReviewApp(ctk.CTk):
 
     def _on_mode_change(self, value: str):
         if value == _MODE_BATCH:
-            self._mode_hint.configure(text="Queued processing \u2022 results in ~15-60 min")
+            self._mode_hint.configure(text=f"Queued processing \u2022 {_BATCH_TIMING_COPY}")
             self.run_button.configure(text="Submit Batch")
         else:
             self._mode_hint.configure(text="")
@@ -651,7 +683,7 @@ class SpecReviewApp(ctk.CTk):
         else:
             warning_text += (
                 f"Batch mode provides identical results at 50% cost savings "
-                f"(results in ~15-60 minutes instead of real-time streaming)."
+                f"({_BATCH_TIMING_COPY} instead of real-time streaming)."
             )
 
         ctk.CTkLabel(inner, text=warning_text,
@@ -841,7 +873,7 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.set(0.4)
         self.log.log_success(f"Batch submitted: {submission.job.batch_id}")
         self.log.log(f"  {len(submission.files_reviewed)} specs queued \u2022 50% cost savings", level="muted")
-        self.log.log_step("Polling for results (typically 15-60 min)...")
+        self.log.log_step(f"Polling for results ({_BATCH_TIMING_COPY})...")
         self.run_button.configure(text="Polling...")
         self._poll_batch()
 
@@ -1333,7 +1365,7 @@ class SpecReviewApp(ctk.CTk):
             ("4.  Choose Your Mode", (
                 "Real-time mode streams results as they come in — fast but "
                 "expensive. Batch mode queues all specs for processing at 50% "
-                "cost savings, with results typically ready in 15–60 minutes. "
+                f"cost savings, with results {_BATCH_TIMING_COPY}. "
                 "For more than a few specs, batch mode is strongly recommended."
             )),
             ("5.  Select Code Cycle", (
