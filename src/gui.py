@@ -800,17 +800,18 @@ class SpecReviewApp(ctk.CTk):
                 self.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
             self.log.log(f"Time: {rv.elapsed_seconds:.1f}s", level="muted")
             if getattr(self, "_export_mode_for_review", False):
-                exported = self._export_report_to_file(result)
-                if not exported:
-                    self.log.log_step("Opening results in pop-out window instead...")
-                    self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
+                export_status = self._export_report_to_file(result)
+                if export_status == "canceled":
+                    self.log.log_warning("Export canceled; results are still available in memory.")
+                elif export_status == "error":
+                    self.log.log_warning("Export failed. Retry export or switch output mode to 'View in App' to open the report window.")
             else:
                 self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
         delete_batch_state()
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
 
-    def _export_report_to_file(self, result) -> bool:
+    def _export_report_to_file(self, result) -> str:
         default_name = f"spec-critic-report-{datetime.now().strftime('%Y-%m-%d')}.docx"
         path = filedialog.asksaveasfilename(
             title="Save Review Report",
@@ -820,7 +821,7 @@ class SpecReviewApp(ctk.CTk):
         )
         if not path:
             self.log.log_warning("Export canceled")
-            return False
+            return "canceled"
         try:
             output_path = Path(path)
             self.log.log_step(f"Exporting report to {output_path.name}...")
@@ -831,10 +832,10 @@ class SpecReviewApp(ctk.CTk):
                 cycle_label=getattr(self, "_selected_cycle_label", DEFAULT_CYCLE.label),
             )
             self.log.log_success(f"Report saved: {output_path}")
-            return True
+            return "success"
         except Exception as e:
             self.log.log_error(f"Export failed: {e}")
-            return False
+            return "error"
 
     def _on_review_error(self, err):
         self.progress_bar.pack_forget()
