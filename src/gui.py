@@ -828,7 +828,6 @@ class SpecReviewApp(ctk.CTk):
                 result,
                 output_path,
                 project_context=getattr(self, "_project_context_for_review", ""),
-                cycle_label=getattr(self, "_selected_cycle_label", DEFAULT_CYCLE.label),
             )
             self.log.log_success(f"Report saved: {output_path}")
             return True
