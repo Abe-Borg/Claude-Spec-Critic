@@ -181,7 +181,28 @@ def _write_files_reviewed(doc: Document, files_reviewed: list[str]) -> None:
 # Methodology note (v1.9.0)
 # ---------------------------------------------------------------------------
 
-def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label: str = "2025", cross_check_status: str | None = None, cross_check_reason: str = "") -> None:
+def _summarize_verification_outcomes(findings: list) -> dict[str, object]:
+    stats = {
+        "total_findings": len(findings),
+        "with_verification": 0,
+        "verdict_counts": {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0},
+    }
+    for finding in findings:
+        verification = getattr(finding, "verification", None)
+        if not verification:
+            continue
+        stats["with_verification"] += 1
+        verdict = str(getattr(verification, "verdict", "UNVERIFIED") or "UNVERIFIED").upper()
+        if verdict not in stats["verdict_counts"]:
+            verdict = "UNVERIFIED"
+        stats["verdict_counts"][verdict] += 1
+    verified_non_unverified = stats["verdict_counts"]["CONFIRMED"] + stats["verdict_counts"]["CORRECTED"] + stats["verdict_counts"]["DISPUTED"]
+    stats["all_unverified"] = stats["with_verification"] > 0 and verified_non_unverified == 0 and stats["verdict_counts"]["UNVERIFIED"] == stats["with_verification"]
+    stats["partial_unverified"] = stats["verdict_counts"]["UNVERIFIED"] > 0 and verified_non_unverified > 0
+    return stats
+
+
+def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label: str = "2025", cross_check_status: str | None = None, cross_check_reason: str = "", verification_stats: dict[str, object] | None = None) -> None:
     """Write a brief methodology note explaining how the review was produced.
 
     Placed after 'Files Reviewed' and before 'Summary' in the report.
@@ -199,10 +220,31 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
         "reflecting the model\u2019s certainty."
     )
 
-    para2_text = (
-        "All findings were checked in a secondary AI verification pass with web search access. "
-        "Verification verdicts (Confirmed, Corrected, Disputed, or Unverified) reflect the verifier model's assessment and should be treated as advisory."
-    )
+    verification_stats = verification_stats or {}
+    all_unverified = bool(verification_stats.get("all_unverified", False))
+    partial_unverified = bool(verification_stats.get("partial_unverified", False))
+    with_verification = int(verification_stats.get("with_verification", 0) or 0)
+
+    if all_unverified:
+        para2_text = (
+            "Verification was attempted but did not return usable results. "
+            "Findings have not been independently verified."
+        )
+    elif partial_unverified:
+        para2_text = (
+            "Findings were checked in a secondary AI verification pass with web search access. "
+            "Some findings could not be verified — see individual verdicts."
+        )
+    elif with_verification > 0:
+        para2_text = (
+            "All findings were checked in a secondary AI verification pass with web search access. "
+            "Verification verdicts (Confirmed, Corrected, Disputed, or Unverified) reflect the verifier model's assessment and should be treated as advisory."
+        )
+    else:
+        para2_text = (
+            "No verification outcomes were recorded for this run. "
+            "Findings should be treated as unverified unless noted otherwise."
+        )
 
     para2_text += f" This review used California {cycle_label} code cycle references."
 
@@ -661,6 +703,10 @@ def export_report(
 
     review = pipeline_result.review_result
     cross_check = pipeline_result.cross_check_result
+    all_findings = list(review.findings)
+    if cross_check and cross_check.findings:
+        all_findings.extend(cross_check.findings)
+    verification_stats = _summarize_verification_outcomes(all_findings)
 
     doc = Document()
 
@@ -699,6 +745,7 @@ def export_report(
         cycle_label=cycle_label,
         cross_check_status=cross_check_status,
         cross_check_reason=cross_check_reason,
+        verification_stats=verification_stats,
     )
     _write_summary_table(doc, review, cross_check)
     

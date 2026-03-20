@@ -111,14 +111,29 @@ def _collect_search_evidence(message) -> tuple[list[str], int, int]:
     for block in getattr(message, "content", []) or []:
         block_type = getattr(block, "type", None)
         if block_type == "web_search_tool_result":
-            results = getattr(block, "results", []) or []
-            if results:
-                success_count += 1
-            for r in results:
-                url = getattr(r, "url", None)
-                if url:
-                    search_urls.append(url)
+            block_content = getattr(block, "content", None)
+            if block_content is None:
+                # Backward-compatible fallback for legacy/mocked objects.
+                block_content = getattr(block, "results", None)
+            if isinstance(block_content, list):
+                if block_content:
+                    success_count += 1
+                for item in block_content:
+                    item_type = getattr(item, "type", None)
+                    if item_type == "web_search_tool_result_error":
+                        error_count += 1
+                        continue
+                    if item_type not in (None, "web_search_result"):
+                        continue
+                    url = getattr(item, "url", None)
+                    if url:
+                        search_urls.append(url)
+            elif getattr(block_content, "type", None) == "web_search_tool_result_error":
+                # Anthropic SDK models this as a union:
+                # WebSearchToolResultBlock.content can be a WebSearchToolResultError object.
+                error_count += 1
         elif block_type == "web_search_tool_result_error":
+            # Backward-compatible fallback in case SDK/server emits top-level error blocks.
             error_count += 1
     return search_urls, success_count, error_count
 

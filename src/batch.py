@@ -129,7 +129,10 @@ def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_
             continue
         finding = findings[idx]
         if result.result.type != "succeeded":
-            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification failed: {result.result.type}")
+            explanation = f"Verification failed: {result.result.type}"
+            if hasattr(result.result, "error") and result.result.error:
+                explanation += f": {result.result.error}"
+            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=explanation)
             continue
         message = result.result.message
         stop_reason = getattr(message, "stop_reason", None)
