@@ -21,7 +21,7 @@ from .verifier import (
     VerificationResult,
 )
 from .cross_checker import run_cross_check
-from .code_cycles import CodeCycle, DEFAULT_CYCLE
+from .code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 from .prompts import get_system_prompt
 
 LogFn = Callable[[str], None]
@@ -40,6 +40,7 @@ class PipelineResult:
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
+    cycle_label: str = DEFAULT_CYCLE.label
 
 
 @dataclass
@@ -62,17 +63,17 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
 
 def _normalize_issue_text(text: str) -> str:
     normalized = re.sub(r"\d{2}\s?\d{2}\s?\d{2}[^.]*\.docx", "", text, flags=re.IGNORECASE)
-    normalized = re.sub(r"(?:Part\s+\d+,?\s*)?Article\s+[\d.]+[A-Z]*", "", normalized, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", normalized).strip().lower()
 
 
 def _dedup_key(f: Finding) -> tuple:
     return (
         _normalize_issue_text(f.issue),
+        (f.section or "").strip().lower(),
         (f.codeReference or "").strip().lower(),
         f.actionType,
-        (f.existingText or "").strip().lower()[:100],
-        (f.replacementText or "").strip().lower()[:100],
+        (f.existingText or "").strip().lower()[:200],
+        (f.replacementText or "").strip().lower()[:200],
     )
 
 
@@ -184,20 +185,39 @@ def _log_cross_check_status(log: LogFn, cross: ReviewResult):
         log(f"Cross-check failed: {cross.error}")
 
 
-def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, cross_check: bool = False, specs: list[ExtractedSpec] | None = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE) -> PipelineResult:
+def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, cross_check: bool | None = None, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle | None = None) -> PipelineResult:
+    if cross_check is None:
+        cross_check = submission.cross_check_enabled
+    if specs is None:
+        specs = submission.prepared_specs
+    if project_context is None:
+        project_context = submission.project_context
+    if cycle is None:
+        cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
+
     state = collect_review_batch_results(submission, log=log)
+    if verify and state.review_result.findings:
+        try:
+            progress(55.0, f"Submitting {len(state.review_result.findings)} verification requests...")
+            verification_submission = start_batch_verification(state.review_result.findings, cycle=cycle, log=log, progress=progress)
+            collect_batch_verification_results(verification_submission, state.review_result.findings, cycle=cycle, log=log, progress=progress)
+        except Exception as e:
+            log(f"Verification failed: {e}. Returning results without verification.")
+            for f in state.review_result.findings:
+                if f.verification is None:
+                    f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
+
     if cross_check:
         state = run_cross_check_for_batch(state, specs=specs, project_context=project_context, cycle=cycle, log=log)
-
-    if verify:
-        verifiable = prepare_verification_work(state)
-        if verifiable:
+        cross_verifiable = list(state.cross_check_result.findings) if state.cross_check_result and state.cross_check_result.findings else []
+        if verify and cross_verifiable:
             try:
-                verification_submission = start_batch_verification(verifiable, cycle=cycle, log=log, progress=progress)
-                collect_batch_verification_results(verification_submission, verifiable, cycle=cycle, log=log, progress=progress)
+                progress(90.0, f"Submitting {len(cross_verifiable)} cross-check verification requests...")
+                verification_submission = start_batch_verification(cross_verifiable, cycle=cycle, log=log, progress=progress)
+                collect_batch_verification_results(verification_submission, cross_verifiable, cycle=cycle, log=log, progress=progress)
             except Exception as e:
-                log(f"Verification failed: {e}. Returning results without verification.")
-                for f in verifiable:
+                log(f"Cross-check verification failed: {e}.")
+                for f in cross_verifiable:
                     if f.verification is None:
                         f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
 
@@ -244,16 +264,24 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     )
 
 
-def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[ExtractedSpec] | None, project_context: str = "", cycle: CodeCycle = DEFAULT_CYCLE, log: LogFn = _noop_log) -> CollectedBatchState:
+def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, cycle: CodeCycle = DEFAULT_CYCLE, log: LogFn = _noop_log) -> CollectedBatchState:
     if not state.submission.cross_check_enabled:
         return state
+    if specs is None:
+        specs = state.submission.prepared_specs
+    if project_context is None:
+        project_context = state.submission.project_context
     if not specs:
         state.cross_check_skipped_due_to_missing_specs = True
         skipped = ReviewResult(findings=[], cross_check_status="skipped", thinking="Cross-check skipped: original extracted spec content is not available.")
         state.cross_check_result = skipped
         _log_cross_check_status(log, skipped)
         return state
-    cross = run_cross_check(specs, state.review_result.findings, project_context=project_context, cycle=cycle)
+    verified_findings = [
+        f for f in state.review_result.findings
+        if f.verification and f.verification.verdict in ("CONFIRMED", "CORRECTED")
+    ]
+    cross = run_cross_check(specs, verified_findings, project_context=project_context, cycle=cycle)
     state.cross_check_result = cross
     _log_cross_check_status(log, cross)
     return state
@@ -291,6 +319,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         leed_alerts=state.leed_alerts,
         placeholder_alerts=state.placeholder_alerts,
         cross_check_result=state.cross_check_result,
+        cycle_label=state.submission.cycle_label,
     )
 
 
@@ -299,14 +328,14 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle)
     specs = prepared.specs
     if dry_run:
-        return PipelineResult(review_result=ReviewResult(findings=[], model=model), files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts)
+        return PipelineResult(review_result=ReviewResult(findings=[], model=model), files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cycle_label=cycle.label)
 
     findings: list[Finding] = []
     thinking: list[str] = []
     in_tok = out_tok = 0
     errors: list[str] = []
     for i, spec in enumerate(specs, start=1):
-        progress(35.0 + ((i - 1) / len(specs)) * 20.0, f"Reviewing {spec.filename} ({i}/{len(specs)})...")
+        progress(25.0 + ((i - 1) / len(specs)) * 25.0, f"Reviewing {spec.filename} ({i}/{len(specs)})...")
         rr = review_single_spec(spec.content, spec.filename, project_context=project_context, model=model, verbose=verbose, stream_callback=stream_callback, cycle=cycle)
         if rr.parse_status == "incomplete":
             log(f"  {spec.filename}: Response incomplete — model ran out of output tokens. No findings extracted.")
@@ -321,24 +350,30 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
 
     findings = _deduplicate_findings(findings)
     cross = None
-    if cross_check:
-        cross = run_cross_check(specs, findings, project_context=project_context, verbose=verbose, cycle=cycle)
-        _log_cross_check_status(log, cross)
-
-    all_verifiable = list(findings)
-    if cross and cross.findings:
-        all_verifiable.extend(cross.findings)
-    if verify and all_verifiable:
+    if verify and findings:
         try:
-            verify_findings(all_verifiable, progress=lambda c, t, fn: progress(66.0 + (c / max(t, 1)) * 29.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle)
+            verify_findings(findings, progress=lambda c, t, fn: progress(50.0 + (c / max(t, 1)) * 25.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle)
         except Exception as e:
             log(f"Verification failed: {e}. Returning results without verification.")
-            for f in all_verifiable:
+            for f in findings:
                 if f.verification is None:
                     f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
+    if cross_check:
+        verified_for_cross = [f for f in findings if f.verification and f.verification.verdict in ("CONFIRMED", "CORRECTED")]
+        progress(75.0, "Running cross-check on verified findings...")
+        cross = run_cross_check(specs, verified_for_cross, project_context=project_context, verbose=verbose, cycle=cycle)
+        _log_cross_check_status(log, cross)
+        if verify and cross and cross.findings:
+            try:
+                verify_findings(cross.findings, progress=lambda c, t, fn: progress(90.0 + (c / max(t, 1)) * 5.0, f"Verifying cross-check {c}/{t} ({fn})..."), cycle=cycle)
+            except Exception as e:
+                log(f"Cross-check verification failed: {e}.")
+                for f in cross.findings:
+                    if f.verification is None:
+                        f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
 
     combined = ReviewResult(findings=findings, thinking="\n\n".join(thinking), model=model, input_tokens=in_tok, output_tokens=out_tok, elapsed_seconds=time.time() - start)
     if errors:
         combined.thinking += "\n\n--- Review Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
     progress(100.0, "Done.")
-    return PipelineResult(review_result=combined, files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cross_check_result=cross)
+    return PipelineResult(review_result=combined, files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cross_check_result=cross, cycle_label=cycle.label)
