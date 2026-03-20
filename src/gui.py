@@ -37,6 +37,7 @@ from src.resume_state import (
     PHASE_REVIEW_COLLECT,
     PHASE_VERIFICATION_POLL,
     PHASE_CROSS_CHECK,
+    PHASE_CROSS_CHECK_VERIFICATION_POLL,
     PHASE_FINALIZE,
     SUPPORTED_PHASES,
     build_resume_state,
@@ -991,13 +992,23 @@ class SpecReviewApp(ctk.CTk):
                     ))
                 cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []
                 if cross_check_findings:
+                    cross_check_verification_job = start_batch_verification(
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
+                    save_batch_state(build_resume_state(
+                        phase=PHASE_CROSS_CHECK_VERIFICATION_POLL,
+                        submission=self._batch_submission,
+                        review_state=review_state,
+                        verification_batch=cross_check_verification_job,
+                        cross_check_skipped_due_to_missing_specs=review_state.cross_check_skipped_due_to_missing_specs,
+                        verification_started=bool(verifiable_findings),
+                        verification_completed=verification_completed,
+                    ))
                     collect_batch_verification_results(
-                        start_batch_verification(
-                            cross_check_findings,
-                            cycle=cycle,
-                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                            progress=_on_progress,
-                        ),
+                        cross_check_verification_job,
                         cross_check_findings,
                         cycle=cycle,
                         log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
@@ -1151,6 +1162,14 @@ class SpecReviewApp(ctk.CTk):
                 return
             self._resume_verification_poll(loaded_state)
             return
+        if phase == PHASE_CROSS_CHECK_VERIFICATION_POLL:
+            if not self._is_valid_verification_resume_state(loaded_state):
+                self.log.log_error("Saved cross-check verification resume state is incomplete. Discarding it.")
+                delete_batch_state()
+                self._reset_ui()
+                return
+            self._resume_cross_check_verification_poll(loaded_state)
+            return
         if phase == PHASE_FINALIZE:
             review_state: CollectedBatchState | None = loaded_state.get("review_state")
             if review_state is None:
@@ -1189,13 +1208,23 @@ class SpecReviewApp(ctk.CTk):
                     )
                     cross_check_findings = list(review_state_local.cross_check_result.findings) if review_state_local.cross_check_result and review_state_local.cross_check_result.findings else []
                     if cross_check_findings:
+                        cross_check_verification_job = start_batch_verification(
+                            cross_check_findings,
+                            cycle=cycle,
+                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                            progress=_on_progress,
+                        )
+                        save_batch_state(build_resume_state(
+                            phase=PHASE_CROSS_CHECK_VERIFICATION_POLL,
+                            submission=self._batch_submission,
+                            review_state=review_state_local,
+                            verification_batch=cross_check_verification_job,
+                            cross_check_skipped_due_to_missing_specs=review_state_local.cross_check_skipped_due_to_missing_specs,
+                            verification_started=True,
+                            verification_completed=True,
+                        ))
                         collect_batch_verification_results(
-                            start_batch_verification(
-                                cross_check_findings,
-                                cycle=cycle,
-                                log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                                progress=_on_progress,
-                            ),
+                            cross_check_verification_job,
                             cross_check_findings,
                             cycle=cycle,
                             log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
@@ -1261,13 +1290,23 @@ class SpecReviewApp(ctk.CTk):
                 )
                 cross_check_findings = list(review_state_local.cross_check_result.findings) if review_state_local.cross_check_result and review_state_local.cross_check_result.findings else []
                 if cross_check_findings:
+                    cross_check_verification_job = start_batch_verification(
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
+                    save_batch_state(build_resume_state(
+                        phase=PHASE_CROSS_CHECK_VERIFICATION_POLL,
+                        submission=self._batch_submission,
+                        review_state=review_state_local,
+                        verification_batch=cross_check_verification_job,
+                        cross_check_skipped_due_to_missing_specs=review_state_local.cross_check_skipped_due_to_missing_specs,
+                        verification_started=True,
+                        verification_completed=True,
+                    ))
                     collect_batch_verification_results(
-                        start_batch_verification(
-                            cross_check_findings,
-                            cycle=cycle,
-                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                            progress=_on_progress,
-                        ),
+                        cross_check_verification_job,
                         cross_check_findings,
                         cycle=cycle,
                         log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
@@ -1280,6 +1319,44 @@ class SpecReviewApp(ctk.CTk):
                 err = f"{e}\n{traceback.format_exc()}"
                 self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
         threading.Thread(target=_do_resume_verification, daemon=True).start()
+
+    def _resume_cross_check_verification_poll(self, loaded_state: dict):
+        run_epoch = self._next_run_epoch()
+        review_state: CollectedBatchState = loaded_state["review_state"]
+        verification_job = loaded_state["verification_batch"]
+        cycle = AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
+        cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []
+
+        def _do_resume_cross_check_verification():
+            try:
+                def _on_progress(pct, msg):
+                    self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
+                    self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+
+                if cross_check_findings:
+                    collect_batch_verification_results(
+                        verification_job,
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
+                save_batch_state(build_resume_state(
+                    phase=PHASE_FINALIZE,
+                    submission=self._batch_submission,
+                    review_state=review_state,
+                    cross_check_skipped_due_to_missing_specs=review_state.cross_check_skipped_due_to_missing_specs,
+                    verification_started=True,
+                    verification_completed=True,
+                ))
+                result = finalize_batch_result(review_state)
+                self._dispatch_if_current(run_epoch, lambda r=result: self._on_review_complete(r))
+            except Exception as e:
+                import traceback
+                err = f"{e}\n{traceback.format_exc()}"
+                self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
+
+        threading.Thread(target=_do_resume_cross_check_verification, daemon=True).start()
 
     # ----- Pop-out report window -----
 

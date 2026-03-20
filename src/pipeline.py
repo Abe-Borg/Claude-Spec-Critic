@@ -277,11 +277,11 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
         state.cross_check_result = skipped
         _log_cross_check_status(log, skipped)
         return state
-    verified_findings = [
+    dedup_findings = [
         f for f in state.review_result.findings
-        if f.verification and f.verification.verdict in ("CONFIRMED", "CORRECTED")
+        if not (f.verification and f.verification.verdict == "DISPUTED")
     ]
-    cross = run_cross_check(specs, verified_findings, project_context=project_context, cycle=cycle)
+    cross = run_cross_check(specs, dedup_findings, project_context=project_context, cycle=cycle)
     state.cross_check_result = cross
     _log_cross_check_status(log, cross)
     return state
@@ -359,9 +359,9 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
                 if f.verification is None:
                     f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
     if cross_check:
-        verified_for_cross = [f for f in findings if f.verification and f.verification.verdict in ("CONFIRMED", "CORRECTED")]
-        progress(75.0, "Running cross-check on verified findings...")
-        cross = run_cross_check(specs, verified_for_cross, project_context=project_context, verbose=verbose, cycle=cycle)
+        dedup_for_cross = [f for f in findings if not (f.verification and f.verification.verdict == "DISPUTED")]
+        progress(75.0, "Running cross-check with dedup context...")
+        cross = run_cross_check(specs, dedup_for_cross, project_context=project_context, verbose=verbose, cycle=cycle)
         _log_cross_check_status(log, cross)
         if verify and cross and cross.findings:
             try:
