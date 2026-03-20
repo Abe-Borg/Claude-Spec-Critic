@@ -84,8 +84,7 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
         "bold (**), or any other markdown formatting. The summary is rendered in "
         "contexts that do not support markdown.\n"
         "- Separate paragraphs with a blank line.\n"
-        "- Be thorough. Cover every coordination theme represented in your findings. "
-        "A 13-spec review with 10+ findings should produce at least 4-6 themed paragraphs.\n\n"
+        "- Be thorough. Cover every coordination theme represented in your findings.\n\n"
         "Each finding must be a JSON object with these fields:\n"
         '- severity: "CRITICAL" | "HIGH" | "MEDIUM" | "GRIPES"\n'
         "- fileName: primary file where the issue is most visible\n"
