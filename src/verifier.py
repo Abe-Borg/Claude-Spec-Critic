@@ -17,6 +17,7 @@ from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .verification_config import VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
 
 VerifyProgressFn = Callable[[int, int, str], None]
+_PAUSE_TURN_RETRY_MAX = 20
 
 
 def _noop_verify_progress(_: int, __: int, ___: str) -> None:
@@ -150,7 +151,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
 
     for attempt in range(max_retries + 1):
         try:
-            response = None
+            all_responses = []
             messages = [{"role": "user", "content": prompt}]
             max_continuations = 3
             for _ in range(max_continuations + 1):
@@ -161,6 +162,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                     tools=[WEB_SEARCH_TOOL],
                     messages=messages,
                 )
+                all_responses.append(response)
                 stop_reason = getattr(response, "stop_reason", None)
                 if stop_reason == "end_turn":
                     break
@@ -169,25 +171,40 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                     messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
                     continue
                 return VerificationResult(verdict="UNVERIFIED", explanation=f"Verification response incomplete (stop_reason: {stop_reason}).")
-            if response is None or getattr(response, "stop_reason", None) != "end_turn":
+            if not all_responses or getattr(all_responses[-1], "stop_reason", None) != "end_turn":
                 return VerificationResult(verdict="UNVERIFIED", explanation="Verification did not complete after maximum continuation attempts.")
 
             response_text = ""
-            for block in response.content:
-                if hasattr(block, "text"):
-                    response_text += block.text
-            search_gate_failure = _search_gate_failure(response)
-            if search_gate_failure:
-                return VerificationResult(verdict="UNVERIFIED", explanation=search_gate_failure)
-            search_urls, _, _ = _collect_search_evidence(response)
+            all_search_urls: list[str] = []
+            any_search_success = False
+            total_search_errors = 0
+            for resp in all_responses:
+                for block in getattr(resp, "content", []) or []:
+                    if hasattr(block, "text"):
+                        response_text += block.text
+                search_urls, successes, errors = _collect_search_evidence(resp)
+                all_search_urls.extend(search_urls)
+                if successes > 0:
+                    any_search_success = True
+                total_search_errors += errors
+            if not any_search_success:
+                if total_search_errors > 0:
+                    return VerificationResult(
+                        verdict="UNVERIFIED",
+                        explanation=f"Web search attempted but all {total_search_errors} search requests failed.",
+                    )
+                return VerificationResult(
+                    verdict="UNVERIFIED",
+                    explanation="Verification did not perform web search. Verdict requires external grounding.",
+                )
 
             if not response_text.strip():
                 return VerificationResult(verdict="UNVERIFIED", explanation="Verification produced no text response.")
 
             parsed = _parse_verification_response(response_text)
-            if search_urls:
+            if all_search_urls:
                 existing = set(parsed.sources)
-                for url in search_urls:
+                for url in all_search_urls:
                     if url not in existing:
                         parsed.sources.append(url)
             return parsed
@@ -275,4 +292,29 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
         time.sleep(poll_interval)
 
     retrieve_verification_results(job, findings, parse_response_fn=_parse_verification_response)
+    pause_turn_findings = [
+        f for f in findings
+        if f.verification
+        and f.verification.verdict == "UNVERIFIED"
+        and "pause_turn" in (f.verification.explanation or "")
+    ]
+    if pause_turn_findings:
+        if len(pause_turn_findings) > _PAUSE_TURN_RETRY_MAX:
+            log(f"Capping pause_turn retry to {_PAUSE_TURN_RETRY_MAX} of {len(pause_turn_findings)} findings.")
+            pause_turn_findings.sort(key=lambda f: f.confidence, reverse=True)
+            pause_turn_findings = pause_turn_findings[:_PAUSE_TURN_RETRY_MAX]
+
+        log(f"Retrying {len(pause_turn_findings)} findings that got pause_turn via real-time verification...")
+        max_workers = min(3, len(pause_turn_findings))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(verify_finding, f, cycle=cycle): f for f in pause_turn_findings}
+            for future in as_completed(futures):
+                finding = futures[future]
+                try:
+                    finding.verification = future.result()
+                except Exception as e:
+                    finding.verification = VerificationResult(
+                        verdict="UNVERIFIED",
+                        explanation=f"Real-time retry after batch pause_turn failed: {e}",
+                    )
     return findings
