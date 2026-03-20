@@ -1170,16 +1170,45 @@ class SpecReviewApp(ctk.CTk):
                 delete_batch_state()
                 self._reset_ui()
                 return
-            cycle = AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
-            review_state = run_cross_check_for_batch(
-                review_state,
-                specs=getattr(self._batch_submission, "prepared_specs", None),
-                project_context=getattr(self, "_project_context_for_review", ""),
-                cycle=cycle,
-                log=lambda msg: self.log.log(msg, level="info"),
-            )
-            result = finalize_batch_result(review_state)
-            self._on_review_complete(result)
+            run_epoch = self._next_run_epoch()
+
+            def _do_resume_cross_check():
+                try:
+                    cycle = AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
+
+                    def _on_progress(pct, msg):
+                        self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
+                        self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+
+                    review_state_local = run_cross_check_for_batch(
+                        review_state,
+                        specs=getattr(self._batch_submission, "prepared_specs", None),
+                        project_context=getattr(self, "_project_context_for_review", ""),
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                    )
+                    cross_check_findings = list(review_state_local.cross_check_result.findings) if review_state_local.cross_check_result and review_state_local.cross_check_result.findings else []
+                    if cross_check_findings:
+                        collect_batch_verification_results(
+                            start_batch_verification(
+                                cross_check_findings,
+                                cycle=cycle,
+                                log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                                progress=_on_progress,
+                            ),
+                            cross_check_findings,
+                            cycle=cycle,
+                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                            progress=_on_progress,
+                        )
+                    result = finalize_batch_result(review_state_local)
+                    self._dispatch_if_current(run_epoch, lambda r=result: self._on_review_complete(r))
+                except Exception as e:
+                    import traceback
+                    err = f"{e}\n{traceback.format_exc()}"
+                    self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
+
+            threading.Thread(target=_do_resume_cross_check, daemon=True).start()
             return
 
     def _is_valid_verification_resume_state(self, loaded_state: dict) -> bool:
@@ -1230,6 +1259,20 @@ class SpecReviewApp(ctk.CTk):
                     cycle=cycle,
                     log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                 )
+                cross_check_findings = list(review_state_local.cross_check_result.findings) if review_state_local.cross_check_result and review_state_local.cross_check_result.findings else []
+                if cross_check_findings:
+                    collect_batch_verification_results(
+                        start_batch_verification(
+                            cross_check_findings,
+                            cycle=cycle,
+                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                            progress=_on_progress,
+                        ),
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
                 result = finalize_batch_result(review_state_local)
                 self._dispatch_if_current(run_epoch, lambda r=result: self._on_review_complete(r))
             except Exception as e:
