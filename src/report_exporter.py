@@ -654,15 +654,27 @@ def _write_notes(doc: Document, thinking: str) -> None:
     _write_narrative_text(doc, thinking)
 
 
+def _sanitize_markdown_line(line: str) -> str:
+    """Strip markdown header prefixes from a line."""
+    stripped = line
+    while stripped.startswith('#'):
+        stripped = stripped[1:]
+    return stripped.strip() if line.startswith('#') else line
+
+
 def _write_narrative_text(doc: Document, text: str) -> None:
-    """Write multi-paragraph narrative text, splitting on double newlines."""
+    """Write multi-paragraph narrative text, splitting on double newlines.
+
+    Strips markdown header formatting (## ...) since the cross-check
+    prompt sometimes produces markdown despite instructions not to.
+    """
     if '\n\n' in text:
         paragraphs = text.split('\n\n')
     else:
         paragraphs = text.split('\n')
 
     for para_text in paragraphs:
-        para_text = para_text.strip()
+        para_text = _sanitize_markdown_line(para_text.strip())
         if para_text:
             para = doc.add_paragraph()
             run = para.add_run(para_text)

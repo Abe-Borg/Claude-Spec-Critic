@@ -36,7 +36,6 @@ WEB_SEARCH_TOOL = {
         "homeadvisor.com",
         "thumbtack.com",
         "angi.com",
-        "medium.com",
         "ehow.com",
         "wikihow.com",
         "about.com",
