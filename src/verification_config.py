@@ -1,10 +1,10 @@
 """Shared configuration for verification API calls."""
 
 VERIFICATION_MODEL = "claude-sonnet-4-6"
-VERIFICATION_MAX_TOKENS = 12_000
+VERIFICATION_MAX_TOKENS = 20_000
 
 WEB_SEARCH_TOOL = {
-    "type": "web_search_20260209",
+    "type": "web_search_20250305",
     "name": "web_search",
     "allowed_domains": [
         "iccsafe.org",
@@ -23,7 +23,7 @@ WEB_SEARCH_TOOL = {
         "chatgpt.com",
         "perplexity.ai",
     ],
-    "max_uses": 3,
+    "max_uses": 5,
     "user_location": {
         "type": "approximate",
         "country": "US",
