@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus 4.6
-v2.3.0 - Opus-only pipeline, real-time cost confirmation, updated mode labels
+v2.3.1 - UI polish: consistent font sizes, improved button contrast, relocated accessibility
 """
 import os, sys, json, time, threading
 from datetime import datetime, timezone
@@ -69,6 +69,9 @@ _FONT_SCALE_OPTIONS = {
     "Large (+10%)": 1.1,
     "Larger (+20%)": 1.2,
 }
+
+# Consistent font size for all input row labels and controls
+_UI_FONT_SIZE = 12
 
 
 def _app_config_dir() -> Path:
@@ -228,7 +231,7 @@ class SpecReviewApp(ctk.CTk):
 
         # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
-        self.hdr.pack(fill="x", pady=(0, 20))
+        self.hdr.pack(fill="x", pady=(0, 8))
         hdr_title_row = ctk.CTkFrame(self.hdr, fg_color="transparent")
         hdr_title_row.pack(fill="x")
         ctk.CTkLabel(hdr_title_row, text="Spec Critic", font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"), text_color=COLORS["text_primary"]).pack(side="left")
@@ -247,6 +250,25 @@ class SpecReviewApp(ctk.CTk):
             text_color=COLORS["text_secondary"], command=self._show_usage_dialog,
         ).pack(side="right", padx=(0, 8), pady=(4, 0))
         ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.6", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
+
+        # --- Accessibility row: sits between header and inputs card ---
+        accessibility_bar = ctk.CTkFrame(c, fg_color="transparent")
+        accessibility_bar.pack(fill="x", pady=(8, 12))
+        ctk.CTkLabel(accessibility_bar, text="Accessibility", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"]).pack(side="left", padx=(0, 12))
+        self._font_scale_var = ctk.StringVar(value=self._font_scale_label)
+        self.font_size_selector = ctk.CTkSegmentedButton(
+            accessibility_bar,
+            values=list(_FONT_SCALE_OPTIONS.keys()),
+            variable=self._font_scale_var,
+            command=self._on_font_scale_change,
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+            selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
+            unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
+            fg_color=COLORS["bg_input"], text_color=COLORS["text_primary"],
+            text_color_disabled=COLORS["text_muted"], height=32,
+        )
+        self.font_size_selector.set(self._font_scale_label)
+        self.font_size_selector.pack(side="left")
 
         self._create_inputs_card(c)
         self.file_list_panel = FileListPanel(c, on_selection_change=self._on_file_selection_change, pack_after=self.inputs_card)
@@ -276,30 +298,30 @@ class SpecReviewApp(ctk.CTk):
         self.inputs_content.pack(fill="x", padx=16, pady=(0, 16))
 
         # --- Row 0: API Key ---
-        ctk.CTkLabel(self.inputs_content, text="API Key", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=8)
-        self.api_key_entry = ctk.CTkEntry(self.inputs_content, placeholder_text="sk-ant-...", font=ctk.CTkFont(family="Consolas", size=12), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36, show="\u2022")
+        ctk.CTkLabel(self.inputs_content, text="API Key", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=8)
+        self.api_key_entry = ctk.CTkEntry(self.inputs_content, placeholder_text="sk-ant-...", font=ctk.CTkFont(family="Consolas", size=_UI_FONT_SIZE), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36, show="\u2022")
         self.api_key_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=8)
         if self.api_key: self.api_key_entry.insert(0, self.api_key)
 
         # --- Row 1: Specs ---
-        ctk.CTkLabel(self.inputs_content, text="Specs", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=8)
+        ctk.CTkLabel(self.inputs_content, text="Specs", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=8)
         ef = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ef.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=8)
         ef.columnconfigure(0, weight=1)
-        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select .docx specification files", font=ctk.CTkFont(family="Consolas", size=12), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
+        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select .docx specification files", font=ctk.CTkFont(family="Consolas", size=_UI_FONT_SIZE), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
         self.input_dir_entry.grid(row=0, column=0, sticky="ew")
-        bkw = {"height": 36, "font": ctk.CTkFont(size=12), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
+        bkw = {"height": 36, "font": ctk.CTkFont(size=_UI_FONT_SIZE), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
         ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
 
         # --- Row 2: Project Context ---
         ctx_label_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ctx_label_frame.grid(row=2, column=0, sticky="nw", pady=8)
-        ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
+        ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
         ctk.CTkButton(ctx_label_frame, text="Expand", width=60, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._open_context_modal).pack(anchor="nw", pady=(4, 0))
         self.context_textbox = ctk.CTkTextbox(
             self.inputs_content, fg_color=COLORS["bg_input"], border_color=COLORS["border"],
             border_width=2, text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(family="Consolas", size=12), height=80, wrap="word",
+            font=ctk.CTkFont(family="Consolas", size=_UI_FONT_SIZE), height=80, wrap="word",
         )
         self.context_textbox.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=8)
         self._context_has_placeholder = True
@@ -310,33 +332,25 @@ class SpecReviewApp(ctk.CTk):
         self.context_textbox.bind("<KeyRelease>", self._on_context_change)
 
         # --- Row 3: Review Mode ---
-        ctk.CTkLabel(self.inputs_content, text="Mode", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
+        ctk.CTkLabel(self.inputs_content, text="Mode", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
         mode_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         mode_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
         self.mode_selector = ctk.CTkSegmentedButton(
             mode_frame, values=[_MODE_REALTIME, _MODE_BATCH],
-            command=self._on_mode_change, font=ctk.CTkFont(family="Segoe UI", size=11),
+            command=self._on_mode_change, font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
             unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
-            fg_color=COLORS["bg_input"], text_color=COLORS["text_secondary"],
+            fg_color=COLORS["bg_input"], text_color=COLORS["text_primary"],
             text_color_disabled=COLORS["text_muted"], height=32,
         )
         self.mode_selector.set(_MODE_REALTIME)
         self.mode_selector.pack(side="left")
         self._mode_hint = ctk.CTkLabel(mode_frame, text="",
-            font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._mode_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 4: Code Cycle ---
-        ctk.CTkLabel(self.inputs_content, text="Code Cycle", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=6, column=0, sticky="w", pady=8)
-        cycle_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        cycle_frame.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=8)
-        self.cycle_selector = ctk.CTkSegmentedButton(cycle_frame, values=["2022", "2025"], font=ctk.CTkFont(family="Segoe UI", size=11), selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"], unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"], fg_color=COLORS["bg_input"], text_color=COLORS["text_secondary"], height=32)
-        self.cycle_selector.set(DEFAULT_CYCLE.label)
-        self.cycle_selector.pack(side="left")
-
-        # --- Row 5: Output ---
-        ctk.CTkLabel(self.inputs_content, text="Output", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
+        # --- Row 4: Output ---
+        ctk.CTkLabel(self.inputs_content, text="Output", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
         output_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         output_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
         self._output_mode_var = ctk.StringVar(value="View in App")
@@ -344,26 +358,26 @@ class SpecReviewApp(ctk.CTk):
             output_frame, values=["View in App", "Export Report"],
             variable=self._output_mode_var,
             command=self._on_output_mode_change,
-            font=ctk.CTkFont(family="Segoe UI", size=11),
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
             unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
-            fg_color=COLORS["bg_input"], text_color=COLORS["text_secondary"],
+            fg_color=COLORS["bg_input"], text_color=COLORS["text_primary"],
             text_color_disabled=COLORS["text_muted"], height=32,
         )
         self.output_selector.set("View in App")
         self.output_selector.pack(side="left")
         self._output_hint = ctk.CTkLabel(output_frame, text="",
-            font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._output_hint.pack(side="left", padx=(12, 0))
 
         # --- Row 5: Options (cross-check) ---
-        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
+        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
         options_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         options_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
         self._cross_check_var = ctk.BooleanVar(value=False)
         self._cross_check_cb = ctk.CTkCheckBox(
             options_frame, text="Cross-spec coordination check", variable=self._cross_check_var,
-            font=ctk.CTkFont(family="Segoe UI", size=12), fg_color=COLORS["accent"],
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
             checkmark_color=COLORS["text_primary"], text_color=COLORS["text_secondary"],
             checkbox_width=20, checkbox_height=20,
@@ -371,27 +385,18 @@ class SpecReviewApp(ctk.CTk):
         self._cross_check_cb.pack(side="left")
         self._cross_check_hint = ctk.CTkLabel(options_frame,
             text="Opus 4.6 \u2022 full content \u2022 finds inter-spec conflicts",
-            font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 7: Accessibility / Font scaling ---
-        ctk.CTkLabel(self.inputs_content, text="Accessibility", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=7, column=0, sticky="w", pady=8)
-        accessibility_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        accessibility_frame.grid(row=7, column=1, sticky="w", padx=(8, 0), pady=8)
-        self._font_scale_var = ctk.StringVar(value=self._font_scale_label)
-        self.font_size_selector = ctk.CTkSegmentedButton(
-            accessibility_frame,
-            values=list(_FONT_SCALE_OPTIONS.keys()),
-            variable=self._font_scale_var,
-            command=self._on_font_scale_change,
-            font=ctk.CTkFont(family="Segoe UI", size=11),
-            selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
-            unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
-            fg_color=COLORS["bg_input"], text_color=COLORS["text_secondary"],
-            text_color_disabled=COLORS["text_muted"], height=32,
-        )
-        self.font_size_selector.set(self._font_scale_label)
-        self.font_size_selector.pack(side="left")
+        # --- Row 6: Code Cycle ---
+        ctk.CTkLabel(self.inputs_content, text="Code Cycle", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=6, column=0, sticky="w", pady=8)
+        cycle_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        cycle_frame.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=8)
+        self.cycle_selector = ctk.CTkSegmentedButton(cycle_frame, values=["2022", "2025"], font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"], unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"], fg_color=COLORS["bg_input"], text_color=COLORS["text_primary"], height=32)
+        self.cycle_selector.set(DEFAULT_CYCLE.label)
+        self.cycle_selector.pack(side="left")
+
+        # (Accessibility row is now in the header area, not inside the inputs card)
 
         self.inputs_content.columnconfigure(1, weight=1)
 
@@ -687,14 +692,14 @@ class SpecReviewApp(ctk.CTk):
             )
 
         ctk.CTkLabel(inner, text=warning_text,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             text_color=COLORS["text_secondary"],
             wraplength=460, justify="left").pack(anchor="w", padx=16, pady=(0, 16))
 
         # Buttons
         btn_frame = ctk.CTkFrame(inner, fg_color="transparent")
         btn_frame.pack(fill="x", padx=16, pady=(0, 16))
-        btn_kw = {"height": 36, "font": ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), "corner_radius": 6}
+        btn_kw = {"height": 36, "font": ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE, weight="bold"), "corner_radius": 6}
 
         def _confirm():
             self._realtime_confirmed = True
@@ -1039,7 +1044,7 @@ class SpecReviewApp(ctk.CTk):
 
         btn_frame = ctk.CTkFrame(inner, fg_color="transparent")
         btn_frame.pack(fill="x", padx=16, pady=(0, 16))
-        btn_kw = {"height": 34, "font": ctk.CTkFont(family="Segoe UI", size=12), "corner_radius": 6}
+        btn_kw = {"height": 34, "font": ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), "corner_radius": 6}
 
         def _resume():
             dialog.destroy()
@@ -1229,7 +1234,7 @@ class SpecReviewApp(ctk.CTk):
 
         ctk.CTkLabel(
             outer, text="AI-assisted M&P specification review for California K-12 DSA projects",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             text_color=COLORS["text_muted"],
         ).pack(anchor="w", padx=20, pady=(0, 12))
 
@@ -1281,7 +1286,7 @@ class SpecReviewApp(ctk.CTk):
             ).pack(anchor="w", padx=8, pady=(10, 2))
             ctk.CTkLabel(
                 scroll, text=body,
-                font=ctk.CTkFont(family="Segoe UI", size=12),
+                font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
                 text_color=COLORS["text_secondary"],
                 wraplength=520, justify="left",
             ).pack(anchor="w", padx=8, pady=(0, 4))
@@ -1298,14 +1303,14 @@ class SpecReviewApp(ctk.CTk):
                 "documents. It\u2019s advisory only and not a substitute for AHJ review. "
                 "Code citations should still be spot-checked by the engineer of record."
             ),
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             text_color=COLORS["text_secondary"],
             wraplength=520, justify="left",
         ).pack(anchor="w", padx=8, pady=(0, 10))
 
         ctk.CTkButton(
             outer, text="Close", width=100, height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
             command=dialog.destroy,
         ).pack(pady=(0, 16))
@@ -1333,7 +1338,7 @@ class SpecReviewApp(ctk.CTk):
 
         ctk.CTkLabel(
             outer, text="Step-by-step guide to running a specification review",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             text_color=COLORS["text_muted"],
         ).pack(anchor="w", padx=20, pady=(0, 12))
 
@@ -1394,7 +1399,7 @@ class SpecReviewApp(ctk.CTk):
             )),
             ("9.  Review the Results", (
                 "Findings are grouped by severity (Critical, High, Medium, "
-                "Gripe) and sorted by confidence within each tier. Each finding "
+                "Gripe) and sorted by confidence within each severity tier. Each finding "
                 "includes a verification verdict from a secondary AI pass with "
                 "web search. Use Export JSON from the report window to save "
                 "structured results for further processing."
@@ -1409,7 +1414,7 @@ class SpecReviewApp(ctk.CTk):
             ).pack(anchor="w", padx=8, pady=(10, 2))
             ctk.CTkLabel(
                 scroll, text=body,
-                font=ctk.CTkFont(family="Segoe UI", size=12),
+                font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
                 text_color=COLORS["text_secondary"],
                 wraplength=520, justify="left",
             ).pack(anchor="w", padx=8, pady=(0, 4))
@@ -1423,20 +1428,20 @@ class SpecReviewApp(ctk.CTk):
             scroll,
             text=(
                 "Use batch mode for routine reviews — identical results at "
-                "half the cost. Save your API key to a file so you don’t "
+                "half the cost. Save your API key to a file so you don't "
                 "have to paste it every time. Write specific project context — "
                 "the more detail you provide, the more targeted the findings. "
                 "Always spot-check code citations against the actual code text "
                 "before acting on findings."
             ),
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             text_color=COLORS["text_secondary"],
             wraplength=520, justify="left",
         ).pack(anchor="w", padx=8, pady=(0, 10))
 
         ctk.CTkButton(
             outer, text="Close", width=100, height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
             command=dialog.destroy,
         ).pack(pady=(0, 16))
