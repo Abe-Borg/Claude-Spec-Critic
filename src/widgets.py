@@ -436,7 +436,7 @@ def _render_alerts(parent, leed_alerts, placeholder_alerts):
             ctk.CTkLabel(aii, text=f"{len(fa)} found", font=ctk.CTkFont(family="Consolas", size=10), text_color=COLORS["text_muted"]).pack(anchor="w")
 
 
-def _render_collapsible_card(parent, finding, card_refs: list | None = None):
+def _render_collapsible_card(parent, finding, card_refs: list | None = None, verbose: bool = True):
     sc = SEVERITY_COLORS.get(finding.severity, COLORS["border"])
     outer = ctk.CTkFrame(parent, fg_color=sc, corner_radius=8); outer.pack(fill="x", pady=4)
     card = ctk.CTkFrame(outer, fg_color=COLORS["bg_input"], corner_radius=6); card.pack(fill="x", padx=(4, 0))
@@ -457,8 +457,14 @@ def _render_collapsible_card(parent, finding, card_refs: list | None = None):
             text_color=COLORS["text_muted"]).pack(side="left", padx=(10, 0))
 
     body = ctk.CTkFrame(card, fg_color="transparent"); body.pack(fill="x", padx=14, pady=(4, 12))
-    ctk.CTkLabel(body, text=finding.issue or "", font=ctk.CTkFont(family="Segoe UI", size=12),
-        text_color=COLORS["text_secondary"], anchor="w", justify="left", wraplength=700).pack(fill="x", pady=(0, 8))
+    if verbose:
+        ctk.CTkLabel(body, text=finding.issue or "", font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_secondary"], anchor="w", justify="left", wraplength=700).pack(fill="x", pady=(0, 8))
+    ar = ctk.CTkFrame(body, fg_color="transparent"); ar.pack(fill="x", pady=(0, 2))
+    ctk.CTkLabel(ar, text="Action:", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+        text_color=COLORS["text_muted"], width=90, anchor="w").pack(side="left")
+    ctk.CTkLabel(ar, text=finding.actionType or "", font=ctk.CTkFont(family="Segoe UI", size=11),
+        text_color=COLORS["text_secondary"], anchor="w").pack(side="left")
     if finding.existingText:
         r = ctk.CTkFrame(body, fg_color="transparent"); r.pack(fill="x", pady=2)
         ctk.CTkLabel(r, text="Existing:", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"], width=90, anchor="w").pack(side="left")
@@ -467,7 +473,7 @@ def _render_collapsible_card(parent, finding, card_refs: list | None = None):
         r = ctk.CTkFrame(body, fg_color="transparent"); r.pack(fill="x", pady=2)
         ctk.CTkLabel(r, text="Replace with:", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"], width=90, anchor="w").pack(side="left")
         ctk.CTkLabel(r, text=finding.replacementText, font=ctk.CTkFont(family="Consolas", size=11), text_color=COLORS["success"], anchor="w", justify="left", wraplength=600).pack(side="left", fill="x", expand=True)
-    if finding.codeReference:
+    if verbose and finding.codeReference:
         ctk.CTkLabel(body, text=f"Reference: {finding.codeReference}", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["accent"], anchor="w").pack(fill="x", pady=(4, 0))
 
     # Verification verdict
@@ -478,14 +484,14 @@ def _render_collapsible_card(parent, finding, card_refs: list | None = None):
         ctk.CTkLabel(vf, text=f"{verdict_icon} {vr.verdict}", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
             text_color="white" if vr.verdict != "CORRECTED" else "black",
             fg_color=vc, corner_radius=4, width=100, height=22).pack(side="left")
-        if vr.explanation:
+        if verbose and vr.explanation:
             ctk.CTkLabel(vf, text=vr.explanation, font=ctk.CTkFont(family="Segoe UI", size=11),
                 text_color=COLORS["text_secondary"], anchor="w", justify="left", wraplength=550).pack(side="left", padx=(8, 0), fill="x", expand=True)
-        if vr.correction:
+        if vr.verdict == "CORRECTED" and vr.correction:
             cr = ctk.CTkFrame(body, fg_color="transparent"); cr.pack(fill="x", pady=2)
             ctk.CTkLabel(cr, text="Correction:", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["warning"], width=90, anchor="w").pack(side="left")
             ctk.CTkLabel(cr, text=vr.correction, font=ctk.CTkFont(family="Consolas", size=11), text_color=COLORS["warning"], anchor="w", justify="left", wraplength=600).pack(side="left", fill="x", expand=True)
-        if vr.sources:
+        if verbose and vr.sources:
             sf = ctk.CTkFrame(body, fg_color="transparent"); sf.pack(fill="x", pady=(2, 0))
             ctk.CTkLabel(sf, text="Sources:", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLORS["text_muted"], width=90, anchor="w").pack(side="left", anchor="n")
             src_text = "\n".join(vr.sources[:3])
@@ -500,7 +506,7 @@ def _render_collapsible_card(parent, finding, card_refs: list | None = None):
     if card_refs is not None: card_refs.append({"body": body, "arrow": arrow_label, "state": card_state, "padx": 14, "pady": (4, 12)})
 
 
-def _render_findings_section(parent, review, card_refs: list | None = None):
+def _render_findings_section(parent, review, card_refs: list | None = None, verbose: bool = True):
     card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8); card.pack(fill="x", pady=(0, 12))
     inner = ctk.CTkFrame(card, fg_color="transparent"); inner.pack(fill="x", padx=16, pady=12)
     findings_header = ctk.CTkFrame(inner, fg_color="transparent"); findings_header.pack(fill="x", pady=(0, 8))
@@ -527,10 +533,10 @@ def _render_findings_section(parent, review, card_refs: list | None = None):
         if not sf: continue
         ctk.CTkLabel(inner, text=f"{sev} ({len(sf)})", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
             text_color=SEVERITY_COLORS.get(sev, COLORS["text_primary"])).pack(anchor="w", pady=(12, 6))
-        for f in sf: _render_collapsible_card(inner, f, card_refs=card_refs)
+        for f in sf: _render_collapsible_card(inner, f, card_refs=card_refs, verbose=verbose)
 
 
-def _render_cross_check_section(parent, cross_check_result, card_refs: list | None = None):
+def _render_cross_check_section(parent, cross_check_result, card_refs: list | None = None, verbose: bool = True):
     """Render the cross-spec coordination findings as a separate section.
 
     This is visually distinct from the per-spec findings section, using
@@ -594,7 +600,7 @@ def _render_cross_check_section(parent, cross_check_result, card_refs: list | No
     )
 
     for f in sorted_findings:
-        _render_collapsible_card(inner, f, card_refs=card_refs)
+        _render_collapsible_card(inner, f, card_refs=card_refs, verbose=verbose)
 
     # Cross-check notes (coordination summary from the model)
     if cross_check_result.thinking:
@@ -660,13 +666,14 @@ def _finding_to_dict(finding) -> dict:
 # ============================================================================
 
 class ReportWindow(ctk.CTkToplevel):
-    def __init__(self, master, review, files_reviewed, leed_alerts, placeholder_alerts, project_context="", cross_check_result=None, **kwargs):
+    def __init__(self, master, review, files_reviewed, leed_alerts, placeholder_alerts, project_context="", cross_check_result=None, verbose: bool = True, **kwargs):
         super().__init__(master, **kwargs)
         self.title("Spec Critic Report"); self.geometry("960x800"); self.minsize(700, 500)
         self.configure(fg_color=COLORS["bg_dark"])
         self._review = review; self._files_reviewed = files_reviewed
         self._leed_alerts = leed_alerts; self._placeholder_alerts = placeholder_alerts
         self._project_context = project_context; self._cross_check_result = cross_check_result
+        self._verbose = verbose
         self._card_refs: list[dict] = []
         self._build_ui(); self.lift(); self.focus_force()
 
@@ -683,8 +690,8 @@ class ReportWindow(ctk.CTkToplevel):
         body.pack(fill="both", expand=True, padx=16, pady=16)
         _render_summary_grid(body, self._review, self._files_reviewed, cross_check_result=self._cross_check_result)
         _render_alerts(body, self._leed_alerts, self._placeholder_alerts)
-        _render_findings_section(body, self._review, card_refs=self._card_refs)
-        _render_cross_check_section(body, self._cross_check_result, card_refs=self._card_refs)
+        _render_findings_section(body, self._review, card_refs=self._card_refs, verbose=self._verbose)
+        _render_cross_check_section(body, self._cross_check_result, card_refs=self._card_refs, verbose=self._verbose)
         if self._review.thinking: _render_notes(body, self._review.thinking)
 
     def _export_json(self, review, files_reviewed, leed_alerts, placeholder_alerts):

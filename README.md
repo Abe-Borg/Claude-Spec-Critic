@@ -69,11 +69,12 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root or
 4. (Optional) Enter project context in the **Project Context** field
 5. Review model is **Opus 4.6** (currently fixed)
 6. (Optional) Check **Cross-spec coordination check** to enable inter-spec analysis
-7. Select the **Output** mode: View in App or Export Report
-8. The token gauge fills to show capacity usage — the run is blocked only if any single file exceeds the 500k per-call limit
-9. Expand the **FILES** panel to check/uncheck individual specs if needed
-10. Click **Run Review**
-11. When complete:
+7. (Optional) Leave **Verbose report** checked to include full issue/explanation/reference detail in finding cards and exported report entries
+8. Select the **Output** mode: View in App or Export Report
+9. The token gauge fills to show capacity usage — the run is blocked only if any single file exceeds the 500k per-call limit
+10. Expand the **FILES** panel to check/uncheck individual specs if needed
+11. Click **Run Review**
+12. When complete:
     - **View in App**: The report renders in-app and a pop-out window opens automatically
     - **Export Report**: A save dialog appears — choose where to save the `.docx` report
 
@@ -85,6 +86,9 @@ Choose how you want to receive the review results:
 - **Batch (SLOW: Cheap!)**: Submits the review and verification phases through the Anthropic Message Batches API for lower cost.
 - **View in App** (default output): Results render in the app as interactive collapsible cards with a pop-out report window.
 - **Export Report**: Results are saved to a Word document (.docx) without rendering in the app.
+- **Verbose report** (default checked): Controls how much finding-level detail is rendered in both output modes.
+  - **Checked**: Full finding detail (issue, code reference, verification explanation/sources, plus all actionable fields).
+  - **Unchecked**: Action-oriented subset only (section, action, existing/replacement text, verification badge, and correction when verdict is `CORRECTED`).
 
 ### Code Cycle
 
@@ -186,6 +190,8 @@ After review (in "View in App" mode), the report renders in a pop-out window wit
 - **Cross-Spec Coordination**: Dedicated section for coordination findings (cyan accent)
 - **Reviewer's Notes**: Claude's personality-driven analysis summary
 
+When **Verbose report** is unchecked, finding cards in both the per-spec and cross-check sections omit issue descriptions, code references, verification explanation prose, and verification source URLs while preserving actionable edit content.
+
 ### Exported Report (.docx)
 
 When using "Export Report" mode, the Word document contains the same information with clean Word-native formatting:
@@ -198,6 +204,8 @@ When using "Export Report" mode, the Word document contains the same information
 - **Findings**: Grouped by severity (colored sub-headings), sorted by confidence, with structured labeled rows per finding (Section, Issue, Action, Existing Text in red, Replace With in green, Reference in blue, Verification verdict)
 - **Cross-Spec Coordination**: Own page with findings and coordination summary (if cross-check was enabled)
 - **Reviewer's Notes**: Own page with italic subtitle and multi-paragraph analysis summary
+
+When **Verbose report** is unchecked, finding entries in both standard findings and cross-check findings include only the actionable subset: header, section, action, existing/replacement text (when present), verification verdict badge, and correction text for `CORRECTED` verdicts.
 
 ### Export Options
 
