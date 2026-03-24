@@ -428,7 +428,7 @@ def _write_alerts(doc: Document, leed_alerts: list[dict],
 # Single finding entry
 # ---------------------------------------------------------------------------
 
-def _write_finding_entry(doc: Document, finding, index: int) -> None:
+def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = True) -> None:
     """Write a single finding with structured labeled rows.
 
     Layout mirrors the old report style:
@@ -471,10 +471,11 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         para.paragraph_format.space_after = Pt(3)
 
     # --- Issue ---
-    para = doc.add_paragraph()
-    para.add_run("Issue: ").bold = True
-    para.add_run(finding.issue or "")
-    para.paragraph_format.space_after = Pt(3)
+    if verbose:
+        para = doc.add_paragraph()
+        para.add_run("Issue: ").bold = True
+        para.add_run(finding.issue or "")
+        para.paragraph_format.space_after = Pt(3)
 
     # --- Action type ---
     para = doc.add_paragraph()
@@ -499,7 +500,7 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         para.paragraph_format.space_after = Pt(3)
 
     # --- Code reference (blue) ---
-    if finding.codeReference:
+    if verbose and finding.codeReference:
         para = doc.add_paragraph()
         para.add_run("Reference: ").bold = True
         run = para.add_run(finding.codeReference)
@@ -518,14 +519,14 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         run.font.color.rgb = verdict_color
         para.paragraph_format.space_after = Pt(3)
 
-        if vr.explanation:
+        if verbose and vr.explanation:
             para = doc.add_paragraph()
             run = para.add_run(vr.explanation)
             run.font.size = Pt(10)
             run.font.color.rgb = RGBColor(100, 100, 100)
             para.paragraph_format.space_after = Pt(3)
 
-        if vr.correction:
+        if vr.verdict == "CORRECTED" and vr.correction:
             para = doc.add_paragraph()
             para.add_run("Correction: ").bold = True
             run = para.add_run(vr.correction)
@@ -540,7 +541,7 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
 # Findings section
 # ---------------------------------------------------------------------------
 
-def _write_findings_section(doc: Document, review) -> None:
+def _write_findings_section(doc: Document, review, verbose: bool = True) -> None:
     """Write per-spec findings grouped by severity, sorted by confidence."""
     doc.add_heading("Findings", level=0)
 
@@ -573,14 +574,14 @@ def _write_findings_section(doc: Document, review) -> None:
 
         for finding in severity_findings:
             finding_number += 1
-            _write_finding_entry(doc, finding, finding_number)
+            _write_finding_entry(doc, finding, finding_number, verbose=verbose)
 
 
 # ---------------------------------------------------------------------------
 # Cross-spec coordination section
 # ---------------------------------------------------------------------------
 
-def _write_cross_check_section(doc: Document, cross_check_result) -> None:
+def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool = True) -> None:
     """Write cross-spec coordination section and explicit status."""
     if not cross_check_result:
         return
@@ -620,7 +621,7 @@ def _write_cross_check_section(doc: Document, cross_check_result) -> None:
     )
 
     for idx, finding in enumerate(sorted_findings, 1):
-        _write_finding_entry(doc, finding, idx)
+        _write_finding_entry(doc, finding, idx, verbose=verbose)
 
     # Coordination summary narrative
     if cross_check_result.thinking:
@@ -691,6 +692,7 @@ def export_report(
     output_path: Path,
     *,
     project_context: str = "",
+    verbose: bool = True,
 ) -> Path:
     """Export a complete review report to a Word document.
 
@@ -763,8 +765,8 @@ def export_report(
     
     _write_alerts(doc, pipeline_result.leed_alerts,
                   pipeline_result.placeholder_alerts)
-    _write_findings_section(doc, review)
-    _write_cross_check_section(doc, cross_check)
+    _write_findings_section(doc, review, verbose=verbose)
+    _write_cross_check_section(doc, cross_check, verbose=verbose)
     _write_notes(doc, review.thinking)
 
     # Save

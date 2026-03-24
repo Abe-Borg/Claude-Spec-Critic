@@ -215,6 +215,7 @@ class SpecReviewApp(ctk.CTk):
         self._selected_files_for_review: list[Path] = []
         self._project_context_for_review: str = ""
         self._cross_check_for_review: bool = False
+        self._verbose_for_review: bool = True
         self._export_mode_for_review: bool = False
         self._last_result = None
         self._poll_consecutive_errors: int = 0
@@ -371,7 +372,7 @@ class SpecReviewApp(ctk.CTk):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._output_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 5: Options (cross-check) ---
+        # --- Row 5: Options ---
         ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
         options_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         options_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
@@ -384,6 +385,15 @@ class SpecReviewApp(ctk.CTk):
             checkbox_width=20, checkbox_height=20,
         )
         self._cross_check_cb.pack(side="left")
+        self._verbose_var = ctk.BooleanVar(value=True)
+        self._verbose_cb = ctk.CTkCheckBox(
+            options_frame, text="Verbose report", variable=self._verbose_var,
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
+            checkmark_color=COLORS["text_primary"], text_color=COLORS["text_secondary"],
+            checkbox_width=20, checkbox_height=20,
+        )
+        self._verbose_cb.pack(side="left", padx=(12, 0))
         self._cross_check_hint = ctk.CTkLabel(options_frame,
             text="Opus 4.6 \u2022 full content \u2022 finds inter-spec conflicts",
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
@@ -743,6 +753,7 @@ class SpecReviewApp(ctk.CTk):
         self._selected_files_for_review = selected_files
         self._project_context_for_review = self._get_project_context()
         self._cross_check_for_review = self._cross_check_var.get()
+        self._verbose_for_review = self._verbose_var.get()
         self._export_mode_for_review = self._is_export_mode
         self._selected_cycle_label = self.cycle_selector.get()
         self.is_processing = True
@@ -812,7 +823,14 @@ class SpecReviewApp(ctk.CTk):
                 elif export_status == "error":
                     self.log.log_warning("Export failed. Retry export or switch output mode to 'View in App' to open the report window.")
             else:
-                self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
+                self._open_report_window(
+                    rv,
+                    result.files_reviewed,
+                    result.leed_alerts,
+                    result.placeholder_alerts,
+                    result.cross_check_result,
+                    verbose=getattr(self, "_verbose_for_review", True),
+                )
         delete_batch_state()
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
@@ -835,6 +853,7 @@ class SpecReviewApp(ctk.CTk):
                 result,
                 output_path,
                 project_context=getattr(self, "_project_context_for_review", ""),
+                verbose=getattr(self, "_verbose_for_review", True),
             )
             self.log.log_success(f"Report saved: {output_path}")
             return "success"
@@ -1132,6 +1151,8 @@ class SpecReviewApp(ctk.CTk):
         self._project_context_for_review = getattr(submission, "project_context", "")
         self._selected_cycle_label = getattr(submission, "cycle_label", DEFAULT_CYCLE.label)
         self._export_mode_for_review = bool(getattr(submission, "export_mode", False))
+        verbose_var = getattr(self, "_verbose_var", None)
+        self._verbose_for_review = verbose_var.get() if verbose_var is not None else bool(getattr(self, "_verbose_for_review", True))
         self.output_selector.set("Export Report" if self._export_mode_for_review else "View in App")
         self._on_output_mode_change(self.output_selector.get())
         if submission.cycle_label in AVAILABLE_CYCLES:
@@ -1360,13 +1381,14 @@ class SpecReviewApp(ctk.CTk):
 
     # ----- Pop-out report window -----
 
-    def _open_report_window(self, review, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result=None):
+    def _open_report_window(self, review, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result=None, verbose: bool = True):
         self._close_report_window()
         self._report_window = ReportWindow(
             self, review=review, files_reviewed=files_reviewed,
             leed_alerts=leed_alerts, placeholder_alerts=placeholder_alerts,
             project_context=getattr(self, "_project_context_for_review", ""),
             cross_check_result=cross_check_result,
+            verbose=verbose,
         )
 
     def _close_report_window(self):
