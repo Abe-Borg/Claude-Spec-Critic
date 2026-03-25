@@ -12,25 +12,14 @@ everything the in-app ReportWindow shows:
     - Cross-spec coordination findings (if cross-check was enabled)
     - Reviewer's notes / analysis summary
 
-This module exists to solve the GUI freezing problem when rendering
-large reviews in-app. When "Export Report" output mode is selected,
-the pipeline runs normally but results are written to a .docx file
-instead of being rendered in CustomTkinter widgets.
-
-Design decisions:
-    - Uses python-docx (already a project dependency) for .docx generation
-    - Accepts the same PipelineResult that the GUI receives — no pipeline changes
-    - Uses real Word heading styles (doc.add_heading) for proper structure
-    - Uses 'Table Grid' style and colored cell shading for the summary table
-    - Uses 'List Bullet' style for file lists and alert details
-    - Findings use the old structured layout with labeled rows on separate lines
-    - Verification verdicts shown inline beneath each finding
-    - The exporter is stateless — one function call, one file written
-    - No GUI dependencies — can be called from any context
-
-v1.8.0 — Initial implementation.
-v1.8.1 — Restyled to use Word-native formatting (real headings, Table Grid,
-    Arial 11pt, structured finding entries with labeled rows).
+Collapsible findings (v2.5.0):
+    Each finding header uses Word Heading 3 style. In Word 2016+ and
+    365, hovering over any heading shows a collapse triangle. Clicking
+    it hides everything between that heading and the next heading of
+    the same or higher level. This means:
+    - Collapse a severity heading (Heading 1) to hide all its findings
+    - Collapse a single finding heading (Heading 3) to hide its details
+    No macros or special XML required — this is native Word behavior.
 
 Usage:
     from report_exporter import export_report
@@ -150,19 +139,31 @@ def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
 
 def _write_title_block(doc: Document, review, files_reviewed: list[str],
                        project_context: str, cycle_label: str = "2025") -> None:
-    """Write the report title and metadata."""
+    """Write the report title and metadata.
+
+    Uses separate paragraphs instead of \\n within runs to ensure
+    reliable rendering across all Word versions and viewers.
+    """
     title = doc.add_heading("Spec Critic — M&P Specification Review Report", level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    # Metadata block (centered)
-    para = doc.add_paragraph()
-    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    para.add_run(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-    para.add_run(f"Model: {review.model}\n")
-    para.add_run(f"Files Reviewed: {len(files_reviewed)}")
-    para.add_run(f"\nCode Cycle: California {cycle_label}")
+    # Metadata as separate centered paragraphs (not \n in a single para)
+    meta_lines = [
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"Model: {review.model}",
+        f"Files Reviewed: {len(files_reviewed)}",
+        f"Code Cycle: California {cycle_label}",
+    ]
     if project_context:
-        para.add_run(f"\nProject: {project_context}")
+        meta_lines.append(f"Project: {project_context}")
+
+    for line in meta_lines:
+        para = doc.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = para.add_run(line)
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(2)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +179,7 @@ def _write_files_reviewed(doc: Document, files_reviewed: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Methodology note (v1.9.0)
+# Methodology note
 # ---------------------------------------------------------------------------
 
 def _summarize_verification_outcomes(findings: list) -> dict[str, object]:
@@ -203,12 +204,7 @@ def _summarize_verification_outcomes(findings: list) -> dict[str, object]:
 
 
 def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label: str = "2025", cross_check_status: str | None = None, cross_check_reason: str = "", verification_stats: dict[str, object] | None = None) -> None:
-    """Write a brief methodology note explaining how the review was produced.
-
-    Placed after 'Files Reviewed' and before 'Summary' in the report.
-    Two short paragraphs: what the tool does, and how verification works.
-    If cross-check was enabled, a sentence about that is included.
-    """
+    """Write a brief methodology note explaining how the review was produced."""
     doc.add_heading("About This Review", level=1)
 
     doc.add_paragraph(
@@ -261,6 +257,13 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
     )
 
     doc.add_paragraph(para2_text)
+
+    # Collapsibility tip
+    doc.add_paragraph(
+        "Tip: In Word, hover over any heading to reveal a collapse triangle. "
+        "Click it to hide the content beneath that heading. Use this to "
+        "collapse individual findings or entire severity groups."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -425,50 +428,65 @@ def _write_alerts(doc: Document, leed_alerts: list[dict],
 
 
 # ---------------------------------------------------------------------------
-# Single finding entry
+# Single finding entry (collapsible via Heading 3)
 # ---------------------------------------------------------------------------
 
 def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = True) -> None:
-    """Write a single finding with structured labeled rows.
+    """Write a single finding as a collapsible block.
 
-    Layout mirrors the old report style:
-        1. [SEVERITY] 92% — filename.docx
-        Section: ...
-        Issue: ...
-        Action: ...
-        Existing Text: ... (red)
-        Replace With: ... (green)
-        Reference: ... (blue)
-        Verification: ... (if applicable)
+    The finding header is rendered as a Heading 3 paragraph, which enables
+    Word's native heading-collapse feature. Users can click the collapse
+    triangle that appears on hover to hide the finding's body content.
+
+    Collapsing a severity group heading (Heading 1) hides all findings
+    in that group. Collapsing a single finding heading (Heading 3) hides
+    just that finding's details.
+
+    Layout:
+        Heading 3: [SEVERITY] 92% — filename.docx — Section ref
+        Normal:    Issue: ...
+        Normal:    Action: ...
+        Normal:    Existing Text: ... (red)
+        Normal:    Replace With: ... (green)
+        Normal:    Reference: ... (blue)
+        Normal:    Verification: ... (if applicable)
     """
     severity_color = SEVERITY_COLORS.get(finding.severity, RGBColor(0, 0, 0))
     conf_tier = _confidence_tier(finding.confidence)
     conf_color = CONFIDENCE_COLORS[conf_tier]
 
-    # --- Finding header ---
+    # --- Finding header as Heading 3 (enables Word collapse) ---
     para = doc.add_paragraph()
+    para.style = doc.styles['Heading 3']
+    para.paragraph_format.space_before = Pt(12)
+    para.paragraph_format.space_after = Pt(4)
+
     # Index + severity badge
     run = para.add_run(f"{index}. [{finding.severity}] ")
     run.bold = True
     run.font.color.rgb = severity_color
+    run.font.size = Pt(11)
     # Confidence
     run = para.add_run(f"{finding.confidence:.0%} ")
     run.bold = True
-    run.font.size = Pt(10)
+    run.font.size = Pt(11)
     run.font.color.rgb = conf_color
     # Separator
     run = para.add_run("— ")
     run.font.color.rgb = RGBColor(128, 128, 128)
+    run.font.size = Pt(11)
     # Filename
     run = para.add_run(finding.fileName or "Unknown")
     run.bold = True
-
-    # --- Section ---
+    run.font.size = Pt(11)
+    run.font.color.rgb = RGBColor(0, 0, 0)
+    # Section (inline in header for compact view)
     if finding.section:
-        para = doc.add_paragraph()
-        para.add_run("Section: ").bold = True
-        para.add_run(finding.section)
-        para.paragraph_format.space_after = Pt(3)
+        run = para.add_run(f" — {finding.section}")
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(100, 100, 100)
+
+    # --- Body content (Normal paragraphs, hidden when heading is collapsed) ---
 
     # --- Issue ---
     if verbose:
@@ -533,16 +551,20 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
             run.font.color.rgb = RGBColor(204, 132, 0)  # Amber
             para.paragraph_format.space_after = Pt(3)
 
-    # Spacer between findings
-    doc.add_paragraph()
-
 
 # ---------------------------------------------------------------------------
 # Findings section
 # ---------------------------------------------------------------------------
 
 def _write_findings_section(doc: Document, review, verbose: bool = True) -> None:
-    """Write per-spec findings grouped by severity, sorted by confidence."""
+    """Write per-spec findings grouped by severity, sorted by confidence.
+
+    Uses heading hierarchy for Word-native collapse support:
+    - Title (level 0): "Findings"
+    - Heading 1: Severity group (e.g., "CRITICAL (1)")
+    - Heading 3: Individual finding header (collapsible)
+    - Normal: Finding body content
+    """
     doc.add_heading("Findings", level=0)
 
     if review.total_count == 0:
@@ -700,6 +722,9 @@ def export_report(
     report shows: files reviewed, summary grid, alerts, per-spec findings,
     cross-check findings, and reviewer's notes.
 
+    Each finding uses Heading 3 for its header line, enabling Word's
+    native heading-collapse feature for individual finding collapsibility.
+
     Args:
         pipeline_result: PipelineResult from the review pipeline
         output_path: Path where the .docx file should be saved
@@ -728,6 +753,16 @@ def export_report(
     style = doc.styles['Normal']
     style.font.name = 'Arial'
     style.font.size = Pt(11)
+
+    # Configure Heading 3 style for finding entries
+    # Keep it compact so findings don't dominate vertical space
+    h3_style = doc.styles['Heading 3']
+    h3_style.font.name = 'Arial'
+    h3_style.font.size = Pt(11)
+    h3_style.paragraph_format.space_before = Pt(12)
+    h3_style.paragraph_format.space_after = Pt(4)
+    # Remove the default Heading 3 color so our per-run colors show through
+    h3_style.font.color.rgb = RGBColor(0, 0, 0)
 
     # Set margins (1 inch sides, 0.75 top/bottom)
     for section in doc.sections:

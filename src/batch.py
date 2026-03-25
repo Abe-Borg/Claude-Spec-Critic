@@ -99,22 +99,29 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
     return results
 
 
-def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_prompt_fn=None, *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
-    if not findings:
-        raise ValueError("No findings eligible for verification")
-    verifiable = list(enumerate(findings))
-    verifiable.sort(key=lambda pair: pair[1].confidence)
-    client = _get_client()
-    reqs = []
-    request_map = {}
-    if system_prompt_fn is None:
-        system_prompt_fn = lambda _: "Verify each finding using web search and return JSON only."
-    for batch_idx, (finding_idx, finding) in enumerate(verifiable):
-        custom_id = f"verify__{batch_idx}"
-        reqs.append({"custom_id": custom_id, "params": {"model": VERIFICATION_MODEL, "max_tokens": VERIFICATION_MAX_TOKENS, "system": system_prompt_fn(cycle), "tools": [WEB_SEARCH_TOOL], "messages": [{"role": "user", "content": build_prompt_fn(finding)}]}})
-        request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx}
-    mb = client.messages.batches.create(requests=reqs)
-    return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
+def _extract_api_error_message(error_obj) -> str:
+    """Extract a clean, human-readable error message from a batch error object.
+
+    The Anthropic SDK returns ErrorResponse objects with nested structure.
+    This extracts the useful message and discards the repr noise.
+    """
+    if error_obj is None:
+        return ""
+    # Try to get the nested error message
+    if hasattr(error_obj, "error"):
+        inner = error_obj.error
+        if hasattr(inner, "message"):
+            msg = str(inner.message)
+            error_type = str(getattr(inner, "type", "")) or ""
+            if error_type:
+                return f"{error_type}: {msg}"
+            return msg
+    # Try direct message attribute
+    if hasattr(error_obj, "message"):
+        return str(error_obj.message)
+    # Fall back to str, but truncate long reprs
+    s = str(error_obj)
+    return s[:200] if len(s) > 200 else s
 
 
 def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_response_fn) -> list[Finding]:
@@ -129,9 +136,14 @@ def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_
             continue
         finding = findings[idx]
         if result.result.type != "succeeded":
-            explanation = f"Verification failed: {result.result.type}"
-            if hasattr(result.result, "error") and result.result.error:
-                explanation += f": {result.result.error}"
+            # Extract clean error message instead of dumping raw ErrorResponse repr
+            error_msg = _extract_api_error_message(
+                getattr(result.result, "error", None)
+            )
+            status_type = result.result.type  # "errored", "expired", "canceled"
+            explanation = f"Verification failed: batch request {status_type}"
+            if error_msg:
+                explanation += f" ({error_msg})"
             finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=explanation)
             continue
         message = result.result.message
@@ -168,6 +180,24 @@ def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_
         if f.verification is None:
             f.verification = VerificationResult(verdict="UNVERIFIED", explanation="No verification result returned from batch.")
     return findings
+
+
+def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_prompt_fn=None, *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
+    if not findings:
+        raise ValueError("No findings eligible for verification")
+    verifiable = list(enumerate(findings))
+    verifiable.sort(key=lambda pair: pair[1].confidence)
+    client = _get_client()
+    reqs = []
+    request_map = {}
+    if system_prompt_fn is None:
+        system_prompt_fn = lambda _: "Verify each finding using web search and return JSON only."
+    for batch_idx, (finding_idx, finding) in enumerate(verifiable):
+        custom_id = f"verify__{batch_idx}"
+        reqs.append({"custom_id": custom_id, "params": {"model": VERIFICATION_MODEL, "max_tokens": VERIFICATION_MAX_TOKENS, "system": system_prompt_fn(cycle), "tools": [WEB_SEARCH_TOOL], "messages": [{"role": "user", "content": build_prompt_fn(finding)}]}})
+        request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx}
+    mb = client.messages.batches.create(requests=reqs)
+    return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
 
 def cancel_batch(batch_id: str) -> str:

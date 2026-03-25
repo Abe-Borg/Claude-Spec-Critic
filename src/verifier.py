@@ -18,6 +18,7 @@ from .verification_config import VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WE
 
 VerifyProgressFn = Callable[[int, int, str], None]
 _PAUSE_TURN_RETRY_MAX = 20
+_ERRORED_RETRY_MAX = 25
 
 
 def _noop_verify_progress(_: int, __: int, ___: str) -> None:
@@ -187,6 +188,41 @@ def _cancel_batch_safely(batch_id: str, log: Callable[[str], None]) -> None:
         log(f"Could not cancel verification batch {batch_id}: {e}")
 
 
+def _is_retryable_unverified(finding: Finding) -> bool:
+    """Check if an UNVERIFIED finding should be retried via real-time.
+
+    Returns True for findings whose verification failed due to:
+    - Batch pause_turn (web search continuation not supported in batch)
+    - API errors (500s, timeouts, errored batch requests)
+    - Missing batch results
+
+    Returns False for findings that were legitimately UNVERIFIED
+    (e.g., weak evidence, no search results found).
+    """
+    if finding.verification is None:
+        return True
+    if finding.verification.verdict != "UNVERIFIED":
+        return False
+    explanation = (finding.verification.explanation or "").lower()
+    # Retryable failure patterns
+    retryable_patterns = [
+        "pause_turn",
+        "errored",
+        "api error",
+        "api_error",
+        "internal server error",
+        "verification failed",
+        "no verification result returned",
+        "rate limited",
+        "connection error",
+        "batch request errored",
+        "batch request expired",
+        "batch request canceled",
+        "retry",
+    ]
+    return any(pattern in explanation for pattern in retryable_patterns)
+
+
 def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle = DEFAULT_CYCLE) -> VerificationResult:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return VerificationResult(verdict="UNVERIFIED", explanation="No API key available for verification.")
@@ -312,6 +348,52 @@ def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFA
     )
 
 
+def _retry_failed_verifications_realtime(
+    findings: list[Finding],
+    *,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    log: Callable[[str], None] = lambda _: None,
+    max_retry_count: int = _ERRORED_RETRY_MAX,
+) -> None:
+    """Retry UNVERIFIED findings that failed due to transient errors.
+
+    Covers pause_turn, API errors (500s), errored/expired batch requests,
+    and missing results — anything that indicates a transient failure rather
+    than a legitimate "couldn't find evidence" UNVERIFIED verdict.
+    """
+    retryable = [f for f in findings if _is_retryable_unverified(f)]
+    if not retryable:
+        return
+
+    if len(retryable) > max_retry_count:
+        log(
+            f"Capping real-time verification retry to {max_retry_count} "
+            f"of {len(retryable)} failed findings."
+        )
+        # Prioritize higher-confidence findings for retry
+        retryable.sort(key=lambda f: f.confidence, reverse=True)
+        retryable = retryable[:max_retry_count]
+
+    log(f"Retrying {len(retryable)} failed verifications via real-time API...")
+    max_workers = min(3, len(retryable))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(verify_finding, f, cycle=cycle): f for f in retryable}
+        succeeded = 0
+        for future in as_completed(futures):
+            finding = futures[future]
+            try:
+                result = future.result()
+                finding.verification = result
+                if result.verdict != "UNVERIFIED":
+                    succeeded += 1
+            except Exception as e:
+                finding.verification = VerificationResult(
+                    verdict="UNVERIFIED",
+                    explanation=f"Real-time retry failed: {e}",
+                )
+    log(f"Real-time retry complete: {succeeded}/{len(retryable)} resolved.")
+
+
 def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *, log: Callable[[str], None] = lambda _: None, progress: Callable[[float, str], None] = lambda _p, _m: None, poll_interval: int = 15, cycle: CodeCycle = DEFAULT_CYCLE) -> list[Finding]:
     if not findings:
         return findings
@@ -338,29 +420,13 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
         time.sleep(poll_interval)
 
     retrieve_verification_results(job, findings, parse_response_fn=_parse_verification_response)
-    pause_turn_findings = [
-        f for f in findings
-        if f.verification
-        and f.verification.verdict == "UNVERIFIED"
-        and "pause_turn" in (f.verification.explanation or "")
-    ]
-    if pause_turn_findings:
-        if len(pause_turn_findings) > _PAUSE_TURN_RETRY_MAX:
-            log(f"Capping pause_turn retry to {_PAUSE_TURN_RETRY_MAX} of {len(pause_turn_findings)} findings.")
-            pause_turn_findings.sort(key=lambda f: f.confidence, reverse=True)
-            pause_turn_findings = pause_turn_findings[:_PAUSE_TURN_RETRY_MAX]
 
-        log(f"Retrying {len(pause_turn_findings)} findings that got pause_turn via real-time verification...")
-        max_workers = min(3, len(pause_turn_findings))
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(verify_finding, f, cycle=cycle): f for f in pause_turn_findings}
-            for future in as_completed(futures):
-                finding = futures[future]
-                try:
-                    finding.verification = future.result()
-                except Exception as e:
-                    finding.verification = VerificationResult(
-                        verdict="UNVERIFIED",
-                        explanation=f"Real-time retry after batch pause_turn failed: {e}",
-                    )
+    # Retry ALL transient failures via real-time (pause_turn, errored, expired, etc.)
+    _retry_failed_verifications_realtime(
+        findings,
+        cycle=cycle,
+        log=log,
+        max_retry_count=_ERRORED_RETRY_MAX,
+    )
+
     return findings
