@@ -44,7 +44,8 @@ from src.resume_state import (
     deserialize_resume_state,
 )
 
-from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportWindow)
+from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportWindow, DiagnosticsWindow)
+from src.diagnostics import DiagnosticsReport
 
 from platformdirs import user_config_dir, user_state_dir
 
@@ -218,6 +219,8 @@ class SpecReviewApp(ctk.CTk):
         self._verbose_for_review: bool = True
         self._export_mode_for_review: bool = False
         self._last_result = None
+        self._diagnostics_report: Optional[DiagnosticsReport] = None
+        self._diagnostics_window: Optional[DiagnosticsWindow] = None
         self._poll_consecutive_errors: int = 0
         self._realtime_confirmed: bool = False
         self._context_debounce_id: str | None = None
@@ -282,6 +285,15 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.set(0)
         self.log = EnhancedLog(c)
         self.log.pack(fill="both", expand=True, pady=(16, 0))
+        self.diagnostics_button = ctk.CTkButton(
+            c, text="Diagnostics", height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"],
+            command=self._open_diagnostics_window, state="disabled",
+        )
+        self.diagnostics_button.pack(fill="x", pady=(8, 0))
 
     def _create_inputs_card(self, parent):
         self.inputs_card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -764,6 +776,20 @@ class SpecReviewApp(ctk.CTk):
         self.progress_bar.set(0); self.progress_bar.configure(mode="determinate")
         os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()
 
+        # Initialize diagnostics report for this run
+        mode = "batch" if self._is_batch_mode else "real-time"
+        self._diagnostics_report = DiagnosticsReport(
+            mode=mode,
+            model=MODEL_OPUS_46,
+            cycle_label=self._selected_cycle_label,
+            files_selected=[p.name for p in selected_files],
+            project_context_tokens=self._project_context_tokens,
+            cross_check_enabled=self._cross_check_for_review,
+            export_mode=self._export_mode_for_review,
+        )
+        self._diagnostics_report.log("init", "info", f"Run started: {mode} mode, {num_specs} files, cycle {self._selected_cycle_label}")
+        self.diagnostics_button.configure(state="disabled")
+
         n = num_specs
         output_label = " \u2192 Export Report" if self._export_mode_for_review else ""
         if self._is_batch_mode:
@@ -775,17 +801,33 @@ class SpecReviewApp(ctk.CTk):
             run_epoch = self._next_run_epoch()
             threading.Thread(target=self._run_review_thread, args=(run_epoch,), daemon=True).start()
 
+    def _make_diag_log(self, phase: str, run_epoch: int):
+        """Return a log callback that writes to both the EnhancedLog and the diagnostics report."""
+        def _log(msg: str):
+            self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info"))
+            if self._diagnostics_report:
+                self._diagnostics_report.log(phase, "info", msg)
+        return _log
+
+    def _make_diag_progress(self, phase: str, run_epoch: int):
+        """Return a progress callback that writes to both UI and diagnostics."""
+        def _on_progress(pct, msg):
+            self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
+            self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+            if self._diagnostics_report:
+                self._diagnostics_report.log(phase, "step", msg, {"progress_pct": round(pct, 1)})
+        return _on_progress
+
     def _run_review_thread(self, run_epoch: int):
+        diag = self._diagnostics_report
         try:
             n = len(self._selected_files_for_review)
             self._dispatch_if_current(run_epoch, lambda: self.log.log_step("Starting per-spec review..."))
             cross_check_note = " + cross-check" if self._cross_check_for_review else ""
             mode_info = f"Model: Opus 4.6  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled{cross_check_note}"
             self._dispatch_if_current(run_epoch, lambda: self.log.log(mode_info, level="muted"))
-
-            def _on_progress(pct, msg):
-                self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
-                self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+            if diag:
+                diag.log("review", "step", f"Starting real-time review of {n} specs")
 
             result = run_review(
                 input_dir=self.input_dir,
@@ -796,13 +838,53 @@ class SpecReviewApp(ctk.CTk):
                 cross_check=self._cross_check_for_review,
                 dry_run=False, verbose=False,
                 cycle=AVAILABLE_CYCLES.get(self._selected_cycle_label, DEFAULT_CYCLE),
-                log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                progress=_on_progress,
+                log=self._make_diag_log("review", run_epoch),
+                progress=self._make_diag_progress("review", run_epoch),
             )
+            # Capture structured diagnostics from the result
+            if diag and result.review_result:
+                rv = result.review_result
+                diag.log("review", "success", "Review completed", {
+                    "input_tokens": rv.input_tokens,
+                    "output_tokens": rv.output_tokens,
+                    "elapsed_seconds": round(rv.elapsed_seconds, 2),
+                    "stop_reason": rv.stop_reason,
+                    "parse_status": rv.parse_status,
+                    "severity_counts": {
+                        "CRITICAL": rv.critical_count,
+                        "HIGH": rv.high_count,
+                        "MEDIUM": rv.medium_count,
+                        "GRIPES": rv.gripe_count,
+                    },
+                    "total_findings": rv.total_count,
+                })
+                if rv.error:
+                    diag.log("review", "error", f"Review error: {rv.error}")
+                if result.cross_check_result:
+                    cc = result.cross_check_result
+                    diag.log("cross_check", "info", f"Cross-check: {cc.cross_check_status}", {
+                        "finding_count": len(cc.findings),
+                        "input_tokens": cc.input_tokens,
+                        "output_tokens": cc.output_tokens,
+                    })
+                # Verification verdict breakdown
+                for f in rv.findings:
+                    if f.verification:
+                        diag.log("verification", "info", f"Verified: {f.fileName} — {f.verification.verdict}", {
+                            "verdict": f.verification.verdict,
+                            "finding_severity": f.severity,
+                            "confidence": f.confidence,
+                        })
+                if result.leed_alerts:
+                    diag.log("preprocessing", "warning", f"LEED alerts: {len(result.leed_alerts)}")
+                if result.placeholder_alerts:
+                    diag.log("preprocessing", "warning", f"Placeholder alerts: {len(result.placeholder_alerts)}")
             self._dispatch_if_current(run_epoch, lambda: self._on_review_complete(result))
         except Exception as e:
             import traceback
             err = f"{e}\n{traceback.format_exc()}"
+            if diag:
+                diag.log("review", "error", f"Review failed: {e}", {"traceback": traceback.format_exc()})
             self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
 
     def _on_review_complete(self, result):
@@ -832,6 +914,11 @@ class SpecReviewApp(ctk.CTk):
                     verbose=getattr(self, "_verbose_for_review", True),
                 )
         delete_batch_state()
+        # Finalize diagnostics and enable button
+        if self._diagnostics_report:
+            self._diagnostics_report.log("finalization", "success", "Run completed successfully")
+            self._diagnostics_report.finish()
+        self.diagnostics_button.configure(state="normal")
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
 
@@ -864,15 +951,19 @@ class SpecReviewApp(ctk.CTk):
     def _on_review_error(self, err):
         self.progress_bar.pack_forget()
         self.log.log_error(f"Review failed: {err}")
+        if self._diagnostics_report:
+            self._diagnostics_report.log("error", "error", f"Run failed: {err}")
+            self._diagnostics_report.finish()
+        self.diagnostics_button.configure(state="normal")
         self.run_button.set_ready(); self.is_processing = False
 
     # ----- Batch mode -----
 
     def _submit_batch_thread(self, run_epoch: int):
+        diag = self._diagnostics_report
         try:
-            def _on_progress(pct, msg):
-                self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
-                self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
+            if diag:
+                diag.log("batch_submit", "step", "Preparing batch submission")
 
             submission = start_batch_review(
                 input_dir=self.input_dir,
@@ -882,14 +973,21 @@ class SpecReviewApp(ctk.CTk):
                 cycle=AVAILABLE_CYCLES.get(self._selected_cycle_label, DEFAULT_CYCLE),
                 cross_check_enabled=self._cross_check_for_review,
                 export_mode=self._export_mode_for_review,
-                log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                progress=_on_progress,
+                log=self._make_diag_log("batch_submit", run_epoch),
+                progress=self._make_diag_progress("batch_submit", run_epoch),
             )
+            if diag:
+                diag.log("batch_submit", "success", f"Batch submitted: {submission.job.batch_id}", {
+                    "batch_id": submission.job.batch_id,
+                    "files_queued": len(submission.files_reviewed),
+                })
             save_batch_state(build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission))
             self._dispatch_if_current(run_epoch, lambda: self._on_batch_submitted(submission))
         except Exception as e:
             import traceback
             err = f"{e}\n{traceback.format_exc()}"
+            if diag:
+                diag.log("batch_submit", "error", f"Batch submission failed: {e}", {"traceback": traceback.format_exc()})
             self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
 
     def _on_batch_submitted(self, submission: BatchSubmission):
@@ -906,6 +1004,7 @@ class SpecReviewApp(ctk.CTk):
         if self._batch_submission is None:
             return
         run_epoch = self._run_epoch
+        diag = self._diagnostics_report
         def _do_poll():
             try:
                 status = poll_batch(self._batch_submission.job.batch_id)
@@ -913,6 +1012,8 @@ class SpecReviewApp(ctk.CTk):
                 self._dispatch_if_current(run_epoch, lambda: self._on_poll_result(status))
             except Exception as e:
                 self._poll_consecutive_errors = getattr(self, "_poll_consecutive_errors", 0) + 1
+                if diag:
+                    diag.log("batch_poll", "warning", f"Poll error #{self._poll_consecutive_errors}: {e}")
                 if self._poll_consecutive_errors >= 5:
                     self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(f"5 consecutive poll errors \u2014 will keep trying"))
                 self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(f"Poll error (retrying): {e}"))
@@ -920,6 +1021,7 @@ class SpecReviewApp(ctk.CTk):
         threading.Thread(target=_do_poll, daemon=True).start()
 
     def _on_poll_result(self, status: BatchStatus):
+        diag = self._diagnostics_report
         batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.55
         self.progress_bar.set(min(batch_pct, 0.95))
         self.log.log(
@@ -927,10 +1029,22 @@ class SpecReviewApp(ctk.CTk):
             f"{status.errored} errors \u2022 {status.progress_pct:.0f}%",
             level="info", paced=False,
         )
+        if diag:
+            diag.log("batch_poll", "info", f"Poll: {status.succeeded}/{status.total} done, {status.errored} errors", {
+                "succeeded": status.succeeded,
+                "processing": status.processing,
+                "errored": status.errored,
+                "canceled": status.canceled,
+                "expired": status.expired,
+                "total": status.total,
+                "progress_pct": round(status.progress_pct, 1),
+            })
         normalized_status = status.status.replace("-", "_")
 
         if normalized_status == "ended":
             self.log.log_success("Batch complete \u2014 collecting results...")
+            if diag:
+                diag.log("batch_poll", "success", "Batch ended — collecting results")
             if self._batch_submission is not None:
                 save_batch_state(build_resume_state(phase=PHASE_REVIEW_COLLECT, submission=self._batch_submission))
             self._collect_batch_results()
@@ -938,15 +1052,23 @@ class SpecReviewApp(ctk.CTk):
             self._schedule_next_poll(15_000)
         elif normalized_status == "canceling":
             self.log.log_warning("Batch is being canceled...")
+            if diag:
+                diag.log("batch_poll", "warning", "Batch is being canceled")
             self._schedule_next_poll(5_000)
         elif normalized_status in ("failed", "expired", "canceled"):
             self.log.log_error(f"Batch terminated with status: {status.status}")
             self.log.log_warning("No results to collect. Clearing batch state.")
+            if diag:
+                diag.log("batch_poll", "error", f"Batch terminated: {status.status}")
+                diag.finish()
+            self.diagnostics_button.configure(state="normal")
             delete_batch_state()
             self._batch_submission = None
             self._reset_ui()
         else:
             self.log.log_warning(f"Unexpected batch status: {status.status} \u2014 continuing to poll...")
+            if diag:
+                diag.log("batch_poll", "warning", f"Unexpected status: {status.status}")
             self._schedule_next_poll(15_000)
 
     def _schedule_next_poll(self, delay_ms: int):
@@ -954,27 +1076,50 @@ class SpecReviewApp(ctk.CTk):
 
     def _collect_batch_results(self):
         run_epoch = self._next_run_epoch()
+        diag = self._diagnostics_report
         def _do_collect():
             try:
-                def _on_progress(pct, msg):
-                    self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
-                    self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
                 if self._batch_submission is None:
                     raise RuntimeError("No active batch submission to collect.")
                 cycle = AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
+
+                if diag:
+                    diag.log("batch_collect", "step", "Collecting review batch results")
                 review_state = collect_review_batch_results(
                     self._batch_submission,
-                    log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                    log=self._make_diag_log("batch_collect", run_epoch),
                 )
-                verifiable_findings = list(review_state.review_result.findings)
+                rv = review_state.review_result
+                if diag:
+                    diag.log("batch_collect", "success", "Review results collected", {
+                        "input_tokens": rv.input_tokens,
+                        "output_tokens": rv.output_tokens,
+                        "elapsed_seconds": round(rv.elapsed_seconds, 2),
+                        "parse_status": rv.parse_status,
+                        "severity_counts": {
+                            "CRITICAL": rv.critical_count, "HIGH": rv.high_count,
+                            "MEDIUM": rv.medium_count, "GRIPES": rv.gripe_count,
+                        },
+                        "total_findings": rv.total_count,
+                    })
+                    if rv.error:
+                        diag.log("batch_collect", "error", f"Review errors: {rv.error}")
+
+                verifiable_findings = list(rv.findings)
                 verification_completed = False
                 if verifiable_findings:
+                    if diag:
+                        diag.log("verification", "step", f"Starting verification batch for {len(verifiable_findings)} findings")
                     verification_job = start_batch_verification(
                         verifiable_findings,
                         cycle=cycle,
-                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                        progress=_on_progress,
+                        log=self._make_diag_log("verification", run_epoch),
+                        progress=self._make_diag_progress("verification", run_epoch),
                     )
+                    if diag:
+                        diag.log("verification", "info", f"Verification batch submitted: {verification_job.batch_id}", {
+                            "batch_id": verification_job.batch_id,
+                        })
                     save_batch_state(build_resume_state(
                         phase=PHASE_VERIFICATION_POLL,
                         submission=self._batch_submission,
@@ -986,10 +1131,17 @@ class SpecReviewApp(ctk.CTk):
                         verification_job,
                         verifiable_findings,
                         cycle=cycle,
-                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                        progress=_on_progress,
+                        log=self._make_diag_log("verification", run_epoch),
+                        progress=self._make_diag_progress("verification", run_epoch),
                     )
                     verification_completed = True
+                    if diag:
+                        verdicts = {}
+                        for f in verifiable_findings:
+                            if f.verification:
+                                v = f.verification.verdict
+                                verdicts[v] = verdicts.get(v, 0) + 1
+                        diag.log("verification", "success", "Verification complete", {"verdicts": verdicts})
 
                 save_batch_state(build_resume_state(
                     phase=PHASE_CROSS_CHECK,
@@ -998,24 +1150,38 @@ class SpecReviewApp(ctk.CTk):
                     verification_started=bool(verifiable_findings),
                     verification_completed=verification_completed,
                 ))
+                if diag:
+                    diag.log("cross_check", "step", "Running cross-spec coordination check")
                 review_state = run_cross_check_for_batch(
                     review_state,
                     specs=getattr(self._batch_submission, "prepared_specs", None),
                     project_context=getattr(self, "_project_context_for_review", ""),
                     cycle=cycle,
-                    log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                    log=self._make_diag_log("cross_check", run_epoch),
                 )
                 if review_state.cross_check_skipped_due_to_missing_specs:
                     self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(
                         "Cross-check skipped due to missing resumable extracted specs."
                     ))
+                    if diag:
+                        diag.log("cross_check", "warning", "Cross-check skipped: missing resumable extracted specs")
+                if diag and review_state.cross_check_result:
+                    cc = review_state.cross_check_result
+                    diag.log("cross_check", "info", f"Cross-check: {cc.cross_check_status}", {
+                        "finding_count": len(cc.findings),
+                        "input_tokens": cc.input_tokens,
+                        "output_tokens": cc.output_tokens,
+                    })
+
                 cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []
                 if cross_check_findings:
+                    if diag:
+                        diag.log("cross_check_verification", "step", f"Verifying {len(cross_check_findings)} cross-check findings")
                     cross_check_verification_job = start_batch_verification(
                         cross_check_findings,
                         cycle=cycle,
-                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                        progress=_on_progress,
+                        log=self._make_diag_log("cross_check_verification", run_epoch),
+                        progress=self._make_diag_progress("cross_check_verification", run_epoch),
                     )
                     save_batch_state(build_resume_state(
                         phase=PHASE_CROSS_CHECK_VERIFICATION_POLL,
@@ -1030,10 +1196,14 @@ class SpecReviewApp(ctk.CTk):
                         cross_check_verification_job,
                         cross_check_findings,
                         cycle=cycle,
-                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                        progress=_on_progress,
+                        log=self._make_diag_log("cross_check_verification", run_epoch),
+                        progress=self._make_diag_progress("cross_check_verification", run_epoch),
                     )
+                    if diag:
+                        diag.log("cross_check_verification", "success", "Cross-check verification complete")
 
+                if diag:
+                    diag.log("finalization", "step", "Finalizing batch results")
                 final_result = finalize_batch_result(review_state)
                 save_batch_state(build_resume_state(
                     phase=PHASE_FINALIZE,
@@ -1047,6 +1217,8 @@ class SpecReviewApp(ctk.CTk):
             except Exception as e:
                 import traceback
                 err = f"{e}\n{traceback.format_exc()}"
+                if diag:
+                    diag.log("batch_collect", "error", f"Batch collection failed: {e}", {"traceback": traceback.format_exc()})
                 self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
         threading.Thread(target=_do_collect, daemon=True).start()
 
@@ -1396,6 +1568,14 @@ class SpecReviewApp(ctk.CTk):
             try: self._report_window.destroy()
             except Exception: pass
             self._report_window = None
+
+    def _open_diagnostics_window(self):
+        if self._diagnostics_report is None:
+            return
+        if self._diagnostics_window is not None:
+            try: self._diagnostics_window.destroy()
+            except Exception: pass
+        self._diagnostics_window = DiagnosticsWindow(self, report=self._diagnostics_report)
 
     # ----- About / How It Works dialog -----
 
