@@ -2,7 +2,7 @@
 Custom widgets for Spec Critic GUI.
 
 Contains: TokenGauge, FileListPanel, EnhancedLog,
-AnimatedButton, ReportWindow.
+AnimatedButton, ReportWindow, DiagnosticsWindow.
 
 v2.3.0 changes:
     - TokenGauge relabeled to "LARGEST SPEC CAPACITY" and updated to show
@@ -716,3 +716,256 @@ class ReportWindow(ctk.CTkToplevel):
 
     def _copy_summary(self, text):
         if text: self.clipboard_clear(); self.clipboard_append(text)
+
+
+# ============================================================================
+# DIAGNOSTICS WINDOW (pop-out toplevel)
+# ============================================================================
+
+class DiagnosticsWindow(ctk.CTkToplevel):
+    """Displays the in-memory diagnostics report for a pipeline run."""
+
+    def __init__(self, master, report, **kwargs):
+        """
+        Parameters
+        ----------
+        report : diagnostics.DiagnosticsReport
+        """
+        super().__init__(master, **kwargs)
+        self.title("Diagnostics Report")
+        self.geometry("900x700")
+        self.minsize(700, 500)
+        self.configure(fg_color=COLORS["bg_dark"])
+        self._report = report
+        self._build_ui()
+        self.lift()
+        self.focus_force()
+
+    def _build_ui(self):
+        # Toolbar
+        toolbar = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=0, height=48)
+        toolbar.pack(fill="x")
+        toolbar.pack_propagate(False)
+        tb_inner = ctk.CTkFrame(toolbar, fg_color="transparent")
+        tb_inner.pack(fill="x", padx=16, pady=8)
+        ctk.CTkLabel(
+            tb_inner, text="Diagnostics Report",
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(side="left")
+
+        btn_kw = {
+            "height": 30, "font": ctk.CTkFont(size=12),
+            "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"],
+            "border_width": 1, "border_color": COLORS["border"],
+            "text_color": COLORS["text_secondary"],
+        }
+        ctk.CTkButton(tb_inner, text="Copy to Clipboard", width=130, command=self._copy_text, **btn_kw).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(tb_inner, text="Save as Text", width=100, command=self._save_text, **btn_kw).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(tb_inner, text="Save as JSON", width=110, command=self._save_json, **btn_kw).pack(side="right")
+
+        # Body
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
+        body.pack(fill="both", expand=True, padx=16, pady=16)
+
+        self._render_config_section(body)
+        self._render_summary_section(body)
+        self._render_timeline_section(body)
+
+    # ------------------------------------------------------------------
+    # Sections
+    # ------------------------------------------------------------------
+
+    def _render_config_section(self, parent):
+        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
+        card.pack(fill="x", pady=(0, 12))
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=16, pady=12)
+
+        ctk.CTkLabel(
+            inner, text="RUN CONFIGURATION",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=COLORS["accent"],
+        ).pack(anchor="w")
+
+        r = self._report
+        started = datetime.fromtimestamp(r.started_at).strftime("%Y-%m-%d %H:%M:%S")
+        duration = f"{r.ended_at - r.started_at:.1f}s" if r.ended_at else "in progress"
+        lines = [
+            f"Run ID: {r.run_id}",
+            f"Mode: {r.mode}  •  Model: {r.model}  •  Cycle: {r.cycle_label}",
+            f"Files: {len(r.files_selected)}  •  Context Tokens: {r.project_context_tokens:,}",
+            f"Cross-Check: {'Enabled' if r.cross_check_enabled else 'Disabled'}  •  Export Mode: {'Yes' if r.export_mode else 'No'}",
+            f"Started: {started}  •  Duration: {duration}",
+        ]
+        if r.files_selected:
+            lines.append("Files: " + ", ".join(r.files_selected))
+
+        ctk.CTkLabel(
+            inner, text="\n".join(lines),
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["text_secondary"],
+            justify="left", anchor="w",
+        ).pack(anchor="w", pady=(6, 0))
+
+    def _render_summary_section(self, parent):
+        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
+        card.pack(fill="x", pady=(0, 12))
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=16, pady=12)
+
+        ctk.CTkLabel(
+            inner, text="SUMMARY",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=COLORS["accent"],
+        ).pack(anchor="w")
+
+        s = self._report.summary()
+
+        # Stats grid
+        stats_frame = ctk.CTkFrame(inner, fg_color="transparent")
+        stats_frame.pack(fill="x", pady=(8, 0))
+
+        stat_items = [
+            ("Total Time", f"{s['total_time_seconds']:.1f}s"),
+            ("Events", str(s["total_events"])),
+            ("Errors", str(s["errors"])),
+            ("Warnings", str(s["warnings"])),
+            ("Input Tokens", f"{s['total_input_tokens']:,}"),
+            ("Output Tokens", f"{s['total_output_tokens']:,}"),
+        ]
+        for i, (label, value) in enumerate(stat_items):
+            cell = ctk.CTkFrame(stats_frame, fg_color=COLORS["bg_input"], corner_radius=6, width=130, height=50)
+            cell.grid(row=0, column=i, padx=(0, 8), sticky="nsew")
+            cell.grid_propagate(False)
+            color = COLORS["error"] if label == "Errors" and s["errors"] > 0 else \
+                    COLORS["warning"] if label == "Warnings" and s["warnings"] > 0 else \
+                    COLORS["text_primary"]
+            ctk.CTkLabel(cell, text=value, font=ctk.CTkFont(family="Consolas", size=14, weight="bold"), text_color=color).place(relx=0.5, rely=0.35, anchor="center")
+            ctk.CTkLabel(cell, text=label, font=ctk.CTkFont(size=10), text_color=COLORS["text_muted"]).place(relx=0.5, rely=0.72, anchor="center")
+        stats_frame.grid_columnconfigure(list(range(len(stat_items))), weight=1)
+
+        # Severity counts
+        if s["severity_counts"]:
+            sev_frame = ctk.CTkFrame(inner, fg_color="transparent")
+            sev_frame.pack(fill="x", pady=(10, 0))
+            ctk.CTkLabel(sev_frame, text="Findings:", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_secondary"]).pack(side="left")
+            for sev, cnt in s["severity_counts"].items():
+                color = SEVERITY_COLORS.get(sev, COLORS["text_secondary"])
+                ctk.CTkLabel(sev_frame, text=f"  {sev}: {cnt}", font=ctk.CTkFont(family="Consolas", size=12, weight="bold"), text_color=color).pack(side="left")
+
+        # Verdict breakdown
+        if s["verification_verdicts"]:
+            verd_frame = ctk.CTkFrame(inner, fg_color="transparent")
+            verd_frame.pack(fill="x", pady=(4, 0))
+            ctk.CTkLabel(verd_frame, text="Verdicts:", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_secondary"]).pack(side="left")
+            for verdict, cnt in s["verification_verdicts"].items():
+                color = VERDICT_COLORS.get(verdict, COLORS["text_secondary"])
+                ctk.CTkLabel(verd_frame, text=f"  {verdict}: {cnt}", font=ctk.CTkFont(family="Consolas", size=12, weight="bold"), text_color=color).pack(side="left")
+
+        # Phase durations
+        if s["phase_durations"]:
+            pd_frame = ctk.CTkFrame(inner, fg_color="transparent")
+            pd_frame.pack(fill="x", pady=(8, 0))
+            ctk.CTkLabel(pd_frame, text="Phase Durations:", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_secondary"]).pack(anchor="w")
+            for phase, dur in s["phase_durations"].items():
+                ctk.CTkLabel(pd_frame, text=f"  {phase:22s} {dur:.1f}s", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"]).pack(anchor="w")
+
+    def _render_timeline_section(self, parent):
+        card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
+        card.pack(fill="x", pady=(0, 12))
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=16, pady=12)
+
+        ctk.CTkLabel(
+            inner, text=f"EVENT TIMELINE  ({len(self._report.events)} events)",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=COLORS["accent"],
+        ).pack(anchor="w")
+
+        level_colors = {
+            "info": COLORS["text_secondary"],
+            "success": COLORS["success"],
+            "warning": COLORS["warning"],
+            "error": COLORS["error"],
+            "step": COLORS["accent"],
+        }
+        level_icons = {
+            "info": "  ",
+            "success": "+ ",
+            "warning": "! ",
+            "error": "X ",
+            "step": "> ",
+        }
+
+        # Use a textbox for efficient rendering of many events
+        textbox = ctk.CTkTextbox(
+            inner, fg_color=COLORS["bg_input"], corner_radius=4,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["text_secondary"],
+            wrap="word", state="disabled", activate_scrollbars=True,
+            height=400,
+        )
+        textbox.pack(fill="x", pady=(8, 0))
+
+        inner_text = textbox._textbox
+        for level, color in level_colors.items():
+            inner_text.tag_configure(level, foreground=color)
+        inner_text.tag_configure("data_tag", foreground=COLORS["text_muted"])
+        inner_text.tag_configure("phase_tag", foreground=COLORS["coordination"])
+
+        textbox.configure(state="normal")
+        for i, e in enumerate(self._report.events):
+            if i > 0:
+                inner_text.insert("end", "\n", ())
+            ts = datetime.fromtimestamp(e.timestamp).strftime("%H:%M:%S")
+            elapsed = f"{e.elapsed:7.1f}s"
+            icon = level_icons.get(e.level, "  ")
+            phase_str = f"[{e.phase}]" if e.phase else ""
+
+            inner_text.insert("end", f"{ts} {elapsed} ", ("info",))
+            inner_text.insert("end", icon, (e.level,))
+            if phase_str:
+                inner_text.insert("end", f"{phase_str:20s} ", ("phase_tag",))
+            inner_text.insert("end", e.message, (e.level,))
+            if e.data:
+                for k, v in e.data.items():
+                    inner_text.insert("end", f"\n{'':38s}{k}: {v}", ("data_tag",))
+        textbox.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # Export actions
+    # ------------------------------------------------------------------
+
+    def _save_json(self):
+        path = filedialog.asksaveasfilename(
+            parent=self, title="Save Diagnostics JSON",
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json")],
+            initialfile=f"spec-critic-diagnostics-{datetime.now().strftime('%Y-%m-%d')}.json",
+        )
+        if path:
+            try:
+                self._report.save_json(path)
+            except Exception as e:
+                from tkinter import messagebox
+                messagebox.showerror("Export Error", f"Could not save JSON file:\n{e}", parent=self)
+
+    def _save_text(self):
+        path = filedialog.asksaveasfilename(
+            parent=self, title="Save Diagnostics Log",
+            defaultextension=".txt",
+            filetypes=[("Text Files", "*.txt")],
+            initialfile=f"spec-critic-diagnostics-{datetime.now().strftime('%Y-%m-%d')}.txt",
+        )
+        if path:
+            try:
+                self._report.save_text(path)
+            except Exception as e:
+                from tkinter import messagebox
+                messagebox.showerror("Export Error", f"Could not save text file:\n{e}", parent=self)
+
+    def _copy_text(self):
+        text = self._report.to_text()
+        self.clipboard_clear()
+        self.clipboard_append(text)
