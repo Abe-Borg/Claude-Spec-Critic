@@ -17,7 +17,7 @@ from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .verification_config import VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
 
 VerifyProgressFn = Callable[[int, int, str], None]
-_ERRORED_RETRY_MAX = 25
+_ERRORED_RETRY_MAX = 75
 
 
 def _noop_verify_progress(_: int, __: int, ___: str) -> None:
@@ -376,11 +376,12 @@ def _retry_failed_verifications_realtime(
     retryable = [f for f in findings if _is_retryable_unverified(f)]
     if not retryable:
         return
+    log(f"Verification fell back to real-time retry for {len(retryable)} findings.")
 
     if len(retryable) > max_retry_count:
         log(
-            f"Capping real-time verification retry to {max_retry_count} "
-            f"of {len(retryable)} failed findings."
+            f"Capped real-time verification retry at {max_retry_count} "
+            f"of {len(retryable)} retryable findings."
         )
         # Prioritize higher-confidence findings for retry
         retryable.sort(key=lambda f: f.confidence, reverse=True)
@@ -411,6 +412,7 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
         return findings
 
     consecutive_errors = 0
+    terminal_status: str | None = None
     while True:
         try:
             status = poll_batch(job.batch_id)
@@ -428,7 +430,9 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
         if st == "ended":
             break
         if st in ("failed", "expired", "canceled"):
-            raise RuntimeError(f"Batch verification terminated with status '{status.status}'.")
+            terminal_status = status.status
+            log(f"Verification batch ended with status '{status.status}'; collecting partial results.")
+            break
         time.sleep(poll_interval)
 
     retrieve_verification_results(job, findings, parse_response_fn=_parse_verification_response)
@@ -440,5 +444,7 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
         log=log,
         max_retry_count=_ERRORED_RETRY_MAX,
     )
+    if terminal_status:
+        log(f"Verification recovery complete after terminal status '{terminal_status}'.")
 
     return findings

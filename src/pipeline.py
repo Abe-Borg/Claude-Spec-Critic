@@ -41,6 +41,7 @@ class PipelineResult:
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
     cycle_label: str = DEFAULT_CYCLE.label
+    total_elapsed_seconds: float | None = None
 
 
 @dataclass
@@ -170,7 +171,56 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
     prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle)
     job = submit_review_batch(prepared.specs, project_context=project_context, model=model, cycle=cycle)
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
-    return BatchSubmission(job=job, files_reviewed=[s.filename for s in prepared.specs], review_request_ids=ordered_ids, leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, model=model, project_context=project_context, prepared_specs=prepared.specs if cross_check_enabled else None, cycle_label=cycle.label, cross_check_enabled=cross_check_enabled, export_mode=export_mode)
+    return BatchSubmission(job=job, files_reviewed=[s.filename for s in prepared.specs], review_request_ids=ordered_ids, leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, model=model, project_context=project_context, prepared_specs=prepared.specs, cycle_label=cycle.label, cross_check_enabled=cross_check_enabled, export_mode=export_mode)
+
+
+def _is_retryable_batch_review_result(rr: ReviewResult | None) -> bool:
+    if rr is None:
+        return True
+    if rr.parse_status in ("parse_error", "incomplete"):
+        return False
+    if not rr.error:
+        return False
+    lowered = rr.error.lower()
+    return any(token in lowered for token in ("batch request errored", "batch request expired", "batch request canceled"))
+
+
+def _recover_retryable_review_batch_results(
+    submission: BatchSubmission,
+    results_by_request: dict[str, ReviewResult],
+    *,
+    log: LogFn = _noop_log,
+) -> dict[str, ReviewResult]:
+    retryable_request_ids = [rid for rid in submission.review_request_ids if _is_retryable_batch_review_result(results_by_request.get(rid))]
+    if not retryable_request_ids:
+        return results_by_request
+    if not submission.prepared_specs:
+        log("Batch review fallback skipped: original extracted specs are unavailable.")
+        return results_by_request
+
+    cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
+    recovered = 0
+    log(f"Batch review real-time fallback started for {len(retryable_request_ids)} item(s).")
+    for rid in retryable_request_ids:
+        meta = submission.job.request_map.get(rid) or {}
+        spec_index = meta.get("index")
+        if not isinstance(spec_index, int) or spec_index < 0 or spec_index >= len(submission.prepared_specs):
+            log(f"Batch review fallback skipped for {rid}: original spec index is unavailable.")
+            continue
+        spec = submission.prepared_specs[spec_index]
+        log(f"Retrying batch review item via real-time API: {spec.filename}")
+        results_by_request[rid] = review_single_spec(
+            spec.content,
+            spec.filename,
+            project_context=submission.project_context,
+            model=submission.model,
+            cycle=cycle,
+        )
+        rr = results_by_request[rid]
+        if rr and not rr.error:
+            recovered += 1
+    log(f"Batch review real-time fallback recovered {recovered}/{len(retryable_request_ids)} item(s).")
+    return results_by_request
 
 
 def _log_cross_check_status(log: LogFn, cross: ReviewResult):
@@ -227,6 +277,7 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
 
 def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _noop_log) -> CollectedBatchState:
     results_by_request = retrieve_review_results(submission.job, model=submission.model)
+    results_by_request = _recover_retryable_review_batch_results(submission, results_by_request, log=log)
     all_findings: list[Finding] = []
     all_thinking: list[str] = []
     errors: list[str] = []
@@ -320,6 +371,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         placeholder_alerts=state.placeholder_alerts,
         cross_check_result=state.cross_check_result,
         cycle_label=state.submission.cycle_label,
+        total_elapsed_seconds=time.time() - state.submission.job.created_at,
     )
 
 
@@ -328,7 +380,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle)
     specs = prepared.specs
     if dry_run:
-        return PipelineResult(review_result=ReviewResult(findings=[], model=model), files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cycle_label=cycle.label)
+        return PipelineResult(review_result=ReviewResult(findings=[], model=model), files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cycle_label=cycle.label, total_elapsed_seconds=time.time() - start)
 
     findings: list[Finding] = []
     thinking: list[str] = []
@@ -376,4 +428,4 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     if errors:
         combined.thinking += "\n\n--- Review Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
     progress(100.0, "Done.")
-    return PipelineResult(review_result=combined, files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cross_check_result=cross, cycle_label=cycle.label)
+    return PipelineResult(review_result=combined, files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cross_check_result=cross, cycle_label=cycle.label, total_elapsed_seconds=combined.elapsed_seconds)

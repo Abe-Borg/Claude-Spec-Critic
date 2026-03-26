@@ -270,7 +270,7 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
 # Summary table
 # ---------------------------------------------------------------------------
 
-def _write_summary_table(doc: Document, review, cross_check_result) -> None:
+def _write_summary_table(doc: Document, review, cross_check_result, *, total_elapsed_seconds: float | None = None) -> None:
     """Write the summary section with a styled severity counts table."""
     doc.add_heading("Summary", level=1)
 
@@ -339,7 +339,8 @@ def _write_summary_table(doc: Document, review, cross_check_result) -> None:
     # Processing time
     para = doc.add_paragraph()
     para.add_run("Processing Time: ").bold = True
-    para.add_run(f"{review.elapsed_seconds:.1f} seconds")
+    processing_seconds = total_elapsed_seconds if total_elapsed_seconds is not None else review.elapsed_seconds
+    para.add_run(f"{processing_seconds:.1f} seconds")
 
     # Verification summary
     all_findings = list(review.findings)
@@ -796,7 +797,12 @@ def export_report(
         cross_check_reason=cross_check_reason,
         verification_stats=verification_stats,
     )
-    _write_summary_table(doc, review, cross_check)
+    _write_summary_table(
+        doc,
+        review,
+        cross_check,
+        total_elapsed_seconds=getattr(pipeline_result, "total_elapsed_seconds", None),
+    )
     
     _write_alerts(doc, pipeline_result.leed_alerts,
                   pipeline_result.placeholder_alerts)

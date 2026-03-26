@@ -9,13 +9,17 @@ from src.pipeline import (
     _deduplicate_findings,
     BatchSubmission,
     CollectedBatchState,
+    PipelineResult,
+    collect_review_batch_results,
+    finalize_batch_result,
+    start_batch_review,
     run_cross_check_for_batch,
 )
 from src.reviewer import Finding, ReviewResult, _stream_review
 from src.cross_checker import run_cross_check
-from src.batch import BatchJob, submit_verification_batch
+from src.batch import BatchJob, BatchStatus, submit_verification_batch
 from src import gui
-from src.verifier import verify_finding
+from src.verifier import verify_finding, collect_verification_batch_results, _ERRORED_RETRY_MAX, VerificationResult
 from src.resume_state import (
     PHASE_REVIEW_POLL,
     PHASE_REVIEW_COLLECT,
@@ -245,22 +249,34 @@ def test_verify_finding_accumulates_pause_turn_search_evidence(monkeypatch: pyte
             self.stop_reason = stop_reason
             self.content = content
 
+    class _StreamCtx:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get_final_message(self):
+            return self.response
+
     class _Messages:
         def __init__(self):
             self.calls = 0
 
-        def create(self, **_kwargs):
+        def stream(self, **_kwargs):
             self.calls += 1
             if self.calls == 1:
-                return _Response(
-                    "pause_turn",
-                    [
-                        _Block("web_search_tool_result", results=[_UrlResult("https://iccsafe.org/a")]),
-                    ],
+                return _StreamCtx(
+                    _Response(
+                        "pause_turn",
+                        [_Block("web_search_tool_result", results=[_UrlResult("https://iccsafe.org/a")])],
+                    )
                 )
-            return _Response(
-                "end_turn",
-                [_Block("text", text='{"verdict":"CONFIRMED","explanation":"ok","sources":[],"correction":null}')],
+            return _StreamCtx(
+                _Response("end_turn", [_Block("text", text='{"verdict":"CONFIRMED","explanation":"ok","sources":[],"correction":null}')])
             )
 
     class _Client:
@@ -294,15 +310,28 @@ def test_verify_finding_search_gate_passes_when_search_only_in_earlier_turn(monk
             self.stop_reason = stop_reason
             self.content = content
 
+    class _StreamCtx:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get_final_message(self):
+            return self.response
+
     class _Messages:
         def __init__(self):
             self.calls = 0
 
-        def create(self, **_kwargs):
+        def stream(self, **_kwargs):
             self.calls += 1
             if self.calls == 1:
-                return _Response("pause_turn", [_Block("web_search_tool_result", results=[_UrlResult("https://nfpa.org/b")])])
-            return _Response("end_turn", [_Block("text", text='{"verdict":"DISPUTED","explanation":"nope","sources":[],"correction":null}')])
+                return _StreamCtx(_Response("pause_turn", [_Block("web_search_tool_result", results=[_UrlResult("https://nfpa.org/b")])]))
+            return _StreamCtx(_Response("end_turn", [_Block("text", text='{"verdict":"DISPUTED","explanation":"nope","sources":[],"correction":null}')]))
 
     class _Client:
         messages = _Messages()
@@ -338,9 +367,22 @@ def test_verify_finding_single_response_still_works(monkeypatch: pytest.MonkeyPa
                 _Block("text", text='{"verdict":"CORRECTED","explanation":"adjust text","sources":[],"correction":"new text"}'),
             ]
 
+    class _StreamCtx:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get_final_message(self):
+            return self.response
+
     class _Messages:
-        def create(self, **_kwargs):
-            return _Response()
+        def stream(self, **_kwargs):
+            return _StreamCtx(_Response())
 
     class _Client:
         messages = _Messages()
@@ -411,9 +453,19 @@ def test_round_trip_finalize_state_payload_uses_review_state():
 def test_verify_finding_non_end_turn_returns_unverified_with_stop_reason(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
-    class _FakeMessages:
-        def create(self, **_kwargs):
+    class _StreamCtx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get_final_message(self):
             return type("Resp", (), {"stop_reason": "max_tokens", "content": []})()
+
+    class _FakeMessages:
+        def stream(self, **_kwargs):
+            return _StreamCtx()
 
     class _FakeClient:
         messages = _FakeMessages()
@@ -439,7 +491,7 @@ def test_load_batch_state_legacy_phase_migrates_to_review_poll(tmp_path: Path, m
     monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
     state_path.write_text(
         """{
-  "saved_at": "2026-03-18T00:00:00+00:00",
+  "saved_at": "2026-03-26T00:00:00+00:00",
   "phase": "review",
   "batch_id": "msgbatch_legacy",
   "job_type": "review",
@@ -610,7 +662,84 @@ def test_verification_request_map_preserves_sorted_confidence_indices(monkeypatc
 
     finding_a = Finding(severity="HIGH", fileName="a", section="1", issue="a", actionType="EDIT", existingText=None, replacementText=None, codeReference=None, confidence=0.9)
     finding_b = Finding(severity="HIGH", fileName="b", section="1", issue="b", actionType="EDIT", existingText=None, replacementText=None, codeReference=None, confidence=0.1)
-    job = submit_verification_batch([finding_a, finding_b], build_prompt_fn=lambda _: "prompt")
+    job = submit_verification_batch(
+        [finding_a, finding_b],
+        build_prompt_fn=lambda _: "prompt",
+        system_prompt_fn=lambda _cycle: "system prompt",
+    )
     # Lower confidence finding_b should be first in batch but still map to original index 1.
     assert job.request_map["verify__0"]["finding_idx"] == 1
     assert job.request_map["verify__1"]["finding_idx"] == 0
+
+
+def test_submit_verification_batch_requires_system_prompt_fn():
+    finding = Finding(severity="HIGH", fileName="a", section="1", issue="a", actionType="EDIT", existingText=None, replacementText=None, codeReference=None, confidence=0.9)
+    with pytest.raises(TypeError):
+        submit_verification_batch([finding], build_prompt_fn=lambda _: "prompt")
+
+
+def test_start_batch_review_always_preserves_prepared_specs(monkeypatch: pytest.MonkeyPatch):
+    specs = [ExtractedSpec(filename="spec.docx", content="Spec text", word_count=2, source_path="/tmp/spec.docx", source_format="docx")]
+    prepared = type("Prepared", (), {"specs": specs, "leed_alerts": [], "placeholder_alerts": []})()
+    monkeypatch.setattr("src.pipeline._prepare_specs", lambda **_kwargs: prepared)
+    monkeypatch.setattr("src.pipeline.submit_review_batch", lambda _specs, **_kwargs: BatchJob(batch_id="msgbatch_review", job_type="review", request_map={"review__spec__0": {"filename": "spec.docx", "index": 0}}, created_at=1.0))
+
+    submission = start_batch_review(input_dir=Path("."), cross_check_enabled=False)
+
+    assert submission.prepared_specs is not None
+    assert submission.prepared_specs[0].filename == "spec.docx"
+
+
+def test_on_poll_result_terminal_status_collects_partial_results(monkeypatch: pytest.MonkeyPatch):
+    dummy = _make_dummy_app()
+    called = {"collect": 0, "save": 0}
+    dummy._batch_submission = _make_submission(batch_id="msgbatch_poll_terminal")
+    dummy._collect_batch_results = lambda: called.__setitem__("collect", called["collect"] + 1)
+    dummy._diagnostics_report = None
+    dummy.progress_bar = type("P", (), {"set": lambda self, _v: None})()
+    dummy._schedule_next_poll = lambda _delay: None
+    monkeypatch.setattr(gui, "save_batch_state", lambda _state: called.__setitem__("save", called["save"] + 1))
+
+    status = BatchStatus(status="failed", processing=0, succeeded=1, errored=1, canceled=0, expired=0, total=2)
+    gui.SpecReviewApp._on_poll_result(dummy, status)
+
+    assert called["collect"] == 1
+    assert called["save"] == 1
+
+
+def test_collect_verification_batch_results_collects_after_terminal_status(monkeypatch: pytest.MonkeyPatch):
+    finding = _make_finding("verification item")
+    job = BatchJob(batch_id="msgbatch_verify_terminal", job_type="verify", request_map={"verify__0": {"finding_idx": 0}}, created_at=1.0)
+    calls = {"retrieve": 0, "retry": 0}
+    monkeypatch.setattr("src.verifier.poll_batch", lambda _batch_id: BatchStatus(status="failed", processing=0, succeeded=1, errored=0, canceled=0, expired=0, total=1))
+    monkeypatch.setattr("src.verifier.retrieve_verification_results", lambda _job, _findings, parse_response_fn: calls.__setitem__("retrieve", calls["retrieve"] + 1))
+    monkeypatch.setattr("src.verifier._retry_failed_verifications_realtime", lambda _findings, **_kwargs: calls.__setitem__("retry", calls["retry"] + 1))
+
+    collect_verification_batch_results(job, [finding], log=lambda _msg: None, progress=lambda _p, _m: None, poll_interval=0)
+
+    assert calls["retrieve"] == 1
+    assert calls["retry"] == 1
+
+
+def test_retry_cap_logging_uses_new_cap_message(monkeypatch: pytest.MonkeyPatch):
+    findings = [_make_finding(f"issue-{i}") for i in range(_ERRORED_RETRY_MAX + 1)]
+    for f in findings:
+        f.verification = None
+    logs: list[str] = []
+    monkeypatch.setattr("src.verifier.verify_finding", lambda _f, cycle: VerificationResult(verdict="UNVERIFIED", explanation="failed"))
+
+    from src.verifier import _retry_failed_verifications_realtime
+    _retry_failed_verifications_realtime(findings, log=lambda msg: logs.append(msg))
+
+    assert any("Capped real-time verification retry at" in msg for msg in logs)
+
+
+def test_finalize_batch_result_sets_total_elapsed_seconds():
+    submission = _make_submission(batch_id="msgbatch_elapsed")
+    state = _make_review_state(submission)
+
+    result = finalize_batch_result(state)
+
+    assert isinstance(result, PipelineResult)
+    assert result.total_elapsed_seconds is not None
+    assert result.total_elapsed_seconds >= 0
