@@ -182,7 +182,7 @@ def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_
     return findings
 
 
-def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_prompt_fn=None, *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
+def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_prompt_fn, *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
     if not findings:
         raise ValueError("No findings eligible for verification")
     verifiable = list(enumerate(findings))
@@ -190,8 +190,6 @@ def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_p
     client = _get_client()
     reqs = []
     request_map = {}
-    if system_prompt_fn is None:
-        system_prompt_fn = lambda _: "Verify each finding using web search and return JSON only."
     for batch_idx, (finding_idx, finding) in enumerate(verifiable):
         custom_id = f"verify__{batch_idx}"
         reqs.append({"custom_id": custom_id, "params": {
