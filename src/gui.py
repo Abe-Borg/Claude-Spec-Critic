@@ -802,11 +802,23 @@ class SpecReviewApp(ctk.CTk):
             threading.Thread(target=self._run_review_thread, args=(run_epoch,), daemon=True).start()
 
     def _make_diag_log(self, phase: str, run_epoch: int):
-        """Return a log callback that writes to both the EnhancedLog and the diagnostics report."""
+        """Return a log callback that writes to both the EnhancedLog and the diagnostics report.
+
+        Detects error/warning keywords in the message to set the appropriate
+        log level, so pipeline-reported failures surface correctly in the
+        diagnostics report instead of being buried as info-level events.
+        """
         def _log(msg: str):
-            self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info"))
+            msg_lower = msg.lower()
+            if any(kw in msg_lower for kw in ("failed", "error", "exception", "crash")):
+                level = "warning"
+            elif any(kw in msg_lower for kw in ("warning", "skipped", "could not", "unavailable")):
+                level = "warning"
+            else:
+                level = "info"
+            self._dispatch_if_current(run_epoch, lambda m=msg, lv=level: self.log.log(m, level=lv))
             if self._diagnostics_report:
-                self._diagnostics_report.log(phase, "info", msg)
+                self._diagnostics_report.log(phase, level, msg)
         return _log
 
     def _make_diag_progress(self, phase: str, run_epoch: int):
@@ -867,14 +879,30 @@ class SpecReviewApp(ctk.CTk):
                         "input_tokens": cc.input_tokens,
                         "output_tokens": cc.output_tokens,
                     })
-                # Verification verdict breakdown
+                # Verification verdict breakdown (includes explanation for failure diagnosis)
                 for f in rv.findings:
                     if f.verification:
-                        diag.log("verification", "info", f"Verified: {f.fileName} — {f.verification.verdict}", {
+                        event_data = {
                             "verdict": f.verification.verdict,
                             "finding_severity": f.severity,
                             "confidence": f.confidence,
-                        })
+                            "explanation": f.verification.explanation or "",
+                        }
+                        if f.verification.sources:
+                            event_data["sources"] = f.verification.sources[:3]
+                        if f.verification.correction:
+                            event_data["correction"] = f.verification.correction
+                        diag.log("verification", "info", f"Verified: {f.fileName} — {f.verification.verdict}", event_data)
+                # Summarize verification failures for quick diagnosis
+                unverified = [f for f in rv.findings if f.verification and f.verification.verdict == "UNVERIFIED"]
+                if unverified:
+                    failure_reasons = list(set(
+                        (f.verification.explanation or "No explanation provided")
+                        for f in unverified
+                    ))
+                    diag.log("verification", "warning",
+                        f"{len(unverified)}/{len(rv.findings)} findings UNVERIFIED",
+                        {"failure_reasons": failure_reasons})
                 if result.leed_alerts:
                     diag.log("preprocessing", "warning", f"LEED alerts: {len(result.leed_alerts)}")
                 if result.placeholder_alerts:
@@ -1141,7 +1169,25 @@ class SpecReviewApp(ctk.CTk):
                             if f.verification:
                                 v = f.verification.verdict
                                 verdicts[v] = verdicts.get(v, 0) + 1
+                                # Log each verdict with explanation for traceability
+                                diag.log("verification", "info",
+                                    f"Verified: {f.fileName} — {f.verification.verdict}", {
+                                        "verdict": f.verification.verdict,
+                                        "finding_severity": f.severity,
+                                        "confidence": f.confidence,
+                                        "explanation": f.verification.explanation or "",
+                                    })
                         diag.log("verification", "success", "Verification complete", {"verdicts": verdicts})
+                        # Summarize failures for quick diagnosis
+                        unverified_batch = [f for f in verifiable_findings if f.verification and f.verification.verdict == "UNVERIFIED"]
+                        if unverified_batch:
+                            failure_reasons = list(set(
+                                (f.verification.explanation or "No explanation provided")
+                                for f in unverified_batch
+                            ))
+                            diag.log("verification", "warning",
+                                f"{len(unverified_batch)}/{len(verifiable_findings)} findings UNVERIFIED",
+                                {"failure_reasons": failure_reasons})
 
                 save_batch_state(build_resume_state(
                     phase=PHASE_CROSS_CHECK,

@@ -219,11 +219,18 @@ def _is_retryable_unverified(finding: Finding) -> bool:
         "batch request expired",
         "batch request canceled",
         "retry",
+        "streaming",
     ]
     return any(pattern in explanation for pattern in retryable_patterns)
 
 
 def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle = DEFAULT_CYCLE) -> VerificationResult:
+    """Verify a single finding using Claude with web search.
+
+    Uses the streaming API because the web_search_20250305 server tool
+    requires streaming — non-streaming messages.create() will fail with
+    a "streaming is required" error when server-side tools are active.
+    """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return VerificationResult(verdict="UNVERIFIED", explanation="No API key available for verification.")
 
@@ -237,13 +244,15 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
             messages = [{"role": "user", "content": prompt}]
             max_continuations = 3
             for _ in range(max_continuations + 1):
-                response = client.messages.create(
+                # --- Streaming API required for web search server tool ---
+                with client.messages.stream(
                     model=VERIFICATION_MODEL,
                     max_tokens=VERIFICATION_MAX_TOKENS,
                     system=system_prompt,
                     tools=[WEB_SEARCH_TOOL],
                     messages=messages,
-                )
+                ) as stream:
+                    response = stream.get_final_message()
                 all_responses.append(response)
                 stop_reason = getattr(response, "stop_reason", None)
                 if stop_reason == "end_turn":
