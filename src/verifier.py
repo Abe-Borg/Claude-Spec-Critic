@@ -17,7 +17,6 @@ from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .verification_config import VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
 
 VerifyProgressFn = Callable[[int, int, str], None]
-_PAUSE_TURN_RETRY_MAX = 20
 _ERRORED_RETRY_MAX = 25
 
 
@@ -230,6 +229,9 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
     Uses the streaming API because the web_search_20250305 server tool
     requires streaming — non-streaming messages.create() will fail with
     a "streaming is required" error when server-side tools are active.
+
+    Adaptive thinking is enabled so the model can reason through complex
+    code-reference chains before rendering a verdict.
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return VerificationResult(verdict="UNVERIFIED", explanation="No API key available for verification.")
@@ -242,12 +244,13 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
         try:
             all_responses = []
             messages = [{"role": "user", "content": prompt}]
-            max_continuations = 3
+            max_continuations = 10
             for _ in range(max_continuations + 1):
                 # --- Streaming API required for web search server tool ---
                 with client.messages.stream(
                     model=VERIFICATION_MODEL,
                     max_tokens=VERIFICATION_MAX_TOKENS,
+                    thinking={"type": "adaptive"},
                     system=system_prompt,
                     tools=[WEB_SEARCH_TOOL],
                     messages=messages,

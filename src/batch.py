@@ -194,7 +194,14 @@ def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_p
         system_prompt_fn = lambda _: "Verify each finding using web search and return JSON only."
     for batch_idx, (finding_idx, finding) in enumerate(verifiable):
         custom_id = f"verify__{batch_idx}"
-        reqs.append({"custom_id": custom_id, "params": {"model": VERIFICATION_MODEL, "max_tokens": VERIFICATION_MAX_TOKENS, "system": system_prompt_fn(cycle), "tools": [WEB_SEARCH_TOOL], "messages": [{"role": "user", "content": build_prompt_fn(finding)}]}})
+        reqs.append({"custom_id": custom_id, "params": {
+            "model": VERIFICATION_MODEL,
+            "max_tokens": VERIFICATION_MAX_TOKENS,
+            "thinking": {"type": "adaptive"},
+            "system": system_prompt_fn(cycle),
+            "tools": [WEB_SEARCH_TOOL],
+            "messages": [{"role": "user", "content": build_prompt_fn(finding)}],
+        }})
         request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx}
     mb = client.messages.batches.create(requests=reqs)
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())

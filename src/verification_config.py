@@ -62,7 +62,7 @@ WEB_SEARCH_TOOL = {
         "britannica.com",
         "simple.wikipedia.org",
     ],
-    "max_uses": 5,
+    "max_uses": 10,
     "user_location": {
         "type": "approximate",
         "country": "US",
