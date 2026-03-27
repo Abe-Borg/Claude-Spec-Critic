@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from docx import Document
 
 from src.code_cycles import CALIFORNIA_2022, CALIFORNIA_2025
 from src.extractor import SUPPORTED_EXTENSIONS, ExtractedSpec, extract_text
@@ -30,6 +31,26 @@ from src.resume_state import (
     serialize_batch_job,
     deserialize_batch_job,
 )
+
+
+def test_extract_text_from_docx_builds_paragraph_map(tmp_path: Path):
+    source = tmp_path / "mapping.docx"
+    doc = Document()
+    doc.add_paragraph("First paragraph")
+    table = doc.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "R1C1"
+    table.rows[0].cells[1].text = "R1C2"
+    table.rows[1].cells[0].text = "R2C1"
+    table.rows[1].cells[1].text = ""
+    doc.add_paragraph("Last paragraph")
+    doc.save(source)
+
+    spec = extract_text(source)
+
+    assert spec.paragraph_map is not None
+    assert "\n\n".join(m.text for m in spec.paragraph_map) == spec.content
+    assert [m.body_index for m in spec.paragraph_map] == sorted(m.body_index for m in spec.paragraph_map)
+    assert any(m.element_type == "table_cell" and m.table_index is not None for m in spec.paragraph_map)
 
 
 def _make_submission(*, batch_id: str = "msgbatch_test", cross_check_enabled: bool = True, export_mode: bool = True, prepared_specs: list[ExtractedSpec] | None = None) -> BatchSubmission:
