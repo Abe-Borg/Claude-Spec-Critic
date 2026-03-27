@@ -21,6 +21,13 @@ Collapsible findings (v2.5.0):
     - Collapse a single finding heading (Heading 3) to hide its details
     No macros or special XML required — this is native Word behavior.
 
+Rejection triage (v2.6.0):
+    Per-spec findings include a clickable w14 checkbox content control
+    in their Heading 3 header. The reviewer opens the exported .docx
+    in Word (2013+), checks boxes next to findings they want to reject,
+    then uses Spec Critic's 'Process Rejections' feature to produce a
+    triaged report with rejected findings moved to an appendix.
+
 Usage:
     from report_exporter import export_report
 
@@ -43,6 +50,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from lxml import etree
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +95,89 @@ CONFIDENCE_COLORS = {
 COORDINATION_COLOR = RGBColor(6, 182, 212)  # Cyan
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]
+
+
+# ---------------------------------------------------------------------------
+# w14 checkbox constants and helpers (rejection triage)
+# ---------------------------------------------------------------------------
+
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+W14_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
+MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+
+REJECT_TAG_PREFIX = "reject_f"
+INSTRUCTIONS_TAG = "sc_rejection_instructions"
+
+
+def _create_rejection_checkbox(tag_value: str) -> etree._Element:
+    """Create a w14 checkbox structured document tag (SDT) element.
+
+    This produces a clickable checkbox in Word 2013+ that toggles between
+    ☐ (unchecked) and ☒ (checked) on click. No macros or form protection
+    required — w14 content controls are interactive in normal editing mode.
+
+    The tag_value (e.g. 'reject_f001') is embedded in the SDT so the
+    report processor can identify which finding each checkbox belongs to.
+    """
+    xml = (
+        f'<w:sdt xmlns:w="{W_NS}" xmlns:w14="{W14_NS}">'
+        f'  <w:sdtPr>'
+        f'    <w:tag w:val="{tag_value}"/>'
+        f'    <w:alias w:val="Reject Finding"/>'
+        f'    <w14:checkbox>'
+        f'      <w14:checked w14:val="0"/>'
+        f'      <w14:checkedState w14:val="2612" w14:font="MS Gothic"/>'
+        f'      <w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/>'
+        f'    </w14:checkbox>'
+        f'  </w:sdtPr>'
+        f'  <w:sdtContent>'
+        f'    <w:r>'
+        f'      <w:rPr>'
+        f'        <w:rFonts w:ascii="MS Gothic" w:eastAsia="MS Gothic" w:hAnsi="MS Gothic"/>'
+        f'      </w:rPr>'
+        f'      <w:t>\u2610</w:t>'
+        f'    </w:r>'
+        f'  </w:sdtContent>'
+        f'</w:sdt>'
+    )
+    return etree.fromstring(xml)
+
+
+def _ensure_w14_namespace(doc: Document) -> None:
+    """Ensure the w14 namespace is declared on the document root element.
+
+    Word needs this namespace declaration to recognize the w14:checkbox
+    content control. Without it, the checkbox renders as plain text.
+    Also adds w14 to mc:Ignorable so older Word versions degrade gracefully.
+    """
+    etree.register_namespace("w14", W14_NS)
+    root = doc.element
+    # Add w14 to mc:Ignorable attribute
+    mc_ignorable = root.get(f"{{{MC_NS}}}Ignorable", "")
+    if "w14" not in mc_ignorable.split():
+        root.set(f"{{{MC_NS}}}Ignorable", f"{mc_ignorable} w14".strip())
+
+
+def _create_instructions_sdt(text: str) -> etree._Element:
+    """Create a tagged SDT wrapping instruction text so the processor can find and remove it."""
+    xml = (
+        f'<w:sdt xmlns:w="{W_NS}">'
+        f'  <w:sdtPr>'
+        f'    <w:tag w:val="{INSTRUCTIONS_TAG}"/>'
+        f'  </w:sdtPr>'
+        f'  <w:sdtContent>'
+        f'    <w:r>'
+        f'      <w:rPr>'
+        f'        <w:i/>'
+        f'        <w:color w:val="6B7280"/>'
+        f'        <w:sz w:val="20"/>'
+        f'      </w:rPr>'
+        f'      <w:t xml:space="preserve">{text}</w:t>'
+        f'    </w:r>'
+        f'  </w:sdtContent>'
+        f'</w:sdt>'
+    )
+    return etree.fromstring(xml)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +358,33 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
 
 
 # ---------------------------------------------------------------------------
+# Rejection triage instructions
+# ---------------------------------------------------------------------------
+
+def _write_rejection_instructions(doc: Document) -> None:
+    """Write a triage instruction paragraph with a tagged SDT for later removal.
+
+    The instruction text is wrapped in a structured document tag (SDT)
+    with the INSTRUCTIONS_TAG so the report processor can find and remove
+    it after triage is complete.
+    """
+    para = doc.add_paragraph()
+    para.paragraph_format.space_before = Pt(6)
+    para.paragraph_format.space_after = Pt(12)
+
+    # Insert the tagged SDT into the paragraph
+    instruction_text = (
+        "Rejection Triage: Each per-spec finding below has a clickable "
+        "checkbox (\u2610). Check the box next to any finding you want to "
+        "reject, then use Spec Critic\u2019s \u2018Process Rejections\u2019 "
+        "feature to produce a clean report with rejected findings moved to "
+        "an appendix. (This instruction is automatically removed during processing.)"
+    )
+    sdt = _create_instructions_sdt(instruction_text)
+    para._p.append(sdt)
+
+
+# ---------------------------------------------------------------------------
 # Summary table
 # ---------------------------------------------------------------------------
 
@@ -432,19 +550,21 @@ def _write_alerts(doc: Document, leed_alerts: list[dict],
 # Single finding entry (collapsible via Heading 3)
 # ---------------------------------------------------------------------------
 
-def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = True) -> None:
+def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = True, *,
+                         include_checkbox: bool = False) -> None:
     """Write a single finding as a collapsible block.
 
     The finding header is rendered as a Heading 3 paragraph, which enables
     Word's native heading-collapse feature. Users can click the collapse
     triangle that appears on hover to hide the finding's body content.
 
-    Collapsing a severity group heading (Heading 1) hides all findings
-    in that group. Collapsing a single finding heading (Heading 3) hides
-    just that finding's details.
+    When include_checkbox is True, a w14 checkbox content control is
+    prepended to the heading paragraph. This checkbox is used for
+    rejection triage — the reviewer checks it in Word, then processes
+    the report through Spec Critic to move rejected findings to an appendix.
 
     Layout:
-        Heading 3: [SEVERITY] 92% — filename.docx — Section ref
+        Heading 3: [☐] [SEVERITY] 92% — filename.docx — Section ref
         Normal:    Issue: ...
         Normal:    Action: ...
         Normal:    Existing Text: ... (red)
@@ -461,6 +581,16 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
     para.style = doc.styles['Heading 3']
     para.paragraph_format.space_before = Pt(12)
     para.paragraph_format.space_after = Pt(4)
+
+    # --- Rejection checkbox (w14 content control) ---
+    if include_checkbox:
+        tag = f"{REJECT_TAG_PREFIX}{index:03d}"
+        checkbox_sdt = _create_rejection_checkbox(tag)
+        # Insert checkbox at the beginning of the paragraph XML
+        para._p.insert(0, checkbox_sdt)
+        # Add a space run after the checkbox for visual separation
+        spacer_run = para.add_run(" ")
+        spacer_run.font.size = Pt(11)
 
     # Index + severity badge
     run = para.add_run(f"{index}. [{finding.severity}] ")
@@ -563,8 +693,10 @@ def _write_findings_section(doc: Document, review, verbose: bool = True) -> None
     Uses heading hierarchy for Word-native collapse support:
     - Title (level 0): "Findings"
     - Heading 1: Severity group (e.g., "CRITICAL (1)")
-    - Heading 3: Individual finding header (collapsible)
+    - Heading 3: Individual finding header (collapsible, with checkbox)
     - Normal: Finding body content
+
+    Per-spec findings include rejection checkboxes for triage.
     """
     doc.add_heading("Findings", level=0)
 
@@ -597,7 +729,11 @@ def _write_findings_section(doc: Document, review, verbose: bool = True) -> None
 
         for finding in severity_findings:
             finding_number += 1
-            _write_finding_entry(doc, finding, finding_number, verbose=verbose)
+            _write_finding_entry(
+                doc, finding, finding_number,
+                verbose=verbose,
+                include_checkbox=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +741,11 @@ def _write_findings_section(doc: Document, review, verbose: bool = True) -> None
 # ---------------------------------------------------------------------------
 
 def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool = True) -> None:
-    """Write cross-spec coordination section and explicit status."""
+    """Write cross-spec coordination section and explicit status.
+
+    Cross-check findings do NOT include rejection checkboxes —
+    only per-spec findings are rejectable.
+    """
     if not cross_check_result:
         return
 
@@ -644,7 +784,7 @@ def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool 
     )
 
     for idx, finding in enumerate(sorted_findings, 1):
-        _write_finding_entry(doc, finding, idx, verbose=verbose)
+        _write_finding_entry(doc, finding, idx, verbose=verbose, include_checkbox=False)
 
     # Coordination summary narrative
     if cross_check_result.thinking:
@@ -723,8 +863,9 @@ def export_report(
     report shows: files reviewed, summary grid, alerts, per-spec findings,
     cross-check findings, and reviewer's notes.
 
-    Each finding uses Heading 3 for its header line, enabling Word's
-    native heading-collapse feature for individual finding collapsibility.
+    Each per-spec finding uses Heading 3 for its header line with a w14
+    checkbox content control, enabling both Word's native heading-collapse
+    feature and rejection triage via the 'Process Rejections' workflow.
 
     Args:
         pipeline_result: PipelineResult from the review pipeline
@@ -803,12 +944,19 @@ def export_report(
         cross_check,
         total_elapsed_seconds=getattr(pipeline_result, "total_elapsed_seconds", None),
     )
-    
+
+    # Rejection triage instructions (before findings)
+    if review.total_count > 0:
+        _write_rejection_instructions(doc)
+
     _write_alerts(doc, pipeline_result.leed_alerts,
                   pipeline_result.placeholder_alerts)
     _write_findings_section(doc, review, verbose=verbose)
     _write_cross_check_section(doc, cross_check, verbose=verbose)
     _write_notes(doc, review.thinking)
+
+    # Ensure w14 namespace is declared for checkbox content controls
+    _ensure_w14_namespace(doc)
 
     # Save
     output_path = Path(output_path)
