@@ -11,12 +11,23 @@ SUPPORTED_EXTENSIONS = {".docx"}
 
 
 @dataclass
+class ParagraphMapping:
+    body_index: int
+    element_type: str
+    text: str
+    table_index: int | None
+    row_index: int | None
+    cell_index: int | None
+
+
+@dataclass
 class ExtractedSpec:
     filename: str
     content: str
     word_count: int
     source_path: str = ""
     source_format: str = ""
+    paragraph_map: list[ParagraphMapping] | None = None
 
 
 def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
@@ -31,27 +42,55 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     except Exception as e:
         raise ValueError(f"Could not read .docx file: {filepath} — {e}")
 
-    paragraphs = []
-    for child in doc.element.body:
+    paragraphs: list[str] = []
+    paragraph_map: list[ParagraphMapping] = []
+    table_counter = 0
+
+    for body_index, child in enumerate(doc.element.body):
         if child.tag.endswith("}p"):
             para = Paragraph(child, doc)
             text = para.text.strip()
             if text:
                 paragraphs.append(text)
+                paragraph_map.append(
+                    ParagraphMapping(
+                        body_index=body_index,
+                        element_type="paragraph",
+                        text=text,
+                        table_index=None,
+                        row_index=None,
+                        cell_index=None,
+                    )
+                )
         elif child.tag.endswith("}tbl"):
             table = DocxTable(child, doc)
-            for row in table.rows:
+            for row_index, row in enumerate(table.rows):
                 row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
                 if row_text:
-                    paragraphs.append(" | ".join(row_text))
+                    joined_text = " | ".join(row_text)
+                    paragraphs.append(joined_text)
+                    paragraph_map.append(
+                        ParagraphMapping(
+                            body_index=body_index,
+                            element_type="table_cell",
+                            text=joined_text,
+                            table_index=table_counter,
+                            row_index=row_index,
+                            cell_index=None,
+                        )
+                    )
+            table_counter += 1
 
     content = "\n\n".join(paragraphs)
+    assert "\n\n".join(m.text for m in paragraph_map) == content, "Paragraph map text does not reconstruct content"
+
     return ExtractedSpec(
         filename=filepath.name,
         content=content,
         word_count=len(content.split()),
         source_path=str(filepath),
         source_format="docx",
+        paragraph_map=paragraph_map,
     )
 
 
