@@ -31,7 +31,7 @@ import math
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from collections import deque
+from collections import defaultdict, deque
 
 import customtkinter as ctk
 from tkinter import filedialog
@@ -528,12 +528,23 @@ def _render_findings_section(parent, review, card_refs: list | None = None, verb
     if review.total_count == 0:
         ctk.CTkLabel(inner, text="\u2713 No issues found", font=ctk.CTkFont(family="Segoe UI", size=14), text_color=COLORS["success"]).pack(pady=16); return
 
-    for sev in ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]:
-        sf = sorted([f for f in review.findings if f.severity == sev], key=lambda f: f.confidence, reverse=True)
-        if not sf: continue
-        ctk.CTkLabel(inner, text=f"{sev} ({len(sf)})", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
-            text_color=SEVERITY_COLORS.get(sev, COLORS["text_primary"])).pack(anchor="w", pady=(12, 6))
-        for f in sf: _render_collapsible_card(inner, f, card_refs=card_refs, verbose=verbose)
+    severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
+    by_file: dict[str, list] = defaultdict(list)
+    for f in review.findings:
+        by_file[f.fileName or "Unknown"].append(f)
+
+    for filename in sorted(by_file.keys(), key=str.casefold):
+        file_findings = sorted(
+            by_file[filename],
+            key=lambda f: (severity_rank.get(f.severity, 99), -f.confidence),
+        )
+        ctk.CTkLabel(
+            inner, text=filename,
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", pady=(12, 6))
+        for f in file_findings:
+            _render_collapsible_card(inner, f, card_refs=card_refs, verbose=verbose)
 
 
 def _render_cross_check_section(parent, cross_check_result, card_refs: list | None = None, verbose: bool = True):
