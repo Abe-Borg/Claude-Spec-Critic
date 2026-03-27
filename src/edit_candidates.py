@@ -35,13 +35,7 @@ def classify_edit_candidates(
     include_cross_check: bool = True,
     cross_check_findings: list[Finding] | None = None,
 ) -> list[EditCandidate]:
-    """Return actionable edit candidates for selection UI.
-
-    Only eligible, actionable findings are returned:
-      - actionType in {EDIT, DELETE}
-      - verification present and verdict in {CONFIRMED, CORRECTED, UNVERIFIED}
-      - existingText is non-empty
-    """
+    """Return edit candidates for selection UI, including ineligible findings."""
     merged: list[Finding] = list(findings)
     if include_cross_check and cross_check_findings:
         merged.extend(cross_check_findings)
@@ -49,31 +43,40 @@ def classify_edit_candidates(
     candidates: list[EditCandidate] = []
     for idx, finding in enumerate(merged):
         action_type = (finding.actionType or "").strip().upper()
-        if action_type not in {"EDIT", "DELETE"}:
-            continue
-
         existing_text = (finding.existingText or "").strip()
-        if not existing_text:
-            continue
-
         verification = finding.verification
-        if verification is None:
-            continue
+        verdict = (verification.verdict or "").strip().upper() if verification else ""
 
-        verdict = (verification.verdict or "").strip().upper()
-        if verdict == "DISPUTED":
-            continue
-        if verdict not in {"CONFIRMED", "CORRECTED", "UNVERIFIED"}:
-            continue
+        eligible = True
+        ineligible_reason: str | None = None
+        if action_type not in {"EDIT", "DELETE", "ADD"}:
+            eligible = False
+            ineligible_reason = f"Unsupported action type: {action_type or 'UNKNOWN'}"
+
+        if eligible and not existing_text:
+            eligible = False
+            ineligible_reason = "Finding has no anchor text to locate in the document"
+
+        if eligible and verification is None:
+            eligible = False
+            ineligible_reason = "Finding has not been verified"
+
+        if eligible and verdict == "DISPUTED":
+            eligible = False
+            ineligible_reason = "Finding was disputed by the verifier"
+
+        if eligible and verdict not in {"CONFIRMED", "CORRECTED", "UNVERIFIED"}:
+            eligible = False
+            ineligible_reason = f"Unrecognized verification verdict: {verdict or 'UNKNOWN'}"
 
         candidates.append(
             EditCandidate(
                 finding_index=idx,
                 finding=finding,
                 source_file=finding.fileName or "Unknown",
-                eligible=True,
-                ineligible_reason=None,
-                default_selected=verdict in {"CONFIRMED", "CORRECTED"},
+                eligible=eligible,
+                ineligible_reason=ineligible_reason,
+                default_selected=eligible and verdict in {"CONFIRMED", "CORRECTED"},
                 replacement_text=_resolved_replacement_text(finding),
                 verdict_badge=verdict,
                 action_type=action_type,
