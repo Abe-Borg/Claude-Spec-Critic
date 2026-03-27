@@ -66,7 +66,7 @@ _SPEC_FILETYPES = [
 # Mode selector labels
 _MODE_REALTIME = "Real-time (FAST: Expensive!)"
 _MODE_BATCH = "Batch (SLOW: Cheap!)"
-_BATCH_TIMING_COPY = "Usually 15 to 30 min, 24 hrs maximum (Extremely Rare)"
+_BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
 
 _FONT_SCALE_OPTIONS = {
     "Default (100%)": 1.0,
