@@ -47,6 +47,7 @@ from src.resume_state import (
 
 from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportWindow, DiagnosticsWindow)
 from src.diagnostics import DiagnosticsReport
+from src.report_processor import process_rejections, ProcessResult
 
 from platformdirs import user_config_dir, user_state_dir
 
@@ -295,6 +296,17 @@ class SpecReviewApp(ctk.CTk):
             command=self._open_diagnostics_window, state="disabled",
         )
         self.diagnostics_button.pack(fill="x", pady=(8, 0))
+
+
+        self.triage_button = ctk.CTkButton(
+            c, text="Process Rejections", height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"],
+            command=self._process_rejections,
+        )
+        self.triage_button.pack(fill="x", pady=(8, 0))
 
     def _create_inputs_card(self, parent):
         self.inputs_card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -1668,6 +1680,45 @@ class SpecReviewApp(ctk.CTk):
             try: self._diagnostics_window.destroy()
             except Exception: pass
         self._diagnostics_window = DiagnosticsWindow(self, report=self._diagnostics_report)
+
+
+
+    def _process_rejections(self):
+        input_path = filedialog.askopenfilename(
+            title="Select Spec Critic Report with Rejections",
+            filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")],
+        )
+        if not input_path:
+            return
+ 
+        input_path = Path(input_path)
+        default_output = input_path.with_stem(input_path.stem + "-triaged")
+        output_path = filedialog.asksaveasfilename(
+            title="Save Triaged Report",
+            defaultextension=".docx",
+            filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")],
+            initialfile=default_output.name,
+            initialdir=str(input_path.parent),
+        )
+        if not output_path:
+            return
+ 
+        try:
+            result = process_rejections(input_path, Path(output_path))
+            if result.rejected_count == 0:
+                self.log.log_success(
+                    f"No findings were rejected. Saved clean report "
+                    f"(checkboxes removed): {Path(output_path).name}"
+                )
+            else:
+                self.log.log_success(
+                    f"Triage complete: {result.rejected_count} rejected, "
+                    f"{result.kept_count} kept. Saved: {Path(output_path).name}"
+                )
+        except ValueError as e:
+            self.log.log_warning(str(e))
+        except Exception as e:
+            self.log.log_error(f"Process rejections failed: {e}")
 
     # ----- About / How It Works dialog -----
 

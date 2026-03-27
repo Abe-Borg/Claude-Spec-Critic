@@ -40,7 +40,6 @@ Usage:
 
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -689,12 +688,12 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
 # ---------------------------------------------------------------------------
 
 def _write_findings_section(doc: Document, review, verbose: bool = True) -> None:
-    """Write per-spec findings grouped by file name.
+    """Write per-spec findings grouped by severity, sorted by confidence.
 
     Uses heading hierarchy for Word-native collapse support:
     - Title (level 0): "Findings"
     - Heading 1: Severity group (e.g., "CRITICAL (1)")
-    - Heading 3: Individual finding header (collapsible)
+    - Heading 3: Individual finding header (collapsible, with checkbox)
     - Normal: Finding body content
 
     Per-spec findings include rejection checkboxes for triage.
@@ -710,21 +709,25 @@ def _write_findings_section(doc: Document, review, verbose: bool = True) -> None
         )
         return
 
-    severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
-    by_file: dict[str, list] = defaultdict(list)
-    for f in review.findings:
-        by_file[f.fileName or "Unknown"].append(f)
+    finding_number = 0  # Running counter across all severities
 
-    finding_number = 0
-
-    for filename in sorted(by_file.keys(), key=str.casefold):
-        file_findings = sorted(
-            by_file[filename],
-            key=lambda f: (severity_rank.get(f.severity, 99), -f.confidence),
+    for severity in SEVERITY_ORDER:
+        severity_findings = sorted(
+            [f for f in review.findings if f.severity == severity],
+            key=lambda f: f.confidence,
+            reverse=True,
         )
-        doc.add_heading(filename, level=1)
+        if not severity_findings:
+            continue
 
-        for finding in file_findings:
+        # Severity sub-heading with colored text
+        heading = doc.add_heading(
+            f"{severity} ({len(severity_findings)})", level=1,
+        )
+        for run in heading.runs:
+            run.font.color.rgb = SEVERITY_COLORS.get(severity, RGBColor(0, 0, 0))
+
+        for finding in severity_findings:
             finding_number += 1
             _write_finding_entry(
                 doc, finding, finding_number,
