@@ -49,28 +49,46 @@ def test_unverified_included_unchecked_by_default():
     assert c.verdict_badge == "UNVERIFIED"
 
 
-def test_disputed_filtered_out():
+def test_disputed_marked_ineligible_with_reason():
     candidates = classify_edit_candidates([_finding(verdict="DISPUTED")])
 
-    assert candidates == []
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.eligible is False
+    assert c.default_selected is False
+    assert c.ineligible_reason == "Finding was disputed by the verifier"
+    assert c.verdict_badge == "DISPUTED"
 
 
-def test_add_action_filtered_out():
+def test_add_action_included_and_eligible_when_verified():
     candidates = classify_edit_candidates([_finding(action="ADD", verdict="CONFIRMED")])
 
-    assert candidates == []
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.action_type == "ADD"
+    assert c.eligible is True
+    assert c.default_selected is True
+    assert c.ineligible_reason is None
 
 
-def test_none_verification_filtered_out():
+def test_none_verification_marked_ineligible():
     candidates = classify_edit_candidates([_finding(verdict=None)])
 
-    assert candidates == []
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.eligible is False
+    assert c.default_selected is False
+    assert c.ineligible_reason == "Finding has not been verified"
 
 
-def test_empty_existing_text_filtered_out():
+def test_empty_existing_text_marked_ineligible():
     candidates = classify_edit_candidates([_finding(existing="  ", verdict="CONFIRMED")])
 
-    assert candidates == []
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.eligible is False
+    assert c.default_selected is False
+    assert c.ineligible_reason == "Finding has no anchor text to locate in the document"
 
 
 def test_mixed_findings_counts_and_ordering_with_cross_check():
@@ -86,6 +104,8 @@ def test_mixed_findings_counts_and_ordering_with_cross_check():
 
     candidates = classify_edit_candidates(main, cross_check_findings=cross, include_cross_check=True)
 
-    assert len(candidates) == 3
-    assert [c.verdict_badge for c in candidates] == ["CONFIRMED", "UNVERIFIED", "CORRECTED"]
-    assert [c.finding_index for c in candidates] == [0, 2, 4]
+    assert len(candidates) == 5
+    assert [c.verdict_badge for c in candidates] == ["CONFIRMED", "CONFIRMED", "UNVERIFIED", "DISPUTED", "CORRECTED"]
+    assert [c.finding_index for c in candidates] == [0, 1, 2, 3, 4]
+    assert [c.eligible for c in candidates] == [True, True, True, False, True]
+    assert candidates[3].ineligible_reason == "Finding was disputed by the verifier"

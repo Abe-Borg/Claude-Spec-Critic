@@ -704,8 +704,13 @@ class EditSelectionDialog(ctk.CTkToplevel):
         self.focus_force()
 
         self._candidates = candidates
+        self._ordered_candidates = sorted(
+            self._candidates,
+            key=lambda c: (not c.eligible, c.finding_index),
+        )
         self._on_apply = on_apply
         self._vars: list[ctk.BooleanVar] = []
+        self._var_candidates: list[tuple[EditCandidate, ctk.BooleanVar]] = []
         self._count_label: ctk.CTkLabel | None = None
         self._summary_primary: ctk.CTkLabel | None = None
         self._summary_secondary: ctk.CTkLabel | None = None
@@ -723,9 +728,20 @@ class EditSelectionDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
             text_color=COLORS["text_primary"],
         ).pack(anchor="w")
+        total_count = len(self._candidates)
+        eligible_count = sum(1 for c in self._candidates if c.eligible)
+        reason_counts: dict[str, int] = {}
+        for candidate in self._candidates:
+            if candidate.eligible or not candidate.ineligible_reason:
+                continue
+            reason_counts[candidate.ineligible_reason] = reason_counts.get(candidate.ineligible_reason, 0) + 1
+        summary_chunks = [f"{total_count} findings total", f"{eligible_count} auto-applicable"]
+        for reason, count in sorted(reason_counts.items()):
+            label = reason.replace("Finding was ", "").replace("the verifier", "verifier")
+            summary_chunks.append(f"{count} {label.lower()}")
         ctk.CTkLabel(
             container,
-            text="Select findings to apply as edits to your .docx files.",
+            text=" \u00b7 ".join(summary_chunks),
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color=COLORS["text_secondary"],
         ).pack(anchor="w", pady=(4, 12))
@@ -757,7 +773,7 @@ class EditSelectionDialog(ctk.CTkToplevel):
         list_frame = ctk.CTkScrollableFrame(container, fg_color=COLORS["bg_card"], corner_radius=8)
         list_frame.pack(fill="both", expand=True)
 
-        for candidate in self._candidates:
+        for candidate in self._ordered_candidates:
             self._build_candidate_row(list_frame, candidate)
 
         summary_card = ctk.CTkFrame(container, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -809,19 +825,26 @@ class EditSelectionDialog(ctk.CTkToplevel):
 
     def _build_candidate_row(self, parent, candidate: EditCandidate):
         is_unverified = candidate.verdict_badge == "UNVERIFIED"
+        is_ineligible = not candidate.eligible
+        muted_text = "#777777"
+        primary_text = muted_text if is_ineligible else COLORS["text_primary"]
+        secondary_text = muted_text if is_ineligible else COLORS["text_secondary"]
         row = ctk.CTkFrame(
             parent,
-            fg_color=COLORS["bg_input"] if not is_unverified else blend_colors(COLORS["bg_input"], COLORS["bg_card"], 0.45),
+            fg_color=blend_colors(COLORS["bg_input"], COLORS["bg_card"], 0.35 if is_ineligible else 0.0)
+            if not is_unverified
+            else blend_colors(COLORS["bg_input"], COLORS["bg_card"], 0.45),
             corner_radius=6,
         )
         row.pack(fill="x", pady=4, padx=4)
         inner = ctk.CTkFrame(row, fg_color="transparent")
         inner.pack(fill="x", padx=10, pady=8)
 
-        var = ctk.BooleanVar(value=candidate.default_selected)
+        var = ctk.BooleanVar(value=candidate.default_selected if candidate.eligible else False)
         var.trace_add("write", lambda *a: self._update_selection_summary())
         self._vars.append(var)
-        ctk.CTkCheckBox(
+        self._var_candidates.append((candidate, var))
+        checkbox = ctk.CTkCheckBox(
             inner,
             text="",
             variable=var,
@@ -834,7 +857,10 @@ class EditSelectionDialog(ctk.CTkToplevel):
             hover_color=COLORS["accent_hover"],
             border_color=COLORS["border"],
             checkmark_color=COLORS["text_primary"],
-        ).grid(row=0, column=0, rowspan=3, sticky="nw")
+        )
+        checkbox.grid(row=0, column=0, rowspan=4, sticky="nw")
+        if is_ineligible:
+            checkbox.configure(state="disabled")
 
         top = ctk.CTkFrame(inner, fg_color="transparent")
         top.grid(row=0, column=1, sticky="ew")
@@ -873,7 +899,7 @@ class EditSelectionDialog(ctk.CTkToplevel):
             inner,
             text=file_section,
             font=ctk.CTkFont(family="Segoe UI", size=11),
-            text_color=COLORS["text_secondary"],
+            text_color=secondary_text,
             anchor="w",
         ).grid(row=1, column=1, sticky="ew", pady=(2, 0))
 
@@ -888,33 +914,35 @@ class EditSelectionDialog(ctk.CTkToplevel):
             inner,
             text=preview,
             font=ctk.CTkFont(family="Consolas", size=10),
-            text_color=COLORS["text_primary"] if not is_unverified else COLORS["text_secondary"],
+            text_color=primary_text if not is_unverified else secondary_text,
             anchor="w",
             justify="left",
         ).grid(row=2, column=1, sticky="ew", pady=(2, 0))
 
-        note = None
+        note = candidate.ineligible_reason if is_ineligible else None
+        note_color = muted_text
         if candidate.verdict_badge == "CORRECTED":
-            note = "\u26a0 Replacement updated by verifier."
+            note = f"{note + ' · ' if note else ''}\u26a0 Replacement updated by verifier."
+            note_color = COLORS["warning"] if not is_ineligible else muted_text
         elif candidate.verdict_badge == "UNVERIFIED":
-            note = "\u26a0 Not verified \u2014 apply with caution."
+            note = f"{note + ' · ' if note else ''}\u26a0 Not verified \u2014 apply with caution."
         if note:
             ctk.CTkLabel(
                 inner,
                 text=note,
                 font=ctk.CTkFont(family="Segoe UI", size=10, slant="italic"),
-                text_color=COLORS["warning"] if candidate.verdict_badge == "CORRECTED" else COLORS["text_muted"],
+                text_color=note_color if candidate.verdict_badge == "CORRECTED" else secondary_text,
                 anchor="w",
             ).grid(row=3, column=1, sticky="ew", pady=(2, 0))
 
         inner.grid_columnconfigure(1, weight=1)
 
     def _selected_candidates(self) -> list[EditCandidate]:
-        return [candidate for candidate, var in zip(self._candidates, self._vars) if var.get()]
+        return [candidate for candidate, var in self._var_candidates if candidate.eligible and var.get()]
 
     def _update_selection_summary(self):
         selected = self._selected_candidates()
-        total = len(self._candidates)
+        total = sum(1 for c in self._candidates if c.eligible)
         count = len(selected)
         affected_files = len({candidate.source_file for candidate in selected})
         confirmed = sum(1 for c in selected if c.verdict_badge == "CONFIRMED")
@@ -931,12 +959,14 @@ class EditSelectionDialog(ctk.CTkToplevel):
             self._apply_button.configure(state="normal" if count > 0 else "disabled")
 
     def _select_all(self):
-        for var in self._vars:
-            var.set(True)
+        for candidate, var in self._var_candidates:
+            if candidate.eligible:
+                var.set(True)
 
     def _select_none(self):
-        for var in self._vars:
-            var.set(False)
+        for candidate, var in self._var_candidates:
+            if candidate.eligible:
+                var.set(False)
 
     def _apply(self):
         selected_indices = [candidate.finding_index for candidate in self._selected_candidates()]

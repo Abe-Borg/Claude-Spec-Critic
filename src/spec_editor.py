@@ -3,15 +3,111 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+import re
+import unicodedata
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph
 
 from .edit_locator import EditLocation, LocatorResult
+
+
+_WHITESPACE_RE = re.compile(r"[\s\u00A0]+")
+_HEADING_HINT_RE = re.compile(r"^\s*(PART\s+\d+|SECTION\s+\d+(\.\d+)*)\b", flags=re.IGNORECASE)
+
+
+def _normalize_text_for_add(text: str) -> str:
+    normalized = unicodedata.normalize("NFC", text)
+    normalized = _WHITESPACE_RE.sub(" ", normalized)
+    return normalized.strip().casefold()
+
+
+def _split_insert_paragraphs(text: str) -> list[str]:
+    return [chunk.strip() for chunk in re.split(r"\n\s*\n+", text) if chunk.strip()]
+
+
+def _paragraph_style_id(paragraph_element) -> str | None:
+    ppr = paragraph_element.find(qn("w:pPr"))
+    if ppr is None:
+        return None
+    pstyle = ppr.find(qn("w:pStyle"))
+    if pstyle is None:
+        return None
+    return pstyle.get(qn("w:val"))
+
+
+def _is_heading_like_text(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    has_alpha = any(ch.isalpha() for ch in stripped)
+    is_upper = has_alpha and stripped == stripped.upper()
+    short_text = len(stripped) <= 36 and not any(p in stripped for p in ".;:")
+    return is_upper or short_text or bool(_HEADING_HINT_RE.match(stripped))
+
+
+def _reference_style_for_text(anchor_index: int, body_children: list, text: str) -> str | None:
+    anchor_style = _paragraph_style_id(body_children[anchor_index])
+    if _is_heading_like_text(text):
+        return anchor_style
+
+    for idx in range(anchor_index + 1, len(body_children)):
+        elem = body_children[idx]
+        if not elem.tag.endswith("}p"):
+            continue
+        para_text = "".join(elem.itertext())
+        if _is_heading_like_text(para_text):
+            continue
+        return _paragraph_style_id(elem) or anchor_style
+
+    return anchor_style
+
+
+def _build_paragraph_element(text: str, style_id: str | None, anchor_element) -> object:
+    paragraph_element = OxmlElement("w:p")
+    if style_id:
+        ppr = OxmlElement("w:pPr")
+        pstyle = OxmlElement("w:pStyle")
+        pstyle.set(qn("w:val"), style_id)
+        ppr.append(pstyle)
+        paragraph_element.append(ppr)
+    else:
+        anchor_ppr = anchor_element.find(qn("w:pPr"))
+        if anchor_ppr is not None:
+            paragraph_element.append(deepcopy(anchor_ppr))
+
+    run_element = OxmlElement("w:r")
+    text_element = OxmlElement("w:t")
+    text_element.text = text
+    text_element.set(qn("xml:space"), "preserve")
+    run_element.append(text_element)
+    paragraph_element.append(run_element)
+    return paragraph_element
+
+
+def _insert_paragraphs_before(anchor_element, texts: list[str], style_id: str | None) -> int:
+    inserted = 0
+    for text in texts:
+        paragraph_element = _build_paragraph_element(text, style_id, anchor_element)
+        anchor_element.addprevious(paragraph_element)
+        inserted += 1
+    return inserted
+
+
+def _insert_paragraphs_after(anchor_element, texts: list[str], style_id: str | None) -> int:
+    inserted = 0
+    for text in reversed(texts):
+        paragraph_element = _build_paragraph_element(text, style_id, anchor_element)
+        anchor_element.addnext(paragraph_element)
+        inserted += 1
+    return inserted
 
 
 @dataclass
@@ -258,8 +354,102 @@ def _resolve_cell_and_offsets(action: EditAction, row) -> tuple[Paragraph | None
     return None, None, None, "Could not resolve target paragraph inside table cell."
 
 
-def _apply_add_action(_action: EditAction) -> None:
-    raise NotImplementedError("ADD actions are not implemented in Phase 3.")
+def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
+    mapping = action.location.mapping
+    if mapping.element_type != "paragraph":
+        return EditOutcome(
+            action=action,
+            status="failed",
+            detail="ADD actions are only supported for paragraph mappings.",
+            original_text=action.location.matched_text,
+            new_text=None,
+        )
+
+    body_children = list(doc.element.body)
+    if mapping.body_index < 0 or mapping.body_index >= len(body_children):
+        return EditOutcome(
+            action=action,
+            status="failed",
+            detail="Body index is out of range in current document.",
+            original_text=action.location.matched_text,
+            new_text=None,
+        )
+
+    anchor_element = body_children[mapping.body_index]
+    if not anchor_element.tag.endswith("}p"):
+        return EditOutcome(
+            action=action,
+            status="failed",
+            detail="ADD mapping expected paragraph but body element was not paragraph.",
+            original_text=action.location.matched_text,
+            new_text=None,
+        )
+
+    anchor_paragraph = Paragraph(anchor_element, doc)
+    replacement = (action.replacement_text or "").strip()
+    if not replacement:
+        return EditOutcome(
+            action=action,
+            status="skipped",
+            detail="ADD action had empty replacement text; nothing to insert.",
+            original_text=anchor_paragraph.text,
+            new_text=None,
+        )
+
+    anchor_text = action.location.matched_text or anchor_paragraph.text
+    replacement_norm = _normalize_text_for_add(replacement)
+    anchor_norm = _normalize_text_for_add(anchor_text)
+
+    position = "replace"
+    new_content = replacement
+    if anchor_norm and replacement_norm.startswith(anchor_norm):
+        position = "after"
+        new_content = replacement[len(anchor_text):].strip()
+    elif anchor_norm and replacement_norm.endswith(anchor_norm):
+        position = "before"
+        new_content = replacement[: max(0, len(replacement) - len(anchor_text))].strip()
+    elif anchor_norm and anchor_norm not in replacement_norm:
+        position = "after"
+        new_content = replacement
+
+    if position == "replace":
+        ok, detail = _replace_in_paragraph(
+            anchor_paragraph,
+            action.location.match_start,
+            action.location.match_end,
+            replacement,
+        )
+        return EditOutcome(
+            action=action,
+            status="applied" if ok else "failed",
+            detail=f"ADD fallback to replace: {detail}",
+            original_text=anchor_text,
+            new_text=anchor_paragraph.text if ok else None,
+        )
+
+    paragraphs = _split_insert_paragraphs(new_content)
+    if not paragraphs:
+        return EditOutcome(
+            action=action,
+            status="skipped",
+            detail="ADD replacement contained no additional content beyond anchor.",
+            original_text=anchor_paragraph.text,
+            new_text=None,
+        )
+
+    style_id = _reference_style_for_text(mapping.body_index, body_children, paragraphs[0])
+    inserted_count = (
+        _insert_paragraphs_after(anchor_element, paragraphs, style_id)
+        if position == "after"
+        else _insert_paragraphs_before(anchor_element, paragraphs, style_id)
+    )
+    return EditOutcome(
+        action=action,
+        status="applied",
+        detail=f"Inserted {inserted_count} paragraph(s) {position} anchor paragraph.",
+        original_text=anchor_paragraph.text,
+        new_text="\n\n".join(paragraphs),
+    )
 
 
 def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list[EditAction]) -> EditReport:
@@ -277,23 +467,17 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
 
-    body_children = list(doc.element.body)
+    non_add_actions = [action for action in actions_to_apply if action.action_type != "ADD"]
+    add_actions = sorted(
+        (action for action in actions_to_apply if action.action_type == "ADD"),
+        key=lambda item: item.location.mapping.body_index,
+        reverse=True,
+    )
 
-    for action in actions_to_apply:
+    body_children = list(doc.element.body)
+    for action in non_add_actions:
         mapping = action.location.mapping
         original_text = action.location.matched_text
-
-        if action.action_type == "ADD":
-            outcomes.append(
-                EditOutcome(
-                    action=action,
-                    status="failed",
-                    detail="ADD action deferred to later phase.",
-                    original_text=original_text,
-                    new_text=None,
-                )
-            )
-            continue
 
         if mapping.body_index < 0 or mapping.body_index >= len(body_children):
             outcomes.append(
@@ -425,6 +609,9 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             )
         )
 
+    for action in add_actions:
+        outcomes.append(_apply_add_action(action, doc))
+
     try:
         doc.save(BytesIO())
     except Exception as exc:
@@ -471,7 +658,7 @@ def build_edit_actions(locator_results: list[LocatorResult]) -> list[EditAction]
     actions: list[EditAction] = []
     for finding_index, result in enumerate(locator_results):
         action_type = result.action_type.upper()
-        if action_type not in {"EDIT", "DELETE"}:
+        if action_type not in {"EDIT", "DELETE", "ADD"}:
             continue
         if result.status == "not_found" or not result.locations:
             continue

@@ -1019,9 +1019,37 @@ class SpecReviewApp(ctk.CTk):
             review_findings,
             cross_check_findings=cross_check_findings,
         )
+        eligible_count = sum(1 for c in candidates if c.eligible)
+        ineligible_count = len(candidates) - eligible_count
+        self.log.log(
+            f"Edit candidates: {eligible_count} eligible, {ineligible_count} ineligible "
+            f"(of {len(candidates)} total findings)",
+            level="info",
+        )
+        if self._diagnostics_report:
+            self._diagnostics_report.log(
+                "edit_selection",
+                "info",
+                f"Edit candidates classified: {eligible_count} eligible, {ineligible_count} ineligible",
+                {"eligible": eligible_count, "ineligible": ineligible_count, "total": len(candidates)},
+            )
+            for candidate in candidates:
+                if candidate.eligible or not candidate.ineligible_reason:
+                    continue
+                self._diagnostics_report.log(
+                    "edit_selection",
+                    "info",
+                    f"Ineligible finding {candidate.finding_index}: {candidate.ineligible_reason}",
+                    {"finding_index": candidate.finding_index, "reason": candidate.ineligible_reason},
+                )
 
         if not any(candidate.eligible for candidate in candidates):
-            self.log.log("No findings eligible for edit application.", level="muted")
+            reasons = {c.ineligible_reason for c in candidates if c.ineligible_reason}
+            reason_str = "; ".join(sorted(reasons)) if reasons else "unknown"
+            self.log.log(
+                f"No findings eligible for auto-apply ({len(candidates)} total). Reasons: {reason_str}",
+                level="muted",
+            )
             return
 
         def on_apply(selected_indices: list[int]):
