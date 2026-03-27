@@ -31,8 +31,10 @@ from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
 from src.prompts import get_system_prompt
 from src.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
-from src.verifier import VerificationResult
 from src.report_exporter import export_report
+from src.edit_candidates import EditCandidate, classify_edit_candidates
+from src.edit_locator import locate_edits
+from src.spec_editor import apply_edits_to_spec, build_edit_actions
 from src.resume_state import (
     PHASE_REVIEW_POLL,
     PHASE_REVIEW_COLLECT,
@@ -45,7 +47,17 @@ from src.resume_state import (
     deserialize_resume_state,
 )
 
-from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportWindow, DiagnosticsWindow)
+from src.widgets import (
+    COLORS,
+    TokenGauge,
+    FileListPanel,
+    EnhancedLog,
+    AnimatedButton,
+    ReportWindow,
+    DiagnosticsWindow,
+    EditSelectionDialog,
+    EditSummaryDialog,
+)
 from src.diagnostics import DiagnosticsReport
 
 from platformdirs import user_config_dir, user_state_dir
@@ -934,6 +946,8 @@ class SpecReviewApp(ctk.CTk):
                     self.log.log_warning("Export canceled; results are still available in memory.")
                 elif export_status == "error":
                     self.log.log_warning("Export failed. Retry export or switch output mode to 'View in App' to open the report window.")
+                elif export_status == "success":
+                    self._show_edit_selection_dialog(result)
             else:
                 self._open_report_window(
                     rv,
@@ -977,6 +991,112 @@ class SpecReviewApp(ctk.CTk):
         except Exception as e:
             self.log.log_error(f"Export failed: {e}")
             return "error"
+
+    def _show_edit_selection_dialog(self, result) -> None:
+        extracted_specs = list(self._extracted_specs or [])
+        source_paths = list(self._selected_files_for_review or [])
+        review_findings = list(result.review_result.findings or []) if result.review_result else []
+        cross_check_findings = list(result.cross_check_result.findings or []) if result.cross_check_result else []
+
+        if not extracted_specs or not source_paths:
+            self.log.log_warning("Edited spec workflow skipped: extracted spec data is unavailable.")
+            return
+        if any(not spec.paragraph_map for spec in extracted_specs):
+            self.log.log_warning("Edited spec workflow skipped: paragraph maps are missing.")
+            return
+
+        candidates = classify_edit_candidates(
+            review_findings,
+            include_cross_check=bool(cross_check_findings),
+            cross_check_findings=cross_check_findings,
+        )
+        if not candidates:
+            self.log.log("No actionable findings eligible for auto-edit application.", level="muted")
+            return
+
+        self.log.log(f"Edit selection ready: {len(candidates)} actionable findings.", level="info")
+
+        def _on_apply(selected_indices: list[int]):
+            candidate_map = {candidate.finding_index: candidate for candidate in candidates}
+            selected_candidates = [candidate_map[idx] for idx in selected_indices if idx in candidate_map]
+            self._apply_selected_edits(
+                selected_candidates=selected_candidates,
+                extracted_specs=extracted_specs,
+                source_paths=source_paths,
+            )
+
+        EditSelectionDialog(self, candidates=candidates, on_apply=_on_apply)
+
+    def _apply_selected_edits(
+        self,
+        *,
+        selected_candidates: list[EditCandidate],
+        extracted_specs: list[ExtractedSpec],
+        source_paths: list[Path],
+    ) -> None:
+        if not selected_candidates:
+            self.log.log_warning("No findings selected for edit application.")
+            return
+
+        default_dir = str(source_paths[0].parent) if source_paths else ""
+        output_dir = filedialog.askdirectory(
+            title="Select folder for edited specification files",
+            initialdir=default_dir,
+            mustexist=True,
+        )
+        if not output_dir:
+            self.log.log_warning("Edit application canceled: output directory not selected.")
+            return
+
+        self.log.log_step(f"Applying selected edits ({len(selected_candidates)} findings)...")
+        output_root = Path(output_dir)
+
+        def _run_apply():
+            reports = []
+            file_map: dict[str, tuple[ExtractedSpec, Path]] = {}
+            for spec, path in zip(extracted_specs, source_paths):
+                file_map[spec.filename] = (spec, path)
+
+            grouped: dict[str, list[EditCandidate]] = {}
+            for candidate in selected_candidates:
+                grouped.setdefault(candidate.source_file, []).append(candidate)
+
+            total_skipped_missing = 0
+            for source_file, candidates_for_file in grouped.items():
+                mapped = file_map.get(source_file)
+                if mapped is None:
+                    total_skipped_missing += len(candidates_for_file)
+                    self.after(0, lambda sf=source_file: self.log.log_warning(f"Skipped edits: no source match for '{sf}'"))
+                    continue
+
+                spec, source_path = mapped
+                paragraph_map = spec.paragraph_map or []
+                findings = [candidate.finding for candidate in candidates_for_file]
+
+                locator_results = locate_edits(findings, paragraph_map)
+                edit_actions = build_edit_actions(locator_results)
+                output_path = output_root / f"{source_path.stem}_edited{source_path.suffix}"
+                report = apply_edits_to_spec(source_path, output_path, edit_actions)
+                reports.append(report)
+
+            if total_skipped_missing > 0:
+                self.after(0, lambda c=total_skipped_missing: self.log.log_warning(f"{c} selected finding(s) skipped due to unmatched source filenames."))
+
+            def _on_done():
+                if not reports:
+                    self.log.log_warning("No files were edited.")
+                    return
+                total_applied = sum(report.edits_applied for report in reports)
+                total_skipped = sum(report.edits_skipped for report in reports)
+                total_failed = sum(report.edits_failed for report in reports)
+                self.log.log_success(
+                    f"Edits complete: {total_applied} applied, {total_skipped} skipped, {total_failed} failed."
+                )
+                EditSummaryDialog(self, edit_reports=reports)
+
+            self.after(0, _on_done)
+
+        threading.Thread(target=_run_apply, daemon=True).start()
 
     def _on_review_error(self, err):
         self.progress_bar.pack_forget()

@@ -30,11 +30,14 @@ import json
 import math
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from collections import defaultdict, deque
 
 import customtkinter as ctk
 from tkinter import filedialog
+
+from .edit_candidates import EditCandidate
+from .spec_editor import EditReport
 
 # ============================================================================
 # SHARED CONFIG
@@ -97,6 +100,12 @@ ANIM = {
     "gauge_duration": 700, "fade_duration": 200, "fade_steps": 8,
     "pulse_interval": 1500, "pulse_step_ms": 67, "glow_step_ms": 67,
     "expand_duration": 200, "expand_steps": 10,
+}
+
+_VERDICT_ICONS = {
+    "CONFIRMED": "\u2713",
+    "CORRECTED": "\u270e",
+    "UNVERIFIED": "\u2014",
 }
 
 
@@ -670,6 +679,344 @@ def _finding_to_dict(finding) -> dict:
     else:
         d["verification"] = None
     return d
+
+
+# ============================================================================
+# EDIT SELECTION + SUMMARY DIALOGS
+# ============================================================================
+
+class EditSelectionDialog(ctk.CTkToplevel):
+    def __init__(
+        self,
+        master,
+        candidates: list[EditCandidate],
+        on_apply: Callable[[list[int]], None],
+        **kwargs,
+    ):
+        super().__init__(master, **kwargs)
+        self.title("Apply Edits to Specifications")
+        self.geometry("980x760")
+        self.minsize(760, 560)
+        self.configure(fg_color=COLORS["bg_dark"])
+        self.transient(master)
+        self.grab_set()
+        self.lift()
+        self.focus_force()
+
+        self._candidates = candidates
+        self._on_apply = on_apply
+        self._vars: list[ctk.BooleanVar] = []
+        self._count_label: ctk.CTkLabel | None = None
+        self._summary_primary: ctk.CTkLabel | None = None
+        self._summary_secondary: ctk.CTkLabel | None = None
+        self._apply_button: ctk.CTkButton | None = None
+        self._build_ui()
+        self._update_selection_summary()
+
+    def _build_ui(self):
+        container = ctk.CTkFrame(self, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=16, pady=16)
+
+        ctk.CTkLabel(
+            container,
+            text="Apply Edits to Specifications",
+            font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            container,
+            text="Select findings to apply as edits to your .docx files.",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=COLORS["text_secondary"],
+        ).pack(anchor="w", pady=(4, 12))
+
+        toolbar = ctk.CTkFrame(container, fg_color=COLORS["bg_card"], corner_radius=8)
+        toolbar.pack(fill="x", pady=(0, 10))
+        toolbar_inner = ctk.CTkFrame(toolbar, fg_color="transparent")
+        toolbar_inner.pack(fill="x", padx=12, pady=10)
+
+        btn_kw = {
+            "height": 28,
+            "font": ctk.CTkFont(family="Segoe UI", size=11),
+            "fg_color": COLORS["bg_input"],
+            "hover_color": COLORS["border"],
+            "border_width": 1,
+            "border_color": COLORS["border"],
+            "text_color": COLORS["text_secondary"],
+        }
+        ctk.CTkButton(toolbar_inner, text="Select All", width=90, command=self._select_all, **btn_kw).pack(side="left")
+        ctk.CTkButton(toolbar_inner, text="Select None", width=95, command=self._select_none, **btn_kw).pack(side="left", padx=(8, 0))
+        self._count_label = ctk.CTkLabel(
+            toolbar_inner,
+            text="0 selected",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            text_color=COLORS["text_muted"],
+        )
+        self._count_label.pack(side="right")
+
+        list_frame = ctk.CTkScrollableFrame(container, fg_color=COLORS["bg_card"], corner_radius=8)
+        list_frame.pack(fill="both", expand=True)
+
+        for candidate in self._candidates:
+            self._build_candidate_row(list_frame, candidate)
+
+        summary_card = ctk.CTkFrame(container, fg_color=COLORS["bg_card"], corner_radius=8)
+        summary_card.pack(fill="x", pady=(10, 0))
+        summary_inner = ctk.CTkFrame(summary_card, fg_color="transparent")
+        summary_inner.pack(fill="x", padx=12, pady=10)
+        self._summary_primary = ctk.CTkLabel(
+            summary_inner,
+            text="0 edits selected across 0 files",
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text_color=COLORS["text_primary"],
+        )
+        self._summary_primary.pack(anchor="w")
+        self._summary_secondary = ctk.CTkLabel(
+            summary_inner,
+            text="0 confirmed, 0 corrected, 0 unverified",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            text_color=COLORS["text_secondary"],
+        )
+        self._summary_secondary.pack(anchor="w", pady=(4, 0))
+
+        actions = ctk.CTkFrame(container, fg_color="transparent")
+        actions.pack(fill="x", pady=(12, 0))
+        ctk.CTkButton(
+            actions,
+            text="Cancel",
+            width=110,
+            height=34,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["bg_input"],
+            hover_color=COLORS["border"],
+            border_width=1,
+            border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"],
+            command=self.destroy,
+        ).pack(side="left")
+        self._apply_button = ctk.CTkButton(
+            actions,
+            text="Apply Selected Edits",
+            width=170,
+            height=34,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text_primary"],
+            command=self._apply,
+        )
+        self._apply_button.pack(side="right")
+
+    def _build_candidate_row(self, parent, candidate: EditCandidate):
+        is_unverified = candidate.verdict_badge == "UNVERIFIED"
+        row = ctk.CTkFrame(
+            parent,
+            fg_color=COLORS["bg_input"] if not is_unverified else blend_colors(COLORS["bg_input"], COLORS["bg_card"], 0.45),
+            corner_radius=6,
+        )
+        row.pack(fill="x", pady=4, padx=4)
+        inner = ctk.CTkFrame(row, fg_color="transparent")
+        inner.pack(fill="x", padx=10, pady=8)
+
+        var = ctk.BooleanVar(value=candidate.default_selected)
+        var.trace_add("write", lambda *a: self._update_selection_summary())
+        self._vars.append(var)
+        ctk.CTkCheckBox(
+            inner,
+            text="",
+            variable=var,
+            width=24,
+            checkbox_width=18,
+            checkbox_height=18,
+            corner_radius=4,
+            border_width=2,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            border_color=COLORS["border"],
+            checkmark_color=COLORS["text_primary"],
+        ).grid(row=0, column=0, rowspan=3, sticky="nw")
+
+        top = ctk.CTkFrame(inner, fg_color="transparent")
+        top.grid(row=0, column=1, sticky="ew")
+        sc = SEVERITY_COLORS.get(candidate.finding.severity, COLORS["border"])
+        ctk.CTkLabel(
+            top,
+            text=candidate.finding.severity,
+            width=70,
+            height=22,
+            corner_radius=4,
+            fg_color=sc,
+            text_color="white" if candidate.finding.severity != "MEDIUM" else "black",
+            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+        ).pack(side="left")
+        vc = VERDICT_COLORS.get(candidate.verdict_badge, VERDICT_COLORS["UNVERIFIED"])
+        vicon = _VERDICT_ICONS.get(candidate.verdict_badge, "\u2014")
+        ctk.CTkLabel(
+            top,
+            text=f"{candidate.verdict_badge} {vicon}",
+            height=22,
+            corner_radius=4,
+            fg_color=vc,
+            text_color="white" if candidate.verdict_badge != "CORRECTED" else "black",
+            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+            padx=8,
+        ).pack(side="left", padx=(6, 0))
+        ctk.CTkLabel(
+            top,
+            text=_confidence_label(candidate.finding.confidence),
+            font=ctk.CTkFont(family="Consolas", size=10, weight="bold"),
+            text_color=_confidence_color(candidate.finding.confidence),
+        ).pack(side="left", padx=(8, 0))
+
+        file_section = f"{candidate.source_file} — {candidate.finding.section or 'No section'}"
+        ctk.CTkLabel(
+            inner,
+            text=file_section,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLORS["text_secondary"],
+            anchor="w",
+        ).grid(row=1, column=1, sticky="ew", pady=(2, 0))
+
+        existing = (candidate.finding.existingText or "").strip().replace("\n", " ")
+        replacement = (candidate.replacement_text or "").strip().replace("\n", " ")
+        if len(existing) > 70:
+            existing = existing[:67] + "..."
+        if len(replacement) > 70:
+            replacement = replacement[:67] + "..."
+        preview = f'Delete "{existing}"' if candidate.action_type == "DELETE" else f'Replace "{existing}" \u2192 "{replacement}"'
+        ctk.CTkLabel(
+            inner,
+            text=preview,
+            font=ctk.CTkFont(family="Consolas", size=10),
+            text_color=COLORS["text_primary"] if not is_unverified else COLORS["text_secondary"],
+            anchor="w",
+            justify="left",
+        ).grid(row=2, column=1, sticky="ew", pady=(2, 0))
+
+        note = None
+        if candidate.verdict_badge == "CORRECTED":
+            note = "\u26a0 Replacement updated by verifier."
+        elif candidate.verdict_badge == "UNVERIFIED":
+            note = "\u26a0 Not verified \u2014 apply with caution."
+        if note:
+            ctk.CTkLabel(
+                inner,
+                text=note,
+                font=ctk.CTkFont(family="Segoe UI", size=10, slant="italic"),
+                text_color=COLORS["warning"] if candidate.verdict_badge == "CORRECTED" else COLORS["text_muted"],
+                anchor="w",
+            ).grid(row=3, column=1, sticky="ew", pady=(2, 0))
+
+        inner.grid_columnconfigure(1, weight=1)
+
+    def _selected_candidates(self) -> list[EditCandidate]:
+        return [candidate for candidate, var in zip(self._candidates, self._vars) if var.get()]
+
+    def _update_selection_summary(self):
+        selected = self._selected_candidates()
+        total = len(self._candidates)
+        count = len(selected)
+        affected_files = len({candidate.source_file for candidate in selected})
+        confirmed = sum(1 for c in selected if c.verdict_badge == "CONFIRMED")
+        corrected = sum(1 for c in selected if c.verdict_badge == "CORRECTED")
+        unverified = sum(1 for c in selected if c.verdict_badge == "UNVERIFIED")
+
+        if self._count_label:
+            self._count_label.configure(text=f"{count} of {total} selected")
+        if self._summary_primary:
+            self._summary_primary.configure(text=f"{count} edits selected across {affected_files} file{'s' if affected_files != 1 else ''}")
+        if self._summary_secondary:
+            self._summary_secondary.configure(text=f"{confirmed} confirmed, {corrected} corrected, {unverified} unverified")
+        if self._apply_button:
+            self._apply_button.configure(state="normal" if count > 0 else "disabled")
+
+    def _select_all(self):
+        for var in self._vars:
+            var.set(True)
+
+    def _select_none(self):
+        for var in self._vars:
+            var.set(False)
+
+    def _apply(self):
+        selected_indices = [candidate.finding_index for candidate in self._selected_candidates()]
+        if not selected_indices:
+            return
+        self._on_apply(selected_indices)
+        self.destroy()
+
+
+class EditSummaryDialog(ctk.CTkToplevel):
+    def __init__(self, master, edit_reports: list[EditReport], **kwargs):
+        super().__init__(master, **kwargs)
+        self.title("Edits Applied")
+        self.geometry("760x520")
+        self.minsize(640, 420)
+        self.configure(fg_color=COLORS["bg_dark"])
+        self.transient(master)
+        self.grab_set()
+        self.lift()
+        self.focus_force()
+
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=16, pady=16)
+
+        ctk.CTkLabel(
+            body,
+            text="Edits Applied",
+            font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", pady=(0, 10))
+
+        total_applied = sum(report.edits_applied for report in edit_reports)
+        total_skipped = sum(report.edits_skipped for report in edit_reports)
+        total_failed = sum(report.edits_failed for report in edit_reports)
+
+        for report in edit_reports:
+            card = ctk.CTkFrame(body, fg_color=COLORS["bg_card"], corner_radius=8)
+            card.pack(fill="x", pady=(0, 8))
+            inner = ctk.CTkFrame(card, fg_color="transparent")
+            inner.pack(fill="x", padx=12, pady=10)
+            icon = "\u2713" if report.edits_failed == 0 else "\u26a0"
+            ctk.CTkLabel(
+                inner,
+                text=f"{icon} {report.output_path.name}",
+                font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+                text_color=COLORS["text_primary"],
+            ).pack(anchor="w")
+            ctk.CTkLabel(
+                inner,
+                text=f"{report.edits_applied} edits applied, {report.edits_skipped} skipped, {report.edits_failed} failed",
+                font=ctk.CTkFont(family="Consolas", size=11),
+                text_color=COLORS["text_secondary"],
+            ).pack(anchor="w", pady=(2, 0))
+            if report.warnings:
+                ctk.CTkLabel(
+                    inner,
+                    text=f"\u26a0 {len(report.warnings)} warning(s)",
+                    font=ctk.CTkFont(family="Segoe UI", size=10),
+                    text_color=COLORS["warning"],
+                ).pack(anchor="w", pady=(2, 0))
+
+        total_card = ctk.CTkFrame(body, fg_color=COLORS["bg_input"], corner_radius=8)
+        total_card.pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(
+            total_card,
+            text=f"Total: {total_applied} applied, {total_skipped} skipped, {total_failed} failed",
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", padx=12, pady=12)
+
+        ctk.CTkButton(
+            self,
+            text="Close",
+            width=100,
+            height=34,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            command=self.destroy,
+        ).pack(anchor="e", padx=16, pady=(0, 16))
 
 
 # ============================================================================
