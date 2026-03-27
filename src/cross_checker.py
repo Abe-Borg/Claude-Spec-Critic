@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
-from anthropic import APIError, APIConnectionError, RateLimitError
+from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
 from .extractor import ExtractedSpec
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_46
@@ -158,6 +158,16 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             return result
         except (RateLimitError, APIConnectionError):
             time.sleep(2 ** attempt * 5)
+        except InternalServerError:
+            time.sleep(2 ** attempt * 10)
+        except APIStatusError as e:
+            if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
+                time.sleep(2 ** attempt * 10)
+                continue
+            result.error = f"API error: {e}"
+            result.cross_check_status = "failed"
+            result.elapsed_seconds = time.time() - start
+            return result
         except APIError as e:
             result.error = f"API error: {e}"
             result.cross_check_status = "failed"
