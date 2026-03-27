@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable
 
-from anthropic import APIError, APIConnectionError, RateLimitError
+from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
 from .batch import BatchJob, submit_verification_batch, poll_batch, retrieve_verification_results, cancel_batch
 from .reviewer import Finding, _get_client
@@ -307,6 +307,21 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                 time.sleep(10 * (attempt + 1))
                 continue
             return VerificationResult(verdict="UNVERIFIED", explanation="Rate limited during verification.")
+        except InternalServerError as e:
+            if attempt < max_retries:
+                time.sleep(15 * (attempt + 1))
+                continue
+            return VerificationResult(verdict="UNVERIFIED", explanation=f"Server overloaded during verification: {e}")
+        except APIStatusError as e:
+            if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
+                if attempt < max_retries:
+                    time.sleep(15 * (attempt + 1))
+                    continue
+                return VerificationResult(verdict="UNVERIFIED", explanation=f"Server overloaded during verification: {e}")
+            if attempt < max_retries:
+                time.sleep(5 * (attempt + 1))
+                continue
+            return VerificationResult(verdict="UNVERIFIED", explanation=f"API error during verification: {e}")
         except (APIConnectionError, APIError) as e:
             if attempt < max_retries:
                 time.sleep(5 * (attempt + 1))

@@ -11,7 +11,7 @@ from typing import Callable, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .verifier import VerificationResult
 
-from anthropic import Anthropic, APIError, APIConnectionError, RateLimitError
+from anthropic import Anthropic, APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
 from .prompts import get_system_prompt, get_single_spec_user_message
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
@@ -194,6 +194,15 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             return result
         except (RateLimitError, APIConnectionError):
             time.sleep(2 ** attempt * 5)
+        except InternalServerError:
+            time.sleep(2 ** attempt * 10)
+        except APIStatusError as e:
+            if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
+                time.sleep(2 ** attempt * 10)
+                continue
+            result.error = f"API error: {e}"
+            result.elapsed_seconds = time.time() - start_time
+            return result
         except APIError as e:
             result.error = f"API error: {e}"
             result.elapsed_seconds = time.time() - start_time
