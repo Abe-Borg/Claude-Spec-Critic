@@ -14,6 +14,10 @@ from .reviewer import Finding
 _WHITESPACE_RE = re.compile(r"[\s\u00A0]+")
 _SECTION_PART_RE = re.compile(r"^\s*part\s+(\d+)\b", flags=re.IGNORECASE)
 _SECTION_NUMERIC_RE = re.compile(r"^\s*(\d+(?:\.\d+)+)\b")
+_SECTION_SEGMENT_SPLIT_RE = re.compile(r"\s*(?:>|/|\\|→|➜|»)\s*")
+_LEADING_NUMBERING_RE = re.compile(r"^\s*(?:\d+(?:\.\d+)*[.)-]?\s*|[A-Z][.)-]\s*)+")
+_CSI_LEVEL1_HEADINGS = {"general", "products", "execution"}
+_UPPERCASE_HEADER_EXCLUSIONS = {"end of section"}
 
 
 @dataclass
@@ -183,17 +187,32 @@ def _fuzzy_match(existing_text: str, paragraph_map: list[ParagraphMapping], thre
     return sorted(hits, key=lambda item: item.match_confidence, reverse=True)
 
 
-def _extract_section_key(section: str) -> str:
+def _extract_section_keys(section: str) -> list[str]:
     section = section.strip()
     if not section:
-        return ""
-    part_match = _SECTION_PART_RE.match(section)
-    if part_match:
-        return f"part {part_match.group(1)}"
-    numeric_match = _SECTION_NUMERIC_RE.match(section)
-    if numeric_match:
-        return numeric_match.group(1)
-    return section.casefold()
+        return []
+    segments = [segment.strip() for segment in _SECTION_SEGMENT_SPLIT_RE.split(section) if segment.strip()]
+    if not segments:
+        segments = [section]
+
+    def _normalize_segment(segment: str) -> str:
+        part_match = _SECTION_PART_RE.match(segment)
+        if part_match:
+            return f"part {part_match.group(1)}"
+        numeric_match = _SECTION_NUMERIC_RE.match(segment)
+        if numeric_match:
+            return numeric_match.group(1)
+        cleaned = _LEADING_NUMBERING_RE.sub("", segment).strip(" -:\t")
+        return cleaned.casefold() if cleaned else segment.casefold()
+
+    keys: list[str] = []
+    for segment in reversed(segments):
+        normalized = _normalize_segment(segment)
+        if normalized and normalized not in keys:
+            keys.append(normalized)
+    if not keys:
+        keys.append(section.casefold())
+    return keys
 
 
 def _header_level(text: str) -> int | None:
@@ -204,12 +223,25 @@ def _header_level(text: str) -> int | None:
     numeric_match = _SECTION_NUMERIC_RE.match(text)
     if numeric_match:
         return len(numeric_match.group(1).split("."))
-    return None
+
+    cleaned = _LEADING_NUMBERING_RE.sub("", text).strip(" -:\t")
+    if not cleaned:
+        return None
+    if len(cleaned) < 3 or len(cleaned) > 60:
+        return None
+    if cleaned.casefold() in _UPPERCASE_HEADER_EXCLUSIONS:
+        return None
+    has_alpha = any(ch.isalpha() for ch in cleaned)
+    if not has_alpha or cleaned != cleaned.upper():
+        return None
+    if cleaned.casefold() in _CSI_LEVEL1_HEADINGS:
+        return 1
+    return 2
 
 
 def _section_anchored_match(existing_text: str, section: str, paragraph_map: list[ParagraphMapping], *, short_text: bool = False) -> list[EditLocation]:
-    section_key = _extract_section_key(section)
-    if not section_key:
+    section_keys = _extract_section_keys(section)
+    if not section_keys:
         return []
 
     header_indexes = [idx for idx, mapping in enumerate(paragraph_map) if _header_level(mapping.text) is not None]
@@ -217,10 +249,13 @@ def _section_anchored_match(existing_text: str, section: str, paragraph_map: lis
         return []
 
     anchor_idx = None
-    for idx in header_indexes:
-        header_text = paragraph_map[idx].text.casefold()
-        if section_key in header_text:
-            anchor_idx = idx
+    for section_key in section_keys:
+        for idx in header_indexes:
+            header_text = paragraph_map[idx].text.casefold()
+            if section_key in header_text:
+                anchor_idx = idx
+                break
+        if anchor_idx is not None:
             break
     if anchor_idx is None:
         return []
@@ -310,8 +345,8 @@ def locate_edit(
     match_candidates: list[EditLocation] = []
     methods: list[callable] = []
 
-    if short_text and finding.section:
-        methods.append(lambda: _section_anchored_match(existing_text, finding.section, paragraph_map, short_text=short_text))
+    if finding.section:
+        methods.insert(0, lambda: _section_anchored_match(existing_text, finding.section, paragraph_map, short_text=short_text))
 
     methods.extend(
         [

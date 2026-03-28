@@ -21,6 +21,7 @@ from src.cross_checker import run_cross_check
 from src.batch import BatchJob, BatchStatus, submit_verification_batch
 from src import gui
 from src.verifier import verify_finding, collect_verification_batch_results, _ERRORED_RETRY_MAX, VerificationResult
+from src.diagnostics import DiagnosticsReport
 from src.resume_state import (
     PHASE_REVIEW_POLL,
     PHASE_REVIEW_COLLECT,
@@ -182,6 +183,8 @@ def test_cycle_prompts_change():
     p2025 = get_system_prompt(CALIFORNIA_2025)
     assert "CBC 2022" in p2022
     assert "CBC 2025" in p2025
+    assert "<findings_json>" in p2025
+    assert "<FINDINGS_JSON>" not in p2025
 
     msg = get_single_spec_user_message("Body", "file.docx", cycle=CALIFORNIA_2025)
     assert "ASCE 7-22" in msg
@@ -764,3 +767,33 @@ def test_finalize_batch_result_sets_total_elapsed_seconds():
     assert isinstance(result, PipelineResult)
     assert result.total_elapsed_seconds is not None
     assert result.total_elapsed_seconds >= 0
+
+
+def test_extract_text_includes_header_footer_content(tmp_path: Path):
+    source = tmp_path / "header_footer.docx"
+    doc = Document()
+    doc.add_paragraph("Main body paragraph")
+    doc.sections[0].header.paragraphs[0].text = "CBC (2019) EDITION"
+    doc.sections[0].footer.paragraphs[0].text = "NORTHWOOD E. S. CLASSROOM BUILDING"
+    doc.save(source)
+
+    spec = extract_text(source)
+
+    assert "===== HEADER/FOOTER CONTENT =====" in spec.content
+    assert "[Header] CBC (2019) EDITION" in spec.content
+    assert "[Footer] NORTHWOOD E. S. CLASSROOM BUILDING" in spec.content
+    assert spec.paragraph_map is not None
+    assert "\n\n".join(m.text for m in spec.paragraph_map) == spec.content
+    assert any(m.element_type == "header" for m in spec.paragraph_map)
+    assert any(m.element_type == "footer" for m in spec.paragraph_map)
+
+
+def test_diagnostics_summary_counts_verification_phase_from_events():
+    report = DiagnosticsReport()
+    report.log("review", "info", "review start")
+    report.log("review", "info", "verification event carried in review", {"verdict": "CONFIRMED", "confidence": 0.9})
+    report.log("edit_application", "info", "edit applied")
+    report.finish()
+
+    summary = report.summary()
+    assert "verification" in summary["phase_durations"]

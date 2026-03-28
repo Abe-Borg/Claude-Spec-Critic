@@ -227,6 +227,37 @@ def _action_confidence(action: EditAction) -> float:
     return action.location.match_confidence
 
 
+def _severity_rank(action: EditAction) -> int:
+    severity = (action.locator_result.finding.severity or "").upper()
+    return {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}.get(severity, 99)
+
+
+def _resolve_overlap_winner(action_a: EditAction, action_b: EditAction) -> EditAction:
+    a_range = (action_a.location.match_start, action_a.location.match_end)
+    b_range = (action_b.location.match_start, action_b.location.match_end)
+
+    a_contains_b = a_range[0] <= b_range[0] and a_range[1] >= b_range[1]
+    b_contains_a = b_range[0] <= a_range[0] and b_range[1] >= a_range[1]
+    if a_contains_b and not b_contains_a:
+        return action_a
+    if b_contains_a and not a_contains_b:
+        return action_b
+
+    rank_a = _severity_rank(action_a)
+    rank_b = _severity_rank(action_b)
+    if rank_a != rank_b:
+        return action_a if rank_a < rank_b else action_b
+
+    conf_a = _action_confidence(action_a)
+    conf_b = _action_confidence(action_b)
+    if conf_a != conf_b:
+        return action_a if conf_a > conf_b else action_b
+
+    span_a = a_range[1] - a_range[0]
+    span_b = b_range[1] - b_range[0]
+    return action_a if span_a >= span_b else action_b
+
+
 def _action_group_key(action: EditAction) -> tuple[int, str, int | None]:
     mapping = action.location.mapping
     return mapping.body_index, mapping.element_type, mapping.row_index
@@ -278,13 +309,14 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
                 accepted.append(action)
                 continue
 
-            if _action_confidence(action) > _action_confidence(overlap):
+            winner = _resolve_overlap_winner(action, overlap)
+            if winner is action:
                 accepted.remove(overlap)
                 skipped.append(
                     EditOutcome(
                         action=overlap,
                         status="skipped",
-                        detail="Skipped due to overlapping conflict with higher-confidence edit.",
+                        detail="Skipped due to overlapping conflict with broader/higher-priority edit.",
                         original_text=overlap.location.matched_text,
                         new_text=None,
                     )
@@ -295,7 +327,7 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
                     EditOutcome(
                         action=action,
                         status="skipped",
-                        detail="Skipped due to overlapping conflict with higher-confidence edit.",
+                        detail="Skipped due to overlapping conflict with broader/higher-priority edit.",
                         original_text=action.location.matched_text,
                         new_text=None,
                     )
@@ -664,6 +696,10 @@ def build_edit_actions(locator_results: list[LocatorResult]) -> list[EditAction]
             continue
 
         best_location = max(result.locations, key=lambda location: location.match_confidence)
+        if best_location.mapping.element_type in {"header", "footer"}:
+            if result.warning is None:
+                result.warning = "Header/footer findings are review-only and cannot be auto-applied yet."
+            continue
         if result.status == "ambiguous" and result.warning is None:
             result.warning = "Ambiguous locator result; selecting highest-confidence location for auto-apply."
 
