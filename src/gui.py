@@ -843,6 +843,12 @@ class SpecReviewApp(ctk.CTk):
                 self._diagnostics_report.log(phase, "step", msg, {"progress_pct": round(pct, 1)})
         return _on_progress
 
+    def _finalize_diagnostics(self, phase: str, level: str, message: str) -> None:
+        if self._diagnostics_report:
+            self._diagnostics_report.log(phase, level, message)
+            self._diagnostics_report.finish()
+        self.diagnostics_button.configure(state="normal")
+
     def _run_review_thread(self, run_epoch: int):
         diag = self._diagnostics_report
         try:
@@ -863,8 +869,14 @@ class SpecReviewApp(ctk.CTk):
                 cross_check=self._cross_check_for_review,
                 dry_run=False, verbose=False,
                 cycle=AVAILABLE_CYCLES.get(self._selected_cycle_label, DEFAULT_CYCLE),
-                log=self._make_diag_log("review", run_epoch),
-                progress=self._make_diag_progress("review", run_epoch),
+                log=lambda msg: self._make_diag_log(
+                    "verification" if "verifying" in msg.lower() else "review",
+                    run_epoch,
+                )(msg),
+                progress=lambda pct, msg: self._make_diag_progress(
+                    "verification" if "verifying" in msg.lower() else "review",
+                    run_epoch,
+                )(pct, msg),
             )
             # Capture structured diagnostics from the result
             if diag and result.review_result:
@@ -958,11 +970,8 @@ class SpecReviewApp(ctk.CTk):
                     verbose=getattr(self, "_verbose_for_review", True),
                 )
         delete_batch_state()
-        # Finalize diagnostics and enable button
-        if self._diagnostics_report:
-            self._diagnostics_report.log("finalization", "success", "Run completed successfully")
-            self._diagnostics_report.finish()
-        self.diagnostics_button.configure(state="normal")
+        if not (getattr(self, "_export_mode_for_review", False) and result.review_result):
+            self._finalize_diagnostics("finalization", "success", "Run completed successfully")
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
 
@@ -1050,6 +1059,7 @@ class SpecReviewApp(ctk.CTk):
                 f"No findings eligible for auto-apply ({len(candidates)} total). Reasons: {reason_str}",
                 level="muted",
             )
+            self._finalize_diagnostics("finalization", "success", "Run completed without eligible auto-edits")
             return
 
         def on_apply(selected_indices: list[int]):
@@ -1077,6 +1087,7 @@ class SpecReviewApp(ctk.CTk):
         )
         if not output_dir:
             self.log.log("Edit application canceled.", level="muted")
+            self._finalize_diagnostics("finalization", "info", "Run completed after user declined edit application")
             return
 
         output_path = Path(output_dir)
@@ -1112,6 +1123,10 @@ class SpecReviewApp(ctk.CTk):
                     run_epoch,
                     lambda: self.log.log_error(f"Edit application failed: {err}"),
                 )
+                self._dispatch_if_current(
+                    run_epoch,
+                    lambda: self._finalize_diagnostics("finalization", "warning", "Run completed with edit application failure"),
+                )
 
         threading.Thread(target=_do_apply, daemon=True).start()
 
@@ -1144,14 +1159,12 @@ class SpecReviewApp(ctk.CTk):
                 "success" if all(report.edits_failed == 0 for report in reports) else "warning",
                 "Edit application complete",
             )
+        self._finalize_diagnostics("finalization", "success", "Run completed after edit application")
 
     def _on_review_error(self, err):
         self.progress_bar.pack_forget()
         self.log.log_error(f"Review failed: {err}")
-        if self._diagnostics_report:
-            self._diagnostics_report.log("error", "error", f"Run failed: {err}")
-            self._diagnostics_report.finish()
-        self.diagnostics_button.configure(state="normal")
+        self._finalize_diagnostics("error", "error", f"Run failed: {err}")
         self.run_button.set_ready(); self.is_processing = False
 
     # ----- Batch mode -----

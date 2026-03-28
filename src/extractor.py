@@ -18,6 +18,8 @@ class ParagraphMapping:
     table_index: int | None
     row_index: int | None
     cell_index: int | None
+    section_index: int | None = None
+    container_type: str | None = None
 
 
 @dataclass
@@ -80,6 +82,45 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                         )
                     )
             table_counter += 1
+
+    header_footer_entries: list[ParagraphMapping] = []
+    for section_index, section in enumerate(doc.sections):
+        for container_name, container in (("header", section.header), ("footer", section.footer)):
+            for para in container.paragraphs:
+                text = para.text.strip()
+                if not text:
+                    continue
+                prefixed = f"[{container_name.title()}] {text}"
+                header_footer_entries.append(
+                    ParagraphMapping(
+                        body_index=-1,
+                        element_type=container_name,
+                        text=prefixed,
+                        table_index=None,
+                        row_index=None,
+                        cell_index=None,
+                        section_index=section_index,
+                        container_type=container_name,
+                    )
+                )
+
+    if header_footer_entries:
+        delimiter = "===== HEADER/FOOTER CONTENT ====="
+        paragraph_map.append(
+            ParagraphMapping(
+                body_index=-1,
+                element_type="meta",
+                text=delimiter,
+                table_index=None,
+                row_index=None,
+                cell_index=None,
+                section_index=None,
+                container_type="header_footer",
+            )
+        )
+        paragraph_map.extend(header_footer_entries)
+        paragraphs.append(delimiter)
+        paragraphs.extend(entry.text for entry in header_footer_entries)
 
     content = "\n\n".join(paragraphs)
     assert "\n\n".join(m.text for m in paragraph_map) == content, "Paragraph map text does not reconstruct content"

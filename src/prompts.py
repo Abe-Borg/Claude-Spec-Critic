@@ -26,7 +26,7 @@ GRIPES — quality/editorial issues that should still be fixed.
 </severity_definitions>
 
 <output_format>
-First provide ANALYSIS SUMMARY (1-2 paragraphs), then wrap findings JSON in <FINDINGS_JSON>...</FINDINGS_JSON>.
+First provide ANALYSIS SUMMARY (1-2 paragraphs), then wrap findings JSON in <findings_json>...</findings_json>.
 Each finding fields:
 - severity: "CRITICAL" | "HIGH" | "MEDIUM" | "GRIPES"
 - fileName
@@ -72,7 +72,7 @@ Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, Energy Co
 
 Reminders:
 - Review every section in the file.
-- Analysis summary first, then JSON findings in <FINDINGS_JSON> tags.
+- Analysis summary first, then JSON findings in <findings_json> tags.
 - Include confidence (0.0-1.0) with each finding.
 
 {context_block}===== FILE: {filename} =====

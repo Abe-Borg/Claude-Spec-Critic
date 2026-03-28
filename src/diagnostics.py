@@ -46,7 +46,8 @@ class DiagnosticsReport:
         ))
 
     def finish(self) -> None:
-        self.ended_at = time.time()
+        if self.ended_at is None:
+            self.ended_at = time.time()
 
     # ------------------------------------------------------------------
     # Summaries
@@ -65,6 +66,11 @@ class DiagnosticsReport:
                 phase_times[e.phase] = {"start": e.elapsed, "end": e.elapsed}
             else:
                 phase_times[e.phase]["end"] = e.elapsed
+
+            if e.data and any(key in e.data for key in ("verdict", "confidence")):
+                synthetic = phase_times.setdefault("verification", {"start": e.elapsed, "end": e.elapsed})
+                synthetic["start"] = min(synthetic["start"], e.elapsed)
+                synthetic["end"] = max(synthetic["end"], e.elapsed)
         phase_durations = {
             p: round(t["end"] - t["start"], 2) for p, t in phase_times.items()
         }

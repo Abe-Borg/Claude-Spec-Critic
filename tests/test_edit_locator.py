@@ -113,6 +113,25 @@ def test_short_text_exact_confidence_is_lowered_and_section_anchored_preferred()
     assert result.locations[0].match_confidence <= 0.70
 
 
+def test_section_anchored_match_prefers_csi_heading_scope_for_long_text():
+    duplicate = "Material and Thickness: Multilayer, multicolor, plastic labels."
+    paragraph_map = [
+        _mapping("PART 2 - PRODUCTS", idx=0),
+        _mapping("2.01 EQUIPMENT LABELS", idx=1),
+        _mapping(duplicate, idx=2),
+        _mapping("2.04 DUCT LABELS", idx=3),
+        _mapping(duplicate, idx=4),
+    ]
+    finding = _finding(duplicate)
+    finding.section = "PRODUCTS > DUCT LABELS"
+
+    result = locate_edit(finding, paragraph_map)
+
+    assert result.status == "matched"
+    assert result.locations[0].mapping.body_index == 4
+    assert result.locations[0].match_method == "section_anchored"
+
+
 def test_none_existing_text_returns_not_found_warning():
     paragraph_map = [_mapping("Anything", idx=0)]
     result = locate_edit(_finding(None), paragraph_map)

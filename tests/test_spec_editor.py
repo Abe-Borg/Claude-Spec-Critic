@@ -36,6 +36,7 @@ def _locator_result(
     replacement_text: str | None,
     confidence: float = 1.0,
     row_index: int | None = None,
+    severity: str = "HIGH",
 ) -> LocatorResult:
     mapping = ParagraphMapping(
         body_index=body_index,
@@ -54,7 +55,17 @@ def _locator_result(
         match_method="exact",
     )
     return LocatorResult(
-        finding=_finding(action=action, existing=matched_text, replacement=replacement_text),
+        finding=Finding(
+            severity=severity,
+            fileName="spec.docx",
+            section="1.0",
+            issue="Issue",
+            actionType=action,
+            existingText=matched_text,
+            replacementText=replacement_text,
+            codeReference="Code",
+            confidence=0.9,
+        ),
         status=status,
         locations=[location],
         replacement_text=replacement_text,
@@ -207,6 +218,43 @@ def test_conflict_resolution_skips_lower_confidence_overlap(tmp_path: Path):
     assert saved.paragraphs[0].text == "abc XYZ ghi"
     assert report.edits_applied == 1
     assert report.edits_skipped == 1
+
+
+def test_conflict_resolution_prefers_broader_subsuming_edit(tmp_path: Path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    text = "Pipe markers include refrigerant piping and condensate piping using R454B notation."
+    doc = Document()
+    doc.add_paragraph(text)
+    doc.save(source)
+
+    gripe = _locator_result(
+        text=text,
+        match_start=text.index("R454B"),
+        match_end=text.index("R454B") + len("R454B"),
+        matched_text="R454B",
+        replacement_text="R-454B",
+        confidence=1.0,
+        severity="GRIPES",
+    )
+    medium = _locator_result(
+        text=text,
+        match_start=0,
+        match_end=len(text),
+        matched_text=text,
+        replacement_text="Pipe markers shall separate refrigerant piping from condensate piping and use R-454B notation.",
+        confidence=1.0,
+        severity="MEDIUM",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([gripe, medium]))
+    saved = Document(output)
+
+    assert saved.paragraphs[0].text.startswith("Pipe markers shall separate refrigerant piping")
+    assert report.edits_applied == 1
+    assert report.edits_skipped == 1
+    assert any("broader/higher-priority" in outcome.detail for outcome in report.outcomes if outcome.status == "skipped")
 
 
 def test_table_cell_edit_updates_target_only(tmp_path: Path):
