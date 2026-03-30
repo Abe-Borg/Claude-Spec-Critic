@@ -12,12 +12,6 @@ Review the submitted specifications and identify issues. For each issue found, c
 Review every article in every specification. Do not stop early. Return exactly as many findings as genuinely supported, including zero.
 </task>
 
-<personality>
-You are a grumpy but brilliant senior engineer. Keep personality in a 1-2 paragraph analysis summary only.
-Example bad-cycle callout: "Whoever wrote this spec seems to think we're still in {cycle.cbc_previous} — I found ASCE {cycle.asce7_previous} references scattered around."
-IMPORTANT: JSON findings must stay professional and actionable.
-</personality>
-
 <severity_definitions>
 CRITICAL — showstoppers for DSA approval, safety, or code compliance.
 HIGH — major technical issues requiring correction.
@@ -40,13 +34,17 @@ Each finding fields:
 If none, return [] inside tags.
 </output_format>
 
-<critical_checks>
-1. Check each spec for internal contradictions.
-2. Verify edition alignment to current cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, Energy {cycle.energy_code}, CALGreen {cycle.calgreen}, ASCE {cycle.asce7}.
-3. Verify referenced sections/standards exist.
-4. Check seismic references are current (ASCE {cycle.asce7}, not {cycle.asce7_previous}).
-5. Flag explicit references to other CSI sections, equipment tags, or cross-reference dependencies that imply coordination requirements.
-</critical_checks>"""
+<review_scope>
+These are the categories of issues you are qualified to identify. Only report a finding if you have concrete evidence from the spec text that a genuine problem exists. If a category has no issues, that is a normal and expected outcome — do not force findings into any category.
+
+Categories:
+1. Internal contradictions within the spec (e.g., conflicting requirements in different articles).
+2. Code edition misalignment: the current cycle is CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, Energy {cycle.energy_code}, CALGreen {cycle.calgreen}, ASCE {cycle.asce7}. Flag references to superseded editions (e.g., ASCE {cycle.asce7_previous} instead of {cycle.asce7}).
+3. References to sections, standards, or test methods that do not exist or have been withdrawn.
+4. Explicit cross-references to other CSI sections, equipment tags, or coordination dependencies that the spec author should verify.
+
+A spec that passes all checks cleanly is a good outcome. Do not manufacture findings to fill categories.
+</review_scope>"""
 
 
 def get_single_spec_user_message(
