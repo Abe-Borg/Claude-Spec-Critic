@@ -11,7 +11,7 @@ from .prompts import get_system_prompt, get_single_spec_user_message
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_46
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET
-from .verification_config import VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
+from .verification_config import BATCH_MAX_OUTPUT_TOKENS, BATCH_OUTPUT_BETA, CODE_EXECUTION_TOOL, VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
 
 
 @dataclass
@@ -48,7 +48,7 @@ def submit_review_batch(specs: list, *, project_context: str = "", model: str = 
         raise ValueError("No specs to submit for batch review")
     client = _get_client()
     system_prompt = get_system_prompt(cycle)
-    output_limit = MAX_OUTPUT_TOKENS_OPUS if model == MODEL_OPUS_46 else MAX_OUTPUT_TOKENS_SONNET
+    output_limit = BATCH_MAX_OUTPUT_TOKENS if model == MODEL_OPUS_46 else MAX_OUTPUT_TOKENS_SONNET
     batch_requests = []
     request_map = {}
     for idx, spec in enumerate(specs):
@@ -56,7 +56,11 @@ def submit_review_batch(specs: list, *, project_context: str = "", model: str = 
         user_message = get_single_spec_user_message(spec.content, spec.filename, project_context=project_context, cycle=cycle)
         batch_requests.append({"custom_id": custom_id, "params": {"model": model, "max_tokens": output_limit, "thinking": {"type": "adaptive"}, "system": system_prompt, "messages": [{"role": "user", "content": user_message}]}})
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}
-    mb = client.messages.batches.create(requests=batch_requests)
+    
+    mb = client.beta.messages.batches.create(
+        requests=batch_requests,
+        betas=[BATCH_OUTPUT_BETA],
+    )
     return BatchJob(batch_id=mb.id, job_type="review", request_map=request_map, created_at=time.time())
 
 
@@ -197,11 +201,16 @@ def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_p
             "max_tokens": VERIFICATION_MAX_TOKENS,
             "thinking": {"type": "adaptive"},
             "system": system_prompt_fn(cycle),
-            "tools": [WEB_SEARCH_TOOL],
+            "tools": [WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
             "messages": [{"role": "user", "content": build_prompt_fn(finding)}],
         }})
         request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx}
-    mb = client.messages.batches.create(requests=reqs)
+
+    mb = client.beta.messages.batches.create(
+        requests=reqs,
+        betas=[BATCH_OUTPUT_BETA],
+    )
+
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
 

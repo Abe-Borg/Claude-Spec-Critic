@@ -14,7 +14,7 @@ from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitErr
 from .batch import BatchJob, submit_verification_batch, poll_batch, retrieve_verification_results, cancel_batch
 from .reviewer import Finding, _get_client
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
-from .verification_config import VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
+from .verification_config import CODE_EXECUTION_TOOL, VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
 
 VerifyProgressFn = Callable[[int, int, str], None]
 _ERRORED_RETRY_MAX = 75
@@ -252,7 +252,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                     max_tokens=VERIFICATION_MAX_TOKENS,
                     thinking={"type": "adaptive"},
                     system=system_prompt,
-                    tools=[WEB_SEARCH_TOOL],
+                    tools=[WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
                     messages=messages,
                 ) as stream:
                     response = stream.get_final_message()

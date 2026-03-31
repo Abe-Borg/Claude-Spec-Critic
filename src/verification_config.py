@@ -69,3 +69,11 @@ WEB_SEARCH_TOOL = {
         "region": "California",
     },
 }
+
+CODE_EXECUTION_TOOL = {
+    "type": "code_execution_20250825",
+    "name": "code_execution",
+}
+
+BATCH_OUTPUT_BETA = "output-300k-2026-03-24"
+BATCH_MAX_OUTPUT_TOKENS = 300_000
