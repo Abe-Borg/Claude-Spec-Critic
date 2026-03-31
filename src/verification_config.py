@@ -4,7 +4,7 @@ VERIFICATION_MODEL = "claude-opus-4-6"
 VERIFICATION_MAX_TOKENS = 128_000
 
 WEB_SEARCH_TOOL = {
-    "type": "web_search_20250305",
+    "type": "web_search_20260209",
     "name": "web_search",
     "blocked_domains": [
         "reddit.com",
