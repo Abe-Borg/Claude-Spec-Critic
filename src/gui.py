@@ -957,8 +957,10 @@ class SpecReviewApp(ctk.CTk):
                 export_status = self._export_report_to_file(result)
                 if export_status == "canceled":
                     self.log.log_warning("Export canceled; results are still available in memory.")
+                    self._finalize_diagnostics("finalization", "info", "Run completed after export canceled")
                 elif export_status == "error":
                     self.log.log_warning("Export failed. Retry export or switch output mode to 'View in App' to open the report window.")
+                    self._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
                 elif export_status == "success":
                     self._show_edit_selection_dialog(result)
             else:
@@ -1072,7 +1074,16 @@ class SpecReviewApp(ctk.CTk):
                 source_paths,
             )
 
-        EditSelectionDialog(self, candidates=candidates, on_apply=on_apply)
+        def on_dismiss():
+            self._finalize_diagnostics(
+                "finalization", "info",
+                "Run completed after edit selection dismissed",
+            )
+
+        EditSelectionDialog(
+            self, candidates=candidates,
+            on_apply=on_apply, on_dismiss=on_dismiss,
+        )
 
     def _apply_selected_edits(
         self,

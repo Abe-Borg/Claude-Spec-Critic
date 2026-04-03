@@ -691,6 +691,7 @@ class EditSelectionDialog(ctk.CTkToplevel):
         master,
         candidates: list[EditCandidate],
         on_apply: Callable[[list[int]], None],
+        on_dismiss: Callable[[], None] | None = None,
         **kwargs,
     ):
         super().__init__(master, **kwargs)
@@ -709,6 +710,8 @@ class EditSelectionDialog(ctk.CTkToplevel):
             key=lambda c: (not c.eligible, c.finding_index),
         )
         self._on_apply = on_apply
+        self._on_dismiss = on_dismiss
+        self._apply_triggered = False
         self._vars: list[ctk.BooleanVar] = []
         self._var_candidates: list[tuple[EditCandidate, ctk.BooleanVar]] = []
         self._count_label: ctk.CTkLabel | None = None
@@ -717,6 +720,7 @@ class EditSelectionDialog(ctk.CTkToplevel):
         self._apply_button: ctk.CTkButton | None = None
         self._build_ui()
         self._update_selection_summary()
+        self.protocol("WM_DELETE_WINDOW", self._dismiss)
 
     def _build_ui(self):
         container = ctk.CTkFrame(self, fg_color="transparent")
@@ -808,7 +812,7 @@ class EditSelectionDialog(ctk.CTkToplevel):
             border_width=1,
             border_color=COLORS["border"],
             text_color=COLORS["text_secondary"],
-            command=self.destroy,
+            command=self._dismiss,
         ).pack(side="left")
         self._apply_button = ctk.CTkButton(
             actions,
@@ -968,10 +972,17 @@ class EditSelectionDialog(ctk.CTkToplevel):
             if candidate.eligible:
                 var.set(False)
 
+    def _dismiss(self):
+        """Close dialog and fire on_dismiss if Apply was not triggered."""
+        if not self._apply_triggered and self._on_dismiss:
+            self._on_dismiss()
+        self.destroy()
+
     def _apply(self):
         selected_indices = [candidate.finding_index for candidate in self._selected_candidates()]
         if not selected_indices:
             return
+        self._apply_triggered = True
         self._on_apply(selected_indices)
         self.destroy()
 

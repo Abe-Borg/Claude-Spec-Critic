@@ -17,6 +17,7 @@ from .batch import (
     retrieve_verification_results_detailed,
     submit_verification_batch,
     submit_verification_followup_wave,
+    _extract_api_error_message,
 )
 from .batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
 from .reviewer import Finding, _get_client
@@ -420,7 +421,13 @@ def _classify_wave_results(
             outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="retry", unverified_reason="Missing batch result"))
             continue
         if result.result.type != "succeeded":
-            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="retry", unverified_reason=f"Batch request {result.result.type}"))
+            error_detail = _extract_api_error_message(
+                getattr(result.result, "error", None)
+            )
+            unverified_msg = f"Batch request {result.result.type}"
+            if error_detail:
+                unverified_msg += f": {error_detail}"
+            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="retry", unverified_reason=unverified_msg))
             continue
         message = result.result.message
         stop_reason = getattr(message, "stop_reason", None)
