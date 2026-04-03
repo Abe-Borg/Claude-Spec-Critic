@@ -1,6 +1,9 @@
 from pathlib import Path
 
 import pytest
+from anthropic._utils import maybe_transform
+from anthropic.types import TextBlock, ToolUseBlock
+from anthropic.types.beta.messages.batch_create_params import BatchCreateParams
 from docx import Document
 
 from src.code_cycles import CALIFORNIA_2022, CALIFORNIA_2025
@@ -734,28 +737,40 @@ def test_on_poll_result_terminal_status_collects_partial_results(monkeypatch: py
 def test_collect_verification_batch_results_collects_after_terminal_status(monkeypatch: pytest.MonkeyPatch):
     finding = _make_finding("verification item")
     job = BatchJob(batch_id="msgbatch_verify_terminal", job_type="verify", request_map={"verify__0": {"finding_idx": 0}}, created_at=1.0)
-    calls = {"retrieve": 0, "retry": 0}
     monkeypatch.setattr("src.verifier.poll_batch", lambda _batch_id: BatchStatus(status="failed", processing=0, succeeded=1, errored=0, canceled=0, expired=0, total=1))
-    monkeypatch.setattr("src.verifier.retrieve_verification_results", lambda _job, _findings, parse_response_fn: calls.__setitem__("retrieve", calls["retrieve"] + 1))
-    monkeypatch.setattr("src.verifier._retry_failed_verifications_realtime", lambda _findings, **_kwargs: calls.__setitem__("retry", calls["retry"] + 1))
 
     collect_verification_batch_results(job, [finding], log=lambda _msg: None, progress=lambda _p, _m: None, poll_interval=0)
 
-    assert calls["retrieve"] == 1
-    assert calls["retry"] == 1
+    assert finding.verification is not None
+    assert finding.verification.verdict == "UNVERIFIED"
 
 
-def test_retry_cap_logging_uses_new_cap_message(monkeypatch: pytest.MonkeyPatch):
+def test_retry_failed_verifications_realtime_is_noop():
     findings = [_make_finding(f"issue-{i}") for i in range(_ERRORED_RETRY_MAX + 1)]
     for f in findings:
         f.verification = None
-    logs: list[str] = []
-    monkeypatch.setattr("src.verifier.verify_finding", lambda _f, cycle: VerificationResult(verdict="UNVERIFIED", explanation="failed"))
 
     from src.verifier import _retry_failed_verifications_realtime
-    _retry_failed_verifications_realtime(findings, log=lambda msg: logs.append(msg))
+    _retry_failed_verifications_realtime(findings, log=lambda _msg: None)
 
-    assert any("Capped real-time verification retry at" in msg for msg in logs)
+    assert all(f.verification is None for f in findings)
+
+
+def test_continuation_request_accepts_sdk_content_blocks():
+    from src.verifier import _build_continuation_request
+
+    content_blocks = [
+        TextBlock(type="text", text="Searching code section 403...", citations=None),
+        ToolUseBlock(type="tool_use", id="toolu_test123", name="web_search", input={"query": "2025 CMC outside air"}),
+    ]
+    request = _build_continuation_request("prompt text", content_blocks, cycle=CALIFORNIA_2025)
+
+    transformed = maybe_transform({"requests": [{"custom_id": "verify__0", "params": request}]}, BatchCreateParams)
+
+    assistant_message = transformed["requests"][0]["params"]["messages"][1]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["content"][0]["type"] == "text"
+    assert assistant_message["content"][1]["type"] == "tool_use"
 
 
 def test_finalize_batch_result_sets_total_elapsed_seconds():
