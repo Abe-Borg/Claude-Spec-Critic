@@ -224,7 +224,7 @@ def _build_verification_request_params(
         "max_tokens": VERIFICATION_MAX_TOKENS,
         "thinking": {"type": "adaptive"},
         "system": system_prompt,
-        "tools": [WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
+        "tools": [WEB_SEARCH_TOOL],
         "messages": messages,
     }
 

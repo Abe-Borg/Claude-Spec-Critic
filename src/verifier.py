@@ -382,7 +382,7 @@ def _build_retry_request(prompt: str, *, cycle: CodeCycle) -> dict:
         "max_tokens": VERIFICATION_MAX_TOKENS,
         "thinking": {"type": "adaptive"},
         "system": _get_verification_system_prompt(cycle),
-        "tools": [WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
+        "tools": [WEB_SEARCH_TOOL],
         "messages": [{"role": "user", "content": prompt}],
     }
 
@@ -393,7 +393,7 @@ def _build_continuation_request(prompt: str, assistant_content_blocks: list, *, 
         "max_tokens": VERIFICATION_MAX_TOKENS,
         "thinking": {"type": "adaptive"},
         "system": _get_verification_system_prompt(cycle),
-        "tools": [WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
+        "tools": [WEB_SEARCH_TOOL],
         "messages": [
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": assistant_content_blocks},
