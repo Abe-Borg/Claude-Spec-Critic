@@ -353,9 +353,6 @@ def locate_edit(
             lambda: _exact_match(existing_text, paragraph_map, short_text=short_text),
             lambda: _normalized_match(existing_text, paragraph_map, short_text=short_text),
             lambda: _fuzzy_match(existing_text, paragraph_map),
-            lambda: _section_anchored_match(existing_text, finding.section, paragraph_map, short_text=short_text)
-            if finding.section
-            else [],
         ]
     )
 

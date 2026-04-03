@@ -174,7 +174,7 @@ All findings (CRITICAL, HIGH, MEDIUM, and GRIPES) are automatically verified via
 | DISPUTED | Red | Finding appears incorrect |
 | UNVERIFIED | Gray | Could not find evidence either way |
 
-In batch mode, verification is also batched for 50% cost savings, with automatic fallback to sequential if the batch fails.
+In batch mode, review and verification stay batch-only. Failed or paused verification items are retried through additional batch waves (retry/continuation) up to a fixed wave limit, then marked UNVERIFIED with explicit reasons.
 
 ## Spec Editing
 
@@ -194,7 +194,7 @@ DISPUTED findings are excluded from editing. ADD actions insert new paragraphs w
 
 Batch mode submits specs through the Anthropic Message Batches API at 50% cost. Both the review and verification stages are batched.
 
-**Durable state**: Pipeline progress is serialized across phases (review-poll, review-collect, verification-poll, finalize) using `resume_state.py`. If the app closes mid-batch, a resume dialog appears on next launch offering to continue or discard.
+**Durable state**: Pipeline progress is serialized across phases (review-poll, review-collect, verification-wave-poll, cross-check, cross-check-verification-wave-poll, finalize) using `resume_state.py`. If the app closes mid-batch, a resume dialog appears on next launch offering to continue or discard.
 
 **Batch state expires after 24 hours.** Terminal failures (failed, expired, canceled batches) stop polling immediately.
 

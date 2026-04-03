@@ -25,7 +25,8 @@ from src.pipeline import (
     BatchSubmission,
     CollectedBatchState,
 )
-from src.batch import poll_batch, BatchStatus, BatchJob
+from src.batch import BatchStatus, BatchJob
+from src.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from src.reviewer import MODEL_OPUS_46, REVIEW_MODELS, Finding
 from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
@@ -39,8 +40,10 @@ from src.resume_state import (
     PHASE_REVIEW_POLL,
     PHASE_REVIEW_COLLECT,
     PHASE_VERIFICATION_POLL,
+    PHASE_VERIFICATION_WAVE_POLL,
     PHASE_CROSS_CHECK,
     PHASE_CROSS_CHECK_VERIFICATION_POLL,
+    PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL,
     PHASE_FINALIZE,
     SUPPORTED_PHASES,
     build_resume_state,
@@ -65,7 +68,7 @@ from platformdirs import user_config_dir, user_state_dir
 API_KEY_FILENAME = "spec_critic_api_key.txt"
 BATCH_STATE_FILENAME = "batch_state.json"
 
-BATCH_STATE_MAX_AGE_HOURS = 72
+BATCH_STATE_MAX_AGE_HOURS = 24 * 30
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
@@ -1202,7 +1205,6 @@ class SpecReviewApp(ctk.CTk):
 
     def _on_batch_submitted(self, submission: BatchSubmission):
         self._batch_submission = submission
-        self._poll_consecutive_errors = 0
         self.progress_bar.set(0.4)
         self.log.log_success(f"Batch submitted: {submission.job.batch_id}")
         self.log.log(f"  {len(submission.files_reviewed)} specs queued \u2022 50% cost savings", level="muted")
@@ -1213,24 +1215,10 @@ class SpecReviewApp(ctk.CTk):
     def _poll_batch(self):
         if self._batch_submission is None:
             return
-        run_epoch = self._run_epoch
-        diag = self._diagnostics_report
-        def _do_poll():
-            try:
-                status = poll_batch(self._batch_submission.job.batch_id)
-                self._poll_consecutive_errors = 0
-                self._dispatch_if_current(run_epoch, lambda: self._on_poll_result(status))
-            except Exception as e:
-                self._poll_consecutive_errors = getattr(self, "_poll_consecutive_errors", 0) + 1
-                if diag:
-                    diag.log("batch_poll", "warning", f"Poll error #{self._poll_consecutive_errors}: {e}")
-                if self._poll_consecutive_errors >= 5:
-                    self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(f"5 consecutive poll errors \u2014 will keep trying"))
-                self._dispatch_if_current(run_epoch, lambda: self.log.log_warning(f"Poll error (retrying): {e}"))
-                self._dispatch_if_current(run_epoch, lambda: self._schedule_next_poll(30_000))
-        threading.Thread(target=_do_poll, daemon=True).start()
+        run_epoch = self._next_run_epoch()
+        threading.Thread(target=self._poll_and_collect_thread, args=(run_epoch,), daemon=True).start()
 
-    def _on_poll_result(self, status: BatchStatus):
+    def _update_poll_progress(self, status: BatchStatus):
         diag = self._diagnostics_report
         batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.55
         self.progress_bar.set(min(batch_pct, 0.95))
@@ -1249,46 +1237,38 @@ class SpecReviewApp(ctk.CTk):
                 "total": status.total,
                 "progress_pct": round(status.progress_pct, 1),
             })
+    def _poll_and_collect_thread(self, run_epoch: int):
+        if self._batch_submission is None:
+            return
+        outcome = poll_batch_bounded(
+            self._batch_submission.job.batch_id,
+            policy=DEFAULT_REVIEW_POLL_POLICY,
+            log=self._make_diag_log("batch_poll", run_epoch),
+            progress_cb=lambda status: self._dispatch_if_current(run_epoch, lambda s=status: self._update_poll_progress(s)),
+        )
+        if outcome.detached or outcome.poll_failed:
+            save_batch_state(build_resume_state(phase=PHASE_REVIEW_POLL, submission=self._batch_submission))
+            reason = outcome.detach_reason or outcome.poll_error or "unknown"
+            msg = (
+                f"Batch polling stopped: {reason}. Batch ID {self._batch_submission.job.batch_id} "
+                "may still be running remotely. Resume later to continue."
+            )
+            self._dispatch_if_current(run_epoch, lambda m=msg: self._on_review_error(m))
+            return
+        if self._batch_submission is not None:
+            save_batch_state(build_resume_state(phase=PHASE_REVIEW_COLLECT, submission=self._batch_submission))
+        self._dispatch_if_current(run_epoch, lambda: self.log.log_success("Batch complete — collecting results..."))
+        self._dispatch_if_current(run_epoch, self._collect_batch_results)
+
+    # Backward-compatible helper retained for tests and legacy call paths.
+    def _on_poll_result(self, status: BatchStatus):
+        if hasattr(self, "_update_poll_progress"):
+            self._update_poll_progress(status)
         normalized_status = status.status.replace("-", "_")
-
-        if normalized_status == "ended":
-            self.log.log_success("Batch complete \u2014 collecting results...")
-            if diag:
-                diag.log("batch_poll", "success", "Batch ended — collecting results")
+        if normalized_status in ("ended", "failed", "expired", "canceled"):
             if self._batch_submission is not None:
                 save_batch_state(build_resume_state(phase=PHASE_REVIEW_COLLECT, submission=self._batch_submission))
             self._collect_batch_results()
-        elif normalized_status == "in_progress":
-            self._schedule_next_poll(15_000)
-        elif normalized_status == "canceling":
-            self.log.log_warning("Batch is being canceled...")
-            if diag:
-                diag.log("batch_poll", "warning", "Batch is being canceled")
-            self._schedule_next_poll(5_000)
-        elif normalized_status in ("failed", "expired", "canceled"):
-            self.log.log_warning(f"Batch ended with status {status.status} — collecting any available results.")
-            if diag:
-                diag.log("batch_poll", "warning", f"Batch terminated with {status.status}; attempting partial result collection")
-            if self._batch_submission is not None:
-                save_batch_state(build_resume_state(phase=PHASE_REVIEW_COLLECT, submission=self._batch_submission))
-            self._collect_batch_results()
-        else:
-            self.log.log_warning(f"Unexpected batch status: {status.status} \u2014 continuing to poll...")
-            if diag:
-                diag.log("batch_poll", "warning", f"Unexpected status: {status.status}")
-            self._schedule_next_poll(15_000)
-
-    def _schedule_next_poll(self, delay_ms: int):
-        self._batch_poll_id = self.after(delay_ms, self._poll_batch)
-
-    def _mark_findings_unverified_after_verification_failure(self, findings, exc: Exception, *, phase: str, run_epoch: int):
-        message = f"Verification unavailable: {exc}"
-        for finding in findings:
-            if finding.verification is None:
-                finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=message)
-        self._dispatch_if_current(run_epoch, lambda m=message: self.log.log_warning(m))
-        if self._diagnostics_report:
-            self._diagnostics_report.log(phase, "warning", f"Verification degraded to UNVERIFIED and continued: {exc}")
 
     def _collect_batch_results(self):
         run_epoch = self._next_run_epoch()
@@ -1323,43 +1303,41 @@ class SpecReviewApp(ctk.CTk):
 
                 verifiable_findings = list(rv.findings)
                 verification_completed = False
+                if review_state.truncated_specs:
+                    for spec_name in review_state.truncated_specs:
+                        self._dispatch_if_current(
+                            run_epoch,
+                            lambda n=spec_name: self.log.log_warning(f"⚠ Review failed for {n} — see report for details"),
+                        )
                 if verifiable_findings:
-                    try:
-                        if diag:
-                            diag.log("verification", "step", f"Starting verification batch for {len(verifiable_findings)} findings")
-                        verification_job = start_batch_verification(
-                            verifiable_findings,
-                            cycle=cycle,
-                            log=self._make_diag_log("verification", run_epoch),
-                            progress=self._make_diag_progress("verification", run_epoch),
-                        )
-                        if diag:
-                            diag.log("verification", "info", f"Verification batch submitted: {verification_job.batch_id}", {
-                                "batch_id": verification_job.batch_id,
-                            })
-                        save_batch_state(build_resume_state(
-                            phase=PHASE_VERIFICATION_POLL,
-                            submission=self._batch_submission,
-                            review_state=review_state,
-                            verification_batch=verification_job,
-                            verification_started=True,
-                        ))
-                        collect_batch_verification_results(
-                            verification_job,
-                            verifiable_findings,
-                            cycle=cycle,
-                            log=self._make_diag_log("verification", run_epoch),
-                            progress=self._make_diag_progress("verification", run_epoch),
-                        )
-                        verification_completed = True
-                    except Exception as verification_exc:
-                        self._mark_findings_unverified_after_verification_failure(
-                            verifiable_findings,
-                            verification_exc,
-                            phase="verification",
-                            run_epoch=run_epoch,
-                        )
-                        verification_completed = True
+                    self._dispatch_if_current(run_epoch, lambda: self.run_button.configure(text="Verifying findings..."))
+                    if diag:
+                        diag.log("verification", "step", f"Starting verification batch for {len(verifiable_findings)} findings")
+                    verification_job = start_batch_verification(
+                        verifiable_findings,
+                        cycle=cycle,
+                        log=self._make_diag_log("verification", run_epoch),
+                        progress=self._make_diag_progress("verification", run_epoch),
+                    )
+                    if diag:
+                        diag.log("verification", "info", f"Verification batch submitted: {verification_job.batch_id}", {
+                            "batch_id": verification_job.batch_id,
+                        })
+                    save_batch_state(build_resume_state(
+                        phase=PHASE_VERIFICATION_WAVE_POLL,
+                        submission=self._batch_submission,
+                        review_state=review_state,
+                        verification_batch=verification_job,
+                        verification_started=True,
+                    ))
+                    collect_batch_verification_results(
+                        verification_job,
+                        verifiable_findings,
+                        cycle=cycle,
+                        log=self._make_diag_log("verification", run_epoch),
+                        progress=self._make_diag_progress("verification", run_epoch),
+                    )
+                    verification_completed = True
                     if diag:
                         verdicts = {}
                         for f in verifiable_findings:
@@ -1384,6 +1362,8 @@ class SpecReviewApp(ctk.CTk):
                 ))
                 if diag:
                     diag.log("cross_check", "step", "Running cross-spec coordination check")
+                self._dispatch_if_current(run_epoch, lambda: self.run_button.configure(text="Cross-check (live API)..."))
+                self._dispatch_if_current(run_epoch, lambda: self.log.log_step("Running cross-spec coordination check (live API)..."))
                 review_state = run_cross_check_for_batch(
                     review_state,
                     specs=getattr(self._batch_submission, "prepared_specs", None),
@@ -1407,40 +1387,33 @@ class SpecReviewApp(ctk.CTk):
 
                 cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []
                 if cross_check_findings:
-                    try:
-                        if diag:
-                            diag.log("cross_check_verification", "step", f"Verifying {len(cross_check_findings)} cross-check findings")
-                        cross_check_verification_job = start_batch_verification(
-                            cross_check_findings,
-                            cycle=cycle,
-                            log=self._make_diag_log("cross_check_verification", run_epoch),
-                            progress=self._make_diag_progress("cross_check_verification", run_epoch),
-                        )
-                        save_batch_state(build_resume_state(
-                            phase=PHASE_CROSS_CHECK_VERIFICATION_POLL,
-                            submission=self._batch_submission,
-                            review_state=review_state,
-                            verification_batch=cross_check_verification_job,
-                            cross_check_skipped_due_to_missing_specs=review_state.cross_check_skipped_due_to_missing_specs,
-                            verification_started=bool(verifiable_findings),
-                            verification_completed=verification_completed,
-                        ))
-                        collect_batch_verification_results(
-                            cross_check_verification_job,
-                            cross_check_findings,
-                            cycle=cycle,
-                            log=self._make_diag_log("cross_check_verification", run_epoch),
-                            progress=self._make_diag_progress("cross_check_verification", run_epoch),
-                        )
-                        if diag:
-                            diag.log("cross_check_verification", "success", "Cross-check verification complete")
-                    except Exception as cross_verification_exc:
-                        self._mark_findings_unverified_after_verification_failure(
-                            cross_check_findings,
-                            cross_verification_exc,
-                            phase="cross_check_verification",
-                            run_epoch=run_epoch,
-                        )
+                    self._dispatch_if_current(run_epoch, lambda: self.run_button.configure(text="Verifying cross-check..."))
+                    if diag:
+                        diag.log("cross_check_verification", "step", f"Verifying {len(cross_check_findings)} cross-check findings")
+                    cross_check_verification_job = start_batch_verification(
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=self._make_diag_log("cross_check_verification", run_epoch),
+                        progress=self._make_diag_progress("cross_check_verification", run_epoch),
+                    )
+                    save_batch_state(build_resume_state(
+                        phase=PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL,
+                        submission=self._batch_submission,
+                        review_state=review_state,
+                        verification_batch=cross_check_verification_job,
+                        cross_check_skipped_due_to_missing_specs=review_state.cross_check_skipped_due_to_missing_specs,
+                        verification_started=bool(verifiable_findings),
+                        verification_completed=verification_completed,
+                    ))
+                    collect_batch_verification_results(
+                        cross_check_verification_job,
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=self._make_diag_log("cross_check_verification", run_epoch),
+                        progress=self._make_diag_progress("cross_check_verification", run_epoch),
+                    )
+                    if diag:
+                        diag.log("cross_check_verification", "success", "Cross-check verification complete")
 
                 if diag:
                     diag.log("finalization", "step", "Finalizing batch results")
@@ -1587,7 +1560,7 @@ class SpecReviewApp(ctk.CTk):
         if phase == PHASE_REVIEW_COLLECT:
             self._collect_batch_results()
             return
-        if phase == PHASE_VERIFICATION_POLL:
+        if phase in (PHASE_VERIFICATION_POLL, PHASE_VERIFICATION_WAVE_POLL):
             if not self._is_valid_verification_resume_state(loaded_state):
                 self.log.log_error("Saved verification resume state is incomplete. Discarding it.")
                 delete_batch_state()
@@ -1595,7 +1568,7 @@ class SpecReviewApp(ctk.CTk):
                 return
             self._resume_verification_poll(loaded_state)
             return
-        if phase == PHASE_CROSS_CHECK_VERIFICATION_POLL:
+        if phase in (PHASE_CROSS_CHECK_VERIFICATION_POLL, PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL):
             if not self._is_valid_verification_resume_state(loaded_state):
                 self.log.log_error("Saved cross-check verification resume state is incomplete. Discarding it.")
                 delete_batch_state()
@@ -1641,36 +1614,28 @@ class SpecReviewApp(ctk.CTk):
                     )
                     cross_check_findings = list(review_state_local.cross_check_result.findings) if review_state_local.cross_check_result and review_state_local.cross_check_result.findings else []
                     if cross_check_findings:
-                        try:
-                            cross_check_verification_job = start_batch_verification(
-                                cross_check_findings,
-                                cycle=cycle,
-                                log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                                progress=_on_progress,
-                            )
-                            save_batch_state(build_resume_state(
-                                phase=PHASE_CROSS_CHECK_VERIFICATION_POLL,
-                                submission=self._batch_submission,
-                                review_state=review_state_local,
-                                verification_batch=cross_check_verification_job,
-                                cross_check_skipped_due_to_missing_specs=review_state_local.cross_check_skipped_due_to_missing_specs,
-                                verification_started=True,
-                                verification_completed=True,
-                            ))
-                            collect_batch_verification_results(
-                                cross_check_verification_job,
-                                cross_check_findings,
-                                cycle=cycle,
-                                log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                                progress=_on_progress,
-                            )
-                        except Exception as cross_check_verification_exc:
-                            self._mark_findings_unverified_after_verification_failure(
-                                cross_check_findings,
-                                cross_check_verification_exc,
-                                phase="cross_check_verification",
-                                run_epoch=run_epoch,
-                            )
+                        cross_check_verification_job = start_batch_verification(
+                            cross_check_findings,
+                            cycle=cycle,
+                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                            progress=_on_progress,
+                        )
+                        save_batch_state(build_resume_state(
+                                phase=PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL,
+                            submission=self._batch_submission,
+                            review_state=review_state_local,
+                            verification_batch=cross_check_verification_job,
+                            cross_check_skipped_due_to_missing_specs=review_state_local.cross_check_skipped_due_to_missing_specs,
+                            verification_started=True,
+                            verification_completed=True,
+                        ))
+                        collect_batch_verification_results(
+                            cross_check_verification_job,
+                            cross_check_findings,
+                            cycle=cycle,
+                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                            progress=_on_progress,
+                        )
                     result = finalize_batch_result(review_state_local)
                     self._dispatch_if_current(run_epoch, lambda r=result: self._on_review_complete(r))
                 except Exception as e:
@@ -1707,21 +1672,13 @@ class SpecReviewApp(ctk.CTk):
                     self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
                     self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
 
-                try:
-                    collect_batch_verification_results(
-                        verification_job,
-                        verifiable_findings,
-                        cycle=cycle,
-                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                        progress=_on_progress,
-                    )
-                except Exception as verification_exc:
-                    self._mark_findings_unverified_after_verification_failure(
-                        verifiable_findings,
-                        verification_exc,
-                        phase="verification",
-                        run_epoch=run_epoch,
-                    )
+                collect_batch_verification_results(
+                    verification_job,
+                    verifiable_findings,
+                    cycle=cycle,
+                    log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                    progress=_on_progress,
+                )
                 save_batch_state(build_resume_state(
                     phase=PHASE_CROSS_CHECK,
                     submission=self._batch_submission,
@@ -1739,36 +1696,28 @@ class SpecReviewApp(ctk.CTk):
                 )
                 cross_check_findings = list(review_state_local.cross_check_result.findings) if review_state_local.cross_check_result and review_state_local.cross_check_result.findings else []
                 if cross_check_findings:
-                    try:
-                        cross_check_verification_job = start_batch_verification(
-                            cross_check_findings,
-                            cycle=cycle,
-                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                            progress=_on_progress,
-                        )
-                        save_batch_state(build_resume_state(
-                            phase=PHASE_CROSS_CHECK_VERIFICATION_POLL,
-                            submission=self._batch_submission,
-                            review_state=review_state_local,
-                            verification_batch=cross_check_verification_job,
-                            cross_check_skipped_due_to_missing_specs=review_state_local.cross_check_skipped_due_to_missing_specs,
-                            verification_started=True,
-                            verification_completed=True,
-                        ))
-                        collect_batch_verification_results(
-                            cross_check_verification_job,
-                            cross_check_findings,
-                            cycle=cycle,
-                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                            progress=_on_progress,
-                        )
-                    except Exception as cross_check_verification_exc:
-                        self._mark_findings_unverified_after_verification_failure(
-                            cross_check_findings,
-                            cross_check_verification_exc,
-                            phase="cross_check_verification",
-                            run_epoch=run_epoch,
-                        )
+                    cross_check_verification_job = start_batch_verification(
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
+                    save_batch_state(build_resume_state(
+                            phase=PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL,
+                        submission=self._batch_submission,
+                        review_state=review_state_local,
+                        verification_batch=cross_check_verification_job,
+                        cross_check_skipped_due_to_missing_specs=review_state_local.cross_check_skipped_due_to_missing_specs,
+                        verification_started=True,
+                        verification_completed=True,
+                    ))
+                    collect_batch_verification_results(
+                        cross_check_verification_job,
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
                 result = finalize_batch_result(review_state_local)
                 self._dispatch_if_current(run_epoch, lambda r=result: self._on_review_complete(r))
             except Exception as e:
@@ -1791,21 +1740,13 @@ class SpecReviewApp(ctk.CTk):
                     self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
 
                 if cross_check_findings:
-                    try:
-                        collect_batch_verification_results(
-                            verification_job,
-                            cross_check_findings,
-                            cycle=cycle,
-                            log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
-                            progress=_on_progress,
-                        )
-                    except Exception as cross_check_verification_exc:
-                        self._mark_findings_unverified_after_verification_failure(
-                            cross_check_findings,
-                            cross_check_verification_exc,
-                            phase="cross_check_verification",
-                            run_epoch=run_epoch,
-                        )
+                    collect_batch_verification_results(
+                        verification_job,
+                        cross_check_findings,
+                        cycle=cycle,
+                        log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
+                        progress=_on_progress,
+                    )
                 save_batch_state(build_resume_state(
                     phase=PHASE_FINALIZE,
                     submission=self._batch_submission,

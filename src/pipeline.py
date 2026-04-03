@@ -13,6 +13,7 @@ from .preprocessor import preprocess_spec
 from .tokenizer import RECOMMENDED_MAX, count_tokens, exceeds_per_call_limit
 from .reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_46, StreamCallback
 from .batch import BatchJob, submit_review_batch, retrieve_review_results
+from .batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from .verifier import (
     verify_findings,
     verify_findings_batch,
@@ -53,6 +54,7 @@ class CollectedBatchState:
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
     cross_check_skipped_due_to_missing_specs: bool = False
+    truncated_specs: list[str] = field(default_factory=list)
 
 
 def _get_spec_files(input_dir: Path) -> list[Path]:
@@ -178,7 +180,7 @@ def _is_retryable_batch_review_result(rr: ReviewResult | None) -> bool:
     if rr is None:
         return True
     if rr.parse_status in ("parse_error", "incomplete"):
-        return False
+        return True
     if not rr.error:
         return False
     lowered = rr.error.lower()
@@ -199,27 +201,56 @@ def _recover_retryable_review_batch_results(
         return results_by_request
 
     cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
-    recovered = 0
-    log(f"Batch review real-time fallback started for {len(retryable_request_ids)} item(s).")
+    repair_specs: list[ExtractedSpec] = []
+    repair_id_map: dict[str, str] = {}
     for rid in retryable_request_ids:
         meta = submission.job.request_map.get(rid) or {}
         spec_index = meta.get("index")
         if not isinstance(spec_index, int) or spec_index < 0 or spec_index >= len(submission.prepared_specs):
-            log(f"Batch review fallback skipped for {rid}: original spec index is unavailable.")
+            log(f"Review repair skipped for {rid}: original spec index is unavailable.")
             continue
         spec = submission.prepared_specs[spec_index]
-        log(f"Retrying batch review item via real-time API: {spec.filename}")
-        results_by_request[rid] = review_single_spec(
-            spec.content,
-            spec.filename,
-            project_context=submission.project_context,
-            model=submission.model,
-            cycle=cycle,
+        repair_specs.append(spec)
+        repair_id_map[spec.filename] = rid
+
+    if not repair_specs:
+        log("No specs eligible for review repair batch.")
+        return results_by_request
+
+    log(f"Submitting review repair batch for {len(repair_specs)} failed item(s)...")
+    repair_job = submit_review_batch(
+        repair_specs,
+        project_context=submission.project_context,
+        model=submission.model,
+        cycle=cycle,
+        retry_instruction=(
+            "This is a retry of a previously truncated review. Return ONLY the findings JSON "
+            "inside <findings_json> tags. Do not include an analysis summary. Focus on "
+            "completing the structured output."
+        ),
+    )
+    outcome = poll_batch_bounded(
+        repair_job.batch_id,
+        policy=DEFAULT_REVIEW_POLL_POLICY,
+        log=log,
+        progress_cb=lambda _status: None,
+    )
+    if outcome.detached or outcome.poll_failed:
+        log(
+            f"Review repair batch did not complete. {len(retryable_request_ids)} item(s) "
+            "will appear as failed in the report."
         )
-        rr = results_by_request[rid]
-        if rr and not rr.error:
+        return results_by_request
+
+    repair_results = retrieve_review_results(repair_job, model=submission.model)
+    recovered = 0
+    for repair_custom_id, repair_rr in repair_results.items():
+        repair_meta = repair_job.request_map.get(repair_custom_id) or {}
+        original_rid = repair_id_map.get(repair_meta.get("filename", ""))
+        if original_rid and repair_rr and not repair_rr.error:
+            results_by_request[original_rid] = repair_rr
             recovered += 1
-    log(f"Batch review real-time fallback recovered {recovered}/{len(retryable_request_ids)} item(s).")
+    log(f"Review repair batch recovered {recovered}/{len(repair_specs)} item(s).")
     return results_by_request
 
 
@@ -281,6 +312,7 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     all_findings: list[Finding] = []
     all_thinking: list[str] = []
     errors: list[str] = []
+    truncated_specs: list[str] = []
     in_tok = out_tok = 0
 
     for rid in submission.review_request_ids:
@@ -289,9 +321,22 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         rr = results_by_request.get(rid)
         if rr is None:
             errors.append(f"{filename}: No result returned from batch")
+            truncated_specs.append(filename)
             continue
         if rr.parse_status == "incomplete":
-            log(f"  {filename}: Response incomplete — model ran out of output tokens. No findings extracted.")
+            errors.append(
+                f"{filename}: Review response truncated — output exceeded token limit. "
+                "No findings extracted. Re-run this spec individually."
+            )
+            truncated_specs.append(filename)
+            continue
+        if rr.parse_status == "parse_error":
+            errors.append(
+                f"{filename}: Could not parse review output. "
+                "No findings extracted. Re-run this spec individually."
+            )
+            truncated_specs.append(filename)
+            continue
         if rr.error:
             errors.append(f"{filename}: {rr.error}")
             continue
@@ -312,6 +357,7 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         files_reviewed=submission.files_reviewed,
         leed_alerts=submission.leed_alerts,
         placeholder_alerts=submission.placeholder_alerts,
+        truncated_specs=truncated_specs,
     )
 
 
