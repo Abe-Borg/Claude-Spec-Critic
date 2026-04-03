@@ -8,7 +8,7 @@ Spec Critic is a desktop application that reviews mechanical and plumbing constr
 
 Manual spec review is slow, inconsistent, and expensive when issues slip through to DSA plan check. A single rejection can delay a project by weeks and cost thousands in re-engineering. Spec Critic doesn't replace your engineering judgment — it augments it by systematically checking every section against current California codes, flagging issues a human reviewer might miss under deadline pressure.
 
-Starting with v2.5, Spec Critic can also **apply fixes directly to your DOCX files**. Select the findings you want to act on, review the proposed edits, and generate corrected spec documents — no manual copy-paste required.
+Starting with v2.8, Spec Critic can also **apply fixes directly to your DOCX files**. Select the findings you want to act on, review the proposed edits, and generate corrected spec documents — no manual copy-paste required.
 
 ## Who Is This For?
 
@@ -109,7 +109,7 @@ For daily use, drop a `spec_critic_api_key.txt` file in either location and the 
 | **Speed** | Fast (streaming) | Slow (queued) |
 | **Cost** | Full price | 50% discount |
 | **How it works** | One streaming API call per spec | All specs submitted as a single Message Batch |
-| **Verification** | Sequential API calls | Also batched for additional savings |
+| **Verification** | Sequential live API calls | Strictly batch-only, wave-based (no real-time fallback) |
 | **Best for** | Quick checks on 1-2 specs | Large reviews with many specs |
 
 Selecting Real-time mode prompts a cost confirmation dialog with a one-click option to switch to Batch.
@@ -159,7 +159,7 @@ When reviewing 2+ specs from the same project, enable the cross-spec coordinatio
 - Equipment schedule conflicts
 - Missing coordination sections
 
-The cross-check runs as a separate Opus 4.6 call after per-spec reviews. Findings appear in a dedicated **CROSS-SPEC COORDINATION** section and go through web search verification like any other finding.
+The cross-check runs as a separate Opus 4.6 call after per-spec reviews. In batch mode this step is explicitly labeled **Cross-check (live API)** in the UI. Findings appear in a dedicated **CROSS-SPEC COORDINATION** section and go through web search verification like any other finding.
 
 ## Verification
 
@@ -174,7 +174,7 @@ All findings (CRITICAL, HIGH, MEDIUM, and GRIPES) are automatically verified via
 | DISPUTED | Red | Finding appears incorrect |
 | UNVERIFIED | Gray | Could not find evidence either way |
 
-In batch mode, review and verification stay batch-only. Failed or paused verification items are retried through additional batch waves (retry/continuation) up to a fixed wave limit, then marked UNVERIFIED with explicit reasons.
+In batch mode, review and verification stay strictly batch-only (no real-time fallback). Verification uses up to three waves total (initial + follow-up retry/continuation waves for `pause_turn` and transient failures). Any unresolved item is marked UNVERIFIED with an explicit reason.
 
 ## Spec Editing
 
@@ -194,9 +194,13 @@ DISPUTED findings are excluded from editing. ADD actions insert new paragraphs w
 
 Batch mode submits specs through the Anthropic Message Batches API at 50% cost. Both the review and verification stages are batched.
 
+Review collection includes a repair wave for failed/truncated review items using a tighter retry prompt. If repair cannot recover an item, that spec is surfaced in the final report as failed/truncated instead of being silently dropped.
+
 **Durable state**: Pipeline progress is serialized across phases (review-poll, review-collect, verification-wave-poll, cross-check, cross-check-verification-wave-poll, finalize) using `resume_state.py`. If the app closes mid-batch, a resume dialog appears on next launch offering to continue or discard.
 
 **Batch state expires after 24 hours.** Terminal failures (failed, expired, canceled batches) stop polling immediately.
+
+Polling is bounded to avoid unbounded waits: 4-hour max elapsed time, 30-minute no-progress stall detection, and a 10 consecutive poll-error limit. If polling detaches/times out, the remote batch is **not canceled** and can be resumed on the next launch.
 
 **Note**: Cross-check requires the original spec content, which is not preserved in the resume state file. If resuming after a restart, cross-check is safely skipped with an explicit status message.
 
@@ -205,7 +209,7 @@ Batch mode submits specs through the Anthropic Message Batches API at 50% cost. 
 ```
 claude-spec-critic/
 ├── src/
-│   ├── __init__.py            # Package version (2.7.0)
+│   ├── __init__.py            # Package version (2.8.0)
 │   ├── gui.py                 # CustomTkinter GUI — all user interaction
 │   ├── widgets.py             # Reusable UI components
 │   ├── pipeline.py            # Core orchestration and phased batch flow
@@ -244,6 +248,16 @@ claude-spec-critic/
 | `lxml` | XML processing for DOCX paragraph-level editing |
 
 ## Changelog
+
+### v2.8.0
+
+- **Behavior**: Batch mode is now strictly batch-only for review and verification (no real-time fallback path)
+- **Feature**: Verification uses bounded retry/continuation waves (up to 3 total waves)
+- **Feature**: Review repair wave retries failed/truncated review items with a tighter prompt
+- **Feature**: Bounded polling across batch phases (4h elapsed, 30m no-progress, 10 consecutive poll errors)
+- **Behavior**: Polling timeout/detach does not cancel remote batches; resume remains available on next launch
+- **UX**: Cross-check is explicitly labeled as a **live API** call in batch mode
+- **Reporting**: Failed/truncated review specs are surfaced in the report instead of silently dropped
 
 ### v2.7.0
 

@@ -1,7 +1,7 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus 4.6
-v2.3.1 - UI polish: consistent font sizes, improved button contrast, relocated accessibility
+v2.8.0 - Batch-only enforcement, bounded polling, and reporting updates
 """
 import os, sys, json, time, threading
 from datetime import datetime, timezone
@@ -220,7 +220,6 @@ class SpecReviewApp(ctk.CTk):
         self._report_window: Optional[ReportWindow] = None
         self._project_context_tokens = 0
         self._batch_submission: Optional[BatchSubmission] = None
-        self._batch_poll_id: Optional[str] = None
         self._run_epoch = 0
         self._extracted_specs: list[ExtractedSpec] = []
         fk = load_api_key_from_file()
@@ -237,7 +236,6 @@ class SpecReviewApp(ctk.CTk):
         self._last_result = None
         self._diagnostics_report: Optional[DiagnosticsReport] = None
         self._diagnostics_window: Optional[DiagnosticsWindow] = None
-        self._poll_consecutive_errors: int = 0
         self._realtime_confirmed: bool = False
         self._context_debounce_id: str | None = None
         self._selected_cycle_label: str = DEFAULT_CYCLE.label

@@ -14,7 +14,6 @@ from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitErr
 from .batch import (
     BatchJob,
     poll_batch,  # Backward-compatibility export for older tests/patching.
-    retrieve_verification_results,  # Backward-compatibility export for older tests/patching.
     retrieve_verification_results_detailed,
     submit_verification_batch,
     submit_verification_followup_wave,
@@ -356,15 +355,15 @@ def _retry_failed_verifications_realtime(
     log: Callable[[str], None] = lambda _: None,
     max_retry_count: int = _ERRORED_RETRY_MAX,
 ) -> None:
-    """Deprecated no-op compatibility shim.
+    """No-op retained for import compatibility.
 
-    Batch verification now uses retry/continuation waves and does not fall back
-    to real-time verification in batch mode.
+    Previously retried UNVERIFIED findings via real-time streaming API.
+    Removed in v2.8.0 as part of batch-only enforcement. Retained because
+    external code or tests may import this symbol. Does nothing when called.
+
+    Safe to delete once all downstream imports are confirmed updated.
     """
-    retryable_count = len(findings)
-    if retryable_count > max_retry_count:
-        log(f"Capped real-time verification retry at {max_retry_count} of {retryable_count} retryable findings.")
-    log("Real-time retry fallback is disabled; using batch waves only.")
+    pass
 
 
 def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
@@ -431,6 +430,8 @@ def _classify_wave_results(
                     finding_idx=finding_idx,
                     original_custom_id=custom_id,
                     classification="continue",
+                    # SDK Pydantic models serialize correctly when passed back
+                    # into batch request messages. Verified by regression test.
                     assistant_content_blocks=list(getattr(message, "content", []) or []),
                     unverified_reason="pause_turn",
                 )
@@ -548,9 +549,4 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
         f"{counts.get('DISPUTED', 0)} disputed, "
         f"{counts.get('UNVERIFIED', 0)} unverified"
     )
-    # Compatibility hooks for legacy tests that monkeypatch older internals.
-    if getattr(retrieve_verification_results, "__module__", "") != "src.batch":
-        retrieve_verification_results(job, findings, parse_response_fn=_parse_verification_response)
-    if getattr(_retry_failed_verifications_realtime, "__module__", "") != __name__:
-        _retry_failed_verifications_realtime(findings, cycle=cycle, log=log, max_retry_count=_ERRORED_RETRY_MAX)
     return findings
