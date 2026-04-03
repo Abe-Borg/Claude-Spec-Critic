@@ -6,6 +6,7 @@ import re
 import time
 from pathlib import Path
 from dataclasses import dataclass
+from typing import Any
 
 from .prompts import get_system_prompt, get_single_spec_user_message
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_46
@@ -43,7 +44,14 @@ def _sanitize_custom_id(filename: str, max_len: int = 50) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", Path(filename).stem if "." in filename else filename)[:max_len]
 
 
-def submit_review_batch(specs: list, *, project_context: str = "", model: str = MODEL_OPUS_46, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
+def submit_review_batch(
+    specs: list,
+    *,
+    project_context: str = "",
+    model: str = MODEL_OPUS_46,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    retry_instruction: str | None = None,
+) -> BatchJob:
     if not specs:
         raise ValueError("No specs to submit for batch review")
     client = _get_client()
@@ -54,13 +62,16 @@ def submit_review_batch(specs: list, *, project_context: str = "", model: str = 
     for idx, spec in enumerate(specs):
         custom_id = f"review__{_sanitize_custom_id(spec.filename)}__{idx}"
         user_message = get_single_spec_user_message(spec.content, spec.filename, project_context=project_context, cycle=cycle)
+        if retry_instruction:
+            user_message += f"\n\n{retry_instruction}"
         batch_requests.append({"custom_id": custom_id, "params": {"model": model, "max_tokens": output_limit, "thinking": {"type": "adaptive"}, "system": system_prompt, "messages": [{"role": "user", "content": user_message}]}})
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}
     
-    mb = client.beta.messages.batches.create(
-        requests=batch_requests,
-        betas=[BATCH_OUTPUT_BETA],
-    )
+    create_fn = client.beta.messages.batches.create if hasattr(client, "beta") else client.messages.batches.create
+    kwargs = {"requests": batch_requests}
+    if hasattr(client, "beta"):
+        kwargs["betas"] = [BATCH_OUTPUT_BETA]
+    mb = create_fn(**kwargs)
     return BatchJob(batch_id=mb.id, job_type="review", request_map=request_map, created_at=time.time())
 
 
@@ -186,6 +197,38 @@ def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_
     return findings
 
 
+def retrieve_verification_results_detailed(job: BatchJob) -> dict[str, Any]:
+    client = _get_client()
+    results: dict[str, Any] = {}
+    for result in client.messages.batches.results(job.batch_id):
+        if result.custom_id not in job.request_map:
+            continue
+        results[result.custom_id] = result
+    return results
+
+
+def _build_verification_request_params(
+    *,
+    prompt: str,
+    system_prompt: str,
+    assistant_content: list | None = None,
+    continue_turn: bool = False,
+) -> dict[str, Any]:
+    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    if assistant_content is not None:
+        messages.append({"role": "assistant", "content": assistant_content})
+    if continue_turn:
+        messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
+    return {
+        "model": VERIFICATION_MODEL,
+        "max_tokens": VERIFICATION_MAX_TOKENS,
+        "thinking": {"type": "adaptive"},
+        "system": system_prompt,
+        "tools": [WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
+        "messages": messages,
+    }
+
+
 def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_prompt_fn, *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
     if not findings:
         raise ValueError("No findings eligible for verification")
@@ -196,21 +239,38 @@ def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_p
     request_map = {}
     for batch_idx, (finding_idx, finding) in enumerate(verifiable):
         custom_id = f"verify__{batch_idx}"
-        reqs.append({"custom_id": custom_id, "params": {
-            "model": VERIFICATION_MODEL,
-            "max_tokens": VERIFICATION_MAX_TOKENS,
-            "thinking": {"type": "adaptive"},
-            "system": system_prompt_fn(cycle),
-            "tools": [WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
-            "messages": [{"role": "user", "content": build_prompt_fn(finding)}],
-        }})
+        reqs.append(
+            {
+                "custom_id": custom_id,
+                "params": _build_verification_request_params(
+                    prompt=build_prompt_fn(finding),
+                    system_prompt=system_prompt_fn(cycle),
+                ),
+            }
+        )
         request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx}
 
-    mb = client.beta.messages.batches.create(
-        requests=reqs,
-        betas=[BATCH_OUTPUT_BETA],
-    )
+    create_fn = client.beta.messages.batches.create if hasattr(client, "beta") else client.messages.batches.create
+    kwargs = {"requests": reqs}
+    if hasattr(client, "beta"):
+        kwargs["betas"] = [BATCH_OUTPUT_BETA]
+    mb = create_fn(**kwargs)
 
+    return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
+
+
+def submit_verification_followup_wave(
+    requests: list[dict[str, Any]],
+    request_map: dict[str, Any],
+) -> BatchJob:
+    if not requests:
+        raise ValueError("No verification follow-up requests to submit")
+    client = _get_client()
+    create_fn = client.beta.messages.batches.create if hasattr(client, "beta") else client.messages.batches.create
+    kwargs = {"requests": requests}
+    if hasattr(client, "beta"):
+        kwargs["betas"] = [BATCH_OUTPUT_BETA]
+    mb = create_fn(**kwargs)
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
 

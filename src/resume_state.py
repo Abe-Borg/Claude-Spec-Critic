@@ -15,11 +15,22 @@ from .verifier import VerificationResult
 
 PHASE_REVIEW_POLL = "review_poll"
 PHASE_REVIEW_COLLECT = "review_collect"
+PHASE_VERIFICATION_WAVE_POLL = "verification_wave_poll"
+PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL = "cross_check_verification_wave_poll"
 PHASE_VERIFICATION_POLL = "verification_poll"
 PHASE_CROSS_CHECK = "cross_check"
 PHASE_CROSS_CHECK_VERIFICATION_POLL = "cross_check_verification_poll"
 PHASE_FINALIZE = "finalize"
-SUPPORTED_PHASES = {PHASE_REVIEW_POLL, PHASE_REVIEW_COLLECT, PHASE_VERIFICATION_POLL, PHASE_CROSS_CHECK, PHASE_CROSS_CHECK_VERIFICATION_POLL, PHASE_FINALIZE}
+SUPPORTED_PHASES = {
+    PHASE_REVIEW_POLL,
+    PHASE_REVIEW_COLLECT,
+    PHASE_VERIFICATION_POLL,
+    PHASE_VERIFICATION_WAVE_POLL,
+    PHASE_CROSS_CHECK,
+    PHASE_CROSS_CHECK_VERIFICATION_POLL,
+    PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL,
+    PHASE_FINALIZE,
+}
 
 
 def serialize_batch_job(job: BatchJob) -> dict[str, Any]:
@@ -194,6 +205,7 @@ def serialize_collected_batch_state(state: CollectedBatchState) -> dict[str, Any
         "leed_alerts": list(state.leed_alerts),
         "placeholder_alerts": list(state.placeholder_alerts),
         "cross_check_skipped_due_to_missing_specs": bool(state.cross_check_skipped_due_to_missing_specs),
+        "truncated_specs": list(state.truncated_specs),
     }
 
 
@@ -209,10 +221,11 @@ def deserialize_collected_batch_state(payload: dict[str, Any], submission: Batch
         placeholder_alerts=list(payload.get("placeholder_alerts", submission.placeholder_alerts)),
         cross_check_result=deserialize_review_result(payload.get("cross_check_result")),
         cross_check_skipped_due_to_missing_specs=bool(payload.get("cross_check_skipped_due_to_missing_specs", False)),
+        truncated_specs=[str(v) for v in payload.get("truncated_specs", [])],
     )
 
 
-def build_resume_state(*, phase: str, submission: BatchSubmission, review_state: CollectedBatchState | None = None, verification_batch: BatchJob | None = None, cross_check_skipped_due_to_missing_specs: bool = False, verification_started: bool = False, verification_completed: bool = False) -> dict[str, Any]:
+def build_resume_state(*, phase: str, submission: BatchSubmission, review_state: CollectedBatchState | None = None, verification_batch: BatchJob | None = None, cross_check_skipped_due_to_missing_specs: bool = False, verification_started: bool = False, verification_completed: bool = False, wave_index: int = 0, resolved_finding_indices: list[int] | None = None, pending_finding_indices: list[int] | None = None, poll_detached: bool = False) -> dict[str, Any]:
     state: dict[str, Any] = {
         "version": __version__,
         "saved_at": datetime.now(timezone.utc).isoformat(),
@@ -222,6 +235,10 @@ def build_resume_state(*, phase: str, submission: BatchSubmission, review_state:
             "cross_check_skipped_due_to_missing_specs": cross_check_skipped_due_to_missing_specs,
             "verification_started": verification_started,
             "verification_completed": verification_completed,
+            "wave_index": wave_index,
+            "resolved_finding_indices": list(resolved_finding_indices or []),
+            "pending_finding_indices": list(pending_finding_indices or []),
+            "poll_detached": poll_detached,
         },
     }
     if review_state is not None:

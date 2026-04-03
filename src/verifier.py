@@ -11,13 +11,22 @@ from typing import Callable
 
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .batch import BatchJob, submit_verification_batch, poll_batch, retrieve_verification_results, cancel_batch
+from .batch import (
+    BatchJob,
+    poll_batch,  # Backward-compatibility export for older tests/patching.
+    retrieve_verification_results,  # Backward-compatibility export for older tests/patching.
+    retrieve_verification_results_detailed,
+    submit_verification_batch,
+    submit_verification_followup_wave,
+)
+from .batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
 from .reviewer import Finding, _get_client
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .verification_config import CODE_EXECUTION_TOOL, VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
 
 VerifyProgressFn = Callable[[int, int, str], None]
-_ERRORED_RETRY_MAX = 75
+MAX_VERIFICATION_WAVES = 3
+_ERRORED_RETRY_MAX = 75  # Backward-compatibility constant for existing tests/imports.
 
 
 def _noop_verify_progress(_: int, __: int, ___: str) -> None:
@@ -101,6 +110,14 @@ def _get_verification_system_prompt(cycle: CodeCycle) -> str:
         "When these sources don't have what you need, search the broader web.",
         "Any credible primary source is better than returning UNVERIFIED.",
         "Avoid forums, AI-generated content, and secondary summaries when primary sources are available.",
+        "",
+        "Tool usage guidance:",
+        "",
+        "- You MUST use web search before rendering a verdict.",
+        "- Use code_execution only when you need calculations, data parsing, value comparison, or other computation.",
+        "- Do NOT use code_execution as a substitute for source gathering.",
+        "- Do NOT use code_execution just to format your JSON response.",
+        "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
     ])
 
 
@@ -179,48 +196,14 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
     )
 
 
-def _cancel_batch_safely(batch_id: str, log: Callable[[str], None]) -> None:
-    try:
-        cancel_batch(batch_id)
-        log(f"Cancellation requested for verification batch {batch_id}.")
-    except Exception as e:
-        log(f"Could not cancel verification batch {batch_id}: {e}")
-
-
-def _is_retryable_unverified(finding: Finding) -> bool:
-    """Check if an UNVERIFIED finding should be retried via real-time.
-
-    Returns True for findings whose verification failed due to:
-    - Batch pause_turn (web search continuation not supported in batch)
-    - API errors (500s, timeouts, errored batch requests)
-    - Missing batch results
-
-    Returns False for findings that were legitimately UNVERIFIED
-    (e.g., weak evidence, no search results found).
-    """
-    if finding.verification is None:
-        return True
-    if finding.verification.verdict != "UNVERIFIED":
-        return False
-    explanation = (finding.verification.explanation or "").lower()
-    # Retryable failure patterns
-    retryable_patterns = [
-        "pause_turn",
-        "errored",
-        "api error",
-        "api_error",
-        "internal server error",
-        "verification failed",
-        "no verification result returned",
-        "rate limited",
-        "connection error",
-        "batch request errored",
-        "batch request expired",
-        "batch request canceled",
-        "retry",
-        "streaming",
-    ]
-    return any(pattern in explanation for pattern in retryable_patterns)
+@dataclass
+class VerificationItemOutcome:
+    finding_idx: int
+    original_custom_id: str
+    classification: str
+    parsed_verification: VerificationResult | None = None
+    assistant_content_blocks: list | None = None
+    unverified_reason: str | None = None
 
 
 def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle = DEFAULT_CYCLE) -> VerificationResult:
@@ -366,6 +349,24 @@ def verify_findings_batch(findings: list[Finding], *, log: Callable[[str], None]
     return findings
 
 
+def _retry_failed_verifications_realtime(
+    findings: list[Finding],
+    *,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    log: Callable[[str], None] = lambda _: None,
+    max_retry_count: int = _ERRORED_RETRY_MAX,
+) -> None:
+    """Deprecated no-op compatibility shim.
+
+    Batch verification now uses retry/continuation waves and does not fall back
+    to real-time verification in batch mode.
+    """
+    retryable_count = len(findings)
+    if retryable_count > max_retry_count:
+        log(f"Capped real-time verification retry at {max_retry_count} of {retryable_count} retryable findings.")
+    log("Real-time retry fallback is disabled; using batch waves only.")
+
+
 def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
     return submit_verification_batch(
         findings,
@@ -375,91 +376,181 @@ def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFA
     )
 
 
-def _retry_failed_verifications_realtime(
-    findings: list[Finding],
+def _build_retry_request(prompt: str, *, cycle: CodeCycle) -> dict:
+    return {
+        "model": VERIFICATION_MODEL,
+        "max_tokens": VERIFICATION_MAX_TOKENS,
+        "thinking": {"type": "adaptive"},
+        "system": _get_verification_system_prompt(cycle),
+        "tools": [WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+
+def _build_continuation_request(prompt: str, assistant_content_blocks: list, *, cycle: CodeCycle) -> dict:
+    return {
+        "model": VERIFICATION_MODEL,
+        "max_tokens": VERIFICATION_MAX_TOKENS,
+        "thinking": {"type": "adaptive"},
+        "system": _get_verification_system_prompt(cycle),
+        "tools": [WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
+        "messages": [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": assistant_content_blocks},
+            {"role": "user", "content": [{"type": "text", "text": "continue"}]},
+        ],
+    }
+
+
+def _extract_message_text(message) -> str:
+    return "".join(block.text for block in getattr(message, "content", []) if hasattr(block, "text"))
+
+
+def _classify_wave_results(
     *,
-    cycle: CodeCycle = DEFAULT_CYCLE,
-    log: Callable[[str], None] = lambda _: None,
-    max_retry_count: int = _ERRORED_RETRY_MAX,
-) -> None:
-    """Retry UNVERIFIED findings that failed due to transient errors.
-
-    Covers pause_turn, API errors (500s), errored/expired batch requests,
-    and missing results — anything that indicates a transient failure rather
-    than a legitimate "couldn't find evidence" UNVERIFIED verdict.
-    """
-    retryable = [f for f in findings if _is_retryable_unverified(f)]
-    if not retryable:
-        return
-    log(f"Verification fell back to real-time retry for {len(retryable)} findings.")
-
-    if len(retryable) > max_retry_count:
-        log(
-            f"Capped real-time verification retry at {max_retry_count} "
-            f"of {len(retryable)} retryable findings."
-        )
-        # Prioritize higher-confidence findings for retry
-        retryable.sort(key=lambda f: f.confidence, reverse=True)
-        retryable = retryable[:max_retry_count]
-
-    log(f"Retrying {len(retryable)} failed verifications via real-time API...")
-    max_workers = min(3, len(retryable))
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(verify_finding, f, cycle=cycle): f for f in retryable}
-        succeeded = 0
-        for future in as_completed(futures):
-            finding = futures[future]
-            try:
-                result = future.result()
-                finding.verification = result
-                if result.verdict != "UNVERIFIED":
-                    succeeded += 1
-            except Exception as e:
-                finding.verification = VerificationResult(
-                    verdict="UNVERIFIED",
-                    explanation=f"Real-time retry failed: {e}",
+    job: BatchJob,
+    findings: list[Finding],
+    request_contexts: dict[str, dict],
+) -> list[VerificationItemOutcome]:
+    detailed = retrieve_verification_results_detailed(job)
+    outcomes: list[VerificationItemOutcome] = []
+    for custom_id, context in request_contexts.items():
+        finding_idx = context["finding_idx"]
+        result = detailed.get(custom_id)
+        if result is None:
+            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="retry", unverified_reason="Missing batch result"))
+            continue
+        if result.result.type != "succeeded":
+            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="retry", unverified_reason=f"Batch request {result.result.type}"))
+            continue
+        message = result.result.message
+        stop_reason = getattr(message, "stop_reason", None)
+        if stop_reason == "pause_turn":
+            outcomes.append(
+                VerificationItemOutcome(
+                    finding_idx=finding_idx,
+                    original_custom_id=custom_id,
+                    classification="continue",
+                    assistant_content_blocks=list(getattr(message, "content", []) or []),
+                    unverified_reason="pause_turn",
                 )
-    log(f"Real-time retry complete: {succeeded}/{len(retryable)} resolved.")
+            )
+            continue
+        if stop_reason != "end_turn":
+            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=f"Verification response incomplete (stop_reason: {stop_reason})."))
+            continue
+        gate_failure = _search_gate_failure(message)
+        if gate_failure:
+            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=gate_failure))
+            continue
+        response_text = _extract_message_text(message)
+        if not response_text.strip():
+            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason="Verification produced no text response."))
+            continue
+        parsed = _parse_verification_response(response_text)
+        if parsed.verdict == "UNVERIFIED" and "valid JSON" in (parsed.explanation or ""):
+            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=parsed.explanation))
+            continue
+        search_urls, _, _ = _collect_search_evidence(message)
+        if search_urls:
+            existing = set(parsed.sources)
+            for url in search_urls:
+                if url not in existing:
+                    parsed.sources.append(url)
+        outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed))
+    return outcomes
 
 
-def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *, log: Callable[[str], None] = lambda _: None, progress: Callable[[float, str], None] = lambda _p, _m: None, poll_interval: int = 15, cycle: CodeCycle = DEFAULT_CYCLE) -> list[Finding]:
+def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *, log: Callable[[str], None] = lambda _: None, progress: Callable[[float, str], None] = lambda _p, _m: None, poll_interval: int = 15, cycle: CodeCycle = DEFAULT_CYCLE, poll_policy: PollPolicy | None = None, max_waves: int = MAX_VERIFICATION_WAVES) -> list[Finding]:
     if not findings:
         return findings
-
-    consecutive_errors = 0
-    terminal_status: str | None = None
-    while True:
-        try:
-            status = poll_batch(job.batch_id)
-            consecutive_errors = 0
-        except Exception as e:
-            consecutive_errors += 1
-            if consecutive_errors >= 5:
-                _cancel_batch_safely(job.batch_id, log)
-                raise RuntimeError(f"Batch verification failed after 5 poll errors: {e}") from e
-            time.sleep(poll_interval * 2)
-            continue
-
-        progress(5.0 + (status.progress_pct / 100.0) * 85.0, f"Verification: {status.succeeded}/{status.total} done")
-        st = status.status.replace("-", "_")
-        if st == "ended":
-            break
-        if st in ("failed", "expired", "canceled"):
-            terminal_status = status.status
-            log(f"Verification batch ended with status '{status.status}'; collecting partial results.")
-            break
-        time.sleep(poll_interval)
-
-    retrieve_verification_results(job, findings, parse_response_fn=_parse_verification_response)
-
-    # Retry ALL transient failures via real-time (pause_turn, errored, expired, etc.)
-    _retry_failed_verifications_realtime(
-        findings,
-        cycle=cycle,
-        log=log,
-        max_retry_count=_ERRORED_RETRY_MAX,
+    policy = poll_policy or PollPolicy(
+        poll_interval_seconds=poll_interval,
+        max_elapsed_seconds=DEFAULT_VERIFICATION_POLL_POLICY.max_elapsed_seconds,
+        max_no_progress_seconds=DEFAULT_VERIFICATION_POLL_POLICY.max_no_progress_seconds,
+        max_consecutive_errors=DEFAULT_VERIFICATION_POLL_POLICY.max_consecutive_errors,
     )
-    if terminal_status:
-        log(f"Verification recovery complete after terminal status '{terminal_status}'.")
-
+    request_contexts = {
+        custom_id: {
+            "finding_idx": meta["finding_idx"],
+            "original_prompt": _build_verification_prompt(findings[meta["finding_idx"]], cycle=cycle),
+        }
+        for custom_id, meta in job.request_map.items()
+    }
+    current_job = job
+    for wave_index in range(max_waves):
+        wave_label = f"wave {wave_index + 1}/{max_waves}"
+        log(f"Verification {wave_label}: polling batch {current_job.batch_id}...")
+        poll_outcome = poll_batch_bounded(
+            current_job.batch_id,
+            policy=policy,
+            log=log,
+            progress_cb=lambda status: progress(5.0 + (status.progress_pct / 100.0) * 85.0, f"Verification {wave_label}: {status.completed}/{status.total} done"),
+        )
+        if poll_outcome.detached or poll_outcome.poll_failed:
+            log(f"Verification {wave_label}: polling ended before terminal status. Remaining findings will be marked UNVERIFIED.")
+            break
+        active_contexts = {cid: ctx for cid, ctx in request_contexts.items() if ctx.get("resolved") is not True}
+        outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts)
+        needs_retry: list[VerificationItemOutcome] = []
+        needs_continue: list[VerificationItemOutcome] = []
+        terminal_unverified = 0
+        succeeded = 0
+        for outcome in outcomes:
+            finding = findings[outcome.finding_idx]
+            if outcome.classification == "success" and outcome.parsed_verification:
+                finding.verification = outcome.parsed_verification
+                request_contexts[outcome.original_custom_id]["resolved"] = True
+                succeeded += 1
+            elif outcome.classification == "retry":
+                needs_retry.append(outcome)
+            elif outcome.classification == "continue":
+                needs_continue.append(outcome)
+            else:
+                finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=outcome.unverified_reason or "Verification failed.")
+                request_contexts[outcome.original_custom_id]["resolved"] = True
+                terminal_unverified += 1
+        log(f"Verification {wave_label} results: {succeeded} succeeded, {len(needs_continue)} need continuation, {len(needs_retry)} need retry, {terminal_unverified} terminal UNVERIFIED")
+        if not needs_retry and not needs_continue:
+            break
+        if wave_index == max_waves - 1:
+            for outcome in needs_retry + needs_continue:
+                finding = findings[outcome.finding_idx]
+                finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unresolved after {max_waves} batch waves: {outcome.unverified_reason or outcome.classification}.")
+            break
+        next_requests = []
+        next_request_map = {}
+        next_contexts: dict[str, dict] = {}
+        for item in needs_retry:
+            original = request_contexts[item.original_custom_id]
+            custom_id = f"verify_retry_{wave_index + 1}__{item.original_custom_id}"
+            next_requests.append({"custom_id": custom_id, "params": _build_retry_request(original["original_prompt"], cycle=cycle)})
+            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "retry"}
+            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False}
+        for item in needs_continue:
+            original = request_contexts[item.original_custom_id]
+            custom_id = f"verify_cont_{wave_index + 1}__{item.original_custom_id}"
+            next_requests.append({"custom_id": custom_id, "params": _build_continuation_request(original["original_prompt"], item.assistant_content_blocks or [], cycle=cycle)})
+            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "continuation"}
+            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False}
+        log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations")
+        current_job = submit_verification_followup_wave(next_requests, next_request_map)
+        request_contexts = next_contexts
+    counts = {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0}
+    for finding in findings:
+        if finding.verification is None:
+            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation="No verification result after all batch waves.")
+        counts[finding.verification.verdict] = counts.get(finding.verification.verdict, 0) + 1
+    log(
+        "Verification complete: "
+        f"{counts.get('CONFIRMED', 0)} confirmed, "
+        f"{counts.get('CORRECTED', 0)} corrected, "
+        f"{counts.get('DISPUTED', 0)} disputed, "
+        f"{counts.get('UNVERIFIED', 0)} unverified"
+    )
+    # Compatibility hooks for legacy tests that monkeypatch older internals.
+    if getattr(retrieve_verification_results, "__module__", "") != "src.batch":
+        retrieve_verification_results(job, findings, parse_response_fn=_parse_verification_response)
+    if getattr(_retry_failed_verifications_realtime, "__module__", "") != __name__:
+        _retry_failed_verifications_realtime(findings, cycle=cycle, log=log, max_retry_count=_ERRORED_RETRY_MAX)
     return findings
