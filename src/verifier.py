@@ -257,8 +257,10 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
             total_search_errors = 0
             for resp in all_responses:
                 for block in getattr(resp, "content", []) or []:
-                    if hasattr(block, "text"):
+
+                    if hasattr(block, "text") and block.text is not None:
                         response_text += block.text
+
                 search_urls, successes, errors = _collect_search_evidence(resp)
                 all_search_urls.extend(search_urls)
                 if successes > 0:
@@ -403,7 +405,7 @@ def _build_continuation_request(prompt: str, assistant_content_blocks: list, *, 
 
 
 def _extract_message_text(message) -> str:
-    return "".join(block.text for block in getattr(message, "content", []) if hasattr(block, "text"))
+    return "".join(block.text for block in getattr(message, "content", []) if hasattr(block, "text") and block.text is not None)
 
 
 def _classify_wave_results(

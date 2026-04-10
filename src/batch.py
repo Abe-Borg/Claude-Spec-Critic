@@ -96,7 +96,7 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
             results[custom_id] = ReviewResult(findings=[], error=err)
             continue
         message = result.result.message
-        response_text = "".join(block.text for block in message.content if hasattr(block, "text"))
+        response_text = "".join(block.text for block in message.content if hasattr(block, "text") and block.text is not None)
         usage = message.usage if hasattr(message, "usage") else None
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
