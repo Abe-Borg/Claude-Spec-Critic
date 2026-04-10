@@ -446,6 +446,7 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         Normal:    Replace With: ... (green)
         Normal:    Reference: ... (blue)
         Normal:    Verification: ... (if applicable)
+        Normal:    Sources: ... (if verbose and available)
     """
     severity_color = SEVERITY_COLORS.get(finding.severity, RGBColor(0, 0, 0))
     conf_tier = _confidence_tier(finding.confidence)
@@ -547,6 +548,18 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
             run = para.add_run(vr.correction)
             run.font.color.rgb = RGBColor(204, 132, 0)  # Amber
             para.paragraph_format.space_after = Pt(3)
+
+        # --- Verification sources (verbose only) ---
+        if verbose and vr.sources:
+            para = doc.add_paragraph()
+            para.add_run("Sources: ").bold = True
+            para.paragraph_format.space_after = Pt(3)
+            for i, url in enumerate(vr.sources):
+                if i > 0:
+                    para.add_run("  •  ")
+                run = para.add_run(url)
+                run.font.size = Pt(9)
+                run.font.color.rgb = RGBColor(59, 130, 246)
 
 
 # ---------------------------------------------------------------------------
