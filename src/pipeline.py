@@ -350,6 +350,8 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     combined = ReviewResult(findings=all_findings, thinking="\n\n".join(all_thinking), model=submission.model, input_tokens=in_tok, output_tokens=out_tok, elapsed_seconds=time.time() - submission.job.created_at)
     if errors:
         combined.thinking += "\n\n--- Batch Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
+        # --- FIX 2a: Surface per-spec errors on combined result ---
+        combined.error = f"{len(errors)} spec(s) had errors: " + "; ".join(errors)
 
     return CollectedBatchState(
         submission=submission,
@@ -473,5 +475,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     combined = ReviewResult(findings=findings, thinking="\n\n".join(thinking), model=model, input_tokens=in_tok, output_tokens=out_tok, elapsed_seconds=time.time() - start)
     if errors:
         combined.thinking += "\n\n--- Review Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
+        # --- FIX 2b: Surface per-spec errors on combined result ---
+        combined.error = f"{len(errors)} spec(s) had errors: " + "; ".join(errors)
     progress(100.0, "Done.")
     return PipelineResult(review_result=combined, files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cross_check_result=cross, cycle_label=cycle.label, total_elapsed_seconds=combined.elapsed_seconds)

@@ -235,7 +235,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                     max_tokens=VERIFICATION_MAX_TOKENS,
                     thinking={"type": "adaptive"},
                     system=system_prompt,
-                    tools=[WEB_SEARCH_TOOL, CODE_EXECUTION_TOOL],
+                    tools=[WEB_SEARCH_TOOL],
                     messages=messages,
                 ) as stream:
                     response = stream.get_final_message()

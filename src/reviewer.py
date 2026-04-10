@@ -21,6 +21,33 @@ MODEL_OPUS_46 = "claude-opus-4-6"
 REVIEW_MODELS = {"Opus 4.6": MODEL_OPUS_46}
 StreamCallback = Callable[[str], None]
 
+# ---------------------------------------------------------------------------
+# Retryable connection-failure heuristic
+# ---------------------------------------------------------------------------
+# These patterns catch httpx / urllib3 / aiohttp transport-level failures
+# that surface as generic Exception (not wrapped in anthropic APIError).
+# They are transient and safe to retry.
+_RETRYABLE_EXCEPTION_PATTERNS = (
+    "peer closed connection",
+    "incomplete chunked read",
+    "connection reset",
+    "connection closed",
+    "timed out",
+    "timeout",
+    "broken pipe",
+    "remotedisconnected",
+    "connectionreset",
+    "server disconnected",
+    "eof occurred",
+    "incomplete read",
+)
+
+
+def _is_retryable_connection_error(exc: Exception) -> bool:
+    """Return True if a generic exception looks like a transient connection failure."""
+    msg = str(exc).lower()
+    return any(pattern in msg for pattern in _RETRYABLE_EXCEPTION_PATTERNS)
+
 
 @dataclass
 class Finding:
@@ -208,6 +235,13 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             result.elapsed_seconds = time.time() - start_time
             return result
         except Exception as e:
+            # --- FIX 1: Retry transient connection failures ---
+            if _is_retryable_connection_error(e) and attempt < max_retries - 1:
+                backoff = 2 ** attempt * 5
+                if verbose:
+                    print(f"Retryable connection error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {backoff}s...")
+                time.sleep(backoff)
+                continue
             result.error = f"Error: {e}"
             result.parse_status = "parse_error"
             result.elapsed_seconds = time.time() - start_time

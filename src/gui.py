@@ -896,8 +896,12 @@ class SpecReviewApp(ctk.CTk):
                     },
                     "total_findings": rv.total_count,
                 })
+                
                 if rv.error:
                     diag.log("review", "error", f"Review error: {rv.error}")
+                    # Surface per-spec errors prominently in diagnostics
+                    diag.log("review", "warning", "One or more specs failed during review — check Reviewer's Notes for details.")
+                
                 if result.cross_check_result:
                     cc = result.cross_check_result
                     diag.log("cross_check", "info", f"Cross-check: {cc.cross_check_status}", {
@@ -942,12 +946,20 @@ class SpecReviewApp(ctk.CTk):
             self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
 
     def _on_review_complete(self, result):
+        
         self.progress_bar.set(1.0)
-        self.log.log_success("Review complete!")
         self._last_result = result
         if result.review_result:
             rv = result.review_result
+            # --- FIX 3: Distinguish zero-findings-with-errors from clean passes ---
+            has_review_errors = bool(rv.error)
+            if has_review_errors:
+                self.log.log_warning("Review completed with errors — some specs failed. See report for details.")
+                self.log.log_warning(rv.error)
+            else:
+                self.log.log_success("Review complete!")
             self.log.log(f"Findings: {rv.critical_count} critical, {rv.high_count} high, {rv.medium_count} medium, {rv.gripe_count} gripes", level="info")
+            
             if result.cross_check_result and result.cross_check_result.findings:
                 cc = result.cross_check_result
                 self.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
