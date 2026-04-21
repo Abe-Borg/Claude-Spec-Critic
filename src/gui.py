@@ -3,12 +3,17 @@ Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus 4.6
 v2.8.0 - Batch-only enforcement, bounded polling, and reporting updates
 """
-import os, sys, json, time, threading
+import os, sys, json, time, threading, shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import customtkinter as ctk
 from tkinter import filedialog
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
 
 base_path = os.path.dirname(os.path.abspath(__file__))
 exe_dir = Path(base_path).parent
@@ -340,6 +345,7 @@ class SpecReviewApp(ctk.CTk):
         self.input_dir_entry.grid(row=0, column=0, sticky="ew")
         bkw = {"height": 36, "font": ctk.CTkFont(size=_UI_FONT_SIZE), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
         ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
+        self._register_specs_drop_target(ef)
 
         # --- Row 2: Project Context ---
         ctx_label_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
@@ -570,13 +576,59 @@ class SpecReviewApp(ctk.CTk):
             filetypes=_SPEC_FILETYPES,
         )
         if files:
-            paths = [Path(f) for f in files if _is_supported_spec(Path(f))]
-            if not paths: self.log.log_warning("No supported .docx files selected"); return
-            self._selected_files = paths
-            self.input_dir = paths[0].parent
-            self.input_dir_entry.delete(0, "end")
-            self.input_dir_entry.insert(0, str(paths[0]) if len(paths) == 1 else f"{len(paths)} files selected")
-            self._analyze_tokens(paths)
+            self._apply_selected_specs([Path(f) for f in files])
+
+    def _register_specs_drop_target(self, specs_frame):
+        if DND_FILES is None:
+            print("[SpecCritic] Drag-and-drop unavailable: install tkinterdnd2 to enable dropping .docx files")
+            return
+        targets = [specs_frame, self.input_dir_entry]
+        for target in targets:
+            if not hasattr(target, "drop_target_register") or not hasattr(target, "dnd_bind"):
+                print("[SpecCritic] Drag-and-drop unavailable: Tk DnD hooks are not active for this widget")
+                return
+            try:
+                target.drop_target_register(DND_FILES)
+                target.dnd_bind("<<Drop>>", self._on_specs_drop)
+            except Exception as e:
+                print(f"[SpecCritic] Drag-and-drop unavailable: {e}")
+                return
+
+    def _parse_dropped_paths(self, payload: str) -> list[Path]:
+        if not payload:
+            return []
+        raw_items: list[str] = []
+        try:
+            raw_items = list(self.tk.splitlist(payload))
+        except Exception:
+            pass
+        if not raw_items:
+            try:
+                raw_items = shlex.split(payload)
+            except ValueError:
+                raw_items = [payload]
+        cleaned: list[Path] = []
+        for item in raw_items:
+            normalized = item.strip().strip("{}").strip("\"")
+            if not normalized:
+                continue
+            cleaned.append(Path(normalized))
+        return cleaned
+
+    def _apply_selected_specs(self, candidate_paths: list[Path]):
+        paths = [p for p in candidate_paths if _is_supported_spec(p)]
+        if not paths:
+            self.log.log_warning("No supported .docx files selected")
+            return
+        self._selected_files = paths
+        self.input_dir = paths[0].parent
+        self.input_dir_entry.delete(0, "end")
+        self.input_dir_entry.insert(0, str(paths[0]) if len(paths) == 1 else f"{len(paths)} files selected")
+        self._analyze_tokens(paths)
+
+    def _on_specs_drop(self, event):
+        dropped_paths = self._parse_dropped_paths(getattr(event, "data", ""))
+        self._apply_selected_specs(dropped_paths)
 
     def _clear_file_state(self):
         self._loaded_file_data = []

@@ -10,7 +10,8 @@ dependencies = [
     "python-docx",
     "tiktoken",
     "customtkinter",
-    "platformdirs"
+    "platformdirs",
+    "tkinterdnd2"
 ]
 
 [tool.setuptools.packages.find]
