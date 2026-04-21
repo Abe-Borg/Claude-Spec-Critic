@@ -15,6 +15,12 @@ except ImportError:
     DND_FILES = None
     TkinterDnD = None
 
+if TkinterDnD is not None:
+    class _CTkDnDRoot(ctk.CTk, TkinterDnD.DnDWrapper):
+        pass
+else:
+    _CTkDnDRoot = ctk.CTk
+
 base_path = os.path.dirname(os.path.abspath(__file__))
 exe_dir = Path(base_path).parent
 sys.path.insert(0, str(exe_dir))
@@ -213,9 +219,14 @@ def _is_supported_spec(filepath: Path) -> bool:
     return filepath.suffix.lower() in SUPPORTED_EXTENSIONS
 
 
-class SpecReviewApp(ctk.CTk):
+class SpecReviewApp(_CTkDnDRoot):
     def __init__(self):
         super().__init__()
+        if TkinterDnD is not None:
+            try:
+                self.TkdndVersion = TkinterDnD._require(self)
+            except Exception as e:
+                print(f"[SpecCritic] Drag-and-drop unavailable: {e}")
         self.title("Spec Critic")
         self.geometry("900x950")
         self.minsize(750, 700)
@@ -341,11 +352,11 @@ class SpecReviewApp(ctk.CTk):
         ef = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ef.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=8)
         ef.columnconfigure(0, weight=1)
-        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select .docx specification files", font=ctk.CTkFont(family="Consolas", size=_UI_FONT_SIZE), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
+        self.input_dir_entry = ctk.CTkEntry(ef, placeholder_text="Select or drop .docx specification files", font=ctk.CTkFont(family="Consolas", size=_UI_FONT_SIZE), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36)
         self.input_dir_entry.grid(row=0, column=0, sticky="ew")
         bkw = {"height": 36, "font": ctk.CTkFont(size=_UI_FONT_SIZE), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
         ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
-        self._register_specs_drop_target(ef)
+        self._register_specs_drop_target()
 
         # --- Row 2: Project Context ---
         ctx_label_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
@@ -578,21 +589,15 @@ class SpecReviewApp(ctk.CTk):
         if files:
             self._apply_selected_specs([Path(f) for f in files])
 
-    def _register_specs_drop_target(self, specs_frame):
+    def _register_specs_drop_target(self):
         if DND_FILES is None:
             print("[SpecCritic] Drag-and-drop unavailable: install tkinterdnd2 to enable dropping .docx files")
             return
-        targets = [specs_frame, self.input_dir_entry]
-        for target in targets:
-            if not hasattr(target, "drop_target_register") or not hasattr(target, "dnd_bind"):
-                print("[SpecCritic] Drag-and-drop unavailable: Tk DnD hooks are not active for this widget")
-                return
-            try:
-                target.drop_target_register(DND_FILES)
-                target.dnd_bind("<<Drop>>", self._on_specs_drop)
-            except Exception as e:
-                print(f"[SpecCritic] Drag-and-drop unavailable: {e}")
-                return
+        try:
+            self.input_dir_entry.drop_target_register(DND_FILES)
+            self.input_dir_entry.dnd_bind("<<Drop>>", self._on_specs_drop)
+        except Exception as e:
+            print(f"[SpecCritic] Drag-and-drop unavailable: {e}")
 
     def _parse_dropped_paths(self, payload: str) -> list[Path]:
         if not payload:
