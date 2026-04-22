@@ -109,6 +109,12 @@ def _set_cell_shading(cell, hex_color: str) -> None:
     cell._tc.get_or_add_tcPr().append(shading)
 
 
+def _set_paragraph_collapsed(paragraph) -> None:
+    """Mark a heading paragraph as collapsed by default when opened in Word."""
+    pPr = paragraph._p.get_or_add_pPr()
+    pPr.append(OxmlElement('w:collapsed'))
+
+
 def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
                           bold: bool = False, color: RGBColor | None = None,
                           size: int | None = None, space_after: int | None = None,
@@ -550,9 +556,15 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
             para.paragraph_format.space_after = Pt(3)
 
         # --- Verification sources (verbose only) ---
+        # Rendered under a Heading 4 "Sources" sub-heading that is marked
+        # collapsed-by-default, so Word hides the URL list when the document
+        # is first opened. The next Heading 3 (next finding) terminates the
+        # collapse zone, so only the URL paragraph below is hidden.
         if verbose and vr.sources:
+            sources_heading = doc.add_heading("Sources", level=4)
+            _set_paragraph_collapsed(sources_heading)
+
             para = doc.add_paragraph()
-            para.add_run("Sources: ").bold = True
             para.paragraph_format.space_after = Pt(3)
             for i, url in enumerate(vr.sources):
                 if i > 0:
