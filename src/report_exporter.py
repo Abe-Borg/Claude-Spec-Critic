@@ -112,7 +112,9 @@ def _set_cell_shading(cell, hex_color: str) -> None:
 def _set_paragraph_collapsed(paragraph) -> None:
     """Mark a heading paragraph as collapsed by default when opened in Word."""
     pPr = paragraph._p.get_or_add_pPr()
-    pPr.append(OxmlElement('w:collapsed'))
+    collapsed = OxmlElement('w:collapsed')
+    collapsed.set(qn('w:val'), '1')
+    pPr.append(collapsed)
 
 
 def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
