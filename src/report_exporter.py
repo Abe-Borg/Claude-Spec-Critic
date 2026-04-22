@@ -117,6 +117,15 @@ def _set_paragraph_collapsed(paragraph) -> None:
     pPr.append(collapsed)
 
 
+def _set_paragraph_outline_level(paragraph, level: int) -> None:
+    """Set <w:outlineLvl> on a paragraph so Word includes it in a preceding
+    heading's open-time collapse zone without changing its visual style."""
+    pPr = paragraph._p.get_or_add_pPr()
+    outline = OxmlElement('w:outlineLvl')
+    outline.set(qn('w:val'), str(level))
+    pPr.append(outline)
+
+
 def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
                           bold: bool = False, color: RGBColor | None = None,
                           size: int | None = None, space_after: int | None = None,
@@ -560,13 +569,16 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         # --- Verification sources (verbose only) ---
         # Rendered under a Heading 4 "Sources" sub-heading that is marked
         # collapsed-by-default, so Word hides the URL list when the document
-        # is first opened. The next Heading 3 (next finding) terminates the
-        # collapse zone, so only the URL paragraph below is hidden.
+        # is first opened. The URL paragraph below carries outlineLvl=8 so
+        # Word's open-time collapse treats it as part of the Sources heading's
+        # zone (plain body paragraphs without an outline level are ignored at
+        # open time). The next Heading 3 (next finding) terminates the zone.
         if verbose and vr.sources:
             sources_heading = doc.add_heading("Sources", level=4)
             _set_paragraph_collapsed(sources_heading)
 
             para = doc.add_paragraph()
+            _set_paragraph_outline_level(para, 8)
             para.paragraph_format.space_after = Pt(3)
             for i, url in enumerate(vr.sources):
                 if i > 0:
