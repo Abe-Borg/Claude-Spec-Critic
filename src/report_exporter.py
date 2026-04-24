@@ -43,6 +43,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from lxml import etree
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +110,37 @@ def _set_cell_shading(cell, hex_color: str) -> None:
     cell._tc.get_or_add_tcPr().append(shading)
 
 
+# Word 2012 extension namespace — NOT the base w: namespace.
+# Per [MS-DOCX] §2.5.1.3, the `collapsed` element lives here.
+_W15_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
+
+
 def _set_paragraph_collapsed(paragraph) -> None:
-    """Mark a heading paragraph as collapsed by default when opened in Word."""
+    """Mark a heading paragraph as collapsed-by-default when the doc is opened.
+
+    Emits ``<w15:collapsed w15:val="1"/>`` per [MS-DOCX] §2.5.1.3. The element
+    MUST be in the Word 2012 extension namespace
+    (http://schemas.microsoft.com/office/word/2012/wordml). Using the base
+    w: namespace causes Word to silently ignore the element, which is why
+    earlier versions of this code rendered Sources headings expanded on open.
+
+    Semantics (per the spec): when this element is set on a heading of level N,
+    immediately subsequent paragraphs with a higher heading level number appear
+    collapsed when the document is opened. In our use, it's set on the
+    "Sources" Heading 4; the URL paragraph below carries outlineLvl=8, which
+    satisfies "higher heading level number" and gets collapsed. The next
+    finding's Heading 3 (outlineLvl=2) is lower and terminates the zone.
+
+    python-docx's default nsmap does NOT register w15, so we construct the
+    element via lxml directly instead of using OxmlElement / qn helpers.
+    """
     pPr = paragraph._p.get_or_add_pPr()
-    collapsed = OxmlElement('w:collapsed')
-    collapsed.set(qn('w:val'), '1')
-    pPr.append(collapsed)
+    collapsed = etree.SubElement(
+        pPr,
+        f"{{{_W15_NS}}}collapsed",
+        nsmap={"w15": _W15_NS},
+    )
+    collapsed.set(f"{{{_W15_NS}}}val", "1")
 
 
 def _set_paragraph_outline_level(paragraph, level: int) -> None:
