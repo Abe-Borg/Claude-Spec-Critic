@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,14 +70,21 @@ def _normalize_issue_text(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip().lower()
 
 
+def _normalized_digest(text: str | None) -> str:
+    normalized = re.sub(r"\s+", " ", (text or "").strip().casefold())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _dedup_key(f: Finding) -> tuple:
     return (
         _normalize_issue_text(f.issue),
         (f.section or "").strip().lower(),
         (f.codeReference or "").strip().lower(),
         f.actionType,
-        (f.existingText or "").strip().lower()[:200],
-        (f.replacementText or "").strip().lower()[:200],
+        _normalized_digest(f.existingText),
+        _normalized_digest(f.replacementText),
+        _normalized_digest(f.anchorText),
+        (f.insertPosition or "").strip().lower(),
     )
 
 
@@ -110,6 +118,9 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             codeReference=rep.codeReference,
             confidence=max(f.confidence for f in group),
             affected_files=files,
+            anchorText=rep.anchorText,
+            insertPosition=rep.insertPosition,
+            occurrences=list(group),
         ))
     return out
 

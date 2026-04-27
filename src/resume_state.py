@@ -96,7 +96,7 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
 
 
 def serialize_finding(finding: Finding) -> dict[str, Any]:
-    return {
+    payload = {
         "severity": finding.severity,
         "fileName": finding.fileName,
         "section": finding.section,
@@ -104,15 +104,37 @@ def serialize_finding(finding: Finding) -> dict[str, Any]:
         "actionType": finding.actionType,
         "existingText": finding.existingText,
         "replacementText": finding.replacementText,
+        "anchorText": finding.anchorText,
+        "insertPosition": finding.insertPosition,
         "codeReference": finding.codeReference,
         "confidence": finding.confidence,
         "affected_files": list(finding.affected_files),
         "verification": serialize_verification_result(finding.verification),
     }
+    if finding.occurrences:
+        payload["occurrences"] = [
+            serialize_finding(Finding(
+                severity=o.severity,
+                fileName=o.fileName,
+                section=o.section,
+                issue=o.issue,
+                actionType=o.actionType,
+                existingText=o.existingText,
+                replacementText=o.replacementText,
+                codeReference=o.codeReference,
+                confidence=o.confidence,
+                verification=o.verification,
+                affected_files=list(o.affected_files),
+                anchorText=o.anchorText,
+                insertPosition=o.insertPosition,
+            ))
+            for o in finding.occurrences
+        ]
+    return payload
 
 
 def deserialize_finding(payload: dict[str, Any]) -> Finding:
-    return Finding(
+    finding = Finding(
         severity=str(payload.get("severity", "MEDIUM")),
         fileName=str(payload.get("fileName", "")),
         section=str(payload.get("section", "")),
@@ -124,7 +146,11 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
         confidence=float(payload.get("confidence", 0.5)),
         affected_files=[str(v) for v in payload.get("affected_files", [])],
         verification=deserialize_verification_result(payload.get("verification")),
+        anchorText=(str(payload["anchorText"]) if payload.get("anchorText") is not None else None),
+        insertPosition=(str(payload["insertPosition"]) if payload.get("insertPosition") is not None else None),
     )
+    finding.occurrences = [deserialize_finding(o) for o in payload.get("occurrences", []) if isinstance(o, dict)]
+    return finding
 
 
 def serialize_review_result(result: ReviewResult | None) -> dict[str, Any] | None:

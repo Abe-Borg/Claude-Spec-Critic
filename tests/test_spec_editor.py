@@ -4,6 +4,8 @@ import pytest
 from docx import Document
 
 from src.edit_locator import EditLocation, LocatorResult
+from src.apply_edits import execute_edit_plan
+from src.extractor import extract_text_from_docx
 from src.extractor import ParagraphMapping
 from src.reviewer import Finding
 from src.spec_editor import apply_edits_to_spec, build_edit_actions
@@ -209,7 +211,7 @@ def test_conflict_resolution_skips_lower_confidence_overlap(tmp_path: Path):
         match_end=6,
         matched_text="c de",
         replacement_text="1234",
-        confidence=0.70,
+        confidence=0.90,
     )
 
     report = apply_edits_to_spec(source, output, build_edit_actions([low, high]))
@@ -288,6 +290,123 @@ def test_table_cell_edit_updates_target_only(tmp_path: Path):
     assert table.cell(0, 1).text == "Allowance Value"
     assert table.cell(0, 2).text == "$10,000"
     assert report.edits_applied == 1
+
+
+def test_ambiguous_locator_result_does_not_build_action():
+    result = _locator_result(
+        status="ambiguous",
+        text="Repeated paragraph",
+        match_start=0,
+        match_end=len("Repeated paragraph"),
+        matched_text="Repeated paragraph",
+        replacement_text="Replacement",
+    )
+
+    actions = build_edit_actions([result])
+
+    assert actions == []
+    assert result.warning == "Ambiguous locator result; manual review required."
+
+
+def test_add_action_inserts_after_explicit_anchor(tmp_path: Path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Anchor paragraph.")
+    doc.add_paragraph("Following paragraph.")
+    doc.save(source)
+
+    result = _locator_result(
+        action="ADD",
+        text="Anchor paragraph.",
+        body_index=0,
+        match_start=0,
+        match_end=len("Anchor paragraph."),
+        matched_text="Anchor paragraph.",
+        replacement_text="Inserted paragraph.",
+    )
+    result.finding.anchorText = "Anchor paragraph."
+    result.finding.insertPosition = "after"
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert [p.text for p in saved.paragraphs] == ["Anchor paragraph.", "Inserted paragraph.", "Following paragraph."]
+    assert report.edits_applied == 1
+
+
+def test_delete_then_add_uses_safe_structural_order(tmp_path: Path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Delete me.")
+    doc.add_paragraph("Anchor paragraph.")
+    doc.save(source)
+
+    delete = _locator_result(
+        action="DELETE",
+        text="Delete me.",
+        body_index=0,
+        match_start=0,
+        match_end=len("Delete me."),
+        matched_text="Delete me.",
+        replacement_text=None,
+    )
+    add = _locator_result(
+        action="ADD",
+        text="Anchor paragraph.",
+        body_index=1,
+        match_start=0,
+        match_end=len("Anchor paragraph."),
+        matched_text="Anchor paragraph.",
+        replacement_text="Inserted safely.",
+    )
+    add.finding.anchorText = "Anchor paragraph."
+    add.finding.insertPosition = "after"
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([delete, add]))
+    saved = Document(output)
+
+    assert [p.text for p in saved.paragraphs] == ["Anchor paragraph.", "Inserted safely."]
+    assert report.edits_applied == 2
+
+
+def test_grouped_finding_edit_expands_to_all_occurrences(tmp_path: Path):
+    source_a = tmp_path / "a.docx"
+    source_b = tmp_path / "b.docx"
+    output_dir = tmp_path / "edited"
+
+    for path in (source_a, source_b):
+        doc = Document()
+        doc.add_paragraph("Replace this repeated boilerplate.")
+        doc.save(path)
+
+    occurrence_a = _finding(existing="Replace this repeated boilerplate.", replacement="Replaced text.")
+    occurrence_a.fileName = "a.docx"
+    occurrence_a.verification = type("V", (), {"verdict": "CONFIRMED", "correction": None})()
+    occurrence_b = _finding(existing="Replace this repeated boilerplate.", replacement="Replaced text.")
+    occurrence_b.fileName = "b.docx"
+    occurrence_b.verification = type("V", (), {"verdict": "CONFIRMED", "correction": None})()
+    grouped = _finding(existing="Replace this repeated boilerplate.", replacement="Replaced text.")
+    grouped.fileName = "a.docx"
+    grouped.verification = type("V", (), {"verdict": "CONFIRMED", "correction": None})()
+    grouped.affected_files = ["a.docx", "b.docx"]
+    grouped.occurrences = [occurrence_a, occurrence_b]
+
+    reports = execute_edit_plan(
+        [0],
+        [grouped],
+        [],
+        [extract_text_from_docx(source_a), extract_text_from_docx(source_b)],
+        [source_a, source_b],
+        output_dir,
+    )
+
+    assert len(reports) == 2
+    assert Document(output_dir / "a_edited.docx").paragraphs[0].text == "Replaced text."
+    assert Document(output_dir / "b_edited.docx").paragraphs[0].text == "Replaced text."
 
 
 def test_same_source_and_output_raises_value_error(tmp_path: Path):

@@ -140,6 +140,31 @@ def test_none_existing_text_returns_not_found_warning():
     assert result.warning is not None
 
 
+def test_add_uses_explicit_anchor_text():
+    paragraph_map = [_mapping("Insert after this paragraph.", idx=0)]
+    finding = _finding(None, replacement="New requirement.")
+    finding.actionType = "ADD"
+    finding.anchorText = "Insert after this paragraph."
+    finding.insertPosition = "after"
+
+    result = locate_edit(finding, paragraph_map)
+
+    assert result.status == "matched"
+    assert result.locations[0].matched_text == "Insert after this paragraph."
+
+
+def test_add_missing_anchor_is_not_located():
+    paragraph_map = [_mapping("Legacy existing text should not be used.", idx=0)]
+    finding = _finding("Legacy existing text should not be used.", replacement="New requirement.")
+    finding.actionType = "ADD"
+    finding.insertPosition = "after"
+
+    result = locate_edit(finding, paragraph_map)
+
+    assert result.status == "not_found"
+    assert "anchorText" in (result.warning or "")
+
+
 def test_cross_paragraph_match_returns_multiple_locations_with_warning():
     paragraph_map = [
         _mapping("PART 1 - GENERAL", idx=0),

@@ -327,8 +327,9 @@ def locate_edit(
     min_confidence: float = 0.60,
 ) -> LocatorResult:
     replacement = _resolve_replacement_text(finding)
-    action_type = finding.actionType
-    existing_text = (finding.existingText or "").strip()
+    action_type = (finding.actionType or "").strip().upper()
+    locator_source = finding.anchorText if action_type == "ADD" else finding.existingText
+    existing_text = (locator_source or "").strip()
 
     if not existing_text:
         return LocatorResult(
@@ -337,7 +338,19 @@ def locate_edit(
             locations=[],
             replacement_text=replacement,
             action_type=action_type,
-            warning="Finding has no existingText; locator cannot determine an edit target.",
+            warning="ADD finding has no anchorText; locator cannot determine an insertion point."
+            if action_type == "ADD"
+            else "Finding has no existingText; locator cannot determine an edit target.",
+        )
+
+    if action_type == "ADD" and (finding.insertPosition or "").strip().lower() not in {"before", "after"}:
+        return LocatorResult(
+            finding=finding,
+            status="not_found",
+            locations=[],
+            replacement_text=replacement,
+            action_type=action_type,
+            warning="ADD finding has no explicit insertPosition.",
         )
 
     short_text = len(existing_text) < 15

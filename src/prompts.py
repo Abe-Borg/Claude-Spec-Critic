@@ -27,8 +27,10 @@ Each finding fields:
 - section
 - issue
 - actionType: "ADD" | "EDIT" | "DELETE"
-- existingText
-- replacementText
+- existingText: exact problematic text for EDIT/DELETE, or null for ADD
+- anchorText: exact nearby paragraph/table text for ADD insertion, otherwise null
+- insertPosition: "before" | "after" for ADD, otherwise null
+- replacementText: full replacement for EDIT, null for DELETE, or only the new inserted text for ADD
 - codeReference
 - confidence (0.0-1.0)
 If none, return [] inside tags.

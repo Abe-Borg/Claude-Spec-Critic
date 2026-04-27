@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 from anthropic._utils import maybe_transform
@@ -23,7 +24,14 @@ from src.reviewer import Finding, ReviewResult, _stream_review
 from src.cross_checker import run_cross_check
 from src.batch import BatchJob, BatchStatus, submit_verification_batch
 from src import gui
-from src.verifier import verify_finding, collect_verification_batch_results, _ERRORED_RETRY_MAX, VerificationResult
+from src.verifier import (
+    verify_finding,
+    collect_verification_batch_results,
+    _ERRORED_RETRY_MAX,
+    VerificationResult,
+    _collect_search_evidence,
+    _search_gate_failure,
+)
 from src.diagnostics import DiagnosticsReport
 from src.resume_state import (
     PHASE_REVIEW_POLL,
@@ -198,6 +206,62 @@ def test_dedup_does_not_merge_different_edits():
     f2 = Finding(severity="HIGH", fileName="b.docx", section="1", issue="Same issue", actionType="EDIT", existingText="different", replacementText="bar", codeReference="CBC", confidence=0.8)
     deduped = _deduplicate_findings([f1, f2])
     assert len(deduped) == 2
+
+
+def test_dedup_does_not_truncate_long_edit_text():
+    prefix = "A" * 220
+    f1 = _make_finding("Same issue")
+    f1.existingText = prefix + " first ending"
+    f1.replacementText = "replacement"
+    f2 = _make_finding("Same issue")
+    f2.fileName = "b.docx"
+    f2.existingText = prefix + " second ending"
+    f2.replacementText = "replacement"
+
+    deduped = _deduplicate_findings([f1, f2])
+
+    assert len(deduped) == 2
+
+
+def test_dedup_group_preserves_occurrences():
+    f1 = _make_finding("Same issue")
+    f2 = _make_finding("Same issue")
+    f2.fileName = "b.docx"
+
+    deduped = _deduplicate_findings([f1, f2])
+
+    assert len(deduped) == 1
+    assert deduped[0].affected_files == ["spec.docx", "b.docx"]
+    assert [f.fileName for f in deduped[0].occurrences] == ["spec.docx", "b.docx"]
+
+
+def test_search_evidence_error_only_result_is_not_success():
+    message = type("Message", (), {"content": [
+        {"type": "web_search_tool_result", "content": [{"type": "web_search_tool_result_error", "message": "rate limited"}]},
+    ]})()
+
+    urls, success_count, error_count = _collect_search_evidence(message)
+
+    assert urls == []
+    assert success_count == 0
+    assert error_count == 1
+    assert "all 1 search requests failed" in (_search_gate_failure(message) or "")
+
+
+def test_search_evidence_mixed_result_counts_success_and_error():
+    message = type("Message", (), {"content": [
+        {"type": "web_search_tool_result", "content": [
+            {"type": "web_search_result", "url": "https://example.com/source"},
+            {"type": "web_search_tool_result_error", "message": "one failed"},
+        ]},
+    ]})()
+
+    urls, success_count, error_count = _collect_search_evidence(message)
+
+    assert urls == ["https://example.com/source"]
+    assert success_count == 1
+    assert error_count == 1
+    assert _search_gate_failure(message) is None
 
 
 def test_cross_check_skip_status():
@@ -518,7 +582,7 @@ def test_load_batch_state_legacy_phase_migrates_to_review_poll(tmp_path: Path, m
     monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
     state_path.write_text(
         """{
-  "saved_at": "2026-03-26T00:00:00+00:00",
+  "saved_at": "2026-04-26T00:00:00+00:00",
   "phase": "review",
   "batch_id": "msgbatch_legacy",
   "job_type": "review",
@@ -764,6 +828,7 @@ def test_continuation_request_accepts_sdk_content_blocks():
         ToolUseBlock(type="tool_use", id="toolu_test123", name="web_search", input={"query": "2025 CMC outside air"}),
     ]
     request = _build_continuation_request("prompt text", content_blocks, cycle=CALIFORNIA_2025)
+    json.dumps(request)
 
     transformed = maybe_transform({"requests": [{"custom_id": "verify__0", "params": request}]}, BatchCreateParams)
 

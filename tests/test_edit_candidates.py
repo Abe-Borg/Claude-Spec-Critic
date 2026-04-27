@@ -3,7 +3,7 @@ from src.reviewer import Finding
 from src.verifier import VerificationResult
 
 
-def _finding(*, action="EDIT", existing="text", replacement="new", verdict="CONFIRMED", correction=None):
+def _finding(*, action="EDIT", existing="text", replacement="new", verdict="CONFIRMED", correction=None, anchor=None, insert=None):
     f = Finding(
         severity="HIGH",
         fileName="spec.docx",
@@ -14,6 +14,8 @@ def _finding(*, action="EDIT", existing="text", replacement="new", verdict="CONF
         replacementText=replacement,
         codeReference="CBC",
         confidence=0.9,
+        anchorText=anchor,
+        insertPosition=insert,
     )
     if verdict is not None:
         f.verification = VerificationResult(verdict=verdict, explanation="", sources=[], correction=correction)
@@ -61,7 +63,7 @@ def test_disputed_marked_ineligible_with_reason():
 
 
 def test_add_action_included_and_eligible_when_verified():
-    candidates = classify_edit_candidates([_finding(action="ADD", verdict="CONFIRMED")])
+    candidates = classify_edit_candidates([_finding(action="ADD", existing=None, anchor="Anchor paragraph", insert="after", verdict="CONFIRMED")])
 
     assert len(candidates) == 1
     c = candidates[0]
@@ -69,6 +71,20 @@ def test_add_action_included_and_eligible_when_verified():
     assert c.eligible is True
     assert c.default_selected is True
     assert c.ineligible_reason is None
+
+
+def test_add_action_without_explicit_anchor_is_ineligible():
+    candidates = classify_edit_candidates([_finding(action="ADD", existing="legacy anchor", anchor=None, insert="after", verdict="CONFIRMED")])
+
+    assert candidates[0].eligible is False
+    assert candidates[0].ineligible_reason == "Finding has no anchor text to locate in the document"
+
+
+def test_add_action_without_insert_position_is_ineligible():
+    candidates = classify_edit_candidates([_finding(action="ADD", existing=None, anchor="Anchor paragraph", insert=None, verdict="CONFIRMED")])
+
+    assert candidates[0].eligible is False
+    assert candidates[0].ineligible_reason == "ADD finding has no explicit insert position"
 
 
 def test_none_verification_marked_ineligible():
@@ -90,11 +106,10 @@ def test_empty_existing_text_marked_ineligible():
     assert c.default_selected is False
     assert c.ineligible_reason == "Finding has no anchor text to locate in the document"
 
-
 def test_mixed_findings_counts_and_ordering_with_cross_check():
     main = [
         _finding(verdict="CONFIRMED"),
-        _finding(action="ADD", verdict="CONFIRMED"),
+        _finding(action="ADD", existing=None, anchor="Anchor paragraph", insert="after", verdict="CONFIRMED"),
         _finding(verdict="UNVERIFIED"),
     ]
     cross = [

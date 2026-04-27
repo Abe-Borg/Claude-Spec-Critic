@@ -157,6 +157,8 @@ def load_batch_state() -> Optional[dict]:
         return None
     try:
         saved_at = datetime.fromisoformat(state["saved_at"])
+        if saved_at.tzinfo is None:
+            saved_at = saved_at.replace(tzinfo=timezone.utc)
         age_hours = (datetime.now(timezone.utc) - saved_at).total_seconds() / 3600
         if age_hours > BATCH_STATE_MAX_AGE_HOURS:
             delete_batch_state()

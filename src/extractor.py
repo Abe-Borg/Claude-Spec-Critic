@@ -123,7 +123,12 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         paragraphs.extend(entry.text for entry in header_footer_entries)
 
     content = "\n\n".join(paragraphs)
-    assert "\n\n".join(m.text for m in paragraph_map) == content, "Paragraph map text does not reconstruct content"
+    reconstructed = "\n\n".join(m.text for m in paragraph_map)
+    if reconstructed != content:
+        raise ValueError(
+            f"Paragraph map text does not reconstruct extracted content for {filepath.name} "
+            f"({len(paragraph_map)} mapped entries)."
+        )
 
     return ExtractedSpec(
         filename=filepath.name,

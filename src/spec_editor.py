@@ -21,6 +21,7 @@ from .edit_locator import EditLocation, LocatorResult
 
 _WHITESPACE_RE = re.compile(r"[\s\u00A0]+")
 _HEADING_HINT_RE = re.compile(r"^\s*(PART\s+\d+|SECTION\s+\d+(\.\d+)*)\b", flags=re.IGNORECASE)
+MIN_AUTO_APPLY_CONFIDENCE = 0.85
 
 
 def _normalize_text_for_add(text: str) -> str:
@@ -221,6 +222,18 @@ def _is_whole_paragraph_delete(action: EditAction) -> bool:
         and location.match_start == 0
         and location.match_end == len(location.mapping.text)
     )
+
+
+def _is_structural_delete(action: EditAction) -> bool:
+    return _is_whole_paragraph_delete(action)
+
+
+def _text_precondition_holds(text: str, action: EditAction) -> bool:
+    start = action.location.match_start
+    end = action.location.match_end
+    if start < 0 or end < start or end > len(text):
+        return False
+    return text[start:end] == action.location.matched_text
 
 
 def _action_confidence(action: EditAction) -> float:
@@ -429,37 +442,26 @@ def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
         )
 
     anchor_text = action.location.matched_text or anchor_paragraph.text
-    replacement_norm = _normalize_text_for_add(replacement)
-    anchor_norm = _normalize_text_for_add(anchor_text)
-
-    position = "replace"
-    new_content = replacement
-    if anchor_norm and replacement_norm.startswith(anchor_norm):
-        position = "after"
-        new_content = replacement[len(anchor_text):].strip()
-    elif anchor_norm and replacement_norm.endswith(anchor_norm):
-        position = "before"
-        new_content = replacement[: max(0, len(replacement) - len(anchor_text))].strip()
-    elif anchor_norm and anchor_norm not in replacement_norm:
-        position = "after"
-        new_content = replacement
-
-    if position == "replace":
-        ok, detail = _replace_in_paragraph(
-            anchor_paragraph,
-            action.location.match_start,
-            action.location.match_end,
-            replacement,
-        )
+    if not _text_precondition_holds(anchor_paragraph.text, action):
         return EditOutcome(
             action=action,
-            status="applied" if ok else "failed",
-            detail=f"ADD fallback to replace: {detail}",
-            original_text=anchor_text,
-            new_text=anchor_paragraph.text if ok else None,
+            status="skipped",
+            detail="ADD anchor no longer matches the current document text.",
+            original_text=anchor_paragraph.text,
+            new_text=None,
         )
 
-    paragraphs = _split_insert_paragraphs(new_content)
+    position = (action.locator_result.finding.insertPosition or "").strip().lower()
+    if position not in {"before", "after"}:
+        return EditOutcome(
+            action=action,
+            status="skipped",
+            detail="ADD action missing explicit before/after insert position.",
+            original_text=anchor_paragraph.text,
+            new_text=None,
+        )
+
+    paragraphs = _split_insert_paragraphs(replacement)
     if not paragraphs:
         return EditOutcome(
             action=action,
@@ -499,15 +501,27 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
 
-    non_add_actions = [action for action in actions_to_apply if action.action_type != "ADD"]
+    non_structural_actions = [
+        action for action in actions_to_apply
+        if action.action_type != "ADD" and not _is_structural_delete(action)
+    ]
     add_actions = sorted(
         (action for action in actions_to_apply if action.action_type == "ADD"),
         key=lambda item: item.location.mapping.body_index,
         reverse=True,
     )
+    delete_actions = sorted(
+        (action for action in actions_to_apply if _is_structural_delete(action)),
+        key=lambda item: item.location.mapping.body_index,
+        reverse=True,
+    )
 
-    body_children = list(doc.element.body)
-    for action in non_add_actions:
+    for action in non_structural_actions + add_actions + delete_actions:
+        if action.action_type == "ADD":
+            outcomes.append(_apply_add_action(action, doc))
+            continue
+
+        body_children = list(doc.element.body)
         mapping = action.location.mapping
         original_text = action.location.matched_text
 
@@ -539,6 +553,18 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 continue
             paragraph = Paragraph(element, doc)
             paragraph_before = paragraph.text
+
+            if not _text_precondition_holds(paragraph_before, action):
+                outcomes.append(
+                    EditOutcome(
+                        action=action,
+                        status="skipped",
+                        detail="Target text no longer matches the current document; edit was not applied.",
+                        original_text=paragraph_before,
+                        new_text=None,
+                    )
+                )
+                continue
 
             if action.action_type == "DELETE" and action.location.match_start == 0 and action.location.match_end == len(paragraph_before):
                 ok = _delete_paragraph(paragraph)
@@ -605,6 +631,30 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 continue
 
             paragraph_before = target_paragraph.text
+            if not _text_precondition_holds(paragraph_before, EditAction(
+                locator_result=action.locator_result,
+                location=EditLocation(
+                    mapping=action.location.mapping,
+                    match_start=start,
+                    match_end=end,
+                    matched_text=action.location.matched_text,
+                    match_confidence=action.location.match_confidence,
+                    match_method=action.location.match_method,
+                ),
+                replacement_text=action.replacement_text,
+                action_type=action.action_type,
+                finding_index=action.finding_index,
+            )):
+                outcomes.append(
+                    EditOutcome(
+                        action=action,
+                        status="skipped",
+                        detail="Table target text no longer matches the current document; edit was not applied.",
+                        original_text=paragraph_before,
+                        new_text=None,
+                    )
+                )
+                continue
             if action.action_type == "DELETE" and start == 0 and end == len(paragraph_before):
                 ok, replace_detail = _replace_in_paragraph(target_paragraph, start, end, "")
                 outcomes.append(
@@ -640,9 +690,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 new_text=None,
             )
         )
-
-    for action in add_actions:
-        outcomes.append(_apply_add_action(action, doc))
 
     try:
         doc.save(BytesIO())
@@ -694,14 +741,18 @@ def build_edit_actions(locator_results: list[LocatorResult]) -> list[EditAction]
             continue
         if result.status == "not_found" or not result.locations:
             continue
+        if result.status == "ambiguous":
+            result.warning = "Ambiguous locator result; manual review required."
+            continue
 
         best_location = max(result.locations, key=lambda location: location.match_confidence)
+        if best_location.match_confidence < MIN_AUTO_APPLY_CONFIDENCE:
+            result.warning = f"Locator confidence {best_location.match_confidence:.2f} is below the auto-apply threshold."
+            continue
         if best_location.mapping.element_type in {"header", "footer"}:
             if result.warning is None:
                 result.warning = "Header/footer findings are review-only and cannot be auto-applied yet."
             continue
-        if result.status == "ambiguous" and result.warning is None:
-            result.warning = "Ambiguous locator result; selecting highest-confidence location for auto-apply."
 
         actions.append(
             EditAction(

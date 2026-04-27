@@ -7,6 +7,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Callable
 
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
@@ -114,11 +115,14 @@ def _get_verification_system_prompt(cycle: CodeCycle) -> str:
         "Tool usage guidance:",
         "",
         "- You MUST use web search before rendering a verdict.",
-        "- Use code_execution only when you need calculations, data parsing, value comparison, or other computation.",
-        "- Do NOT use code_execution as a substitute for source gathering.",
-        "- Do NOT use code_execution just to format your JSON response.",
         "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
     ])
+
+
+def _field(obj, name: str, default=None):
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
 
 
 def _collect_search_evidence(message) -> tuple[list[str], int, int]:
@@ -126,26 +130,25 @@ def _collect_search_evidence(message) -> tuple[list[str], int, int]:
     success_count = 0
     error_count = 0
     for block in getattr(message, "content", []) or []:
-        block_type = getattr(block, "type", None)
+        block_type = _field(block, "type")
         if block_type == "web_search_tool_result":
-            block_content = getattr(block, "content", None)
+            block_content = _field(block, "content")
             if block_content is None:
                 # Backward-compatible fallback for legacy/mocked objects.
-                block_content = getattr(block, "results", None)
+                block_content = _field(block, "results")
             if isinstance(block_content, list):
-                if block_content:
-                    success_count += 1
                 for item in block_content:
-                    item_type = getattr(item, "type", None)
+                    item_type = _field(item, "type")
                     if item_type == "web_search_tool_result_error":
                         error_count += 1
                         continue
                     if item_type not in (None, "web_search_result"):
                         continue
-                    url = getattr(item, "url", None)
+                    url = _field(item, "url")
                     if url:
                         search_urls.append(url)
-            elif getattr(block_content, "type", None) == "web_search_tool_result_error":
+                        success_count += 1
+            elif _field(block_content, "type") == "web_search_tool_result_error":
                 # Anthropic SDK models this as a union:
                 # WebSearchToolResultBlock.content can be a WebSearchToolResultError object.
                 error_count += 1
@@ -153,6 +156,28 @@ def _collect_search_evidence(message) -> tuple[list[str], int, int]:
             # Backward-compatible fallback in case SDK/server emits top-level error blocks.
             error_count += 1
     return search_urls, success_count, error_count
+
+
+def _jsonable(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items() if v is not None}
+    if hasattr(value, "model_dump"):
+        return _jsonable(value.model_dump(exclude_none=True))
+    if hasattr(value, "dict"):
+        return _jsonable(value.dict(exclude_none=True))
+    return str(value)
+
+
+def _serialize_content_blocks(content_blocks: list) -> list[dict]:
+    return [_jsonable(block) for block in content_blocks or []]
 
 
 def _web_search_count(message) -> int:
@@ -164,7 +189,7 @@ def _web_search_count(message) -> int:
 def _search_gate_failure(message) -> str | None:
     _, success_count, error_count = _collect_search_evidence(message)
     web_search_count = _web_search_count(message)
-    if web_search_count > 0 and success_count > 0:
+    if success_count > 0:
         return None
     if error_count > 0 and success_count == 0:
         return f"Web search attempted but all {error_count} search requests failed."
@@ -244,7 +269,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                 if stop_reason == "end_turn":
                     break
                 if stop_reason == "pause_turn":
-                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "assistant", "content": _serialize_content_blocks(list(response.content or []))})
                     messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
                     continue
                 return VerificationResult(verdict="UNVERIFIED", explanation=f"Verification response incomplete (stop_reason: {stop_reason}).")
@@ -398,7 +423,7 @@ def _build_continuation_request(prompt: str, assistant_content_blocks: list, *, 
         "tools": [WEB_SEARCH_TOOL],
         "messages": [
             {"role": "user", "content": prompt},
-            {"role": "assistant", "content": assistant_content_blocks},
+            {"role": "assistant", "content": _serialize_content_blocks(assistant_content_blocks)},
             {"role": "user", "content": [{"type": "text", "text": "continue"}]},
         ],
     }
@@ -439,9 +464,7 @@ def _classify_wave_results(
                     finding_idx=finding_idx,
                     original_custom_id=custom_id,
                     classification="continue",
-                    # SDK Pydantic models serialize correctly when passed back
-                    # into batch request messages. Verified by regression test.
-                    assistant_content_blocks=list(getattr(message, "content", []) or []),
+                    assistant_content_blocks=_serialize_content_blocks(list(getattr(message, "content", []) or [])),
                     unverified_reason="pause_turn",
                 )
             )

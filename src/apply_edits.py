@@ -68,6 +68,22 @@ def _build_failure_report(
     )
 
 
+def _expand_selected_finding(finding: Finding) -> list[Finding]:
+    if not finding.occurrences:
+        return [finding]
+
+    expanded: list[Finding] = []
+    for occurrence in finding.occurrences:
+        if occurrence.verification is None:
+            occurrence.verification = finding.verification
+        if occurrence.anchorText is None:
+            occurrence.anchorText = finding.anchorText
+        if occurrence.insertPosition is None:
+            occurrence.insertPosition = finding.insertPosition
+        expanded.append(occurrence)
+    return expanded
+
+
 def execute_edit_plan(
     selected_finding_indices: list[int],
     all_findings: list[Finding],
@@ -95,7 +111,8 @@ def execute_edit_plan(
     selected_pairs: list[tuple[int, Finding]] = []
     for idx in selected_finding_indices:
         if 0 <= idx < len(merged_findings):
-            selected_pairs.append((idx, merged_findings[idx]))
+            for occurrence in _expand_selected_finding(merged_findings[idx]):
+                selected_pairs.append((idx, occurrence))
         else:
             log(f"Skipping out-of-range selected finding index: {idx}")
 
@@ -124,7 +141,7 @@ def execute_edit_plan(
             if locator_result.status == "not_found":
                 log(f"[{filename}] Finding #{original_index} not found in document text.")
             elif locator_result.status == "ambiguous":
-                log(f"[{filename}] Finding #{original_index} was ambiguous; highest-confidence target will be used.")
+                log(f"[{filename}] Finding #{original_index} was ambiguous; manual review required.")
             if locator_result.warning:
                 log(f"[{filename}] Finding #{original_index} warning: {locator_result.warning}")
 

@@ -62,6 +62,9 @@ class Finding:
     confidence: float = 0.5
     verification: VerificationResult | None = None
     affected_files: list[str] = field(default_factory=list)
+    anchorText: str | None = None
+    insertPosition: str | None = None
+    occurrences: list["Finding"] = field(default_factory=list)
 
 
 @dataclass
@@ -179,6 +182,8 @@ def _parse_findings(data: list) -> list[Finding]:
             replacementText=str(item.get("replacementText")) if item.get("replacementText") is not None else None,
             codeReference=str(item.get("codeReference")) if item.get("codeReference") is not None else None,
             confidence=confidence,
+            anchorText=str(item.get("anchorText")) if item.get("anchorText") is not None else None,
+            insertPosition=str(item.get("insertPosition")).strip().lower() if item.get("insertPosition") is not None else None,
         ))
     return findings
 
@@ -219,14 +224,28 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             result.parse_status = "ok"
             result.elapsed_seconds = time.time() - start_time
             return result
-        except (RateLimitError, APIConnectionError):
-            time.sleep(2 ** attempt * 5)
-        except InternalServerError:
-            time.sleep(2 ** attempt * 10)
-        except APIStatusError as e:
-            if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
+        except (RateLimitError, APIConnectionError) as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt * 5)
+                continue
+            result.error = f"{e.__class__.__name__}: {e}"
+            result.elapsed_seconds = time.time() - start_time
+            return result
+        except InternalServerError as e:
+            if attempt < max_retries - 1:
                 time.sleep(2 ** attempt * 10)
                 continue
+            result.error = f"{e.__class__.__name__}: {e}"
+            result.elapsed_seconds = time.time() - start_time
+            return result
+        except APIStatusError as e:
+            if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt * 10)
+                    continue
+                result.error = f"{e.__class__.__name__}: {e}"
+                result.elapsed_seconds = time.time() - start_time
+                return result
             result.error = f"API error: {e}"
             result.elapsed_seconds = time.time() - start_time
             return result
