@@ -62,6 +62,8 @@ class Finding:
     confidence: float = 0.5
     verification: VerificationResult | None = None
     affected_files: list[str] = field(default_factory=list)
+    anchorText: str | None = None
+    insertPosition: str | None = None
 
 
 @dataclass
@@ -169,6 +171,12 @@ def _parse_findings(data: list) -> list[Finding]:
             confidence = max(0.0, min(1.0, float(item.get("confidence", 0.5))))
         except Exception:
             confidence = 0.5
+        anchor_text_raw = item.get("anchorText")
+        anchor_text = str(anchor_text_raw) if anchor_text_raw is not None else None
+        insert_position_raw = item.get("insertPosition")
+        insert_position = str(insert_position_raw).strip().lower() if insert_position_raw is not None else None
+        if insert_position not in {"before", "after"}:
+            insert_position = None
         findings.append(Finding(
             severity=sev,
             fileName=str(item.get("fileName") or "").strip(),
@@ -179,6 +187,8 @@ def _parse_findings(data: list) -> list[Finding]:
             replacementText=str(item.get("replacementText")) if item.get("replacementText") is not None else None,
             codeReference=str(item.get("codeReference")) if item.get("codeReference") is not None else None,
             confidence=confidence,
+            anchorText=anchor_text,
+            insertPosition=insert_position,
         ))
     return findings
 

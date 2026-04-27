@@ -44,6 +44,8 @@ def classify_edit_candidates(
     for idx, finding in enumerate(merged):
         action_type = (finding.actionType or "").strip().upper()
         existing_text = (finding.existingText or "").strip()
+        anchor_text = (finding.anchorText or "").strip()
+        insert_position = (finding.insertPosition or "").strip().lower()
         verification = finding.verification
         verdict = (verification.verdict or "").strip().upper() if verification else ""
 
@@ -53,7 +55,14 @@ def classify_edit_candidates(
             eligible = False
             ineligible_reason = f"Unsupported action type: {action_type or 'UNKNOWN'}"
 
-        if eligible and not existing_text:
+        if eligible and action_type == "ADD":
+            if not anchor_text:
+                eligible = False
+                ineligible_reason = "ADD finding has no anchor text for insertion point"
+            elif insert_position not in {"before", "after"}:
+                eligible = False
+                ineligible_reason = "ADD finding has no insertPosition (\"before\"/\"after\")"
+        elif eligible and not existing_text:
             eligible = False
             ineligible_reason = "Finding has no anchor text to locate in the document"
 

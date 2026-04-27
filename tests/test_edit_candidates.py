@@ -3,7 +3,21 @@ from src.reviewer import Finding
 from src.verifier import VerificationResult
 
 
-def _finding(*, action="EDIT", existing="text", replacement="new", verdict="CONFIRMED", correction=None):
+def _finding(
+    *,
+    action="EDIT",
+    existing="text",
+    replacement="new",
+    verdict="CONFIRMED",
+    correction=None,
+    anchor_text=None,
+    insert_position=None,
+):
+    if action == "ADD":
+        if anchor_text is None:
+            anchor_text = "Anchor paragraph text"
+        if insert_position is None:
+            insert_position = "after"
     f = Finding(
         severity="HIGH",
         fileName="spec.docx",
@@ -14,6 +28,8 @@ def _finding(*, action="EDIT", existing="text", replacement="new", verdict="CONF
         replacementText=replacement,
         codeReference="CBC",
         confidence=0.9,
+        anchorText=anchor_text,
+        insertPosition=insert_position,
     )
     if verdict is not None:
         f.verification = VerificationResult(verdict=verdict, explanation="", sources=[], correction=correction)
@@ -109,3 +125,30 @@ def test_mixed_findings_counts_and_ordering_with_cross_check():
     assert [c.finding_index for c in candidates] == [0, 1, 2, 3, 4]
     assert [c.eligible for c in candidates] == [True, True, True, False, True]
     assert candidates[3].ineligible_reason == "Finding was disputed by the verifier"
+
+
+def test_add_action_without_anchor_text_marked_ineligible():
+    candidates = classify_edit_candidates([_finding(action="ADD", verdict="CONFIRMED", anchor_text="")])
+
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.eligible is False
+    assert c.ineligible_reason == "ADD finding has no anchor text for insertion point"
+
+
+def test_add_action_without_insert_position_marked_ineligible():
+    candidates = classify_edit_candidates([_finding(action="ADD", verdict="CONFIRMED", anchor_text="Anchor", insert_position="")])
+
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.eligible is False
+    assert "insertPosition" in c.ineligible_reason
+
+
+def test_add_action_with_invalid_insert_position_marked_ineligible():
+    candidates = classify_edit_candidates([_finding(action="ADD", verdict="CONFIRMED", anchor_text="Anchor", insert_position="middle")])
+
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.eligible is False
+    assert "insertPosition" in c.ineligible_reason

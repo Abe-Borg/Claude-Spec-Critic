@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from dataclasses import dataclass, field
@@ -69,14 +70,21 @@ def _normalize_issue_text(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip().lower()
 
 
+def _full_text_digest(text: str | None) -> str:
+    normalized = (text or "").strip().lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _dedup_key(f: Finding) -> tuple:
     return (
         _normalize_issue_text(f.issue),
         (f.section or "").strip().lower(),
         (f.codeReference or "").strip().lower(),
         f.actionType,
-        (f.existingText or "").strip().lower()[:200],
-        (f.replacementText or "").strip().lower()[:200],
+        _full_text_digest(f.existingText),
+        _full_text_digest(f.replacementText),
+        _full_text_digest(f.anchorText),
+        (f.insertPosition or "").strip().lower(),
     )
 
 
@@ -110,6 +118,8 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             codeReference=rep.codeReference,
             confidence=max(f.confidence for f in group),
             affected_files=files,
+            anchorText=rep.anchorText,
+            insertPosition=rep.insertPosition,
         ))
     return out
 
@@ -179,7 +189,7 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
 def _is_retryable_batch_review_result(rr: ReviewResult | None) -> bool:
     if rr is None:
         return True
-    if rr.parse_status in ("parse_error", "incomplete"):
+    if rr.parse_status in ("parse_error", "incomplete", "batch_failed"):
         return True
     if not rr.error:
         return False
@@ -337,8 +347,16 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
             )
             truncated_specs.append(filename)
             continue
+        if rr.parse_status == "batch_failed":
+            errors.append(
+                f"{filename}: {rr.error or 'Batch request failed.'} "
+                "No findings extracted. Re-run this spec individually."
+            )
+            truncated_specs.append(filename)
+            continue
         if rr.error:
             errors.append(f"{filename}: {rr.error}")
+            truncated_specs.append(filename)
             continue
         all_findings.extend(rr.findings)
         if rr.thinking:
@@ -376,11 +394,30 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
         state.cross_check_result = skipped
         _log_cross_check_status(log, skipped)
         return state
+    failed_filenames = set(state.truncated_specs)
+    cross_check_specs = [s for s in specs if s.filename not in failed_filenames]
+    if failed_filenames:
+        log(
+            f"Cross-check excluding {len(failed_filenames)} spec(s) that failed review: "
+            f"{', '.join(sorted(failed_filenames))}"
+        )
+    if len(cross_check_specs) < 2:
+        skipped = ReviewResult(
+            findings=[],
+            cross_check_status="skipped",
+            thinking=(
+                "Cross-check skipped: fewer than two specs reviewed successfully "
+                f"(failed: {', '.join(sorted(failed_filenames)) or 'none'})."
+            ),
+        )
+        state.cross_check_result = skipped
+        _log_cross_check_status(log, skipped)
+        return state
     dedup_findings = [
         f for f in state.review_result.findings
         if not (f.verification and f.verification.verdict == "DISPUTED")
     ]
-    cross = run_cross_check(specs, dedup_findings, project_context=project_context, cycle=cycle)
+    cross = run_cross_check(cross_check_specs, dedup_findings, project_context=project_context, cycle=cycle)
     state.cross_check_result = cross
     _log_cross_check_status(log, cross)
     return state

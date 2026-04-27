@@ -172,3 +172,72 @@ def test_locate_edits_batch_helper():
     assert len(results) == 2
     assert results[0].status == "matched"
     assert results[1].status == "not_found"
+
+
+def test_locate_edit_add_uses_anchor_text_and_insert_position():
+    paragraph_map = [
+        _mapping("PART 1 - GENERAL", idx=0),
+        _mapping("Provide submittals within ten days.", idx=1),
+        _mapping("End of section.", idx=2),
+    ]
+    finding = Finding(
+        severity="HIGH",
+        fileName="spec.docx",
+        section="1",
+        issue="Add seismic restraint requirement",
+        actionType="ADD",
+        existingText=None,
+        replacementText="Provide seismic restraints per ASCE 7-22.",
+        codeReference="ASCE",
+        confidence=0.9,
+        anchorText="Provide submittals within ten days.",
+        insertPosition="after",
+    )
+
+    result = locate_edit(finding, paragraph_map)
+
+    assert result.status == "matched"
+    assert result.locations[0].mapping.body_index == 1
+    assert result.replacement_text == "Provide seismic restraints per ASCE 7-22."
+
+
+def test_locate_edit_add_without_anchor_text_returns_not_found():
+    paragraph_map = [_mapping("Some paragraph.", idx=0)]
+    finding = Finding(
+        severity="HIGH",
+        fileName="spec.docx",
+        section="1",
+        issue="i",
+        actionType="ADD",
+        existingText=None,
+        replacementText="new",
+        codeReference="C",
+        confidence=0.9,
+        anchorText=None,
+        insertPosition="after",
+    )
+
+    result = locate_edit(finding, paragraph_map)
+    assert result.status == "not_found"
+    assert "anchorText" in (result.warning or "")
+
+
+def test_locate_edit_add_without_insert_position_returns_not_found():
+    paragraph_map = [_mapping("Anchor paragraph.", idx=0)]
+    finding = Finding(
+        severity="HIGH",
+        fileName="spec.docx",
+        section="1",
+        issue="i",
+        actionType="ADD",
+        existingText=None,
+        replacementText="new",
+        codeReference="C",
+        confidence=0.9,
+        anchorText="Anchor paragraph.",
+        insertPosition=None,
+    )
+
+    result = locate_edit(finding, paragraph_map)
+    assert result.status == "not_found"
+    assert "insertPosition" in (result.warning or "")

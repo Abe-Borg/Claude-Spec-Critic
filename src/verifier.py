@@ -122,6 +122,12 @@ def _get_verification_system_prompt(cycle: CodeCycle) -> str:
 
 
 def _collect_search_evidence(message) -> tuple[list[str], int, int]:
+    """Return (urls, success_count, error_count) for a single message.
+
+    A search block counts as successful only when it yields at least one
+    usable result URL. Error-only result lists count solely as errors so
+    they cannot satisfy the external-grounding gate.
+    """
     search_urls: list[str] = []
     success_count = 0
     error_count = 0
@@ -132,9 +138,8 @@ def _collect_search_evidence(message) -> tuple[list[str], int, int]:
             if block_content is None:
                 # Backward-compatible fallback for legacy/mocked objects.
                 block_content = getattr(block, "results", None)
+            block_added_url = False
             if isinstance(block_content, list):
-                if block_content:
-                    success_count += 1
                 for item in block_content:
                     item_type = getattr(item, "type", None)
                     if item_type == "web_search_tool_result_error":
@@ -145,10 +150,13 @@ def _collect_search_evidence(message) -> tuple[list[str], int, int]:
                     url = getattr(item, "url", None)
                     if url:
                         search_urls.append(url)
+                        block_added_url = True
             elif getattr(block_content, "type", None) == "web_search_tool_result_error":
                 # Anthropic SDK models this as a union:
                 # WebSearchToolResultBlock.content can be a WebSearchToolResultError object.
                 error_count += 1
+            if block_added_url:
+                success_count += 1
         elif block_type == "web_search_tool_result_error":
             # Backward-compatible fallback in case SDK/server emits top-level error blocks.
             error_count += 1
@@ -164,10 +172,12 @@ def _web_search_count(message) -> int:
 def _search_gate_failure(message) -> str | None:
     _, success_count, error_count = _collect_search_evidence(message)
     web_search_count = _web_search_count(message)
-    if web_search_count > 0 and success_count > 0:
+    if success_count > 0:
         return None
-    if error_count > 0 and success_count == 0:
+    if web_search_count > 0 and error_count > 0:
         return f"Web search attempted but all {error_count} search requests failed."
+    if web_search_count > 0:
+        return f"Web search attempted ({web_search_count} requests) but no usable results were returned."
     return "Verification did not perform web search. Verdict requires external grounding."
 
 
@@ -255,6 +265,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
             all_search_urls: list[str] = []
             any_search_success = False
             total_search_errors = 0
+            total_web_search_requests = 0
             for resp in all_responses:
                 for block in getattr(resp, "content", []) or []:
 
@@ -266,11 +277,17 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                 if successes > 0:
                     any_search_success = True
                 total_search_errors += errors
+                total_web_search_requests += _web_search_count(resp)
             if not any_search_success:
                 if total_search_errors > 0:
                     return VerificationResult(
                         verdict="UNVERIFIED",
                         explanation=f"Web search attempted but all {total_search_errors} search requests failed.",
+                    )
+                if total_web_search_requests > 0:
+                    return VerificationResult(
+                        verdict="UNVERIFIED",
+                        explanation=f"Web search attempted ({total_web_search_requests} requests) but no usable results were returned.",
                     )
                 return VerificationResult(
                     verdict="UNVERIFIED",

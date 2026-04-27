@@ -27,8 +27,10 @@ Each finding fields:
 - section
 - issue
 - actionType: "ADD" | "EDIT" | "DELETE"
-- existingText
-- replacementText
+- existingText: for EDIT/DELETE, the exact source text to replace or remove. Null for ADD.
+- replacementText: for EDIT, the new text. For ADD, ONLY the new content to insert (do not echo the anchor). For DELETE, null.
+- anchorText: REQUIRED for ADD. The exact existing paragraph text the new content should be inserted next to, used to locate the insertion point. Null for EDIT/DELETE.
+- insertPosition: REQUIRED for ADD. "before" or "after", indicating placement relative to anchorText. Null for EDIT/DELETE.
 - codeReference
 - confidence (0.0-1.0)
 If none, return [] inside tags.

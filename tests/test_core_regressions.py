@@ -200,6 +200,34 @@ def test_dedup_does_not_merge_different_edits():
     assert len(deduped) == 2
 
 
+def test_dedup_does_not_merge_findings_that_share_long_prefix():
+    shared_prefix = "A" * 220
+    f1 = Finding(
+        severity="HIGH",
+        fileName="a.docx",
+        section="1",
+        issue="Long-text issue",
+        actionType="EDIT",
+        existingText=shared_prefix + " — variant one",
+        replacementText="rep1",
+        codeReference="CBC",
+        confidence=0.9,
+    )
+    f2 = Finding(
+        severity="HIGH",
+        fileName="b.docx",
+        section="1",
+        issue="Long-text issue",
+        actionType="EDIT",
+        existingText=shared_prefix + " — variant two",
+        replacementText="rep1",
+        codeReference="CBC",
+        confidence=0.9,
+    )
+    deduped = _deduplicate_findings([f1, f2])
+    assert len(deduped) == 2
+
+
 def test_cross_check_skip_status():
     result = run_cross_check([], [])
     assert result.cross_check_status == "skipped"
@@ -477,6 +505,116 @@ def test_round_trip_finalize_state_payload_uses_review_state():
     assert restored["resume_flags"]["verification_completed"] is True
 
 
+def test_collect_search_evidence_error_only_block_does_not_count_as_success():
+    from src.verifier import _collect_search_evidence
+
+    class _Block:
+        def __init__(self, block_type, content):
+            self.type = block_type
+            self.content = content
+
+    class _ErrorItem:
+        type = "web_search_tool_result_error"
+
+    class _Resp:
+        content = [_Block("web_search_tool_result", [_ErrorItem(), _ErrorItem()])]
+
+    urls, success_count, error_count = _collect_search_evidence(_Resp())
+    assert urls == []
+    assert success_count == 0
+    assert error_count == 2
+
+
+def test_collect_search_evidence_url_block_counts_as_success():
+    from src.verifier import _collect_search_evidence
+
+    class _Block:
+        def __init__(self, block_type, content):
+            self.type = block_type
+            self.content = content
+
+    class _UrlItem:
+        type = "web_search_result"
+        url = "https://dgs.ca.gov/x"
+
+    class _Resp:
+        content = [_Block("web_search_tool_result", [_UrlItem()])]
+
+    urls, success_count, error_count = _collect_search_evidence(_Resp())
+    assert urls == ["https://dgs.ca.gov/x"]
+    assert success_count == 1
+    assert error_count == 0
+
+
+def test_search_gate_failure_rejects_error_only_results():
+    from src.verifier import _search_gate_failure
+
+    class _Block:
+        def __init__(self, block_type, content):
+            self.type = block_type
+            self.content = content
+
+    class _ErrorItem:
+        type = "web_search_tool_result_error"
+
+    class _ServerToolUse:
+        web_search_requests = 2
+
+    class _Usage:
+        server_tool_use = _ServerToolUse()
+
+    class _Resp:
+        content = [_Block("web_search_tool_result", [_ErrorItem(), _ErrorItem()])]
+        usage = _Usage()
+
+    failure = _search_gate_failure(_Resp())
+    assert failure is not None
+    assert "all 2 search requests failed" in failure
+
+
+def test_search_gate_failure_rejects_no_result_blocks_with_usage_searches():
+    from src.verifier import _search_gate_failure
+
+    class _ServerToolUse:
+        web_search_requests = 1
+
+    class _Usage:
+        server_tool_use = _ServerToolUse()
+
+    class _Resp:
+        content = []
+        usage = _Usage()
+
+    failure = _search_gate_failure(_Resp())
+    assert failure is not None
+    assert "no usable results" in failure
+
+
+def test_search_gate_failure_passes_when_url_present():
+    from src.verifier import _search_gate_failure
+
+    class _Block:
+        def __init__(self, block_type, content):
+            self.type = block_type
+            self.content = content
+
+    class _UrlItem:
+        type = "web_search_result"
+        url = "https://nfpa.org/std"
+
+    class _ServerToolUse:
+        web_search_requests = 1
+
+    class _Usage:
+        server_tool_use = _ServerToolUse()
+
+    class _Resp:
+        content = [_Block("web_search_tool_result", [_UrlItem()])]
+        usage = _Usage()
+
+    assert _search_gate_failure(_Resp()) is None
+
+
 def test_verify_finding_non_end_turn_returns_unverified_with_stop_reason(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
@@ -584,6 +722,76 @@ def test_run_cross_check_for_batch_skips_when_specs_missing():
     assert result.cross_check_skipped_due_to_missing_specs is True
     assert result.cross_check_result is not None
     assert result.cross_check_result.cross_check_status == "skipped"
+
+
+def test_run_cross_check_excludes_specs_that_failed_review(monkeypatch: pytest.MonkeyPatch):
+    submission = _make_submission(batch_id="msgbatch_cross_failed", cross_check_enabled=True)
+    state = CollectedBatchState(
+        submission=submission,
+        review_result=ReviewResult(findings=[_make_finding("x")]),
+        truncated_specs=["bad.docx"],
+    )
+    spec_good_a = ExtractedSpec(filename="good_a.docx", content="A", word_count=1, source_path="/tmp/a.docx", source_format="docx")
+    spec_good_b = ExtractedSpec(filename="good_b.docx", content="B", word_count=1, source_path="/tmp/b.docx", source_format="docx")
+    spec_bad = ExtractedSpec(filename="bad.docx", content="Z", word_count=1, source_path="/tmp/bad.docx", source_format="docx")
+
+    captured: dict[str, list] = {}
+
+    def _fake_run_cross_check(specs, findings, *, project_context="", cycle=None, **_kwargs):
+        captured["specs"] = list(specs)
+        return ReviewResult(findings=[], cross_check_status="completed")
+
+    monkeypatch.setattr("src.pipeline.run_cross_check", _fake_run_cross_check)
+
+    result = run_cross_check_for_batch(state, specs=[spec_good_a, spec_bad, spec_good_b])
+
+    assert [s.filename for s in captured["specs"]] == ["good_a.docx", "good_b.docx"]
+    assert result.cross_check_result is not None
+    assert result.cross_check_result.cross_check_status == "completed"
+
+
+def test_run_cross_check_skipped_when_only_one_spec_survives_review():
+    submission = _make_submission(batch_id="msgbatch_cross_only_one", cross_check_enabled=True)
+    state = CollectedBatchState(
+        submission=submission,
+        review_result=ReviewResult(findings=[_make_finding("x")]),
+        truncated_specs=["bad_a.docx", "bad_b.docx"],
+    )
+    only_good = ExtractedSpec(filename="good.docx", content="g", word_count=1, source_path="/tmp/g.docx", source_format="docx")
+    spec_bad_a = ExtractedSpec(filename="bad_a.docx", content="a", word_count=1, source_path="/tmp/a.docx", source_format="docx")
+    spec_bad_b = ExtractedSpec(filename="bad_b.docx", content="b", word_count=1, source_path="/tmp/b.docx", source_format="docx")
+
+    result = run_cross_check_for_batch(state, specs=[only_good, spec_bad_a, spec_bad_b])
+
+    assert result.cross_check_result is not None
+    assert result.cross_check_result.cross_check_status == "skipped"
+    assert "fewer than two" in result.cross_check_result.thinking
+
+
+def test_collect_review_batch_results_marks_errored_request_as_truncated(monkeypatch: pytest.MonkeyPatch):
+    spec = ExtractedSpec(filename="failing.docx", content="x", word_count=1, source_path="/tmp/failing.docx", source_format="docx")
+    submission = _make_submission(batch_id="msgbatch_errored", prepared_specs=[spec])
+
+    failing_result = ReviewResult(
+        findings=[],
+        model="claude-opus-4-6",
+        error="Batch request errored: rate-limit-exceeded",
+        parse_status="batch_failed",
+    )
+    monkeypatch.setattr(
+        "src.pipeline.retrieve_review_results",
+        lambda _job, **_kwargs: {"review__spec__0": failing_result},
+    )
+    monkeypatch.setattr(
+        "src.pipeline._recover_retryable_review_batch_results",
+        lambda submission, results_by_request, **_kwargs: results_by_request,
+    )
+
+    state = collect_review_batch_results(submission)
+
+    assert "spec.docx" in state.truncated_specs
+    assert state.review_result.findings == []
+    assert "rate-limit-exceeded" in (state.review_result.error or "")
 
 
 def test_resume_verification_state_rejected_when_batch_missing(monkeypatch: pytest.MonkeyPatch):

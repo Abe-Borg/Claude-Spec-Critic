@@ -93,7 +93,7 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
             err = f"Batch request {result.result.type}"
             if hasattr(result.result, "error") and result.result.error:
                 err += f": {result.result.error}"
-            results[custom_id] = ReviewResult(findings=[], error=err)
+            results[custom_id] = ReviewResult(findings=[], model=model, error=err, parse_status="batch_failed")
             continue
         message = result.result.message
         response_text = "".join(block.text for block in message.content if hasattr(block, "text") and block.text is not None)

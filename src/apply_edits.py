@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,28 @@ from .edit_locator import locate_edits
 from .extractor import ExtractedSpec, extract_text_from_docx
 from .reviewer import Finding
 from .spec_editor import EditAction, EditOutcome, EditReport, apply_edits_to_spec, build_edit_actions
+
+
+def _expand_finding_across_affected_files(finding: Finding) -> list[Finding]:
+    """Expand a deduped finding into one Finding per affected file.
+
+    Dedup collapses identical findings from multiple files into a single
+    Finding with affected_files set; without expansion, the apply layer
+    would only edit one file per group.
+    """
+    affected = list(finding.affected_files) if finding.affected_files else []
+    if not affected:
+        return [finding]
+    if len(affected) == 1 and affected[0] == finding.fileName:
+        return [finding]
+
+    expanded: list[Finding] = []
+    for fname in affected:
+        if fname == finding.fileName:
+            expanded.append(finding)
+        else:
+            expanded.append(dataclasses.replace(finding, fileName=fname))
+    return expanded
 
 
 def _ensure_paragraph_maps(specs: list[ExtractedSpec], source_paths: list[Path]) -> list[ExtractedSpec]:
@@ -101,7 +124,8 @@ def execute_edit_plan(
 
     findings_by_file: dict[str, list[tuple[int, Finding]]] = defaultdict(list)
     for original_index, finding in selected_pairs:
-        findings_by_file[finding.fileName].append((original_index, finding))
+        for expanded in _expand_finding_across_affected_files(finding):
+            findings_by_file[expanded.fileName].append((original_index, expanded))
 
     reports: list[EditReport] = []
 

@@ -327,18 +327,42 @@ def locate_edit(
     min_confidence: float = 0.60,
 ) -> LocatorResult:
     replacement = _resolve_replacement_text(finding)
-    action_type = finding.actionType
-    existing_text = (finding.existingText or "").strip()
+    action_type = (finding.actionType or "").strip().upper()
 
-    if not existing_text:
-        return LocatorResult(
-            finding=finding,
-            status="not_found",
-            locations=[],
-            replacement_text=replacement,
-            action_type=action_type,
-            warning="Finding has no existingText; locator cannot determine an edit target.",
-        )
+    # ADD actions are located via the explicit anchorText (the paragraph the new
+    # content should be inserted next to). EDIT/DELETE actions locate via the
+    # existing source text being replaced or removed.
+    if action_type == "ADD":
+        existing_text = (finding.anchorText or "").strip()
+        if not existing_text:
+            return LocatorResult(
+                finding=finding,
+                status="not_found",
+                locations=[],
+                replacement_text=replacement,
+                action_type=action_type,
+                warning="ADD finding has no anchorText; locator cannot determine an insertion point.",
+            )
+        if finding.insertPosition not in {"before", "after"}:
+            return LocatorResult(
+                finding=finding,
+                status="not_found",
+                locations=[],
+                replacement_text=replacement,
+                action_type=action_type,
+                warning="ADD finding has no insertPosition (\"before\"/\"after\"); locator cannot determine an insertion point.",
+            )
+    else:
+        existing_text = (finding.existingText or "").strip()
+        if not existing_text:
+            return LocatorResult(
+                finding=finding,
+                status="not_found",
+                locations=[],
+                replacement_text=replacement,
+                action_type=action_type,
+                warning="Finding has no existingText; locator cannot determine an edit target.",
+            )
 
     short_text = len(existing_text) < 15
 

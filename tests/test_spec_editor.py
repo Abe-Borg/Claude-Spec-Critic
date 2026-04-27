@@ -290,6 +290,270 @@ def test_table_cell_edit_updates_target_only(tmp_path: Path):
     assert report.edits_applied == 1
 
 
+def test_expand_finding_across_affected_files_unaffected_when_single_file():
+    from src.apply_edits import _expand_finding_across_affected_files
+
+    f = Finding(
+        severity="HIGH",
+        fileName="a.docx",
+        section="1",
+        issue="i",
+        actionType="EDIT",
+        existingText="x",
+        replacementText="y",
+        codeReference="C",
+        confidence=0.9,
+    )
+    expanded = _expand_finding_across_affected_files(f)
+    assert len(expanded) == 1
+    assert expanded[0] is f
+
+
+def test_expand_finding_across_affected_files_clones_per_file():
+    from src.apply_edits import _expand_finding_across_affected_files
+
+    f = Finding(
+        severity="HIGH",
+        fileName="a.docx",
+        section="1",
+        issue="i",
+        actionType="EDIT",
+        existingText="x",
+        replacementText="y",
+        codeReference="C",
+        confidence=0.9,
+        affected_files=["a.docx", "b.docx", "c.docx"],
+    )
+    expanded = _expand_finding_across_affected_files(f)
+    assert [clone.fileName for clone in expanded] == ["a.docx", "b.docx", "c.docx"]
+    # Clones preserve all other attributes
+    for clone in expanded:
+        assert clone.existingText == "x"
+        assert clone.replacementText == "y"
+        assert clone.severity == "HIGH"
+
+
+def test_execute_edit_plan_applies_grouped_finding_to_every_affected_file(tmp_path: Path):
+    from src.apply_edits import execute_edit_plan
+    from src.extractor import extract_text_from_docx
+    from src.verifier import VerificationResult
+
+    source_a = tmp_path / "a.docx"
+    source_b = tmp_path / "b.docx"
+    output_dir = tmp_path / "out"
+
+    for path in (source_a, source_b):
+        doc = Document()
+        doc.add_paragraph("Provide seismic bracing per ASCE 7-16.")
+        doc.save(path)
+
+    spec_a = extract_text_from_docx(source_a)
+    spec_b = extract_text_from_docx(source_b)
+
+    grouped = Finding(
+        severity="HIGH",
+        fileName="a.docx",
+        section="1",
+        issue="Outdated ASCE reference (found in 2 specs: a.docx, b.docx)",
+        actionType="EDIT",
+        existingText="ASCE 7-16",
+        replacementText="ASCE 7-22",
+        codeReference="ASCE",
+        confidence=0.95,
+        affected_files=["a.docx", "b.docx"],
+    )
+    grouped.verification = VerificationResult(verdict="CONFIRMED", explanation="ok", sources=[], correction=None)
+
+    reports = execute_edit_plan(
+        selected_finding_indices=[0],
+        all_findings=[grouped],
+        cross_check_findings=[],
+        extracted_specs=[spec_a, spec_b],
+        source_paths=[source_a, source_b],
+        output_dir=output_dir,
+    )
+
+    assert len(reports) == 2
+    output_paths = sorted(report.output_path.name for report in reports)
+    assert output_paths == ["a_edited.docx", "b_edited.docx"]
+    for report in reports:
+        assert report.edits_applied == 1
+        saved = Document(report.output_path)
+        assert saved.paragraphs[0].text == "Provide seismic bracing per ASCE 7-22."
+
+
+def test_build_edit_actions_skips_ambiguous_locator_results():
+    text = "Use non-shrink grout at equipment bases."
+    mapping = ParagraphMapping(body_index=0, element_type="paragraph", text=text, table_index=None, row_index=None, cell_index=None)
+    loc_a = EditLocation(mapping=mapping, match_start=0, match_end=len(text), matched_text=text, match_confidence=0.95, match_method="exact")
+    loc_b = EditLocation(mapping=mapping, match_start=0, match_end=len(text), matched_text=text, match_confidence=0.93, match_method="exact")
+    finding = Finding(severity="HIGH", fileName="spec.docx", section="1", issue="i", actionType="EDIT", existingText=text, replacementText="x", codeReference="C", confidence=0.9)
+    result = LocatorResult(finding=finding, status="ambiguous", locations=[loc_a, loc_b], replacement_text="x", action_type="EDIT", warning=None)
+
+    actions = build_edit_actions([result])
+    assert actions == []
+    assert result.warning is not None
+    assert "manual review" in result.warning.lower()
+
+
+def test_build_edit_actions_skips_cross_paragraph_span_match():
+    para_one = ParagraphMapping(body_index=1, element_type="paragraph", text="Provide submittals within ten days.", table_index=None, row_index=None, cell_index=None)
+    para_two = ParagraphMapping(body_index=2, element_type="paragraph", text="Submit operation and maintenance manuals.", table_index=None, row_index=None, cell_index=None)
+    loc_one = EditLocation(mapping=para_one, match_start=0, match_end=len(para_one.text), matched_text=para_one.text, match_confidence=0.88, match_method="exact")
+    loc_two = EditLocation(mapping=para_two, match_start=0, match_end=len(para_two.text), matched_text=para_two.text, match_confidence=0.88, match_method="exact")
+    finding = Finding(severity="HIGH", fileName="spec.docx", section="1", issue="i", actionType="EDIT", existingText=para_one.text + "\n\n" + para_two.text, replacementText="x", codeReference="C", confidence=0.9)
+    result = LocatorResult(finding=finding, status="matched", locations=[loc_one, loc_two], replacement_text="x", action_type="EDIT", warning="Matched text spans multiple paragraphs; review before auto-applying edit.")
+
+    actions = build_edit_actions([result])
+    assert actions == []
+
+
+def test_build_edit_actions_allows_unique_match():
+    text = "Provide seismic bracing per ASCE 7-16."
+    mapping = ParagraphMapping(body_index=0, element_type="paragraph", text=text, table_index=None, row_index=None, cell_index=None)
+    loc = EditLocation(mapping=mapping, match_start=28, match_end=37, matched_text="ASCE 7-16", match_confidence=1.0, match_method="exact")
+    finding = Finding(severity="HIGH", fileName="spec.docx", section="1", issue="i", actionType="EDIT", existingText="ASCE 7-16", replacementText="ASCE 7-22", codeReference="C", confidence=0.9)
+    result = LocatorResult(finding=finding, status="matched", locations=[loc], replacement_text="ASCE 7-22", action_type="EDIT", warning=None)
+
+    actions = build_edit_actions([result])
+    assert len(actions) == 1
+    assert actions[0].location is loc
+
+
+def test_add_action_inserts_after_anchor_using_explicit_position(tmp_path: Path):
+    from src.edit_locator import locate_edit
+    from src.extractor import extract_text_from_docx
+
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Provide submittals within ten days.")
+    doc.add_paragraph("End of section.")
+    doc.save(source)
+
+    spec = extract_text_from_docx(source)
+    finding = Finding(
+        severity="HIGH",
+        fileName="source.docx",
+        section="1",
+        issue="Add seismic restraint requirement",
+        actionType="ADD",
+        existingText=None,
+        replacementText="Provide seismic restraints per ASCE 7-22.",
+        codeReference="ASCE",
+        confidence=0.95,
+        anchorText="Provide submittals within ten days.",
+        insertPosition="after",
+    )
+
+    result = locate_edit(finding, spec.paragraph_map)
+    actions = build_edit_actions([result])
+    assert len(actions) == 1
+
+    apply_edits_to_spec(source, output, actions)
+    saved = Document(output)
+    paragraphs = [p.text for p in saved.paragraphs]
+    assert paragraphs == [
+        "Provide submittals within ten days.",
+        "Provide seismic restraints per ASCE 7-22.",
+        "End of section.",
+    ]
+
+
+def test_add_action_inserts_before_anchor_using_explicit_position(tmp_path: Path):
+    from src.edit_locator import locate_edit
+    from src.extractor import extract_text_from_docx
+
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("First paragraph.")
+    doc.add_paragraph("Last paragraph.")
+    doc.save(source)
+
+    spec = extract_text_from_docx(source)
+    finding = Finding(
+        severity="HIGH",
+        fileName="source.docx",
+        section="1",
+        issue="Insert preamble",
+        actionType="ADD",
+        existingText=None,
+        replacementText="Preamble paragraph.",
+        codeReference="C",
+        confidence=0.95,
+        anchorText="Last paragraph.",
+        insertPosition="before",
+    )
+
+    result = locate_edit(finding, spec.paragraph_map)
+    actions = build_edit_actions([result])
+    apply_edits_to_spec(source, output, actions)
+
+    saved = Document(output)
+    paragraphs = [p.text for p in saved.paragraphs]
+    assert paragraphs == ["First paragraph.", "Preamble paragraph.", "Last paragraph."]
+
+
+def test_delete_then_add_inserts_at_correct_anchor_after_index_shift(tmp_path: Path):
+    from src.edit_locator import locate_edit
+    from src.extractor import extract_text_from_docx
+
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Keep paragraph 0")
+    doc.add_paragraph("Delete me paragraph 1")
+    doc.add_paragraph("Anchor paragraph 2")
+    doc.add_paragraph("Tail paragraph 3")
+    doc.save(source)
+
+    spec = extract_text_from_docx(source)
+
+    delete_finding = Finding(
+        severity="HIGH",
+        fileName="source.docx",
+        section="1",
+        issue="Delete me",
+        actionType="DELETE",
+        existingText="Delete me paragraph 1",
+        replacementText=None,
+        codeReference="C",
+        confidence=0.95,
+    )
+    add_finding = Finding(
+        severity="HIGH",
+        fileName="source.docx",
+        section="1",
+        issue="Add new content after anchor",
+        actionType="ADD",
+        existingText=None,
+        replacementText="Inserted paragraph",
+        codeReference="C",
+        confidence=0.95,
+        anchorText="Anchor paragraph 2",
+        insertPosition="after",
+    )
+
+    delete_result = locate_edit(delete_finding, spec.paragraph_map)
+    add_result = locate_edit(add_finding, spec.paragraph_map)
+    actions = build_edit_actions([delete_result, add_result])
+    assert len(actions) == 2
+
+    apply_edits_to_spec(source, output, actions)
+    saved = Document(output)
+    paragraphs = [p.text for p in saved.paragraphs]
+    assert paragraphs == [
+        "Keep paragraph 0",
+        "Anchor paragraph 2",
+        "Inserted paragraph",
+        "Tail paragraph 3",
+    ]
+
+
 def test_same_source_and_output_raises_value_error(tmp_path: Path):
     source = tmp_path / "source.docx"
     doc = Document()

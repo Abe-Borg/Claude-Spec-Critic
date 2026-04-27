@@ -386,7 +386,15 @@ def _resolve_cell_and_offsets(action: EditAction, row) -> tuple[Paragraph | None
     return None, None, None, "Could not resolve target paragraph inside table cell."
 
 
-def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
+def _apply_add_action(action: EditAction, doc: Document, body_children: list) -> EditOutcome:
+    """Insert paragraphs near an anchor.
+
+    body_children is the snapshot list captured before any mutations. Element
+    references in that snapshot remain valid (and correctly indexed by original
+    body_index) even after deletes earlier in the document, because the Python
+    list is never reordered. We do, however, verify the anchor still exists in
+    the tree before inserting — a delete may have removed the anchor itself.
+    """
     mapping = action.location.mapping
     if mapping.element_type != "paragraph":
         return EditOutcome(
@@ -397,7 +405,6 @@ def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
             new_text=None,
         )
 
-    body_children = list(doc.element.body)
     if mapping.body_index < 0 or mapping.body_index >= len(body_children):
         return EditOutcome(
             action=action,
@@ -417,6 +424,15 @@ def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
             new_text=None,
         )
 
+    if anchor_element.getparent() is None:
+        return EditOutcome(
+            action=action,
+            status="skipped",
+            detail="Anchor paragraph was removed by a prior edit; ADD skipped to avoid stale-index insertion.",
+            original_text=action.location.matched_text,
+            new_text=None,
+        )
+
     anchor_paragraph = Paragraph(anchor_element, doc)
     replacement = (action.replacement_text or "").strip()
     if not replacement:
@@ -428,43 +444,23 @@ def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
             new_text=None,
         )
 
-    anchor_text = action.location.matched_text or anchor_paragraph.text
-    replacement_norm = _normalize_text_for_add(replacement)
-    anchor_norm = _normalize_text_for_add(anchor_text)
-
-    position = "replace"
-    new_content = replacement
-    if anchor_norm and replacement_norm.startswith(anchor_norm):
-        position = "after"
-        new_content = replacement[len(anchor_text):].strip()
-    elif anchor_norm and replacement_norm.endswith(anchor_norm):
-        position = "before"
-        new_content = replacement[: max(0, len(replacement) - len(anchor_text))].strip()
-    elif anchor_norm and anchor_norm not in replacement_norm:
-        position = "after"
-        new_content = replacement
-
-    if position == "replace":
-        ok, detail = _replace_in_paragraph(
-            anchor_paragraph,
-            action.location.match_start,
-            action.location.match_end,
-            replacement,
-        )
+    finding = action.locator_result.finding
+    insert_position = (finding.insertPosition or "").strip().lower()
+    if insert_position not in {"before", "after"}:
         return EditOutcome(
             action=action,
-            status="applied" if ok else "failed",
-            detail=f"ADD fallback to replace: {detail}",
-            original_text=anchor_text,
-            new_text=anchor_paragraph.text if ok else None,
+            status="failed",
+            detail="ADD action has no insertPosition (\"before\"/\"after\"); refusing to guess.",
+            original_text=anchor_paragraph.text,
+            new_text=None,
         )
 
-    paragraphs = _split_insert_paragraphs(new_content)
+    paragraphs = _split_insert_paragraphs(replacement)
     if not paragraphs:
         return EditOutcome(
             action=action,
             status="skipped",
-            detail="ADD replacement contained no additional content beyond anchor.",
+            detail="ADD replacement contained no insertable text after splitting.",
             original_text=anchor_paragraph.text,
             new_text=None,
         )
@@ -472,13 +468,13 @@ def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
     style_id = _reference_style_for_text(mapping.body_index, body_children, paragraphs[0])
     inserted_count = (
         _insert_paragraphs_after(anchor_element, paragraphs, style_id)
-        if position == "after"
+        if insert_position == "after"
         else _insert_paragraphs_before(anchor_element, paragraphs, style_id)
     )
     return EditOutcome(
         action=action,
         status="applied",
-        detail=f"Inserted {inserted_count} paragraph(s) {position} anchor paragraph.",
+        detail=f"Inserted {inserted_count} paragraph(s) {insert_position} anchor paragraph.",
         original_text=anchor_paragraph.text,
         new_text="\n\n".join(paragraphs),
     )
@@ -642,7 +638,7 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         )
 
     for action in add_actions:
-        outcomes.append(_apply_add_action(action, doc))
+        outcomes.append(_apply_add_action(action, doc, body_children))
 
     try:
         doc.save(BytesIO())
@@ -695,13 +691,23 @@ def build_edit_actions(locator_results: list[LocatorResult]) -> list[EditAction]
         if result.status == "not_found" or not result.locations:
             continue
 
-        best_location = max(result.locations, key=lambda location: location.match_confidence)
+        if result.status == "ambiguous":
+            if result.warning is None:
+                result.warning = "Ambiguous locator result; manual review required, edit not auto-applied."
+            continue
+
+        # A "matched" result with multiple locations means the locator fell back to
+        # a cross-paragraph span match. Those are structurally risky to auto-apply.
+        if len(result.locations) > 1:
+            if result.warning is None:
+                result.warning = "Match spans multiple paragraphs; manual review required, edit not auto-applied."
+            continue
+
+        best_location = result.locations[0]
         if best_location.mapping.element_type in {"header", "footer"}:
             if result.warning is None:
                 result.warning = "Header/footer findings are review-only and cannot be auto-applied yet."
             continue
-        if result.status == "ambiguous" and result.warning is None:
-            result.warning = "Ambiguous locator result; selecting highest-confidence location for auto-apply."
 
         actions.append(
             EditAction(
