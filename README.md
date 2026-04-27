@@ -1,82 +1,264 @@
 # Spec Critic
 
-**v2.8.3** — AI-assisted M&P specification review for California K-12 DSA projects.
+Spec Critic is a desktop QA/review tool for California MEP specification teams. It ingests CSI-style `.docx` specification sections (mechanical/plumbing focus), runs LLM-assisted compliance and constructability checks, verifies each finding against code references and web evidence, and produces both an interactive in-app report and a formal Word deliverable.
 
-## What It Does
+The project is optimized for DSA-oriented K-12 workflows and California code cycle selection (2022/2025), with an emphasis on:
 
-Spec Critic reviews mechanical and plumbing CSI-format `.docx` specifications against California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) using Claude Opus 4.6. It produces structured findings with severity classifications, confidence scores, verification verdicts backed by web search, and optional cross-spec coordination analysis.
+- high-signal findings,
+- explicit severity and confidence scoring,
+- deterministic batch/resume behavior,
+- and optional “apply edits back to source spec” automation.
 
-## Pipeline Stages
+---
 
-1. **Text Extraction** — Reads `.docx` files locally (paragraphs, tables, headers/footers)
-2. **Local Pre-Screening** — Detects LEED references and unresolved placeholders without API calls
-3. **Per-Spec Review** — Each spec sent individually to Claude Opus 4.6 for code compliance review
-4. **Deduplication** — Consolidates identical findings across multiple specs
-5. **Cross-Spec Coordination** *(optional)* — Full-content analysis of all specs together in a single 1M-token-context call to find inter-spec contradictions, scope gaps, and coordination issues
-6. **Verification** — Every finding verified by a secondary Claude Opus 4.6 pass with web search (multi-wave batch with retry/continuation support)
-7. **Edit Application** *(optional)* — Fuzzy-matched surgical edits applied directly to source `.docx` files
+## Current Status
 
-## Modes
+- **App version:** `2.8.3` (package `src.__version__`).
+- **Packaging version:** `2.8.0` in `pyproject.toml` (if you cut a release, sync this with `src/__init__.py`).
+- **Runtime:** Python 3.11+ desktop app (CustomTkinter + TkinterDnD2).
+- **Model stack:** Anthropic Claude Opus 4.6 for review/cross-check/verification.
 
-- **Real-time** — Immediate in-session processing (streaming API, higher cost)
-- **Batch** — Queued processing at 50% cost savings (usually 45 min–2 hrs, 24 hrs max)
+---
 
-Both modes use identical review prompts and criteria. Batch state is persisted to disk and survives app restarts — resume from any phase.
+## What the Application Does (End-to-End)
 
-## Output Options
+1. **Load spec files (`.docx` only).**
+2. **Extract body + table + header/footer text** while preserving useful paragraph mapping metadata.
+3. **Run local pre-screen checks** (LEED references, unresolved placeholders) without API calls.
+4. **Run primary compliance review** per spec (real-time or batch mode).
+5. **Deduplicate findings** across specs.
+6. **Optionally run cross-spec coordination check** to catch contradictions, scope gaps, and interface misses.
+7. **Run verification phase** with web-search-backed adjudication for each finding.
+8. **Present results** in GUI report windows.
+9. **Optionally export `.docx` review report.**
+10. **Optionally generate and apply surgical edits** back into source Word documents.
 
-- **View in App** — Interactive report window with collapsible finding cards, severity grouping, and JSON export
-- **Export Report** — Formatted `.docx` report with Word-native heading collapse, colored severity table, verification verdicts with sources, and coordination summary
+---
 
-## Code Cycles
+## Core Capabilities
 
-Supports California 2022 and 2025 code cycles. The selected cycle determines which editions of CBC, CMC, CPC, Energy Code, CALGreen, and ASCE 7 the reviewer checks against.
+### 1) Review Modes
 
-## Key Files
+- **Real-time mode**
+  - Immediate streaming review responses.
+  - Higher immediate cost profile.
+- **Batch mode**
+  - Uses Anthropic Message Batches API.
+  - Lower-cost asynchronous execution.
+  - Durable resume-state support across app restarts.
 
-| File | Purpose |
-|---|---|
-| `main.py` | PyInstaller entry point |
-| `src/gui.py` | CustomTkinter GUI — inputs, mode selection, batch resume, diagnostics |
-| `src/pipeline.py` | Core orchestration — preparation, review, cross-check, verification, finalization |
-| `src/reviewer.py` | Claude API client — streaming review, JSON extraction, finding parsing |
-| `src/verifier.py` | Web search verification — multi-wave batch with retry/continuation |
-| `src/batch.py` | Anthropic Message Batches API — submit, poll, retrieve for review and verification |
-| `src/batch_runtime.py` | Bounded polling runtime with timeout, no-progress detection, error thresholds |
-| `src/cross_checker.py` | Cross-spec coordination reviewer — full-content multi-spec analysis |
-| `src/extractor.py` | DOCX text extraction with paragraph mapping (body elements, tables, headers/footers) |
-| `src/preprocessor.py` | Local detection of LEED references and unresolved placeholders |
-| `src/prompts.py` | System prompt and user message construction |
-| `src/tokenizer.py` | Token counting, per-call limits, cross-check budget |
-| `src/edit_locator.py` | Fuzzy/exact/normalized/section-anchored paragraph matching |
-| `src/edit_candidates.py` | Eligibility classification for finding-to-edit selection |
-| `src/spec_editor.py` | Surgical DOCX edit application (paragraph replace, delete, add, table cell edits) |
-| `src/apply_edits.py` | Orchestration of locate → action build → apply workflow |
-| `src/report_exporter.py` | Word document report generation with severity table, verdicts, sources, and coordination |
-| `src/resume_state.py` | Durable serialization for batch resume across all pipeline phases |
-| `src/verification_config.py` | Shared config for verification model, tools, batch output beta |
-| `src/code_cycles.py` | California code cycle definitions (2022, 2025) |
-| `src/diagnostics.py` | In-memory diagnostics report with event timeline and phase durations |
-| `src/widgets.py` | Custom GUI widgets — TokenGauge, FileListPanel, EnhancedLog, ReportWindow, EditSelectionDialog, DiagnosticsWindow |
+### 2) Code Cycle Awareness
 
-## Requirements
+- Built-in support for:
+  - **California 2022 code cycle**
+  - **California 2025 code cycle**
+- Cycle selection drives prompt framing and code reference expectations across review + verification.
 
-- Python 3.11+
-- Anthropic API key (Claude Opus 4.6)
-- Dependencies: `anthropic`, `python-docx`, `customtkinter`, `tiktoken`, `platformdirs`
+### 3) Verification Wave Engine
 
-## Changelog
+Verification is not a trivial post-process; it includes:
 
-### v2.8.3
-- Verbose Word report now includes verification source URLs for each finding (rendered inline with blue text after the verdict/explanation/correction block)
+- structured verdict parsing,
+- evidence/source extraction,
+- retry/continuation logic,
+- bounded polling policies,
+- and multi-wave completion handling.
 
-### v2.8.2
-- Retryable connection error handling for transient httpx/urllib3 failures during streaming review
-- Per-spec errors surfaced on combined ReviewResult for clear reporting
-- Zero-findings-with-errors distinguished from clean passes in GUI
+### 4) Editable Output Pipeline
 
-### v2.8.0
-- Batch-only enforcement for verification (real-time verification removed)
-- Multi-wave verification batch with retry/continuation support
-- Bounded polling runtime with configurable timeouts and error thresholds
-- Durable resume state serialization across all pipeline phases
+When enabled, findings can be converted to edit candidates and applied to source docs through:
+
+- exact/normalized/fuzzy/section-anchored matching,
+- conflict resolution,
+- safe paragraph/table operations,
+- and per-file edit reporting.
+
+### 5) Reporting
+
+- **Interactive GUI report** with collapsible finding cards and severity grouping.
+- **Word export** with heading hierarchy, summary tables, alerts, verification outcomes, and optional verbose finding detail.
+
+---
+
+## Repository Structure
+
+```text
+.
+├── main.py                       # PyInstaller-friendly app entry point
+├── README.md                     # Project overview and operations guide
+├── CLAUDE.md                     # Deep technical architecture reference
+├── pyproject.toml                # Packaging metadata
+├── requirements.txt              # Runtime dependency pins/ranges
+├── tests/
+│   ├── test_core_regressions.py
+│   ├── test_edit_candidates.py
+│   ├── test_edit_locator.py
+│   └── test_spec_editor.py
+└── src/
+    ├── __init__.py               # app version string
+    ├── gui.py                    # main desktop application + orchestration hooks
+    ├── widgets.py                # reusable UI components and report windows
+    ├── pipeline.py               # orchestration for review/cross-check/verify
+    ├── reviewer.py               # primary Claude review client + parsing
+    ├── verifier.py               # verification engine + batch wave logic
+    ├── verification_config.py    # verification model/tool constants
+    ├── batch.py                  # Message Batches submit/poll/retrieve/cancel
+    ├── batch_runtime.py          # bounded poll policy/runtime helpers
+    ├── resume_state.py           # serialize/deserialize durable batch state
+    ├── extractor.py              # DOCX extraction + paragraph mapping
+    ├── preprocessor.py           # local non-LLM alert detection
+    ├── tokenizer.py              # token counting and budget checks
+    ├── prompts.py                # system/user prompt construction
+    ├── cross_checker.py          # cross-spec coordination analysis
+    ├── diagnostics.py            # event timeline + phase durations
+    ├── report_exporter.py        # formal Word report export
+    ├── edit_candidates.py        # finding -> edit-candidate classification
+    ├── edit_locator.py           # locating text spans in source docs
+    ├── spec_editor.py            # low-level Word edit application
+    ├── apply_edits.py            # orchestrated edit-plan execution
+    └── code_cycles.py            # cycle definitions + defaults
+```
+
+---
+
+## Installation
+
+### Prerequisites
+
+- Python **3.11+**
+- A valid **Anthropic API key**
+- Desktop environment with Tk support
+
+### Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Environment
+
+Set your Anthropic key before launch:
+
+```bash
+export ANTHROPIC_API_KEY="your_key_here"
+```
+
+(Windows PowerShell)
+
+```powershell
+$env:ANTHROPIC_API_KEY="your_key_here"
+```
+
+---
+
+## Running the App
+
+```bash
+python main.py
+```
+
+`main.py` is intentionally minimal and delegates to `src.gui.main()` so the same entry pattern works cleanly in both local and packaged/PyInstaller contexts.
+
+---
+
+## Typical User Workflow
+
+1. Launch app.
+2. Select one or more `.docx` spec files (drag/drop or browser).
+3. Select code cycle (2022 or 2025).
+4. Add optional project context.
+5. Choose mode (real-time or batch).
+6. Start review.
+7. (Optional) Enable cross-spec check.
+8. Let verification complete.
+9. Review findings in report window.
+10. Export report and/or apply suggested edits.
+
+---
+
+## Data Model Snapshot
+
+Important logical objects in the codebase:
+
+- `ExtractedSpec` — extracted source text + metadata.
+- `Finding` — normalized finding payload with severity/action/replacement details.
+- `ReviewResult` — parsed findings + token/accounting/error status.
+- `BatchJob`/`BatchStatus` — asynchronous batch handles.
+- `VerificationResult` — verdict + explanation + evidence URLs.
+- `PipelineResult` — end-state output consumed by UI/export.
+
+For field-level details, see `CLAUDE.md`.
+
+---
+
+## Reliability, Safety, and Operational Guards
+
+- Retryable transient connection handling during streaming.
+- Bounded polling policies for long-running batch operations.
+- Explicit no-progress and elapsed-time ceilings.
+- Resume-state snapshots persisted for restart recovery.
+- Finding deduplication to suppress duplicate noise.
+- Edit conflict resolution for overlapping replacements.
+
+---
+
+## Testing
+
+Run the unit/regression suite:
+
+```bash
+pytest -q
+```
+
+Focused test sets include:
+
+- edit candidate classification,
+- edit location matching,
+- spec editing behavior,
+- core regression protection for orchestration paths.
+
+---
+
+## Known Constraints
+
+- Input format is currently **`.docx` only**.
+- Quality of findings is still bounded by source spec clarity and completeness.
+- LLM-assisted QA is an expert-support system, not a substitute for licensed design responsibility.
+- API/network availability impacts turnaround for model-dependent phases.
+
+---
+
+## Release / Maintenance Checklist
+
+When cutting a release:
+
+1. Update `src/__init__.py` version.
+2. Sync `pyproject.toml` version.
+3. Update changelog/release notes.
+4. Run tests.
+5. Smoke test GUI flow (review + verify + export).
+
+---
+
+## Contributing
+
+If you are modifying behavior, strongly prefer this sequence:
+
+1. Add/adjust tests in `tests/`.
+2. Implement in `src/`.
+3. Validate with `pytest`.
+4. Verify GUI integration points in `src/gui.py` and `src/widgets.py`.
+5. Keep `README.md` (user-facing) and `CLAUDE.md` (engineer-facing) synchronized.
+
+---
+
+## Quick File Guide
+
+- Start at **`README.md`** if you need user/ops context.
+- Start at **`CLAUDE.md`** if you need architecture and internal contracts.
+- Start at **`src/pipeline.py`** if you need orchestration flow.
+- Start at **`src/gui.py`** if you need actual runtime UX pathing.
+- Start at **`tests/`** if you need expected behavior and guardrails.
