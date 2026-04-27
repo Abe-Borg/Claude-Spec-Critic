@@ -1,267 +1,311 @@
-# CLAUDE.md — Spec Critic v2.3.0
+# CLAUDE.md — Spec Critic Technical Reference
 
-Technical reference for AI-assisted development. This file describes architecture, module responsibilities, data flow, and conventions for the current codebase.
+This document is the engineering/operator reference for the Spec Critic codebase. It is intentionally implementation-focused and should be kept aligned with the actual runtime behavior in `src/`.
 
-## Application Overview
+---
 
-Spec Critic is a Python desktop application for reviewing mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. It extracts text from `.docx` files, performs local preprocessing, runs per-spec reviews (real-time or batch), optionally runs cross-spec coordination checks, verifies findings via web search, and presents results in-app or as exported Word reports.
+## 1) System Purpose
 
-## Module Map
+Spec Critic is a Python desktop application that performs AI-assisted review of California mechanical/plumbing specification documents (`.docx`).
 
-```
-src/
-├── __init__.py          # Package version (2.3.0)
-├── gui.py               # CustomTkinter GUI — all user interaction
-├── widgets.py           # Reusable UI components
-├── pipeline.py          # Core orchestration and phased batch flow
-├── report_exporter.py   # Word document (.docx) report generation
-├── cross_checker.py     # Cross-spec coordination check (Opus 4.6)
-├── batch.py             # Anthropic Message Batches API wrapper
-├── verifier.py          # Web search verification (Opus 4.6)
-├── extractor.py         # Text extraction (DOCX-only)
-├── preprocessor.py      # Local LEED/placeholder detection
-├── tokenizer.py         # Token counting and limits
-├── prompts.py           # System + user prompt builders
-├── reviewer.py          # Anthropic API client with streaming
-├── code_cycles.py       # California code cycle definitions (2022, 2025)
-└── resume_state.py      # Durable batch resume-state serialization/deserialization
-```
+Primary outcomes:
 
-## Data Flow
+- identify likely code/compliance and coordination issues,
+- classify findings with severity + confidence,
+- verify findings with web-search-backed evidence,
+- generate stakeholder-readable reports,
+- optionally apply precise edits back to Word source files.
 
-```
-User selects .docx files
-         │
-         ▼
-    extractor.py
-    extract_text(filepath) → ExtractedSpec
-         │
-         ▼
-    preprocessor.py
-    preprocess_spec() → LEED alerts, placeholder alerts
-         │
-         ▼
-    tokenizer.py
-    count_tokens() → per-spec token counts
-         │
-         ├──── Real-time path ────┐     ├──── Batch path ────┐
-         ▼                        │     ▼                     │
-    reviewer.py                   │  batch.py                 │
-    review_single_spec()          │  submit_review_batch()    │
-         │                        │     │                     │
-         ▼                        │     ▼                     │
-    pipeline.py                   │  collect_review_batch_results()
-    _deduplicate_findings()       │     │
-         ├────────────────────────┘     ├─────────────────────┐
-         ▼                              ▼                     │
-    run_cross_check_for_batch() or run_cross_check()          │
-         │                                                    │
-         ▼                                                    │
-    verifier.py (sequential or batch)                         │
-         │                                                    │
-         ▼                                                    │
-    finalize_batch_result() / PipelineResult                  │
-         │                                                    │
-         ├──── View in App ──── widgets.py (ReportWindow)     │
-         └──── Export Report ── report_exporter.py (.docx)    │
-```
+---
 
-## Key Data Structures
+## 2) Runtime Topology
 
-### ExtractedSpec (extractor.py)
-```python
-@dataclass
-class ExtractedSpec:
-    filename: str
-    content: str
-    word_count: int
-    source_path: str = ""
-    source_format: str = ""
-```
+### User Interface Layer
 
-### Finding (reviewer.py)
-```python
-@dataclass
-class Finding:
-    severity: str
-    fileName: str
-    section: str
-    issue: str
-    actionType: str
-    existingText: str | None
-    replacementText: str | None
-    codeReference: str | None
-    confidence: float = 0.5
-    verification: VerificationResult | None = None
-    affected_files: list[str] = field(default_factory=list)
-```
+- `src/gui.py`
+  - Main application window and user flow control.
+  - File selection, mode toggles, code cycle selection, start/resume controls.
+  - Bridges user actions to orchestration functions in `pipeline.py`.
+- `src/widgets.py`
+  - Composite UI components:
+    - token gauge,
+    - file panel,
+    - enhanced log,
+    - report windows,
+    - edit selection/summary dialogs,
+    - diagnostics viewer.
 
-### ReviewResult (reviewer.py)
-```python
-@dataclass
-class ReviewResult:
-    findings: list[Finding] = field(default_factory=list)
-    raw_response: str = ""
-    thinking: str = ""
-    model: str = MODEL_OPUS_46
-    input_tokens: int = 0
-    output_tokens: int = 0
-    elapsed_seconds: float = 0.0
-    error: str | None = None
-    stop_reason: str | None = None
-    parse_status: str | None = None
-    cross_check_status: str | None = None
+### Orchestration Layer
 
-    @property
-    def critical_count(self) -> int: ...
-    @property
-    def high_count(self) -> int: ...
-    @property
-    def medium_count(self) -> int: ...
-    @property
-    def gripe_count(self) -> int: ...
-    @property
-    def total_count(self) -> int: ...
-```
+- `src/pipeline.py`
+  - Central sequencing for extraction → review → dedup → cross-check → verification → finalize.
+  - Contains both convenience wrappers and explicit phased APIs used for resumable batch flow.
 
-### BatchSubmission and CollectedBatchState (pipeline.py)
-```python
-@dataclass
-class BatchSubmission:
-    job: BatchJob
-    files_reviewed: list[str] = field(default_factory=list)
-    review_request_ids: list[str] = field(default_factory=list)
-    leed_alerts: list[dict] = field(default_factory=list)
-    placeholder_alerts: list[dict] = field(default_factory=list)
-    model: str = MODEL_OPUS_46
-    project_context: str = ""
-    prepared_specs: list[ExtractedSpec] | None = None
-    cycle_label: str = DEFAULT_CYCLE.label
-    cross_check_enabled: bool = False
-    export_mode: bool = False
+### Model Interaction Layer
 
-@dataclass
-class CollectedBatchState:
-    submission: BatchSubmission
-    review_result: ReviewResult
-    files_reviewed: list[str] = field(default_factory=list)
-    leed_alerts: list[dict] = field(default_factory=list)
-    placeholder_alerts: list[dict] = field(default_factory=list)
-    cross_check_result: Optional[ReviewResult] = None
-    cross_check_skipped_due_to_missing_specs: bool = False
-```
+- `src/reviewer.py`
+  - Primary Claude review calls.
+  - Streaming response assembly and JSON array extraction.
+- `src/cross_checker.py`
+  - Multi-spec coordination analysis.
+- `src/verifier.py`
+  - Secondary verification adjudication, including batch-wave retries/continuations.
+- `src/prompts.py`
+  - Prompt builders (system + user).
+- `src/verification_config.py`
+  - Shared verification constants/configuration.
 
-## Module Details
+### Batch and Recovery Layer
 
-### extractor.py — DOCX-only text extraction
+- `src/batch.py`
+  - Message Batches API submit/poll/retrieve/cancel wrappers.
+- `src/batch_runtime.py`
+  - Poll policy and bounded waiting (elapsed/no-progress/errors).
+- `src/resume_state.py`
+  - Durable state serialization/deserialization for resumable workflows.
 
-**Public API:**
-- `extract_text(filepath: Path) -> ExtractedSpec` — dispatcher for supported extensions
-- `extract_text_from_docx(filepath: Path) -> ExtractedSpec`
-- `extract_multiple_specs(filepaths: list[Path]) -> list[ExtractedSpec]`
-- `SUPPORTED_EXTENSIONS = {".docx"}`
+### Document/Editing Layer
 
-Implementation notes:
-- Preserves body order by iterating `doc.element.body`
-- Flattens DOCX tables into pipe-delimited rows
-- No PDF extraction path
+- `src/extractor.py`
+  - DOCX text + structure extraction (including table and header/footer harvesting).
+- `src/preprocessor.py`
+  - Local static checks (LEED mentions, unresolved placeholders).
+- `src/edit_candidates.py`
+  - Selection/classification of findings suitable for automatic edits.
+- `src/edit_locator.py`
+  - Matching finding text to concrete paragraph/cell locations.
+- `src/spec_editor.py`
+  - Performs safe edit actions (replace/delete/add in paragraphs and tables).
+- `src/apply_edits.py`
+  - Orchestrates end-to-end edit plan execution across files.
 
-### prompts.py — Prompt builders
+### Reporting + Diagnostics Layer
 
-**Public API:**
-- `get_system_prompt(cycle: CodeCycle) -> str`
-- `get_single_spec_user_message(spec_content, filename, project_context, *, cycle) -> str`
+- `src/report_exporter.py`
+  - Produces final `.docx` reports with structured sections, severity tables, verification blocks, and optional verbose detail.
+- `src/diagnostics.py`
+  - Timestamped diagnostic events and phase duration summaries.
 
-`get_system_prompt()` is cycle-aware and injects selected California code references from `CodeCycle`.
+### Utility Domain Layer
 
-### code_cycles.py — California Code Cycle Definitions
+- `src/tokenizer.py`
+  - Token counting and context-budget heuristics.
+- `src/code_cycles.py`
+  - California code-cycle metadata and defaults.
+- `src/__init__.py`
+  - Package version source of truth for app runtime.
 
-Defines `CodeCycle` dataclass with edition references (CBC, CMC, CPC, Energy, CALGreen, ASCE 7).
+---
 
-**Public API:**
-- `CodeCycle` — frozen dataclass with `label`, `cbc`, `cmc`, `cpc`, `energy_code`, `calgreen`, `asce7`, `asce7_previous`, `cbc_previous`
-- `CALIFORNIA_2022`
-- `CALIFORNIA_2025`
-- `AVAILABLE_CYCLES`
-- `DEFAULT_CYCLE` (`CALIFORNIA_2025`)
+## 3) Key Domain Objects
 
-### resume_state.py — Durable Batch Resume State
+### `ExtractedSpec` (`extractor.py`)
+Represents one extracted specification unit with full content and metadata, including paragraph mapping used by edit-location logic.
 
-Serializes/deserializes pipeline state for crash recovery and app restart resume.
+### `Finding` (`reviewer.py`)
+Canonical issue object containing:
 
-**Public API:**
-- Phase constants: `PHASE_REVIEW_POLL`, `PHASE_REVIEW_COLLECT`, `PHASE_VERIFICATION_POLL`, `PHASE_FINALIZE`
-- `SUPPORTED_PHASES`
-- `build_resume_state(...) -> dict`
-- `deserialize_resume_state(payload) -> dict`
+- severity,
+- source file/section,
+- issue statement,
+- action type,
+- existing/replacement text,
+- code reference,
+- confidence,
+- optional verification payload.
 
-Key design:
-- Dataclasses round-trip through serializer/deserializer helpers
-- `build_resume_state()` stamps version and ISO UTC timestamp
-- GUI `load_batch_state()` uses `deserialize_resume_state()` and retains legacy v1 fallback migration logic
+### `ReviewResult` (`reviewer.py`)
+Aggregates findings and model run metadata:
 
-### batch.py — Anthropic Batches API
+- raw model content,
+- token usage,
+- elapsed time,
+- stop reason,
+- parse status,
+- optional error context.
 
-- `submit_review_batch(specs, *, project_context="", model=..., cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob`
-- `poll_batch(batch_id) -> BatchStatus`
-- `retrieve_review_results(job, *, model) -> dict[str, ReviewResult]`
-- `submit_verification_batch(findings, build_prompt_fn) -> BatchJob`
-- `retrieve_verification_results(job, findings, parse_response_fn) -> list[Finding]`
-- `cancel_batch(batch_id) -> str`
+### `BatchJob` / `BatchStatus` (`batch.py`)
+Tracks batch submission IDs and retrieved status fields from Anthropic.
 
-### cross_checker.py — Cross-spec coordination
+### `VerificationResult` (`verifier.py`)
+Structured post-review verdict and evidence summary attached per finding.
 
-- `run_cross_check(specs, existing_findings, *, project_context="", ..., cycle: CodeCycle = DEFAULT_CYCLE) -> ReviewResult`
-- Skips with explicit status for <2 specs or over-limit combined input
+### `PipelineResult` (`pipeline.py`)
+Final object delivered to UI/report export, combining reviewed files, alerts, findings, and optional cross-check data.
 
-### verifier.py — Verification
+---
 
-- `verify_findings(findings, *, progress=..., cycle=...) -> list[Finding]`
-- `verify_findings_batch(findings, *, log=..., progress=..., poll_interval=..., cycle=...) -> list[Finding]`
-- `start_verification_batch(findings, *, cycle) -> BatchJob`
-- `collect_verification_batch_results(job, findings, *, log, progress, poll_interval, cycle) -> list[Finding]`
+## 4) Primary Execution Flows
 
-### pipeline.py — Orchestration and phased batch APIs
+## A. Real-time Flow
 
-Primary phased batch APIs used by GUI:
-- `collect_review_batch_results(submission) -> CollectedBatchState`
-- `run_cross_check_for_batch(state, specs, ...) -> CollectedBatchState`
-- `prepare_verification_work(state) -> list[Finding]`
-- `start_batch_verification(findings, ...) -> BatchJob`
-- `collect_batch_verification_results(job, findings, ...) -> list[Finding]`
-- `finalize_batch_result(state) -> PipelineResult`
+1. UI selects files and options.
+2. `extractor.extract_multiple_specs()` loads specs.
+3. `preprocessor.preprocess_spec()` emits local alerts.
+4. `reviewer.review_single_spec()` runs per-spec primary review.
+5. `pipeline._deduplicate_findings()` merges duplicates.
+6. Optional `cross_checker.run_cross_check()`.
+7. `verifier.verify_findings()` (or verification batch path depending call site).
+8. `PipelineResult` is rendered/exported.
 
-Convenience wrapper still available:
-- `collect_batch_results(submission, ...) -> PipelineResult`
+## B. Batch Flow (Phased + Resumable)
 
-### report_exporter.py — Word export
+1. `pipeline.start_batch_review()` prepares specs and submits review batch.
+2. `pipeline.collect_review_batch_results()` retrieves/parses results.
+3. Optional `pipeline.run_cross_check_for_batch()`.
+4. `pipeline.prepare_verification_work()` collects all findings.
+5. `pipeline.start_batch_verification()` submits verification batch job.
+6. `pipeline.collect_batch_verification_results()` executes wave logic until completion/limits.
+7. `pipeline.finalize_batch_result()` returns `PipelineResult`.
+8. Resume support is driven by `resume_state.build_resume_state()` + `deserialize_resume_state()`.
 
-- `export_report(result: PipelineResult, output_path, *, project_context="", cross_check_enabled=False, cycle_label="2025")`
+---
 
-### tokenizer.py — Token limits
+## 5) Prompting and Code-Cycle Behavior
 
-- `MAX_CONTEXT_TOKENS = 1_000_000`
-- `MAX_OUTPUT_TOKENS_OPUS = 128_000`
-- `MAX_OUTPUT_TOKENS_SONNET = 64_000`
-- `RECOMMENDED_MAX = 500_000`
-- `CROSS_CHECK_OVERHEAD = 50_000`
-- `CROSS_CHECK_OUTPUT_BUDGET = 128_000`
-- `CROSS_CHECK_RECOMMENDED_MAX = 822_000`
+- Prompt system text is produced by `prompts.get_system_prompt(cycle=...)`.
+- Per-spec user content is produced by `prompts.get_single_spec_user_message(...)`.
+- Cross-check prompt text is cycle-aware and generated in `cross_checker.py`.
+- Verification prompt/system content is generated in `verifier.py` and references the selected `CodeCycle`.
+- `code_cycles.py` currently defines California **2022** and **2025** cycles, defaulting to **2025**.
 
-### gui.py — Key UX/flow behaviors
+---
 
-- Code cycle selector segmented control (`2022` / `2025`)
-- Mode labels: `Real-time (FAST: Expensive!)` and `Batch (SLOW: Cheap!)`
-- Real-time cost confirmation dialog with batch-switch option
-- Resume state uses `resume_state.py` serializers/deserializers
-- File browser filter restricted to `.docx`
+## 6) Token/Context Budgeting
 
-## Dependencies
+`tokenizer.py` defines operational budgets, including:
 
-```
-anthropic
-python-docx
-tiktoken
-customtkinter
-platformdirs
-```
+- model context maximum,
+- output token ceilings,
+- recommended conservative maxima,
+- cross-check overhead and output reserves.
+
+Use `analyze_token_usage()` before expensive multi-spec operations when extending pipeline behavior.
+
+---
+
+## 7) Verification Wave Semantics
+
+`verifier.py` includes wave-based follow-up logic for partially successful verification batches.
+
+Important behavior:
+
+- classification of completed vs retryable vs continuation-needed outcomes,
+- bounded by `MAX_VERIFICATION_WAVES`,
+- uses batch helper functions in `batch.py`,
+- supports progress/log callbacks for UX transparency.
+
+---
+
+## 8) Edit Automation Architecture
+
+Edit flow is intentionally segmented:
+
+1. **Candidate classification** (`edit_candidates.py`) filters findings that can be safely converted into actionable edits.
+2. **Location resolution** (`edit_locator.py`) attempts exact, normalized, fuzzy, and section-anchored matches with confidence scoring.
+3. **Action construction + conflict resolution** (`spec_editor.build_edit_actions()` and conflict helpers).
+4. **Document mutation** (`spec_editor.apply_edits_to_spec()`), including table cell support and overlap handling.
+5. **Cross-file plan execution** (`apply_edits.execute_edit_plan()`).
+
+This layering allows testing, explainability, and safer fallback behavior when text matches are ambiguous.
+
+---
+
+## 9) Reporting Contract
+
+`report_exporter.export_report(...)` produces a Word document containing:
+
+- title/context metadata,
+- files reviewed,
+- methodology note,
+- summary tables (severity and timing),
+- LEED/placeholder alerts,
+- findings section (compact/verbose formatting),
+- optional cross-check section,
+- optional model thinking/narrative sections where applicable.
+
+Styling helpers include table cell shading, heading outline levels, and collapsed sections for readability in Word.
+
+---
+
+## 10) GUI and State Persistence Notes
+
+`gui.py` contains:
+
+- app state directory selection via platformdirs,
+- API key loading helpers,
+- batch state save/load/delete wrappers,
+- `.docx` support enforcement,
+- phase-aware resume behavior hooked into `resume_state.py`.
+
+The GUI is the canonical integration surface; changes in `pipeline.py` should be validated against GUI callbacks and report window assumptions in `widgets.py`.
+
+---
+
+## 11) Test Coverage Map
+
+- `tests/test_edit_candidates.py` → candidate selection/classification logic.
+- `tests/test_edit_locator.py` → locator confidence/match strategy behavior.
+- `tests/test_spec_editor.py` → action application and edit safety semantics.
+- `tests/test_core_regressions.py` → orchestration and regression guardrails.
+
+Add tests first when changing matching, parsing, or orchestration behavior.
+
+---
+
+## 12) Dependencies
+
+Declared via `requirements.txt` and `pyproject.toml` (setuptools build backend).
+
+Primary runtime dependencies:
+
+- `anthropic`
+- `python-docx`
+- `tiktoken`
+- `customtkinter`
+- `platformdirs`
+- `tkinterdnd2`
+- `lxml` (runtime dependency in `requirements.txt`)
+
+---
+
+## 13) Operational Risks / Invariants
+
+### Important invariants
+
+- Input extension support is restricted to `.docx`.
+- `Finding` schema compatibility must be preserved across reviewer, verifier, exporter, and edit modules.
+- Resume-state serialization fields must remain backward-compatible or be explicitly migrated.
+- Verification parsing should fail closed (explicit uncertain/error verdicts), not silently drop malformed content.
+
+### Common failure surfaces
+
+- upstream API/network transient errors,
+- malformed/non-standard source documents,
+- long-running batch poll starvation,
+- overly ambiguous replacement spans during edit location.
+
+---
+
+## 14) Maintenance Checklist for Engineers
+
+When making meaningful changes:
+
+1. Update or add tests.
+2. Validate both real-time and batch paths (if affected).
+3. Validate resume/restart behavior for batch phases (if affected).
+4. Validate report export for findings + verification rendering.
+5. Keep README (user-facing) and CLAUDE (engineering-facing) aligned.
+6. If release-impacting, sync versions in `src/__init__.py` and `pyproject.toml`.
+
+---
+
+## 15) Fast Navigation Guide
+
+- **Need to change orchestration?** → `src/pipeline.py`
+- **Need to change prompting/output parsing?** → `src/reviewer.py`, `src/prompts.py`
+- **Need to change verification behavior?** → `src/verifier.py`, `src/batch.py`, `src/batch_runtime.py`
+- **Need to change edit automation?** → `src/edit_candidates.py`, `src/edit_locator.py`, `src/spec_editor.py`, `src/apply_edits.py`
+- **Need to change UI?** → `src/gui.py`, `src/widgets.py`
+- **Need to change Word export?** → `src/report_exporter.py`
+
