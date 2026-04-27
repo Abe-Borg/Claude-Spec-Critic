@@ -27,10 +27,15 @@ Each finding fields:
 - section
 - issue
 - actionType: "ADD" | "EDIT" | "DELETE"
-- existingText
-- replacementText
+- existingText (verbatim text to edit/delete; null for ADD)
+- replacementText (only the new text to write; for ADD, the inserted block alone)
 - codeReference
 - confidence (0.0-1.0)
+
+For actionType "ADD" only, also include:
+- anchorText: verbatim text of an existing nearby paragraph to anchor the insertion (omit or use null if no reliable anchor exists; the edit will be flagged for manual review)
+- insertPosition: "before" or "after" relative to anchorText
+
 If none, return [] inside tags.
 </output_format>
 

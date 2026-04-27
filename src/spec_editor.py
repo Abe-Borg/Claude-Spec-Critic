@@ -386,7 +386,12 @@ def _resolve_cell_and_offsets(action: EditAction, row) -> tuple[Paragraph | None
     return None, None, None, "Could not resolve target paragraph inside table cell."
 
 
-def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
+def _apply_add_action(
+    action: EditAction,
+    doc: Document,
+    *,
+    original_body_children: list | None = None,
+) -> EditOutcome:
     mapping = action.location.mapping
     if mapping.element_type != "paragraph":
         return EditOutcome(
@@ -397,7 +402,13 @@ def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
             new_text=None,
         )
 
-    body_children = list(doc.element.body)
+    # Use the pre-mutation snapshot so DELETE actions earlier in the same
+    # apply pass do not shift the body_index used by ADD (audit Issue 6).
+    body_children = (
+        list(original_body_children)
+        if original_body_children is not None
+        else list(doc.element.body)
+    )
     if mapping.body_index < 0 or mapping.body_index >= len(body_children):
         return EditOutcome(
             action=action,
@@ -417,6 +428,18 @@ def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
             new_text=None,
         )
 
+    # If the anchor was already removed by a DELETE earlier in this run,
+    # there is no longer a parent to insert beside. Fail safely instead of
+    # silently writing into an orphaned XML node.
+    if anchor_element.getparent() is None:
+        return EditOutcome(
+            action=action,
+            status="failed",
+            detail="ADD anchor paragraph was deleted earlier in this edit pass; skip.",
+            original_text=action.location.matched_text,
+            new_text=None,
+        )
+
     anchor_paragraph = Paragraph(anchor_element, doc)
     replacement = (action.replacement_text or "").strip()
     if not replacement:
@@ -432,17 +455,28 @@ def _apply_add_action(action: EditAction, doc: Document) -> EditOutcome:
     replacement_norm = _normalize_text_for_add(replacement)
     anchor_norm = _normalize_text_for_add(anchor_text)
 
-    position = "replace"
-    new_content = replacement
-    if anchor_norm and replacement_norm.startswith(anchor_norm):
-        position = "after"
-        new_content = replacement[len(anchor_text):].strip()
-    elif anchor_norm and replacement_norm.endswith(anchor_norm):
-        position = "before"
-        new_content = replacement[: max(0, len(replacement) - len(anchor_text))].strip()
-    elif anchor_norm and anchor_norm not in replacement_norm:
-        position = "after"
+    # If the model provided an explicit insertPosition, trust it instead of
+    # guessing from text overlap (audit Issue 5). This makes ADD edits
+    # deterministic when the prompt produced the structured anchor model.
+    explicit_position = (
+        getattr(action.locator_result.finding, "insertPosition", None) or ""
+    ).strip().lower()
+
+    if explicit_position in {"before", "after"}:
+        position = explicit_position
         new_content = replacement
+    else:
+        position = "replace"
+        new_content = replacement
+        if anchor_norm and replacement_norm.startswith(anchor_norm):
+            position = "after"
+            new_content = replacement[len(anchor_text):].strip()
+        elif anchor_norm and replacement_norm.endswith(anchor_norm):
+            position = "before"
+            new_content = replacement[: max(0, len(replacement) - len(anchor_text))].strip()
+        elif anchor_norm and anchor_norm not in replacement_norm:
+            position = "after"
+            new_content = replacement
 
     if position == "replace":
         ok, detail = _replace_in_paragraph(
@@ -642,7 +676,9 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         )
 
     for action in add_actions:
-        outcomes.append(_apply_add_action(action, doc))
+        outcomes.append(
+            _apply_add_action(action, doc, original_body_children=body_children)
+        )
 
     try:
         doc.save(BytesIO())
@@ -695,13 +731,22 @@ def build_edit_actions(locator_results: list[LocatorResult]) -> list[EditAction]
         if result.status == "not_found" or not result.locations:
             continue
 
+        # Ambiguous locator results have multiple plausible targets; previous
+        # behavior silently picked the highest-confidence candidate, which
+        # could mutate the wrong paragraph. Per audit Issue 4, ambiguous
+        # matches must be manual-review-only.
+        if result.status == "ambiguous":
+            result.warning = (
+                "Ambiguous locator result; multiple targets matched. "
+                "Review and apply manually instead of auto-editing."
+            )
+            continue
+
         best_location = max(result.locations, key=lambda location: location.match_confidence)
         if best_location.mapping.element_type in {"header", "footer"}:
             if result.warning is None:
                 result.warning = "Header/footer findings are review-only and cannot be auto-applied yet."
             continue
-        if result.status == "ambiguous" and result.warning is None:
-            result.warning = "Ambiguous locator result; selecting highest-confidence location for auto-apply."
 
         actions.append(
             EditAction(

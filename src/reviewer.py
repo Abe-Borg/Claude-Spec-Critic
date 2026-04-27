@@ -62,6 +62,11 @@ class Finding:
     confidence: float = 0.5
     verification: VerificationResult | None = None
     affected_files: list[str] = field(default_factory=list)
+    # ADD-action insertion model (audit Issue 5). When the model explicitly
+    # provides an anchor and a side, the editor inserts deterministically
+    # instead of falling back to brittle prefix/suffix text heuristics.
+    anchorText: str | None = None
+    insertPosition: str | None = None  # "before" | "after" | None
 
 
 @dataclass
@@ -169,6 +174,14 @@ def _parse_findings(data: list) -> list[Finding]:
             confidence = max(0.0, min(1.0, float(item.get("confidence", 0.5))))
         except Exception:
             confidence = 0.5
+        anchor_raw = item.get("anchorText")
+        anchor_text = str(anchor_raw).strip() if anchor_raw is not None else None
+        if anchor_text == "":
+            anchor_text = None
+        position_raw = item.get("insertPosition")
+        position = str(position_raw).strip().lower() if position_raw is not None else None
+        if position not in {"before", "after"}:
+            position = None
         findings.append(Finding(
             severity=sev,
             fileName=str(item.get("fileName") or "").strip(),
@@ -179,6 +192,8 @@ def _parse_findings(data: list) -> list[Finding]:
             replacementText=str(item.get("replacementText")) if item.get("replacementText") is not None else None,
             codeReference=str(item.get("codeReference")) if item.get("codeReference") is not None else None,
             confidence=confidence,
+            anchorText=anchor_text,
+            insertPosition=position,
         ))
     return findings
 
@@ -187,7 +202,9 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
     start_time = time.time()
     result = ReviewResult(model=model)
     output_limit = MAX_OUTPUT_TOKENS_OPUS if model == MODEL_OPUS_46 else MAX_OUTPUT_TOKENS_SONNET
+    last_exception: Exception | None = None
     for attempt in range(max_retries):
+        is_last_attempt = attempt == max_retries - 1
         try:
             if verbose:
                 print(f"Calling Claude {model} (attempt {attempt + 1}/{max_retries})...")
@@ -219,12 +236,21 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             result.parse_status = "ok"
             result.elapsed_seconds = time.time() - start_time
             return result
-        except (RateLimitError, APIConnectionError):
+        except (RateLimitError, APIConnectionError) as e:
+            last_exception = e
+            if is_last_attempt:
+                break
             time.sleep(2 ** attempt * 5)
-        except InternalServerError:
+        except InternalServerError as e:
+            last_exception = e
+            if is_last_attempt:
+                break
             time.sleep(2 ** attempt * 10)
         except APIStatusError as e:
             if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
+                last_exception = e
+                if is_last_attempt:
+                    break
                 time.sleep(2 ** attempt * 10)
                 continue
             result.error = f"API error: {e}"
@@ -235,9 +261,12 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             result.elapsed_seconds = time.time() - start_time
             return result
         except Exception as e:
-            # --- FIX 1: Retry transient connection failures ---
-            if _is_retryable_connection_error(e) and attempt < max_retries - 1:
+            # Retry transient connection failures, but don't sleep after the
+            # final attempt — and surface the underlying exception detail
+            # rather than a generic "failed after N attempts" (audit Issue 9).
+            if _is_retryable_connection_error(e) and not is_last_attempt:
                 backoff = 2 ** attempt * 5
+                last_exception = e
                 if verbose:
                     print(f"Retryable connection error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {backoff}s...")
                 time.sleep(backoff)
@@ -246,7 +275,13 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             result.parse_status = "parse_error"
             result.elapsed_seconds = time.time() - start_time
             return result
-    result.error = f"Failed after {max_retries} attempts."
+    if last_exception is not None:
+        result.error = (
+            f"Failed after {max_retries} attempts: "
+            f"{type(last_exception).__name__}: {last_exception}"
+        )
+    else:
+        result.error = f"Failed after {max_retries} attempts."
     result.elapsed_seconds = time.time() - start_time
     return result
 

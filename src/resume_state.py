@@ -108,10 +108,16 @@ def serialize_finding(finding: Finding) -> dict[str, Any]:
         "confidence": finding.confidence,
         "affected_files": list(finding.affected_files),
         "verification": serialize_verification_result(finding.verification),
+        "anchorText": finding.anchorText,
+        "insertPosition": finding.insertPosition,
     }
 
 
 def deserialize_finding(payload: dict[str, Any]) -> Finding:
+    insert_pos = payload.get("insertPosition")
+    if insert_pos is not None:
+        normalized_pos = str(insert_pos).strip().lower()
+        insert_pos = normalized_pos if normalized_pos in {"before", "after"} else None
     return Finding(
         severity=str(payload.get("severity", "MEDIUM")),
         fileName=str(payload.get("fileName", "")),
@@ -124,6 +130,8 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
         confidence=float(payload.get("confidence", 0.5)),
         affected_files=[str(v) for v in payload.get("affected_files", [])],
         verification=deserialize_verification_result(payload.get("verification")),
+        anchorText=(str(payload["anchorText"]) if payload.get("anchorText") is not None else None),
+        insertPosition=insert_pos,
     )
 
 

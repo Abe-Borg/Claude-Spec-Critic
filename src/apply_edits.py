@@ -99,9 +99,20 @@ def execute_edit_plan(
         else:
             log(f"Skipping out-of-range selected finding index: {idx}")
 
+    # Findings that were merged across multiple files during deduplication
+    # carry every affected file in `affected_files`. The display layer keeps a
+    # single representative row, but edit application must fan out to every
+    # file or the user only edits one of N affected specs (audit Issue 3).
     findings_by_file: dict[str, list[tuple[int, Finding]]] = defaultdict(list)
     for original_index, finding in selected_pairs:
-        findings_by_file[finding.fileName].append((original_index, finding))
+        target_files = list(dict.fromkeys(finding.affected_files)) or (
+            [finding.fileName] if finding.fileName else []
+        )
+        if not target_files:
+            log(f"Skipping selected finding #{original_index}: no associated file name.")
+            continue
+        for file_name in target_files:
+            findings_by_file[file_name].append((original_index, finding))
 
     reports: list[EditReport] = []
 
@@ -124,7 +135,7 @@ def execute_edit_plan(
             if locator_result.status == "not_found":
                 log(f"[{filename}] Finding #{original_index} not found in document text.")
             elif locator_result.status == "ambiguous":
-                log(f"[{filename}] Finding #{original_index} was ambiguous; highest-confidence target will be used.")
+                log(f"[{filename}] Finding #{original_index} matched multiple locations; skipped — review and apply manually.")
             if locator_result.warning:
                 log(f"[{filename}] Finding #{original_index} warning: {locator_result.warning}")
 

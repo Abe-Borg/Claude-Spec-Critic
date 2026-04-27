@@ -121,6 +121,46 @@ def _get_verification_system_prompt(cycle: CodeCycle) -> str:
     ])
 
 
+def _content_block_to_plain(block) -> dict | None:
+    """Best-effort convert an Anthropic SDK content block to a plain dict.
+
+    Storing live SDK Pydantic objects in continuation state ties our resume
+    flow to a specific SDK shape; converting at capture time (audit Issue 8)
+    decouples it. ``maybe_transform`` accepts plain dicts or Pydantic models
+    on the way out, so either form works downstream.
+    """
+    if block is None:
+        return None
+    if isinstance(block, dict):
+        return block
+    dumper = getattr(block, "model_dump", None)
+    if callable(dumper):
+        try:
+            data = dumper(mode="python", exclude_none=False)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    legacy_dumper = getattr(block, "dict", None)
+    if callable(legacy_dumper):
+        try:
+            data = legacy_dumper()
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    block_type = getattr(block, "type", None)
+    if not block_type:
+        return None
+    fallback: dict = {"type": str(block_type)}
+    for attr in ("text", "id", "name", "input", "content", "tool_use_id", "results"):
+        if hasattr(block, attr):
+            value = getattr(block, attr)
+            if value is not None:
+                fallback[attr] = value
+    return fallback
+
+
 def _collect_search_evidence(message) -> tuple[list[str], int, int]:
     search_urls: list[str] = []
     success_count = 0
@@ -133,8 +173,11 @@ def _collect_search_evidence(message) -> tuple[list[str], int, int]:
                 # Backward-compatible fallback for legacy/mocked objects.
                 block_content = getattr(block, "results", None)
             if isinstance(block_content, list):
-                if block_content:
-                    success_count += 1
+                # Only count this block as a successful search if it contains
+                # at least one usable web_search_result item. Error-only lists
+                # must not count as success — that would let verdicts pass the
+                # external-grounding gate without any real evidence.
+                block_had_valid_result = False
                 for item in block_content:
                     item_type = getattr(item, "type", None)
                     if item_type == "web_search_tool_result_error":
@@ -142,9 +185,12 @@ def _collect_search_evidence(message) -> tuple[list[str], int, int]:
                         continue
                     if item_type not in (None, "web_search_result"):
                         continue
+                    block_had_valid_result = True
                     url = getattr(item, "url", None)
                     if url:
                         search_urls.append(url)
+                if block_had_valid_result:
+                    success_count += 1
             elif getattr(block_content, "type", None) == "web_search_tool_result_error":
                 # Anthropic SDK models this as a union:
                 # WebSearchToolResultBlock.content can be a WebSearchToolResultError object.
@@ -434,14 +480,17 @@ def _classify_wave_results(
         message = result.result.message
         stop_reason = getattr(message, "stop_reason", None)
         if stop_reason == "pause_turn":
+            raw_blocks = getattr(message, "content", []) or []
+            plain_blocks = [b for b in (_content_block_to_plain(rb) for rb in raw_blocks) if b is not None]
             outcomes.append(
                 VerificationItemOutcome(
                     finding_idx=finding_idx,
                     original_custom_id=custom_id,
                     classification="continue",
-                    # SDK Pydantic models serialize correctly when passed back
-                    # into batch request messages. Verified by regression test.
-                    assistant_content_blocks=list(getattr(message, "content", []) or []),
+                    # Plain dicts decouple the continuation payload from SDK
+                    # Pydantic shape changes (audit Issue 8). maybe_transform
+                    # accepts these the same way it accepts model objects.
+                    assistant_content_blocks=plain_blocks,
                     unverified_reason="pause_turn",
                 )
             )

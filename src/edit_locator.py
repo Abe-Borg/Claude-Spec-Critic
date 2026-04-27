@@ -327,8 +327,15 @@ def locate_edit(
     min_confidence: float = 0.60,
 ) -> LocatorResult:
     replacement = _resolve_replacement_text(finding)
-    action_type = finding.actionType
+    action_type = (finding.actionType or "").upper()
     existing_text = (finding.existingText or "").strip()
+
+    # ADD actions may rely on an explicit anchorText (audit Issue 5). If
+    # provided, locate the anchor paragraph using the same matchers as EDIT.
+    if action_type == "ADD":
+        anchor_candidate = (getattr(finding, "anchorText", None) or "").strip()
+        if anchor_candidate:
+            existing_text = anchor_candidate
 
     if not existing_text:
         return LocatorResult(
