@@ -37,6 +37,7 @@ from src.pipeline import (
     CollectedBatchState,
 )
 from src.batch import BatchStatus, BatchJob
+from src.verifier import VerificationBatchDetached
 from src.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from src.reviewer import MODEL_OPUS_46, REVIEW_MODELS, Finding
 from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
@@ -73,6 +74,7 @@ from src.widgets import (
     EditSummaryDialog,
 )
 from src.diagnostics import DiagnosticsReport
+
 
 from platformdirs import user_config_dir, user_state_dir
 
@@ -1401,6 +1403,9 @@ class SpecReviewApp(_CTkDnDRoot):
                         diag.log("verification", "info", f"Verification batch submitted: {verification_job.batch_id}", {
                             "batch_id": verification_job.batch_id,
                         })
+
+
+
                     save_batch_state(build_resume_state(
                         phase=PHASE_VERIFICATION_WAVE_POLL,
                         submission=self._batch_submission,
@@ -1408,14 +1413,38 @@ class SpecReviewApp(_CTkDnDRoot):
                         verification_batch=verification_job,
                         verification_started=True,
                     ))
-                    collect_batch_verification_results(
-                        verification_job,
-                        verifiable_findings,
-                        cycle=cycle,
-                        log=self._make_diag_log("verification", run_epoch),
-                        progress=self._make_diag_progress("verification", run_epoch),
-                    )
-                    verification_completed = True
+                    try:
+                        collect_batch_verification_results(
+                            verification_job,
+                            verifiable_findings,
+                            cycle=cycle,
+                            log=self._make_diag_log("verification", run_epoch),
+                            progress=self._make_diag_progress("verification", run_epoch),
+                        )
+                        verification_completed = True
+                    except VerificationBatchDetached as detach:
+                        # Resume state at PHASE_VERIFICATION_WAVE_POLL was saved above
+                        # with the verification_batch ID. Leave it intact so the user
+                        # can resume when they relaunch.
+                        msg = (
+                            f"Verification batch {detach.batch_id} is still running on "
+                            f"Anthropic's side ({detach.reason}). Stopping here so you "
+                            f"can resume later — relaunch and click 'Resume Batch'."
+                        )
+                        if diag:
+                            diag.log("verification", "warning", msg, {
+                                "batch_id": detach.batch_id,
+                                "reason": detach.reason,
+                            })
+                        self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_warning(m))
+                        self._dispatch_if_current(run_epoch, lambda: self._finalize_diagnostics(
+                            "verification", "warning", "Run halted; verification batch still running"
+                        ))
+                        self._dispatch_if_current(run_epoch, self._reset_ui)
+                        return
+
+
+
                     if diag:
                         verdicts = {}
                         for f in verifiable_findings:
@@ -1474,6 +1503,9 @@ class SpecReviewApp(_CTkDnDRoot):
                         log=self._make_diag_log("cross_check_verification", run_epoch),
                         progress=self._make_diag_progress("cross_check_verification", run_epoch),
                     )
+
+
+
                     save_batch_state(build_resume_state(
                         phase=PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL,
                         submission=self._batch_submission,
@@ -1483,15 +1515,35 @@ class SpecReviewApp(_CTkDnDRoot):
                         verification_started=bool(verifiable_findings),
                         verification_completed=verification_completed,
                     ))
-                    collect_batch_verification_results(
-                        cross_check_verification_job,
-                        cross_check_findings,
-                        cycle=cycle,
-                        log=self._make_diag_log("cross_check_verification", run_epoch),
-                        progress=self._make_diag_progress("cross_check_verification", run_epoch),
-                    )
-                    if diag:
-                        diag.log("cross_check_verification", "success", "Cross-check verification complete")
+                    try:
+                        collect_batch_verification_results(
+                            cross_check_verification_job,
+                            cross_check_findings,
+                            cycle=cycle,
+                            log=self._make_diag_log("cross_check_verification", run_epoch),
+                            progress=self._make_diag_progress("cross_check_verification", run_epoch),
+                        )
+                        if diag:
+                            diag.log("cross_check_verification", "success", "Cross-check verification complete")
+                    except VerificationBatchDetached as detach:
+                        msg = (
+                            f"Cross-check verification batch {detach.batch_id} is still "
+                            f"running on Anthropic's side ({detach.reason}). Stopping here "
+                            f"so you can resume later — relaunch and click 'Resume Batch'."
+                        )
+                        if diag:
+                            diag.log("cross_check_verification", "warning", msg, {
+                                "batch_id": detach.batch_id,
+                                "reason": detach.reason,
+                            })
+                        self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_warning(m))
+                        self._dispatch_if_current(run_epoch, lambda: self._finalize_diagnostics(
+                            "cross_check_verification", "warning", "Run halted; cross-check verification batch still running"
+                        ))
+                        self._dispatch_if_current(run_epoch, self._reset_ui)
+                        return
+
+
 
                 if diag:
                     diag.log("finalization", "step", "Finalizing batch results")

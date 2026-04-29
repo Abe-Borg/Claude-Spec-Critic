@@ -28,6 +28,19 @@ VerifyProgressFn = Callable[[int, int, str], None]
 MAX_VERIFICATION_WAVES = 3
 _ERRORED_RETRY_MAX = 75  # Backward-compatibility constant for existing tests/imports.
 
+class VerificationBatchDetached(Exception):
+    """Polling for a verification batch ended before the batch reached a terminal state.
+
+    The remote batch may still be running on Anthropic's side. Callers should preserve
+    resume state so the user can pick up where they left off rather than treating this
+    as a finalize-with-everything-UNVERIFIED outcome.
+    """
+
+    def __init__(self, batch_id: str, reason: str):
+        super().__init__(f"Verification batch {batch_id} polling detached: {reason}")
+        self.batch_id = batch_id
+        self.reason = reason
+
 
 def _noop_verify_progress(_: int, __: int, ___: str) -> None:
     return
@@ -497,9 +510,16 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
             log=log,
             progress_cb=lambda status: progress(5.0 + (status.progress_pct / 100.0) * 85.0, f"Verification {wave_label}: {status.completed}/{status.total} done"),
         )
+
         if poll_outcome.detached or poll_outcome.poll_failed:
-            log(f"Verification {wave_label}: polling ended before terminal status. Remaining findings will be marked UNVERIFIED.")
-            break
+            reason = poll_outcome.detach_reason or poll_outcome.poll_error or "unknown"
+            log(
+                f"Verification {wave_label}: polling detached ({reason}). "
+                f"Remote batch {current_job.batch_id} may still be running."
+            )
+            raise VerificationBatchDetached(current_job.batch_id, reason)
+
+
         active_contexts = {cid: ctx for cid, ctx in request_contexts.items() if ctx.get("resolved") is not True}
         outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts)
         needs_retry: list[VerificationItemOutcome] = []
