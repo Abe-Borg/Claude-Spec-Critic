@@ -11,8 +11,19 @@ from typing import Any
 from .prompts import get_system_prompt, get_single_spec_user_message
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_46
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
-from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET
-from .verification_config import BATCH_MAX_OUTPUT_TOKENS, BATCH_OUTPUT_BETA, CODE_EXECUTION_TOOL, VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
+from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET, count_tokens
+from .api_config import (
+    BATCH_MAX_OUTPUT_TOKENS,
+    BATCH_OUTPUT_BETA,
+    VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
+    WEB_SEARCH_TOOL,
+    assert_extended_output_allowed,
+    extract_cache_usage,
+    review_max_tokens,
+    system_prompt_with_cache,
+    tools_with_cache,
+    verification_max_tokens,
+)
 
 
 @dataclass
@@ -56,7 +67,12 @@ def submit_review_batch(
         raise ValueError("No specs to submit for batch review")
     client = _get_client()
     system_prompt = get_system_prompt(cycle)
-    output_limit = BATCH_MAX_OUTPUT_TOKENS if model == MODEL_OPUS_46 else MAX_OUTPUT_TOKENS_SONNET
+    system_payload = system_prompt_with_cache(system_prompt)
+    use_extended_output = model == MODEL_OPUS_46
+    # Local token estimate sized so the per-spec dispatcher can pick the
+    # right cap without an extra API call. Conservative; only used to
+    # decide between standard and extended-output sizing.
+    system_tokens = count_tokens(system_prompt)
     batch_requests = []
     request_map = {}
     for idx, spec in enumerate(specs):
@@ -64,9 +80,20 @@ def submit_review_batch(
         user_message = get_single_spec_user_message(spec.content, spec.filename, project_context=project_context, cycle=cycle)
         if retry_instruction:
             user_message += f"\n\n{retry_instruction}"
-        batch_requests.append({"custom_id": custom_id, "params": {"model": model, "max_tokens": output_limit, "thinking": {"type": "adaptive"}, "system": system_prompt, "messages": [{"role": "user", "content": user_message}]}})
+        approx_input_tokens = system_tokens + count_tokens(user_message)
+        output_limit = review_max_tokens(
+            batch=True,
+            model=model,
+            input_tokens=approx_input_tokens,
+            allow_extended_output=use_extended_output,
+        )
+        # Fail-fast guard: 300k requires the batch beta header. Plan Sprint
+        # 2 item 8 — never let a 300k request slip through without it.
+        betas = [BATCH_OUTPUT_BETA] if hasattr(client, "beta") else None
+        assert_extended_output_allowed(max_tokens=output_limit, betas=betas)
+        batch_requests.append({"custom_id": custom_id, "params": {"model": model, "max_tokens": output_limit, "thinking": {"type": "adaptive"}, "system": system_payload, "messages": [{"role": "user", "content": user_message}]}})
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}
-    
+
     create_fn = client.beta.messages.batches.create if hasattr(client, "beta") else client.messages.batches.create
     kwargs = {"requests": batch_requests}
     if hasattr(client, "beta"):
@@ -100,17 +127,38 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
         usage = message.usage if hasattr(message, "usage") else None
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        cache = extract_cache_usage(usage)
         stop_reason = getattr(message, "stop_reason", None)
 
         if stop_reason != "end_turn":
-            results[custom_id] = ReviewResult(findings=[], raw_response=response_text, stop_reason=stop_reason, parse_status="incomplete", model=model, input_tokens=input_tokens, output_tokens=output_tokens, error=f"Batch response incomplete (stop_reason: {stop_reason})")
+            results[custom_id] = ReviewResult(
+                findings=[], raw_response=response_text, stop_reason=stop_reason,
+                parse_status="incomplete", model=model,
+                input_tokens=input_tokens, output_tokens=output_tokens,
+                cache_creation_input_tokens=cache["cache_creation_input_tokens"],
+                cache_read_input_tokens=cache["cache_read_input_tokens"],
+                error=f"Batch response incomplete (stop_reason: {stop_reason})",
+            )
             continue
         try:
             data, thinking = _extract_json_array(response_text, stop_reason=stop_reason)
             findings = _parse_findings(data)
-            results[custom_id] = ReviewResult(findings=findings, raw_response=response_text, thinking=thinking, model=model, input_tokens=input_tokens, output_tokens=output_tokens, stop_reason=stop_reason, parse_status="ok")
+            results[custom_id] = ReviewResult(
+                findings=findings, raw_response=response_text, thinking=thinking,
+                model=model, input_tokens=input_tokens, output_tokens=output_tokens,
+                cache_creation_input_tokens=cache["cache_creation_input_tokens"],
+                cache_read_input_tokens=cache["cache_read_input_tokens"],
+                stop_reason=stop_reason, parse_status="ok",
+            )
         except Exception as e:
-            results[custom_id] = ReviewResult(findings=[], raw_response=response_text, thinking=response_text, model=model, input_tokens=input_tokens, output_tokens=output_tokens, stop_reason=stop_reason, parse_status="parse_error", error=f"Failed to parse review output: {e}")
+            results[custom_id] = ReviewResult(
+                findings=[], raw_response=response_text, thinking=response_text,
+                model=model, input_tokens=input_tokens, output_tokens=output_tokens,
+                cache_creation_input_tokens=cache["cache_creation_input_tokens"],
+                cache_read_input_tokens=cache["cache_read_input_tokens"],
+                stop_reason=stop_reason, parse_status="parse_error",
+                error=f"Failed to parse review output: {e}",
+            )
     return results
 
 
@@ -221,10 +269,10 @@ def _build_verification_request_params(
         messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
     return {
         "model": VERIFICATION_MODEL,
-        "max_tokens": VERIFICATION_MAX_TOKENS,
+        "max_tokens": verification_max_tokens(),
         "thinking": {"type": "adaptive"},
-        "system": system_prompt,
-        "tools": [WEB_SEARCH_TOOL],
+        "system": system_prompt_with_cache(system_prompt),
+        "tools": tools_with_cache([WEB_SEARCH_TOOL]),
         "messages": messages,
     }
 

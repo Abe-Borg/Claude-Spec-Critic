@@ -22,7 +22,19 @@ from .batch import (
 from .batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
 from .reviewer import Finding, _get_client
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
-from .verification_config import CODE_EXECUTION_TOOL, VERIFICATION_MODEL, VERIFICATION_MAX_TOKENS, WEB_SEARCH_TOOL
+from .api_config import (
+    VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
+    extract_cache_usage,
+    system_prompt_with_cache,
+    tools_with_cache,
+    verification_max_tokens,
+    WEB_SEARCH_TOOL,
+)
+
+# VERIFICATION_MAX_TOKENS is computed once at import for backward-compat
+# with callers that read the constant. The dynamic helper is used for the
+# request shape so future model routing (Phase 3) can change it per call.
+VERIFICATION_MAX_TOKENS = verification_max_tokens()
 
 VerifyProgressFn = Callable[[int, int, str], None]
 MAX_VERIFICATION_WAVES = 3
@@ -114,9 +126,8 @@ def _get_verification_system_prompt(cycle: CodeCycle) -> str:
         "Tool usage guidance:",
         "",
         "- You MUST use web search before rendering a verdict.",
-        "- Use code_execution only when you need calculations, data parsing, value comparison, or other computation.",
-        "- Do NOT use code_execution as a substitute for source gathering.",
-        "- Do NOT use code_execution just to format your JSON response.",
+        "- The only tool available is web_search. Render the verdict from the",
+        "  evidence it returns; do not fabricate a tool that has not been provided.",
         "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
     ])
 
@@ -268,6 +279,9 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
     client = _get_client()
     prompt = _build_verification_prompt(finding, cycle=cycle)
     system_prompt = _get_verification_system_prompt(cycle)
+    system_payload = system_prompt_with_cache(system_prompt)
+    tools_payload = tools_with_cache([WEB_SEARCH_TOOL])
+    output_limit = verification_max_tokens()
 
     for attempt in range(max_retries + 1):
         try:
@@ -278,10 +292,10 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                 # --- Streaming API required for web search server tool ---
                 with client.messages.stream(
                     model=VERIFICATION_MODEL,
-                    max_tokens=VERIFICATION_MAX_TOKENS,
+                    max_tokens=output_limit,
                     thinking={"type": "adaptive"},
-                    system=system_prompt,
-                    tools=[WEB_SEARCH_TOOL],
+                    system=system_payload,
+                    tools=tools_payload,
                     messages=messages,
                 ) as stream:
                     response = stream.get_final_message()
@@ -427,10 +441,10 @@ def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFA
 def _build_retry_request(prompt: str, *, cycle: CodeCycle) -> dict:
     return {
         "model": VERIFICATION_MODEL,
-        "max_tokens": VERIFICATION_MAX_TOKENS,
+        "max_tokens": verification_max_tokens(),
         "thinking": {"type": "adaptive"},
-        "system": _get_verification_system_prompt(cycle),
-        "tools": [WEB_SEARCH_TOOL],
+        "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
+        "tools": tools_with_cache([WEB_SEARCH_TOOL]),
         "messages": [{"role": "user", "content": prompt}],
     }
 
@@ -438,10 +452,10 @@ def _build_retry_request(prompt: str, *, cycle: CodeCycle) -> dict:
 def _build_continuation_request(prompt: str, assistant_content_blocks: list, *, cycle: CodeCycle) -> dict:
     return {
         "model": VERIFICATION_MODEL,
-        "max_tokens": VERIFICATION_MAX_TOKENS,
+        "max_tokens": verification_max_tokens(),
         "thinking": {"type": "adaptive"},
-        "system": _get_verification_system_prompt(cycle),
-        "tools": [WEB_SEARCH_TOOL],
+        "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
+        "tools": tools_with_cache([WEB_SEARCH_TOOL]),
         "messages": [
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": assistant_content_blocks},
