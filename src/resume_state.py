@@ -81,6 +81,15 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         "explanation": result.explanation,
         "sources": list(result.sources),
         "correction": result.correction,
+        # Phase 3 evidence model fields. Missing keys deserialize to safe
+        # defaults so legacy resume payloads still load.
+        "grounded": result.grounded,
+        "model_used": result.model_used,
+        "escalated": result.escalated,
+        "cache_status": result.cache_status,
+        "web_search_requests": result.web_search_requests,
+        "successful_source_count": result.successful_source_count,
+        "search_error_count": result.search_error_count,
     }
 
 
@@ -92,6 +101,13 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         explanation=str(payload.get("explanation", "")),
         sources=[str(s) for s in payload.get("sources", [])],
         correction=(str(payload["correction"]) if payload.get("correction") is not None else None),
+        grounded=bool(payload.get("grounded", False)),
+        model_used=str(payload.get("model_used", "")),
+        escalated=bool(payload.get("escalated", False)),
+        cache_status=str(payload.get("cache_status", "n/a")),
+        web_search_requests=int(payload.get("web_search_requests", 0) or 0),
+        successful_source_count=int(payload.get("successful_source_count", 0) or 0),
+        search_error_count=int(payload.get("search_error_count", 0) or 0),
     )
 
 

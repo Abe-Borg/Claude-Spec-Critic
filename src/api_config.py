@@ -32,11 +32,37 @@ MODEL_OPUS_47 = "claude-opus-4-7"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
 MODEL_HAIKU_45 = "claude-haiku-4-5-20251001"
 
-# Defaults preserved from prior behavior. Phase 3 will introduce Sonnet
-# verification with Opus escalation; Phase 2 only adds the routing scaffold.
+# Defaults. Phase 3 introduces Sonnet verification with Opus escalation,
+# but the *default* verifier model is unchanged until live A/B evaluation
+# (plan section 7.1: "Do not assume same quality without measurement").
+# Operators opt in by setting SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT=1,
+# which flips the default to Sonnet and enables Opus escalation for
+# CRITICAL/HIGH UNVERIFIED findings.
 REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_46)
 CROSS_CHECK_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_CROSS_CHECK_MODEL", MODEL_OPUS_46)
-VERIFICATION_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_VERIFICATION_MODEL", MODEL_OPUS_46)
+
+
+def verification_sonnet_default_enabled() -> bool:
+    """Whether Sonnet is the default verifier (Phase 3 routing).
+
+    Off by default so behavior matches Phase 2. When on, callers route
+    initial verification to Sonnet and reserve Opus for escalation.
+    """
+    return os.environ.get("SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT", "0") == "1"
+
+
+_VERIFICATION_MODEL_OVERRIDE = os.environ.get("SPEC_CRITIC_VERIFICATION_MODEL")
+if _VERIFICATION_MODEL_OVERRIDE:
+    VERIFICATION_MODEL_DEFAULT = _VERIFICATION_MODEL_OVERRIDE
+elif verification_sonnet_default_enabled():
+    VERIFICATION_MODEL_DEFAULT = MODEL_SONNET_46
+else:
+    VERIFICATION_MODEL_DEFAULT = MODEL_OPUS_46
+
+# Model used when escalating a low-confidence/high-severity verification.
+VERIFICATION_ESCALATION_MODEL = os.environ.get(
+    "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_46
+)
 
 # Convenience set of "Opus-class" models for output-cap dispatch.
 OPUS_MODELS = frozenset({MODEL_OPUS_46, MODEL_OPUS_47})

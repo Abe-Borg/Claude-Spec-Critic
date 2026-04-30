@@ -674,8 +674,21 @@ def _finding_to_dict(finding) -> dict:
     """Serialize a Finding to a JSON-safe dict, including confidence and verification."""
     d = {k: v for k, v in finding.__dict__.items() if k != "verification"}
     if finding.verification is not None:
-        d["verification"] = {"verdict": finding.verification.verdict, "explanation": finding.verification.explanation,
-            "sources": finding.verification.sources, "correction": finding.verification.correction}
+        v = finding.verification
+        d["verification"] = {
+            "verdict": v.verdict,
+            "explanation": v.explanation,
+            "sources": v.sources,
+            "correction": v.correction,
+            # Phase 3 evidence model
+            "grounded": v.grounded,
+            "model_used": v.model_used,
+            "escalated": v.escalated,
+            "cache_status": v.cache_status,
+            "web_search_requests": v.web_search_requests,
+            "successful_source_count": v.successful_source_count,
+            "search_error_count": v.search_error_count,
+        }
     else:
         d["verification"] = None
     return d

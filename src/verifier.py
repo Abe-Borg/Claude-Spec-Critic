@@ -23,12 +23,22 @@ from .batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_ba
 from .reviewer import Finding, _get_client
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .api_config import (
+    MODEL_OPUS_46,
+    VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     extract_cache_usage,
     system_prompt_with_cache,
     tools_with_cache,
     verification_max_tokens,
     WEB_SEARCH_TOOL,
+)
+from .verification_cache import VerificationCache
+from .verification_router import (
+    classify_finding_for_verification,
+    escalation_verification_model,
+    initial_verification_model,
+    local_skip_enabled,
+    should_escalate_verification,
 )
 
 # VERIFICATION_MAX_TOKENS is computed once at import for backward-compat
@@ -39,6 +49,13 @@ VERIFICATION_MAX_TOKENS = verification_max_tokens()
 VerifyProgressFn = Callable[[int, int, str], None]
 MAX_VERIFICATION_WAVES = 3
 _ERRORED_RETRY_MAX = 75  # Backward-compatibility constant for existing tests/imports.
+
+# Phase 3 (plan 7.4): when a batch run finishes with only a few unresolved
+# items, optionally fall back to real-time verification for the remainder
+# instead of submitting another batch wave.
+_REALTIME_FALLBACK_THRESHOLD = int(
+    os.environ.get("SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD", "0")
+)
 
 
 def _noop_verify_progress(_: int, __: int, ___: str) -> None:
@@ -51,6 +68,49 @@ class VerificationResult:
     explanation: str = ""
     sources: list[str] = field(default_factory=list)
     correction: str | None = None
+    # ----- Phase 3 evidence model (plan 7.5) -------------------------------
+    # ``grounded`` records whether the verdict was backed by at least one
+    # successful web_search_result block. The verifier production paths
+    # never mark a result CONFIRMED/CORRECTED unless this is True.
+    grounded: bool = False
+    model_used: str = ""
+    escalated: bool = False
+    # "n/a" — not part of a cache-aware run
+    # "miss" — verifier ran fresh and produced this result
+    # "hit"  — result reused from a previous finding in the same run
+    # "local_skip" — finding was diagnosed locally; no web verification ran
+    cache_status: str = "n/a"
+    web_search_requests: int = 0
+    successful_source_count: int = 0
+    search_error_count: int = 0
+
+
+def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
+    """Downgrade verified-but-ungrounded verdicts to UNVERIFIED.
+
+    Plan 7.5 acceptance: a result cannot be marked verified if ``grounded``
+    is False. Locally-skipped findings are exempt — they are explicitly
+    UNVERIFIED already and never claim CONFIRMED.
+    """
+    verdict = (result.verdict or "").strip().upper()
+    if verdict in ("CONFIRMED", "CORRECTED") and not result.grounded:
+        result.verdict = "UNVERIFIED"
+        suffix = " (downgraded: verdict lacked external grounding)"
+        if not result.explanation:
+            result.explanation = "Verdict downgraded to UNVERIFIED: no external evidence."
+        elif suffix not in result.explanation:
+            result.explanation = (result.explanation + suffix)[:500]
+    return result
+
+
+def _local_skip_result(reason: str = "Locally classified: external grounding not required for this finding.") -> VerificationResult:
+    return VerificationResult(
+        verdict="UNVERIFIED",
+        explanation=reason,
+        grounded=False,
+        cache_status="local_skip",
+        model_used="local",
+    )
 
 
 def _build_verification_prompt(finding: Finding, *, cycle: CodeCycle = DEFAULT_CYCLE) -> str:
@@ -263,7 +323,15 @@ class VerificationItemOutcome:
     unverified_reason: str | None = None
 
 
-def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle = DEFAULT_CYCLE) -> VerificationResult:
+def verify_finding(
+    finding: Finding,
+    *,
+    max_retries: int = 2,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    model: str | None = None,
+    cache: VerificationCache | None = None,
+    escalated: bool = False,
+) -> VerificationResult:
     """Verify a single finding using Claude with web search.
 
     Uses the streaming API because the web_search_20250305 server tool
@@ -272,16 +340,98 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
 
     Adaptive thinking is enabled so the model can reason through complex
     code-reference chains before rendering a verdict.
+
+    Phase 3:
+    - ``model`` overrides the default verifier (Sonnet/Opus routing).
+    - ``cache`` short-circuits for findings that match a previously verified
+      claim in the same run.
+    - ``escalated`` is propagated into the result so diagnostics can
+      distinguish the first pass from the Opus retry.
     """
+    if cache is not None:
+        cached = cache.get(finding, cycle=cycle)
+        if cached is not None:
+            return cached
+
+    if local_skip_enabled() and classify_finding_for_verification(finding) == "local_skip":
+        return _local_skip_result()
+
+    selected_model = model or initial_verification_model()
+    result = _run_verification_call(
+        finding,
+        cycle=cycle,
+        model=selected_model,
+        max_retries=max_retries,
+        escalated=escalated,
+    )
+
+    # Escalation: re-run on Opus when Sonnet failed to ground a high-stakes
+    # finding. Skip when caller already passed escalated=True (avoid loops)
+    # or the routing config has nowhere to escalate to.
+    if not escalated and should_escalate_verification(
+        finding,
+        verdict=result.verdict,
+        grounded=result.grounded,
+        successful_source_count=result.successful_source_count,
+        search_error_count=result.search_error_count,
+    ):
+        escalated_model = escalation_verification_model()
+        if escalated_model and escalated_model != selected_model:
+            esc_result = _run_verification_call(
+                finding,
+                cycle=cycle,
+                model=escalated_model,
+                max_retries=max_retries,
+                escalated=True,
+            )
+            # Prefer the escalated result when it produced a grounded verdict;
+            # otherwise keep the first pass so we don't lose its evidence.
+            if esc_result.grounded or (
+                esc_result.verdict in ("CONFIRMED", "CORRECTED", "DISPUTED")
+                and result.verdict == "UNVERIFIED"
+            ):
+                result = esc_result
+
+    if cache is not None and result.cache_status == "miss":
+        cache.put(finding, cycle=cycle, result=result)
+    return result
+
+
+def _run_verification_call(
+    finding: Finding,
+    *,
+    cycle: CodeCycle,
+    model: str,
+    max_retries: int,
+    escalated: bool,
+) -> VerificationResult:
+    """Single verification call (no caching, no escalation).
+
+    Always returns a VerificationResult with the Phase 3 evidence fields
+    populated (``model_used``, ``grounded``, ``escalated``, search counts).
+    """
+    def _make_unverified(explanation: str, *, search_requests: int = 0, search_errors: int = 0, search_successes: int = 0) -> VerificationResult:
+        return _enforce_grounding_invariant(VerificationResult(
+            verdict="UNVERIFIED",
+            explanation=explanation,
+            grounded=False,
+            model_used=model,
+            escalated=escalated,
+            cache_status="miss",
+            web_search_requests=search_requests,
+            successful_source_count=search_successes,
+            search_error_count=search_errors,
+        ))
+
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return VerificationResult(verdict="UNVERIFIED", explanation="No API key available for verification.")
+        return _make_unverified("No API key available for verification.")
 
     client = _get_client()
     prompt = _build_verification_prompt(finding, cycle=cycle)
     system_prompt = _get_verification_system_prompt(cycle)
     system_payload = system_prompt_with_cache(system_prompt)
     tools_payload = tools_with_cache([WEB_SEARCH_TOOL])
-    output_limit = verification_max_tokens()
+    output_limit = verification_max_tokens(model=model)
 
     for attempt in range(max_retries + 1):
         try:
@@ -291,7 +441,7 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
             for _ in range(max_continuations + 1):
                 # --- Streaming API required for web search server tool ---
                 with client.messages.stream(
-                    model=VERIFICATION_MODEL,
+                    model=model,
                     max_tokens=output_limit,
                     thinking={"type": "adaptive"},
                     system=system_payload,
@@ -307,38 +457,47 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                     messages.append({"role": "assistant", "content": response.content})
                     messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
                     continue
-                return VerificationResult(verdict="UNVERIFIED", explanation=f"Verification response incomplete (stop_reason: {stop_reason}).")
+                return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
             if not all_responses or getattr(all_responses[-1], "stop_reason", None) != "end_turn":
-                return VerificationResult(verdict="UNVERIFIED", explanation="Verification did not complete after maximum continuation attempts.")
+                return _make_unverified("Verification did not complete after maximum continuation attempts.")
 
             response_text = ""
             all_search_urls: list[str] = []
-            any_search_success = False
+            success_blocks = 0
             total_search_errors = 0
+            total_search_requests = 0
             for resp in all_responses:
                 for block in getattr(resp, "content", []) or []:
-
                     if hasattr(block, "text") and block.text is not None:
                         response_text += block.text
 
                 search_urls, successes, errors = _collect_search_evidence(resp)
                 all_search_urls.extend(search_urls)
-                if successes > 0:
-                    any_search_success = True
+                success_blocks += successes
                 total_search_errors += errors
-            if not any_search_success:
+                total_search_requests += _web_search_count(resp)
+
+            grounded = success_blocks > 0
+            if not grounded:
                 if total_search_errors > 0:
-                    return VerificationResult(
-                        verdict="UNVERIFIED",
-                        explanation=f"Web search attempted but all {total_search_errors} search requests failed.",
+                    return _make_unverified(
+                        f"Web search attempted but all {total_search_errors} search requests failed.",
+                        search_requests=total_search_requests,
+                        search_errors=total_search_errors,
                     )
-                return VerificationResult(
-                    verdict="UNVERIFIED",
-                    explanation="Verification did not perform web search. Verdict requires external grounding.",
+                return _make_unverified(
+                    "Verification did not perform web search. Verdict requires external grounding.",
+                    search_requests=total_search_requests,
+                    search_errors=total_search_errors,
                 )
 
             if not response_text.strip():
-                return VerificationResult(verdict="UNVERIFIED", explanation="Verification produced no text response.")
+                return _make_unverified(
+                    "Verification produced no text response.",
+                    search_requests=total_search_requests,
+                    search_errors=total_search_errors,
+                    search_successes=success_blocks,
+                )
 
             parsed = _parse_verification_response(response_text)
             if all_search_urls:
@@ -346,45 +505,91 @@ def verify_finding(finding: Finding, *, max_retries: int = 2, cycle: CodeCycle =
                 for url in all_search_urls:
                     if url not in existing:
                         parsed.sources.append(url)
-            return parsed
+            parsed.grounded = True
+            parsed.model_used = model
+            parsed.escalated = escalated
+            parsed.cache_status = "miss"
+            parsed.web_search_requests = total_search_requests
+            parsed.successful_source_count = len(all_search_urls)
+            parsed.search_error_count = total_search_errors
+            return _enforce_grounding_invariant(parsed)
         except RateLimitError:
             if attempt < max_retries:
                 time.sleep(10 * (attempt + 1))
                 continue
-            return VerificationResult(verdict="UNVERIFIED", explanation="Rate limited during verification.")
+            return _make_unverified("Rate limited during verification.")
         except InternalServerError as e:
             if attempt < max_retries:
                 time.sleep(15 * (attempt + 1))
                 continue
-            return VerificationResult(verdict="UNVERIFIED", explanation=f"Server overloaded during verification: {e}")
+            return _make_unverified(f"Server overloaded during verification: {e}")
         except APIStatusError as e:
             if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
                 if attempt < max_retries:
                     time.sleep(15 * (attempt + 1))
                     continue
-                return VerificationResult(verdict="UNVERIFIED", explanation=f"Server overloaded during verification: {e}")
+                return _make_unverified(f"Server overloaded during verification: {e}")
             if attempt < max_retries:
                 time.sleep(5 * (attempt + 1))
                 continue
-            return VerificationResult(verdict="UNVERIFIED", explanation=f"API error during verification: {e}")
+            return _make_unverified(f"API error during verification: {e}")
         except (APIConnectionError, APIError) as e:
             if attempt < max_retries:
                 time.sleep(5 * (attempt + 1))
                 continue
-            return VerificationResult(verdict="UNVERIFIED", explanation=f"API error during verification: {e}")
+            return _make_unverified(f"API error during verification: {e}")
         except Exception as e:
-            return VerificationResult(verdict="UNVERIFIED", explanation=f"Unexpected error during verification: {e}")
+            return _make_unverified(f"Unexpected error during verification: {e}")
 
 
-def verify_findings(findings: list[Finding], *, progress: VerifyProgressFn = _noop_verify_progress, cycle: CodeCycle = DEFAULT_CYCLE) -> list[Finding]:
+def prepare_findings_for_verification(
+    findings: list[Finding],
+    *,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    cache: VerificationCache | None = None,
+    log: Callable[[str], None] = lambda _: None,
+) -> list[Finding]:
+    """Apply Phase 3 pre-pass: local skip + cache lookup.
+
+    Mutates ``findings`` in place — any finding that resolves locally
+    (local-skip classification or cache hit) gets ``f.verification`` set
+    here. Returns the subset of findings that still need a remote
+    verification call.
+    """
+    remaining: list[Finding] = []
+    skipped_local = 0
+    cache_hits = 0
+    for f in findings:
+        if local_skip_enabled() and classify_finding_for_verification(f) == "local_skip":
+            f.verification = _local_skip_result()
+            skipped_local += 1
+            continue
+        if cache is not None:
+            cached = cache.get(f, cycle=cycle)
+            if cached is not None:
+                f.verification = cached
+                cache_hits += 1
+                continue
+        remaining.append(f)
+    if skipped_local or cache_hits:
+        log(
+            f"Verification pre-pass: {skipped_local} locally skipped, "
+            f"{cache_hits} cache hits, {len(remaining)} require web verification."
+        )
+    return remaining
+
+
+def verify_findings(findings: list[Finding], *, progress: VerifyProgressFn = _noop_verify_progress, cycle: CodeCycle = DEFAULT_CYCLE, cache: VerificationCache | None = None) -> list[Finding]:
     verifiable = list(findings)
     verifiable.sort(key=lambda f: f.confidence)
-    total = len(verifiable)
+    # Resolve local-skip and cache-hit findings before spinning up workers.
+    remaining = prepare_findings_for_verification(verifiable, cycle=cycle, cache=cache)
+    total = len(remaining)
     if total == 0:
         return findings
     max_workers = min(5, total)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(verify_finding, f, cycle=cycle): f for f in verifiable}
+        futures = {pool.submit(verify_finding, f, cycle=cycle, cache=cache): f for f in remaining}
         completed = 0
         for future in as_completed(futures):
             f = futures[future]
@@ -397,16 +602,29 @@ def verify_findings(findings: list[Finding], *, progress: VerifyProgressFn = _no
     return findings
 
 
-def verify_findings_batch(findings: list[Finding], *, log: Callable[[str], None] = lambda _: None, progress: Callable[[float, str], None] = lambda _p, _m: None, poll_interval: int = 15, cycle: CodeCycle = DEFAULT_CYCLE) -> list[Finding]:
+def verify_findings_batch(
+    findings: list[Finding],
+    *,
+    log: Callable[[str], None] = lambda _: None,
+    progress: Callable[[float, str], None] = lambda _p, _m: None,
+    poll_interval: int = 15,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    cache: VerificationCache | None = None,
+) -> list[Finding]:
     if not findings:
         log("No findings eligible for batch verification.")
         return findings
 
-    progress(0.0, f"Submitting {len(findings)} verification requests...")
-    job = start_verification_batch(findings, cycle=cycle)
+    remaining = prepare_findings_for_verification(findings, cycle=cycle, cache=cache, log=log)
+    if not remaining:
+        progress(100.0, "Verification complete (all resolved locally / cached)")
+        return findings
+
+    progress(0.0, f"Submitting {len(remaining)} verification requests...")
+    job = start_verification_batch(remaining, cycle=cycle)
     log(f"Verification batch submitted: {job.batch_id}")
 
-    collect_verification_batch_results(job, findings, log=log, progress=progress, poll_interval=poll_interval, cycle=cycle)
+    collect_verification_batch_results(job, remaining, log=log, progress=progress, poll_interval=poll_interval, cycle=cycle, cache=cache)
     progress(100.0, "Verification complete")
     return findings
 
@@ -429,19 +647,21 @@ def _retry_failed_verifications_realtime(
     pass
 
 
-def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
+def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, model: str | None = None) -> BatchJob:
     return submit_verification_batch(
         findings,
         build_prompt_fn=lambda finding: _build_verification_prompt(finding, cycle=cycle),
         system_prompt_fn=_get_verification_system_prompt,
         cycle=cycle,
+        model=model or initial_verification_model(),
     )
 
 
-def _build_retry_request(prompt: str, *, cycle: CodeCycle) -> dict:
+def _build_retry_request(prompt: str, *, cycle: CodeCycle, model: str | None = None) -> dict:
+    selected = model or initial_verification_model()
     return {
-        "model": VERIFICATION_MODEL,
-        "max_tokens": verification_max_tokens(),
+        "model": selected,
+        "max_tokens": verification_max_tokens(model=selected),
         "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
         "tools": tools_with_cache([WEB_SEARCH_TOOL]),
@@ -449,10 +669,11 @@ def _build_retry_request(prompt: str, *, cycle: CodeCycle) -> dict:
     }
 
 
-def _build_continuation_request(prompt: str, assistant_content_blocks: list, *, cycle: CodeCycle) -> dict:
+def _build_continuation_request(prompt: str, assistant_content_blocks: list, *, cycle: CodeCycle, model: str | None = None) -> dict:
+    selected = model or initial_verification_model()
     return {
-        "model": VERIFICATION_MODEL,
-        "max_tokens": verification_max_tokens(),
+        "model": selected,
+        "max_tokens": verification_max_tokens(model=selected),
         "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
         "tools": tools_with_cache([WEB_SEARCH_TOOL]),
@@ -478,6 +699,8 @@ def _classify_wave_results(
     outcomes: list[VerificationItemOutcome] = []
     for custom_id, context in request_contexts.items():
         finding_idx = context["finding_idx"]
+        model_used = context.get("model") or job.request_map.get(custom_id, {}).get("model") or VERIFICATION_MODEL
+        escalated = bool(context.get("escalated", False))
         result = detailed.get(custom_id)
         if result is None:
             outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="retry", unverified_reason="Missing batch result"))
@@ -524,17 +747,39 @@ def _classify_wave_results(
         if parsed.verdict == "UNVERIFIED" and "valid JSON" in (parsed.explanation or ""):
             outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=parsed.explanation))
             continue
-        search_urls, _, _ = _collect_search_evidence(message)
+        search_urls, success_blocks, error_count = _collect_search_evidence(message)
         if search_urls:
             existing = set(parsed.sources)
             for url in search_urls:
                 if url not in existing:
                     parsed.sources.append(url)
+        # Phase 3 evidence model: stamp grounding/source counts so the
+        # downstream invariant can downgrade ungrounded verified verdicts.
+        parsed.grounded = success_blocks > 0
+        parsed.model_used = model_used
+        parsed.escalated = escalated
+        parsed.cache_status = "miss"
+        parsed.web_search_requests = _web_search_count(message)
+        parsed.successful_source_count = len(search_urls)
+        parsed.search_error_count = error_count
+        parsed = _enforce_grounding_invariant(parsed)
         outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed))
     return outcomes
 
 
-def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *, log: Callable[[str], None] = lambda _: None, progress: Callable[[float, str], None] = lambda _p, _m: None, poll_interval: int = 15, cycle: CodeCycle = DEFAULT_CYCLE, poll_policy: PollPolicy | None = None, max_waves: int = MAX_VERIFICATION_WAVES) -> list[Finding]:
+def collect_verification_batch_results(
+    job: BatchJob,
+    findings: list[Finding],
+    *,
+    log: Callable[[str], None] = lambda _: None,
+    progress: Callable[[float, str], None] = lambda _p, _m: None,
+    poll_interval: int = 15,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    poll_policy: PollPolicy | None = None,
+    max_waves: int = MAX_VERIFICATION_WAVES,
+    cache: VerificationCache | None = None,
+    realtime_fallback_threshold: int | None = None,
+) -> list[Finding]:
     if not findings:
         return findings
     policy = poll_policy or PollPolicy(
@@ -543,10 +788,17 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
         max_no_progress_seconds=DEFAULT_VERIFICATION_POLL_POLICY.max_no_progress_seconds,
         max_consecutive_errors=DEFAULT_VERIFICATION_POLL_POLICY.max_consecutive_errors,
     )
+    fallback_threshold = (
+        realtime_fallback_threshold
+        if realtime_fallback_threshold is not None
+        else _REALTIME_FALLBACK_THRESHOLD
+    )
     request_contexts = {
         custom_id: {
             "finding_idx": meta["finding_idx"],
             "original_prompt": _build_verification_prompt(findings[meta["finding_idx"]], cycle=cycle),
+            "model": meta.get("model") or initial_verification_model(),
+            "escalated": False,
         }
         for custom_id, meta in job.request_map.items()
     }
@@ -573,6 +825,8 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
             finding = findings[outcome.finding_idx]
             if outcome.classification == "success" and outcome.parsed_verification:
                 finding.verification = outcome.parsed_verification
+                if cache is not None:
+                    cache.put(finding, cycle=cycle, result=outcome.parsed_verification)
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 succeeded += 1
             elif outcome.classification == "retry":
@@ -587,7 +841,28 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
         if not needs_retry and not needs_continue:
             break
         if wave_index == max_waves - 1:
-            for outcome in needs_retry + needs_continue:
+            unresolved = needs_retry + needs_continue
+            # Phase 3 (plan 7.4): if only a small tail remains, fall back to
+            # real-time verification rather than waiting for another batch.
+            if (
+                fallback_threshold > 0
+                and len(unresolved) <= fallback_threshold
+            ):
+                log(
+                    f"Verification: real-time fallback for {len(unresolved)} "
+                    f"unresolved finding(s) (threshold={fallback_threshold})."
+                )
+                for outcome in unresolved:
+                    finding = findings[outcome.finding_idx]
+                    try:
+                        finding.verification = verify_finding(finding, cycle=cycle, cache=cache)
+                    except Exception as e:
+                        finding.verification = VerificationResult(
+                            verdict="UNVERIFIED",
+                            explanation=f"Real-time fallback verification failed: {e}",
+                        )
+                break
+            for outcome in unresolved:
                 finding = findings[outcome.finding_idx]
                 finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unresolved after {max_waves} batch waves: {outcome.unverified_reason or outcome.classification}.")
             break
@@ -596,16 +871,18 @@ def collect_verification_batch_results(job: BatchJob, findings: list[Finding], *
         next_contexts: dict[str, dict] = {}
         for item in needs_retry:
             original = request_contexts[item.original_custom_id]
+            wave_model = original.get("model") or initial_verification_model()
             custom_id = f"verify_retry_{wave_index + 1}__{item.original_custom_id}"
-            next_requests.append({"custom_id": custom_id, "params": _build_retry_request(original["original_prompt"], cycle=cycle)})
-            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "retry"}
-            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False}
+            next_requests.append({"custom_id": custom_id, "params": _build_retry_request(original["original_prompt"], cycle=cycle, model=wave_model)})
+            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "retry", "model": wave_model}
+            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False)}
         for item in needs_continue:
             original = request_contexts[item.original_custom_id]
+            wave_model = original.get("model") or initial_verification_model()
             custom_id = f"verify_cont_{wave_index + 1}__{item.original_custom_id}"
-            next_requests.append({"custom_id": custom_id, "params": _build_continuation_request(original["original_prompt"], item.assistant_content_blocks or [], cycle=cycle)})
-            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "continuation"}
-            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False}
+            next_requests.append({"custom_id": custom_id, "params": _build_continuation_request(original["original_prompt"], item.assistant_content_blocks or [], cycle=cycle, model=wave_model)})
+            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "continuation", "model": wave_model}
+            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False)}
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations")
         current_job = submit_verification_followup_wave(next_requests, next_request_map)
         request_contexts = next_contexts

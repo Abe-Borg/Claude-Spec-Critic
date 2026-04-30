@@ -87,12 +87,38 @@ class DiagnosticsReport:
                 total_cache_creation_tokens += e.data.get("cache_creation_input_tokens", 0)
                 total_cache_read_tokens += e.data.get("cache_read_input_tokens", 0)
 
-        # Verification verdict breakdown
+        # Verification verdict breakdown + Phase 3 evidence telemetry
         verdicts: dict[str, int] = {}
+        verification_stats = {
+            "grounded": 0,
+            "ungrounded": 0,
+            "escalated": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "local_skips": 0,
+            "search_errors": 0,
+            "search_requests": 0,
+        }
         for e in self.events:
             if e.data and "verdict" in e.data:
                 v = e.data["verdict"]
                 verdicts[v] = verdicts.get(v, 0) + 1
+                # Optional Phase 3 fields. Missing keys are simply ignored.
+                if e.data.get("grounded") is True:
+                    verification_stats["grounded"] += 1
+                elif "grounded" in e.data:
+                    verification_stats["ungrounded"] += 1
+                if e.data.get("escalated") is True:
+                    verification_stats["escalated"] += 1
+                cs = e.data.get("cache_status")
+                if cs == "hit":
+                    verification_stats["cache_hits"] += 1
+                elif cs == "miss":
+                    verification_stats["cache_misses"] += 1
+                elif cs == "local_skip":
+                    verification_stats["local_skips"] += 1
+                verification_stats["search_errors"] += int(e.data.get("search_error_count", 0) or 0)
+                verification_stats["search_requests"] += int(e.data.get("web_search_requests", 0) or 0)
 
         # Finding severity breakdown
         severities: dict[str, int] = {}
@@ -118,6 +144,7 @@ class DiagnosticsReport:
             "total_cache_creation_input_tokens": total_cache_creation_tokens,
             "total_cache_read_input_tokens": total_cache_read_tokens,
             "verification_verdicts": verdicts,
+            "verification_evidence": verification_stats,
             "severity_counts": severities,
         }
 
@@ -202,6 +229,17 @@ class DiagnosticsReport:
             lines.append(f"  Findings:        {s['severity_counts']}")
         if s["verification_verdicts"]:
             lines.append(f"  Verdicts:        {s['verification_verdicts']}")
+        evidence = s.get("verification_evidence")
+        if evidence and any(evidence.values()):
+            lines.append(
+                "  Evidence:        "
+                f"grounded={evidence['grounded']}, "
+                f"ungrounded={evidence['ungrounded']}, "
+                f"escalated={evidence['escalated']}, "
+                f"cache_hits={evidence['cache_hits']}, "
+                f"local_skips={evidence['local_skips']}, "
+                f"search_errors={evidence['search_errors']}"
+            )
         if s["phase_durations"]:
             lines.append("  Phase Durations:")
             for phase, dur in s["phase_durations"].items():
