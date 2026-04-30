@@ -201,11 +201,17 @@ def serialize_submission(submission: BatchSubmission) -> dict[str, Any]:
         "code_cycle": submission.cycle_label,
         "cross_check_enabled": submission.cross_check_enabled,
         "export_mode": submission.export_mode,
+        # Phase 8 / plan section 12.1: persist the review mode so resume
+        # restores the exact prompt path. Older payloads without this key
+        # fall back to the default.
+        "review_mode": submission.review_mode,
         "prepared_specs": [serialize_extracted_spec(s) for s in (submission.prepared_specs or [])],
     }
 
 
 def deserialize_submission(payload: dict[str, Any]) -> BatchSubmission:
+    from .review_modes import DEFAULT_REVIEW_MODE, coerce_review_mode
+
     specs_payload = payload.get("prepared_specs") or []
     prepared_specs = [deserialize_extracted_spec(s) for s in specs_payload] if specs_payload else None
     return BatchSubmission(
@@ -219,6 +225,7 @@ def deserialize_submission(payload: dict[str, Any]) -> BatchSubmission:
         cycle_label=str(payload.get("code_cycle", DEFAULT_CYCLE.label)),
         cross_check_enabled=bool(payload.get("cross_check_enabled", False)),
         export_mode=bool(payload.get("export_mode", False)),
+        review_mode=coerce_review_mode(payload.get("review_mode", DEFAULT_REVIEW_MODE.value)).value,
         prepared_specs=prepared_specs,
     )
 

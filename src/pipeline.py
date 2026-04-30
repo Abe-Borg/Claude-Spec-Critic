@@ -27,9 +27,10 @@ from .verifier import (
     VerificationResult,
 )
 from .verification_cache import VerificationCache
-from .cross_checker import run_cross_check
+from .cross_checker import run_cross_check, run_chunked_cross_check
 from .code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 from .prompts import get_system_prompt
+from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode, coerce_review_mode
 
 # Phase 7.1 (audit Section 11.1): log callbacks accept an explicit ``level``
 # keyword so pipeline code can categorize messages (info / success / warning /
@@ -141,7 +142,7 @@ class _PreparedSpecs:
     placeholder_alerts: list[dict]
 
 
-def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE) -> _PreparedSpecs:
+def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE) -> _PreparedSpecs:
     spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
     if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
@@ -168,7 +169,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     if not specs:
         raise FileNotFoundError("All files failed extraction. No specs to review.")
 
-    system_prompt = get_system_prompt(cycle)
+    system_prompt = get_system_prompt(cycle, mode=mode)
     system_tokens = count_tokens(system_prompt)
     ctx_tokens = count_tokens(project_context) if project_context else 0
     for spec in specs:
@@ -185,7 +186,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         # Pick the largest spec by local count and verify the API agrees.
         biggest = max(specs, key=lambda s: count_tokens(s.content))
         from .prompts import get_single_spec_user_message
-        user_message = get_single_spec_user_message(biggest.content, biggest.filename, project_context=project_context, cycle=cycle)
+        user_message = get_single_spec_user_message(biggest.content, biggest.filename, project_context=project_context, cycle=cycle, mode=mode)
         exact = count_tokens_via_api(
             model=MODEL_OPUS_46,
             system=system_prompt,
@@ -217,13 +218,18 @@ class BatchSubmission:
     cycle_label: str = DEFAULT_CYCLE.label
     cross_check_enabled: bool = False
     export_mode: bool = False
+    # Phase 8 / plan section 12.1: review mode that produced this batch.
+    # Stored as the enum string value so resume-state JSON serialization is
+    # trivial. ``coerce_review_mode`` handles None / unknown labels.
+    review_mode: str = DEFAULT_REVIEW_MODE.value
 
 
-def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_46, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, export_mode: bool = False) -> BatchSubmission:
-    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle)
-    job = submit_review_batch(prepared.specs, project_context=project_context, model=model, cycle=cycle)
+def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_46, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, export_mode: bool = False, mode: ReviewMode | str | None = None) -> BatchSubmission:
+    review_mode = coerce_review_mode(mode)
+    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode)
+    job = submit_review_batch(prepared.specs, project_context=project_context, model=model, cycle=cycle, mode=review_mode)
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
-    return BatchSubmission(job=job, files_reviewed=[s.filename for s in prepared.specs], review_request_ids=ordered_ids, leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, model=model, project_context=project_context, prepared_specs=prepared.specs, cycle_label=cycle.label, cross_check_enabled=cross_check_enabled, export_mode=export_mode)
+    return BatchSubmission(job=job, files_reviewed=[s.filename for s in prepared.specs], review_request_ids=ordered_ids, leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, model=model, project_context=project_context, prepared_specs=prepared.specs, cycle_label=cycle.label, cross_check_enabled=cross_check_enabled, export_mode=export_mode, review_mode=review_mode.value)
 
 
 def _is_retryable_batch_review_result(rr: ReviewResult | None) -> bool:
@@ -278,6 +284,7 @@ def _recover_retryable_review_batch_results(
             "inside <findings_json> tags. Do not include an analysis summary. Focus on "
             "completing the structured output."
         ),
+        mode=coerce_review_mode(submission.review_mode),
     )
     outcome = poll_batch_bounded(
         repair_job.batch_id,
@@ -589,7 +596,12 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
         f for f in state.review_result.findings
         if not (f.verification and f.verification.verdict == "DISPUTED")
     ]
-    cross = run_cross_check(specs, dedup_findings, project_context=project_context, cycle=cycle)
+    # Phase 8 / plan section 12.3: chunk by CSI division when the combined
+    # input would otherwise exceed the cross-check token budget. This used
+    # to surface as a ``skipped`` status — large projects therefore got no
+    # coordination review at all. ``run_chunked_cross_check`` falls back to
+    # the original single-pass ``run_cross_check`` when the input fits.
+    cross = run_chunked_cross_check(specs, dedup_findings, project_context=project_context, cycle=cycle, log=log)
     state.cross_check_result = cross
     _log_cross_check_status(log, cross)
     return state
@@ -659,9 +671,10 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
     )
 
 
-def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_46, verify: bool = True, cross_check: bool = False, dry_run: bool = False, verbose: bool = False, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE) -> PipelineResult:
+def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_46, verify: bool = True, cross_check: bool = False, dry_run: bool = False, verbose: bool = False, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode | str | None = None) -> PipelineResult:
     start = time.time()
-    prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle)
+    review_mode = coerce_review_mode(mode)
+    prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode)
     specs = prepared.specs
     if dry_run:
         return PipelineResult(review_result=ReviewResult(findings=[], model=model), files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cycle_label=cycle.label, total_elapsed_seconds=time.time() - start)
@@ -672,7 +685,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     errors: list[str] = []
     for i, spec in enumerate(specs, start=1):
         progress(25.0 + ((i - 1) / len(specs)) * 25.0, f"Reviewing {spec.filename} ({i}/{len(specs)})...")
-        rr = review_single_spec(spec.content, spec.filename, project_context=project_context, model=model, verbose=verbose, stream_callback=stream_callback, cycle=cycle)
+        rr = review_single_spec(spec.content, spec.filename, project_context=project_context, model=model, verbose=verbose, stream_callback=stream_callback, cycle=cycle, mode=review_mode)
         if rr.parse_status == "incomplete":
             log(f"  {spec.filename}: Response incomplete — model ran out of output tokens. No findings extracted.", level="warning")
         if rr.error:
@@ -698,7 +711,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     if cross_check:
         dedup_for_cross = [f for f in findings if not (f.verification and f.verification.verdict == "DISPUTED")]
         progress(75.0, "Running cross-check with dedup context...")
-        cross = run_cross_check(specs, dedup_for_cross, project_context=project_context, verbose=verbose, cycle=cycle)
+        cross = run_chunked_cross_check(specs, dedup_for_cross, project_context=project_context, verbose=verbose, cycle=cycle, log=log)
         _log_cross_check_status(log, cross)
         if verify and cross and cross.findings:
             try:
