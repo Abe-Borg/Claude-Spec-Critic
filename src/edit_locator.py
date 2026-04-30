@@ -7,6 +7,12 @@ from difflib import SequenceMatcher
 import re
 import unicodedata
 
+from .edit_candidates import (
+    SAFETY_AUTO_SAFE,
+    SAFETY_AUTO_WITH_CAUTION,
+    SAFETY_MANUAL_REVIEW,
+    SAFETY_REPORT_ONLY,
+)
 from .extractor import ParagraphMapping
 from .reviewer import Finding
 
@@ -38,6 +44,60 @@ class LocatorResult:
     replacement_text: str | None
     action_type: str
     warning: str | None = None
+    # Phase 4 (audit Section 8.1): paragraph-locator safety category. Values:
+    # AUTO_SAFE, AUTO_WITH_CAUTION, MANUAL_REVIEW, REPORT_ONLY. Computed
+    # from match method/confidence, ambiguity, element type, and structural
+    # span. build_edit_actions uses this to gate auto-application. Left as
+    # None by default so __post_init__ can derive it from the result data;
+    # locate_edit also passes an explicit value when it has cross-paragraph
+    # context that __post_init__ can't see.
+    safety_category: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.safety_category is None:
+            self.safety_category = _classify_locator_safety(
+                status=self.status,
+                action_type=(self.action_type or "").upper(),
+                locations=self.locations,
+                replacement_text=self.replacement_text,
+                cross_paragraph=False,
+            )
+
+
+def _classify_locator_safety(
+    *,
+    status: str,
+    action_type: str,
+    locations: list[EditLocation],
+    replacement_text: str | None,
+    cross_paragraph: bool,
+) -> str:
+    """Classify a locator result for downstream auto-apply gating."""
+    if status == "not_found" or not locations:
+        return SAFETY_REPORT_ONLY
+    if status == "ambiguous":
+        return SAFETY_MANUAL_REVIEW
+    if action_type in {"EDIT", "ADD"} and not (replacement_text or "").strip():
+        return SAFETY_REPORT_ONLY
+
+    best = max(locations, key=lambda location: location.match_confidence)
+    element_type = best.mapping.element_type
+    method = best.match_method
+    confidence = best.match_confidence
+
+    if element_type in {"header", "footer", "meta"}:
+        return SAFETY_MANUAL_REVIEW
+    if cross_paragraph:
+        return SAFETY_AUTO_WITH_CAUTION
+    if method == "fuzzy":
+        return SAFETY_MANUAL_REVIEW
+    if method == "exact" and confidence >= 0.95:
+        return SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
+    if method == "normalized" and confidence >= 0.85:
+        return SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
+    if method == "section_anchored":
+        return SAFETY_AUTO_WITH_CAUTION
+    return SAFETY_AUTO_WITH_CAUTION
 
 
 def _resolve_replacement_text(finding: Finding) -> str | None:
@@ -345,6 +405,7 @@ def locate_edit(
             replacement_text=replacement,
             action_type=action_type,
             warning="Finding has no existingText; locator cannot determine an edit target.",
+            safety_category=SAFETY_REPORT_ONLY,
         )
 
     short_text = len(existing_text) < 15
@@ -376,13 +437,21 @@ def locate_edit(
         if filtered_spans:
             warning = "Matched text spans multiple paragraphs; review before auto-applying edit."
             best_span = max(filtered_spans, key=lambda span: span[0].match_confidence)
+            cross_status = "matched" if len(filtered_spans) == 1 else "ambiguous"
             return LocatorResult(
                 finding=finding,
-                status="matched" if len(filtered_spans) == 1 else "ambiguous",
+                status=cross_status,
                 locations=best_span,
                 replacement_text=replacement,
                 action_type=action_type,
                 warning=warning,
+                safety_category=_classify_locator_safety(
+                    status=cross_status,
+                    action_type=action_type,
+                    locations=best_span,
+                    replacement_text=replacement,
+                    cross_paragraph=True,
+                ),
             )
         return LocatorResult(
             finding=finding,
@@ -391,6 +460,7 @@ def locate_edit(
             replacement_text=replacement,
             action_type=action_type,
             warning="No paragraph match met the confidence threshold.",
+            safety_category=SAFETY_REPORT_ONLY,
         )
 
     status = "matched" if len(match_candidates) == 1 else "ambiguous"
@@ -401,6 +471,13 @@ def locate_edit(
         replacement_text=replacement,
         action_type=action_type,
         warning=warning,
+        safety_category=_classify_locator_safety(
+            status=status,
+            action_type=action_type,
+            locations=match_candidates,
+            replacement_text=replacement,
+            cross_paragraph=False,
+        ),
     )
 
 
