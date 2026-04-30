@@ -547,7 +547,7 @@ def prepare_findings_for_verification(
     *,
     cycle: CodeCycle = DEFAULT_CYCLE,
     cache: VerificationCache | None = None,
-    log: Callable[[str], None] = lambda _: None,
+    log: Callable[..., None] = lambda *_a, **_k: None,
 ) -> list[Finding]:
     """Apply Phase 3 pre-pass: local skip + cache lookup.
 
@@ -574,7 +574,8 @@ def prepare_findings_for_verification(
     if skipped_local or cache_hits:
         log(
             f"Verification pre-pass: {skipped_local} locally skipped, "
-            f"{cache_hits} cache hits, {len(remaining)} require web verification."
+            f"{cache_hits} cache hits, {len(remaining)} require web verification.",
+            level="info",
         )
     return remaining
 
@@ -605,14 +606,14 @@ def verify_findings(findings: list[Finding], *, progress: VerifyProgressFn = _no
 def verify_findings_batch(
     findings: list[Finding],
     *,
-    log: Callable[[str], None] = lambda _: None,
+    log: Callable[..., None] = lambda *_a, **_k: None,
     progress: Callable[[float, str], None] = lambda _p, _m: None,
     poll_interval: int = 15,
     cycle: CodeCycle = DEFAULT_CYCLE,
     cache: VerificationCache | None = None,
 ) -> list[Finding]:
     if not findings:
-        log("No findings eligible for batch verification.")
+        log("No findings eligible for batch verification.", level="info")
         return findings
 
     remaining = prepare_findings_for_verification(findings, cycle=cycle, cache=cache, log=log)
@@ -622,7 +623,7 @@ def verify_findings_batch(
 
     progress(0.0, f"Submitting {len(remaining)} verification requests...")
     job = start_verification_batch(remaining, cycle=cycle)
-    log(f"Verification batch submitted: {job.batch_id}")
+    log(f"Verification batch submitted: {job.batch_id}", level="step")
 
     collect_verification_batch_results(job, remaining, log=log, progress=progress, poll_interval=poll_interval, cycle=cycle, cache=cache)
     progress(100.0, "Verification complete")
@@ -633,7 +634,7 @@ def _retry_failed_verifications_realtime(
     findings: list[Finding],
     *,
     cycle: CodeCycle = DEFAULT_CYCLE,
-    log: Callable[[str], None] = lambda _: None,
+    log: Callable[..., None] = lambda *_a, **_k: None,
     max_retry_count: int = _ERRORED_RETRY_MAX,
 ) -> None:
     """No-op retained for import compatibility.
@@ -771,7 +772,7 @@ def collect_verification_batch_results(
     job: BatchJob,
     findings: list[Finding],
     *,
-    log: Callable[[str], None] = lambda _: None,
+    log: Callable[..., None] = lambda *_a, **_k: None,
     progress: Callable[[float, str], None] = lambda _p, _m: None,
     poll_interval: int = 15,
     cycle: CodeCycle = DEFAULT_CYCLE,
@@ -807,7 +808,7 @@ def collect_verification_batch_results(
     current_job = job
     for wave_index in range(max_waves):
         wave_label = f"wave {wave_index + 1}/{max_waves}"
-        log(f"Verification {wave_label}: polling batch {current_job.batch_id}...")
+        log(f"Verification {wave_label}: polling batch {current_job.batch_id}...", level="step")
         poll_outcome = poll_batch_bounded(
             current_job.batch_id,
             policy=policy,
@@ -815,7 +816,7 @@ def collect_verification_batch_results(
             progress_cb=lambda status: progress(5.0 + (status.progress_pct / 100.0) * 85.0, f"Verification {wave_label}: {status.completed}/{status.total} done"),
         )
         if poll_outcome.detached or poll_outcome.poll_failed:
-            log(f"Verification {wave_label}: polling ended before terminal status. Remaining findings will be marked UNVERIFIED.")
+            log(f"Verification {wave_label}: polling ended before terminal status. Remaining findings will be marked UNVERIFIED.", level="warning")
             break
         active_contexts = {cid: ctx for cid, ctx in request_contexts.items() if ctx.get("resolved") is not True}
         outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts)
@@ -839,7 +840,11 @@ def collect_verification_batch_results(
                 finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=outcome.unverified_reason or "Verification failed.")
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 terminal_unverified += 1
-        log(f"Verification {wave_label} results: {succeeded} succeeded, {len(needs_continue)} need continuation, {len(needs_retry)} need retry, {terminal_unverified} terminal UNVERIFIED")
+        wave_summary_level = "warning" if (len(needs_retry) or len(needs_continue) or terminal_unverified) else "info"
+        log(
+            f"Verification {wave_label} results: {succeeded} succeeded, {len(needs_continue)} need continuation, {len(needs_retry)} need retry, {terminal_unverified} terminal UNVERIFIED",
+            level=wave_summary_level,
+        )
         if not needs_retry and not needs_continue:
             break
         if wave_index == max_waves - 1:
@@ -852,7 +857,8 @@ def collect_verification_batch_results(
             ):
                 log(
                     f"Verification: real-time fallback for {len(unresolved)} "
-                    f"unresolved finding(s) (threshold={fallback_threshold})."
+                    f"unresolved finding(s) (threshold={fallback_threshold}).",
+                    level="info",
                 )
                 for outcome in unresolved:
                     finding = findings[outcome.finding_idx]
@@ -885,7 +891,7 @@ def collect_verification_batch_results(
             next_requests.append({"custom_id": custom_id, "params": _build_continuation_request(original["original_prompt"], item.assistant_content_blocks or [], cycle=cycle, model=wave_model)})
             next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "continuation", "model": wave_model}
             next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False)}
-        log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations")
+        log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         current_job = submit_verification_followup_wave(next_requests, next_request_map)
         request_contexts = next_contexts
     counts = {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0}
@@ -898,6 +904,7 @@ def collect_verification_batch_results(
         f"{counts.get('CONFIRMED', 0)} confirmed, "
         f"{counts.get('CORRECTED', 0)} corrected, "
         f"{counts.get('DISPUTED', 0)} disputed, "
-        f"{counts.get('UNVERIFIED', 0)} unverified"
+        f"{counts.get('UNVERIFIED', 0)} unverified",
+        level="success",
     )
     return findings

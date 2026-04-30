@@ -75,7 +75,7 @@ def poll_batch_bounded(
     batch_id: str,
     *,
     policy: PollPolicy,
-    log: Callable[[str], None],
+    log: Callable[..., None],
     progress_cb: Callable[[BatchStatus], None],
     cancel_event=None,
 ) -> PollOutcome:
@@ -92,14 +92,16 @@ def poll_batch_bounded(
         if now - started > policy.max_elapsed_seconds:
             log(
                 f"Polling timed out after {policy.max_elapsed_seconds / 3600:.1f}h. "
-                "Remote batch may still be running."
+                "Remote batch may still be running.",
+                level="warning",
             )
             return PollOutcome(detached=True, detach_reason="max_elapsed")
 
         if now - last_progress_time > policy.max_no_progress_seconds:
             log(
                 f"No progress for {policy.max_no_progress_seconds / 60:.0f} minutes. "
-                "Remote batch may still be running."
+                "Remote batch may still be running.",
+                level="warning",
             )
             return PollOutcome(detached=True, detach_reason="no_progress")
 
@@ -111,7 +113,8 @@ def poll_batch_bounded(
             if consecutive_errors >= policy.max_consecutive_errors:
                 log(
                     f"Polling failed {consecutive_errors} times consecutively. "
-                    "Remote batch may still be running."
+                    "Remote batch may still be running.",
+                    level="error",
                 )
                 return PollOutcome(poll_failed=True, poll_error=f"poll_error_threshold: {exc}")
             backoff = min(policy.poll_interval_seconds * (2 ** consecutive_errors), 300)

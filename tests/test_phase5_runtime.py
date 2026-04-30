@@ -292,7 +292,7 @@ def test_drop_cross_check_findings_with_disputed_upstream_drops_match():
     review = [_review_finding_disputed(file="A.docx", section="2.1")]
     log_messages: list[str] = []
     kept = _drop_cross_check_findings_with_disputed_upstream(
-        cross, review, log=lambda m: log_messages.append(m)
+        cross, review, log=lambda m, **_k: log_messages.append(m)
     )
     assert [f.fileName for f in kept] == ["B.docx"]
     assert any("DISPUTED" in m for m in log_messages)
