@@ -11,6 +11,7 @@ from typing import Any
 from .prompts import get_system_prompt, get_single_spec_user_message
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_46
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
+from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
 from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET, count_tokens
 from .api_config import (
     BATCH_MAX_OUTPUT_TOKENS,
@@ -62,11 +63,12 @@ def submit_review_batch(
     model: str = MODEL_OPUS_46,
     cycle: CodeCycle = DEFAULT_CYCLE,
     retry_instruction: str | None = None,
+    mode: ReviewMode = DEFAULT_REVIEW_MODE,
 ) -> BatchJob:
     if not specs:
         raise ValueError("No specs to submit for batch review")
     client = _get_client()
-    system_prompt = get_system_prompt(cycle)
+    system_prompt = get_system_prompt(cycle, mode=mode)
     system_payload = system_prompt_with_cache(system_prompt)
     use_extended_output = model == MODEL_OPUS_46
     # Local token estimate sized so the per-spec dispatcher can pick the
@@ -77,7 +79,7 @@ def submit_review_batch(
     request_map = {}
     for idx, spec in enumerate(specs):
         custom_id = f"review__{_sanitize_custom_id(spec.filename)}__{idx}"
-        user_message = get_single_spec_user_message(spec.content, spec.filename, project_context=project_context, cycle=cycle)
+        user_message = get_single_spec_user_message(spec.content, spec.filename, project_context=project_context, cycle=cycle, mode=mode)
         if retry_instruction:
             user_message += f"\n\n{retry_instruction}"
         approx_input_tokens = system_tokens + count_tokens(user_message)

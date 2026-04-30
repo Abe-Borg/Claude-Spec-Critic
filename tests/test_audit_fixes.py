@@ -490,7 +490,10 @@ def test_run_cross_check_for_batch_skips_failed_specs(monkeypatch: pytest.Monkey
         captured["spec_filenames"] = [s.filename for s in specs]
         return ReviewResult(findings=[], cross_check_status="completed")
 
-    monkeypatch.setattr("src.pipeline.run_cross_check", fake_run_cross_check)
+    # Pipeline now invokes the chunked wrapper, which delegates to
+    # ``run_cross_check`` when the input fits. Patch the chunked entry
+    # point so the test still observes which specs were forwarded.
+    monkeypatch.setattr("src.pipeline.run_chunked_cross_check", fake_run_cross_check)
 
     run_cross_check_for_batch(state, specs=[spec_a, spec_b])
 

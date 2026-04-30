@@ -15,6 +15,7 @@ from anthropic import Anthropic, APIError, APIConnectionError, APIStatusError, R
 
 from .prompts import get_system_prompt, get_single_spec_user_message
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
+from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
 from .api_config import (
     MODEL_OPUS_46,
     REVIEW_MODEL_DEFAULT,
@@ -301,12 +302,12 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
     return result
 
 
-def review_single_spec(spec_content: str, filename: str, *, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE) -> ReviewResult:
+def review_single_spec(spec_content: str, filename: str, *, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE) -> ReviewResult:
     client = _get_client()
     return _stream_review(
         client,
-        get_system_prompt(cycle),
-        get_single_spec_user_message(spec_content, filename, project_context=project_context, cycle=cycle),
+        get_system_prompt(cycle, mode=mode),
+        get_single_spec_user_message(spec_content, filename, project_context=project_context, cycle=cycle, mode=mode),
         model=model,
         max_retries=max_retries,
         verbose=verbose,
