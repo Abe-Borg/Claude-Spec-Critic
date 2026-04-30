@@ -17,7 +17,9 @@ src/
 ├── report_exporter.py   # Word document (.docx) report generation
 ├── cross_checker.py     # Cross-spec coordination check (Opus 4.6)
 ├── batch.py             # Anthropic Message Batches API wrapper
-├── verifier.py          # Web search verification (Opus 4.6)
+├── verifier.py          # Web search verification (default Opus 4.6; Sonnet routing opt-in)
+├── verification_router.py  # Phase 3: model routing + local pre-classification
+├── verification_cache.py   # Phase 3: per-run verdict cache (claim-keyed)
 ├── extractor.py         # Text extraction (DOCX-only)
 ├── preprocessor.py      # Local LEED/placeholder detection
 ├── tokenizer.py         # Token counting and limits
@@ -216,10 +218,24 @@ Key design:
 
 ### verifier.py — Verification
 
-- `verify_findings(findings, *, progress=..., cycle=...) -> list[Finding]`
-- `verify_findings_batch(findings, *, log=..., progress=..., poll_interval=..., cycle=...) -> list[Finding]`
-- `start_verification_batch(findings, *, cycle) -> BatchJob`
-- `collect_verification_batch_results(job, findings, *, log, progress, poll_interval, cycle) -> list[Finding]`
+- `verify_findings(findings, *, progress=..., cycle=..., cache=None) -> list[Finding]`
+- `verify_findings_batch(findings, *, log=..., progress=..., poll_interval=..., cycle=..., cache=None) -> list[Finding]`
+- `verify_finding(finding, *, max_retries=2, cycle=..., model=None, cache=None, escalated=False) -> VerificationResult`
+- `prepare_findings_for_verification(findings, *, cycle, cache=None, log=...) -> list[Finding]` — Phase 3 pre-pass that resolves local-skip and cache-hit findings in place; returns the remainder to verify remotely.
+- `start_verification_batch(findings, *, cycle, model=None) -> BatchJob`
+- `collect_verification_batch_results(job, findings, *, log, progress, poll_interval, cycle, cache=None, realtime_fallback_threshold=None) -> list[Finding]`
+
+`VerificationResult` includes the Phase 3 evidence model (`grounded`, `model_used`, `escalated`, `cache_status`, `web_search_requests`, `successful_source_count`, `search_error_count`). The verifier never marks a verdict CONFIRMED/CORRECTED unless `grounded` is True; ungrounded verdicts are downgraded to UNVERIFIED.
+
+### verification_router.py — Phase 3 routing
+
+- `initial_verification_model()` / `escalation_verification_model()`
+- `should_escalate_verification(finding, *, verdict, grounded, ...)` — returns True for CRITICAL/HIGH UNVERIFIED findings when Sonnet is the initial verifier.
+- `classify_finding_for_verification(finding) -> "web_required" | "local_skip"` — gated by `SPEC_CRITIC_LOCAL_VERIFICATION_SKIP=1`.
+
+### verification_cache.py — Phase 3 per-run cache
+
+- `VerificationCache.get/put` — keyed by code cycle + actionType + codeReference + claim digest. Only grounded results are cached; cache hits are tagged `cache_status="hit"` so reports show evidence reuse.
 
 ### pipeline.py — Orchestration and phased batch APIs
 
@@ -227,8 +243,8 @@ Primary phased batch APIs used by GUI:
 - `collect_review_batch_results(submission) -> CollectedBatchState`
 - `run_cross_check_for_batch(state, specs, ...) -> CollectedBatchState`
 - `prepare_verification_work(state) -> list[Finding]`
-- `start_batch_verification(findings, ...) -> BatchJob`
-- `collect_batch_verification_results(job, findings, ...) -> list[Finding]`
+- `start_batch_verification(findings, *, cycle, log, progress, cache=None) -> BatchJob | None` — returns `None` when every finding resolved via local-skip / cache hit; callers must skip the collect step in that case.
+- `collect_batch_verification_results(job, findings, *, cache=None, ...) -> list[Finding]`
 - `finalize_batch_result(state) -> PipelineResult`
 
 Convenience wrapper still available:

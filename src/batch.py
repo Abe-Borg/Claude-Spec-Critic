@@ -261,15 +261,17 @@ def _build_verification_request_params(
     system_prompt: str,
     assistant_content: list | None = None,
     continue_turn: bool = False,
+    model: str | None = None,
 ) -> dict[str, Any]:
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     if assistant_content is not None:
         messages.append({"role": "assistant", "content": assistant_content})
     if continue_turn:
         messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
+    selected_model = model or VERIFICATION_MODEL
     return {
-        "model": VERIFICATION_MODEL,
-        "max_tokens": verification_max_tokens(),
+        "model": selected_model,
+        "max_tokens": verification_max_tokens(model=selected_model),
         "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(system_prompt),
         "tools": tools_with_cache([WEB_SEARCH_TOOL]),
@@ -277,7 +279,14 @@ def _build_verification_request_params(
     }
 
 
-def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_prompt_fn, *, cycle: CodeCycle = DEFAULT_CYCLE) -> BatchJob:
+def submit_verification_batch(
+    findings: list[Finding],
+    build_prompt_fn,
+    system_prompt_fn,
+    *,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    model: str | None = None,
+) -> BatchJob:
     if not findings:
         raise ValueError("No findings eligible for verification")
     verifiable = list(enumerate(findings))
@@ -293,10 +302,11 @@ def submit_verification_batch(findings: list[Finding], build_prompt_fn, system_p
                 "params": _build_verification_request_params(
                     prompt=build_prompt_fn(finding),
                     system_prompt=system_prompt_fn(cycle),
+                    model=model,
                 ),
             }
         )
-        request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx}
+        request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx, "model": model or VERIFICATION_MODEL}
 
     create_fn = client.beta.messages.batches.create if hasattr(client, "beta") else client.messages.batches.create
     kwargs = {"requests": reqs}

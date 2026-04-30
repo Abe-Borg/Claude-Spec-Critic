@@ -21,8 +21,10 @@ from .verifier import (
     verify_findings_batch,
     start_verification_batch,
     collect_verification_batch_results,
+    prepare_findings_for_verification,
     VerificationResult,
 )
+from .verification_cache import VerificationCache
 from .cross_checker import run_cross_check
 from .code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 from .prompts import get_system_prompt
@@ -312,12 +314,22 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
     if cycle is None:
         cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
 
+    # Phase 3: one cache per pipeline run lets the cross-check verification
+    # phase reuse evidence already gathered during review verification.
+    cache = VerificationCache()
+
     state = collect_review_batch_results(submission, log=log)
     if verify and state.review_result.findings:
         try:
             progress(55.0, f"Submitting {len(state.review_result.findings)} verification requests...")
-            verification_submission = start_batch_verification(state.review_result.findings, cycle=cycle, log=log, progress=progress)
-            collect_batch_verification_results(verification_submission, state.review_result.findings, cycle=cycle, log=log, progress=progress)
+            verification_submission = start_batch_verification(
+                state.review_result.findings, cycle=cycle, log=log, progress=progress, cache=cache,
+            )
+            if verification_submission is not None:
+                collect_batch_verification_results(
+                    verification_submission, state.review_result.findings,
+                    cycle=cycle, log=log, progress=progress, cache=cache,
+                )
         except Exception as e:
             log(f"Verification failed: {e}. Returning results without verification.")
             for f in state.review_result.findings:
@@ -330,13 +342,25 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
         if verify and cross_verifiable:
             try:
                 progress(90.0, f"Submitting {len(cross_verifiable)} cross-check verification requests...")
-                verification_submission = start_batch_verification(cross_verifiable, cycle=cycle, log=log, progress=progress)
-                collect_batch_verification_results(verification_submission, cross_verifiable, cycle=cycle, log=log, progress=progress)
+                verification_submission = start_batch_verification(
+                    cross_verifiable, cycle=cycle, log=log, progress=progress, cache=cache,
+                )
+                if verification_submission is not None:
+                    collect_batch_verification_results(
+                        verification_submission, cross_verifiable,
+                        cycle=cycle, log=log, progress=progress, cache=cache,
+                    )
             except Exception as e:
                 log(f"Cross-check verification failed: {e}.")
                 for f in cross_verifiable:
                     if f.verification is None:
                         f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
+    cache_stats = cache.stats()
+    if cache_stats["hits"] or cache_stats["size"]:
+        log(
+            f"Verification cache: {cache_stats['hits']} hits, "
+            f"{cache_stats['misses']} misses across {cache_stats['size']} unique claim(s)."
+        )
 
     progress(100.0, "Done.")
     return finalize_batch_result(state)
@@ -454,14 +478,40 @@ def prepare_verification_work(state: CollectedBatchState) -> list[Finding]:
     return all_verifiable
 
 
-def start_batch_verification(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress) -> BatchJob:
-    progress(60.0, f"Submitting {len(findings)} verification requests...")
-    job = start_verification_batch(findings, cycle=cycle)
+def start_batch_verification(
+    findings: list[Finding],
+    *,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+    cache: VerificationCache | None = None,
+) -> BatchJob | None:
+    """Submit a verification batch, applying Phase 3 pre-pass first.
+
+    Returns ``None`` if every finding resolved locally (local-skip or cache
+    hit) — callers should treat that as "verification complete" without
+    polling. Returns the BatchJob otherwise.
+    """
+    remaining = prepare_findings_for_verification(findings, cycle=cycle, cache=cache, log=log)
+    if not remaining:
+        progress(60.0, "Verification: all findings resolved locally / cached.")
+        return None
+    progress(60.0, f"Submitting {len(remaining)} verification requests...")
+    job = start_verification_batch(remaining, cycle=cycle)
     log(f"Verification batch submitted: {job.batch_id}")
     return job
 
 
-def collect_batch_verification_results(job: BatchJob, findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, poll_interval: int = 15) -> list[Finding]:
+def collect_batch_verification_results(
+    job: BatchJob,
+    findings: list[Finding],
+    *,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+    poll_interval: int = 15,
+    cache: VerificationCache | None = None,
+) -> list[Finding]:
     return collect_verification_batch_results(
         job,
         findings,
@@ -469,6 +519,7 @@ def collect_batch_verification_results(job: BatchJob, findings: list[Finding], *
         log=log,
         progress=lambda p, m: progress(60.0 + (p / 100.0) * 35.0, m),
         poll_interval=poll_interval,
+        cache=cache,
     )
 
 
@@ -511,9 +562,10 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
 
     findings = _deduplicate_findings(findings)
     cross = None
+    cache = VerificationCache()
     if verify and findings:
         try:
-            verify_findings(findings, progress=lambda c, t, fn: progress(50.0 + (c / max(t, 1)) * 25.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle)
+            verify_findings(findings, progress=lambda c, t, fn: progress(50.0 + (c / max(t, 1)) * 25.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
         except Exception as e:
             log(f"Verification failed: {e}. Returning results without verification.")
             for f in findings:
@@ -526,7 +578,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
         _log_cross_check_status(log, cross)
         if verify and cross and cross.findings:
             try:
-                verify_findings(cross.findings, progress=lambda c, t, fn: progress(90.0 + (c / max(t, 1)) * 5.0, f"Verifying cross-check {c}/{t} ({fn})..."), cycle=cycle)
+                verify_findings(cross.findings, progress=lambda c, t, fn: progress(90.0 + (c / max(t, 1)) * 5.0, f"Verifying cross-check {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
             except Exception as e:
                 log(f"Cross-check verification failed: {e}.")
                 for f in cross.findings:
