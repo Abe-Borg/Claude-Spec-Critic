@@ -1585,7 +1585,7 @@ class SpecReviewApp(_CTkDnDRoot):
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("Pending Batch Found")
-        dialog.geometry("480x220")
+        dialog.geometry("480x300")
         dialog.configure(fg_color=COLORS["bg_dark"])
         dialog.resizable(False, False)
         dialog.transient(self)
@@ -1608,11 +1608,40 @@ class SpecReviewApp(_CTkDnDRoot):
         ctk.CTkLabel(inner, text=info_text, font=ctk.CTkFont(family="Consolas", size=11),
             text_color=COLORS["text_secondary"], justify="left").pack(anchor="w", padx=16, pady=(0, 12))
 
+        prefill_key = ""
+        try:
+            prefill_key = self.api_key_entry.get().strip()
+        except Exception:
+            prefill_key = ""
+        if not prefill_key:
+            prefill_key = load_api_key_from_file() or os.environ.get("ANTHROPIC_API_KEY", "") or ""
+
+        ctk.CTkLabel(inner, text="API Key",
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+            text_color=COLORS["text_secondary"]).pack(anchor="w", padx=16, pady=(0, 4))
+        api_key_entry = ctk.CTkEntry(inner, placeholder_text="sk-ant-...",
+            font=ctk.CTkFont(family="Consolas", size=_UI_FONT_SIZE),
+            fg_color=COLORS["bg_input"], border_color=COLORS["border"],
+            text_color=COLORS["text_primary"], height=36, show="\u2022")
+        api_key_entry.pack(fill="x", padx=16, pady=(0, 12))
+        if prefill_key:
+            api_key_entry.insert(0, prefill_key)
+
         btn_frame = ctk.CTkFrame(inner, fg_color="transparent")
         btn_frame.pack(fill="x", padx=16, pady=(0, 16))
         btn_kw = {"height": 34, "font": ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), "corner_radius": 6}
 
         def _resume():
+            entered_key = api_key_entry.get().strip()
+            if not entered_key:
+                self.log.log_error("API key is required to resume batch. Enter your key and try again.")
+                api_key_entry.focus_set()
+                return
+            try:
+                self.api_key_entry.delete(0, "end")
+                self.api_key_entry.insert(0, entered_key)
+            except Exception:
+                pass
             dialog.destroy()
             self._resume_batch(loaded)
 
