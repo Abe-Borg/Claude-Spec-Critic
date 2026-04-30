@@ -53,7 +53,11 @@ def classify_edit_candidates(
             eligible = False
             ineligible_reason = f"Unsupported action type: {action_type or 'UNKNOWN'}"
 
-        if eligible and not existing_text:
+        # ADD actions may use the explicit anchorText field instead of
+        # existingText to locate the insertion point (audit Issue 5).
+        anchor_text = (getattr(finding, "anchorText", None) or "").strip()
+        has_anchor_for_add = action_type == "ADD" and bool(anchor_text)
+        if eligible and not existing_text and not has_anchor_for_add:
             eligible = False
             ineligible_reason = "Finding has no anchor text to locate in the document"
 

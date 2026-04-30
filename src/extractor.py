@@ -123,7 +123,14 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         paragraphs.extend(entry.text for entry in header_footer_entries)
 
     content = "\n\n".join(paragraphs)
-    assert "\n\n".join(m.text for m in paragraph_map) == content, "Paragraph map text does not reconstruct content"
+    reconstructed = "\n\n".join(m.text for m in paragraph_map)
+    if reconstructed != content:
+        # Controlled error preserves context (audit Issue 10). The raw assert
+        # version was stripped under -O and produced an opaque AssertionError.
+        raise ValueError(
+            f"Paragraph map for '{filepath.name}' does not reconstruct extracted content "
+            f"(map_chars={len(reconstructed)}, content_chars={len(content)})."
+        )
 
     return ExtractedSpec(
         filename=filepath.name,

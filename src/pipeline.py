@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from dataclasses import dataclass, field
@@ -69,14 +70,24 @@ def _normalize_issue_text(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip().lower()
 
 
+def _normalized_text_digest(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    # Hash the full text so long passages can never collide just because
+    # their first 200 characters happen to match. Truncating before hashing
+    # silently merged distinct findings (audit Issue 2).
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _dedup_key(f: Finding) -> tuple:
     return (
         _normalize_issue_text(f.issue),
         (f.section or "").strip().lower(),
         (f.codeReference or "").strip().lower(),
         f.actionType,
-        (f.existingText or "").strip().lower()[:200],
-        (f.replacementText or "").strip().lower()[:200],
+        _normalized_text_digest(f.existingText),
+        _normalized_text_digest(f.replacementText),
     )
 
 
@@ -339,6 +350,12 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
             continue
         if rr.error:
             errors.append(f"{filename}: {rr.error}")
+            # Errored/expired/canceled batch requests previously fell through
+            # silently as "no findings" — cross-check would then run as if the
+            # spec had been reviewed cleanly (audit Issue 7). Surface them as
+            # truncated so the GUI flags the spec and downstream filters can
+            # exclude it.
+            truncated_specs.append(filename)
             continue
         all_findings.extend(rr.findings)
         if rr.thinking:
@@ -373,6 +390,25 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
     if not specs:
         state.cross_check_skipped_due_to_missing_specs = True
         skipped = ReviewResult(findings=[], cross_check_status="skipped", thinking="Cross-check skipped: original extracted spec content is not available.")
+        state.cross_check_result = skipped
+        _log_cross_check_status(log, skipped)
+        return state
+    # Exclude specs whose individual review failed/truncated so cross-check
+    # does not make coordination claims based on a spec that was never
+    # successfully reviewed (audit Issue 7).
+    failed_filenames = set(state.truncated_specs or [])
+    if failed_filenames:
+        filtered_specs = [s for s in specs if s.filename not in failed_filenames]
+        if len(filtered_specs) != len(specs):
+            log(
+                "Cross-check excluding "
+                f"{len(specs) - len(filtered_specs)} spec(s) that failed review: "
+                + ", ".join(sorted(failed_filenames))
+            )
+        specs = filtered_specs
+    if not specs:
+        state.cross_check_skipped_due_to_missing_specs = True
+        skipped = ReviewResult(findings=[], cross_check_status="skipped", thinking="Cross-check skipped: every spec failed review.")
         state.cross_check_result = skipped
         _log_cross_check_status(log, skipped)
         return state
