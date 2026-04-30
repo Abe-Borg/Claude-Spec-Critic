@@ -129,12 +129,36 @@ class DiagnosticsReport:
         total_output_tokens = 0
         total_cache_creation_tokens = 0
         total_cache_read_tokens = 0
+        # Phase 9 plan 13.4: output-size and search-budget telemetry. We track
+        # the maximum output observed per phase, the count of truncated calls
+        # (stop_reason != end_turn), and aggregate search budget consumption
+        # so future tuning has data to draw on.
+        output_samples: list[int] = []
+        output_max_by_phase: dict[str, int] = {}
+        truncated_calls = 0
+        truncated_phases: dict[str, int] = {}
+        max_output_cap_observed = 0
         for e in self.events:
-            if e.data:
-                total_input_tokens += e.data.get("input_tokens", 0)
-                total_output_tokens += e.data.get("output_tokens", 0)
-                total_cache_creation_tokens += e.data.get("cache_creation_input_tokens", 0)
-                total_cache_read_tokens += e.data.get("cache_read_input_tokens", 0)
+            if not e.data:
+                continue
+            in_tok = int(e.data.get("input_tokens", 0) or 0)
+            out_tok = int(e.data.get("output_tokens", 0) or 0)
+            total_input_tokens += in_tok
+            total_output_tokens += out_tok
+            total_cache_creation_tokens += int(e.data.get("cache_creation_input_tokens", 0) or 0)
+            total_cache_read_tokens += int(e.data.get("cache_read_input_tokens", 0) or 0)
+            if out_tok > 0:
+                output_samples.append(out_tok)
+                phase_max = output_max_by_phase.get(e.phase, 0)
+                if out_tok > phase_max:
+                    output_max_by_phase[e.phase] = out_tok
+            stop_reason = e.data.get("stop_reason")
+            if stop_reason and stop_reason not in ("end_turn", "tool_use", None):
+                truncated_calls += 1
+                truncated_phases[e.phase] = truncated_phases.get(e.phase, 0) + 1
+            cap = int(e.data.get("max_output_tokens", 0) or 0)
+            if cap > max_output_cap_observed:
+                max_output_cap_observed = cap
 
         # Verification verdict breakdown + Phase 3 evidence telemetry
         verdicts: dict[str, int] = {}
@@ -169,6 +193,58 @@ class DiagnosticsReport:
                 verification_stats["search_errors"] += int(e.data.get("search_error_count", 0) or 0)
                 verification_stats["search_requests"] += int(e.data.get("web_search_requests", 0) or 0)
 
+        # Phase 9 plan 13.4: search-budget telemetry. We aggregate per-finding
+        # search-request counts so a future tuning pass can see whether the
+        # default ``max_uses`` is over- or under-allocated. Findings with zero
+        # web-search activity (local-skip / cache hit) are excluded so the
+        # budget percentile reflects calls that actually used the tool.
+        search_budget_samples: list[int] = []
+        budget_ceiling = 0
+        try:
+            from .api_config import DEFAULT_VERIFICATION_MAX_USES
+            budget_ceiling = int(DEFAULT_VERIFICATION_MAX_USES)
+        except Exception:
+            budget_ceiling = 0
+        budget_saturated = 0
+        for e in self.events:
+            if not e.data or "verdict" not in e.data:
+                continue
+            if (e.data.get("cache_status") or "") in {"hit", "local_skip"}:
+                continue
+            requests = int(e.data.get("web_search_requests", 0) or 0)
+            if requests <= 0:
+                continue
+            search_budget_samples.append(requests)
+            if budget_ceiling and requests >= budget_ceiling:
+                budget_saturated += 1
+
+        def _percentile(values: list[int], pct: float) -> int:
+            if not values:
+                return 0
+            ordered = sorted(values)
+            idx = max(0, min(len(ordered) - 1, int(round((pct / 100.0) * (len(ordered) - 1)))))
+            return ordered[idx]
+
+        search_budget = {
+            "samples": len(search_budget_samples),
+            "ceiling": budget_ceiling,
+            "saturated_calls": budget_saturated,
+            "max_observed": max(search_budget_samples) if search_budget_samples else 0,
+            "p50": _percentile(search_budget_samples, 50),
+            "p95": _percentile(search_budget_samples, 95),
+            "total": sum(search_budget_samples),
+        }
+        output_telemetry = {
+            "samples": len(output_samples),
+            "max_observed": max(output_samples) if output_samples else 0,
+            "p50": _percentile(output_samples, 50),
+            "p95": _percentile(output_samples, 95),
+            "max_by_phase": dict(output_max_by_phase),
+            "truncated_calls": truncated_calls,
+            "truncated_by_phase": dict(truncated_phases),
+            "max_cap_observed": max_output_cap_observed,
+        }
+
         # Finding severity breakdown
         severities: dict[str, int] = {}
         for e in self.events:
@@ -194,6 +270,8 @@ class DiagnosticsReport:
             "total_cache_read_input_tokens": total_cache_read_tokens,
             "verification_verdicts": verdicts,
             "verification_evidence": verification_stats,
+            "search_budget": search_budget,
+            "output_telemetry": output_telemetry,
             "severity_counts": severities,
             # Phase 7.3 actionable fields.
             "failed_specs": list(self.failed_specs),
@@ -302,6 +380,39 @@ class DiagnosticsReport:
             lines.append("  Phase Durations:")
             for phase, dur in s["phase_durations"].items():
                 lines.append(f"    {phase:20s} {dur:.1f}s")
+        # Phase 9 plan 13.4: surface output-size and search-budget usage so
+        # operators can see whether dynamic caps and ``max_uses`` defaults
+        # match real workloads.
+        out_t = s.get("output_telemetry") or {}
+        if out_t.get("samples"):
+            lines.append(
+                "  Output Tokens (samples="
+                f"{out_t['samples']}): max={out_t['max_observed']:,}, "
+                f"p50={out_t['p50']:,}, p95={out_t['p95']:,}"
+            )
+            if out_t.get("truncated_calls"):
+                lines.append(
+                    f"    Truncated calls: {out_t['truncated_calls']}"
+                    + (
+                        f" — by phase: {out_t['truncated_by_phase']}"
+                        if out_t.get("truncated_by_phase")
+                        else ""
+                    )
+                )
+        budget = s.get("search_budget") or {}
+        if budget.get("samples"):
+            ceiling = budget.get("ceiling") or 0
+            saturated = budget.get("saturated_calls") or 0
+            ceiling_part = f"/{ceiling}" if ceiling else ""
+            saturated_part = (
+                f", saturated={saturated}" if ceiling and saturated else ""
+            )
+            lines.append(
+                f"  Search Budget (samples={budget['samples']}): "
+                f"max={budget['max_observed']}{ceiling_part}, "
+                f"p50={budget['p50']}, p95={budget['p95']}, "
+                f"total={budget['total']}{saturated_part}"
+            )
         # Phase 7.3 actionable section: surface failed specs, skipped edits,
         # ambiguous locator count, and event truncation so users can see
         # what required attention without scanning the timeline.
