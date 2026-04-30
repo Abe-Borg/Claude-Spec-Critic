@@ -13,6 +13,13 @@ from .pipeline import BatchSubmission, CollectedBatchState
 from .reviewer import Finding, ReviewResult, MODEL_OPUS_46
 from .verifier import VerificationResult
 
+RESUME_STATE_SCHEMA_VERSION = 2
+
+
+class ResumeStateValidationError(ValueError):
+    """Raised when a serialized resume-state payload fails structural validation."""
+
+
 PHASE_REVIEW_POLL = "review_poll"
 PHASE_REVIEW_COLLECT = "review_collect"
 PHASE_VERIFICATION_WAVE_POLL = "verification_wave_poll"
@@ -227,6 +234,7 @@ def deserialize_collected_batch_state(payload: dict[str, Any], submission: Batch
 
 def build_resume_state(*, phase: str, submission: BatchSubmission, review_state: CollectedBatchState | None = None, verification_batch: BatchJob | None = None, cross_check_skipped_due_to_missing_specs: bool = False, verification_started: bool = False, verification_completed: bool = False, wave_index: int = 0, resolved_finding_indices: list[int] | None = None, pending_finding_indices: list[int] | None = None, poll_detached: bool = False) -> dict[str, Any]:
     state: dict[str, Any] = {
+        "schema_version": RESUME_STATE_SCHEMA_VERSION,
         "version": __version__,
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "phase": phase,
@@ -248,13 +256,50 @@ def build_resume_state(*, phase: str, submission: BatchSubmission, review_state:
     return state
 
 
+def _validate_resume_payload(payload: dict[str, Any]) -> None:
+    """Reject obviously-malformed payloads before downstream code touches them."""
+    if not isinstance(payload, dict):
+        raise ResumeStateValidationError("Resume state payload must be a JSON object.")
+
+    phase = payload.get("phase")
+    if not isinstance(phase, str) or not phase:
+        raise ResumeStateValidationError("Resume state is missing 'phase'.")
+    if phase not in SUPPORTED_PHASES and phase != "review":
+        # 'review' is the legacy alias migrated by the loader.
+        raise ResumeStateValidationError(f"Unsupported resume phase: {phase!r}")
+
+    submission_payload = payload.get("submission")
+    if not isinstance(submission_payload, dict):
+        raise ResumeStateValidationError("Resume state is missing 'submission' payload.")
+    job = submission_payload.get("job")
+    if not isinstance(job, dict):
+        raise ResumeStateValidationError("Resume submission is missing 'job' payload.")
+    batch_id = job.get("batch_id")
+    if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
+        raise ResumeStateValidationError(f"Invalid batch_id: {batch_id!r}")
+    if not isinstance(job.get("request_map"), dict):
+        raise ResumeStateValidationError("Resume submission has invalid 'request_map'.")
+    if not isinstance(job.get("created_at"), (int, float)):
+        raise ResumeStateValidationError("Resume submission has invalid 'created_at'.")
+
+    resume_flags = payload.get("resume_flags")
+    if resume_flags is not None and not isinstance(resume_flags, dict):
+        raise ResumeStateValidationError("Resume 'resume_flags' must be a dict if present.")
+
+    schema_version = payload.get("schema_version")
+    if schema_version is not None and not isinstance(schema_version, int):
+        raise ResumeStateValidationError("'schema_version' must be an integer when present.")
+
+
 def deserialize_resume_state(payload: dict[str, Any]) -> dict[str, Any]:
+    _validate_resume_payload(payload)
     phase = str(payload.get("phase", ""))
     submission_payload = payload.get("submission")
     if not isinstance(submission_payload, dict):
         raise ValueError("Missing submission payload")
     submission = deserialize_submission(submission_payload)
     out: dict[str, Any] = {
+        "schema_version": payload.get("schema_version", 1),
         "version": payload.get("version"),
         "saved_at": payload.get("saved_at"),
         "phase": phase,

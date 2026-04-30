@@ -803,6 +803,92 @@ def test_extract_text_includes_header_footer_content(tmp_path: Path):
     assert any(m.element_type == "footer" for m in spec.paragraph_map)
 
 
+def test_deserialize_resume_state_rejects_unsupported_phase():
+    from src.resume_state import ResumeStateValidationError, deserialize_resume_state
+
+    payload = {
+        "schema_version": 2,
+        "phase": "totally_made_up_phase",
+        "submission": {
+            "job": {
+                "batch_id": "msgbatch_x",
+                "job_type": "review",
+                "request_map": {},
+                "created_at": 1.0,
+            }
+        },
+    }
+    with pytest.raises(ResumeStateValidationError):
+        deserialize_resume_state(payload)
+
+
+def test_deserialize_resume_state_rejects_bad_batch_id():
+    from src.resume_state import ResumeStateValidationError, deserialize_resume_state
+
+    payload = {
+        "schema_version": 2,
+        "phase": "review_poll",
+        "submission": {
+            "job": {
+                "batch_id": "not_a_real_batch",
+                "job_type": "review",
+                "request_map": {},
+                "created_at": 1.0,
+            }
+        },
+    }
+    with pytest.raises(ResumeStateValidationError):
+        deserialize_resume_state(payload)
+
+
+def test_deserialize_resume_state_rejects_missing_request_map():
+    from src.resume_state import ResumeStateValidationError, deserialize_resume_state
+
+    payload = {
+        "schema_version": 2,
+        "phase": "review_poll",
+        "submission": {
+            "job": {
+                "batch_id": "msgbatch_x",
+                "job_type": "review",
+                "created_at": 1.0,
+            }
+        },
+    }
+    with pytest.raises(ResumeStateValidationError):
+        deserialize_resume_state(payload)
+
+
+def test_extract_multiple_specs_preserves_order(tmp_path: Path):
+    from src.extractor import extract_multiple_specs
+
+    paths = []
+    for i, body in enumerate(["alpha body", "bravo body", "charlie body"]):
+        p = tmp_path / f"{i:02d}_spec.docx"
+        doc = Document()
+        doc.add_paragraph(body)
+        doc.save(p)
+        paths.append(p)
+
+    specs = extract_multiple_specs(paths, max_workers=4)
+
+    assert [s.filename for s in specs] == [p.name for p in paths]
+    assert specs[0].content.startswith("alpha")
+    assert specs[2].content.startswith("charlie")
+
+
+def test_compute_poll_interval_progressive_backoff():
+    from src.batch_runtime import _compute_poll_interval
+
+    assert _compute_poll_interval(0, 15, 120) == 15
+    assert _compute_poll_interval(4 * 60, 15, 120) == 15
+    assert _compute_poll_interval(10 * 60, 15, 120) == 30
+    assert _compute_poll_interval(20 * 60, 15, 120) == 60
+    assert _compute_poll_interval(60 * 60, 15, 120) == 120
+    # Cap respected
+    assert _compute_poll_interval(60 * 60, 30, 60) == 60
+
+
 def test_diagnostics_summary_counts_verification_phase_from_events():
     report = DiagnosticsReport()
     report.log("review", "info", "review start")

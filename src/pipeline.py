@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
+
+from concurrent.futures import ThreadPoolExecutor
 
 from .extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from .preprocessor import preprocess_spec
@@ -130,10 +133,35 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     leed_alerts: list[dict] = []
     placeholder_alerts: list[dict] = []
     progress(0.0, "Extracting text from specifications...")
+
+    extracted_by_path: dict[Path, ExtractedSpec | Exception] = {}
+    if len(spec_files) > 1:
+        max_workers = min(4, len(spec_files))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(extract_text, p): p for p in spec_files}
+            for fut in futures:
+                p = futures[fut]
+                try:
+                    extracted_by_path[p] = fut.result()
+                except Exception as exc:
+                    extracted_by_path[p] = exc
+    else:
+        for p in spec_files:
+            try:
+                extracted_by_path[p] = extract_text(p)
+            except Exception as exc:
+                extracted_by_path[p] = exc
+
     for i, p in enumerate(spec_files, start=1):
-        spec = extract_text(p)
-        if spec.word_count == 0 or not spec.content.strip():
+        result = extracted_by_path.get(p)
+        if isinstance(result, Exception):
+            log(f"Skipping {p.name}: extraction failed ({result})")
+            progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
+            continue
+        spec = result
+        if spec is None or spec.word_count == 0 or not spec.content.strip():
             log(f"Skipping {p.name}: no extractable text content")
+            progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
             continue
         specs.append(spec)
         pre = preprocess_spec(spec.content, spec.filename)
@@ -187,11 +215,15 @@ def _is_retryable_batch_review_result(rr: ReviewResult | None) -> bool:
     return any(token in lowered for token in ("batch request errored", "batch request expired", "batch request canceled"))
 
 
+REVIEW_REPAIR_REALTIME_THRESHOLD = 3
+
+
 def _recover_retryable_review_batch_results(
     submission: BatchSubmission,
     results_by_request: dict[str, ReviewResult],
     *,
     log: LogFn = _noop_log,
+    realtime_threshold: int = REVIEW_REPAIR_REALTIME_THRESHOLD,
 ) -> dict[str, ReviewResult]:
     retryable_request_ids = [rid for rid in submission.review_request_ids if _is_retryable_batch_review_result(results_by_request.get(rid))]
     if not retryable_request_ids:
@@ -215,6 +247,31 @@ def _recover_retryable_review_batch_results(
 
     if not repair_specs:
         log("No specs eligible for review repair batch.")
+        return results_by_request
+
+    if len(repair_specs) <= realtime_threshold:
+        log(f"Repairing {len(repair_specs)} failed item(s) via real-time API (threshold={realtime_threshold}).")
+        recovered = 0
+        for spec in repair_specs:
+            rid = repair_id_map.get(spec.filename)
+            if not rid:
+                continue
+            try:
+                rr = review_single_spec(
+                    spec.content,
+                    spec.filename,
+                    project_context=submission.project_context,
+                    model=submission.model,
+                    cycle=cycle,
+                )
+                if rr and not rr.error and rr.parse_status not in ("parse_error", "incomplete"):
+                    results_by_request[rid] = rr
+                    recovered += 1
+                else:
+                    log(f"Real-time repair returned error for {spec.filename}; leaving original failure in place.")
+            except Exception as exc:
+                log(f"Real-time repair failed for {spec.filename}: {exc}")
+        log(f"Real-time repair recovered {recovered}/{len(repair_specs)} item(s).")
         return results_by_request
 
     log(f"Submitting review repair batch for {len(repair_specs)} failed item(s)...")
@@ -266,7 +323,7 @@ def _log_cross_check_status(log: LogFn, cross: ReviewResult):
         log(f"Cross-check failed: {cross.error}")
 
 
-def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, cross_check: bool | None = None, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle | None = None) -> PipelineResult:
+def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, cross_check: bool | None = None, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle | None = None, overlap_cross_check: bool = True) -> PipelineResult:
     if cross_check is None:
         cross_check = submission.cross_check_enabled
     if specs is None:
@@ -277,6 +334,31 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
         cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
 
     state = collect_review_batch_results(submission, log=log)
+
+    # Kick off cross-check in parallel with primary verification when both are
+    # requested and we have specs available. Cross-check output is provisional
+    # (we do not yet drop coordination findings tied to disputed upstream
+    # findings); the cross-check verifier pass will catch unsupported claims.
+    cross_check_thread: threading.Thread | None = None
+    cross_check_holder: dict = {}
+    can_overlap = (
+        overlap_cross_check
+        and cross_check
+        and submission.cross_check_enabled
+        and specs is not None
+        and bool(specs)
+        and bool(state.review_result.findings)
+    )
+    if can_overlap:
+        def _run_cross_check_concurrent():
+            try:
+                cross_check_holder["result"] = run_cross_check(specs, state.review_result.findings, project_context=project_context, cycle=cycle)
+            except Exception as exc:
+                cross_check_holder["error"] = exc
+        cross_check_thread = threading.Thread(target=_run_cross_check_concurrent, name="cross-check", daemon=True)
+        cross_check_thread.start()
+        log("Cross-check started concurrently with verification.")
+
     if verify and state.review_result.findings:
         try:
             progress(55.0, f"Submitting {len(state.review_result.findings)} verification requests...")
@@ -288,19 +370,31 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
                 if f.verification is None:
                     f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
 
-    if cross_check:
+    if cross_check_thread is not None:
+        cross_check_thread.join()
+        if "error" in cross_check_holder:
+            log(f"Cross-check (concurrent) failed: {cross_check_holder['error']}")
+            state.cross_check_result = ReviewResult(findings=[], cross_check_status="failed", error=str(cross_check_holder["error"]))
+        else:
+            cross = cross_check_holder.get("result")
+            if cross is not None:
+                state.cross_check_result = cross
+                _log_cross_check_status(log, cross)
+
+    if cross_check and state.cross_check_result is None:
         state = run_cross_check_for_batch(state, specs=specs, project_context=project_context, cycle=cycle, log=log)
-        cross_verifiable = list(state.cross_check_result.findings) if state.cross_check_result and state.cross_check_result.findings else []
-        if verify and cross_verifiable:
-            try:
-                progress(90.0, f"Submitting {len(cross_verifiable)} cross-check verification requests...")
-                verification_submission = start_batch_verification(cross_verifiable, cycle=cycle, log=log, progress=progress)
-                collect_batch_verification_results(verification_submission, cross_verifiable, cycle=cycle, log=log, progress=progress)
-            except Exception as e:
-                log(f"Cross-check verification failed: {e}.")
-                for f in cross_verifiable:
-                    if f.verification is None:
-                        f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
+
+    cross_verifiable = list(state.cross_check_result.findings) if state.cross_check_result and state.cross_check_result.findings else []
+    if cross_check and verify and cross_verifiable:
+        try:
+            progress(90.0, f"Submitting {len(cross_verifiable)} cross-check verification requests...")
+            verification_submission = start_batch_verification(cross_verifiable, cycle=cycle, log=log, progress=progress)
+            collect_batch_verification_results(verification_submission, cross_verifiable, cycle=cycle, log=log, progress=progress)
+        except Exception as e:
+            log(f"Cross-check verification failed: {e}.")
+            for f in cross_verifiable:
+                if f.verification is None:
+                    f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
 
     progress(100.0, "Done.")
     return finalize_batch_result(state)

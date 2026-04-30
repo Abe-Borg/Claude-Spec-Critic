@@ -1,13 +1,36 @@
 """Text extraction module for Spec Critic (DOCX-only)."""
 
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph
 
 SUPPORTED_EXTENSIONS = {".docx"}
+
+
+@dataclass
+class RunFormatting:
+    """Captures inline formatting for a single run, used to detect rich content."""
+    start: int
+    end: int
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    font_name: str | None = None
+    font_size: float | None = None
+    color: str | None = None
+
+    def style_signature(self) -> tuple:
+        return (
+            bool(self.bold),
+            bool(self.italic),
+            bool(self.underline),
+            self.font_name or "",
+            float(self.font_size) if self.font_size is not None else 0.0,
+            self.color or "",
+        )
 
 
 @dataclass
@@ -20,6 +43,54 @@ class ParagraphMapping:
     cell_index: int | None
     section_index: int | None = None
     container_type: str | None = None
+    runs: list[RunFormatting] = field(default_factory=list)
+    has_rich_formatting: bool = False
+
+
+def _color_hex(color_obj) -> str | None:
+    if color_obj is None:
+        return None
+    rgb = getattr(color_obj, "rgb", None)
+    if rgb is None:
+        return None
+    try:
+        return str(rgb)
+    except Exception:
+        return None
+
+
+def _capture_run_formatting(paragraph: Paragraph) -> tuple[list[RunFormatting], bool]:
+    """Capture per-run formatting for a paragraph; flag whether formatting is rich.
+
+    A paragraph counts as rich-formatted if it has more than one non-empty run with
+    distinct style signatures (bold/italic/underline/font/color differ).
+    """
+    runs: list[RunFormatting] = []
+    cursor = 0
+    for run in paragraph.runs:
+        text = run.text or ""
+        font = getattr(run, "font", None)
+        size = getattr(font, "size", None) if font is not None else None
+        size_pt = float(size.pt) if size is not None and hasattr(size, "pt") else None
+        runs.append(
+            RunFormatting(
+                start=cursor,
+                end=cursor + len(text),
+                bold=bool(run.bold) if run.bold is not None else False,
+                italic=bool(run.italic) if run.italic is not None else False,
+                underline=bool(run.underline) if run.underline is not None else False,
+                font_name=(getattr(font, "name", None) if font is not None else None),
+                font_size=size_pt,
+                color=_color_hex(getattr(font, "color", None) if font is not None else None),
+            )
+        )
+        cursor += len(text)
+
+    non_empty = [r for r in runs if r.end > r.start]
+    if len(non_empty) <= 1:
+        return runs, False
+    signatures = {r.style_signature() for r in non_empty}
+    return runs, len(signatures) > 1
 
 
 @dataclass
@@ -53,6 +124,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             para = Paragraph(child, doc)
             text = para.text.strip()
             if text:
+                runs, is_rich = _capture_run_formatting(para)
                 paragraphs.append(text)
                 paragraph_map.append(
                     ParagraphMapping(
@@ -62,6 +134,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                         table_index=None,
                         row_index=None,
                         cell_index=None,
+                        runs=runs,
+                        has_rich_formatting=is_rich,
                     )
                 )
         elif child.tag.endswith("}tbl"):
@@ -145,5 +219,12 @@ def extract_text(filepath: Path) -> ExtractedSpec:
     return extract_text_from_docx(filepath)
 
 
-def extract_multiple_specs(filepaths: list[Path]) -> list[ExtractedSpec]:
-    return [extract_text(fp) for fp in filepaths]
+def extract_multiple_specs(filepaths: list[Path], *, max_workers: int = 4) -> list[ExtractedSpec]:
+    """Extract specs in parallel, preserving the input order in the output list."""
+    if not filepaths:
+        return []
+    if max_workers <= 1 or len(filepaths) <= 1:
+        return [extract_text(fp) for fp in filepaths]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(filepaths))) as pool:
+        return list(pool.map(extract_text, filepaths))

@@ -5,12 +5,14 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from .edit_locator import locate_edits
 from .extractor import ExtractedSpec, extract_text_from_docx
 from .reviewer import Finding
 from .spec_editor import EditAction, EditOutcome, EditReport, apply_edits_to_spec, build_edit_actions
+
+EditPlanMode = Literal["apply", "comments"]
 
 
 def _ensure_paragraph_maps(specs: list[ExtractedSpec], source_paths: list[Path]) -> list[ExtractedSpec]:
@@ -68,6 +70,73 @@ def _build_failure_report(
     )
 
 
+def _format_change_log(source_path: Path, actions: list[EditAction]) -> str:
+    lines: list[str] = []
+    lines.append(f"# Proposed edits for {source_path.name}")
+    lines.append("")
+    lines.append(f"_Generated {datetime.now().isoformat(timespec='seconds')}_")
+    lines.append("")
+    lines.append("This file lists proposed edits that were NOT applied. Review each item and")
+    lines.append("apply manually in Word, or re-run with auto-apply if you trust the changes.")
+    lines.append("")
+    if not actions:
+        lines.append("_No actionable edits were located._")
+        return "\n".join(lines) + "\n"
+    for i, action in enumerate(actions, start=1):
+        finding = action.locator_result.finding
+        location = action.location
+        lines.append(f"## {i}. {finding.severity or 'UNSPECIFIED'} — {action.action_type}")
+        lines.append("")
+        lines.append(f"- **Section:** {finding.section or 'unknown'}")
+        if finding.codeReference:
+            lines.append(f"- **Code reference:** {finding.codeReference}")
+        lines.append(f"- **Issue:** {finding.issue}")
+        lines.append(f"- **Match confidence:** {location.match_confidence:.2f} ({location.match_method})")
+        lines.append(f"- **Body index:** {location.mapping.body_index}")
+        if location.mapping.element_type != "paragraph":
+            lines.append(f"- **Container:** {location.mapping.element_type}")
+        lines.append("")
+        lines.append("**Existing text:**")
+        lines.append("")
+        lines.append("```")
+        lines.append(location.matched_text or finding.existingText or "")
+        lines.append("```")
+        if action.replacement_text is not None:
+            lines.append("")
+            lines.append("**Proposed replacement:**")
+            lines.append("")
+            lines.append("```")
+            lines.append(action.replacement_text)
+            lines.append("```")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _build_comments_report(
+    *, source_path: Path, output_path: Path, actions: list[EditAction], change_log_path: Path
+) -> EditReport:
+    outcomes = [
+        EditOutcome(
+            action=action,
+            status="skipped",
+            detail=f"Comments mode: change-log written to {change_log_path.name}; no mutation applied.",
+            original_text=action.location.matched_text,
+            new_text=None,
+        )
+        for action in actions
+    ]
+    return EditReport(
+        source_path=source_path,
+        output_path=output_path,
+        total_edits_attempted=len(actions),
+        edits_applied=0,
+        edits_skipped=len(actions),
+        edits_failed=0,
+        outcomes=outcomes,
+        warnings=[f"Comments mode: change-log written to {change_log_path}"],
+    )
+
+
 def execute_edit_plan(
     selected_finding_indices: list[int],
     all_findings: list[Finding],
@@ -77,6 +146,7 @@ def execute_edit_plan(
     output_dir: Path,
     *,
     log: Callable[[str], None] = lambda _: None,
+    mode: EditPlanMode = "apply",
 ) -> list[EditReport]:
     """Run locate -> action build -> apply workflow for selected findings."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -144,6 +214,33 @@ def execute_edit_plan(
                     edits_failed=0,
                     outcomes=[],
                     warnings=[warning],
+                )
+            )
+            continue
+
+        if mode == "comments":
+            change_log_path = output_dir / f"{source_path.stem}_proposed_edits.md"
+            try:
+                change_log_path.write_text(_format_change_log(source_path, actions), encoding="utf-8")
+                log(f"[{filename}] Comments mode: wrote change-log to {change_log_path.name}")
+            except Exception as exc:
+                warning = f"Failed to write change-log: {exc}"
+                log(f"[{filename}] {warning}")
+                reports.append(
+                    _build_failure_report(
+                        source_path=source_path,
+                        output_path=output_path,
+                        actions=actions,
+                        warning=warning,
+                    )
+                )
+                continue
+            reports.append(
+                _build_comments_report(
+                    source_path=source_path,
+                    output_path=output_path,
+                    actions=actions,
+                    change_log_path=change_log_path,
                 )
             )
             continue

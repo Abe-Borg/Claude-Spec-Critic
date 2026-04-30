@@ -152,8 +152,55 @@ def _build_run_offset_map(paragraph: Paragraph) -> list[tuple[int, int, int]]:
     return offsets
 
 
-def _replace_in_paragraph(paragraph: Paragraph, match_start: int, match_end: int, replacement: str) -> tuple[bool, str]:
-    """Replace text slice [match_start:match_end] in paragraph without removing runs."""
+def _runs_have_distinct_formatting(paragraph: Paragraph, run_indices: list[int]) -> bool:
+    """Return True if affected non-whitespace runs have distinct style signatures.
+
+    Whitespace-only runs are ignored: they typically carry no perceivable formatting
+    even if their bold/italic flags differ from neighbours, and dropping them
+    rarely surprises the user. The check downgrades only when textual content
+    that the reader can see would lose distinct inline formatting.
+    """
+    if len(run_indices) <= 1:
+        return False
+    signatures: set[tuple] = set()
+    for idx in run_indices:
+        if idx < 0 or idx >= len(paragraph.runs):
+            continue
+        run = paragraph.runs[idx]
+        if not run.text or not run.text.strip():
+            continue
+        font = getattr(run, "font", None)
+        size = getattr(font, "size", None) if font is not None else None
+        size_pt = float(size.pt) if size is not None and hasattr(size, "pt") else 0.0
+        color = None
+        font_color = getattr(font, "color", None) if font is not None else None
+        rgb = getattr(font_color, "rgb", None) if font_color is not None else None
+        if rgb is not None:
+            try:
+                color = str(rgb)
+            except Exception:
+                color = None
+        signatures.add(
+            (
+                bool(run.bold) if run.bold is not None else False,
+                bool(run.italic) if run.italic is not None else False,
+                bool(run.underline) if run.underline is not None else False,
+                getattr(font, "name", None) if font is not None else None,
+                size_pt,
+                color,
+            )
+        )
+        if len(signatures) > 1:
+            return True
+    return False
+
+
+def _replace_in_paragraph(paragraph: Paragraph, match_start: int, match_end: int, replacement: str, *, allow_rich_format_loss: bool = False) -> tuple[bool, str]:
+    """Replace text slice [match_start:match_end] in paragraph without removing runs.
+
+    If the replacement spans runs with distinct formatting and would lose that
+    formatting, refuse and report unless `allow_rich_format_loss` is True.
+    """
     full_text = paragraph.text
     if match_start < 0 or match_end < match_start or match_end > len(full_text):
         return False, "Invalid match offsets for paragraph text length."
@@ -166,6 +213,11 @@ def _replace_in_paragraph(paragraph: Paragraph, match_start: int, match_end: int
     affected: list[tuple[int, int, int]] = [
         entry for entry in run_map if entry[1] < match_end and entry[2] > match_start
     ]
+
+    if not allow_rich_format_loss:
+        affected_indices = [entry[0] for entry in affected]
+        if _runs_have_distinct_formatting(paragraph, affected_indices):
+            return False, "Replacement spans runs with distinct formatting; downgraded to manual review to preserve inline formatting."
 
     if not affected:
         if match_start == match_end:
@@ -202,6 +254,17 @@ def _replace_in_paragraph(paragraph: Paragraph, match_start: int, match_end: int
     if paragraph.text != expected:
         return False, "Run-level replacement verification failed."
     return True, "Replacement applied successfully."
+
+
+_RICH_FORMAT_DOWNGRADE_TOKEN = "downgraded to manual review"
+
+
+def _replace_outcome_status(ok: bool, detail: str) -> str:
+    if ok:
+        return "applied"
+    if _RICH_FORMAT_DOWNGRADE_TOKEN in detail:
+        return "skipped"
+    return "failed"
 
 
 def _delete_paragraph(paragraph: Paragraph) -> bool:
@@ -558,7 +621,7 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             outcomes.append(
                 EditOutcome(
                     action=action,
-                    status="applied" if ok else "failed",
+                    status=_replace_outcome_status(ok, detail),
                     detail=detail,
                     original_text=paragraph_before,
                     new_text=paragraph.text if ok else None,
@@ -623,7 +686,7 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             outcomes.append(
                 EditOutcome(
                     action=action,
-                    status="applied" if ok else "failed",
+                    status=_replace_outcome_status(ok, replace_detail),
                     detail=replace_detail,
                     original_text=paragraph_before,
                     new_text=target_paragraph.text if ok else None,

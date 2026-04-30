@@ -58,6 +58,7 @@ from src.resume_state import (
     PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL,
     PHASE_FINALIZE,
     SUPPORTED_PHASES,
+    ResumeStateValidationError,
     build_resume_state,
     deserialize_resume_state,
 )
@@ -173,39 +174,48 @@ def load_batch_state() -> Optional[dict]:
             delete_batch_state()
             return None
         return restored
-    except (KeyError, TypeError, ValueError):
-        # Intentionally retained for upgrade continuity with older installed versions
-        # that persisted pre-resume-state (v1) payloads.
-        try:
-            batch_id = state.get("batch_id", "")
-            if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
-                delete_batch_state()
-                return None
-            legacy_submission = BatchSubmission(
-                job=BatchJob(
-                    batch_id=batch_id,
-                    job_type=state.get("job_type", "review"),
-                    request_map=state["request_map"],
-                    created_at=state["created_at"],
-                ),
-                files_reviewed=state.get("files_reviewed", []),
-                review_request_ids=state.get("review_request_ids", []),
-                leed_alerts=state.get("leed_alerts", []),
-                placeholder_alerts=state.get("placeholder_alerts", []),
-                model=MODEL_OPUS_46,
-                project_context=state.get("project_context", ""),
-                cycle_label=state.get("code_cycle", DEFAULT_CYCLE.label),
-                cross_check_enabled=state.get("cross_check_enabled", False),
-                export_mode=state.get("export_mode", False),
-                prepared_specs=[ExtractedSpec(**s) for s in (state.get("prepared_specs") or [])] if state.get("prepared_specs") else None,
-            )
-            phase = state.get("phase", "review")
-            phase_map = {"review": PHASE_REVIEW_POLL}
-            migrated_phase = phase_map.get(phase, phase)
-            return {"phase": migrated_phase, "submission": legacy_submission, "resume_flags": {}}
-        except Exception:
+    except ResumeStateValidationError as exc:
+        # Schema present but invalid: drop without attempting legacy migration.
+        if isinstance(state, dict) and state.get("schema_version") is not None:
+            print(f"[SpecCritic] Resume state failed validation: {exc}")
             delete_batch_state()
             return None
+        # Otherwise fall through to legacy migration below.
+    except (KeyError, TypeError, ValueError):
+        pass
+
+    # Intentionally retained for upgrade continuity with older installed versions
+    # that persisted pre-resume-state (v1) payloads.
+    try:
+        batch_id = state.get("batch_id", "")
+        if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
+            delete_batch_state()
+            return None
+        legacy_submission = BatchSubmission(
+            job=BatchJob(
+                batch_id=batch_id,
+                job_type=state.get("job_type", "review"),
+                request_map=state["request_map"],
+                created_at=state["created_at"],
+            ),
+            files_reviewed=state.get("files_reviewed", []),
+            review_request_ids=state.get("review_request_ids", []),
+            leed_alerts=state.get("leed_alerts", []),
+            placeholder_alerts=state.get("placeholder_alerts", []),
+            model=MODEL_OPUS_46,
+            project_context=state.get("project_context", ""),
+            cycle_label=state.get("code_cycle", DEFAULT_CYCLE.label),
+            cross_check_enabled=state.get("cross_check_enabled", False),
+            export_mode=state.get("export_mode", False),
+            prepared_specs=[ExtractedSpec(**s) for s in (state.get("prepared_specs") or [])] if state.get("prepared_specs") else None,
+        )
+        phase = state.get("phase", "review")
+        phase_map = {"review": PHASE_REVIEW_POLL}
+        migrated_phase = phase_map.get(phase, phase)
+        return {"phase": migrated_phase, "submission": legacy_submission, "resume_flags": {}}
+    except Exception:
+        delete_batch_state()
+        return None
 
 
 def delete_batch_state() -> None:

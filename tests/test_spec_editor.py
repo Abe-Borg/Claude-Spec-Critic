@@ -290,6 +290,89 @@ def test_table_cell_edit_updates_target_only(tmp_path: Path):
     assert report.edits_applied == 1
 
 
+def test_apply_edits_downgrades_when_replacement_spans_distinct_formatting(tmp_path: Path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    p = doc.add_paragraph()
+    p.add_run("Provide bracing per ")
+    bold_run = p.add_run("ASCE")
+    bold_run.bold = True
+    italic_run = p.add_run(" 7-16")
+    italic_run.italic = True
+    p.add_run(".")
+    doc.save(source)
+
+    text = "Provide bracing per ASCE 7-16."
+    result = _locator_result(
+        text=text,
+        match_start=text.index("ASCE 7-16"),
+        match_end=text.index("ASCE 7-16") + len("ASCE 7-16"),
+        matched_text="ASCE 7-16",
+        replacement_text="ASCE 7-22",
+    )
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+
+    saved = Document(output)
+    assert saved.paragraphs[0].text == text  # No mutation should have occurred.
+    assert report.edits_applied == 0
+    assert report.edits_skipped == 1
+    skipped = [o for o in report.outcomes if o.status == "skipped"]
+    assert any("manual review" in o.detail for o in skipped)
+
+
+def test_execute_edit_plan_comments_mode_writes_change_log_without_mutating(tmp_path: Path):
+    from src.apply_edits import execute_edit_plan
+    from src.extractor import extract_text_from_docx
+    from src.verifier import VerificationResult
+
+    source = tmp_path / "spec.docx"
+    doc = Document()
+    doc.add_paragraph("Provide seismic bracing per ASCE 7-16.")
+    doc.save(source)
+
+    spec = extract_text_from_docx(source)
+    finding = Finding(
+        severity="HIGH",
+        fileName="spec.docx",
+        section="1.0",
+        issue="Outdated standard reference",
+        actionType="EDIT",
+        existingText="ASCE 7-16",
+        replacementText="ASCE 7-22",
+        codeReference="ASCE 7-22",
+        confidence=0.9,
+    )
+    finding.verification = VerificationResult(verdict="CONFIRMED")
+
+    output_dir = tmp_path / "out"
+    reports = execute_edit_plan(
+        selected_finding_indices=[0],
+        all_findings=[finding],
+        cross_check_findings=[],
+        extracted_specs=[spec],
+        source_paths=[source],
+        output_dir=output_dir,
+        mode="comments",
+    )
+
+    change_log = output_dir / "spec_proposed_edits.md"
+    assert change_log.exists()
+    body = change_log.read_text(encoding="utf-8")
+    assert "ASCE 7-16" in body
+    assert "ASCE 7-22" in body
+
+    # Ensure no _edited.docx file was created and source is untouched.
+    assert not (output_dir / "spec_edited.docx").exists()
+    saved = Document(source)
+    assert saved.paragraphs[0].text == "Provide seismic bracing per ASCE 7-16."
+
+    assert len(reports) == 1
+    assert reports[0].edits_applied == 0
+    assert reports[0].edits_skipped == 1
+
+
 def test_same_source_and_output_raises_value_error(tmp_path: Path):
     source = tmp_path / "source.docx"
     doc = Document()
