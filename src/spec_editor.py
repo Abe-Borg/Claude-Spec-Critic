@@ -16,6 +16,12 @@ from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph
 
+from .edit_candidates import (
+    SAFETY_AUTO_SAFE,
+    SAFETY_AUTO_WITH_CAUTION,
+    SAFETY_MANUAL_REVIEW,
+    SAFETY_REPORT_ONLY,
+)
 from .edit_locator import EditLocation, LocatorResult
 
 
@@ -220,6 +226,43 @@ def _is_whole_paragraph_delete(action: EditAction) -> bool:
         and location.mapping.element_type == "paragraph"
         and location.match_start == 0
         and location.match_end == len(location.mapping.text)
+    )
+
+
+def _precondition_holds_for_paragraph(
+    paragraph: Paragraph,
+    match_start: int,
+    match_end: int,
+    expected_text: str,
+) -> tuple[bool, str]:
+    """Verify the live paragraph still contains the expected slice (audit 8.3).
+
+    Returns (ok, detail). Falls back to substring presence if exact offsets no
+    longer line up but the original matched text is still uniquely present.
+    """
+    current = paragraph.text
+    if 0 <= match_start <= match_end <= len(current):
+        if current[match_start:match_end] == expected_text:
+            return True, "Precondition matched at recorded offsets."
+
+    if expected_text and current.count(expected_text) == 1:
+        return True, "Precondition matched via single substring presence."
+
+    return (
+        False,
+        "Precondition revalidation failed: paragraph text no longer matches "
+        "the recorded edit target.",
+    )
+
+
+def _precondition_holds_for_anchor(anchor_paragraph: Paragraph, expected_text: str) -> tuple[bool, str]:
+    if not expected_text:
+        return True, "No anchor precondition recorded."
+    if expected_text in anchor_paragraph.text or anchor_paragraph.text in expected_text:
+        return True, "Anchor precondition holds."
+    return (
+        False,
+        "Precondition revalidation failed: anchor paragraph text no longer matches the recorded anchor.",
     )
 
 
@@ -441,6 +484,23 @@ def _apply_add_action(
         )
 
     anchor_paragraph = Paragraph(anchor_element, doc)
+
+    # Phase 4 (audit Section 8.3): revalidate anchor before mutating. If a
+    # prior edit changed the anchor paragraph text in a way that no longer
+    # matches the recorded anchor, do not insert beside it.
+    ok_anchor, anchor_detail = _precondition_holds_for_anchor(
+        anchor_paragraph,
+        action.location.matched_text,
+    )
+    if not ok_anchor:
+        return EditOutcome(
+            action=action,
+            status="skipped",
+            detail=anchor_detail,
+            original_text=anchor_paragraph.text,
+            new_text=None,
+        )
+
     replacement = (action.replacement_text or "").strip()
     if not replacement:
         return EditOutcome(
@@ -533,15 +593,33 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
 
-    non_add_actions = [action for action in actions_to_apply if action.action_type != "ADD"]
+    # Phase 4 (audit Section 8.4): apply edits in a deterministic safety
+    # order — in-place replacements first, then ADDs, then whole-paragraph
+    # DELETEs in descending body_index. This keeps anchor elements live for
+    # ADDs and avoids any ordering surprise where a DELETE shifts the
+    # document structure before later edits run.
+    replacement_actions: list[EditAction] = []
+    whole_delete_actions: list[EditAction] = []
+    for action in actions_to_apply:
+        if action.action_type == "ADD":
+            continue
+        if _is_whole_paragraph_delete(action):
+            whole_delete_actions.append(action)
+        else:
+            replacement_actions.append(action)
+
     add_actions = sorted(
         (action for action in actions_to_apply if action.action_type == "ADD"),
         key=lambda item: item.location.mapping.body_index,
         reverse=True,
     )
+    whole_delete_actions.sort(
+        key=lambda item: item.location.mapping.body_index,
+        reverse=True,
+    )
 
     body_children = list(doc.element.body)
-    for action in non_add_actions:
+    for action in replacement_actions:
         mapping = action.location.mapping
         original_text = action.location.matched_text
 
@@ -574,15 +652,23 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             paragraph = Paragraph(element, doc)
             paragraph_before = paragraph.text
 
-            if action.action_type == "DELETE" and action.location.match_start == 0 and action.location.match_end == len(paragraph_before):
-                ok = _delete_paragraph(paragraph)
+            # Phase 4 (audit Section 8.3): revalidate immediately before
+            # mutating. If a previous edit in this pass changed the paragraph
+            # such that the recorded slice no longer matches, skip safely.
+            ok_pre, pre_detail = _precondition_holds_for_paragraph(
+                paragraph,
+                action.location.match_start,
+                action.location.match_end,
+                action.location.matched_text,
+            )
+            if not ok_pre:
                 outcomes.append(
                     EditOutcome(
                         action=action,
-                        status="applied" if ok else "failed",
-                        detail="Deleted full paragraph." if ok else "Failed to delete paragraph element.",
+                        status="skipped",
+                        detail=pre_detail,
                         original_text=paragraph_before,
-                        new_text="" if ok else None,
+                        new_text=None,
                     )
                 )
                 continue
@@ -639,6 +725,25 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 continue
 
             paragraph_before = target_paragraph.text
+
+            ok_pre, pre_detail = _precondition_holds_for_paragraph(
+                target_paragraph,
+                start,
+                end,
+                action.location.matched_text,
+            )
+            if not ok_pre:
+                outcomes.append(
+                    EditOutcome(
+                        action=action,
+                        status="skipped",
+                        detail=pre_detail,
+                        original_text=paragraph_before,
+                        new_text=None,
+                    )
+                )
+                continue
+
             if action.action_type == "DELETE" and start == 0 and end == len(paragraph_before):
                 ok, replace_detail = _replace_in_paragraph(target_paragraph, start, end, "")
                 outcomes.append(
@@ -678,6 +783,78 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
     for action in add_actions:
         outcomes.append(
             _apply_add_action(action, doc, original_body_children=body_children)
+        )
+
+    # Whole-paragraph DELETEs run last (audit Section 8.4). Descending body
+    # order keeps the snapshot indices stable and avoids any chance that a
+    # remove() upstream of an ADD anchor could orphan that anchor before the
+    # ADD applied.
+    for action in whole_delete_actions:
+        mapping = action.location.mapping
+        if mapping.body_index < 0 or mapping.body_index >= len(body_children):
+            outcomes.append(
+                EditOutcome(
+                    action=action,
+                    status="failed",
+                    detail="Body index is out of range in current document.",
+                    original_text=action.location.matched_text,
+                    new_text=None,
+                )
+            )
+            continue
+        element = body_children[mapping.body_index]
+        if not element.tag.endswith("}p"):
+            outcomes.append(
+                EditOutcome(
+                    action=action,
+                    status="failed",
+                    detail="Mapping expected paragraph but body element was not paragraph.",
+                    original_text=action.location.matched_text,
+                    new_text=None,
+                )
+            )
+            continue
+        if element.getparent() is None:
+            outcomes.append(
+                EditOutcome(
+                    action=action,
+                    status="skipped",
+                    detail="Paragraph already removed by an earlier edit; skipping DELETE.",
+                    original_text=action.location.matched_text,
+                    new_text=None,
+                )
+            )
+            continue
+        paragraph = Paragraph(element, doc)
+        paragraph_before = paragraph.text
+
+        ok_pre, pre_detail = _precondition_holds_for_paragraph(
+            paragraph,
+            action.location.match_start,
+            action.location.match_end,
+            action.location.matched_text,
+        )
+        if not ok_pre:
+            outcomes.append(
+                EditOutcome(
+                    action=action,
+                    status="skipped",
+                    detail=pre_detail,
+                    original_text=paragraph_before,
+                    new_text=None,
+                )
+            )
+            continue
+
+        ok = _delete_paragraph(paragraph)
+        outcomes.append(
+            EditOutcome(
+                action=action,
+                status="applied" if ok else "failed",
+                detail="Deleted full paragraph." if ok else "Failed to delete paragraph element.",
+                original_text=paragraph_before,
+                new_text="" if ok else None,
+            )
         )
 
     try:
@@ -722,7 +899,18 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
     )
 
 
-def build_edit_actions(locator_results: list[LocatorResult]) -> list[EditAction]:
+def build_edit_actions(
+    locator_results: list[LocatorResult],
+    *,
+    allow_caution: bool = True,
+) -> list[EditAction]:
+    """Convert locator results into mutating edit actions.
+
+    Phase 4: gate auto-application on locator-level safety categories. Only
+    AUTO_SAFE results are accepted by default; AUTO_WITH_CAUTION is included
+    when allow_caution is True (preserves existing behavior). MANUAL_REVIEW
+    and REPORT_ONLY locator results never produce actions.
+    """
     actions: list[EditAction] = []
     for finding_index, result in enumerate(locator_results):
         action_type = result.action_type.upper()
@@ -740,6 +928,22 @@ def build_edit_actions(locator_results: list[LocatorResult]) -> list[EditAction]
                 "Ambiguous locator result; multiple targets matched. "
                 "Review and apply manually instead of auto-editing."
             )
+            continue
+
+        category = (result.safety_category or "").upper()
+        if category == SAFETY_MANUAL_REVIEW:
+            if result.warning is None:
+                result.warning = (
+                    "Locator classified as manual review; not eligible for auto-apply."
+                )
+            continue
+        if category == SAFETY_REPORT_ONLY:
+            continue
+        if category == SAFETY_AUTO_WITH_CAUTION and not allow_caution:
+            if result.warning is None:
+                result.warning = (
+                    "Locator classified AUTO_WITH_CAUTION; auto-apply suppressed by caller."
+                )
             continue
 
         best_location = max(result.locations, key=lambda location: location.match_confidence)

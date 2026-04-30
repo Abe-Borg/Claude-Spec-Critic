@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
 
 from .reviewer import Finding
+
+
+# Phase 4 edit-safety categories (audit Section 8.1). The eligibility flag and
+# default_selected stay for UI back-compat; safety_category gives downstream
+# code (and the locator/spec_editor) a single dimension on which to gate
+# auto-application versus manual review.
+SAFETY_AUTO_SAFE: Final[str] = "AUTO_SAFE"
+SAFETY_AUTO_WITH_CAUTION: Final[str] = "AUTO_WITH_CAUTION"
+SAFETY_MANUAL_REVIEW: Final[str] = "MANUAL_REVIEW"
+SAFETY_REPORT_ONLY: Final[str] = "REPORT_ONLY"
 
 
 @dataclass
@@ -18,6 +29,7 @@ class EditCandidate:
     replacement_text: str | None
     verdict_badge: str
     action_type: str
+    safety_category: str = SAFETY_REPORT_ONLY
 
 
 def _resolved_replacement_text(finding: Finding) -> str | None:
@@ -73,6 +85,15 @@ def classify_edit_candidates(
             eligible = False
             ineligible_reason = f"Unrecognized verification verdict: {verdict or 'UNKNOWN'}"
 
+        default_selected = eligible and verdict in {"CONFIRMED", "CORRECTED"}
+        if not eligible:
+            safety_category = SAFETY_REPORT_ONLY
+        elif verdict in {"CONFIRMED", "CORRECTED"}:
+            safety_category = SAFETY_AUTO_SAFE
+        else:
+            # UNVERIFIED is eligible but not auto-selected; treat as caution.
+            safety_category = SAFETY_AUTO_WITH_CAUTION
+
         candidates.append(
             EditCandidate(
                 finding_index=idx,
@@ -80,10 +101,11 @@ def classify_edit_candidates(
                 source_file=finding.fileName or "Unknown",
                 eligible=eligible,
                 ineligible_reason=ineligible_reason,
-                default_selected=eligible and verdict in {"CONFIRMED", "CORRECTED"},
+                default_selected=default_selected,
                 replacement_text=_resolved_replacement_text(finding),
                 verdict_badge=verdict,
                 action_type=action_type,
+                safety_category=safety_category,
             )
         )
 
