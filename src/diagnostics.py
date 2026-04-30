@@ -78,10 +78,14 @@ class DiagnosticsReport:
         # Aggregate token data from events
         total_input_tokens = 0
         total_output_tokens = 0
+        total_cache_creation_tokens = 0
+        total_cache_read_tokens = 0
         for e in self.events:
             if e.data:
                 total_input_tokens += e.data.get("input_tokens", 0)
                 total_output_tokens += e.data.get("output_tokens", 0)
+                total_cache_creation_tokens += e.data.get("cache_creation_input_tokens", 0)
+                total_cache_read_tokens += e.data.get("cache_read_input_tokens", 0)
 
         # Verification verdict breakdown
         verdicts: dict[str, int] = {}
@@ -111,6 +115,8 @@ class DiagnosticsReport:
             "phase_durations": phase_durations,
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
+            "total_cache_creation_input_tokens": total_cache_creation_tokens,
+            "total_cache_read_input_tokens": total_cache_read_tokens,
             "verification_verdicts": verdicts,
             "severity_counts": severities,
         }
@@ -187,6 +193,11 @@ class DiagnosticsReport:
         lines.append(f"  Warnings:        {s['warnings']}")
         lines.append(f"  Input Tokens:    {s['total_input_tokens']:,}")
         lines.append(f"  Output Tokens:   {s['total_output_tokens']:,}")
+        cache_create = s.get("total_cache_creation_input_tokens", 0)
+        cache_read = s.get("total_cache_read_input_tokens", 0)
+        if cache_create or cache_read:
+            lines.append(f"  Cache Creation:  {cache_create:,} tokens")
+            lines.append(f"  Cache Read:      {cache_read:,} tokens")
         if s["severity_counts"]:
             lines.append(f"  Findings:        {s['severity_counts']}")
         if s["verification_verdicts"]:

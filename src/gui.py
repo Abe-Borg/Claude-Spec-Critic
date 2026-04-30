@@ -942,6 +942,8 @@ class SpecReviewApp(_CTkDnDRoot):
                 diag.log("review", "success", "Review completed", {
                     "input_tokens": rv.input_tokens,
                     "output_tokens": rv.output_tokens,
+                    "cache_creation_input_tokens": rv.cache_creation_input_tokens,
+                    "cache_read_input_tokens": rv.cache_read_input_tokens,
                     "elapsed_seconds": round(rv.elapsed_seconds, 2),
                     "stop_reason": rv.stop_reason,
                     "parse_status": rv.parse_status,
@@ -965,6 +967,8 @@ class SpecReviewApp(_CTkDnDRoot):
                         "finding_count": len(cc.findings),
                         "input_tokens": cc.input_tokens,
                         "output_tokens": cc.output_tokens,
+                        "cache_creation_input_tokens": cc.cache_creation_input_tokens,
+                        "cache_read_input_tokens": cc.cache_read_input_tokens,
                     })
                 # Verification verdict breakdown (includes explanation for failure diagnosis)
                 for f in rv.findings:
@@ -1368,6 +1372,8 @@ class SpecReviewApp(_CTkDnDRoot):
                     diag.log("batch_collect", "success", "Review results collected", {
                         "input_tokens": rv.input_tokens,
                         "output_tokens": rv.output_tokens,
+                        "cache_creation_input_tokens": rv.cache_creation_input_tokens,
+                        "cache_read_input_tokens": rv.cache_read_input_tokens,
                         "elapsed_seconds": round(rv.elapsed_seconds, 2),
                         "parse_status": rv.parse_status,
                         "severity_counts": {
@@ -1461,6 +1467,8 @@ class SpecReviewApp(_CTkDnDRoot):
                         "finding_count": len(cc.findings),
                         "input_tokens": cc.input_tokens,
                         "output_tokens": cc.output_tokens,
+                        "cache_creation_input_tokens": cc.cache_creation_input_tokens,
+                        "cache_read_input_tokens": cc.cache_read_input_tokens,
                     })
 
                 cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []

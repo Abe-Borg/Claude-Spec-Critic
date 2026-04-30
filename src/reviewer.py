@@ -15,9 +15,14 @@ from anthropic import Anthropic, APIError, APIConnectionError, APIStatusError, R
 
 from .prompts import get_system_prompt, get_single_spec_user_message
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
-from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET
+from .api_config import (
+    MODEL_OPUS_46,
+    REVIEW_MODEL_DEFAULT,
+    extract_cache_usage,
+    review_max_tokens,
+    system_prompt_with_cache,
+)
 
-MODEL_OPUS_46 = "claude-opus-4-6"
 REVIEW_MODELS = {"Opus 4.6": MODEL_OPUS_46}
 StreamCallback = Callable[[str], None]
 
@@ -77,6 +82,10 @@ class ReviewResult:
     model: str = MODEL_OPUS_46
     input_tokens: int = 0
     output_tokens: int = 0
+    # Phase 2 prompt-caching telemetry. Populated when the API returns
+    # cache_creation_input_tokens / cache_read_input_tokens in usage.
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     elapsed_seconds: float = 0.0
     error: str | None = None
     stop_reason: str | None = None
@@ -201,14 +210,17 @@ def _parse_findings(data: list) -> list[Finding]:
 def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = MODEL_OPUS_46, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
     start_time = time.time()
     result = ReviewResult(model=model)
-    output_limit = MAX_OUTPUT_TOKENS_OPUS if model == MODEL_OPUS_46 else MAX_OUTPUT_TOKENS_SONNET
+    # Dynamic per-call output cap. Real-time review uses the smaller cap to
+    # bound runaway outputs; large inputs still get plenty of headroom.
+    output_limit = review_max_tokens(batch=False, model=model)
+    system_payload = system_prompt_with_cache(system_prompt)
     last_exception: Exception | None = None
     for attempt in range(max_retries):
         is_last_attempt = attempt == max_retries - 1
         try:
             if verbose:
                 print(f"Calling Claude {model} (attempt {attempt + 1}/{max_retries})...")
-            with client.messages.stream(model=model, max_tokens=output_limit, thinking={"type": "adaptive"}, system=system_prompt, messages=[{"role": "user", "content": user_message}]) as stream:
+            with client.messages.stream(model=model, max_tokens=output_limit, thinking={"type": "adaptive"}, system=system_payload, messages=[{"role": "user", "content": user_message}]) as stream:
                 chunks: list[str] = []
                 for text in stream.text_stream:
                     chunks.append(text)
@@ -223,6 +235,9 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             if usage:
                 result.input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
                 result.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                cache = extract_cache_usage(usage)
+                result.cache_creation_input_tokens = cache["cache_creation_input_tokens"]
+                result.cache_read_input_tokens = cache["cache_read_input_tokens"]
 
             if result.stop_reason != "end_turn":
                 result.parse_status = "incomplete"
@@ -286,7 +301,7 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
     return result
 
 
-def review_single_spec(spec_content: str, filename: str, *, project_context: str = "", model: str = MODEL_OPUS_46, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE) -> ReviewResult:
+def review_single_spec(spec_content: str, filename: str, *, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE) -> ReviewResult:
     client = _get_client()
     return _stream_review(
         client,

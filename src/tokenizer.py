@@ -21,8 +21,15 @@ spec's call size against this limit.
 The cross-check limit (CROSS_CHECK_RECOMMENDED_MAX) is much higher
 because the cross-checker sends ALL spec content in a single call.
 """
-import tiktoken
+from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
+from typing import Any, Optional
+
+import tiktoken
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +84,52 @@ def get_encoder():
 
 
 def count_tokens(text: str) -> int:
-    """Count tokens in a text string."""
+    """Count tokens in a text string (local cl100k_base estimate)."""
     encoder = get_encoder()
     return len(encoder.encode(text))
+
+
+def count_tokens_via_api(
+    *,
+    model: str,
+    system: Any,
+    messages: list[dict],
+    tools: Optional[list[dict]] = None,
+    client: Any = None,
+) -> Optional[int]:
+    """Exact token count via Anthropic's count_tokens endpoint.
+
+    Returns the input-token total for the given request shape, or ``None`` on
+    failure (network error, missing API key, SDK version mismatch). Callers
+    should treat ``None`` as "preflight unavailable" and fall back to the
+    local estimate rather than blocking submission.
+
+    Plan section 6.3: keep the local estimate for UI responsiveness, use this
+    helper before batch submission and real-time confirmation when exact
+    routing/guardrail decisions matter.
+    """
+    if client is None:
+        try:
+            from .reviewer import _get_client
+            client = _get_client()
+        except Exception as exc:  # pragma: no cover - exercised via tests
+            _log.warning("count_tokens_via_api: no client available (%s)", exc)
+            return None
+    try:
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+        }
+        if system is not None:
+            kwargs["system"] = system
+        if tools:
+            kwargs["tools"] = tools
+        result = client.messages.count_tokens(**kwargs)
+        # MessageTokensCount has an input_tokens attribute.
+        return int(getattr(result, "input_tokens", 0) or 0)
+    except Exception as exc:
+        _log.warning("count_tokens_via_api failed: %s", exc)
+        return None
 
 
 def analyze_token_usage(

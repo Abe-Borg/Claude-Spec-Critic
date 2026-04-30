@@ -11,10 +11,11 @@ from typing import Callable, Optional
 
 from .extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from .preprocessor import preprocess_spec
-from .tokenizer import RECOMMENDED_MAX, count_tokens, exceeds_per_call_limit
+from .tokenizer import RECOMMENDED_MAX, count_tokens, count_tokens_via_api, exceeds_per_call_limit
 from .reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_46, StreamCallback
 from .batch import BatchJob, submit_review_batch, retrieve_review_results
 from .batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
+from .api_config import token_count_preflight_enabled
 from .verifier import (
     verify_findings,
     verify_findings_batch,
@@ -154,13 +155,37 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     if not specs:
         raise FileNotFoundError("All files failed extraction. No specs to review.")
 
-    system_tokens = count_tokens(get_system_prompt(cycle))
+    system_prompt = get_system_prompt(cycle)
+    system_tokens = count_tokens(system_prompt)
     ctx_tokens = count_tokens(project_context) if project_context else 0
     for spec in specs:
         spec_tokens = count_tokens(spec.content)
         est = system_tokens + ctx_tokens + spec_tokens
         if exceeds_per_call_limit(spec_tokens, system_tokens + ctx_tokens):
             raise ValueError(f"Spec '{spec.filename}' is too large for a single API call: ~{est:,} tokens (recommended max: {RECOMMENDED_MAX:,}).")
+
+    # Optional Anthropic token-counting preflight. Plan section 6.3: prefer
+    # exact counts for final routing/guardrail decisions; fall back to the
+    # local estimate when the API call fails. This is opt-in via env to
+    # avoid forcing a network round-trip for every preview.
+    if token_count_preflight_enabled() and specs:
+        # Pick the largest spec by local count and verify the API agrees.
+        biggest = max(specs, key=lambda s: count_tokens(s.content))
+        from .prompts import get_single_spec_user_message
+        user_message = get_single_spec_user_message(biggest.content, biggest.filename, project_context=project_context, cycle=cycle)
+        exact = count_tokens_via_api(
+            model=MODEL_OPUS_46,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        if exact is not None:
+            local = system_tokens + ctx_tokens + count_tokens(biggest.content)
+            log(f"Token preflight ({biggest.filename}): local~{local:,} | exact={exact:,}")
+            if exact > RECOMMENDED_MAX:
+                log(
+                    f"WARNING: exact token count {exact:,} exceeds recommended {RECOMMENDED_MAX:,}. "
+                    "Response may be truncated."
+                )
 
     return _PreparedSpecs(specs=specs, leed_alerts=leed_alerts, placeholder_alerts=placeholder_alerts)
 

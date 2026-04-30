@@ -11,6 +11,12 @@ from .extractor import ExtractedSpec
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_46
 from .tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
+from .api_config import (
+    CROSS_CHECK_MODEL_DEFAULT,
+    cross_check_max_tokens,
+    extract_cache_usage,
+    system_prompt_with_cache,
+)
 
 StreamCallback = Callable[[str], None]
 
@@ -114,23 +120,25 @@ def _get_cross_check_user_message(spec_input: str, file_count: int, project_cont
     return f"Review the following {file_count} specs for cross-spec coordination only.\n{ctx}\n{spec_input}"
 
 
-def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, verbose: bool = False, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE) -> ReviewResult:
+def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, verbose: bool = False, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT) -> ReviewResult:
     if len(specs) < 2:
-        return ReviewResult(findings=[], thinking="Need at least 2 specs.", model=MODEL_OPUS_46, cross_check_status="skipped")
+        return ReviewResult(findings=[], thinking="Need at least 2 specs.", model=model, cross_check_status="skipped")
 
     system_prompt = _cross_system_prompt(cycle)
     user_message = _get_cross_check_user_message(_build_cross_check_input(specs, existing_findings), len(specs), project_context=project_context)
     total_input_tokens = count_tokens(system_prompt) + count_tokens(user_message)
     if total_input_tokens > CROSS_CHECK_RECOMMENDED_MAX:
-        return ReviewResult(findings=[], thinking=f"Combined input ({total_input_tokens:,}) exceeds cross-check limit ({CROSS_CHECK_RECOMMENDED_MAX:,}).", model=MODEL_OPUS_46, cross_check_status="skipped")
+        return ReviewResult(findings=[], thinking=f"Combined input ({total_input_tokens:,}) exceeds cross-check limit ({CROSS_CHECK_RECOMMENDED_MAX:,}).", model=model, cross_check_status="skipped")
 
     client = _get_client()
     start = time.time()
-    result = ReviewResult(model=MODEL_OPUS_46)
+    result = ReviewResult(model=model)
+    output_limit = cross_check_max_tokens(model=model)
+    system_payload = system_prompt_with_cache(system_prompt)
 
     for attempt in range(max_retries):
         try:
-            with client.messages.stream(model=MODEL_OPUS_46, max_tokens=128_000, thinking={"type": "adaptive"}, system=system_prompt, messages=[{"role": "user", "content": user_message}]) as stream:
+            with client.messages.stream(model=model, max_tokens=output_limit, thinking={"type": "adaptive"}, system=system_payload, messages=[{"role": "user", "content": user_message}]) as stream:
                 chunks: list[str] = []
                 for text in stream.text_stream:
                     chunks.append(text)
@@ -145,6 +153,9 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             if usage:
                 result.input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
                 result.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                cache = extract_cache_usage(usage)
+                result.cache_creation_input_tokens = cache["cache_creation_input_tokens"]
+                result.cache_read_input_tokens = cache["cache_read_input_tokens"]
 
             if result.stop_reason != "end_turn":
                 result.parse_status = "incomplete"
