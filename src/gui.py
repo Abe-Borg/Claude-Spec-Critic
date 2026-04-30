@@ -1033,6 +1033,10 @@ class SpecReviewApp(_CTkDnDRoot):
             # Capture structured diagnostics from the result
             if diag and result.review_result:
                 rv = result.review_result
+                # Phase 9 plan 13.4: include the configured output cap so the
+                # diagnostics summary can compute utilization vs ceiling.
+                from .api_config import review_max_tokens as _review_cap
+                review_cap = _review_cap(batch=False, model=rv.model)
                 diag.log("review", "success", "Review completed", {
                     "input_tokens": rv.input_tokens,
                     "output_tokens": rv.output_tokens,
@@ -1041,6 +1045,7 @@ class SpecReviewApp(_CTkDnDRoot):
                     "elapsed_seconds": round(rv.elapsed_seconds, 2),
                     "stop_reason": rv.stop_reason,
                     "parse_status": rv.parse_status,
+                    "max_output_tokens": review_cap,
                     "severity_counts": {
                         "CRITICAL": rv.critical_count,
                         "HIGH": rv.high_count,

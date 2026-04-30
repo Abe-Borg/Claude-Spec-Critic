@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .extractor import extract_text, extract_multiple_specs, ExtractedSpec, SUPPORTED_EXTENSIONS
-from .preprocessor import preprocess_spec
+from .extraction_cache import (
+    cache_token_count,
+    extract_multiple_specs_cached,
+    extraction_cache_stats,
+    get_cached_token_count,
+    token_count_cache_key,
+)
+from .preprocessor import preprocess_spec, detect_inconsistent_file_naming
 from .tokenizer import RECOMMENDED_MAX, count_tokens, count_tokens_via_api, exceeds_per_call_limit
 from .reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_46, StreamCallback
 from .batch import BatchJob, submit_review_batch, retrieve_review_results
@@ -137,9 +144,20 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
 
 @dataclass
 class _PreparedSpecs:
+    """Phase 9 plan 13.1: preflight alerts ride alongside the leed/placeholder
+    alerts. Pipeline callers log them via diagnostics; the GUI/report can pick
+    them up in a follow-up commit without breaking serialization here."""
     specs: list[ExtractedSpec]
     leed_alerts: list[dict]
     placeholder_alerts: list[dict]
+    # Phase 9 (plan 13.1): deterministic preflight alerts surfaced before any
+    # model call. ``code_cycle_alerts`` flags references to a stale California
+    # cycle for the selected ``CodeCycle``; ``structural_alerts`` includes
+    # empty sections and duplicate headings; ``naming_alerts`` is a project-
+    # level CSI naming consistency check across all selected files.
+    code_cycle_alerts: list[dict] = field(default_factory=list)
+    structural_alerts: list[dict] = field(default_factory=list)
+    naming_alerts: list[dict] = field(default_factory=list)
 
 
 def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE) -> _PreparedSpecs:
@@ -150,24 +168,53 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     specs: list[ExtractedSpec] = []
     leed_alerts: list[dict] = []
     placeholder_alerts: list[dict] = []
+    code_cycle_alerts: list[dict] = []
+    structural_alerts: list[dict] = []
     progress(0.0, "Extracting text from specifications...")
     # Phase 5.2 (audit Section 9.2): parallel extraction. Order is preserved
     # by extract_multiple_specs, so deterministic file ordering and per-spec
     # progress reporting remain stable. Per-file errors still propagate to
     # the caller — the pool maintains the original semantics.
-    extracted = extract_multiple_specs(spec_files)
+    # Phase 9 plan 13.2: cache extraction by file identity so repeated runs
+    # with toggled options skip the DOCX parse. Falls through to the parallel
+    # extractor for misses.
+    extracted = extract_multiple_specs_cached(spec_files)
     for i, (p, spec) in enumerate(zip(spec_files, extracted), start=1):
         if spec.word_count == 0 or not spec.content.strip():
             log(f"Skipping {p.name}: no extractable text content", level="warning")
             progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
             continue
         specs.append(spec)
-        pre = preprocess_spec(spec.content, spec.filename)
+        pre = preprocess_spec(spec.content, spec.filename, cycle=cycle)
         leed_alerts.extend(pre.leed_alerts)
         placeholder_alerts.extend(pre.placeholder_alerts)
+        code_cycle_alerts.extend(pre.code_cycle_alerts)
+        structural_alerts.extend(pre.structural_alerts)
         progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
     if not specs:
         raise FileNotFoundError("All files failed extraction. No specs to review.")
+
+    # Phase 9 plan 13.1: project-level naming consistency check. Logged so
+    # users see it before submission; never raises.
+    naming_alerts = detect_inconsistent_file_naming([s.filename for s in specs])
+    if code_cycle_alerts:
+        log(
+            f"Preflight: {len(code_cycle_alerts)} stale code-cycle reference(s) "
+            f"detected against the {cycle.label} cycle.",
+            level="warning",
+        )
+    if structural_alerts:
+        log(
+            f"Preflight: {len(structural_alerts)} structural issue(s) "
+            "(empty/duplicate sections) detected.",
+            level="warning",
+        )
+    if naming_alerts:
+        log(
+            f"Preflight: {len(naming_alerts)} file(s) use a non-dominant CSI "
+            "naming style.",
+            level="warning",
+        )
 
     system_prompt = get_system_prompt(cycle, mode=mode)
     system_tokens = count_tokens(system_prompt)
@@ -187,11 +234,26 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         biggest = max(specs, key=lambda s: count_tokens(s.content))
         from .prompts import get_single_spec_user_message
         user_message = get_single_spec_user_message(biggest.content, biggest.filename, project_context=project_context, cycle=cycle, mode=mode)
-        exact = count_tokens_via_api(
+        # Phase 9 plan 13.2: re-use the exact API count when nothing relevant
+        # changed. The cache key includes model + cycle + mode + content so a
+        # later run with a different cycle still preflights correctly.
+        cache_key = token_count_cache_key(
             model=MODEL_OPUS_46,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
+            system_prompt=system_prompt,
+            user_message=user_message,
+            project_context=project_context,
+            cycle_label=cycle.label,
+            mode=mode.value,
         )
+        exact = get_cached_token_count(cache_key)
+        if exact is None:
+            exact = count_tokens_via_api(
+                model=MODEL_OPUS_46,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            if exact is not None:
+                cache_token_count(cache_key, exact)
         if exact is not None:
             local = system_tokens + ctx_tokens + count_tokens(biggest.content)
             log(f"Token preflight ({biggest.filename}): local~{local:,} | exact={exact:,}", level="info")
@@ -202,7 +264,22 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
                     level="warning",
                 )
 
-    return _PreparedSpecs(specs=specs, leed_alerts=leed_alerts, placeholder_alerts=placeholder_alerts)
+    cache_stats = extraction_cache_stats()
+    if cache_stats["hits"]:
+        log(
+            f"Extraction cache: {cache_stats['hits']} hit(s) reused; "
+            f"{cache_stats['misses']} miss(es).",
+            level="info",
+        )
+
+    return _PreparedSpecs(
+        specs=specs,
+        leed_alerts=leed_alerts,
+        placeholder_alerts=placeholder_alerts,
+        code_cycle_alerts=code_cycle_alerts,
+        structural_alerts=structural_alerts,
+        naming_alerts=naming_alerts,
+    )
 
 
 @dataclass
