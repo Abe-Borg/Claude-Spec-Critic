@@ -31,11 +31,15 @@ from .cross_checker import run_cross_check
 from .code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 from .prompts import get_system_prompt
 
-LogFn = Callable[[str], None]
+# Phase 7.1 (audit Section 11.1): log callbacks accept an explicit ``level``
+# keyword so pipeline code can categorize messages (info / success / warning /
+# error / step / muted) without the GUI keyword-sniffing the message text.
+# Older single-arg callers still work — ``level`` is a keyword default.
+LogFn = Callable[..., None]
 ProgressFn = Callable[[float, str], None]
 
 
-def _noop_log(_: str) -> None: return
+def _noop_log(_msg: str, **_kwargs: object) -> None: return
 
 def _noop_progress(_: float, __: str) -> None: return
 
@@ -153,7 +157,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     extracted = extract_multiple_specs(spec_files)
     for i, (p, spec) in enumerate(zip(spec_files, extracted), start=1):
         if spec.word_count == 0 or not spec.content.strip():
-            log(f"Skipping {p.name}: no extractable text content")
+            log(f"Skipping {p.name}: no extractable text content", level="warning")
             progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
             continue
         specs.append(spec)
@@ -189,11 +193,12 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         )
         if exact is not None:
             local = system_tokens + ctx_tokens + count_tokens(biggest.content)
-            log(f"Token preflight ({biggest.filename}): local~{local:,} | exact={exact:,}")
+            log(f"Token preflight ({biggest.filename}): local~{local:,} | exact={exact:,}", level="info")
             if exact > RECOMMENDED_MAX:
                 log(
                     f"WARNING: exact token count {exact:,} exceeds recommended {RECOMMENDED_MAX:,}. "
-                    "Response may be truncated."
+                    "Response may be truncated.",
+                    level="warning",
                 )
 
     return _PreparedSpecs(specs=specs, leed_alerts=leed_alerts, placeholder_alerts=placeholder_alerts)
@@ -242,7 +247,7 @@ def _recover_retryable_review_batch_results(
     if not retryable_request_ids:
         return results_by_request
     if not submission.prepared_specs:
-        log("Batch review fallback skipped: original extracted specs are unavailable.")
+        log("Batch review fallback skipped: original extracted specs are unavailable.", level="warning")
         return results_by_request
 
     cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
@@ -252,17 +257,17 @@ def _recover_retryable_review_batch_results(
         meta = submission.job.request_map.get(rid) or {}
         spec_index = meta.get("index")
         if not isinstance(spec_index, int) or spec_index < 0 or spec_index >= len(submission.prepared_specs):
-            log(f"Review repair skipped for {rid}: original spec index is unavailable.")
+            log(f"Review repair skipped for {rid}: original spec index is unavailable.", level="warning")
             continue
         spec = submission.prepared_specs[spec_index]
         repair_specs.append(spec)
         repair_id_map[spec.filename] = rid
 
     if not repair_specs:
-        log("No specs eligible for review repair batch.")
+        log("No specs eligible for review repair batch.", level="warning")
         return results_by_request
 
-    log(f"Submitting review repair batch for {len(repair_specs)} failed item(s)...")
+    log(f"Submitting review repair batch for {len(repair_specs)} failed item(s)...", level="step")
     repair_job = submit_review_batch(
         repair_specs,
         project_context=submission.project_context,
@@ -283,7 +288,8 @@ def _recover_retryable_review_batch_results(
     if outcome.detached or outcome.poll_failed:
         log(
             f"Review repair batch did not complete. {len(retryable_request_ids)} item(s) "
-            "will appear as failed in the report."
+            "will appear as failed in the report.",
+            level="warning",
         )
         return results_by_request
 
@@ -295,20 +301,21 @@ def _recover_retryable_review_batch_results(
         if original_rid and repair_rr and not repair_rr.error:
             results_by_request[original_rid] = repair_rr
             recovered += 1
-    log(f"Review repair batch recovered {recovered}/{len(repair_specs)} item(s).")
+    repair_level = "success" if recovered == len(repair_specs) else "warning"
+    log(f"Review repair batch recovered {recovered}/{len(repair_specs)} item(s).", level=repair_level)
     return results_by_request
 
 
 def _log_cross_check_status(log: LogFn, cross: ReviewResult):
     if cross.cross_check_status == "completed":
         if cross.findings:
-            log(f"Cross-check found {len(cross.findings)} coordination issues")
+            log(f"Cross-check found {len(cross.findings)} coordination issues", level="info")
         else:
-            log("Cross-check completed — no coordination issues found")
+            log("Cross-check completed — no coordination issues found", level="success")
     elif cross.cross_check_status == "skipped":
-        log(f"Cross-check skipped: {cross.thinking}")
+        log(f"Cross-check skipped: {cross.thinking}", level="warning")
     elif cross.cross_check_status == "failed":
-        log(f"Cross-check failed: {cross.error}")
+        log(f"Cross-check failed: {cross.error}", level="error")
 
 
 def _drop_cross_check_findings_with_disputed_upstream(
@@ -351,7 +358,8 @@ def _drop_cross_check_findings_with_disputed_upstream(
     if dropped:
         log(
             f"Cross-check: dropping {dropped} finding(s) whose upstream review "
-            "finding was DISPUTED."
+            "finding was DISPUTED.",
+            level="warning",
         )
     return kept
 
@@ -415,7 +423,7 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
                     cycle=cycle, log=log, progress=progress, cache=cache,
                 )
         except Exception as e:
-            log(f"Verification failed: {e}. Returning results without verification.")
+            log(f"Verification failed: {e}. Returning results without verification.", level="error")
             for f in state.review_result.findings:
                 if f.verification is None:
                     f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
@@ -425,7 +433,7 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
             try:
                 state = cross_check_future.result()
             except Exception as e:
-                log(f"Cross-check failed during parallel run: {e}.")
+                log(f"Cross-check failed during parallel run: {e}.", level="error")
                 if state.cross_check_result is None:
                     state.cross_check_result = ReviewResult(
                         findings=[],
@@ -465,7 +473,7 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
                         cycle=cycle, log=log, progress=progress, cache=cache,
                     )
             except Exception as e:
-                log(f"Cross-check verification failed: {e}.")
+                log(f"Cross-check verification failed: {e}.", level="error")
                 for f in cross_verifiable:
                     if f.verification is None:
                         f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
@@ -473,7 +481,8 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
     if cache_stats["hits"] or cache_stats["size"]:
         log(
             f"Verification cache: {cache_stats['hits']} hits, "
-            f"{cache_stats['misses']} misses across {cache_stats['size']} unique claim(s)."
+            f"{cache_stats['misses']} misses across {cache_stats['size']} unique claim(s).",
+            level="info",
         )
 
     progress(100.0, "Done.")
@@ -566,7 +575,8 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
             log(
                 "Cross-check excluding "
                 f"{len(specs) - len(filtered_specs)} spec(s) that failed review: "
-                + ", ".join(sorted(failed_filenames))
+                + ", ".join(sorted(failed_filenames)),
+                level="warning",
             )
         specs = filtered_specs
     if not specs:
@@ -612,7 +622,7 @@ def start_batch_verification(
         return None
     progress(60.0, f"Submitting {len(remaining)} verification requests...")
     job = start_verification_batch(remaining, cycle=cycle)
-    log(f"Verification batch submitted: {job.batch_id}")
+    log(f"Verification batch submitted: {job.batch_id}", level="step")
     return job
 
 
@@ -664,7 +674,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
         progress(25.0 + ((i - 1) / len(specs)) * 25.0, f"Reviewing {spec.filename} ({i}/{len(specs)})...")
         rr = review_single_spec(spec.content, spec.filename, project_context=project_context, model=model, verbose=verbose, stream_callback=stream_callback, cycle=cycle)
         if rr.parse_status == "incomplete":
-            log(f"  {spec.filename}: Response incomplete — model ran out of output tokens. No findings extracted.")
+            log(f"  {spec.filename}: Response incomplete — model ran out of output tokens. No findings extracted.", level="warning")
         if rr.error:
             errors.append(f"{spec.filename}: {rr.error}")
             continue
@@ -681,7 +691,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
         try:
             verify_findings(findings, progress=lambda c, t, fn: progress(50.0 + (c / max(t, 1)) * 25.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
         except Exception as e:
-            log(f"Verification failed: {e}. Returning results without verification.")
+            log(f"Verification failed: {e}. Returning results without verification.", level="error")
             for f in findings:
                 if f.verification is None:
                     f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
@@ -694,7 +704,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
             try:
                 verify_findings(cross.findings, progress=lambda c, t, fn: progress(90.0 + (c / max(t, 1)) * 5.0, f"Verifying cross-check {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
             except Exception as e:
-                log(f"Cross-check verification failed: {e}.")
+                log(f"Cross-check verification failed: {e}.", level="error")
                 for f in cross.findings:
                     if f.verification is None:
                         f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")

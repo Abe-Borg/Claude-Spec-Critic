@@ -739,7 +739,7 @@ def test_collect_verification_batch_results_collects_after_terminal_status(monke
     job = BatchJob(batch_id="msgbatch_verify_terminal", job_type="verify", request_map={"verify__0": {"finding_idx": 0}}, created_at=1.0)
     monkeypatch.setattr("src.verifier.poll_batch", lambda _batch_id: BatchStatus(status="failed", processing=0, succeeded=1, errored=0, canceled=0, expired=0, total=1))
 
-    collect_verification_batch_results(job, [finding], log=lambda _msg: None, progress=lambda _p, _m: None, poll_interval=0)
+    collect_verification_batch_results(job, [finding], log=lambda *_a, **_k: None, progress=lambda _p, _m: None, poll_interval=0)
 
     assert finding.verification is not None
     assert finding.verification.verdict == "UNVERIFIED"
@@ -751,7 +751,7 @@ def test_retry_failed_verifications_realtime_is_noop():
         f.verification = None
 
     from src.verifier import _retry_failed_verifications_realtime
-    _retry_failed_verifications_realtime(findings, log=lambda _msg: None)
+    _retry_failed_verifications_realtime(findings, log=lambda *_a, **_k: None)
 
     assert all(f.verification is None for f in findings)
 

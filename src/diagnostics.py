@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Optional
 
 
+# Phase 7.3 (audit Section 11.3): cap retained events so a long-running batch
+# poll cannot grow the in-memory report unbounded. Truncation tracking lets
+# the report still surface that older events were dropped.
+_DEFAULT_MAX_EVENTS = 5000
+
+
 @dataclass
 class DiagnosticEvent:
     timestamp: float
@@ -34,8 +40,25 @@ class DiagnosticsReport:
     cross_check_enabled: bool = False
     export_mode: bool = False
     events: list[DiagnosticEvent] = field(default_factory=list)
+    # Phase 7.3 actionable fields. Populated by the pipeline / GUI when the
+    # corresponding phase records actionable failure or skip information.
+    failed_specs: list[str] = field(default_factory=list)
+    skipped_specs: list[str] = field(default_factory=list)
+    edit_skip_reasons: dict[str, int] = field(default_factory=dict)
+    ambiguous_locator_count: int = 0
+    edits_applied_total: int = 0
+    edits_skipped_total: int = 0
+    edits_failed_total: int = 0
+    max_events: int = _DEFAULT_MAX_EVENTS
+    events_dropped: int = 0
 
     def log(self, phase: str, level: str, message: str, data: Optional[dict] = None) -> None:
+        # Cap the event list to bound memory on long-running batch polls.
+        # When the cap is exceeded, drop the oldest event and remember that
+        # truncation happened so the summary can flag it.
+        if self.max_events > 0 and len(self.events) >= self.max_events:
+            self.events.pop(0)
+            self.events_dropped += 1
         self.events.append(DiagnosticEvent(
             timestamp=time.time(),
             elapsed=time.time() - self.started_at,
@@ -44,6 +67,32 @@ class DiagnosticsReport:
             message=message,
             data=data,
         ))
+
+    def record_failed_spec(self, filename: str) -> None:
+        if filename and filename not in self.failed_specs:
+            self.failed_specs.append(filename)
+
+    def record_skipped_spec(self, filename: str) -> None:
+        if filename and filename not in self.skipped_specs:
+            self.skipped_specs.append(filename)
+
+    def record_edit_skip(self, reason: str) -> None:
+        if not reason:
+            return
+        self.edit_skip_reasons[reason] = self.edit_skip_reasons.get(reason, 0) + 1
+        if reason == "ambiguous":
+            self.ambiguous_locator_count += 1
+
+    def record_edit_report(
+        self,
+        *,
+        applied: int = 0,
+        skipped: int = 0,
+        failed: int = 0,
+    ) -> None:
+        self.edits_applied_total += int(applied)
+        self.edits_skipped_total += int(skipped)
+        self.edits_failed_total += int(failed)
 
     def finish(self) -> None:
         if self.ended_at is None:
@@ -146,6 +195,15 @@ class DiagnosticsReport:
             "verification_verdicts": verdicts,
             "verification_evidence": verification_stats,
             "severity_counts": severities,
+            # Phase 7.3 actionable fields.
+            "failed_specs": list(self.failed_specs),
+            "skipped_specs": list(self.skipped_specs),
+            "edit_skip_reasons": dict(self.edit_skip_reasons),
+            "ambiguous_locator_count": self.ambiguous_locator_count,
+            "edits_applied_total": self.edits_applied_total,
+            "edits_skipped_total": self.edits_skipped_total,
+            "edits_failed_total": self.edits_failed_total,
+            "events_dropped": self.events_dropped,
         }
 
     # ------------------------------------------------------------------
@@ -244,6 +302,37 @@ class DiagnosticsReport:
             lines.append("  Phase Durations:")
             for phase, dur in s["phase_durations"].items():
                 lines.append(f"    {phase:20s} {dur:.1f}s")
+        # Phase 7.3 actionable section: surface failed specs, skipped edits,
+        # ambiguous locator count, and event truncation so users can see
+        # what required attention without scanning the timeline.
+        if s.get("failed_specs"):
+            lines.append("")
+            lines.append(f"  Failed Specs:    {len(s['failed_specs'])}")
+            for fname in s["failed_specs"]:
+                lines.append(f"                   - {fname}")
+        if s.get("skipped_specs"):
+            lines.append(f"  Skipped Specs:   {len(s['skipped_specs'])}")
+            for fname in s["skipped_specs"]:
+                lines.append(f"                   - {fname}")
+        if s.get("edit_skip_reasons"):
+            lines.append("  Edit Skips:")
+            for reason, cnt in s["edit_skip_reasons"].items():
+                lines.append(f"    {reason:20s} {cnt}")
+        if s.get("ambiguous_locator_count"):
+            lines.append(f"  Ambiguous Locators: {s['ambiguous_locator_count']}")
+        if (s.get("edits_applied_total") or s.get("edits_skipped_total")
+                or s.get("edits_failed_total")):
+            lines.append(
+                "  Edit Application: "
+                f"applied={s['edits_applied_total']}, "
+                f"skipped={s['edits_skipped_total']}, "
+                f"failed={s['edits_failed_total']}"
+            )
+        if s.get("events_dropped"):
+            lines.append(
+                f"  Events Dropped:  {s['events_dropped']} "
+                f"(cap={self.max_events:,}; older events truncated)"
+            )
         lines.append("")
 
         # Timeline

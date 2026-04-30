@@ -237,6 +237,12 @@ class SpecReviewApp(_CTkDnDRoot):
         self._project_context_tokens = 0
         self._batch_submission: Optional[BatchSubmission] = None
         self._run_epoch = 0
+        # Phase 7.2 (audit Section 11.2): every background token analysis
+        # captures an epoch when launched. When a newer analysis starts, the
+        # epoch increments — older threads silently drop their results so a
+        # stale background pass cannot overwrite UI state that already
+        # reflects the latest user action.
+        self._analysis_epoch = 0
         self._extracted_specs: list[ExtractedSpec] = []
         fk = load_api_key_from_file()
         ek = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -652,16 +658,36 @@ class SpecReviewApp(_CTkDnDRoot):
         if not file_paths:
             self.log.log_warning("No supported files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
         self.log.log_step(f"Analyzing {len(file_paths)} files...")
+
+        # Phase 7.2 (audit Section 11.2): capture every UI-thread value that
+        # the background pass needs *before* spawning the worker. The worker
+        # must not read Tkinter/CustomTkinter state directly — those reads
+        # are not thread-safe and risk reading partially-updated values.
         project_context = self._get_project_context()
+        cycle_label = self.cycle_selector.get()
+        cycle = AVAILABLE_CYCLES.get(cycle_label, DEFAULT_CYCLE)
+
+        # Increment the analysis epoch and capture the value. Newer
+        # analysis starts will bump the epoch; older threads will see their
+        # captured value differs from ``self._analysis_epoch`` and discard
+        # their result instead of overwriting fresher UI state.
+        self._analysis_epoch += 1
+        captured_epoch = self._analysis_epoch
+
+        def _is_current() -> bool:
+            return self._analysis_epoch == captured_epoch
+
+        def _dispatch_if_current(fn):
+            self.after(0, lambda: fn() if _is_current() else None)
 
         def analyze():
             try:
-                self.after(0, lambda: self._clear_file_state())
+                _dispatch_if_current(lambda: self._clear_file_state())
                 file_data = []
                 processed_names: list[str] = []
                 from tiktoken import get_encoding
                 enc = get_encoding("cl100k_base")
-                sys_tokens = len(enc.encode(get_system_prompt(AVAILABLE_CYCLES.get(self.cycle_selector.get(), DEFAULT_CYCLE))))
+                sys_tokens = len(enc.encode(get_system_prompt(cycle)))
                 ctx_tokens = len(enc.encode(project_context)) if project_context else 0
                 extracted_specs: list[ExtractedSpec] = []
                 for f in file_paths:
@@ -672,30 +698,30 @@ class SpecReviewApp(_CTkDnDRoot):
                         processed_names.append(f.name)
                         extracted_specs.append(spec)
                     except Exception as e:
-                        self.after(0, lambda err=str(e), n=f.name: self.log.log_warning(f"Could not read {n}: {err}"))
+                        _dispatch_if_current(lambda err=str(e), n=f.name: self.log.log_warning(f"Could not read {n}: {err}"))
                 if processed_names:
-                    self.after(0, lambda names=processed_names: self.log.log_file_batch(names))
+                    _dispatch_if_current(lambda names=processed_names: self.log.log_file_batch(names))
                 if file_data:
-                    self.after(0, lambda fd=file_data, es=extracted_specs, st=sys_tokens, ct=ctx_tokens:
+                    _dispatch_if_current(lambda fd=file_data, es=extracted_specs, st=sys_tokens, ct=ctx_tokens:
                         self._set_file_data(fd, es, st, ct))
                     overhead = sys_tokens + ctx_tokens
                     max_per_file = max(d["tokens"] for d in file_data)
                     largest_call = overhead + max_per_file
                     per_file_limit_exceeded = exceeds_per_call_limit(max_per_file, overhead)
-                    self.after(0, lambda fd=file_data: self.file_list_panel.load_files(fd))
-                    self.after(0, lambda lc=largest_call, fc=len(file_data): self.token_gauge.update_gauge(lc, fc))
-                    self.after(0, lambda lc=largest_call: self.log.log_success(f"Token analysis complete: largest spec call ~{lc:,} tokens"))
+                    _dispatch_if_current(lambda fd=file_data: self.file_list_panel.load_files(fd))
+                    _dispatch_if_current(lambda lc=largest_call, fc=len(file_data): self.token_gauge.update_gauge(lc, fc))
+                    _dispatch_if_current(lambda lc=largest_call: self.log.log_success(f"Token analysis complete: largest spec call ~{lc:,} tokens"))
                     if per_file_limit_exceeded:
                         over_files = [d["filename"] for d in file_data if exceeds_per_call_limit(d["tokens"], overhead)]
-                        self.after(0, lambda of=over_files: self.log.log_warning(
+                        _dispatch_if_current(lambda of=over_files: self.log.log_warning(
                             f"File too large for single API call: {', '.join(of)}"
                         ))
-                    self.after(0, lambda b=per_file_limit_exceeded: self.run_button.configure(
+                    _dispatch_if_current(lambda b=per_file_limit_exceeded: self.run_button.configure(
                         state="disabled" if b else "normal"
                     ))
-                    self.after(0, lambda b=per_file_limit_exceeded: self.file_list_panel.set_over_limit(b))
+                    _dispatch_if_current(lambda b=per_file_limit_exceeded: self.file_list_panel.set_over_limit(b))
             except Exception as e:
-                self.after(0, lambda err=e: self.log.log_error(f"Analysis failed: {err}"))
+                _dispatch_if_current(lambda err=e: self.log.log_error(f"Analysis failed: {err}"))
 
         threading.Thread(target=analyze, daemon=True).start()
 
@@ -875,19 +901,26 @@ class SpecReviewApp(_CTkDnDRoot):
     def _make_diag_log(self, phase: str, run_epoch: int):
         """Return a log callback that writes to both the EnhancedLog and the diagnostics report.
 
-        Detects error/warning keywords in the message to set the appropriate
-        log level, so pipeline-reported failures surface correctly in the
-        diagnostics report instead of being buried as info-level events.
+        Phase 7.1 (audit Section 11.1): pipeline code now passes an explicit
+        ``level`` keyword (info/success/warning/error/step/muted), so this
+        callback no longer keyword-sniffs message text. Single-arg callers
+        (legacy code) still work — they default to ``level="info"``.
         """
-        def _log(msg: str):
-            msg_lower = msg.lower()
-            if any(kw in msg_lower for kw in ("failed", "error", "exception", "crash")):
-                level = "warning"
-            elif any(kw in msg_lower for kw in ("warning", "skipped", "could not", "unavailable")):
-                level = "warning"
-            else:
-                level = "info"
-            self._dispatch_if_current(run_epoch, lambda m=msg, lv=level: self.log.log(m, level=lv))
+        # Map levels that EnhancedLog does not render natively to a sensible
+        # display level; the diagnostics report keeps the original level.
+        ui_level_map = {
+            "info": "info",
+            "success": "success",
+            "warning": "warning",
+            "error": "error",
+            "step": "step",
+            "muted": "muted",
+            "debug": "muted",
+        }
+
+        def _log(msg: str, *, level: str = "info"):
+            ui_level = ui_level_map.get(level, "info")
+            self._dispatch_if_current(run_epoch, lambda m=msg, lv=ui_level: self.log.log(m, level=lv))
             if self._diagnostics_report:
                 self._diagnostics_report.log(phase, level, msg)
         return _log
@@ -1233,7 +1266,31 @@ class SpecReviewApp(_CTkDnDRoot):
         )
         EditSummaryDialog(self, edit_reports=reports)
         if self._diagnostics_report:
+            # Phase 7.3 actionable diagnostics: aggregate per-report counts
+            # and outcome reasons so the summary shows what required manual
+            # follow-up rather than only writing freeform timeline entries.
             for report in reports:
+                self._diagnostics_report.record_edit_report(
+                    applied=report.edits_applied,
+                    skipped=report.edits_skipped,
+                    failed=report.edits_failed,
+                )
+                for outcome in getattr(report, "outcomes", []) or []:
+                    if outcome.status in ("skipped", "failed"):
+                        reason = (outcome.detail or outcome.status).strip().lower()
+                        # Bucket common locator-skip reasons; keep specific
+                        # detail under a separate key when present.
+                        if "ambiguous" in reason:
+                            bucket = "ambiguous"
+                        elif "not found" in reason or "not_found" in reason:
+                            bucket = "not_found"
+                        elif "manual" in reason:
+                            bucket = "manual_review"
+                        elif outcome.status == "failed":
+                            bucket = "failed"
+                        else:
+                            bucket = "skipped_other"
+                        self._diagnostics_report.record_edit_skip(bucket)
                 self._diagnostics_report.log(
                     "edit_application",
                     "info",
@@ -1397,6 +1454,12 @@ class SpecReviewApp(_CTkDnDRoot):
                 verifiable_findings = list(rv.findings)
                 verification_completed = False
                 if review_state.truncated_specs:
+                    # Phase 7.3 actionable diagnostics: surface failed specs
+                    # in the structured report so they appear in the summary
+                    # without needing to scan the timeline.
+                    if diag:
+                        for spec_name in review_state.truncated_specs:
+                            diag.record_failed_spec(spec_name)
                     for spec_name in review_state.truncated_specs:
                         self._dispatch_if_current(
                             run_epoch,
