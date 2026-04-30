@@ -13,6 +13,13 @@ DEFAULT_MAX_ELAPSED_SECONDS = 4 * 3600
 DEFAULT_MAX_NO_PROGRESS_SECONDS = 30 * 60
 DEFAULT_MAX_CONSECUTIVE_ERRORS = 10
 
+# Phase 5.1 (audit Section 9.1): progressive polling backoff. The initial
+# interval keeps short batches snappy; the cap throttles long-running
+# batches so we don't pile up needless API calls. ``backoff_after_seconds``
+# defines how soon stretching kicks in.
+DEFAULT_POLL_BACKOFF_AFTER_SECONDS = 5 * 60
+DEFAULT_POLL_MAX_INTERVAL_SECONDS = 120
+
 
 @dataclass
 class PollPolicy:
@@ -20,6 +27,32 @@ class PollPolicy:
     max_elapsed_seconds: int = DEFAULT_MAX_ELAPSED_SECONDS
     max_no_progress_seconds: int = DEFAULT_MAX_NO_PROGRESS_SECONDS
     max_consecutive_errors: int = DEFAULT_MAX_CONSECUTIVE_ERRORS
+    backoff_after_seconds: int = DEFAULT_POLL_BACKOFF_AFTER_SECONDS
+    max_poll_interval_seconds: int = DEFAULT_POLL_MAX_INTERVAL_SECONDS
+
+
+def _progressive_poll_interval(
+    *,
+    elapsed_seconds: float,
+    policy: PollPolicy,
+) -> int:
+    """Return the wait between polls given how long polling has been running.
+
+    Schedule (audit Section 9.1):
+    - First ``backoff_after_seconds``: ``poll_interval_seconds`` (snappy).
+    - After that: linearly stretch toward ``max_poll_interval_seconds`` over
+      the next equal window, then hold at the max.
+    """
+    base = max(1, int(policy.poll_interval_seconds))
+    cap = max(base, int(policy.max_poll_interval_seconds))
+    threshold = max(0, int(policy.backoff_after_seconds))
+    if elapsed_seconds <= threshold or cap == base:
+        return base
+    # Linear ramp: at threshold -> base, at 2*threshold -> cap.
+    span = max(1, threshold)
+    progress = min(1.0, (elapsed_seconds - threshold) / span)
+    interval = int(base + (cap - base) * progress)
+    return max(base, min(cap, interval))
 
 
 DEFAULT_REVIEW_POLL_POLICY = PollPolicy()
@@ -96,4 +129,12 @@ def poll_batch_bounded(
         if normalized in ("ended", "failed", "expired", "canceled"):
             return PollOutcome(terminal=True, terminal_status=status.status, final_status=status)
 
-        time.sleep(policy.poll_interval_seconds)
+        # Progressive backoff (audit Section 9.1): start at the configured
+        # interval, then stretch toward max_poll_interval_seconds for
+        # long-running batches.
+        time.sleep(
+            _progressive_poll_interval(
+                elapsed_seconds=time.monotonic() - started,
+                policy=policy,
+            )
+        )

@@ -787,6 +787,8 @@ def collect_verification_batch_results(
         max_elapsed_seconds=DEFAULT_VERIFICATION_POLL_POLICY.max_elapsed_seconds,
         max_no_progress_seconds=DEFAULT_VERIFICATION_POLL_POLICY.max_no_progress_seconds,
         max_consecutive_errors=DEFAULT_VERIFICATION_POLL_POLICY.max_consecutive_errors,
+        backoff_after_seconds=DEFAULT_VERIFICATION_POLL_POLICY.backoff_after_seconds,
+        max_poll_interval_seconds=DEFAULT_VERIFICATION_POLL_POLICY.max_poll_interval_seconds,
     )
     fallback_threshold = (
         realtime_fallback_threshold

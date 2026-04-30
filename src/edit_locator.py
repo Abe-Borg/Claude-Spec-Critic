@@ -64,6 +64,51 @@ class LocatorResult:
             )
 
 
+def _is_whole_paragraph_match(location: EditLocation) -> bool:
+    return (
+        location.mapping.element_type == "paragraph"
+        and location.match_start == 0
+        and location.match_end == len(location.mapping.text)
+    )
+
+
+def _formatting_downgrade(
+    *,
+    location: EditLocation,
+    action_type: str,
+    base_category: str,
+) -> str:
+    """Apply audit Section 8.5 formatting downgrades.
+
+    A paragraph counts as "richly formatted" when it has 2+ runs with
+    distinct character-format signatures. Run-level replacement of a
+    sub-span across such runs collapses non-matching formatting into the
+    first run and silently destroys inline emphasis, so we downgrade.
+
+    - Whole-paragraph replacements/DELETEs that touch a richly formatted
+      paragraph are demoted to MANUAL_REVIEW (the audit calls these
+      "richly formatted paragraphs: mark manual review").
+    - Partial-run replacements that span multiple distinct-format runs are
+      demoted to AUTO_WITH_CAUTION.
+    """
+    if action_type not in {"EDIT", "DELETE"}:
+        return base_category
+    mapping = location.mapping
+    if mapping.element_type != "paragraph":
+        return base_category
+    distinct = getattr(mapping, "distinct_formatting_runs", 0) or 0
+    if distinct < 2:
+        return base_category
+
+    if _is_whole_paragraph_match(location):
+        return SAFETY_MANUAL_REVIEW
+
+    # Partial replacement on a multi-format paragraph — caller must review.
+    if base_category == SAFETY_AUTO_SAFE:
+        return SAFETY_AUTO_WITH_CAUTION
+    return base_category
+
+
 def _classify_locator_safety(
     *,
     status: str,
@@ -88,16 +133,23 @@ def _classify_locator_safety(
     if element_type in {"header", "footer", "meta"}:
         return SAFETY_MANUAL_REVIEW
     if cross_paragraph:
-        return SAFETY_AUTO_WITH_CAUTION
-    if method == "fuzzy":
-        return SAFETY_MANUAL_REVIEW
-    if method == "exact" and confidence >= 0.95:
-        return SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
-    if method == "normalized" and confidence >= 0.85:
-        return SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
-    if method == "section_anchored":
-        return SAFETY_AUTO_WITH_CAUTION
-    return SAFETY_AUTO_WITH_CAUTION
+        category = SAFETY_AUTO_WITH_CAUTION
+    elif method == "fuzzy":
+        category = SAFETY_MANUAL_REVIEW
+    elif method == "exact" and confidence >= 0.95:
+        category = SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
+    elif method == "normalized" and confidence >= 0.85:
+        category = SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
+    elif method == "section_anchored":
+        category = SAFETY_AUTO_WITH_CAUTION
+    else:
+        category = SAFETY_AUTO_WITH_CAUTION
+
+    return _formatting_downgrade(
+        location=best,
+        action_type=action_type,
+        base_category=category,
+    )
 
 
 def _resolve_replacement_text(finding: Finding) -> str | None:
