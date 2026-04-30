@@ -20,6 +20,14 @@ class ParagraphMapping:
     cell_index: int | None
     section_index: int | None = None
     container_type: str | None = None
+    # Phase 4 (audit Section 8.5): rich-formatting downgrade. ``run_count``
+    # is the number of non-empty runs in the source paragraph;
+    # ``distinct_formatting_runs`` is the count of distinct character-format
+    # signatures across those runs (bold/italic/underline/font/size/color).
+    # Both are 0 for non-paragraph mappings (table cells flatten multiple
+    # paragraphs and runs; treat them via the table-cell caution path).
+    run_count: int = 0
+    distinct_formatting_runs: int = 0
 
 
 @dataclass
@@ -30,6 +38,37 @@ class ExtractedSpec:
     source_path: str = ""
     source_format: str = ""
     paragraph_map: list[ParagraphMapping] | None = None
+
+
+def _summarize_paragraph_formatting(paragraph: Paragraph) -> tuple[int, int]:
+    """Return (run_count, distinct_formatting_runs) for a paragraph.
+
+    Phase 4 (audit Section 8.5): callers downgrade auto-edit safety when a
+    paragraph has multiple runs with distinct character formatting, because
+    run-level replacement collapses non-matching formatting into the first
+    run and silently destroys inline emphasis/font choices.
+    """
+    runs = list(paragraph.runs)
+    if not runs:
+        return 0, 0
+    signatures: set[tuple] = set()
+    non_empty = 0
+    for run in runs:
+        if not run.text:
+            continue
+        non_empty += 1
+        font = run.font
+        signatures.add(
+            (
+                bool(run.bold),
+                bool(run.italic),
+                bool(run.underline),
+                getattr(font, "name", None),
+                float(font.size.pt) if getattr(font, "size", None) is not None else None,
+                str(getattr(getattr(font, "color", None), "rgb", None) or ""),
+            )
+        )
+    return non_empty, len(signatures)
 
 
 def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
@@ -54,6 +93,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             text = para.text.strip()
             if text:
                 paragraphs.append(text)
+                run_count, distinct_fmt = _summarize_paragraph_formatting(para)
                 paragraph_map.append(
                     ParagraphMapping(
                         body_index=body_index,
@@ -62,6 +102,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                         table_index=None,
                         row_index=None,
                         cell_index=None,
+                        run_count=run_count,
+                        distinct_formatting_runs=distinct_fmt,
                     )
                 )
         elif child.tag.endswith("}tbl"):
@@ -152,5 +194,27 @@ def extract_text(filepath: Path) -> ExtractedSpec:
     return extract_text_from_docx(filepath)
 
 
-def extract_multiple_specs(filepaths: list[Path]) -> list[ExtractedSpec]:
-    return [extract_text(fp) for fp in filepaths]
+def extract_multiple_specs(
+    filepaths: list[Path],
+    *,
+    max_workers: int | None = None,
+) -> list[ExtractedSpec]:
+    """Extract a list of specs in parallel.
+
+    Phase 5.2 (audit Section 9.2): bounded thread pool for I/O-bound DOCX
+    parsing. Result order is preserved to match ``filepaths`` so downstream
+    deterministic ordering (filenames, dedup keys, request maps) does not
+    change. ``max_workers=1`` (or a single file) runs sequentially.
+    """
+    if not filepaths:
+        return []
+    paths = [Path(fp) for fp in filepaths]
+    if len(paths) == 1:
+        return [extract_text(paths[0])]
+    workers = max_workers if max_workers is not None else min(8, len(paths))
+    workers = max(1, workers)
+    if workers == 1:
+        return [extract_text(p) for p in paths]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(extract_text, paths))

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
+from .extractor import extract_text, extract_multiple_specs, ExtractedSpec, SUPPORTED_EXTENSIONS
 from .preprocessor import preprocess_spec
 from .tokenizer import RECOMMENDED_MAX, count_tokens, count_tokens_via_api, exceeds_per_call_limit
 from .reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_46, StreamCallback
@@ -144,10 +146,15 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     leed_alerts: list[dict] = []
     placeholder_alerts: list[dict] = []
     progress(0.0, "Extracting text from specifications...")
-    for i, p in enumerate(spec_files, start=1):
-        spec = extract_text(p)
+    # Phase 5.2 (audit Section 9.2): parallel extraction. Order is preserved
+    # by extract_multiple_specs, so deterministic file ordering and per-spec
+    # progress reporting remain stable. Per-file errors still propagate to
+    # the caller — the pool maintains the original semantics.
+    extracted = extract_multiple_specs(spec_files)
+    for i, (p, spec) in enumerate(zip(spec_files, extracted), start=1):
         if spec.word_count == 0 or not spec.content.strip():
             log(f"Skipping {p.name}: no extractable text content")
+            progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
             continue
         specs.append(spec)
         pre = preprocess_spec(spec.content, spec.filename)
@@ -304,6 +311,64 @@ def _log_cross_check_status(log: LogFn, cross: ReviewResult):
         log(f"Cross-check failed: {cross.error}")
 
 
+def _drop_cross_check_findings_with_disputed_upstream(
+    cross_findings: list[Finding],
+    review_findings: list[Finding],
+    *,
+    log: LogFn = _noop_log,
+) -> list[Finding]:
+    """Filter cross-check findings whose upstream review findings are DISPUTED.
+
+    Phase 5.3 (audit Section 9.3): when cross-check ran in parallel with
+    review verification, it may reference a review finding that ended up
+    DISPUTED. Coordination claims rooted in discredited upstream evidence
+    should not consume verification tokens. Match by ``(filename, section)``
+    overlap with at least one DISPUTED review finding; if no match is found
+    the cross-check finding is kept (provisional).
+    """
+    disputed_keys: set[tuple[str, str]] = set()
+    for f in review_findings:
+        if not f.verification or f.verification.verdict != "DISPUTED":
+            continue
+        files = list(f.affected_files) or [f.fileName]
+        for fname in files:
+            disputed_keys.add(((fname or "").strip().lower(), (f.section or "").strip().lower()))
+    if not disputed_keys:
+        return cross_findings
+    kept: list[Finding] = []
+    dropped = 0
+    for f in cross_findings:
+        files = list(f.affected_files) or [f.fileName]
+        section_key = (f.section or "").strip().lower()
+        depends_on_disputed = any(
+            ((fname or "").strip().lower(), section_key) in disputed_keys
+            for fname in files
+        )
+        if depends_on_disputed:
+            dropped += 1
+            continue
+        kept.append(f)
+    if dropped:
+        log(
+            f"Cross-check: dropping {dropped} finding(s) whose upstream review "
+            "finding was DISPUTED."
+        )
+    return kept
+
+
+def _parallel_cross_check_enabled() -> bool:
+    """Phase 5.3 (audit Section 9.3): opt-in parallel cross-check overlap.
+
+    The default keeps the historical sequential flow (review verification
+    finishes before cross-check runs) so cross-check sees verified findings
+    and can drop coordination claims that depend on DISPUTED upstream
+    findings. When enabled, cross-check runs concurrently with the review
+    verification batch poll, then the dependency filter is applied
+    post-hoc before cross-check verification submits.
+    """
+    return os.environ.get("SPEC_CRITIC_PARALLEL_CROSS_CHECK", "0").strip() in {"1", "true", "yes"}
+
+
 def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, cross_check: bool | None = None, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle | None = None) -> PipelineResult:
     if cross_check is None:
         cross_check = submission.cross_check_enabled
@@ -319,6 +384,25 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
     cache = VerificationCache()
 
     state = collect_review_batch_results(submission, log=log)
+
+    parallel = cross_check and _parallel_cross_check_enabled() and bool(state.review_result.findings)
+    cross_check_future = None
+    cross_check_executor: ThreadPoolExecutor | None = None
+    if parallel:
+        # Kick off cross-check before we start polling the verification batch.
+        # The cross-check call blocks on a remote streaming response, so it
+        # would otherwise sit idle while we poll. Start it on a worker thread
+        # so the two long-running calls overlap.
+        cross_check_executor = ThreadPoolExecutor(max_workers=1)
+        cross_check_future = cross_check_executor.submit(
+            run_cross_check_for_batch,
+            state,
+            specs=specs,
+            project_context=project_context,
+            cycle=cycle,
+            log=log,
+        )
+
     if verify and state.review_result.findings:
         try:
             progress(55.0, f"Submitting {len(state.review_result.findings)} verification requests...")
@@ -337,8 +421,38 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
                     f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
 
     if cross_check:
-        state = run_cross_check_for_batch(state, specs=specs, project_context=project_context, cycle=cycle, log=log)
+        if cross_check_future is not None:
+            try:
+                state = cross_check_future.result()
+            except Exception as e:
+                log(f"Cross-check failed during parallel run: {e}.")
+                if state.cross_check_result is None:
+                    state.cross_check_result = ReviewResult(
+                        findings=[],
+                        cross_check_status="failed",
+                        error=str(e),
+                    )
+            finally:
+                if cross_check_executor is not None:
+                    cross_check_executor.shutdown(wait=False)
+        else:
+            state = run_cross_check_for_batch(state, specs=specs, project_context=project_context, cycle=cycle, log=log)
+
         cross_verifiable = list(state.cross_check_result.findings) if state.cross_check_result and state.cross_check_result.findings else []
+        # Phase 5.3 (audit Section 9.3): when running in parallel the
+        # cross-check did not have access to verified findings yet, so it
+        # may have built coordination claims on review findings that have
+        # since been DISPUTED. Drop those before spending tokens verifying
+        # them. The reference is by section + filename + issue overlap;
+        # if no upstream is identifiable we keep the finding (provisional).
+        if parallel and cross_verifiable:
+            cross_verifiable = _drop_cross_check_findings_with_disputed_upstream(
+                cross_verifiable,
+                state.review_result.findings,
+                log=log,
+            )
+            if state.cross_check_result is not None:
+                state.cross_check_result.findings = cross_verifiable
         if verify and cross_verifiable:
             try:
                 progress(90.0, f"Submitting {len(cross_verifiable)} cross-check verification requests...")

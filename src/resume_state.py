@@ -13,6 +13,8 @@ from .pipeline import BatchSubmission, CollectedBatchState
 from .reviewer import Finding, ReviewResult, MODEL_OPUS_46
 from .verifier import VerificationResult
 
+_RESUME_STATE_CURRENT_SCHEMA = "v2"
+
 PHASE_REVIEW_POLL = "review_poll"
 PHASE_REVIEW_COLLECT = "review_collect"
 PHASE_VERIFICATION_WAVE_POLL = "verification_wave_poll"
@@ -252,6 +254,7 @@ def deserialize_collected_batch_state(payload: dict[str, Any], submission: Batch
 def build_resume_state(*, phase: str, submission: BatchSubmission, review_state: CollectedBatchState | None = None, verification_batch: BatchJob | None = None, cross_check_skipped_due_to_missing_specs: bool = False, verification_started: bool = False, verification_completed: bool = False, wave_index: int = 0, resolved_finding_indices: list[int] | None = None, pending_finding_indices: list[int] | None = None, poll_detached: bool = False) -> dict[str, Any]:
     state: dict[str, Any] = {
         "version": __version__,
+        "schema": _RESUME_STATE_CURRENT_SCHEMA,
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "phase": phase,
         "submission": serialize_submission(submission),
@@ -272,14 +275,54 @@ def build_resume_state(*, phase: str, submission: BatchSubmission, review_state:
     return state
 
 
+def _validate_batch_id(batch_id: Any) -> str:
+    """Phase 5.5 (audit Section 9.5): hard-fail malformed batch IDs.
+
+    Anthropic batch IDs are non-empty strings prefixed with ``msgbatch_``.
+    Anything else means the resume payload was hand-edited or corrupted —
+    accepting it would let polling spin forever against a non-existent
+    batch. The GUI loader catches the ValueError and discards the file.
+    """
+    if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
+        raise ValueError(f"Invalid batch_id in resume payload: {batch_id!r}")
+    return batch_id
+
+
+def _validate_request_map(request_map: Any) -> dict:
+    """Resume payload's request_map must round-trip cleanly.
+
+    Phase 5.5: reject malformed shapes (non-dict, non-string keys, missing
+    indices) instead of silently accepting them. Polling against a broken
+    map would associate results with the wrong findings.
+    """
+    if not isinstance(request_map, dict) or not request_map:
+        raise ValueError("request_map must be a non-empty dict")
+    for key, meta in request_map.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"request_map key must be a non-empty string: {key!r}")
+        if not isinstance(meta, dict):
+            raise ValueError(f"request_map[{key!r}] must be a dict, got {type(meta).__name__}")
+    return request_map
+
+
 def deserialize_resume_state(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Resume payload must be a dict")
     phase = str(payload.get("phase", ""))
+    if phase and phase not in SUPPORTED_PHASES:
+        raise ValueError(f"Unsupported resume phase: {phase!r}")
     submission_payload = payload.get("submission")
     if not isinstance(submission_payload, dict):
         raise ValueError("Missing submission payload")
+    job_payload = submission_payload.get("job")
+    if not isinstance(job_payload, dict):
+        raise ValueError("Missing submission.job payload")
+    _validate_batch_id(job_payload.get("batch_id"))
+    _validate_request_map(job_payload.get("request_map"))
     submission = deserialize_submission(submission_payload)
     out: dict[str, Any] = {
         "version": payload.get("version"),
+        "schema": payload.get("schema") or _RESUME_STATE_CURRENT_SCHEMA,
         "saved_at": payload.get("saved_at"),
         "phase": phase,
         "submission": submission,
@@ -288,5 +331,9 @@ def deserialize_resume_state(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("review_findings_payload"):
         out["review_state"] = deserialize_collected_batch_state(payload["review_findings_payload"], submission)
     if payload.get("verification_batch"):
-        out["verification_batch"] = deserialize_batch_job(payload["verification_batch"])
+        verification_payload = payload["verification_batch"]
+        if not isinstance(verification_payload, dict):
+            raise ValueError("verification_batch must be a dict")
+        _validate_batch_id(verification_payload.get("batch_id"))
+        out["verification_batch"] = deserialize_batch_job(verification_payload)
     return out
