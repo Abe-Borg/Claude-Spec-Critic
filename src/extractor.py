@@ -9,6 +9,10 @@ from docx.text.paragraph import Paragraph
 
 SUPPORTED_EXTENSIONS = {".docx"}
 
+# Project-context attachments are reviewed as background reference material
+# (not edited by the spec pipeline), so PDFs are accepted in addition to DOCX.
+CONTEXT_ATTACHMENT_EXTENSIONS = {".docx", ".pdf"}
+
 
 @dataclass
 class ParagraphMapping:
@@ -218,3 +222,52 @@ def extract_multiple_specs(
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(extract_text, paths))
+
+
+def _extract_pdf_text(filepath: Path) -> str:
+    try:
+        from pypdf import PdfReader
+        from pypdf.errors import PdfReadError
+    except ImportError as exc:
+        raise ValueError(
+            "PDF support requires the 'pypdf' package. Install with: pip install pypdf"
+        ) from exc
+    try:
+        reader = PdfReader(str(filepath))
+    except PdfReadError as exc:
+        raise ValueError(f"Invalid or corrupted PDF: {filepath} — {exc}")
+    except Exception as exc:
+        raise ValueError(f"Could not read PDF: {filepath} — {exc}")
+    if getattr(reader, "is_encrypted", False):
+        raise ValueError(f"PDF is encrypted and cannot be read: {filepath}")
+    pages: list[str] = []
+    for page in reader.pages:
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        text = text.strip()
+        if text:
+            pages.append(text)
+    return "\n\n".join(pages)
+
+
+def extract_context_text(filepath: Path) -> str:
+    """Extract plain text from a Project Context attachment (.docx or .pdf).
+
+    Returns a plain string suitable for splicing into the project_context
+    prompt block. Unlike ``extract_text``, this does not build a paragraph
+    map — the result is reference material, not an editable spec.
+    """
+    filepath = Path(filepath)
+    if not filepath.exists():
+        raise FileNotFoundError(f"File not found: {filepath}")
+    ext = filepath.suffix.lower()
+    if ext == ".docx":
+        return extract_text_from_docx(filepath).content
+    if ext == ".pdf":
+        return _extract_pdf_text(filepath)
+    raise ValueError(
+        f"Unsupported context attachment format: '{ext}'. "
+        f"Supported: {', '.join(sorted(CONTEXT_ATTACHMENT_EXTENSIONS))}"
+    )

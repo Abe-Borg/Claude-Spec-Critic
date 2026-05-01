@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import customtkinter as ctk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
 except ImportError:
@@ -39,7 +39,13 @@ from src.pipeline import (
 from src.batch import BatchStatus, BatchJob
 from src.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from src.reviewer import MODEL_OPUS_46, REVIEW_MODELS, Finding
-from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
+from src.extractor import (
+    extract_text,
+    extract_context_text,
+    ExtractedSpec,
+    SUPPORTED_EXTENSIONS,
+    CONTEXT_ATTACHMENT_EXTENSIONS,
+)
 from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
 from src.prompts import get_system_prompt
 from src.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
@@ -91,6 +97,13 @@ _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
 _SPEC_FILETYPES = [
     ("Word Specifications", "*.docx"),
+    ("All Files", "*.*"),
+]
+
+_CONTEXT_FILETYPES = [
+    ("Documents", "*.docx *.pdf"),
+    ("Word Documents", "*.docx"),
+    ("PDF Documents", "*.pdf"),
     ("All Files", "*.*"),
 ]
 
@@ -378,7 +391,8 @@ class SpecReviewApp(_CTkDnDRoot):
         ctx_label_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ctx_label_frame.grid(row=2, column=0, sticky="nw", pady=8)
         ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
-        ctk.CTkButton(ctx_label_frame, text="Expand", width=60, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._open_context_modal).pack(anchor="nw", pady=(4, 0))
+        ctk.CTkButton(ctx_label_frame, text="Expand", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._open_context_modal).pack(anchor="nw", pady=(4, 0))
+        ctk.CTkButton(ctx_label_frame, text="Attach Files…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_context_files).pack(anchor="nw", pady=(4, 0))
         self.context_textbox = ctk.CTkTextbox(
             self.inputs_content, fg_color=COLORS["bg_input"], border_color=COLORS["border"],
             border_width=2, text_color=COLORS["text_primary"],
@@ -572,6 +586,88 @@ class SpecReviewApp(_CTkDnDRoot):
             self._project_context_tokens = 0
         self._on_file_selection_change()
 
+    def _set_context_text(self, new_text: str) -> None:
+        """Replace the context textbox contents, restoring placeholder when empty."""
+        self.context_textbox.delete("1.0", "end")
+        if new_text:
+            self._context_has_placeholder = False
+            self.context_textbox.configure(text_color=COLORS["text_primary"])
+            self.context_textbox.insert("1.0", new_text)
+        else:
+            self._context_has_placeholder = True
+            self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
+            self.context_textbox.configure(text_color=COLORS["text_muted"])
+        self._on_context_change()
+
+    def _extract_context_attachments(self, paths: list[Path]) -> tuple[str, list[str]]:
+        """Extract text from .docx/.pdf attachments. Returns (combined_text, errors)."""
+        sections: list[str] = []
+        errors: list[str] = []
+        for path in paths:
+            try:
+                text = extract_context_text(path).strip()
+            except Exception as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            if not text:
+                errors.append(f"{path.name}: no extractable text (scanned PDF?)")
+                continue
+            sections.append(
+                f"--- BEGIN ATTACHMENT: {path.name} ---\n{text}\n--- END ATTACHMENT: {path.name} ---"
+            )
+        return ("\n\n".join(sections), errors)
+
+    def _attach_context_files(self, target_textbox=None) -> None:
+        """Open a file picker, extract .docx/.pdf text, and append to the context.
+
+        ``target_textbox`` lets the modal dialog reuse this flow against its
+        own textbox; when None, the inline context textbox is updated.
+        """
+        files = filedialog.askopenfilenames(
+            title="Attach project context documents",
+            filetypes=_CONTEXT_FILETYPES,
+        )
+        if not files:
+            return
+        paths = [Path(f) for f in files]
+        unsupported = [p for p in paths if p.suffix.lower() not in CONTEXT_ATTACHMENT_EXTENSIONS]
+        if unsupported:
+            messagebox.showwarning(
+                "Unsupported files",
+                "Only .docx and .pdf files can be attached. Skipping:\n"
+                + "\n".join(p.name for p in unsupported),
+            )
+            paths = [p for p in paths if p not in unsupported]
+        if not paths:
+            return
+
+        try:
+            self.configure(cursor="watch")
+            self.update_idletasks()
+            combined, errors = self._extract_context_attachments(paths)
+        finally:
+            self.configure(cursor="")
+
+        if errors:
+            messagebox.showwarning(
+                "Some attachments could not be read",
+                "\n".join(errors),
+            )
+        if not combined:
+            return
+
+        if target_textbox is None:
+            existing = self._get_project_context()
+            merged = f"{existing}\n\n{combined}" if existing else combined
+            self._set_context_text(merged)
+        else:
+            existing = target_textbox.get("1.0", "end").strip()
+            target_textbox.delete("1.0", "end")
+            target_textbox.insert(
+                "1.0",
+                f"{existing}\n\n{combined}" if existing else combined,
+            )
+
     def _open_context_modal(self):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Project Context")
@@ -618,12 +714,22 @@ class SpecReviewApp(_CTkDnDRoot):
             self._on_context_change()
             dialog.destroy()
 
+        button_row = ctk.CTkFrame(outer, fg_color="transparent")
+        button_row.pack(fill="x", padx=16, pady=(0, 16))
         ctk.CTkButton(
-            outer, text="Save & Close", width=120, height=32,
+            button_row, text="Attach Files…", width=120, height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=13),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"],
+            command=lambda: self._attach_context_files(target_textbox=modal_textbox),
+        ).pack(side="left")
+        ctk.CTkButton(
+            button_row, text="Save & Close", width=120, height=32,
             font=ctk.CTkFont(family="Segoe UI", size=13),
             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
             command=_save_and_close,
-        ).pack(anchor="e", padx=16, pady=(0, 16))
+        ).pack(side="right")
 
     def _on_mode_change(self, value: str):
         if value == _MODE_BATCH:
