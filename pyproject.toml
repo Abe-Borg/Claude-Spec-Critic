@@ -8,6 +8,7 @@ version = "2.8.0"
 dependencies = [
     "anthropic",
     "python-docx",
+    "pypdf",
     "tiktoken",
     "customtkinter",
     "platformdirs",

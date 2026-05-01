@@ -9,7 +9,13 @@ from anthropic.types.beta.messages.batch_create_params import BatchCreateParams
 from docx import Document
 
 from src.code_cycles import CALIFORNIA_2022, CALIFORNIA_2025
-from src.extractor import SUPPORTED_EXTENSIONS, ExtractedSpec, extract_text
+from src.extractor import (
+    CONTEXT_ATTACHMENT_EXTENSIONS,
+    SUPPORTED_EXTENSIONS,
+    ExtractedSpec,
+    extract_context_text,
+    extract_text,
+)
 from src.prompts import get_system_prompt, get_single_spec_user_message
 from src.pipeline import (
     _deduplicate_findings,
@@ -181,6 +187,33 @@ def test_supported_extensions_docx_only(tmp_path: Path):
     pdf.write_text("not a docx")
     with pytest.raises(ValueError):
         extract_text(pdf)
+
+
+def test_extract_context_text_supports_docx_and_pdf(tmp_path: Path):
+    assert CONTEXT_ATTACHMENT_EXTENSIONS == {".docx", ".pdf"}
+
+    docx_path = tmp_path / "context.docx"
+    doc = Document()
+    doc.add_paragraph("Project alpha overview")
+    doc.add_paragraph("Owner: Acme USD")
+    doc.save(docx_path)
+    docx_text = extract_context_text(docx_path)
+    assert "Project alpha overview" in docx_text
+    assert "Owner: Acme USD" in docx_text
+
+    pypdf = pytest.importorskip("pypdf")
+    pdf_path = tmp_path / "context.pdf"
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    with pdf_path.open("wb") as fh:
+        writer.write(fh)
+    # A blank page produces no text; the helper must still succeed and return a string.
+    assert isinstance(extract_context_text(pdf_path), str)
+
+    bogus = tmp_path / "context.txt"
+    bogus.write_text("hi")
+    with pytest.raises(ValueError):
+        extract_context_text(bogus)
 
 
 def test_cycle_prompts_change():
