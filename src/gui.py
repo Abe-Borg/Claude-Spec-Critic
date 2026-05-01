@@ -46,7 +46,11 @@ from src.extractor import (
     SUPPORTED_EXTENSIONS,
     CONTEXT_ATTACHMENT_EXTENSIONS,
 )
-from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
+from src.tokenizer import (
+    PROJECT_CONTEXT_MAX_TOKENS,
+    RECOMMENDED_MAX,
+    exceeds_per_call_limit,
+)
 from src.prompts import get_system_prompt
 from src.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
 from src.review_modes import (
@@ -393,18 +397,29 @@ class SpecReviewApp(_CTkDnDRoot):
         ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
         ctk.CTkButton(ctx_label_frame, text="Expand", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._open_context_modal).pack(anchor="nw", pady=(4, 0))
         ctk.CTkButton(ctx_label_frame, text="Attach Files…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_context_files).pack(anchor="nw", pady=(4, 0))
+        ctx_field_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        ctx_field_frame.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=8)
+        ctx_field_frame.columnconfigure(0, weight=1)
         self.context_textbox = ctk.CTkTextbox(
-            self.inputs_content, fg_color=COLORS["bg_input"], border_color=COLORS["border"],
+            ctx_field_frame, fg_color=COLORS["bg_input"], border_color=COLORS["border"],
             border_width=2, text_color=COLORS["text_primary"],
             font=ctk.CTkFont(family="Consolas", size=_UI_FONT_SIZE), height=80, wrap="word",
         )
-        self.context_textbox.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=8)
+        self.context_textbox.grid(row=0, column=0, sticky="ew")
         self._context_has_placeholder = True
         self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
         self.context_textbox.configure(text_color=COLORS["text_muted"])
         self.context_textbox.bind("<FocusIn>", self._context_focus_in)
         self.context_textbox.bind("<FocusOut>", self._context_focus_out)
         self.context_textbox.bind("<KeyRelease>", self._on_context_change)
+        self.context_token_label = ctk.CTkLabel(
+            ctx_field_frame,
+            text=f"0 / {PROJECT_CONTEXT_MAX_TOKENS:,} tokens",
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLORS["text_muted"],
+            anchor="e",
+        )
+        self.context_token_label.grid(row=1, column=0, sticky="e", pady=(4, 0))
 
         # --- Row 3: Review Mode ---
         ctk.CTkLabel(self.inputs_content, text="Mode", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
@@ -575,8 +590,6 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _do_context_change(self):
         self._context_debounce_id = None
-        if not self._loaded_file_data:
-            return
         ctx = self._get_project_context()
         if ctx:
             from tiktoken import get_encoding
@@ -584,7 +597,23 @@ class SpecReviewApp(_CTkDnDRoot):
             self._project_context_tokens = len(enc.encode(ctx))
         else:
             self._project_context_tokens = 0
-        self._on_file_selection_change()
+        self._update_context_token_label()
+        if self._loaded_file_data:
+            self._on_file_selection_change()
+
+    def _update_context_token_label(self) -> None:
+        tokens = self._project_context_tokens
+        over = tokens > PROJECT_CONTEXT_MAX_TOKENS
+        text = f"{tokens:,} / {PROJECT_CONTEXT_MAX_TOKENS:,} tokens"
+        if over:
+            text += " — exceeds limit"
+            color = COLORS["error"]
+        elif tokens > int(PROJECT_CONTEXT_MAX_TOKENS * 0.9):
+            color = COLORS["warning"]
+        else:
+            color = COLORS["text_muted"]
+        if hasattr(self, "context_token_label"):
+            self.context_token_label.configure(text=text, text_color=color)
 
     def _set_context_text(self, new_text: str) -> None:
         """Replace the context textbox contents, restoring placeholder when empty."""
@@ -658,15 +687,27 @@ class SpecReviewApp(_CTkDnDRoot):
 
         if target_textbox is None:
             existing = self._get_project_context()
-            merged = f"{existing}\n\n{combined}" if existing else combined
-            self._set_context_text(merged)
         else:
             existing = target_textbox.get("1.0", "end").strip()
-            target_textbox.delete("1.0", "end")
-            target_textbox.insert(
-                "1.0",
-                f"{existing}\n\n{combined}" if existing else combined,
+        merged = f"{existing}\n\n{combined}" if existing else combined
+
+        from tiktoken import get_encoding
+        enc = get_encoding("cl100k_base")
+        merged_tokens = len(enc.encode(merged))
+        if merged_tokens > PROJECT_CONTEXT_MAX_TOKENS:
+            messagebox.showerror(
+                "Project Context too large",
+                f"Attaching these file(s) would push Project Context to "
+                f"{merged_tokens:,} tokens, exceeding the {PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
+                f"Trim the existing context or attach smaller documents.",
             )
+            return
+
+        if target_textbox is None:
+            self._set_context_text(merged)
+        else:
+            target_textbox.delete("1.0", "end")
+            target_textbox.insert("1.0", merged)
 
     def _open_context_modal(self):
         dialog = ctk.CTkToplevel(self)
@@ -702,16 +743,19 @@ class SpecReviewApp(_CTkDnDRoot):
 
         def _save_and_close():
             new_text = modal_textbox.get("1.0", "end").strip()
-            self.context_textbox.delete("1.0", "end")
             if new_text:
-                self._context_has_placeholder = False
-                self.context_textbox.configure(text_color=COLORS["text_primary"])
-                self.context_textbox.insert("1.0", new_text)
-            else:
-                self._context_has_placeholder = True
-                self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
-                self.context_textbox.configure(text_color=COLORS["text_muted"])
-            self._on_context_change()
+                from tiktoken import get_encoding
+                enc = get_encoding("cl100k_base")
+                tokens = len(enc.encode(new_text))
+                if tokens > PROJECT_CONTEXT_MAX_TOKENS:
+                    messagebox.showerror(
+                        "Project Context too large",
+                        f"Project Context is {tokens:,} tokens, exceeding the "
+                        f"{PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
+                        f"Trim the text before saving.",
+                    )
+                    return
+            self._set_context_text(new_text)
             dialog.destroy()
 
         button_row = ctk.CTkFrame(outer, fg_color="transparent")
@@ -965,6 +1009,24 @@ class SpecReviewApp(_CTkDnDRoot):
         missing = [f for f in self._selected_files if not f.exists()]
         if missing: self.log.log_error(f"File not found: {missing[0].name}"); return False
         if self.file_list_panel.get_selected_count() == 0: self.log.log_error("No files selected"); return False
+        ctx = self._get_project_context()
+        if ctx:
+            from tiktoken import get_encoding
+            ctx_tokens = len(get_encoding("cl100k_base").encode(ctx))
+            self._project_context_tokens = ctx_tokens
+            self._update_context_token_label()
+            if ctx_tokens > PROJECT_CONTEXT_MAX_TOKENS:
+                self.log.log_error(
+                    f"Project Context is {ctx_tokens:,} tokens — limit is "
+                    f"{PROJECT_CONTEXT_MAX_TOKENS:,}. Trim it before running."
+                )
+                messagebox.showerror(
+                    "Project Context too large",
+                    f"Project Context is {ctx_tokens:,} tokens, exceeding the "
+                    f"{PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
+                    f"Trim the context (or remove some attachments) before running.",
+                )
+                return False
         return True
 
     def _next_run_epoch(self) -> int:
