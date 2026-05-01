@@ -37,7 +37,6 @@ from src.pipeline import (
     CollectedBatchState,
 )
 from src.batch import BatchStatus, BatchJob
-from src.verifier import VerificationBatchDetached
 from src.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from src.reviewer import MODEL_OPUS_46, REVIEW_MODELS, Finding
 from src.extractor import (
