@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -516,21 +518,24 @@ def test_verification_batch_job_round_trip():
 def test_load_batch_state_legacy_phase_migrates_to_review_poll(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state_path = tmp_path / "batch_state.json"
     monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
+    # Use a fresh ``saved_at`` so the fixture does not age past
+    # BATCH_STATE_MAX_AGE_HOURS as wall-clock time advances.
+    saved_at = datetime.now(timezone.utc).isoformat()
     state_path.write_text(
-        """{
-  "saved_at": "2026-03-26T00:00:00+00:00",
-  "phase": "review",
-  "batch_id": "msgbatch_legacy",
-  "job_type": "review",
-  "request_map": {"review__spec__0": {"filename": "spec.docx", "index": 0, "type": "review"}},
-  "created_at": 123.0,
-  "files_reviewed": ["spec.docx"],
-  "review_request_ids": ["review__spec__0"],
-  "leed_alerts": [],
-  "placeholder_alerts": [],
-  "cross_check_enabled": false,
-  "export_mode": false
-}""",
+        json.dumps({
+            "saved_at": saved_at,
+            "phase": "review",
+            "batch_id": "msgbatch_legacy",
+            "job_type": "review",
+            "request_map": {"review__spec__0": {"filename": "spec.docx", "index": 0, "type": "review"}},
+            "created_at": 123.0,
+            "files_reviewed": ["spec.docx"],
+            "review_request_ids": ["review__spec__0"],
+            "leed_alerts": [],
+            "placeholder_alerts": [],
+            "cross_check_enabled": False,
+            "export_mode": False,
+        }),
         encoding="utf-8",
     )
     loaded = gui.load_batch_state()

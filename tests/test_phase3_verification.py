@@ -144,13 +144,21 @@ def test_verification_cache_does_not_cache_ungrounded_results():
 # ---------------------------------------------------------------------------
 
 
-def test_local_skip_disabled_by_default(monkeypatch):
+def test_local_skip_enabled_by_default(monkeypatch):
+    # Phase 3.3 (audit Section 7.3): default is now ON so placeholder/LEED/
+    # internal-contradiction GRIPES never spend a web search.
     monkeypatch.delenv("SPEC_CRITIC_LOCAL_VERIFICATION_SKIP", raising=False)
-    # Re-import not required: the helper reads env each call.
+    from src.verification_router import classify_finding_for_verification, local_skip_enabled
+    assert local_skip_enabled() is True
+    f = _make_finding(severity="GRIPES", code_ref=None, issue="placeholder text [SELECT]")
+    assert classify_finding_for_verification(f) == "local_skip"
+
+
+def test_local_skip_disabled_via_env(monkeypatch):
+    monkeypatch.setenv("SPEC_CRITIC_LOCAL_VERIFICATION_SKIP", "0")
     from src.verification_router import classify_finding_for_verification, local_skip_enabled
     assert local_skip_enabled() is False
     f = _make_finding(severity="GRIPES", code_ref=None, issue="placeholder text [SELECT]")
-    # With flag off, every finding is web_required regardless of content.
     assert classify_finding_for_verification(f) == "web_required"
 
 
@@ -207,30 +215,48 @@ def test_prepare_findings_for_verification_resolves_local_and_cached(monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def test_sonnet_default_off_by_default(monkeypatch):
+def test_sonnet_default_on_by_default(monkeypatch):
+    # Phase 2.7 (audit Section 6.7): Sonnet is the default verifier so
+    # cost/latency drops without losing quality on CRITICAL/HIGH findings
+    # (those escalate to Opus via :func:`should_escalate_verification`).
     monkeypatch.delenv("SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT", raising=False)
-    monkeypatch.delenv("SPEC_CRITIC_VERIFICATION_MODEL", raising=False)
-    import src.api_config as api_config
-    importlib.reload(api_config)
-    assert api_config.VERIFICATION_MODEL_DEFAULT == api_config.MODEL_OPUS_46
-
-
-def test_sonnet_default_flips_when_flag_set(monkeypatch):
-    monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT", "1")
     monkeypatch.delenv("SPEC_CRITIC_VERIFICATION_MODEL", raising=False)
     import src.api_config as api_config
     importlib.reload(api_config)
     assert api_config.VERIFICATION_MODEL_DEFAULT == api_config.MODEL_SONNET_46
 
 
-def test_should_escalate_only_when_sonnet_default_enabled(monkeypatch):
+def test_sonnet_default_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT", "0")
+    monkeypatch.delenv("SPEC_CRITIC_VERIFICATION_MODEL", raising=False)
+    import src.api_config as api_config
+    importlib.reload(api_config)
+    assert api_config.VERIFICATION_MODEL_DEFAULT == api_config.MODEL_OPUS_46
+
+
+def test_should_escalate_for_critical_when_sonnet_default(monkeypatch):
     monkeypatch.delenv("SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT", raising=False)
+    monkeypatch.delenv("SPEC_CRITIC_VERIFICATION_MODEL", raising=False)
+    monkeypatch.delenv("SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", raising=False)
     import src.api_config as api_config
     import src.verification_router as router
     importlib.reload(api_config)
     importlib.reload(router)
     f = _make_finding(severity="CRITICAL")
-    # Flag off — never escalate.
+    assert router.should_escalate_verification(
+        f, verdict="UNVERIFIED", grounded=False,
+        successful_source_count=0, search_error_count=0,
+    ) is True
+
+
+def test_should_not_escalate_when_sonnet_default_disabled(monkeypatch):
+    monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT", "0")
+    import src.api_config as api_config
+    import src.verification_router as router
+    importlib.reload(api_config)
+    importlib.reload(router)
+    f = _make_finding(severity="CRITICAL")
+    # Flag off — initial verifier is already Opus, nowhere to escalate to.
     assert router.should_escalate_verification(
         f, verdict="UNVERIFIED", grounded=False,
         successful_source_count=0, search_error_count=0,

@@ -225,8 +225,14 @@ class TestExtractCacheUsage:
 
 
 class TestTokenCountPreflight:
-    def test_disabled_by_default(self, monkeypatch):
+    def test_enabled_by_default(self, monkeypatch):
+        # Phase 2.3 (audit Section 6.3): default is now ON so the pipeline
+        # always runs the moment-of-truth API count before submission.
         monkeypatch.delenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", raising=False)
+        assert api_config.token_count_preflight_enabled() is True
+
+    def test_disabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "0")
         assert api_config.token_count_preflight_enabled() is False
 
     def test_enabled_via_env(self, monkeypatch):

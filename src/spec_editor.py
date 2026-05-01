@@ -966,3 +966,175 @@ def build_edit_actions(
 
 def apply_edits_to_specs(edit_plan: list[tuple[Path, Path, list[EditAction]]]) -> list[EditReport]:
     return [apply_edits_to_spec(source, output, actions) for source, output, actions in edit_plan]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.6 (audit Section 8.6): change-log / annotation mode.
+#
+# An optional alternative to mutating the spec text. Instead of rewriting
+# paragraphs, this writes a copy of the document with a yellow-highlighted
+# annotation paragraph inserted immediately after each target anchor:
+#
+#     [SPEC CRITIC SUGGESTION • EDIT — Section 23 05 23 §2.3.A]
+#       Existing: <original verbatim>
+#       Proposed: <suggested verbatim>
+#       Issue:    <one-line summary>
+#
+# This is the safe option for table cells, header/footer text, richly
+# formatted paragraphs, and ambiguous matches — the original text is never
+# touched, and the user can review the inline suggestions in Word and
+# accept/reject by hand.
+# ---------------------------------------------------------------------------
+
+
+def _annotation_label(action: EditAction) -> str:
+    finding = getattr(action.locator_result, "finding", None)
+    section = (getattr(finding, "section", "") or "").strip()
+    section_part = f" — Section {section}" if section else ""
+    return f"[SPEC CRITIC SUGGESTION • {action.action_type}{section_part}]"
+
+
+def _insert_annotation_paragraph(anchor_paragraph: Paragraph, lines: list[str]) -> None:
+    """Insert a yellow-highlighted annotation paragraph after ``anchor_paragraph``.
+
+    The annotation is a single paragraph with the lines joined by ``\\n``
+    (rendered as soft line breaks) so the suggestion stays grouped in one
+    block in Word. Highlighting uses ``w:highlight w:val="yellow"`` so the
+    user sees the annotation distinctly.
+    """
+    new_para = OxmlElement("w:p")
+    pPr = OxmlElement("w:pPr")
+    new_para.append(pPr)
+    for i, line in enumerate(lines):
+        if i > 0:
+            br_run = OxmlElement("w:r")
+            br = OxmlElement("w:br")
+            br_run.append(br)
+            new_para.append(br_run)
+        run = OxmlElement("w:r")
+        rPr = OxmlElement("w:rPr")
+        highlight = OxmlElement("w:highlight")
+        highlight.set(qn("w:val"), "yellow")
+        rPr.append(highlight)
+        # Bold the first line (the label).
+        if i == 0:
+            b = OxmlElement("w:b")
+            rPr.append(b)
+        run.append(rPr)
+        text_el = OxmlElement("w:t")
+        text_el.text = line
+        text_el.set(qn("xml:space"), "preserve")
+        run.append(text_el)
+        new_para.append(run)
+    anchor_paragraph._element.addnext(new_para)
+
+
+def _annotation_lines_for_action(action: EditAction) -> list[str]:
+    label = _annotation_label(action)
+    lines = [label]
+    original = (action.location.matched_text or "").strip()
+    proposed = (action.replacement_text or "").strip()
+    if action.action_type == "EDIT":
+        if original:
+            lines.append(f"  Existing: {original[:600]}")
+        if proposed:
+            lines.append(f"  Proposed: {proposed[:600]}")
+    elif action.action_type == "ADD":
+        if proposed:
+            lines.append(f"  Insert {action.locator_result.warning or ''}".rstrip())
+            lines.append(f"  Proposed: {proposed[:600]}")
+    elif action.action_type == "DELETE":
+        if original:
+            lines.append(f"  Delete: {original[:600]}")
+    warning = (action.locator_result.warning or "").strip()
+    if warning:
+        lines.append(f"  Note: {warning[:300]}")
+    return lines
+
+
+def annotate_spec_with_suggestions(
+    source_path: Path,
+    output_path: Path,
+    edit_actions: list[EditAction],
+) -> EditReport:
+    """Write a copy of the spec with inline yellow-highlighted suggestions.
+
+    Phase 4.6: this mode never mutates the original spec text — it only
+    inserts annotation paragraphs after each anchor. Useful for table
+    cells, header/footer text, and richly formatted paragraphs where a
+    direct rewrite would be unsafe.
+    """
+    source_path = Path(source_path)
+    output_path = Path(output_path)
+    if source_path.resolve() == output_path.resolve():
+        raise ValueError("output_path must differ from source_path; refusing to overwrite source document.")
+
+    doc = Document(source_path)
+    body_children = list(doc.element.body)
+    outcomes: list[EditOutcome] = []
+    annotated = 0
+    skipped = 0
+    failed = 0
+
+    # Process in descending body_index so each insertion does not shift the
+    # indices of earlier targets.
+    sorted_actions = sorted(
+        edit_actions,
+        key=lambda a: a.location.mapping.body_index,
+        reverse=True,
+    )
+    for action in sorted_actions:
+        mapping = action.location.mapping
+        if mapping.body_index < 0 or mapping.body_index >= len(body_children):
+            failed += 1
+            outcomes.append(EditOutcome(
+                action=action, status="failed",
+                detail="Anchor index out of range; cannot annotate.",
+                original_text=mapping.text, new_text=None,
+            ))
+            continue
+        element = body_children[mapping.body_index]
+        if element.tag != qn("w:p"):
+            # Skip table-cell / non-paragraph anchors — the simple
+            # addnext insertion does not work cleanly for cells.
+            skipped += 1
+            outcomes.append(EditOutcome(
+                action=action, status="skipped",
+                detail="Annotation mode currently supports paragraph anchors only.",
+                original_text=mapping.text, new_text=None,
+            ))
+            continue
+        anchor = Paragraph(element, doc.element.body)
+        try:
+            _insert_annotation_paragraph(anchor, _annotation_lines_for_action(action))
+            annotated += 1
+            outcomes.append(EditOutcome(
+                action=action, status="applied",
+                detail="Annotation inserted; original text unchanged.",
+                original_text=mapping.text,
+                new_text=action.replacement_text,
+            ))
+        except Exception as exc:  # pragma: no cover - defensive
+            failed += 1
+            outcomes.append(EditOutcome(
+                action=action, status="failed",
+                detail=f"Annotation insertion raised: {exc}",
+                original_text=mapping.text, new_text=None,
+            ))
+
+    # Validate the document still serializes before writing to disk.
+    buf = BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    output_path.write_bytes(buf.read())
+
+    return EditReport(
+        source_path=source_path,
+        output_path=output_path,
+        total_edits_attempted=len(edit_actions),
+        edits_applied=annotated,
+        edits_skipped=skipped,
+        edits_failed=failed,
+        outcomes=outcomes,
+        warnings=[],
+    )

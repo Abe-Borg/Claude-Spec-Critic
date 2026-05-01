@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from . import __version__
@@ -12,6 +15,30 @@ from .extractor import ExtractedSpec
 from .pipeline import BatchSubmission, CollectedBatchState
 from .reviewer import Finding, ReviewResult, MODEL_OPUS_46
 from .verifier import VerificationResult
+
+_log = logging.getLogger(__name__)
+
+
+def _content_digest(content: str) -> str:
+    """SHA-256 of the extracted spec content (Phase 5.5)."""
+    return hashlib.sha256((content or "").encode("utf-8", errors="replace")).hexdigest()
+
+
+def _source_file_digest(source_path: str) -> str | None:
+    """SHA-256 of the underlying file at ``source_path``, or None on error."""
+    if not source_path:
+        return None
+    try:
+        path = Path(source_path)
+        if not path.is_file():
+            return None
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
 
 _RESUME_STATE_CURRENT_SCHEMA = "v2"
 
@@ -56,23 +83,53 @@ def deserialize_batch_job(payload: dict[str, Any]) -> BatchJob:
 
 
 def serialize_extracted_spec(spec: ExtractedSpec) -> dict[str, Any]:
+    # Phase 5.5 (audit Section 9.5): record both the extracted-content digest
+    # and the source-file digest so deserialize can detect that the spec was
+    # changed on disk between save and resume.
     return {
         "filename": spec.filename,
         "content": spec.content,
         "word_count": spec.word_count,
         "source_path": spec.source_path,
         "source_format": spec.source_format,
+        "content_sha256": _content_digest(spec.content),
+        "source_sha256": _source_file_digest(spec.source_path),
     }
 
 
 def deserialize_extracted_spec(payload: dict[str, Any]) -> ExtractedSpec:
-    return ExtractedSpec(
+    spec = ExtractedSpec(
         filename=str(payload["filename"]),
         content=str(payload.get("content", "")),
         word_count=int(payload.get("word_count", 0)),
         source_path=str(payload.get("source_path", "")),
         source_format=str(payload.get("source_format", "unknown")),
     )
+    # Phase 5.5: warn when the on-disk file no longer matches the saved
+    # digest. Resume continues — the saved content is still authoritative
+    # for the in-flight batch — but the user is told the file changed.
+    expected_content = payload.get("content_sha256")
+    if expected_content:
+        actual_content = _content_digest(spec.content)
+        if actual_content != expected_content:
+            _log.warning(
+                "Resume: stored content digest mismatch for %s (saved=%s actual=%s)",
+                spec.filename, expected_content[:12], actual_content[:12],
+            )
+    expected_source = payload.get("source_sha256")
+    if expected_source and spec.source_path:
+        actual_source = _source_file_digest(spec.source_path)
+        if actual_source is None:
+            _log.warning(
+                "Resume: source file missing for %s at %s — using saved content",
+                spec.filename, spec.source_path,
+            )
+        elif actual_source != expected_source:
+            _log.warning(
+                "Resume: source file %s changed on disk since save (saved=%s actual=%s)",
+                spec.source_path, expected_source[:12], actual_source[:12],
+            )
+    return spec
 
 
 def serialize_verification_result(result: VerificationResult | None) -> dict[str, Any] | None:

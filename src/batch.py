@@ -25,6 +25,13 @@ from .api_config import (
     tools_with_cache,
     verification_max_tokens,
 )
+from .structured_schemas import (
+    REVIEW_TOOL_NAME,
+    extract_tool_use_block,
+    review_findings_tool,
+    review_tool_choice,
+    structured_outputs_enabled,
+)
 
 
 @dataclass
@@ -75,6 +82,9 @@ def submit_review_batch(
     # right cap without an extra API call. Conservative; only used to
     # decide between standard and extended-output sizing.
     system_tokens = count_tokens(system_prompt)
+    use_structured = structured_outputs_enabled()
+    structured_tools = tools_with_cache([review_findings_tool()]) if use_structured else None
+    structured_choice = review_tool_choice() if use_structured else None
     batch_requests = []
     request_map = {}
     for idx, spec in enumerate(specs):
@@ -93,7 +103,20 @@ def submit_review_batch(
         # 2 item 8 — never let a 300k request slip through without it.
         betas = [BATCH_OUTPUT_BETA] if hasattr(client, "beta") else None
         assert_extended_output_allowed(max_tokens=output_limit, betas=betas)
-        batch_requests.append({"custom_id": custom_id, "params": {"model": model, "max_tokens": output_limit, "thinking": {"type": "adaptive"}, "system": system_payload, "messages": [{"role": "user", "content": user_message}]}})
+        params: dict[str, Any] = {
+            "model": model,
+            "max_tokens": output_limit,
+            "thinking": {"type": "adaptive"},
+            "system": system_payload,
+            "messages": [{"role": "user", "content": user_message}],
+        }
+        if use_structured:
+            # Phase 2.4: same tool-forcing behavior as the streaming path so
+            # batch results can be unpacked from a tool_use block instead of
+            # regex-extracting tagged JSON from the response text.
+            params["tools"] = structured_tools
+            params["tool_choice"] = structured_choice
+        batch_requests.append({"custom_id": custom_id, "params": params})
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}
 
     create_fn = client.beta.messages.batches.create if hasattr(client, "beta") else client.messages.batches.create
@@ -132,7 +155,8 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
         cache = extract_cache_usage(usage)
         stop_reason = getattr(message, "stop_reason", None)
 
-        if stop_reason != "end_turn":
+        # Tool-use stops are the success path under structured outputs.
+        if stop_reason not in ("end_turn", "tool_use"):
             results[custom_id] = ReviewResult(
                 findings=[], raw_response=response_text, stop_reason=stop_reason,
                 parse_status="incomplete", model=model,
@@ -143,7 +167,14 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
             )
             continue
         try:
-            data, thinking = _extract_json_array(response_text, stop_reason=stop_reason)
+            structured_payload = extract_tool_use_block(message, REVIEW_TOOL_NAME)
+            if isinstance(structured_payload, dict):
+                data = structured_payload.get("findings") or []
+                if not isinstance(data, list):
+                    data = []
+                thinking = str(structured_payload.get("analysis_summary") or "")
+            else:
+                data, thinking = _extract_json_array(response_text, stop_reason=stop_reason)
             findings = _parse_findings(data)
             results[custom_id] = ReviewResult(
                 findings=findings, raw_response=response_text, thinking=thinking,
@@ -265,18 +296,27 @@ def _build_verification_request_params(
     continue_turn: bool = False,
     model: str | None = None,
 ) -> dict[str, Any]:
+    from .structured_schemas import structured_outputs_enabled, verification_verdict_tool
+
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     if assistant_content is not None:
         messages.append({"role": "assistant", "content": assistant_content})
     if continue_turn:
         messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
     selected_model = model or VERIFICATION_MODEL
+    # Phase 2.5 (audit Section 6.5, Option B): include the verdict tool
+    # alongside web_search. The system prompt instructs the model to call
+    # ``submit_verification_verdict`` as the final step, so we get a strict
+    # schema-validated verdict object after web grounding.
+    tool_list: list[dict] = [WEB_SEARCH_TOOL]
+    if structured_outputs_enabled():
+        tool_list.append(verification_verdict_tool())
     return {
         "model": selected_model,
         "max_tokens": verification_max_tokens(model=selected_model),
         "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(system_prompt),
-        "tools": tools_with_cache([WEB_SEARCH_TOOL]),
+        "tools": tools_with_cache(tool_list),
         "messages": messages,
     }
 

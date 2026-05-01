@@ -10,7 +10,14 @@ from typing import Callable
 from .edit_locator import locate_edits
 from .extractor import ExtractedSpec, extract_text_from_docx
 from .reviewer import Finding
-from .spec_editor import EditAction, EditOutcome, EditReport, apply_edits_to_spec, build_edit_actions
+from .spec_editor import (
+    EditAction,
+    EditOutcome,
+    EditReport,
+    annotate_spec_with_suggestions,
+    apply_edits_to_spec,
+    build_edit_actions,
+)
 
 
 def _ensure_paragraph_maps(specs: list[ExtractedSpec], source_paths: list[Path]) -> list[ExtractedSpec]:
@@ -77,8 +84,21 @@ def execute_edit_plan(
     output_dir: Path,
     *,
     log: Callable[[str], None] = lambda _: None,
+    mode: str = "edit",
 ) -> list[EditReport]:
-    """Run locate -> action build -> apply workflow for selected findings."""
+    """Run locate -> action build -> apply workflow for selected findings.
+
+    Phase 4.6 — ``mode`` selects how proposals are written:
+
+    * ``"edit"`` (default): mutate paragraph text per the action plan
+      (legacy behavior).
+    * ``"annotate"``: write a copy of each spec with yellow-highlighted
+      suggestion paragraphs inserted after each anchor; the original text
+      is never changed. This is the safe option for table cells, header/
+      footer text, and richly formatted paragraphs.
+    """
+    if mode not in {"edit", "annotate"}:
+        raise ValueError(f"Unknown edit mode: {mode!r}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     mapped_specs = _ensure_paragraph_maps(extracted_specs, source_paths)
@@ -139,7 +159,14 @@ def execute_edit_plan(
             if locator_result.warning:
                 log(f"[{filename}] Finding #{original_index} warning: {locator_result.warning}")
 
-        actions = build_edit_actions(locator_results)
+        # Annotate mode is intentionally permissive about which actions it
+        # accepts: even MANUAL_REVIEW / ambiguous candidates can produce a
+        # useful suggestion paragraph, so we build actions with caution
+        # allowed and skip only the empty case.
+        if mode == "annotate":
+            actions = build_edit_actions(locator_results, allow_caution=True)
+        else:
+            actions = build_edit_actions(locator_results)
         output_path = _make_output_path(source_path, output_dir)
 
         if not actions:
@@ -160,7 +187,10 @@ def execute_edit_plan(
             continue
 
         try:
-            report = apply_edits_to_spec(source_path, output_path, actions)
+            if mode == "annotate":
+                report = annotate_spec_with_suggestions(source_path, output_path, actions)
+            else:
+                report = apply_edits_to_spec(source_path, output_path, actions)
             reports.append(report)
         except Exception as exc:
             warning = f"Failed to apply edits: {exc}"
