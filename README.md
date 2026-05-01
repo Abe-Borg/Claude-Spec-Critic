@@ -2,11 +2,11 @@
 
 **v2.10.0** — AI-assisted M&P specification review for California K-12 DSA projects.
 
-## What It Does
+The project is optimized for DSA-oriented K-12 workflows and California code cycle selection (2022/2025), with an emphasis on:
 
 Spec Critic reviews mechanical and plumbing CSI-format `.docx` specifications against California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) using Claude. It produces structured findings with severity classifications, confidence scores, verification verdicts backed by web search, optional cross-spec coordination analysis, and either inline edits or yellow-highlighted suggestion annotations on a copy of each spec.
 
-## Pipeline Stages
+---
 
 1. **Text Extraction** — Reads `.docx` files locally (paragraphs, tables, headers/footers). Cached by file hash so repeated runs over the same files do not re-parse.
 2. **Local Pre-Screening** — Detects LEED references, unresolved placeholders (`[SELECT]`, `[VERIFY]`, `TBD`, etc.), stale code-cycle references, empty sections, duplicate headings, and inconsistent file naming, all without API calls.
@@ -18,7 +18,10 @@ Spec Critic reviews mechanical and plumbing CSI-format `.docx` specifications ag
    * **Edit mode** — Fuzzy-matched surgical edits applied to a copy of each spec. Ambiguous, table, header/footer, or rich-formatted matches are downgraded to manual review.
    * **Annotate mode** — Yellow-highlighted suggestion paragraphs inserted after each anchor; the original text is never mutated. Safer for table cells, header/footer text, and richly formatted paragraphs.
 
-## Modes
+- **App version:** `2.8.3` (package `src.__version__`).
+- **Packaging version:** `2.8.0` in `pyproject.toml` (if you cut a release, sync this with `src/__init__.py`).
+- **Runtime:** Python 3.11+ desktop app (CustomTkinter + TkinterDnD2).
+- **Model stack:** Anthropic Claude Opus 4.6 for review/cross-check/verification.
 
 - **Real-time** — Immediate in-session processing (streaming API, higher cost).
 - **Batch** — Queued processing at 50% cost savings (usually 45 min–2 hrs, 24 hrs max).
@@ -35,14 +38,23 @@ The reviewer prompt has three modes that adjust scope and edit safety:
 | Comprehensive *(default)* | Strict scope + constructability, TAB/commissioning, equipment schedule conflicts, Division 01 coordination, warranty, basis-of-design, controls sequence, DSA/HCAI/Title 24 closeout, fire/smoke damper access, seismic restraints, sprinkler/hydraulic, pipe/duct material, submittal/O&M | Allowed |
 | Safe-edit | Findings with exact editable anchors and low-risk replacements only | Allowed |
 
-## Output Options
+1. **Load spec files (`.docx` only).**
+2. **Extract body + table + header/footer text** while preserving useful paragraph mapping metadata.
+3. **Run local pre-screen checks** (LEED references, unresolved placeholders) without API calls.
+4. **Run primary compliance review** per spec (real-time or batch mode).
+5. **Deduplicate findings** across specs.
+6. **Optionally run cross-spec coordination check** to catch contradictions, scope gaps, and interface misses.
+7. **Run verification phase** with web-search-backed adjudication for each finding.
+8. **Present results** in GUI report windows.
+9. **Optionally export `.docx` review report.**
+10. **Optionally generate and apply surgical edits** back into source Word documents.
 
 - **View in App** — Interactive report window with collapsible finding cards, severity grouping, JSON export, and a diagnostics window showing token usage, cache hits, verification grounding, output telemetry, and search-budget consumption.
 - **Export Report** — Formatted `.docx` report with Word-native heading collapse, colored severity table, verification verdicts with sources, and coordination summary.
 
-## Code Cycles
+## Core Capabilities
 
-Supports California 2022 and 2025 code cycles. The selected cycle determines which editions of CBC, CMC, CPC, Energy Code, CALGreen, and ASCE 7 the reviewer checks against.
+### 1) Review Modes
 
 ## Module Map
 
@@ -95,13 +107,16 @@ All flags read from environment variables; the listed default applies when the v
 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | `claude-opus-4-6` | Override escalation model |
 | `SPEC_CRITIC_EXTRACTION_CACHE` | `1` (on) | `0` disables file-extraction cache |
 
-## Requirements
+- Built-in support for:
+  - **California 2022 code cycle**
+  - **California 2025 code cycle**
+- Cycle selection drives prompt framing and code reference expectations across review + verification.
 
 - Python 3.11+
 - Anthropic API key
 - Dependencies: `anthropic`, `python-docx`, `customtkinter`, `tiktoken`, `platformdirs`
 
-## Changelog
+Verification is not a trivial post-process; it includes:
 
 ### v2.10.0
 - Structured outputs: review, cross-check, and verification now use Anthropic tool-use schemas instead of `<findings_json>` regex parsing
@@ -119,10 +134,7 @@ All flags read from environment variables; the listed default applies when the v
 ### v2.8.3
 - Verbose Word report now includes verification source URLs for each finding (rendered inline with blue text after the verdict/explanation/correction block)
 
-### v2.8.2
-- Retryable connection error handling for transient httpx/urllib3 failures during streaming review
-- Per-spec errors surfaced on combined ReviewResult for clear reporting
-- Zero-findings-with-errors distinguished from clean passes in GUI
+### 4) Editable Output Pipeline
 
 ### v2.8.0
 - Batch-only enforcement for verification (real-time verification removed)

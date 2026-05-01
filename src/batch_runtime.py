@@ -56,7 +56,9 @@ def _progressive_poll_interval(
 
 
 DEFAULT_REVIEW_POLL_POLICY = PollPolicy()
-DEFAULT_VERIFICATION_POLL_POLICY = PollPolicy()
+DEFAULT_VERIFICATION_POLL_POLICY = PollPolicy(
+    max_no_progress_seconds=4 * 3600,
+)
 
 
 @dataclass

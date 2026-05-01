@@ -870,6 +870,7 @@ def collect_verification_batch_results(
             log=log,
             progress_cb=lambda status: progress(5.0 + (status.progress_pct / 100.0) * 85.0, f"Verification {wave_label}: {status.completed}/{status.total} done"),
         )
+
         if poll_outcome.detached or poll_outcome.poll_failed:
             log(f"Verification {wave_label}: polling ended before terminal status. Remaining findings will be marked UNVERIFIED.", level="warning")
             break

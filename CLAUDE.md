@@ -1,12 +1,12 @@
 # CLAUDE.md — Spec Critic v2.10.0
 
-Technical reference for AI-assisted development. This file describes architecture, module responsibilities, data flow, and conventions for the current codebase.
+This document is the engineering/operator reference for the Spec Critic codebase. It is intentionally implementation-focused and should be kept aligned with the actual runtime behavior in `src/`.
 
-## Application Overview
+---
 
 Spec Critic is a Python desktop application for reviewing mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. It extracts text from `.docx` files, performs local preprocessing, runs per-spec reviews (real-time or batch), optionally runs cross-spec coordination checks, verifies findings via web search (Sonnet by default with Opus escalation), and presents results in-app or as exported Word reports. Optional auto-edit and annotation modes write a copy of each spec with surgical edits or yellow-highlighted suggestions.
 
-## Module Map
+Spec Critic is a Python desktop application that performs AI-assisted review of California mechanical/plumbing specification documents (`.docx`).
 
 ```
 src/
@@ -40,7 +40,11 @@ src/
 └── code_cycles.py          # California code cycle definitions
 ```
 
-## Data Flow
+- identify likely code/compliance and coordination issues,
+- classify findings with severity + confidence,
+- verify findings with web-search-backed evidence,
+- generate stakeholder-readable reports,
+- optionally apply precise edits back to Word source files.
 
 ```
 User selects .docx files
@@ -80,7 +84,7 @@ User selects .docx files
                                 "edit"|"annotate")                           │
 ```
 
-## Key Data Structures
+## 2) Runtime Topology
 
 ### ExtractedSpec (extractor.py)
 ```python
@@ -132,7 +136,7 @@ Phase 3 evidence model: `grounded`, `model_used`, `escalated`, `cache_status`, `
 ### BatchSubmission / CollectedBatchState (pipeline.py)
 Plus `review_mode: str` so resume restores the exact prompt path.
 
-## Module Details
+### Batch and Recovery Layer
 
 ### api_config.py — Centralized API configuration
 
@@ -158,7 +162,7 @@ Plus `review_mode: str` so resume restores the exact prompt path.
 
 `ReviewMode` enum with STRICT / COMPREHENSIVE / SAFE_EDIT. `coerce_review_mode(value)` accepts strings (`"strict"`, `"comprehensive"`, `"safe_edit"`) for convenience. `DEFAULT_REVIEW_MODE = COMPREHENSIVE`.
 
-### prompts.py — Prompt builders
+### Reporting + Diagnostics Layer
 
 **Public API:**
 - `get_system_prompt(cycle, mode=...)`
@@ -172,7 +176,8 @@ Both inject the active review mode banner, the mode-specific task text, and the 
 
 ### resume_state.py — Durable resume state
 
-Serializes/deserializes pipeline state for crash recovery and app restart resume.
+### `Finding` (`reviewer.py`)
+Canonical issue object containing:
 
 **Public API:**
 - Phase constants: `PHASE_REVIEW_POLL`, `PHASE_REVIEW_COLLECT`, `PHASE_VERIFICATION_POLL`, `PHASE_VERIFICATION_WAVE_POLL`, `PHASE_CROSS_CHECK`, `PHASE_CROSS_CHECK_VERIFICATION_POLL`, `PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL`, `PHASE_FINALIZE`
@@ -182,7 +187,12 @@ Serializes/deserializes pipeline state for crash recovery and app restart resume
 
 Phase 5.5: `serialize_extracted_spec` records SHA-256 digests of both the extracted content and the underlying source file. `deserialize_extracted_spec` warns when either differs from the saved digest at resume time.
 
-### batch.py — Anthropic Batches API
+- raw model content,
+- token usage,
+- elapsed time,
+- stop reason,
+- parse status,
+- optional error context.
 
 - `submit_review_batch(specs, ..., mode)` — emits requests with the structured tool when enabled
 - `poll_batch(batch_id) -> BatchStatus`
@@ -193,12 +203,13 @@ Phase 5.5: `serialize_extracted_spec` records SHA-256 digests of both the extrac
 
 Progressive poll backoff: base interval for ~5 minutes, then linearly ramps to 120 s, then holds. `PollPolicy` carries timeout / error-threshold / no-progress thresholds.
 
-### cross_checker.py — Cross-spec coordination
+### `VerificationResult` (`verifier.py`)
+Structured post-review verdict and evidence summary attached per finding.
 
 - `run_cross_check(specs, existing_findings, ...)` — single-pass
 - `run_chunked_cross_check(specs, existing_findings, ...)` — chunks by CSI division (Div 21 / 22 / 23 / Controls / 25 + 01) when the combined input exceeds the recommended cap; merges chunk results locally
 
-### verifier.py — Verification
+---
 
 - `verify_findings(findings, *, progress, cycle, cache)` — real-time path (Sonnet default, Opus escalation)
 - `verify_findings_batch(findings, *, log, progress, ...)` — multi-wave batch path
@@ -247,7 +258,7 @@ Helpers:
 - `extract_multiple_specs_cached(filepaths)` — uses the LRU cache keyed on `(absolute_path, size, mtime_ns)`; falls back to parallel extraction for misses
 - `token_count_cache_key(model, system_prompt, user_message, project_context, cycle_label, mode)` — SHA-256 of inputs; LRU bounded to 256 entries
 
-### tokenizer.py — Token limits
+## 5) Prompting and Code-Cycle Behavior
 
 - `MAX_CONTEXT_TOKENS = 1_000_000`
 - `MAX_OUTPUT_TOKENS_OPUS = 128_000`
@@ -288,7 +299,7 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 
 `DiagnosticsReport.summary()` returns a dict with totals + `failed_specs`, `skipped_specs`, `edit_skip_reasons`, `ambiguous_locator_count`, `edits_applied_total/skipped_total/failed_total`, `verification_evidence` (grounded / ungrounded / escalated / cache_hits / local_skips / search_errors / search_requests), `output_telemetry` (max_observed / p50 / p95 / truncated_calls / max_cap_observed), `search_budget` (ceiling / saturated_calls / p50 / p95). The `DiagnosticsWindow` widget renders all of these inline; `to_text()` and `to_dict()` produce the export formats.
 
-### gui.py — Key UX/flow behaviors
+---
 
 - Code-cycle selector segmented control (`2022` / `2025`)
 - Review-mode segmented control (Strict / Comprehensive / Safe edit)
@@ -318,10 +329,3 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 
 ## Dependencies
 
-```
-anthropic
-python-docx
-tiktoken
-customtkinter
-platformdirs
-```
