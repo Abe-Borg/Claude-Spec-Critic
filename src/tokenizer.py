@@ -56,6 +56,12 @@ MAX_OUTPUT_TOKENS_SONNET = 64_000
 # Conservative relative to the 1M window and intended as a practical guardrail.
 RECOMMENDED_MAX = 500_000
 
+# Hard cap on the Project Context block. The context is sent on every per-spec
+# review call, every cross-check call, and every verification call, so it
+# multiplies cost quickly. 100K tokens leaves ~400K of the per-spec budget for
+# the spec itself.
+PROJECT_CONTEXT_MAX_TOKENS = 100_000
+
 
 # ---------------------------------------------------------------------------
 # Cross-check limits (v2.2.0)
