@@ -23,6 +23,13 @@ from .api_config import (
     review_max_tokens,
     system_prompt_with_cache,
 )
+from .structured_schemas import (
+    REVIEW_TOOL_NAME,
+    extract_tool_use_block,
+    review_findings_tool,
+    review_tool_choice,
+    structured_outputs_enabled,
+)
 
 REVIEW_MODELS = {"Opus 4.6": MODEL_OPUS_46}
 StreamCallback = Callable[[str], None]
@@ -126,6 +133,12 @@ def _get_client() -> Anthropic:
 
 
 def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[list, str]:
+    """Fallback parser for the legacy ``<findings_json>``-tagged text path.
+
+    Phase 2.4 (audit Section 6.4) replaces this with structured tool-use
+    outputs as the primary path. This function remains as a fallback when
+    the model returns no tool_use block (e.g., refusal or feature flag off).
+    """
     tagged = re.search(r"<\s*findings_json\s*>(.*?)<\s*/\s*findings_json\s*>", text, flags=re.IGNORECASE | re.DOTALL)
     if tagged:
         json_str = tagged.group(1).strip()
@@ -164,6 +177,22 @@ def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[l
         return [], text.strip()
 
     raise ValueError(f"Could not extract JSON findings from response (stop_reason: {stop_reason}): {text[:200]}...")
+
+
+def _extract_structured_findings(resp) -> tuple[list[dict], str] | None:
+    """Pull findings out of a tool_use block when structured outputs are used.
+
+    Returns ``(findings_list, analysis_summary)`` if a matching tool_use
+    block is present, else None — callers fall back to text parsing.
+    """
+    payload = extract_tool_use_block(resp, REVIEW_TOOL_NAME)
+    if not isinstance(payload, dict):
+        return None
+    findings = payload.get("findings") or []
+    if not isinstance(findings, list):
+        findings = []
+    summary = str(payload.get("analysis_summary") or "")
+    return findings, summary
 
 
 def _parse_findings(data: list) -> list[Finding]:
@@ -215,13 +244,28 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
     # bound runaway outputs; large inputs still get plenty of headroom.
     output_limit = review_max_tokens(batch=False, model=model)
     system_payload = system_prompt_with_cache(system_prompt)
+    # Phase 2.4: when structured outputs are enabled, force the model to
+    # emit a tool_use block whose ``input`` matches the finding schema.
+    # ``tool_choice`` removes the "did the model wrap its output in tags?"
+    # parse-failure mode entirely.
+    use_structured = structured_outputs_enabled()
+    request_kwargs: dict = {
+        "model": model,
+        "max_tokens": output_limit,
+        "thinking": {"type": "adaptive"},
+        "system": system_payload,
+        "messages": [{"role": "user", "content": user_message}],
+    }
+    if use_structured:
+        request_kwargs["tools"] = [review_findings_tool()]
+        request_kwargs["tool_choice"] = review_tool_choice()
     last_exception: Exception | None = None
     for attempt in range(max_retries):
         is_last_attempt = attempt == max_retries - 1
         try:
             if verbose:
                 print(f"Calling Claude {model} (attempt {attempt + 1}/{max_retries})...")
-            with client.messages.stream(model=model, max_tokens=output_limit, thinking={"type": "adaptive"}, system=system_payload, messages=[{"role": "user", "content": user_message}]) as stream:
+            with client.messages.stream(**request_kwargs) as stream:
                 chunks: list[str] = []
                 for text in stream.text_stream:
                     chunks.append(text)
@@ -240,13 +284,19 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
                 result.cache_creation_input_tokens = cache["cache_creation_input_tokens"]
                 result.cache_read_input_tokens = cache["cache_read_input_tokens"]
 
-            if result.stop_reason != "end_turn":
+            # Tool-use stops report stop_reason="tool_use", which is the
+            # success path when structured outputs are forced.
+            if result.stop_reason not in ("end_turn", "tool_use"):
                 result.parse_status = "incomplete"
                 result.error = f"Response incomplete (stop_reason: {result.stop_reason}). The model likely ran out of output tokens. Partial response preserved in raw_response."
                 result.elapsed_seconds = time.time() - start_time
                 return result
 
-            data, thinking = _extract_json_array(response_text, stop_reason=result.stop_reason)
+            structured = _extract_structured_findings(resp) if use_structured else None
+            if structured is not None:
+                data, thinking = structured
+            else:
+                data, thinking = _extract_json_array(response_text, stop_reason=result.stop_reason)
             result.findings = _parse_findings(data)
             result.thinking = thinking
             result.parse_status = "ok"

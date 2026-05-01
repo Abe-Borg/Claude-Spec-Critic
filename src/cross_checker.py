@@ -18,6 +18,13 @@ from .api_config import (
     extract_cache_usage,
     system_prompt_with_cache,
 )
+from .structured_schemas import (
+    CROSS_CHECK_TOOL_NAME,
+    cross_check_findings_tool,
+    cross_check_tool_choice,
+    extract_tool_use_block,
+    structured_outputs_enabled,
+)
 
 StreamCallback = Callable[[str], None]
 LogFn = Callable[..., None]
@@ -87,8 +94,9 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
         "GRIPES — minor coordination polish items.\n"
         "</severity_definitions>\n\n"
         "<output_format>\n"
-        "First provide a COORDINATION SUMMARY, then wrap findings JSON "
-        "in <FINDINGS_JSON>...</FINDINGS_JSON> tags.\n\n"
+        "Submit your review by calling the ``submit_cross_check_findings`` "
+        "tool exactly once. Provide a plain-text ``coordination_summary`` and "
+        "a ``findings`` array (zero or more items).\n\n"
         "COORDINATION SUMMARY requirements:\n"
         "- Organize by coordination theme (e.g., 'Seismic Scope Overlap', "
         "'Equipment Cross-Reference Gaps', 'TAB Coordination Issues').\n"
@@ -102,7 +110,7 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
         "- Cover every coordination theme represented in your findings. If no issues were found, "
         "write a brief summary stating that cross-spec coordination appears adequate and note "
         "any areas where coordination is particularly well-handled.\n\n"
-        "Each finding must be a JSON object with these fields:\n"
+        "Each finding object has these fields:\n"
         '- severity: "CRITICAL" | "HIGH" | "MEDIUM" | "GRIPES"\n'
         "- fileName: primary file where the issue is most visible\n"
         "- section: section reference\n"
@@ -112,11 +120,10 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
         "- replacementText: suggested correction\n"
         "- codeReference: applicable code or standard\n"
         "- confidence: 0.0-1.0\n\n"
-        "If no cross-spec issues are found, return an empty array:\n"
-        "<FINDINGS_JSON>\n[]\n</FINDINGS_JSON>\n\n"
-        "CRITICAL: You MUST wrap the JSON array in <FINDINGS_JSON> tags. "
-        "Do NOT output findings as markdown, bullet points, or prose. "
-        "The JSON array is machine-parsed and will fail if not properly tagged.\n"
+        "If no cross-spec issues are found, call the tool with an empty "
+        "``findings`` array.\n\n"
+        "Compatibility fallback: when the tool is unavailable, emit findings "
+        "as a JSON array wrapped in ``<FINDINGS_JSON>...</FINDINGS_JSON>``.\n"
         "</output_format>"
     )
 
@@ -141,10 +148,21 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     result = ReviewResult(model=model)
     output_limit = cross_check_max_tokens(model=model)
     system_payload = system_prompt_with_cache(system_prompt)
+    use_structured = structured_outputs_enabled()
+    request_kwargs: dict = {
+        "model": model,
+        "max_tokens": output_limit,
+        "thinking": {"type": "adaptive"},
+        "system": system_payload,
+        "messages": [{"role": "user", "content": user_message}],
+    }
+    if use_structured:
+        request_kwargs["tools"] = [cross_check_findings_tool()]
+        request_kwargs["tool_choice"] = cross_check_tool_choice()
 
     for attempt in range(max_retries):
         try:
-            with client.messages.stream(model=model, max_tokens=output_limit, thinking={"type": "adaptive"}, system=system_payload, messages=[{"role": "user", "content": user_message}]) as stream:
+            with client.messages.stream(**request_kwargs) as stream:
                 chunks: list[str] = []
                 for text in stream.text_stream:
                     chunks.append(text)
@@ -163,15 +181,22 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 result.cache_creation_input_tokens = cache["cache_creation_input_tokens"]
                 result.cache_read_input_tokens = cache["cache_read_input_tokens"]
 
-            if result.stop_reason != "end_turn":
+            if result.stop_reason not in ("end_turn", "tool_use"):
                 result.parse_status = "incomplete"
                 result.error = f"Response incomplete (stop_reason: {result.stop_reason})."
                 result.cross_check_status = "failed"
                 result.elapsed_seconds = time.time() - start
                 return result
 
-            data, thinking = _extract_json_array(result.raw_response, stop_reason=result.stop_reason)
-            thinking = _sanitize_narrative(thinking)
+            payload = extract_tool_use_block(resp, CROSS_CHECK_TOOL_NAME) if use_structured else None
+            if isinstance(payload, dict):
+                data = payload.get("findings") or []
+                thinking = _sanitize_narrative(str(payload.get("coordination_summary") or ""))
+            else:
+                data, thinking = _extract_json_array(result.raw_response, stop_reason=result.stop_reason)
+                thinking = _sanitize_narrative(thinking)
+            if not isinstance(data, list):
+                data = []
             result.findings = _parse_findings(data)
             result.thinking = thinking
             result.parse_status = "ok"

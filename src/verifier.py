@@ -51,10 +51,11 @@ MAX_VERIFICATION_WAVES = 3
 _ERRORED_RETRY_MAX = 75  # Backward-compatibility constant for existing tests/imports.
 
 # Phase 3 (plan 7.4): when a batch run finishes with only a few unresolved
-# items, optionally fall back to real-time verification for the remainder
-# instead of submitting another batch wave.
+# items, fall back to real-time verification for the remainder instead of
+# paying for another full batch wave. Default 5 keeps small retry tails
+# from forcing a fresh batch cycle; set to 0 to disable.
 _REALTIME_FALLBACK_THRESHOLD = int(
-    os.environ.get("SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD", "0")
+    os.environ.get("SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD", "5")
 )
 
 
@@ -186,8 +187,15 @@ def _get_verification_system_prompt(cycle: CodeCycle) -> str:
         "Tool usage guidance:",
         "",
         "- You MUST use web search before rendering a verdict.",
-        "- The only tool available is web_search. Render the verdict from the",
-        "  evidence it returns; do not fabricate a tool that has not been provided.",
+        "- The available tools are ``web_search`` (server-side) and",
+        "  ``submit_verification_verdict`` (the structured verdict tool).",
+        "  Use web_search first, then call submit_verification_verdict exactly",
+        "  once as the final step of your turn with the verdict, explanation,",
+        "  sources, and (for CORRECTED only) the corrected reference.",
+        "- Do not fabricate any other tool; do not output the verdict as plain",
+        "  text — use the structured tool.",
+        "- If the structured tool is somehow unavailable, fall back to a JSON",
+        "  object in the response text using the same field names.",
         "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
     ])
 
@@ -289,6 +297,13 @@ def _search_gate_failure(message) -> str | None:
 
 
 def _parse_verification_response(response_text: str) -> VerificationResult:
+    """Fallback verifier-output parser.
+
+    Phase 2.5: when structured outputs are enabled, callers should prefer
+    :func:`_verdict_from_tool_use` (which reads the strict ``submit_verification_verdict``
+    tool input) and only fall back to this text parser when no tool block
+    is present.
+    """
     text = response_text.strip()
     if text.startswith("```"):
         lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
@@ -310,6 +325,32 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
         explanation=str(data.get("explanation") or "")[:500],
         sources=[str(s) for s in data.get("sources", []) if s],
         correction=(str(data.get("correction"))[:500] if data.get("correction") is not None else None),
+    )
+
+
+def _verdict_from_tool_use(message) -> VerificationResult | None:
+    """Extract a verdict from the structured ``submit_verification_verdict`` tool call.
+
+    Returns None when no matching tool_use block is present so the caller
+    can fall back to text parsing.
+    """
+    from .structured_schemas import VERIFICATION_TOOL_NAME, extract_tool_use_block
+
+    payload = extract_tool_use_block(message, VERIFICATION_TOOL_NAME)
+    if not isinstance(payload, dict):
+        return None
+    verdict = str(payload.get("verdict", "UNVERIFIED")).upper().strip()
+    if verdict not in ("CONFIRMED", "CORRECTED", "UNVERIFIED", "DISPUTED"):
+        verdict = "UNVERIFIED"
+    sources_raw = payload.get("sources") or []
+    sources = [str(s) for s in sources_raw if s] if isinstance(sources_raw, list) else []
+    correction_raw = payload.get("correction")
+    correction = str(correction_raw)[:500] if correction_raw not in (None, "") else None
+    return VerificationResult(
+        verdict=verdict,
+        explanation=str(payload.get("explanation") or "")[:500],
+        sources=sources,
+        correction=correction,
     )
 
 
@@ -491,15 +532,24 @@ def _run_verification_call(
                     search_errors=total_search_errors,
                 )
 
-            if not response_text.strip():
-                return _make_unverified(
-                    "Verification produced no text response.",
-                    search_requests=total_search_requests,
-                    search_errors=total_search_errors,
-                    search_successes=success_blocks,
-                )
-
-            parsed = _parse_verification_response(response_text)
+            # Phase 2.5: prefer the structured tool_use verdict when the
+            # model called ``submit_verification_verdict``. The verdict is
+            # always in the final (end_turn) response — earlier responses
+            # are pause_turn continuations carrying web search activity.
+            parsed = None
+            for resp in reversed(all_responses):
+                parsed = _verdict_from_tool_use(resp)
+                if parsed is not None:
+                    break
+            if parsed is None:
+                if not response_text.strip():
+                    return _make_unverified(
+                        "Verification produced no text response.",
+                        search_requests=total_search_requests,
+                        search_errors=total_search_errors,
+                        search_successes=success_blocks,
+                    )
+                parsed = _parse_verification_response(response_text)
             if all_search_urls:
                 existing = set(parsed.sources)
                 for url in all_search_urls:
@@ -740,14 +790,19 @@ def _classify_wave_results(
         if gate_failure:
             outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=gate_failure))
             continue
+        # Phase 2.5: prefer the structured verdict tool_use block over text
+        # parsing. ``response_text`` is only consulted when no tool block is
+        # present (legacy / fallback path).
+        parsed = _verdict_from_tool_use(message)
         response_text = _extract_message_text(message)
-        if not response_text.strip():
-            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason="Verification produced no text response."))
-            continue
-        parsed = _parse_verification_response(response_text)
-        if parsed.verdict == "UNVERIFIED" and "valid JSON" in (parsed.explanation or ""):
-            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=parsed.explanation))
-            continue
+        if parsed is None:
+            if not response_text.strip():
+                outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason="Verification produced no text response."))
+                continue
+            parsed = _parse_verification_response(response_text)
+            if parsed.verdict == "UNVERIFIED" and "valid JSON" in (parsed.explanation or ""):
+                outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=parsed.explanation))
+                continue
         search_urls, success_blocks, error_count = _collect_search_evidence(message)
         if search_urls:
             existing = set(parsed.sources)

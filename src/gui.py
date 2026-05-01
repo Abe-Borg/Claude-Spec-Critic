@@ -776,10 +776,62 @@ class SpecReviewApp(_CTkDnDRoot):
                         state="disabled" if b else "normal"
                     ))
                     _dispatch_if_current(lambda b=per_file_limit_exceeded: self.file_list_panel.set_over_limit(b))
+                    # Phase 2.3 (audit Section 6.3): after the cl100k_base
+                    # estimate, kick off an exact Anthropic count_tokens call
+                    # for the largest spec and re-render the gauge with the
+                    # exact value. The local estimate stays visible while
+                    # the API call is in flight.
+                    self._refresh_exact_token_count(file_data, extracted_specs, project_context, cycle, sys_tokens, ctx_tokens, _dispatch_if_current)
             except Exception as e:
                 _dispatch_if_current(lambda err=e: self.log.log_error(f"Analysis failed: {err}"))
 
         threading.Thread(target=analyze, daemon=True).start()
+
+    def _refresh_exact_token_count(self, file_data, extracted_specs, project_context, cycle, sys_tokens, ctx_tokens, dispatch):
+        """Run Anthropic count_tokens for the largest spec and update the gauge.
+
+        Runs in its own background thread so the cl100k_base estimate stays
+        on screen while we wait. Falls back silently to the local estimate
+        when the API call fails or returns None.
+        """
+        from .tokenizer import count_tokens_via_api
+        from .prompts import get_single_spec_user_message, get_system_prompt
+        from .reviewer import MODEL_OPUS_46 as _model
+        from .review_modes import DEFAULT_REVIEW_MODE
+
+        biggest = max(file_data, key=lambda d: d["tokens"])
+        biggest_spec = next((s for s in extracted_specs if s.filename == biggest["filename"]), None)
+        if biggest_spec is None:
+            return
+
+        def _exact():
+            try:
+                system_prompt = get_system_prompt(cycle, mode=DEFAULT_REVIEW_MODE)
+                user_message = get_single_spec_user_message(
+                    biggest_spec.content,
+                    biggest_spec.filename,
+                    project_context=project_context,
+                    cycle=cycle,
+                    mode=DEFAULT_REVIEW_MODE,
+                )
+                exact = count_tokens_via_api(
+                    model=_model,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_message}],
+                )
+                if exact is None:
+                    return
+                fc = len(file_data)
+                dispatch(lambda lc=int(exact), n=fc: self.token_gauge.update_gauge(lc, n, is_exact=True))
+                dispatch(lambda lc=int(exact): self.log.log(
+                    f"Exact token count (API): {lc:,} tokens for largest spec",
+                    level="muted",
+                ))
+            except Exception:
+                # Silent fallback — the cl100k_base estimate is already on screen.
+                return
+
+        threading.Thread(target=_exact, daemon=True).start()
 
     def _on_file_selection_change(self):
         if not self._loaded_file_data: return
@@ -961,13 +1013,11 @@ class SpecReviewApp(_CTkDnDRoot):
     def _make_diag_log(self, phase: str, run_epoch: int):
         """Return a log callback that writes to both the EnhancedLog and the diagnostics report.
 
-        Phase 7.1 (audit Section 11.1): pipeline code now passes an explicit
-        ``level`` keyword (info/success/warning/error/step/muted), so this
-        callback no longer keyword-sniffs message text. Single-arg callers
-        (legacy code) still work — they default to ``level="info"``.
+        Phase 7.1 (audit Section 11.1): pipeline code now passes explicit
+        ``level`` and ``phase`` keywords. The constructed ``phase`` is used
+        as the default; when a caller (e.g., the verifier path) supplies
+        ``phase=``, it overrides on a per-call basis.
         """
-        # Map levels that EnhancedLog does not render natively to a sensible
-        # display level; the diagnostics report keeps the original level.
         ui_level_map = {
             "info": "info",
             "success": "success",
@@ -978,20 +1028,24 @@ class SpecReviewApp(_CTkDnDRoot):
             "debug": "muted",
         }
 
-        def _log(msg: str, *, level: str = "info"):
+        default_phase = phase
+
+        def _log(msg: str, *, level: str = "info", phase: str | None = None, **_extra):
             ui_level = ui_level_map.get(level, "info")
             self._dispatch_if_current(run_epoch, lambda m=msg, lv=ui_level: self.log.log(m, level=lv))
             if self._diagnostics_report:
-                self._diagnostics_report.log(phase, level, msg)
+                self._diagnostics_report.log(phase or default_phase, level, msg)
         return _log
 
     def _make_diag_progress(self, phase: str, run_epoch: int):
         """Return a progress callback that writes to both UI and diagnostics."""
-        def _on_progress(pct, msg):
+        default_phase = phase
+
+        def _on_progress(pct, msg, *, phase: str | None = None, **_extra):
             self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
             self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
             if self._diagnostics_report:
-                self._diagnostics_report.log(phase, "step", msg, {"progress_pct": round(pct, 1)})
+                self._diagnostics_report.log(phase or default_phase, "step", msg, {"progress_pct": round(pct, 1)})
         return _on_progress
 
     def _finalize_diagnostics(self, phase: str, level: str, message: str) -> None:
@@ -1011,6 +1065,8 @@ class SpecReviewApp(_CTkDnDRoot):
             if diag:
                 diag.log("review", "step", f"Starting real-time review of {n} specs")
 
+            review_log = self._make_diag_log("review", run_epoch)
+            review_progress = self._make_diag_progress("review", run_epoch)
             result = run_review(
                 input_dir=self.input_dir,
                 files=self._selected_files_for_review,
@@ -1021,14 +1077,8 @@ class SpecReviewApp(_CTkDnDRoot):
                 dry_run=False, verbose=False,
                 cycle=AVAILABLE_CYCLES.get(self._selected_cycle_label, DEFAULT_CYCLE),
                 mode=self._review_mode_for_review,
-                log=lambda msg: self._make_diag_log(
-                    "verification" if "verifying" in msg.lower() else "review",
-                    run_epoch,
-                )(msg),
-                progress=lambda pct, msg: self._make_diag_progress(
-                    "verification" if "verifying" in msg.lower() else "review",
-                    run_epoch,
-                )(pct, msg),
+                log=review_log,
+                progress=review_progress,
             )
             # Capture structured diagnostics from the result
             if diag and result.review_result:

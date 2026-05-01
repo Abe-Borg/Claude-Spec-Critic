@@ -8,15 +8,17 @@ All knobs are read from environment variables with sane defaults. Existing
 constants in `verification_config.py` and `tokenizer.py` are re-exported here
 so future model migration touches one file.
 
-Feature flags (all default-on except where noted):
-    SPEC_CRITIC_PROMPT_CACHE        — "0" disables prompt caching.
-    SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT — "1" enables Anthropic count_tokens
-                                        preflight before submission. Default
-                                        off (opt-in) so live API calls only
-                                        happen when explicitly requested.
-    SPEC_CRITIC_VERIFICATION_MAX_USES — int override for web-search max_uses.
-    SPEC_CRITIC_VERIFICATION_MODEL  — model id override for verification.
-    SPEC_CRITIC_REVIEW_MODEL        — model id override for review.
+Feature flags (default-on unless noted):
+    SPEC_CRITIC_PROMPT_CACHE                     — "0" disables prompt caching.
+    SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT            — "0" disables Anthropic
+                                                   count_tokens preflight.
+    SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT      — "0" reverts to Opus default.
+    SPEC_CRITIC_LOCAL_VERIFICATION_SKIP          — "0" disables local-skip.
+    SPEC_CRITIC_PARALLEL_CROSS_CHECK             — "0" disables parallel cross-check.
+    SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD      — int (default 5).
+    SPEC_CRITIC_VERIFICATION_MAX_USES            — int override for web-search max_uses.
+    SPEC_CRITIC_VERIFICATION_MODEL               — model id override for verification.
+    SPEC_CRITIC_REVIEW_MODEL                     — model id override for review.
 """
 from __future__ import annotations
 
@@ -32,12 +34,9 @@ MODEL_OPUS_47 = "claude-opus-4-7"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
 MODEL_HAIKU_45 = "claude-haiku-4-5-20251001"
 
-# Defaults. Phase 3 introduces Sonnet verification with Opus escalation,
-# but the *default* verifier model is unchanged until live A/B evaluation
-# (plan section 7.1: "Do not assume same quality without measurement").
-# Operators opt in by setting SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT=1,
-# which flips the default to Sonnet and enables Opus escalation for
-# CRITICAL/HIGH UNVERIFIED findings.
+# Defaults. Phase 3 routes verification through Sonnet first and reserves
+# Opus for escalation on CRITICAL/HIGH UNVERIFIED findings. Set
+# SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT=0 to revert to Opus-everywhere.
 REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_46)
 CROSS_CHECK_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_CROSS_CHECK_MODEL", MODEL_OPUS_46)
 
@@ -45,10 +44,13 @@ CROSS_CHECK_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_CROSS_CHECK_MODEL", MODE
 def verification_sonnet_default_enabled() -> bool:
     """Whether Sonnet is the default verifier (Phase 3 routing).
 
-    Off by default so behavior matches Phase 2. When on, callers route
-    initial verification to Sonnet and reserve Opus for escalation.
+    On by default. Verification is largely retrieval + comparison + verdict
+    classification, which Sonnet handles well at materially lower cost. Opus
+    remains the escalation target for CRITICAL/HIGH UNVERIFIED findings.
+    Set SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT=0 to revert to the prior
+    Opus-everywhere behavior.
     """
-    return os.environ.get("SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT", "0") == "1"
+    return os.environ.get("SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT", "1") != "0"
 
 
 _VERIFICATION_MODEL_OVERRIDE = os.environ.get("SPEC_CRITIC_VERIFICATION_MODEL")
@@ -194,7 +196,14 @@ def tools_with_cache(tools: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def token_count_preflight_enabled() -> bool:
-    return os.environ.get("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "0") == "1"
+    """Whether to call Anthropic's count_tokens endpoint before submission.
+
+    On by default. The GUI also runs an exact count for the largest spec
+    when the file list changes (Phase 2.3); the pipeline call here is the
+    moment-of-truth guard before a real submission. Set
+    SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT=0 to disable.
+    """
+    return os.environ.get("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "1") != "0"
 
 
 # ---------------------------------------------------------------------------

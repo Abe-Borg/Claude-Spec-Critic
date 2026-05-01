@@ -39,17 +39,38 @@ from .code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 from .prompts import get_system_prompt
 from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode, coerce_review_mode
 
-# Phase 7.1 (audit Section 11.1): log callbacks accept an explicit ``level``
-# keyword so pipeline code can categorize messages (info / success / warning /
-# error / step / muted) without the GUI keyword-sniffing the message text.
-# Older single-arg callers still work — ``level`` is a keyword default.
+# Phase 7.1 (audit Section 11.1): log/progress callbacks accept explicit
+# ``level`` and ``phase`` keywords so pipeline code can categorize messages
+# (info / success / warning / error / step / muted) and route them to the
+# right diagnostics bucket without the GUI keyword-sniffing the message text.
+# Older single-arg callers still work — kwargs default cleanly.
 LogFn = Callable[..., None]
-ProgressFn = Callable[[float, str], None]
+ProgressFn = Callable[..., None]
 
 
 def _noop_log(_msg: str, **_kwargs: object) -> None: return
 
-def _noop_progress(_: float, __: str) -> None: return
+
+def _phase_tagged_log(log: LogFn, phase: str) -> LogFn:
+    """Wrap a log callback so all calls carry an explicit ``phase`` kwarg.
+
+    Used to retag verification log calls when the underlying callback is
+    bucketed by phase (e.g., the GUI diagnostics writer). ``phase`` is set
+    via ``setdefault`` so callers can still override per-call.
+    """
+    def _log(msg: str, **kwargs: object) -> None:
+        kwargs.setdefault("phase", phase)
+        log(msg, **kwargs)
+    return _log
+
+
+def _phase_tagged_progress(progress: ProgressFn, phase: str) -> ProgressFn:
+    def _on_progress(pct: float, msg: str, **kwargs: object) -> None:
+        kwargs.setdefault("phase", phase)
+        progress(pct, msg, **kwargs)
+    return _on_progress
+
+def _noop_progress(_: float, __: str, **_kwargs: object) -> None: return
 
 
 @dataclass
@@ -80,6 +101,83 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
     for ext in SUPPORTED_EXTENSIONS:
         files.extend(input_dir.glob(f"*{ext}"))
     return sorted([p for p in files if not p.name.startswith("~$")], key=lambda p: p.name.lower())
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.3: formal grouping vs occurrence types.
+#
+# Audit Section 5.3 / plan Sprint 1 item 3 asked for a clean separation
+# between the *display* concept ("the same issue appears in N files") and the
+# *executable edit* concept ("apply this change to file X at location Y").
+# The pipeline already achieves the behavioral goal via ``Finding.affected_files``,
+# but having explicit types makes it harder to lose per-file occurrences when
+# new code paths get added (e.g., the report exporter, edit dialog, comments
+# mode). These dataclasses are produced by ``group_findings()`` and consumed
+# by code that needs the formal split. The legacy list-of-Finding API is
+# preserved so existing callers do not need to change.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FindingOccurrence:
+    """One executable edit candidate: a finding bound to a single file."""
+    occurrence_id: str
+    file_name: str
+    finding: Finding
+
+
+@dataclass
+class FindingGroup:
+    """A display-level group of findings that share dedup identity.
+
+    The ``representative`` finding is the highest-severity / highest-
+    confidence example used to render the report. ``occurrences`` lists the
+    per-file edit candidates so callers fanning out edits do not have to
+    re-derive them from ``affected_files``.
+    """
+    group_id: str
+    representative: Finding
+    occurrences: list[FindingOccurrence] = field(default_factory=list)
+
+    @property
+    def file_names(self) -> list[str]:
+        return [o.file_name for o in self.occurrences]
+
+
+def _occurrence_id(group_id: str, file_name: str, idx: int) -> str:
+    return f"{group_id}::{idx:03d}::{file_name}"
+
+
+def group_findings(findings: list[Finding]) -> list[FindingGroup]:
+    """Convert a deduplicated finding list into formal ``FindingGroup`` rows.
+
+    Each group's ``occurrences`` list expands ``Finding.affected_files`` so a
+    multi-file finding produces one ``FindingOccurrence`` per file. Findings
+    with no ``affected_files`` and no ``fileName`` produce a single
+    placeholder occurrence with an empty file name; downstream code should
+    check for that and skip.
+    """
+    groups: list[FindingGroup] = []
+    for idx, f in enumerate(findings):
+        files = list(dict.fromkeys(f.affected_files)) or (
+            [f.fileName] if f.fileName else [""]
+        )
+        group_id = f"grp-{idx:04d}"
+        occurrences = [
+            FindingOccurrence(
+                occurrence_id=_occurrence_id(group_id, name, i),
+                file_name=name,
+                finding=f,
+            )
+            for i, name in enumerate(files)
+        ]
+        groups.append(FindingGroup(group_id=group_id, representative=f, occurrences=occurrences))
+    return groups
+
+
+def expand_to_occurrences(findings: list[Finding]) -> list[FindingOccurrence]:
+    """Flatten findings to per-file occurrences for edit execution."""
+    return [occ for grp in group_findings(findings) for occ in grp.occurrences if occ.file_name]
 
 
 def _normalize_issue_text(text: str) -> str:
@@ -449,16 +547,14 @@ def _drop_cross_check_findings_with_disputed_upstream(
 
 
 def _parallel_cross_check_enabled() -> bool:
-    """Phase 5.3 (audit Section 9.3): opt-in parallel cross-check overlap.
+    """Phase 5.3 (audit Section 9.3): parallel cross-check overlap.
 
-    The default keeps the historical sequential flow (review verification
-    finishes before cross-check runs) so cross-check sees verified findings
-    and can drop coordination claims that depend on DISPUTED upstream
-    findings. When enabled, cross-check runs concurrently with the review
-    verification batch poll, then the dependency filter is applied
-    post-hoc before cross-check verification submits.
+    Cross-check runs concurrently with the review verification batch poll;
+    findings whose upstream review verdict became DISPUTED are dropped
+    after both join. Set SPEC_CRITIC_PARALLEL_CROSS_CHECK=0 to revert to
+    the prior sequential flow.
     """
-    return os.environ.get("SPEC_CRITIC_PARALLEL_CROSS_CHECK", "0").strip() in {"1", "true", "yes"}
+    return os.environ.get("SPEC_CRITIC_PARALLEL_CROSS_CHECK", "1").strip() not in {"0", "false", "no"}
 
 
 def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, cross_check: bool | None = None, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle | None = None) -> PipelineResult:
@@ -777,24 +873,25 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     findings = _deduplicate_findings(findings)
     cross = None
     cache = VerificationCache()
+    verify_progress = _phase_tagged_progress(progress, "verification")
     if verify and findings:
         try:
-            verify_findings(findings, progress=lambda c, t, fn: progress(50.0 + (c / max(t, 1)) * 25.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
+            verify_findings(findings, progress=lambda c, t, fn: verify_progress(50.0 + (c / max(t, 1)) * 25.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
         except Exception as e:
-            log(f"Verification failed: {e}. Returning results without verification.", level="error")
+            log(f"Verification failed: {e}. Returning results without verification.", level="error", phase="verification")
             for f in findings:
                 if f.verification is None:
                     f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
     if cross_check:
         dedup_for_cross = [f for f in findings if not (f.verification and f.verification.verdict == "DISPUTED")]
-        progress(75.0, "Running cross-check with dedup context...")
-        cross = run_chunked_cross_check(specs, dedup_for_cross, project_context=project_context, verbose=verbose, cycle=cycle, log=log)
+        progress(75.0, "Running cross-check with dedup context...", phase="cross_check")
+        cross = run_chunked_cross_check(specs, dedup_for_cross, project_context=project_context, verbose=verbose, cycle=cycle, log=_phase_tagged_log(log, "cross_check"))
         _log_cross_check_status(log, cross)
         if verify and cross and cross.findings:
             try:
-                verify_findings(cross.findings, progress=lambda c, t, fn: progress(90.0 + (c / max(t, 1)) * 5.0, f"Verifying cross-check {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
+                verify_findings(cross.findings, progress=lambda c, t, fn: verify_progress(90.0 + (c / max(t, 1)) * 5.0, f"Verifying cross-check {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
             except Exception as e:
-                log(f"Cross-check verification failed: {e}.", level="error")
+                log(f"Cross-check verification failed: {e}.", level="error", phase="verification")
                 for f in cross.findings:
                     if f.verification is None:
                         f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")

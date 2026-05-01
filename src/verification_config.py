@@ -21,21 +21,9 @@ from .api_config import (
 # api_config so changes propagate everywhere.
 VERIFICATION_MAX_TOKENS = verification_max_tokens()
 
-# Code-execution tool definition is kept here for backward import compat,
-# but is no longer wired into verification calls. Plan section 2.3 (and
-# Anthropic server-tools docs) caution that combining standalone
-# code_execution with web_search_20260209 dynamic filtering creates two
-# execution environments. The verifier prompt has been updated to stop
-# instructing the model to use it.
-CODE_EXECUTION_TOOL = {
-    "type": "code_execution_20250825",
-    "name": "code_execution",
-}
-
 __all__ = [
     "BATCH_MAX_OUTPUT_TOKENS",
     "BATCH_OUTPUT_BETA",
-    "CODE_EXECUTION_TOOL",
     "VERIFICATION_MAX_TOKENS",
     "VERIFICATION_MODEL",
     "WEB_SEARCH_TOOL",

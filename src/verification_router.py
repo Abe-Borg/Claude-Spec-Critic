@@ -50,8 +50,13 @@ _LOCAL_SKIP_KEYWORDS = (
 
 
 def local_skip_enabled() -> bool:
-    """Whether to short-circuit verification for clearly local findings."""
-    return os.environ.get("SPEC_CRITIC_LOCAL_VERIFICATION_SKIP", "0") == "1"
+    """Whether to short-circuit verification for clearly local findings.
+
+    On by default: classifying placeholder/LEED/typo/duplicate-paragraph
+    GRIPES as ``local_skip`` avoids paying for web searches that add no
+    signal. Set SPEC_CRITIC_LOCAL_VERIFICATION_SKIP=0 to disable.
+    """
+    return os.environ.get("SPEC_CRITIC_LOCAL_VERIFICATION_SKIP", "1") != "0"
 
 
 def classify_finding_for_verification(finding: Finding) -> str:

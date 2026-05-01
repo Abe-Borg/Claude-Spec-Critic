@@ -157,8 +157,9 @@ GRIPES — quality/editorial issues that should still be fixed.
 </severity_definitions>
 
 <output_format>
-First provide ANALYSIS SUMMARY (1-2 paragraphs), then wrap findings JSON in <findings_json>...</findings_json>.
-Each finding fields:
+Submit your review by calling the ``submit_review_findings`` tool exactly
+once. Include an ``analysis_summary`` (1-2 paragraphs) and a ``findings``
+array (zero or more items). Each finding has these fields:
 - severity: "CRITICAL" | "HIGH" | "MEDIUM" | "GRIPES"
 - fileName
 - section
@@ -173,7 +174,10 @@ For actionType "ADD" only, also include:
 - anchorText: verbatim text of an existing nearby paragraph to anchor the insertion (omit or use null if no reliable anchor exists; the edit will be flagged for manual review)
 - insertPosition: "before" or "after" relative to anchorText
 
-If none, return [] inside tags.
+If no issues are found, call the tool with an empty ``findings`` array.
+
+Compatibility fallback: when the tool is unavailable, emit findings as JSON
+inside ``<findings_json>...</findings_json>`` tags using the same shape.
 </output_format>
 {editability}
 <review_scope>

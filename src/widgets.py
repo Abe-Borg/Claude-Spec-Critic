@@ -155,7 +155,7 @@ class TokenGauge(ctk.CTkFrame):
         self.header_frame.bind("<Button-1>", self._toggle)
         self.expand_label = ctk.CTkLabel(self.header_frame, text="\u25bc", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"], width=20)
         self.expand_label.pack(side="left"); self.expand_label.bind("<Button-1>", self._toggle)
-        self.title_label = ctk.CTkLabel(self.header_frame, text="LARGEST SPEC CAPACITY", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"])
+        self.title_label = ctk.CTkLabel(self.header_frame, text="LARGEST SPEC CAPACITY (approx)", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"])
         self.title_label.pack(side="left", padx=(4, 0)); self.title_label.bind("<Button-1>", self._toggle)
         self.count_label = ctk.CTkLabel(self.header_frame, text=f"\u2014 / {max_tokens:,}", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_secondary"])
         self.count_label.pack(side="right"); self.count_label.bind("<Button-1>", self._toggle)
@@ -172,16 +172,22 @@ class TokenGauge(ctk.CTkFrame):
     def expand(self): self._expanded = True; self.expand_label.configure(text="\u25bc"); self.content_container.pack(fill="x")
     def collapse(self): self._expanded = False; self.expand_label.configure(text="\u25b6"); self.content_container.pack_forget()
 
-    def update_gauge(self, largest_call_tokens, file_count=0):
+    def update_gauge(self, largest_call_tokens, file_count=0, *, is_exact: bool = False):
         """Update the gauge to show the largest spec's call estimate.
 
         Args:
             largest_call_tokens: Estimated input tokens for the largest single
                 spec API call (overhead + spec content tokens).
             file_count: Number of selected files (shown in status text).
+            is_exact: True if the count came from Anthropic's count_tokens
+                endpoint; False for the local cl100k_base estimate. Phase 2.3
+                of the implementation plan asked the GUI to distinguish
+                approximate from exact counts.
         """
         self.token_count = largest_call_tokens; raw_pct = largest_call_tokens / self.max_tokens
         self._target_pct = min(raw_pct, 1.0); self.is_over_limit = raw_pct > 1.0
+        title_suffix = "" if is_exact else " (approx)"
+        self.title_label.configure(text=f"LARGEST SPEC CAPACITY{title_suffix}")
         self.count_label.configure(text=f"{largest_call_tokens:,} / {self.max_tokens:,}")
         if raw_pct > 1.0: self._target_color, status, sc = COLORS["error"], "\u26a0 Largest spec exceeds per-call limit!", COLORS["error"]
         elif raw_pct > 0.9: self._target_color, status, sc = COLORS["warning"], f"\u26a0 {raw_pct*100:.0f}% \u2014 largest spec approaching limit \u2022 {file_count} files", COLORS["warning"]
@@ -1282,6 +1288,148 @@ class DiagnosticsWindow(ctk.CTkToplevel):
             ctk.CTkLabel(pd_frame, text="Phase Durations:", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_secondary"]).pack(anchor="w")
             for phase, dur in s["phase_durations"].items():
                 ctk.CTkLabel(pd_frame, text=f"  {phase:22s} {dur:.1f}s", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"]).pack(anchor="w")
+
+        # Phase 7.3: actionable diagnostics — render the fields previously
+        # only available in the Save-as-Text/JSON exports.
+        self._render_actionable_section(inner, s)
+
+    def _render_actionable_section(self, parent, summary: dict):
+        """Render Phase 7.3 / 9.4 actionable diagnostics in the summary card."""
+        # Cache token usage.
+        cache_creation = summary.get("total_cache_creation_input_tokens", 0)
+        cache_read = summary.get("total_cache_read_input_tokens", 0)
+        if cache_creation or cache_read:
+            cache_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            cache_frame.pack(fill="x", pady=(8, 0))
+            ctk.CTkLabel(
+                cache_frame, text="Prompt Cache:",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(side="left")
+            ctk.CTkLabel(
+                cache_frame,
+                text=f"  created={cache_creation:,}  read={cache_read:,}",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_muted"],
+            ).pack(side="left")
+
+        # Verification evidence (grounded / cache hits / escalations).
+        evidence = summary.get("verification_evidence") or {}
+        if any(evidence.values()):
+            evi_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            evi_frame.pack(fill="x", pady=(4, 0))
+            ctk.CTkLabel(
+                evi_frame, text="Verification Evidence:",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(anchor="w")
+            evi_pairs = [
+                ("grounded", "grounded"),
+                ("ungrounded", "ungrounded"),
+                ("escalated", "escalated"),
+                ("cache_hits", "cache hits"),
+                ("local_skips", "local skips"),
+                ("search_errors", "search errors"),
+                ("search_requests", "search reqs"),
+            ]
+            for key, label in evi_pairs:
+                val = int(evidence.get(key, 0) or 0)
+                if val == 0:
+                    continue
+                ctk.CTkLabel(
+                    evi_frame, text=f"  {label:18s} {val:>6}",
+                    font=ctk.CTkFont(family="Consolas", size=12),
+                    text_color=COLORS["text_muted"],
+                ).pack(anchor="w")
+
+        # Failed / skipped specs.
+        failed = summary.get("failed_specs") or []
+        skipped = summary.get("skipped_specs") or []
+        if failed or skipped:
+            fs_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            fs_frame.pack(fill="x", pady=(8, 0))
+            ctk.CTkLabel(
+                fs_frame, text="Specs:",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(anchor="w")
+            if failed:
+                ctk.CTkLabel(
+                    fs_frame,
+                    text=f"  failed   ({len(failed)}): {', '.join(failed[:6])}{' ...' if len(failed) > 6 else ''}",
+                    font=ctk.CTkFont(family="Consolas", size=12),
+                    text_color=COLORS["error"],
+                ).pack(anchor="w")
+            if skipped:
+                ctk.CTkLabel(
+                    fs_frame,
+                    text=f"  skipped  ({len(skipped)}): {', '.join(skipped[:6])}{' ...' if len(skipped) > 6 else ''}",
+                    font=ctk.CTkFont(family="Consolas", size=12),
+                    text_color=COLORS["warning"],
+                ).pack(anchor="w")
+
+        # Edit pipeline outcomes.
+        applied = summary.get("edits_applied_total", 0)
+        skipped_e = summary.get("edits_skipped_total", 0)
+        failed_e = summary.get("edits_failed_total", 0)
+        ambig = summary.get("ambiguous_locator_count", 0)
+        edit_reasons = summary.get("edit_skip_reasons") or {}
+        if applied or skipped_e or failed_e or ambig or edit_reasons:
+            ed_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            ed_frame.pack(fill="x", pady=(8, 0))
+            ctk.CTkLabel(
+                ed_frame,
+                text=f"Edits: applied={applied}  skipped={skipped_e}  failed={failed_e}  ambiguous_locators={ambig}",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(anchor="w")
+            if edit_reasons:
+                for reason, cnt in edit_reasons.items():
+                    ctk.CTkLabel(
+                        ed_frame, text=f"  skip[{reason}] = {cnt}",
+                        font=ctk.CTkFont(family="Consolas", size=12),
+                        text_color=COLORS["text_muted"],
+                    ).pack(anchor="w")
+
+        # Output / search budget telemetry.
+        ot = summary.get("output_telemetry") or {}
+        if ot.get("samples"):
+            ot_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            ot_frame.pack(fill="x", pady=(8, 0))
+            ctk.CTkLabel(
+                ot_frame,
+                text=(
+                    f"Output tokens: max={ot.get('max_observed', 0):,}  "
+                    f"p50={ot.get('p50', 0):,}  p95={ot.get('p95', 0):,}  "
+                    f"truncated={ot.get('truncated_calls', 0)}"
+                ),
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(anchor="w")
+
+        sb = summary.get("search_budget") or {}
+        if sb.get("samples"):
+            sb_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            sb_frame.pack(fill="x", pady=(4, 0))
+            ctk.CTkLabel(
+                sb_frame,
+                text=(
+                    f"Search budget: ceiling={sb.get('ceiling', 0)}  "
+                    f"max={sb.get('max_observed', 0)}  p50={sb.get('p50', 0)}  "
+                    f"p95={sb.get('p95', 0)}  saturated={sb.get('saturated_calls', 0)}"
+                ),
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(anchor="w")
+
+        dropped = summary.get("events_dropped", 0)
+        if dropped:
+            ctk.CTkLabel(
+                parent,
+                text=f"⚠ {dropped:,} events dropped (event cap)",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["warning"],
+            ).pack(anchor="w", pady=(4, 0))
 
     def _render_timeline_section(self, parent):
         card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
