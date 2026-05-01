@@ -2137,25 +2137,49 @@ class SpecReviewApp(_CTkDnDRoot):
                 "Claude checks for code compliance issues (CBC, CMC, CPC, "
                 "Energy Code, CALGreen), DSA-specific requirements, outdated standards, "
                 "coordination problems, and constructability concerns. Each finding is "
-                "assigned a severity (Critical, High, Medium, or Gripe) and a confidence score."
+                "assigned a severity (Critical, High, Medium, or Gripe) and a confidence score. "
+                "The Review Mode selector controls scope: Strict (evidence-backed contradictions "
+                "and code-cycle issues only), Comprehensive (adds AEC constructability and "
+                "coordination), or Safe edit (only findings that can be expressed as a precise "
+                "auto-applicable edit)."
             )),
             ("4.  Deduplication", (
                 "When the same issue appears across multiple specs \u2014 like an outdated "
                 "seismic code reference \u2014 duplicates are consolidated into a single "
-                "finding that lists all affected files."
+                "finding that lists all affected files. Per-file edit occurrences are "
+                "preserved internally so multi-file edits can target every affected spec."
             )),
             ("5.  Cross-Spec Coordination  (optional)", (
                 "If enabled, a separate Opus 4.6 call analyzes the full text of all your "
                 "specs together using the 1M token context window. It catches contradictions "
                 "between specs, missing cross-references, scope gaps and overlaps, "
-                "inconsistent equipment data, and division-of-work conflicts. Because it "
-                "has the complete content of every spec, it can find coordination issues "
-                "that are invisible to per-spec review."
+                "inconsistent equipment data, and division-of-work conflicts. Large projects "
+                "are chunked by CSI division (21 / 22 / 23 / Controls) and merged. Cross-check "
+                "runs in parallel with verification to reduce wall-clock time."
             )),
             ("6.  Verification", (
-                "Every finding is checked in a secondary AI verification pass using Claude Opus 4.6 with web search. "
-                "The verifier searches for the cited codes and standards and returns a verdict: Confirmed, Corrected, "
-                "Disputed, or Unverified. This is an AI-assisted check, not a substitute for engineer review."
+                "Every finding that needs external grounding is checked in a secondary AI "
+                "pass with web search. The default verifier is Claude Sonnet 4.6 (faster and "
+                "cheaper); Opus 4.6 is used as an escalation model for low-confidence "
+                "Critical/High findings. Verdicts are Confirmed, Corrected, Disputed, or "
+                "Unverified, and a verdict cannot be marked Confirmed/Corrected unless real "
+                "web evidence was actually returned. Internal-only issues (placeholders, "
+                "duplicates, internal contradictions) are resolved locally without web search. "
+                "This is an AI-assisted check, not a substitute for engineer review."
+            )),
+            ("7.  Edit Safety Classification", (
+                "Each finding is classified into an edit-safety category: Auto-safe "
+                "(unambiguous single-paragraph match), Auto-with-caution (exact match with "
+                "minor risk), Manual-review (ambiguous or structurally complex), or "
+                "Report-only (no safe edit possible). Ambiguous matches, missing ADD anchors, "
+                "and table/header/footer/rich-format edits are never auto-applied."
+            )),
+            ("8.  Output", (
+                "Results can be viewed in-app, exported as a Word report, or used to produce "
+                "an edited copy of each spec. Auto-edit mode applies surgical changes in a "
+                "safe order with revalidation immediately before each mutation. Annotation "
+                "mode writes a copy with yellow-highlighted suggestion paragraphs without "
+                "changing the original text. The source files are never overwritten."
             )),
         ]
 
@@ -2180,9 +2204,10 @@ class SpecReviewApp(_CTkDnDRoot):
         ctk.CTkLabel(
             scroll,
             text=(
-                "Spec Critic is a review assistant \u2014 it doesn\u2019t modify your "
-                "documents. It\u2019s advisory only and not a substitute for AHJ review. "
-                "Code citations should still be spot-checked by the engineer of record."
+                "Spec Critic is a review assistant \u2014 it never modifies your source "
+                "documents. Auto-edit and annotation modes always write to a copy. "
+                "It\u2019s advisory only and not a substitute for AHJ review. Code "
+                "citations should still be spot-checked by the engineer of record."
             ),
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
             text_color=COLORS["text_secondary"],
@@ -2259,31 +2284,48 @@ class SpecReviewApp(_CTkDnDRoot):
                 "2025). This determines which edition of CBC, CMC, CPC, Energy "
                 "Code, CALGreen, and ASCE 7 the reviewer checks against."
             )),
-            ("6.  Enable Cross-Spec Coordination (Optional)", (
+            ("6.  Choose Review Mode", (
+                "Strict reports only evidence-backed contradictions, code-cycle "
+                "issues, and invalid references — fewer findings, higher precision. "
+                "Comprehensive (the default) adds AEC constructability, coordination, "
+                "TAB/commissioning, schedules, controls, closeout, and material "
+                "coordination issues. Safe edit only emits findings whose fix is a "
+                "precise, unambiguous, low-risk edit — useful when you intend to use "
+                "the auto-edit output."
+            )),
+            ("7.  Enable Cross-Spec Coordination (Optional)", (
                 "Check this option to run a separate coordination analysis that "
                 "sends all spec content to Claude in a single call. This catches "
                 "contradictions between specs, missing cross-references, and "
-                "scope gaps that per-spec review cannot detect. Requires the "
-                "combined content to fit within the cross-check token limit."
+                "scope gaps that per-spec review cannot detect. Large projects are "
+                "automatically chunked by CSI division when the combined input "
+                "exceeds the recommended token ceiling."
             )),
-            ("7.  Choose Output Mode", (
+            ("8.  Choose Output Mode", (
                 "'View in App' renders results in a pop-out report window with "
                 "collapsible finding cards. 'Export Report' saves a formatted "
-                ".docx file — useful for large reviews that would slow down "
-                "in-app rendering, or for sharing with your team."
+                ".docx report. 'Auto-Edit' writes an edited copy of each spec — "
+                "only Auto-safe findings are applied; ambiguous, table, header/"
+                "footer, and richly formatted edits are downgraded to manual review. "
+                "'Annotate' writes a copy with yellow-highlighted suggestion "
+                "paragraphs after each anchor without changing the original text. "
+                "Source files are never overwritten."
             )),
-            ("8.  Run the Review", (
+            ("9.  Run the Review", (
                 "Click Run Review (real-time) or Submit Batch (batch mode). "
                 "The activity log shows progress. In batch mode, you can close "
                 "the app and reopen it later — the pending batch state is saved "
                 "and you will be prompted to resume."
             )),
-            ("9.  Review the Results", (
+            ("10.  Review the Results", (
                 "Findings are grouped by severity (Critical, High, Medium, "
                 "Gripe) and sorted by confidence within each severity tier. Each finding "
                 "includes a verification verdict from a secondary AI pass with "
-                "web search. Use Export JSON from the report window to save "
-                "structured results for further processing."
+                "web search, and shows whether the verdict was externally grounded "
+                "or escalated to Opus. Use Export JSON from the report window to "
+                "save structured results. Open the Diagnostics window to see "
+                "model usage, prompt-cache hits, token counts by phase, "
+                "verification evidence stats, and edit-skip reasons."
             )),
         ]
 
