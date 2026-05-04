@@ -1,14 +1,22 @@
 """Structured-output JSON schemas for review, cross-check, and verification.
 
 Phase 2.4 / 2.5 (audit Sections 6.4–6.5): replace fragile ``<findings_json>``
-tag-and-regex parsing with Anthropic tool-use schemas. The model is given a
-single tool whose ``input_schema`` matches the existing finding shape, and
-``tool_choice`` forces it to call that tool — eliminating the parse-failure
-class entirely. The text-parsing path stays as a fallback for the rare
-case where the model returns no tool_use block (e.g., refusal).
+tag-and-regex parsing with Anthropic tool-use schemas. The model is given
+a single tool whose ``input_schema`` matches the existing finding shape.
 
-Toggle:
+``tool_choice`` is intentionally ``{"type": "auto"}`` rather than a forcing
+choice because the API rejects forcing tool_choice (``{"type": "tool", ...}``
+or ``{"type": "any"}``) when adaptive thinking is enabled. With only one
+tool exposed and the system prompt instructing the model to call it, the
+tool is reliably invoked. The tagged-JSON parser remains as the
+documented fallback for the rare cases where the model emits text instead
+of calling the tool.
+
+Toggles:
     SPEC_CRITIC_STRUCTURED_OUTPUTS — "0" disables; default on.
+    SPEC_CRITIC_STRICT_TOOLS       — "1" enables strict tool-input
+                                      sampling; default off pending real-
+                                      call verification under thinking.
 """
 from __future__ import annotations
 
@@ -170,8 +178,8 @@ VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
 
 # ---------------------------------------------------------------------------
 # Tool builders. Each returns a single tool dict that callers pass via
-# ``tools=[...]`` together with ``tool_choice={"type": "tool", "name": ...}``
-# to force the model to emit a structured object.
+# ``tools=[...]`` together with ``tool_choice={"type": "auto"}`` (forcing
+# tool_choice is incompatible with adaptive thinking; see module docstring).
 # ---------------------------------------------------------------------------
 
 _REVIEW_TOOL_NAME = "submit_review_findings"
@@ -182,12 +190,16 @@ _VERIFICATION_TOOL_NAME = "submit_verification_verdict"
 def _strict_enabled() -> bool:
     """Whether to attach ``"strict": true`` to tool definitions.
 
-    Strict mode uses grammar-constrained sampling to guarantee tool inputs
-    match the schema, eliminating the parse-failure tail. On by default;
-    set ``SPEC_CRITIC_STRICT_TOOLS=0`` to disable (e.g. if a future schema
-    construct is unsupported by the strict validator).
+    Off by default. Strict mode uses grammar-constrained sampling to
+    guarantee tool inputs match the schema, but the same era of API
+    restrictions that block forcing tool_choice with adaptive thinking
+    (see ``review_tool_choice``) may also reject strict mode under
+    thinking. The schemas are already authored to be strict-compatible
+    (every property required, nullable for optional, no oneOf/anyOf),
+    so flipping ``SPEC_CRITIC_STRICT_TOOLS=1`` after a verifying smoke
+    call is a one-env-var change with no schema rework needed.
     """
-    return os.environ.get("SPEC_CRITIC_STRICT_TOOLS", "1") != "0"
+    return os.environ.get("SPEC_CRITIC_STRICT_TOOLS", "0") == "1"
 
 
 def review_findings_tool() -> dict[str, Any]:

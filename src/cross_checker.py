@@ -126,7 +126,11 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
         "- Plain text only. No markdown headers, bullets, or bold — the summary renders in contexts "
         "that do not support markdown.\n"
         "- Separate paragraphs with a blank line. If no issues were found, briefly state that "
-        "coordination appears adequate.\n"
+        "coordination appears adequate.\n\n"
+        "Fallback: if for any reason you cannot call the submit_cross_check_findings\n"
+        "tool, emit the findings array as JSON wrapped in ``<findings_json>...</findings_json>``\n"
+        "tags. Prefer the tool — the fallback is only for cases where the tool call would\n"
+        "otherwise be skipped entirely.\n"
         "</output>"
     )
 
@@ -397,7 +401,9 @@ def _cross_discipline_synthesis_system_prompt(cycle: CodeCycle) -> str:
         "Set coordination_summary to a brief plain-text summary of any cross-"
         "discipline themes you found (or a single sentence saying coordination "
         "across disciplines appears adequate when there are no findings). "
-        "No markdown.\n"
+        "No markdown.\n\n"
+        "Fallback: if for any reason you cannot call the tool, emit the findings "
+        "array as JSON wrapped in ``<findings_json>...</findings_json>`` tags.\n"
         "</output>"
     )
 

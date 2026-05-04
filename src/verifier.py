@@ -215,7 +215,10 @@ def _get_verification_system_prompt(cycle: CodeCycle) -> str:
         "- Call web_search first, then call submit_verification_verdict exactly",
         "  once as the final step of your turn with verdict, explanation, sources,",
         "  and (for CORRECTED only) the corrected reference.",
-        "- Do not output the verdict as plain text — always use the structured tool.",
+        "- Strongly prefer the structured tool over plain text. Fallback only:",
+        "  if you cannot call the tool, emit the verdict as a JSON object with",
+        "  the same field names (verdict, explanation, sources, correction) so",
+        "  it can still be parsed.",
         "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
     ])
 

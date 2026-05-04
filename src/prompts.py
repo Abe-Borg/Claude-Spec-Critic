@@ -171,6 +171,13 @@ Notes that are not enforced by schema:
   When no reliable anchor exists, leave anchorText null — the edit will
   be flagged for manual review.
 - Use null (not empty string) for fields that don't apply.
+
+Fallback: if for any reason you cannot call the submit_review_findings
+tool, emit the same payload as JSON wrapped in
+``<findings_json>...</findings_json>`` tags. The JSON should be an array
+of finding objects (without the analysis_summary wrapper). Prefer the
+tool — the fallback is only for cases where the tool call would otherwise
+be skipped entirely.
 </output>
 {editability}
 <review_scope>
