@@ -201,11 +201,14 @@ def verification_verdict_tool() -> dict[str, Any]:
 
 
 def review_tool_choice() -> dict[str, Any]:
-    return {"type": "tool", "name": _REVIEW_TOOL_NAME}
+    # Cannot use {"type": "tool", "name": ...} together with thinking.
+    # Only one tool is exposed on review calls, so {"type": "any"} forces
+    # the same behavior while preserving adaptive thinking.
+    return {"type": "any", "disable_parallel_tool_use": True}
 
 
 def cross_check_tool_choice() -> dict[str, Any]:
-    return {"type": "tool", "name": _CROSS_CHECK_TOOL_NAME}
+    return {"type": "any", "disable_parallel_tool_use": True}
 
 
 # Verification cannot use a forcing tool_choice because the model needs to
