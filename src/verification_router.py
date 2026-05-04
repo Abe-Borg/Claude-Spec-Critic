@@ -13,8 +13,6 @@ import os
 import re
 
 from .api_config import (
-    MODEL_OPUS_46,
-    MODEL_SONNET_46,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT,
     verification_sonnet_default_enabled,

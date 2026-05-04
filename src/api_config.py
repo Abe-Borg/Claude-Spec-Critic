@@ -32,13 +32,12 @@ from typing import Iterable
 MODEL_OPUS_46 = "claude-opus-4-6"
 MODEL_OPUS_47 = "claude-opus-4-7"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
-MODEL_HAIKU_45 = "claude-haiku-4-5-20251001"
 
 # Defaults. Phase 3 routes verification through Sonnet first and reserves
 # Opus for escalation on CRITICAL/HIGH UNVERIFIED findings. Set
 # SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT=0 to revert to Opus-everywhere.
-REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_46)
-CROSS_CHECK_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_CROSS_CHECK_MODEL", MODEL_OPUS_46)
+REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_47)
+CROSS_CHECK_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_CROSS_CHECK_MODEL", MODEL_OPUS_47)
 
 
 def verification_sonnet_default_enabled() -> bool:
@@ -59,11 +58,11 @@ if _VERIFICATION_MODEL_OVERRIDE:
 elif verification_sonnet_default_enabled():
     VERIFICATION_MODEL_DEFAULT = MODEL_SONNET_46
 else:
-    VERIFICATION_MODEL_DEFAULT = MODEL_OPUS_46
+    VERIFICATION_MODEL_DEFAULT = MODEL_OPUS_47
 
 # Model used when escalating a low-confidence/high-severity verification.
 VERIFICATION_ESCALATION_MODEL = os.environ.get(
-    "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_46
+    "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_47
 )
 
 # Convenience set of "Opus-class" models for output-cap dispatch.
@@ -153,8 +152,23 @@ def prompt_caching_enabled() -> bool:
     return os.environ.get("SPEC_CRITIC_PROMPT_CACHE", "1") != "0"
 
 
+def _cache_control_block() -> dict:
+    """Return the standard cache_control block.
+
+    Spec Critic batch + verification waves run for 30 minutes to several hours,
+    well beyond the 5-minute default ephemeral cache TTL. The 1-hour TTL
+    costs 2x the cache write but typically pays back inside the second wave
+    of a batch verification cycle, where the same system prompt is sent
+    hundreds of times. Set ``SPEC_CRITIC_PROMPT_CACHE_TTL=5m`` to revert.
+    """
+    ttl = os.environ.get("SPEC_CRITIC_PROMPT_CACHE_TTL", "1h").strip().lower()
+    if ttl == "5m":
+        return {"type": "ephemeral"}
+    return {"type": "ephemeral", "ttl": "1h"}
+
+
 def system_prompt_with_cache(prompt: str):
-    """Return a system payload with an ephemeral cache breakpoint when enabled.
+    """Return a system payload with a cache breakpoint when enabled.
 
     When caching is enabled, returns a one-element list of TextBlockParam
     dicts with cache_control set. When disabled, returns the original string
@@ -172,23 +186,42 @@ def system_prompt_with_cache(prompt: str):
         {
             "type": "text",
             "text": prompt,
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": _cache_control_block(),
         }
     ]
 
 
 def tools_with_cache(tools: list[dict]) -> list[dict]:
-    """Attach an ephemeral cache breakpoint to the last tool definition.
+    """Attach a cache breakpoint to the last tool definition.
 
     Tool schemas are stable across verification calls. Caching the trailing
     tool block lets the rest of the request (system prompt + tool defs)
-    share one cache prefix.
+    share one cache prefix. The system prompt has its own breakpoint via
+    :func:`system_prompt_with_cache`, so changing only a tool definition
+    invalidates only the tools-level cache entry.
     """
     if not prompt_caching_enabled() or not tools:
         return tools
     last = dict(tools[-1])
-    last["cache_control"] = {"type": "ephemeral"}
+    last["cache_control"] = _cache_control_block()
     return [*tools[:-1], last]
+
+
+# ---------------------------------------------------------------------------
+# Service tier (priority capacity)
+# ---------------------------------------------------------------------------
+
+
+def batch_service_tier() -> str | None:
+    """Return the ``service_tier`` parameter to set on batch request params.
+
+    ``auto`` (default) opts batch requests into priority capacity when
+    available, falling back to standard. Set ``SPEC_CRITIC_SERVICE_TIER``
+    to ``standard_only`` to pin to standard, or to an empty string to omit
+    the field entirely (some SDK versions or accounts may not accept it).
+    """
+    tier = os.environ.get("SPEC_CRITIC_SERVICE_TIER", "auto").strip()
+    return tier or None
 
 
 # ---------------------------------------------------------------------------

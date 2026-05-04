@@ -18,6 +18,7 @@ from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
 from .api_config import (
     MODEL_OPUS_46,
+    MODEL_OPUS_47,
     REVIEW_MODEL_DEFAULT,
     extract_cache_usage,
     review_max_tokens,
@@ -31,7 +32,7 @@ from .structured_schemas import (
     structured_outputs_enabled,
 )
 
-REVIEW_MODELS = {"Opus 4.6": MODEL_OPUS_46}
+REVIEW_MODELS = {"Opus 4.7": MODEL_OPUS_47}
 StreamCallback = Callable[[str], None]
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ class ReviewResult:
     findings: list[Finding] = field(default_factory=list)
     raw_response: str = ""
     thinking: str = ""
-    model: str = MODEL_OPUS_46
+    model: str = MODEL_OPUS_47
     input_tokens: int = 0
     output_tokens: int = 0
     # Phase 2 prompt-caching telemetry. Populated when the API returns
@@ -237,7 +238,7 @@ def _parse_findings(data: list) -> list[Finding]:
     return findings
 
 
-def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = MODEL_OPUS_46, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
+def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = MODEL_OPUS_47, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
     start_time = time.time()
     result = ReviewResult(model=model)
     # Dynamic per-call output cap. Real-time review uses the smaller cap to

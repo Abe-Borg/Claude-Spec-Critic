@@ -33,7 +33,21 @@ def structured_outputs_enabled() -> bool:
 _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["severity", "fileName", "section", "issue", "actionType", "confidence"],
+    # All properties are required so strict-mode constrained sampling has a
+    # deterministic shape to fill. Optional values use nullable types.
+    "required": [
+        "severity",
+        "fileName",
+        "section",
+        "issue",
+        "actionType",
+        "existingText",
+        "replacementText",
+        "codeReference",
+        "confidence",
+        "anchorText",
+        "insertPosition",
+    ],
     "properties": {
         "severity": {
             "type": "string",
@@ -91,11 +105,11 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
 REVIEW_FINDINGS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["findings"],
+    "required": ["analysis_summary", "findings"],
     "properties": {
         "analysis_summary": {
             "type": "string",
-            "description": "Optional short narrative covering the review thinking.",
+            "description": "Short narrative covering the review thinking. Empty string is acceptable.",
         },
         "findings": {
             "type": "array",
@@ -109,7 +123,7 @@ REVIEW_FINDINGS_SCHEMA: dict[str, Any] = {
 CROSS_CHECK_FINDINGS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["findings"],
+    "required": ["coordination_summary", "findings"],
     "properties": {
         "coordination_summary": {
             "type": "string",
@@ -130,7 +144,7 @@ CROSS_CHECK_FINDINGS_SCHEMA: dict[str, Any] = {
 VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["verdict", "explanation"],
+    "required": ["verdict", "explanation", "sources", "correction"],
     "properties": {
         "verdict": {
             "type": "string",
@@ -144,7 +158,7 @@ VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
         "sources": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "URLs or source identifiers used as evidence.",
+            "description": "URLs or source identifiers used as evidence. May be empty.",
         },
         "correction": {
             "type": ["string", "null"],
@@ -165,8 +179,19 @@ _CROSS_CHECK_TOOL_NAME = "submit_cross_check_findings"
 _VERIFICATION_TOOL_NAME = "submit_verification_verdict"
 
 
+def _strict_enabled() -> bool:
+    """Whether to attach ``"strict": true`` to tool definitions.
+
+    Strict mode uses grammar-constrained sampling to guarantee tool inputs
+    match the schema, eliminating the parse-failure tail. On by default;
+    set ``SPEC_CRITIC_STRICT_TOOLS=0`` to disable (e.g. if a future schema
+    construct is unsupported by the strict validator).
+    """
+    return os.environ.get("SPEC_CRITIC_STRICT_TOOLS", "1") != "0"
+
+
 def review_findings_tool() -> dict[str, Any]:
-    return {
+    tool: dict[str, Any] = {
         "name": _REVIEW_TOOL_NAME,
         "description": (
             "Submit the structured per-spec review output. Use this tool exactly "
@@ -174,10 +199,13 @@ def review_findings_tool() -> dict[str, Any]:
         ),
         "input_schema": REVIEW_FINDINGS_SCHEMA,
     }
+    if _strict_enabled():
+        tool["strict"] = True
+    return tool
 
 
 def cross_check_findings_tool() -> dict[str, Any]:
-    return {
+    tool: dict[str, Any] = {
         "name": _CROSS_CHECK_TOOL_NAME,
         "description": (
             "Submit the structured cross-spec coordination output. Use this "
@@ -186,10 +214,13 @@ def cross_check_findings_tool() -> dict[str, Any]:
         ),
         "input_schema": CROSS_CHECK_FINDINGS_SCHEMA,
     }
+    if _strict_enabled():
+        tool["strict"] = True
+    return tool
 
 
 def verification_verdict_tool() -> dict[str, Any]:
-    return {
+    tool: dict[str, Any] = {
         "name": _VERIFICATION_TOOL_NAME,
         "description": (
             "After consulting web search, submit the structured verification "
@@ -198,17 +229,28 @@ def verification_verdict_tool() -> dict[str, Any]:
         ),
         "input_schema": VERIFICATION_VERDICT_SCHEMA,
     }
+    if _strict_enabled():
+        tool["strict"] = True
+    return tool
 
 
 def review_tool_choice() -> dict[str, Any]:
-    # Cannot use {"type": "tool", "name": ...} together with thinking.
-    # Only one tool is exposed on review calls, so {"type": "any"} forces
-    # the same behavior while preserving adaptive thinking.
-    return {"type": "any", "disable_parallel_tool_use": True}
+    # Force the model to call submit_review_findings. Modern Anthropic models
+    # accept {"type": "tool", "name": ...} together with adaptive thinking;
+    # the prior {"type": "any"} workaround is no longer required.
+    return {
+        "type": "tool",
+        "name": _REVIEW_TOOL_NAME,
+        "disable_parallel_tool_use": True,
+    }
 
 
 def cross_check_tool_choice() -> dict[str, Any]:
-    return {"type": "any", "disable_parallel_tool_use": True}
+    return {
+        "type": "tool",
+        "name": _CROSS_CHECK_TOOL_NAME,
+        "disable_parallel_tool_use": True,
+    }
 
 
 # Verification cannot use a forcing tool_choice because the model needs to
@@ -220,11 +262,43 @@ def cross_check_tool_choice() -> dict[str, Any]:
 # Response unpacking
 # ---------------------------------------------------------------------------
 
+def _coerce_to_dict(value: Any) -> dict[str, Any] | None:
+    """Best-effort conversion of an SDK value to a plain dict.
+
+    Tool ``input`` payloads come back as plain dicts on the streaming path,
+    but the batch-results path sometimes returns a Pydantic model instead.
+    Without this coercion the caller silently falls back to text parsing,
+    which then mis-parses (or fails on) perfectly valid structured output.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    dumper = getattr(value, "model_dump", None)
+    if callable(dumper):
+        try:
+            data = dumper(mode="python", exclude_none=False)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    legacy_dumper = getattr(value, "dict", None)
+    if callable(legacy_dumper):
+        try:
+            data = legacy_dumper()
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return None
+
+
 def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] | None:
     """Pull the matching ``tool_use`` block's ``input`` off a response.
 
-    Returns the input dict if found, otherwise None. Tolerates both SDK
-    Pydantic objects and the plain dicts produced by batch result iteration.
+    Returns the input dict if found, otherwise None. Tolerates SDK
+    Pydantic objects, plain dicts, and Pydantic-model ``input`` payloads
+    (the batch retrieval path can return any of the three).
     """
     content = getattr(response, "content", None)
     if content is None and isinstance(response, dict):
@@ -246,8 +320,9 @@ def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] |
         binput = getattr(block, "input", None)
         if binput is None and isinstance(block, dict):
             binput = block.get("input")
-        if isinstance(binput, dict):
-            return binput
+        coerced = _coerce_to_dict(binput)
+        if coerced is not None:
+            return coerced
     return None
 
 

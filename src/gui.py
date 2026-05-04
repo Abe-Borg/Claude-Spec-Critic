@@ -38,7 +38,7 @@ from src.pipeline import (
 )
 from src.batch import BatchStatus, BatchJob
 from src.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
-from src.reviewer import MODEL_OPUS_46, REVIEW_MODELS, Finding
+from src.reviewer import MODEL_OPUS_47, REVIEW_MODELS, Finding
 from src.extractor import (
     extract_text,
     extract_context_text,
@@ -214,7 +214,7 @@ def load_batch_state() -> Optional[dict]:
                 review_request_ids=state.get("review_request_ids", []),
                 leed_alerts=state.get("leed_alerts", []),
                 placeholder_alerts=state.get("placeholder_alerts", []),
-                model=MODEL_OPUS_46,
+                model=MODEL_OPUS_47,
                 project_context=state.get("project_context", ""),
                 cycle_label=state.get("code_cycle", DEFAULT_CYCLE.label),
                 cross_check_enabled=state.get("cross_check_enabled", False),
@@ -947,7 +947,7 @@ class SpecReviewApp(_CTkDnDRoot):
         """
         from .tokenizer import count_tokens_via_api
         from .prompts import get_single_spec_user_message, get_system_prompt
-        from .reviewer import MODEL_OPUS_46 as _model
+        from .reviewer import MODEL_OPUS_47 as _model
         from .review_modes import DEFAULT_REVIEW_MODE
 
         biggest = max(file_data, key=lambda d: d["tokens"])
@@ -1158,7 +1158,7 @@ class SpecReviewApp(_CTkDnDRoot):
         mode = "batch" if self._is_batch_mode else "real-time"
         self._diagnostics_report = DiagnosticsReport(
             mode=mode,
-            model=MODEL_OPUS_46,
+            model=MODEL_OPUS_47,
             cycle_label=self._selected_cycle_label,
             files_selected=[p.name for p in selected_files],
             project_context_tokens=self._project_context_tokens,
@@ -1240,7 +1240,7 @@ class SpecReviewApp(_CTkDnDRoot):
                 input_dir=self.input_dir,
                 files=self._selected_files_for_review,
                 project_context=self._project_context_for_review,
-                model=MODEL_OPUS_46,
+                model=MODEL_OPUS_47,
                 verify=True,
                 cross_check=self._cross_check_for_review,
                 dry_run=False, verbose=False,
@@ -1615,7 +1615,7 @@ class SpecReviewApp(_CTkDnDRoot):
                 input_dir=self.input_dir,
                 files=self._selected_files_for_review,
                 project_context=self._project_context_for_review,
-                model=MODEL_OPUS_46,
+                model=MODEL_OPUS_47,
                 cycle=AVAILABLE_CYCLES.get(self._selected_cycle_label, DEFAULT_CYCLE),
                 cross_check_enabled=self._cross_check_for_review,
                 export_mode=self._export_mode_for_review,

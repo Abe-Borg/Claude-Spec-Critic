@@ -231,7 +231,8 @@ def test_sonnet_default_can_be_disabled(monkeypatch):
     monkeypatch.delenv("SPEC_CRITIC_VERIFICATION_MODEL", raising=False)
     import src.api_config as api_config
     importlib.reload(api_config)
-    assert api_config.VERIFICATION_MODEL_DEFAULT == api_config.MODEL_OPUS_46
+    # Opus-everywhere fallback now points at Opus 4.7.
+    assert api_config.VERIFICATION_MODEL_DEFAULT == api_config.MODEL_OPUS_47
 
 
 def test_should_escalate_for_critical_when_sonnet_default(monkeypatch):
