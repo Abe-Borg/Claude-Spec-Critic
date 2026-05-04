@@ -58,7 +58,10 @@ class TestPromptCaching:
         block = payload[0]
         assert block["type"] == "text"
         assert block["text"] == "system text"
-        assert block["cache_control"] == {"type": "ephemeral"}
+        # Default TTL is 1h; cache_control must always carry type=ephemeral.
+        cc = block["cache_control"]
+        assert cc["type"] == "ephemeral"
+        assert cc.get("ttl") == "1h"
 
     def test_system_prompt_with_cache_returns_string_when_disabled(self, monkeypatch):
         monkeypatch.setenv("SPEC_CRITIC_PROMPT_CACHE", "0")
@@ -69,7 +72,9 @@ class TestPromptCaching:
         monkeypatch.setenv("SPEC_CRITIC_PROMPT_CACHE", "1")
         cached = tools_with_cache([{"name": "a"}, {"name": "b"}])
         assert "cache_control" not in cached[0]
-        assert cached[1]["cache_control"] == {"type": "ephemeral"}
+        cc = cached[1]["cache_control"]
+        assert cc["type"] == "ephemeral"
+        assert cc.get("ttl") == "1h"
         # Original list/dicts should not be mutated.
         assert cached[1] is not cached[0]
 
@@ -297,9 +302,11 @@ class TestRequestShapeWiring:
         req = _build_retry_request("prompt body", cycle=DEFAULT_CYCLE)
         # System should be a list of cache-tagged blocks.
         assert isinstance(req["system"], list)
-        assert req["system"][0]["cache_control"] == {"type": "ephemeral"}
+        sys_cc = req["system"][0]["cache_control"]
+        assert sys_cc["type"] == "ephemeral"
         # Last tool should carry cache_control.
-        assert req["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+        tool_cc = req["tools"][-1]["cache_control"]
+        assert tool_cc["type"] == "ephemeral"
         # Verification cap should be the modest value, not 128k.
         assert req["max_tokens"] == VERIFICATION_OUTPUT_CAP
 
@@ -314,7 +321,8 @@ class TestRequestShapeWiring:
             cycle=DEFAULT_CYCLE,
         )
         assert isinstance(req["system"], list)
-        assert req["system"][0]["cache_control"] == {"type": "ephemeral"}
+        sys_cc = req["system"][0]["cache_control"]
+        assert sys_cc["type"] == "ephemeral"
         # Continuation has user/assistant/user pattern.
         roles = [m["role"] for m in req["messages"]]
         assert roles == ["user", "assistant", "user"]

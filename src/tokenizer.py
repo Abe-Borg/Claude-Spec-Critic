@@ -5,8 +5,8 @@ Uses tiktoken with cl100k_base for approximate preflight estimates.
 These counts are used for guardrails, not exact billing.
 
 Token limits (v2.3.0):
-    - Claude Opus 4.6 context window: 1,000,000 tokens
-    - Opus 4.6 max output: 128,000 tokens
+    - Claude Opus 4.7 context window: 1,000,000 tokens
+    - Opus 4.7 max output: 128,000 tokens
     - Sonnet 4.6 max output: 64,000 tokens
     - Per-spec recommended input limit: 500,000 tokens
       (practical limit — individual specs are reviewed one at a time)
@@ -36,11 +36,10 @@ _log = logging.getLogger(__name__)
 # Model limits
 # ---------------------------------------------------------------------------
 
-# Claude Opus 4.6 context window (GA as of March 13, 2026)
-# No beta header required. Standard pricing across the full window.
+# Claude Opus 4.7 context window (1M tokens, no beta header required).
 MAX_CONTEXT_TOKENS = 1_000_000
 
-# Opus 4.6 max output tokens
+# Opus 4.7 max output tokens
 MAX_OUTPUT_TOKENS_OPUS = 128_000
 # Sonnet 4.6 max output tokens
 MAX_OUTPUT_TOKENS_SONNET = 64_000
@@ -67,9 +66,9 @@ PROJECT_CONTEXT_MAX_TOKENS = 100_000
 # Cross-check limits (v2.2.0)
 # ---------------------------------------------------------------------------
 
-# Cross-check uses Opus 4.6 with full spec content and adaptive thinking.
+# Cross-check uses Opus 4.7 with full spec content and adaptive thinking.
 # With thinking enabled, thinking tokens + text output share the max_tokens budget.
-# Opus 4.6 supports up to 128K output tokens. Cross-check reserves the
+# Opus 4.7 supports up to 128K output tokens. Cross-check reserves the
 # full output budget so adaptive thinking + text output can use it.
 # Budget: 1M context - 128K output reserve - 50K overhead = 822K
 CROSS_CHECK_OVERHEAD = 50_000

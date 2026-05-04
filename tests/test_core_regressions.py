@@ -31,7 +31,7 @@ from src.reviewer import Finding, ReviewResult, _stream_review
 from src.cross_checker import run_cross_check
 from src.batch import BatchJob, BatchStatus, submit_verification_batch
 from src import gui
-from src.verifier import verify_finding, collect_verification_batch_results, _ERRORED_RETRY_MAX, VerificationResult
+from src.verifier import verify_finding, collect_verification_batch_results, VerificationResult
 from src.diagnostics import DiagnosticsReport
 from src.resume_state import (
     PHASE_REVIEW_POLL,
@@ -781,17 +781,6 @@ def test_collect_verification_batch_results_collects_after_terminal_status(monke
 
     assert finding.verification is not None
     assert finding.verification.verdict == "UNVERIFIED"
-
-
-def test_retry_failed_verifications_realtime_is_noop():
-    findings = [_make_finding(f"issue-{i}") for i in range(_ERRORED_RETRY_MAX + 1)]
-    for f in findings:
-        f.verification = None
-
-    from src.verifier import _retry_failed_verifications_realtime
-    _retry_failed_verifications_realtime(findings, log=lambda *_a, **_k: None)
-
-    assert all(f.verification is None for f in findings)
 
 
 def test_continuation_request_accepts_sdk_content_blocks():

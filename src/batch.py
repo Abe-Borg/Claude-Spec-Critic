@@ -9,16 +9,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from .prompts import get_system_prompt, get_single_spec_user_message
-from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_46
+from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
 from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET, count_tokens
 from .api_config import (
     BATCH_MAX_OUTPUT_TOKENS,
     BATCH_OUTPUT_BETA,
+    LARGE_REVIEW_INPUT_THRESHOLD,
+    OPUS_MODELS,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     WEB_SEARCH_TOOL,
     assert_extended_output_allowed,
+    batch_service_tier,
     extract_cache_usage,
     review_max_tokens,
     system_prompt_with_cache,
@@ -67,7 +70,7 @@ def submit_review_batch(
     specs: list,
     *,
     project_context: str = "",
-    model: str = MODEL_OPUS_46,
+    model: str = MODEL_OPUS_47,
     cycle: CodeCycle = DEFAULT_CYCLE,
     retry_instruction: str | None = None,
     mode: ReviewMode = DEFAULT_REVIEW_MODE,
@@ -77,31 +80,40 @@ def submit_review_batch(
     client = _get_client()
     system_prompt = get_system_prompt(cycle, mode=mode)
     system_payload = system_prompt_with_cache(system_prompt)
-    use_extended_output = model == MODEL_OPUS_46
-    # Local token estimate sized so the per-spec dispatcher can pick the
-    # right cap without an extra API call. Conservative; only used to
-    # decide between standard and extended-output sizing.
+    # The 300k extended-output beta is only useful for genuinely large reviews.
+    # Earlier versions enabled it by model identity alone, which meant every
+    # batch request asked for 300k output regardless of input size — bypassing
+    # the per-call cap and disabling cost guards. Now: the model must support
+    # extended output AND the input must be large enough to plausibly need it.
+    model_supports_extended = model in OPUS_MODELS
     system_tokens = count_tokens(system_prompt)
     use_structured = structured_outputs_enabled()
     structured_tools = tools_with_cache([review_findings_tool()]) if use_structured else None
     structured_choice = review_tool_choice() if use_structured else None
     batch_requests = []
     request_map = {}
+    any_extended_output = False
     for idx, spec in enumerate(specs):
         custom_id = f"review__{_sanitize_custom_id(spec.filename)}__{idx}"
         user_message = get_single_spec_user_message(spec.content, spec.filename, project_context=project_context, cycle=cycle, mode=mode)
         if retry_instruction:
             user_message += f"\n\n{retry_instruction}"
         approx_input_tokens = system_tokens + count_tokens(user_message)
+        allow_extended = (
+            model_supports_extended
+            and approx_input_tokens >= LARGE_REVIEW_INPUT_THRESHOLD
+        )
+        if allow_extended:
+            any_extended_output = True
         output_limit = review_max_tokens(
             batch=True,
             model=model,
             input_tokens=approx_input_tokens,
-            allow_extended_output=use_extended_output,
+            allow_extended_output=allow_extended,
         )
         # Fail-fast guard: 300k requires the batch beta header. Plan Sprint
         # 2 item 8 — never let a 300k request slip through without it.
-        betas = [BATCH_OUTPUT_BETA] if hasattr(client, "beta") else None
+        betas = [BATCH_OUTPUT_BETA] if (allow_extended and hasattr(client, "beta")) else None
         assert_extended_output_allowed(max_tokens=output_limit, betas=betas)
         params: dict[str, Any] = {
             "model": model,
@@ -110,6 +122,9 @@ def submit_review_batch(
             "system": system_payload,
             "messages": [{"role": "user", "content": user_message}],
         }
+        tier = batch_service_tier()
+        if tier:
+            params["service_tier"] = tier
         if use_structured:
             # Phase 2.4: same tool-forcing behavior as the streaming path so
             # batch results can be unpacked from a tool_use block instead of
@@ -119,9 +134,10 @@ def submit_review_batch(
         batch_requests.append({"custom_id": custom_id, "params": params})
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}
 
-    create_fn = client.beta.messages.batches.create if hasattr(client, "beta") else client.messages.batches.create
-    kwargs = {"requests": batch_requests}
-    if hasattr(client, "beta"):
+    use_beta = any_extended_output and hasattr(client, "beta")
+    create_fn = client.beta.messages.batches.create if use_beta else client.messages.batches.create
+    kwargs: dict[str, Any] = {"requests": batch_requests}
+    if use_beta:
         kwargs["betas"] = [BATCH_OUTPUT_BETA]
     mb = create_fn(**kwargs)
     return BatchJob(batch_id=mb.id, job_type="review", request_map=request_map, created_at=time.time())
@@ -311,7 +327,7 @@ def _build_verification_request_params(
     tool_list: list[dict] = [WEB_SEARCH_TOOL]
     if structured_outputs_enabled():
         tool_list.append(verification_verdict_tool())
-    return {
+    params: dict[str, Any] = {
         "model": selected_model,
         "max_tokens": verification_max_tokens(model=selected_model),
         "thinking": {"type": "adaptive"},
@@ -319,6 +335,10 @@ def _build_verification_request_params(
         "tools": tools_with_cache(tool_list),
         "messages": messages,
     }
+    tier = batch_service_tier()
+    if tier:
+        params["service_tier"] = tier
+    return params
 
 
 def submit_verification_batch(
@@ -350,11 +370,10 @@ def submit_verification_batch(
         )
         request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx, "model": model or VERIFICATION_MODEL}
 
-    create_fn = client.beta.messages.batches.create if hasattr(client, "beta") else client.messages.batches.create
-    kwargs = {"requests": reqs}
-    if hasattr(client, "beta"):
-        kwargs["betas"] = [BATCH_OUTPUT_BETA]
-    mb = create_fn(**kwargs)
+    # Verification output is capped at 32k, well within both Sonnet and Opus
+    # base ceilings, so the 300k extended-output beta is not needed. Use the
+    # standard batches endpoint.
+    mb = client.messages.batches.create(requests=reqs)
 
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
@@ -366,11 +385,7 @@ def submit_verification_followup_wave(
     if not requests:
         raise ValueError("No verification follow-up requests to submit")
     client = _get_client()
-    create_fn = client.beta.messages.batches.create if hasattr(client, "beta") else client.messages.batches.create
-    kwargs = {"requests": requests}
-    if hasattr(client, "beta"):
-        kwargs["betas"] = [BATCH_OUTPUT_BETA]
-    mb = create_fn(**kwargs)
+    mb = client.messages.batches.create(requests=requests)
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
 

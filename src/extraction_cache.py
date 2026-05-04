@@ -231,13 +231,15 @@ def token_count_cache_key(
     project_context: str = "",
     cycle_label: str = "",
     mode: str = "",
+    tools: Optional[list[dict]] = None,
     extra: Optional[dict] = None,
 ) -> str:
     """Deterministic digest of inputs that influence the API token count.
 
-    Including ``cycle_label`` and ``mode`` prevents collisions when the same
-    spec is reviewed under a different code cycle or review mode (the system
-    prompt and user message would already differ, but explicit is better).
+    Including ``cycle_label``, ``mode``, and ``tools`` prevents collisions
+    when the same spec is reviewed under a different code cycle, review
+    mode, or tool definition (each of which materially changes the input
+    token count).
     """
     h = hashlib.sha256()
     parts = [
@@ -248,6 +250,15 @@ def token_count_cache_key(
         cycle_label or "",
         mode or "",
     ]
+    if tools:
+        # Hash the tool list as a stable JSON serialization so any change to
+        # tool definitions (schema, description, name, strict flag) busts
+        # the cache.
+        import json as _json
+        try:
+            parts.append(_json.dumps(tools, sort_keys=True, default=str))
+        except Exception:
+            parts.append(str(tools))
     if extra:
         for k in sorted(extra.keys()):
             parts.append(f"{k}={extra[k]}")

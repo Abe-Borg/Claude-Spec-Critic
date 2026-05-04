@@ -21,7 +21,7 @@ from .extraction_cache import (
 )
 from .preprocessor import preprocess_spec, detect_inconsistent_file_naming
 from .tokenizer import RECOMMENDED_MAX, count_tokens, count_tokens_via_api, exceeds_per_call_limit
-from .reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_46, StreamCallback
+from .reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_47, StreamCallback
 from .batch import BatchJob, submit_review_batch, retrieve_review_results
 from .batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from .api_config import token_count_preflight_enabled
@@ -331,24 +331,29 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         # Pick the largest spec by local count and verify the API agrees.
         biggest = max(specs, key=lambda s: count_tokens(s.content))
         from .prompts import get_single_spec_user_message
+        from .structured_schemas import review_findings_tool, structured_outputs_enabled
         user_message = get_single_spec_user_message(biggest.content, biggest.filename, project_context=project_context, cycle=cycle, mode=mode)
-        # Phase 9 plan 13.2: re-use the exact API count when nothing relevant
-        # changed. The cache key includes model + cycle + mode + content so a
-        # later run with a different cycle still preflights correctly.
+        # Match the actual request shape: when structured outputs are on, the
+        # tool definition adds real input tokens that the preflight should
+        # count. Including tools in the cache key prevents stale hits when
+        # the tool schema changes between runs.
+        preflight_tools = [review_findings_tool()] if structured_outputs_enabled() else None
         cache_key = token_count_cache_key(
-            model=MODEL_OPUS_46,
+            model=MODEL_OPUS_47,
             system_prompt=system_prompt,
             user_message=user_message,
             project_context=project_context,
             cycle_label=cycle.label,
             mode=mode.value,
+            tools=preflight_tools,
         )
         exact = get_cached_token_count(cache_key)
         if exact is None:
             exact = count_tokens_via_api(
-                model=MODEL_OPUS_46,
+                model=MODEL_OPUS_47,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
+                tools=preflight_tools,
             )
             if exact is not None:
                 cache_token_count(cache_key, exact)
@@ -387,7 +392,7 @@ class BatchSubmission:
     review_request_ids: list[str] = field(default_factory=list)
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
-    model: str = MODEL_OPUS_46
+    model: str = MODEL_OPUS_47
     project_context: str = ""
     prepared_specs: list[ExtractedSpec] | None = None
     cycle_label: str = DEFAULT_CYCLE.label
@@ -399,7 +404,7 @@ class BatchSubmission:
     review_mode: str = DEFAULT_REVIEW_MODE.value
 
 
-def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_46, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, export_mode: bool = False, mode: ReviewMode | str | None = None) -> BatchSubmission:
+def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_47, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, export_mode: bool = False, mode: ReviewMode | str | None = None) -> BatchSubmission:
     review_mode = coerce_review_mode(mode)
     prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode)
     job = submit_review_batch(prepared.specs, project_context=project_context, model=model, cycle=cycle, mode=review_mode)
@@ -455,9 +460,9 @@ def _recover_retryable_review_batch_results(
         model=submission.model,
         cycle=cycle,
         retry_instruction=(
-            "This is a retry of a previously truncated review. Return ONLY the findings JSON "
-            "inside <findings_json> tags. Do not include an analysis summary. Focus on "
-            "completing the structured output."
+            "This is a retry of a previously truncated review. Submit findings via the "
+            "submit_review_findings tool with analysis_summary set to an empty string. "
+            "Spend the entire output budget on the findings array."
         ),
         mode=coerce_review_mode(submission.review_mode),
     )
@@ -844,7 +849,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
     )
 
 
-def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_46, verify: bool = True, cross_check: bool = False, dry_run: bool = False, verbose: bool = False, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode | str | None = None) -> PipelineResult:
+def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_47, verify: bool = True, cross_check: bool = False, dry_run: bool = False, verbose: bool = False, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode | str | None = None) -> PipelineResult:
     start = time.time()
     review_mode = coerce_review_mode(mode)
     prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode)
