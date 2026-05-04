@@ -235,23 +235,15 @@ def verification_verdict_tool() -> dict[str, Any]:
 
 
 def review_tool_choice() -> dict[str, Any]:
-    # Force the model to call submit_review_findings. Modern Anthropic models
-    # accept {"type": "tool", "name": ...} together with adaptive thinking;
-    # the prior {"type": "any"} workaround is no longer required.
-    return {
-        "type": "tool",
-        "name": _REVIEW_TOOL_NAME,
-        "disable_parallel_tool_use": True,
-    }
-
+    # Any forcing tool_choice ({"type": "tool", "name": ...} or {"type": "any"})
+    # is rejected by the API when ``thinking`` is enabled. Use {"type": "auto"}
+    # so adaptive thinking is preserved; with only one tool exposed and the
+    # system prompt instructing the model to call it, the tool is reliably
+    # invoked, and the tagged-JSON parser stays as a fallback.
+    return {"type": "auto", "disable_parallel_tool_use": True}
 
 def cross_check_tool_choice() -> dict[str, Any]:
-    return {
-        "type": "tool",
-        "name": _CROSS_CHECK_TOOL_NAME,
-        "disable_parallel_tool_use": True,
-    }
-
+    return {"type": "auto", "disable_parallel_tool_use": True}
 
 # Verification cannot use a forcing tool_choice because the model needs to
 # call ``web_search`` first; instead the prompt instructs the model to emit
