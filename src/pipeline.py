@@ -33,7 +33,7 @@ from .verifier import (
     prepare_findings_for_verification,
     VerificationResult,
 )
-from .verification_cache import VerificationCache
+from .verification_cache import VerificationCache, cache_persist_enabled
 from .cross_checker import run_cross_check, run_chunked_cross_check
 from .code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 from .prompts import get_system_prompt
@@ -71,6 +71,54 @@ def _phase_tagged_progress(progress: ProgressFn, phase: str) -> ProgressFn:
     return _on_progress
 
 def _noop_progress(_: float, __: str, **_kwargs: object) -> None: return
+
+
+def _make_verification_cache(*, log: LogFn = _noop_log) -> VerificationCache:
+    """Construct a verification cache, prepopulated from disk when enabled.
+
+    Persistence is opt-out (``SPEC_CRITIC_VERIFICATION_CACHE_PERSIST=0``
+    disables it). Load failures (missing file on first run, corrupt JSON,
+    schema mismatch) silently fall back to an empty cache so a fresh user
+    is never blocked by cache state.
+    """
+    cache = VerificationCache()
+    if not cache_persist_enabled():
+        return cache
+    try:
+        loaded = cache.load_from_disk()
+    except Exception as exc:  # pragma: no cover - defensive
+        log(f"Verification cache: load failed ({exc}); starting fresh.", level="warning")
+        return cache
+    if loaded:
+        stats = cache.stats()
+        expired_part = (
+            f", {stats['expired_on_load']} expired"
+            if stats.get("expired_on_load")
+            else ""
+        )
+        log(
+            f"Verification cache: loaded {loaded} entry(ies) from disk"
+            f"{expired_part}.",
+            level="info",
+        )
+    return cache
+
+
+def _persist_verification_cache(cache: VerificationCache, *, log: LogFn = _noop_log) -> None:
+    """Save the in-memory cache to disk if persistence is enabled.
+
+    Failures are logged but never raised — a save failure should not abort
+    a run that has already produced findings.
+    """
+    if not cache_persist_enabled():
+        return
+    try:
+        size = cache.save_to_disk()
+    except Exception as exc:  # pragma: no cover - defensive
+        log(f"Verification cache: save failed ({exc}).", level="warning")
+        return
+    if size:
+        log(f"Verification cache: saved {size} entry(ies) to disk.", level="info")
 
 
 @dataclass
@@ -574,7 +622,9 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
 
     # Phase 3: one cache per pipeline run lets the cross-check verification
     # phase reuse evidence already gathered during review verification.
-    cache = VerificationCache()
+    # Phase 10: the cache also persists to disk between runs so the same
+    # claim verified yesterday isn't re-verified today.
+    cache = _make_verification_cache(log=log)
 
     state = collect_review_batch_results(submission, log=log)
 
@@ -669,6 +719,7 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
             f"{cache_stats['misses']} misses across {cache_stats['size']} unique claim(s).",
             level="info",
         )
+    _persist_verification_cache(cache, log=log)
 
     progress(100.0, "Done.")
     return finalize_batch_result(state)
@@ -877,7 +928,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
 
     findings = _deduplicate_findings(findings)
     cross = None
-    cache = VerificationCache()
+    cache = _make_verification_cache(log=log)
     verify_progress = _phase_tagged_progress(progress, "verification")
     if verify and findings:
         try:
@@ -906,5 +957,6 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
         combined.thinking += "\n\n--- Review Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
         # --- FIX 2b: Surface per-spec errors on combined result ---
         combined.error = f"{len(errors)} spec(s) had errors: " + "; ".join(errors)
+    _persist_verification_cache(cache, log=log)
     progress(100.0, "Done.")
     return PipelineResult(review_result=combined, files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cross_check_result=cross, cycle_label=cycle.label, total_elapsed_seconds=combined.elapsed_seconds)

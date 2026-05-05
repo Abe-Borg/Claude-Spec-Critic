@@ -14,8 +14,10 @@ from .tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .api_config import (
     CROSS_CHECK_MODEL_DEFAULT,
+    SYNTHESIS_MODEL_DEFAULT,
     cross_check_max_tokens,
     extract_cache_usage,
+    synthesis_max_tokens,
     system_prompt_with_cache,
 )
 from .structured_schemas import (
@@ -441,10 +443,16 @@ def _run_cross_discipline_synthesis(
     chunk_results: list[tuple[str, ReviewResult]],
     *,
     cycle: CodeCycle,
-    model: str,
+    model: str | None = None,
     log: LogFn = _noop_log,
 ) -> tuple[list[Finding], str]:
     """Second LLM pass that surfaces coordination issues spanning chunks.
+
+    Defaults to ``SYNTHESIS_MODEL_DEFAULT`` (Haiku 4.5). The synthesis input
+    is per-chunk finding summaries (severity / file / section / issue, ≤300
+    chars each) — bounded input, bounded output, correlation over already-
+    classified items. Haiku handles this faithfully at materially lower cost
+    than the previous Opus default.
 
     Returns ``(findings, summary_text)``. On any failure path, returns an
     empty findings list — the local merge in :func:`_synthesize_chunk_findings`
@@ -453,15 +461,18 @@ def _run_cross_discipline_synthesis(
     """
     completed_chunks = [(cid, r) for cid, r in chunk_results if r.cross_check_status == "completed"]
     finding_count = sum(len(r.findings) for _, r in completed_chunks)
+    # Need at least two completed chunks to have anything to *synthesize across*.
+    # A single chunk can't produce cross-discipline findings.
     if len(completed_chunks) < 2 or finding_count == 0:
         return [], ""
 
+    selected_model = model or SYNTHESIS_MODEL_DEFAULT
     system_prompt = _cross_discipline_synthesis_system_prompt(cycle)
     user_message = _build_cross_discipline_synthesis_input(chunk_results)
-    output_limit = cross_check_max_tokens(model=model)
+    output_limit = synthesis_max_tokens(model=selected_model)
 
     request_kwargs: dict = {
-        "model": model,
+        "model": selected_model,
         "max_tokens": output_limit,
         "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(system_prompt),
@@ -561,9 +572,12 @@ def _synthesize_chunk_findings(
 
     # Cross-discipline synthesis pass — recovers coordination findings that
     # span chunk boundaries (e.g., HVAC vs. plumbing in the same shaft) which
-    # the per-chunk passes cannot see by construction.
+    # the per-chunk passes cannot see by construction. Defaults to Haiku
+    # (configured via ``SPEC_CRITIC_SYNTHESIS_MODEL``); the ``fallback_model``
+    # parameter is preserved for callers that want to pin the synthesis pass
+    # to the same model the per-chunk pass used.
     synthesized, synthesis_summary = _run_cross_discipline_synthesis(
-        chunk_results, cycle=cycle, model=fallback_model, log=log,
+        chunk_results, cycle=cycle, log=log,
     )
     if synthesized:
         findings.extend(synthesized)

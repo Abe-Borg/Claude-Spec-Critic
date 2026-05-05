@@ -29,6 +29,8 @@ from .api_config import (
     system_prompt_with_cache,
     tools_with_cache,
     verification_max_tokens,
+    web_search_max_uses_for_severity,
+    web_search_tool_for_severity,
     WEB_SEARCH_TOOL,
 )
 from .verification_cache import VerificationCache
@@ -170,7 +172,8 @@ def _get_verification_system_prompt(cycle: CodeCycle) -> str:
         f"Energy Code {cycle.energy_code}, CALGreen {cycle.calgreen}, ASCE {cycle.asce7}.",
         "",
         "Search budget:",
-        "- You have a maximum of 5 web_search calls. Plan accordingly.",
+        "- Your web_search budget is bounded and varies by severity (high-stakes findings",
+        "  get more headroom). The exact ceiling is enforced per call; treat it as scarce.",
         "- Make your first query specific enough (include code section, edition, and the",
         "  exact claim being checked) so most findings settle in one or two searches.",
         "- Use additional searches only when a primary source contradicts a secondary one,",
@@ -494,7 +497,13 @@ def _run_verification_call(
     prompt = _build_verification_prompt(finding, cycle=cycle)
     system_prompt = _get_verification_system_prompt(cycle)
     system_payload = system_prompt_with_cache(system_prompt)
-    tools_payload = tools_with_cache([WEB_SEARCH_TOOL])
+    # Per-severity web_search budget. CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3.
+    # The web_search tool is the first entry in the tools list; the prompt-
+    # cache breakpoint sits on the *last* tool, so changing max_uses by
+    # severity only varies the cache prefix (one cache entry per severity
+    # tier) and never invalidates the verdict-tool cache.
+    severity_tool = web_search_tool_for_severity(finding.severity)
+    tools_payload = tools_with_cache([severity_tool])
     output_limit = verification_max_tokens(model=model)
 
     for attempt in range(max_retries + 1):
@@ -581,11 +590,10 @@ def _run_verification_call(
                         search_successes=success_blocks,
                     )
                 parsed = _parse_verification_response(response_text)
-            if all_search_urls:
-                existing = set(parsed.sources)
-                for url in all_search_urls:
-                    if url not in existing:
-                        parsed.sources.append(url)
+            # Source trimming: keep only the URLs the model actually cited
+            # in its ``submit_verification_verdict`` payload. The full set of
+            # URLs the model saw across all web_search calls is preserved in
+            # ``successful_source_count`` for diagnostics; reports stay clean.
             parsed.grounded = True
             parsed.model_used = model
             parsed.escalated = escalated
@@ -630,12 +638,20 @@ def prepare_findings_for_verification(
     cache: VerificationCache | None = None,
     log: Callable[..., None] = lambda *_a, **_k: None,
 ) -> list[Finding]:
-    """Apply Phase 3 pre-pass: local skip + cache lookup.
+    """Apply Phase 3 pre-pass: local skip + cache lookup + Haiku triage.
 
     Mutates ``findings`` in place — any finding that resolves locally
-    (local-skip classification or cache hit) gets ``f.verification`` set
-    here. Returns the subset of findings that still need a remote
-    verification call.
+    (keyword classifier, Haiku triage, or cache hit) gets
+    ``f.verification`` set here. Returns the subset of findings that still
+    need a remote verification call.
+
+    Order of operations:
+      1. Keyword classifier (free, instant) — drops obvious editorial gripes.
+      2. Cache lookup — reuses prior grounded verdicts for identical claims.
+      3. Haiku triage (when ``SPEC_CRITIC_HAIKU_TRIAGE=1``) — flexible
+         classifier over what the keyword path could not resolve. Eligibility
+         is enforced in :mod:`triage`: CRITICAL/HIGH severity and findings
+         with a non-empty ``codeReference`` are never skipped.
     """
     remaining: list[Finding] = []
     skipped_local = 0
@@ -652,10 +668,38 @@ def prepare_findings_for_verification(
                 cache_hits += 1
                 continue
         remaining.append(f)
-    if skipped_local or cache_hits:
+
+    haiku_skipped = 0
+    # Haiku triage runs after the keyword classifier and cache lookup so it
+    # only sees findings the cheaper paths could not resolve. The Haiku
+    # module is responsible for its own no-op short-circuit when the
+    # feature flag is off.
+    from .triage import classify_findings_with_haiku, filter_local_skips, haiku_triage_enabled
+
+    if haiku_triage_enabled() and remaining:
+        classifications = classify_findings_with_haiku(remaining, log=log)
+        if classifications:
+            still_remaining: list[Finding] = []
+            skip_indices = set(filter_local_skips(remaining, classifications))
+            for idx, f in enumerate(remaining):
+                if idx in skip_indices:
+                    f.verification = _local_skip_result(
+                        "Locally classified by Haiku triage: external grounding not "
+                        "required for this finding."
+                    )
+                    haiku_skipped += 1
+                    continue
+                still_remaining.append(f)
+            remaining = still_remaining
+
+    if skipped_local or cache_hits or haiku_skipped:
+        triage_part = (
+            f", {haiku_skipped} Haiku-skipped" if haiku_skipped else ""
+        )
         log(
             f"Verification pre-pass: {skipped_local} locally skipped, "
-            f"{cache_hits} cache hits, {len(remaining)} require web verification.",
+            f"{cache_hits} cache hits{triage_part}, "
+            f"{len(remaining)} require web verification.",
             level="info",
         )
     return remaining
@@ -721,26 +765,41 @@ def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFA
     )
 
 
-def _build_retry_request(prompt: str, *, cycle: CodeCycle, model: str | None = None) -> dict:
+def _build_retry_request(
+    prompt: str,
+    *,
+    cycle: CodeCycle,
+    model: str | None = None,
+    severity: str | None = None,
+) -> dict:
     selected = model or initial_verification_model()
+    web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
     return {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected),
         "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
-        "tools": tools_with_cache([WEB_SEARCH_TOOL]),
+        "tools": tools_with_cache([web_tool]),
         "messages": [{"role": "user", "content": prompt}],
     }
 
 
-def _build_continuation_request(prompt: str, assistant_content_blocks: list, *, cycle: CodeCycle, model: str | None = None) -> dict:
+def _build_continuation_request(
+    prompt: str,
+    assistant_content_blocks: list,
+    *,
+    cycle: CodeCycle,
+    model: str | None = None,
+    severity: str | None = None,
+) -> dict:
     selected = model or initial_verification_model()
+    web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
     return {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected),
         "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
-        "tools": tools_with_cache([WEB_SEARCH_TOOL]),
+        "tools": tools_with_cache([web_tool]),
         "messages": [
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": assistant_content_blocks},
@@ -820,11 +879,10 @@ def _classify_wave_results(
                 outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=parsed.explanation))
                 continue
         search_urls, success_blocks, error_count = _collect_search_evidence(message)
-        if search_urls:
-            existing = set(parsed.sources)
-            for url in search_urls:
-                if url not in existing:
-                    parsed.sources.append(url)
+        # Source trimming (Phase 10): keep only the model's cited sources from
+        # the structured verdict payload. ``successful_source_count`` still
+        # records how many distinct URLs the model retrieved across searches
+        # so diagnostics retain the full evidence-gathering picture.
         # Phase 3 evidence model: stamp grounding/source counts so the
         # downstream invariant can downgrade ungrounded verified verdicts.
         parsed.grounded = success_blocks > 0
@@ -963,17 +1021,19 @@ def collect_verification_batch_results(
         for item in needs_retry:
             original = request_contexts[item.original_custom_id]
             wave_model = original.get("model") or initial_verification_model()
+            wave_severity = (findings[item.finding_idx].severity or "").strip().upper() or "GRIPES"
             custom_id = f"verify_retry_{wave_index + 1}__{item.original_custom_id}"
-            next_requests.append({"custom_id": custom_id, "params": _build_retry_request(original["original_prompt"], cycle=cycle, model=wave_model)})
-            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "retry", "model": wave_model}
-            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False)}
+            next_requests.append({"custom_id": custom_id, "params": _build_retry_request(original["original_prompt"], cycle=cycle, model=wave_model, severity=wave_severity)})
+            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "retry", "model": wave_model, "severity": wave_severity}
+            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False), "severity": wave_severity}
         for item in needs_continue:
             original = request_contexts[item.original_custom_id]
             wave_model = original.get("model") or initial_verification_model()
+            wave_severity = (findings[item.finding_idx].severity or "").strip().upper() or "GRIPES"
             custom_id = f"verify_cont_{wave_index + 1}__{item.original_custom_id}"
-            next_requests.append({"custom_id": custom_id, "params": _build_continuation_request(original["original_prompt"], item.assistant_content_blocks or [], cycle=cycle, model=wave_model)})
-            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "continuation", "model": wave_model}
-            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False)}
+            next_requests.append({"custom_id": custom_id, "params": _build_continuation_request(original["original_prompt"], item.assistant_content_blocks or [], cycle=cycle, model=wave_model, severity=wave_severity)})
+            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "continuation", "model": wave_model, "severity": wave_severity}
+            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False), "severity": wave_severity}
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         current_job = submit_verification_followup_wave(next_requests, next_request_map)
         request_contexts = next_contexts

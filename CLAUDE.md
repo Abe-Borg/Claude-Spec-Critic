@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v2.10.0
+# CLAUDE.md — Spec Critic v2.11.0
 
 This document is the engineering/operator reference for the Spec Critic codebase. It is intentionally implementation-focused and should be kept aligned with the actual runtime behavior in `src/`.
 
@@ -10,7 +10,7 @@ Spec Critic is a Python desktop application that performs AI-assisted review of 
 
 ```
 src/
-├── __init__.py             # Package version (2.10.0)
+├── __init__.py             # Package version (2.11.0)
 ├── gui.py                  # CustomTkinter GUI — all user interaction
 ├── widgets.py              # Reusable UI components
 ├── pipeline.py             # Core orchestration + FindingGroup/FindingOccurrence
@@ -22,7 +22,8 @@ src/
 ├── cross_checker.py        # Cross-spec coordination (chunked by CSI division)
 ├── verifier.py             # Verification (Sonnet/Opus routing, real-time fallback)
 ├── verification_router.py  # Initial / escalation model + local-skip classification
-├── verification_cache.py   # Per-run claim-keyed verdict cache
+├── verification_cache.py   # Persistent claim-keyed verdict cache (JSON on disk)
+├── triage.py               # Haiku-based verification triage (opt-in)
 ├── verification_config.py  # Backward-compat re-exports from api_config
 ├── batch.py                # Anthropic Message Batches API wrapper
 ├── batch_runtime.py        # Bounded polling with progressive backoff
@@ -228,6 +229,19 @@ Structured post-review verdict and evidence summary attached per finding.
 
 `VerificationCache.make_cache_key(finding, cycle)` includes `cycle_label | actionType | codeReference | sha256(claim_summary)`. Only `grounded=True` results are cached. Hits are tagged `cache_status="hit"`.
 
+Phase 10 — disk persistence: `VerificationCache.load_from_disk(path)` and `save_to_disk(path)` round-trip the cache to JSON at `~/.spec_critic/verification_cache.json` (override via `SPEC_CRITIC_CACHE_PATH`). Atomic write via temp-file + rename. Each entry stores `created_ts` and `model_used` for future age/model-based pruning. Default behavior is database mode (no automatic expiration); set `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` to a positive integer for opt-in TTL pruning. Cycle label remains in the key, so switching code cycles naturally invalidates entries from the prior cycle.
+
+### triage.py — Haiku verification triage
+
+Optional pre-pass that runs after the keyword classifier and cache lookup but before web verification. Classifies eligible findings as `web_required` or `local_skip` so internally-verifiable findings (e.g. internal contradictions where both sides are quoted, equipment-tag mismatches, formatting issues) skip the expensive Sonnet+web_search call.
+
+Hard safety contract enforced in `is_eligible_for_haiku_triage`:
+- Findings with a non-empty `codeReference` are never eligible.
+- `CRITICAL` and `HIGH` severity findings are never eligible.
+- API failure or parse error → all affected findings default to `web_required`.
+
+Off by default; enable with `SPEC_CRITIC_HAIKU_TRIAGE=1` after validating quality on a representative run.
+
 ### pipeline.py — Orchestration
 
 Phased batch APIs used by the GUI:
@@ -263,6 +277,10 @@ Helpers:
 - `MAX_CONTEXT_TOKENS = 1_000_000`
 - `MAX_OUTPUT_TOKENS_OPUS = 128_000`
 - `MAX_OUTPUT_TOKENS_SONNET = 64_000`
+- `MAX_OUTPUT_TOKENS_HAIKU = 64_000`
+- `VERIFICATION_OUTPUT_CAP = 16_000` (verdicts are 1–2 sentences; tightened from 32k)
+- `SYNTHESIS_OUTPUT_CAP = 32_000` (cross-discipline synthesis on Haiku)
+- `HAIKU_TRIAGE_OUTPUT_CAP = 8_000` (triage classifications)
 - `RECOMMENDED_MAX = 500_000`
 - `CROSS_CHECK_OVERHEAD = 50_000`
 - `CROSS_CHECK_OUTPUT_BUDGET = 128_000`
@@ -321,11 +339,32 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 | `SPEC_CRITIC_LOCAL_VERIFICATION_SKIP` | `1` | `0` web-verifies all findings |
 | `SPEC_CRITIC_PARALLEL_CROSS_CHECK` | `1` | `0` runs cross-check after verification |
 | `SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD` | `5` | Real-time fallback when retry tail ≤ N |
-| `SPEC_CRITIC_VERIFICATION_MAX_USES` | `5` | Web-search tool max_uses |
-| `SPEC_CRITIC_REVIEW_MODEL` | `claude-opus-4-6` | Override review model |
+| `SPEC_CRITIC_VERIFICATION_MAX_USES` | `5` | Default web_search `max_uses` (when severity tiering doesn't apply) |
+| `SPEC_CRITIC_REVIEW_MODEL` | `claude-opus-4-7` | Override review model |
+| `SPEC_CRITIC_CROSS_CHECK_MODEL` | `claude-opus-4-7` | Override cross-check model |
+| `SPEC_CRITIC_SYNTHESIS_MODEL` | `claude-haiku-4-5` | Override cross-discipline synthesis model |
+| `SPEC_CRITIC_TRIAGE_MODEL` | `claude-haiku-4-5` | Override Haiku verification triage model |
+| `SPEC_CRITIC_HAIKU_TRIAGE` | `0` | `1` enables Haiku verification triage augmenting the keyword classifier |
 | `SPEC_CRITIC_VERIFICATION_MODEL` | (auto) | Override verifier model |
-| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | `claude-opus-4-6` | Override escalation model |
+| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | `claude-opus-4-7` | Override escalation model |
+| `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | `1` | `0` disables on-disk verification cache (database mode) |
+| `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `0` | Positive integer enables age-based cache pruning |
+| `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override cache path |
 | `SPEC_CRITIC_EXTRACTION_CACHE` | `1` | `0` disables file-extraction cache |
+
+## Web-search budget per severity
+
+| Severity | `web_search` `max_uses` |
+|---|---|
+| CRITICAL / HIGH | 7 |
+| MEDIUM | 5 |
+| GRIPES | 3 |
+
+Applied identically in real-time and batch verification paths via `web_search_tool_for_severity(severity)`. Higher severities get more rope; editorial gripes get less. The grounding invariant still gates verdicts (`CONFIRMED`/`CORRECTED` require `grounded=True`), so cap variation never lets weak verdicts through.
+
+## Sources list
+
+`VerificationResult.sources` contains only the URLs the model cited in its `submit_verification_verdict` payload. The full set of URLs the model retrieved across all `web_search` calls is preserved on `successful_source_count` for diagnostics.
 
 ## Dependencies
 
