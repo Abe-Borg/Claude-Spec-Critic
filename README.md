@@ -43,7 +43,7 @@ The project is optimized for DSA-oriented K-12 workflows and California code cyc
 - **Real-time** — Immediate in-session processing (streaming API, higher cost).
 - **Batch** — Queued processing at 50% cost savings (usually 45 min – 2 hrs, 24 hrs max).
 
-Both modes use identical review prompts and criteria. Batch state is persisted to disk with content + source-file SHA-256 digests and survives app restarts — resume from any phase: review-poll, review-collect, cross-check, verification (poll / wave-poll), or finalize.
+Both modes share identical prompts, models, tool schemas, output caps, and parsing logic, so findings should be functionally equivalent across modes. The 300k extended-output path is the only intentional asymmetry — batch-only by API design (`output-300k-2026-03-24` beta header is not honored on streaming requests) and only used for inputs ≥200k tokens. Batch state is persisted to disk with content + source-file SHA-256 digests and survives app restarts — resume from any phase: review-poll, review-collect, cross-check, verification (poll / wave-poll), or finalize.
 
 ## Review Modes
 
@@ -186,9 +186,8 @@ All flags read from environment variables; the listed default applies when the v
 | `MAX_OUTPUT_TOKENS_OPUS` | 128,000 | Per-call Opus output cap |
 | `MAX_OUTPUT_TOKENS_SONNET` | 64,000 | Per-call Sonnet output cap |
 | `MAX_OUTPUT_TOKENS_HAIKU` | 64,000 | Per-call Haiku output cap |
-| `REVIEW_OUTPUT_CAP_REALTIME` | 64,000 | Streaming per-spec review |
-| `REVIEW_OUTPUT_CAP_BATCH` | 128,000 | Standard batch review |
-| `REVIEW_OUTPUT_CAP_BATCH_LARGE` | 300,000 | Only when 300k beta header is set |
+| `REVIEW_OUTPUT_CAP` | 128,000 | Unified per-spec review cap (real-time and batch) |
+| `REVIEW_OUTPUT_CAP_BATCH_EXTENDED` | 300,000 | Batch-only; requires the 300k beta header |
 | `CROSS_CHECK_OUTPUT_CAP` | 96,000 | Cross-check needs more than verify |
 | `CROSS_CHECK_OUTPUT_BUDGET` | 128,000 | Reserved for cross-check output during budgeting |
 | `VERIFICATION_OUTPUT_CAP` | 16,000 | Verdicts are 1–2 sentences (tightened from 32k) |

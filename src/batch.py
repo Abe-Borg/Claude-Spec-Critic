@@ -114,7 +114,6 @@ def submit_review_batch(
         output_limit = review_max_tokens(
             batch=True,
             model=model,
-            input_tokens=approx_input_tokens,
             allow_extended_output=allow_extended,
         )
         # Fail-fast guard: 300k requires the batch beta header. Plan Sprint

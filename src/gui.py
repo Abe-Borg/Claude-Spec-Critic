@@ -1081,13 +1081,14 @@ class SpecReviewApp(_CTkDnDRoot):
         if num_specs > 5:
             warning_text += (
                 f"\u26a0  You have {num_specs} specs selected. For more than 5 specs, "
-                f"batch mode is strongly recommended — same review prompts and criteria "
-                f"at 50% lower pricing."
+                f"batch mode is strongly recommended — identical prompts, models, "
+                f"and review logic at 50% lower pricing. Findings should be equivalent."
             )
         else:
             warning_text += (
-                f"Batch mode uses the same review prompts and criteria at 50% lower pricing "
-                f"({_BATCH_TIMING_COPY} instead of immediate in-session processing)."
+                f"Batch mode uses the same prompts, models, and review logic at 50% "
+                f"lower pricing — findings should be equivalent. "
+                f"({_BATCH_TIMING_COPY} instead of immediate in-session processing.)"
             )
 
         ctk.CTkLabel(inner, text=warning_text,
@@ -2332,7 +2333,8 @@ class SpecReviewApp(_CTkDnDRoot):
                 "The Review Mode selector controls scope: Strict (evidence-backed contradictions "
                 "and code-cycle issues only), Comprehensive (adds AEC constructability and "
                 "coordination), or Safe edit (only findings that can be expressed as a precise "
-                "auto-applicable edit)."
+                "auto-applicable edit). Real-time and batch use identical prompts, models, "
+                "and output caps — findings should be equivalent across modes."
             )),
             ("4.  Deduplication", (
                 "When the same issue appears across multiple specs \u2014 like an outdated "
@@ -2468,7 +2470,9 @@ class SpecReviewApp(_CTkDnDRoot):
                 "Real-time mode processes the review immediately in the current "
                 "session — faster turnaround but higher cost. Batch mode queues all specs for processing at 50% "
                 f"cost savings, with results {_BATCH_TIMING_COPY}. "
-                "For more than a few specs, batch mode is strongly recommended."
+                "Both modes use identical prompts, models, output caps, and review "
+                "logic — findings should be equivalent; only the API dispatch path "
+                "differs. For more than a few specs, batch mode is strongly recommended."
             )),
             ("5.  Select Code Cycle", (
                 "Choose the California code cycle for your project (2022 or "

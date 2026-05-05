@@ -119,10 +119,13 @@ BATCH_MAX_OUTPUT_TOKENS = 300_000
 
 # Per-phase dynamic caps. These are intentionally lower than the hard model
 # ceilings so the app does not blanket-allocate the maximum on every call.
-# Plan section 6.6: "Reduce runaway cost exposure"; Sprint 2 item 4.
-REVIEW_OUTPUT_CAP_REALTIME = 64_000   # streaming review of one spec
-REVIEW_OUTPUT_CAP_BATCH = 128_000     # standard batch review
-REVIEW_OUTPUT_CAP_BATCH_LARGE = 300_000  # only when 300k beta header is set
+# The review cap is unified across real-time and batch so findings cannot
+# diverge between modes on normal-size specs. (Anthropic bills by actual
+# output, so the cap is a fail-fast guard, not a cost lever.) The extended
+# 300k path is batch-only — the ``output-300k-2026-03-24`` beta header is
+# not honored on streaming requests.
+REVIEW_OUTPUT_CAP = 128_000              # baseline for both real-time and batch
+REVIEW_OUTPUT_CAP_BATCH_EXTENDED = 300_000  # batch-only, with 300k beta header
 CROSS_CHECK_OUTPUT_CAP = 96_000       # cross-check needs more than verify
 # Verdicts are 1-2 sentences per the verifier system prompt; 16k is a
 # fail-fast guard, not a billing knob (you pay only for actual output).
@@ -158,22 +161,17 @@ def triage_max_tokens(*, model: str = TRIAGE_MODEL_DEFAULT) -> int:
     return output_cap_for_model(model, requested=HAIKU_TRIAGE_OUTPUT_CAP)
 
 
-def review_max_tokens(*, batch: bool, model: str = REVIEW_MODEL_DEFAULT, input_tokens: int = 0, allow_extended_output: bool = False) -> int:
+def review_max_tokens(*, batch: bool = False, model: str = REVIEW_MODEL_DEFAULT, allow_extended_output: bool = False) -> int:
     """Return a per-call max_tokens for a review request.
 
-    ``allow_extended_output`` must be True for the 300k batch path. The plan
-    requires a fail-fast guard against using 300k without the beta header
-    (Sprint 2 item 8); see :func:`assert_extended_output_allowed`.
+    Real-time and batch share the same baseline so findings cannot diverge
+    between modes on normal-size specs. ``allow_extended_output`` selects
+    the 300k batch-only path; the beta header is checked at the call site
+    by :func:`assert_extended_output_allowed`.
     """
-    if not batch:
-        return output_cap_for_model(model, requested=REVIEW_OUTPUT_CAP_REALTIME)
-    if allow_extended_output:
-        return min(BATCH_MAX_OUTPUT_TOKENS, REVIEW_OUTPUT_CAP_BATCH_LARGE)
-    if input_tokens >= LARGE_REVIEW_INPUT_THRESHOLD:
-        # Larger inputs may need more headroom but stay within the model's
-        # standard ceiling.
-        return output_cap_for_model(model, requested=REVIEW_OUTPUT_CAP_BATCH)
-    return output_cap_for_model(model, requested=REVIEW_OUTPUT_CAP_BATCH)
+    if batch and allow_extended_output:
+        return min(BATCH_MAX_OUTPUT_TOKENS, REVIEW_OUTPUT_CAP_BATCH_EXTENDED)
+    return output_cap_for_model(model, requested=REVIEW_OUTPUT_CAP)
 
 
 def cross_check_max_tokens(*, model: str = CROSS_CHECK_MODEL_DEFAULT) -> int:
