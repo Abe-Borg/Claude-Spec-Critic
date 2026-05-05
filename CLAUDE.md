@@ -4,9 +4,19 @@ This document is the engineering/operator reference for the Spec Critic codebase
 
 ---
 
+## 1) What it is
+
 Spec Critic is a Python desktop application for reviewing mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. It extracts text from `.docx` files, performs local preprocessing, runs per-spec reviews (real-time or batch), optionally runs cross-spec coordination checks, verifies findings via web search (Sonnet by default with Opus escalation), and presents results in-app or as exported Word reports. Optional auto-edit and annotation modes write a copy of each spec with surgical edits or yellow-highlighted suggestions.
 
-Spec Critic is a Python desktop application that performs AI-assisted review of California mechanical/plumbing specification documents (`.docx`).
+The tool's purpose is to:
+
+- identify likely code/compliance and coordination issues,
+- classify findings with severity + confidence,
+- verify findings with web-search-backed evidence,
+- generate stakeholder-readable reports,
+- optionally apply precise edits back to Word source files.
+
+### Source layout
 
 ```
 src/
@@ -41,11 +51,7 @@ src/
 └── code_cycles.py          # California code cycle definitions
 ```
 
-- identify likely code/compliance and coordination issues,
-- classify findings with severity + confidence,
-- verify findings with web-search-backed evidence,
-- generate stakeholder-readable reports,
-- optionally apply precise edits back to Word source files.
+### High-level flow
 
 ```
 User selects .docx files
@@ -85,6 +91,8 @@ User selects .docx files
                                 "edit"|"annotate")                           │
 ```
 
+---
+
 ## 2) Runtime Topology
 
 ### ExtractedSpec (extractor.py)
@@ -103,6 +111,8 @@ class ExtractedSpec:
 Per-element record used by the locator. Includes `body_index`, `element_type`, `section_index`, plus Phase 4 formatting fields (`run_count`, `distinct_formatting_runs`).
 
 ### Finding (reviewer.py)
+Canonical issue object containing raw model content, token usage, elapsed time, stop reason, parse status, and optional error context. Schema:
+
 ```python
 @dataclass
 class Finding:
@@ -132,23 +142,25 @@ cache_read_input_tokens: int = 0
 ```
 
 ### VerificationResult (verifier.py)
-Phase 3 evidence model: `grounded`, `model_used`, `escalated`, `cache_status`, `web_search_requests`, `successful_source_count`, `search_error_count`. Verdicts cannot be CONFIRMED/CORRECTED unless `grounded` is True.
+Phase 3 evidence model: `grounded`, `model_used`, `escalated`, `cache_status`, `web_search_requests`, `successful_source_count`, `search_error_count`. Verdicts cannot be `CONFIRMED` / `CORRECTED` unless `grounded` is True.
 
 ### BatchSubmission / CollectedBatchState (pipeline.py)
-Plus `review_mode: str` so resume restores the exact prompt path.
+Carry `review_mode: str` so resume restores the exact prompt path.
 
-### Batch and Recovery Layer
+---
+
+## 3) Module Reference
 
 ### api_config.py — Centralized API configuration
 
 **Public API:**
 - Model identifiers: `MODEL_OPUS_46`, `MODEL_OPUS_47`, `MODEL_SONNET_46`, `MODEL_HAIKU_45`
-- Defaults: `REVIEW_MODEL_DEFAULT`, `CROSS_CHECK_MODEL_DEFAULT`, `VERIFICATION_MODEL_DEFAULT`, `VERIFICATION_ESCALATION_MODEL`
-- Output caps: `review_max_tokens()`, `cross_check_max_tokens()`, `verification_max_tokens()`, `output_cap_for_model()`, `assert_extended_output_allowed()`
+- Defaults: `REVIEW_MODEL_DEFAULT` (Opus 4.7), `CROSS_CHECK_MODEL_DEFAULT` (Opus 4.7), `VERIFICATION_MODEL_DEFAULT` (Sonnet 4.6 by default), `VERIFICATION_ESCALATION_MODEL` (Opus 4.7), `SYNTHESIS_MODEL_DEFAULT` (Haiku 4.5), `TRIAGE_MODEL_DEFAULT` (Haiku 4.5)
+- Output caps: `review_max_tokens()`, `cross_check_max_tokens()`, `verification_max_tokens()`, `synthesis_max_tokens()`, `triage_max_tokens()`, `output_cap_for_model()`, `assert_extended_output_allowed()`
 - Prompt caching: `prompt_caching_enabled()`, `system_prompt_with_cache()`, `tools_with_cache()`, `extract_cache_usage()`
 - Token counting: `token_count_preflight_enabled()` (default on)
 - Sonnet routing: `verification_sonnet_default_enabled()` (default on)
-- Web-search tool: `WEB_SEARCH_TOOL` (web_search_20260209, blocked-only domain list, max_uses=5)
+- Web-search tool: `WEB_SEARCH_TOOL` (web_search_20260209, blocked-only domain list, default `max_uses=5`); per-severity budget via `web_search_max_uses_for_severity(severity)` and `web_search_tool_for_severity(severity)`
 
 ### structured_schemas.py — Tool-use schemas
 
@@ -163,7 +175,7 @@ Plus `review_mode: str` so resume restores the exact prompt path.
 
 `ReviewMode` enum with STRICT / COMPREHENSIVE / SAFE_EDIT. `coerce_review_mode(value)` accepts strings (`"strict"`, `"comprehensive"`, `"safe_edit"`) for convenience. `DEFAULT_REVIEW_MODE = COMPREHENSIVE`.
 
-### Reporting + Diagnostics Layer
+### prompts.py — Prompt builders
 
 **Public API:**
 - `get_system_prompt(cycle, mode=...)`
@@ -177,9 +189,6 @@ Both inject the active review mode banner, the mode-specific task text, and the 
 
 ### resume_state.py — Durable resume state
 
-### `Finding` (`reviewer.py`)
-Canonical issue object containing:
-
 **Public API:**
 - Phase constants: `PHASE_REVIEW_POLL`, `PHASE_REVIEW_COLLECT`, `PHASE_VERIFICATION_POLL`, `PHASE_VERIFICATION_WAVE_POLL`, `PHASE_CROSS_CHECK`, `PHASE_CROSS_CHECK_VERIFICATION_POLL`, `PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL`, `PHASE_FINALIZE`
 - `SUPPORTED_PHASES`
@@ -188,12 +197,7 @@ Canonical issue object containing:
 
 Phase 5.5: `serialize_extracted_spec` records SHA-256 digests of both the extracted content and the underlying source file. `deserialize_extracted_spec` warns when either differs from the saved digest at resume time.
 
-- raw model content,
-- token usage,
-- elapsed time,
-- stop reason,
-- parse status,
-- optional error context.
+### batch.py — Anthropic Message Batches wrapper
 
 - `submit_review_batch(specs, ..., mode)` — emits requests with the structured tool when enabled
 - `poll_batch(batch_id) -> BatchStatus`
@@ -204,13 +208,12 @@ Phase 5.5: `serialize_extracted_spec` records SHA-256 digests of both the extrac
 
 Progressive poll backoff: base interval for ~5 minutes, then linearly ramps to 120 s, then holds. `PollPolicy` carries timeout / error-threshold / no-progress thresholds.
 
-### `VerificationResult` (`verifier.py`)
-Structured post-review verdict and evidence summary attached per finding.
+### cross_checker.py — Cross-spec coordination
 
 - `run_cross_check(specs, existing_findings, ...)` — single-pass
 - `run_chunked_cross_check(specs, existing_findings, ...)` — chunks by CSI division (Div 21 / 22 / 23 / Controls / 25 + 01) when the combined input exceeds the recommended cap; merges chunk results locally
 
----
+### verifier.py — Web-search verification
 
 - `verify_findings(findings, *, progress, cycle, cache)` — real-time path (Sonnet default, Opus escalation)
 - `verify_findings_batch(findings, *, log, progress, ...)` — multi-wave batch path
@@ -225,7 +228,7 @@ Structured post-review verdict and evidence summary attached per finding.
 - `should_escalate_verification(finding, *, verdict, grounded, ...)` — fires for CRITICAL/HIGH UNVERIFIED when Sonnet was the initial verifier
 - `classify_finding_for_verification(finding) -> "web_required" | "local_skip"` — local-skip default-on; only GRIPES with no codeReference and a placeholder/LEED/typo/duplicate/internal-contradiction keyword
 
-### verification_cache.py — Per-run cache
+### verification_cache.py — Per-run cache (with disk persistence)
 
 `VerificationCache.make_cache_key(finding, cycle)` includes `cycle_label | actionType | codeReference | sha256(claim_summary)`. Only `grounded=True` results are cached. Hits are tagged `cache_status="hit"`.
 
@@ -272,21 +275,29 @@ Helpers:
 - `extract_multiple_specs_cached(filepaths)` — uses the LRU cache keyed on `(absolute_path, size, mtime_ns)`; falls back to parallel extraction for misses
 - `token_count_cache_key(model, system_prompt, user_message, project_context, cycle_label, mode)` — SHA-256 of inputs; LRU bounded to 256 entries
 
-## 5) Prompting and Code-Cycle Behavior
+### tokenizer.py — Token accounting
 
+- `count_tokens(text)` — local cl100k_base
+- `count_tokens_via_api(model, system, messages, *, client=None)` — Anthropic exact (`None` on failure)
+
+Constants:
 - `MAX_CONTEXT_TOKENS = 1_000_000`
 - `MAX_OUTPUT_TOKENS_OPUS = 128_000`
 - `MAX_OUTPUT_TOKENS_SONNET = 64_000`
 - `MAX_OUTPUT_TOKENS_HAIKU = 64_000`
-- `VERIFICATION_OUTPUT_CAP = 16_000` (verdicts are 1–2 sentences; tightened from 32k)
-- `SYNTHESIS_OUTPUT_CAP = 32_000` (cross-discipline synthesis on Haiku)
-- `HAIKU_TRIAGE_OUTPUT_CAP = 8_000` (triage classifications)
 - `RECOMMENDED_MAX = 500_000`
 - `CROSS_CHECK_OVERHEAD = 50_000`
 - `CROSS_CHECK_OUTPUT_BUDGET = 128_000`
 - `CROSS_CHECK_RECOMMENDED_MAX = 822_000`
-- `count_tokens(text)` — local cl100k_base
-- `count_tokens_via_api(model, system, messages, *, client=None)` — Anthropic exact (`None` on failure)
+
+Output caps live in `api_config.py`:
+- `REVIEW_OUTPUT_CAP_REALTIME = 64_000`
+- `REVIEW_OUTPUT_CAP_BATCH = 128_000`
+- `REVIEW_OUTPUT_CAP_BATCH_LARGE = 300_000` (only with the 300k beta header)
+- `CROSS_CHECK_OUTPUT_CAP = 96_000`
+- `VERIFICATION_OUTPUT_CAP = 16_000` (verdicts are 1–2 sentences; tightened from 32k)
+- `SYNTHESIS_OUTPUT_CAP = 32_000` (cross-discipline synthesis on Haiku)
+- `HAIKU_TRIAGE_OUTPUT_CAP = 8_000` (triage classifications)
 
 ### edit_locator.py — Locator
 
@@ -319,6 +330,8 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 
 ---
 
+## 4) GUI Notes (gui.py / widgets.py)
+
 - Code-cycle selector segmented control (`2022` / `2025`)
 - Review-mode segmented control (Strict / Comprehensive / Safe edit)
 - Mode labels: `Real-time (FAST: Expensive!)` and `Batch (SLOW: Cheap!)`
@@ -328,7 +341,40 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 - Resume state uses `resume_state.py` serializers/deserializers; legacy v1 migration path retained
 - File browser filter restricted to `.docx`
 
-## Feature flags
+---
+
+## 5) Prompting and Code-Cycle Behavior
+
+- Prompts are mode-aware (Strict / Comprehensive / Safe-edit) and cycle-aware (California 2022 / 2025).
+- `get_system_prompt(cycle, mode=...)` injects the mode banner and editability clause; `get_single_spec_user_message(...)` emits the per-spec task text with project context.
+- The system prompt instructs the model to call the structured tool (`submit_review_findings`); a tagged-JSON fallback exists for compatibility with older paths.
+- `DEFAULT_CYCLE = CALIFORNIA_2025`. Cycle labels are part of the verification cache key, so switching cycles naturally invalidates prior entries.
+
+---
+
+## 6) Verification Routing and Web Search
+
+### Severity-tiered web-search budget
+
+| Severity | `web_search` `max_uses` |
+|---|---|
+| CRITICAL / HIGH | 7 |
+| MEDIUM | 5 |
+| GRIPES | 3 |
+
+Applied identically in real-time and batch verification paths via `web_search_tool_for_severity(severity)`. Higher severities get more rope; editorial gripes get less. The grounding invariant still gates verdicts (`CONFIRMED` / `CORRECTED` require `grounded=True`), so cap variation never lets weak verdicts through.
+
+### Sources list
+
+`VerificationResult.sources` contains only the URLs the model cited in its `submit_verification_verdict` payload. The full set of URLs the model retrieved across all `web_search` calls is preserved on `successful_source_count` for diagnostics.
+
+### Source-quality blocklist
+
+A blocked-domain list filters social/AI-assistant/forum/general-encyclopedia sources from `web_search_20260209`. California priority sources are documented in the verifier system prompt rather than encoded as an allow-list (mixing allow + block lists is unsupported by the tool).
+
+---
+
+## 7) Feature Flags
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -352,19 +398,10 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override cache path |
 | `SPEC_CRITIC_EXTRACTION_CACHE` | `1` | `0` disables file-extraction cache |
 
-## Web-search budget per severity
+---
 
-| Severity | `web_search` `max_uses` |
-|---|---|
-| CRITICAL / HIGH | 7 |
-| MEDIUM | 5 |
-| GRIPES | 3 |
+## 8) Dependencies
 
-Applied identically in real-time and batch verification paths via `web_search_tool_for_severity(severity)`. Higher severities get more rope; editorial gripes get less. The grounding invariant still gates verdicts (`CONFIRMED`/`CORRECTED` require `grounded=True`), so cap variation never lets weak verdicts through.
-
-## Sources list
-
-`VerificationResult.sources` contains only the URLs the model cited in its `submit_verification_verdict` payload. The full set of URLs the model retrieved across all `web_search` calls is preserved on `successful_source_count` for diagnostics.
-
-## Dependencies
-
+- Python 3.11+
+- Anthropic API key (`ANTHROPIC_API_KEY`)
+- Runtime packages: `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic` (see `requirements.txt` for pinned versions)
