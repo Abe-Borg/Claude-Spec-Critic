@@ -241,9 +241,10 @@ def _parse_findings(data: list) -> list[Finding]:
 def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = MODEL_OPUS_47, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
     start_time = time.time()
     result = ReviewResult(model=model)
-    # Dynamic per-call output cap. Real-time review uses the smaller cap to
-    # bound runaway outputs; large inputs still get plenty of headroom.
-    output_limit = review_max_tokens(batch=False, model=model)
+    # Per-call output cap. Real-time and batch share the same baseline so
+    # findings cannot diverge between modes; the 300k extended path is a
+    # batch-only API capability (300k beta header is not honored on stream).
+    output_limit = review_max_tokens(model=model)
     system_payload = system_prompt_with_cache(system_prompt)
     # Phase 2.4: when structured outputs are enabled, force the model to
     # emit a tool_use block whose ``input`` matches the finding schema.

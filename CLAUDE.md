@@ -8,6 +8,8 @@ This document is the engineering/operator reference for the Spec Critic codebase
 
 Spec Critic is a Python desktop application for reviewing mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. It extracts text from `.docx` files, performs local preprocessing, runs per-spec reviews (real-time or batch), optionally runs cross-spec coordination checks, verifies findings via web search (Sonnet by default with Opus escalation), and presents results in-app or as exported Word reports. Optional auto-edit and annotation modes write a copy of each spec with surgical edits or yellow-highlighted suggestions.
 
+The two processing modes (real-time and batch) share identical prompts, models, tool schemas, output caps, and parsing logic, so findings should be functionally equivalent across modes. The only intentional asymmetry is the 300k extended-output path, which is gated to the batch API by the `output-300k-2026-03-24` beta header (Anthropic does not honor it on streaming requests) and only triggers for inputs ≥200k tokens. Real-time pays full per-token pricing for immediate results; batch pays ~50% for asynchronous results delivered within ~45 min – 24 h.
+
 The tool's purpose is to:
 
 - identify likely code/compliance and coordination issues,
@@ -291,9 +293,8 @@ Constants:
 - `CROSS_CHECK_RECOMMENDED_MAX = 822_000`
 
 Output caps live in `api_config.py`:
-- `REVIEW_OUTPUT_CAP_REALTIME = 64_000`
-- `REVIEW_OUTPUT_CAP_BATCH = 128_000`
-- `REVIEW_OUTPUT_CAP_BATCH_LARGE = 300_000` (only with the 300k beta header)
+- `REVIEW_OUTPUT_CAP = 128_000` (unified baseline; real-time and batch use the same cap so findings cannot diverge between modes)
+- `REVIEW_OUTPUT_CAP_BATCH_EXTENDED = 300_000` (batch-only; requires the `output-300k-2026-03-24` beta header, which is not honored on streaming requests)
 - `CROSS_CHECK_OUTPUT_CAP = 96_000`
 - `VERIFICATION_OUTPUT_CAP = 16_000` (verdicts are 1–2 sentences; tightened from 32k)
 - `SYNTHESIS_OUTPUT_CAP = 32_000` (cross-discipline synthesis on Haiku)

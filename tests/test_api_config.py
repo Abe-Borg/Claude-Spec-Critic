@@ -19,8 +19,7 @@ from src.api_config import (
     MAX_OUTPUT_TOKENS_SONNET,
     MODEL_OPUS_46,
     MODEL_SONNET_46,
-    REVIEW_OUTPUT_CAP_BATCH,
-    REVIEW_OUTPUT_CAP_REALTIME,
+    REVIEW_OUTPUT_CAP,
     VERIFICATION_OUTPUT_CAP,
     WEB_SEARCH_TOOL,
     assert_extended_output_allowed,
@@ -103,16 +102,12 @@ class TestOutputCaps:
         cap = output_cap_for_model(MODEL_SONNET_46, requested=200_000)
         assert cap == MAX_OUTPUT_TOKENS_SONNET
 
-    def test_realtime_review_uses_smaller_cap(self):
-        # Real-time review should NOT default to the 128k batch cap; that
-        # was the old behavior the plan calls out for runaway-cost exposure.
-        cap = review_max_tokens(batch=False, model=MODEL_OPUS_46)
-        assert cap == REVIEW_OUTPUT_CAP_REALTIME
-        assert cap < REVIEW_OUTPUT_CAP_BATCH
-
-    def test_batch_review_uses_batch_cap(self):
-        cap = review_max_tokens(batch=True, model=MODEL_OPUS_46, input_tokens=10_000)
-        assert cap == REVIEW_OUTPUT_CAP_BATCH
+    def test_review_cap_is_unified_across_modes(self):
+        # Real-time and batch share the same baseline cap so findings cannot
+        # diverge between modes on normal-size specs.
+        realtime = review_max_tokens(batch=False, model=MODEL_OPUS_46)
+        batch = review_max_tokens(batch=True, model=MODEL_OPUS_46)
+        assert realtime == batch == REVIEW_OUTPUT_CAP
 
     def test_batch_review_extended_output(self):
         cap = review_max_tokens(
@@ -120,7 +115,15 @@ class TestOutputCaps:
         )
         assert cap == BATCH_MAX_OUTPUT_TOKENS
 
-    def test_batch_review_sonnet_clamped_to_sonnet_ceiling(self):
+    def test_realtime_cannot_use_extended_output(self):
+        # The 300k beta header is a batch-only API capability — real-time
+        # never returns the extended cap even if asked.
+        cap = review_max_tokens(
+            batch=False, model=MODEL_OPUS_46, allow_extended_output=True
+        )
+        assert cap == REVIEW_OUTPUT_CAP
+
+    def test_review_sonnet_clamped_to_sonnet_ceiling(self):
         cap = review_max_tokens(batch=True, model=MODEL_SONNET_46)
         assert cap == MAX_OUTPUT_TOKENS_SONNET
 
