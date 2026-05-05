@@ -45,6 +45,11 @@ class BatchJob:
     request_map: dict
     created_at: float
     status: str = "submitted"
+    # Populated by start_batch_verification so collect_batch_verification_results
+    # can pass the exact submitted list (not the full pre-pass input) to
+    # collect_verification_batch_results, avoiding finding-index mismatch when
+    # local-skip or cache-hit findings are filtered out before submission.
+    submitted_findings: list | None = None
 
 
 @dataclass
