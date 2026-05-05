@@ -149,6 +149,50 @@ CROSS_CHECK_FINDINGS_SCHEMA: dict[str, Any] = {
 }
 
 
+TRIAGE_CLASSIFICATIONS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["classifications"],
+    "properties": {
+        "classifications": {
+            "type": "array",
+            "description": (
+                "One entry per finding in the input batch, in the same order. "
+                "Use the integer index supplied in the prompt to reference each "
+                "finding."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["index", "classification", "reason"],
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Zero-based index of the finding being classified.",
+                    },
+                    "classification": {
+                        "type": "string",
+                        "enum": ["web_required", "local_skip"],
+                        "description": (
+                            "web_required: the finding asserts a code/standard/external "
+                            "fact and must be verified with web evidence. "
+                            "local_skip: the finding is verifiable from spec text alone "
+                            "(internal contradiction with quoted text, formatting, typo, "
+                            "duplicate, placeholder) and does not need web search."
+                        ),
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Brief justification (one sentence).",
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -185,6 +229,7 @@ VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
 _REVIEW_TOOL_NAME = "submit_review_findings"
 _CROSS_CHECK_TOOL_NAME = "submit_cross_check_findings"
 _VERIFICATION_TOOL_NAME = "submit_verification_verdict"
+_TRIAGE_TOOL_NAME = "submit_triage_classifications"
 
 
 def _strict_enabled() -> bool:
@@ -229,6 +274,25 @@ def cross_check_findings_tool() -> dict[str, Any]:
     if _strict_enabled():
         tool["strict"] = True
     return tool
+
+
+def triage_classifications_tool() -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "name": _TRIAGE_TOOL_NAME,
+        "description": (
+            "Submit triage classifications for a batch of findings. Use this "
+            "tool exactly once with one entry per finding (matched by the "
+            "integer index supplied in the prompt)."
+        ),
+        "input_schema": TRIAGE_CLASSIFICATIONS_SCHEMA,
+    }
+    if _strict_enabled():
+        tool["strict"] = True
+    return tool
+
+
+def triage_tool_choice() -> dict[str, Any]:
+    return {"type": "auto", "disable_parallel_tool_use": True}
 
 
 def verification_verdict_tool() -> dict[str, Any]:
@@ -333,3 +397,4 @@ def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] |
 REVIEW_TOOL_NAME = _REVIEW_TOOL_NAME
 CROSS_CHECK_TOOL_NAME = _CROSS_CHECK_TOOL_NAME
 VERIFICATION_TOOL_NAME = _VERIFICATION_TOOL_NAME
+TRIAGE_TOOL_NAME = _TRIAGE_TOOL_NAME

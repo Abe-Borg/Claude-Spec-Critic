@@ -16,9 +16,31 @@ Feature flags (default-on unless noted):
     SPEC_CRITIC_LOCAL_VERIFICATION_SKIP          — "0" disables local-skip.
     SPEC_CRITIC_PARALLEL_CROSS_CHECK             — "0" disables parallel cross-check.
     SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD      — int (default 5).
-    SPEC_CRITIC_VERIFICATION_MAX_USES            — int override for web-search max_uses.
+    SPEC_CRITIC_VERIFICATION_MAX_USES            — int override for default
+                                                   web-search max_uses (used
+                                                   when per-severity tiering
+                                                   is disabled).
     SPEC_CRITIC_VERIFICATION_MODEL               — model id override for verification.
     SPEC_CRITIC_REVIEW_MODEL                     — model id override for review.
+    SPEC_CRITIC_SYNTHESIS_MODEL                  — model id override for the
+                                                   cross-discipline synthesis
+                                                   pass (default Haiku 4.5).
+    SPEC_CRITIC_TRIAGE_MODEL                     — model id override for
+                                                   verification triage
+                                                   (default Haiku 4.5).
+    SPEC_CRITIC_HAIKU_TRIAGE                     — "1" enables Haiku-based
+                                                   verification triage as an
+                                                   augmentation of the
+                                                   keyword classifier
+                                                   (default off).
+    SPEC_CRITIC_VERIFICATION_CACHE_PERSIST       — "0" disables on-disk
+                                                   verification cache
+                                                   (default on; database mode).
+    SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS      — int; 0 means no expiry
+                                                   (default 0).
+    SPEC_CRITIC_CACHE_PATH                       — explicit cache path
+                                                   (default ``~/.spec_critic
+                                                   /verification_cache.json``).
 """
 from __future__ import annotations
 
@@ -32,6 +54,7 @@ from typing import Iterable
 MODEL_OPUS_46 = "claude-opus-4-6"
 MODEL_OPUS_47 = "claude-opus-4-7"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
+MODEL_HAIKU_45 = "claude-haiku-4-5"
 
 # Defaults. Phase 3 routes verification through Sonnet first and reserves
 # Opus for escalation on CRITICAL/HIGH UNVERIFIED findings. Set
@@ -65,8 +88,20 @@ VERIFICATION_ESCALATION_MODEL = os.environ.get(
     "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_47
 )
 
-# Convenience set of "Opus-class" models for output-cap dispatch.
+# Cross-discipline synthesis pass (cross_checker._run_cross_discipline_synthesis)
+# correlates already-classified per-chunk findings — small input, small output,
+# shallow reasoning. Haiku is appropriate; Opus is overkill.
+SYNTHESIS_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_SYNTHESIS_MODEL", MODEL_HAIKU_45)
+
+# Verification triage pre-pass (triage.classify_findings_with_haiku) decides
+# whether a finding can be locally resolved or needs web verification. The
+# task is shallow classification over short inputs; Haiku fits.
+TRIAGE_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_TRIAGE_MODEL", MODEL_HAIKU_45)
+
+
+# Convenience sets for output-cap dispatch.
 OPUS_MODELS = frozenset({MODEL_OPUS_46, MODEL_OPUS_47})
+HAIKU_MODELS = frozenset({MODEL_HAIKU_45})
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +111,7 @@ OPUS_MODELS = frozenset({MODEL_OPUS_46, MODEL_OPUS_47})
 # Hard ceilings imposed by the model.
 MAX_OUTPUT_TOKENS_OPUS = 128_000
 MAX_OUTPUT_TOKENS_SONNET = 64_000
+MAX_OUTPUT_TOKENS_HAIKU = 64_000
 
 # Extended-output batch beta. Required header to use 300k output in batch.
 BATCH_OUTPUT_BETA = "output-300k-2026-03-24"
@@ -88,16 +124,38 @@ REVIEW_OUTPUT_CAP_REALTIME = 64_000   # streaming review of one spec
 REVIEW_OUTPUT_CAP_BATCH = 128_000     # standard batch review
 REVIEW_OUTPUT_CAP_BATCH_LARGE = 300_000  # only when 300k beta header is set
 CROSS_CHECK_OUTPUT_CAP = 96_000       # cross-check needs more than verify
-VERIFICATION_OUTPUT_CAP = 32_000      # verification verdicts are short
+# Verdicts are 1-2 sentences per the verifier system prompt; 16k is a
+# fail-fast guard, not a billing knob (you pay only for actual output).
+VERIFICATION_OUTPUT_CAP = 16_000
+# Synthesis pass output is a handful of cross-division findings + a brief
+# coordination summary; 32k leaves comfortable headroom while bounding
+# runaway output if Haiku misbehaves.
+SYNTHESIS_OUTPUT_CAP = 32_000
+# Triage emits a small array of {index, classification, reason}; 8k is more
+# than enough even for a 50-finding chunk.
+HAIKU_TRIAGE_OUTPUT_CAP = 8_000
 
 # Token threshold above which a review uses the larger batch cap.
 LARGE_REVIEW_INPUT_THRESHOLD = 200_000
 
 
 def output_cap_for_model(model: str, *, requested: int) -> int:
-    """Clamp ``requested`` to the model's hard ceiling."""
-    ceiling = MAX_OUTPUT_TOKENS_OPUS if model in OPUS_MODELS else MAX_OUTPUT_TOKENS_SONNET
+    """Clamp ``requested`` to the model's hard output ceiling."""
+    if model in OPUS_MODELS:
+        ceiling = MAX_OUTPUT_TOKENS_OPUS
+    elif model in HAIKU_MODELS:
+        ceiling = MAX_OUTPUT_TOKENS_HAIKU
+    else:
+        ceiling = MAX_OUTPUT_TOKENS_SONNET
     return min(requested, ceiling)
+
+
+def synthesis_max_tokens(*, model: str = SYNTHESIS_MODEL_DEFAULT) -> int:
+    return output_cap_for_model(model, requested=SYNTHESIS_OUTPUT_CAP)
+
+
+def triage_max_tokens(*, model: str = TRIAGE_MODEL_DEFAULT) -> int:
+    return output_cap_for_model(model, requested=HAIKU_TRIAGE_OUTPUT_CAP)
 
 
 def review_max_tokens(*, batch: bool, model: str = REVIEW_MODEL_DEFAULT, input_tokens: int = 0, allow_extended_output: bool = False) -> int:
@@ -265,11 +323,33 @@ _WEB_SEARCH_BLOCKED_DOMAINS = [
     "wikipedia.org", "britannica.com", "simple.wikipedia.org",
 ]
 
-# Lowered from prior 10. Plan section 6.8 recommends reducing default
-# max_uses for simple verification and escalating only when needed.
+# Default web-search budget when severity tiering is disabled or the severity
+# is not recognized. Lowered from prior 10. Plan section 6.8 recommends
+# reducing default max_uses for simple verification and escalating only when
+# needed.
 DEFAULT_VERIFICATION_MAX_USES = int(
     os.environ.get("SPEC_CRITIC_VERIFICATION_MAX_USES", "5")
 )
+
+# Per-severity search budgets. High-stakes claims get more rope; editorial
+# gripes get less. Applied identically to real-time and batch verification
+# paths so the budget shape doesn't depend on which mode you ran in.
+_SEVERITY_MAX_USES: dict[str, int] = {
+    "CRITICAL": 7,
+    "HIGH": 7,
+    "MEDIUM": 5,
+    "GRIPES": 3,
+}
+
+
+def web_search_max_uses_for_severity(severity: str | None) -> int:
+    """Return the per-severity web_search budget.
+
+    Falls back to ``DEFAULT_VERIFICATION_MAX_USES`` for unknown severities so
+    a misclassified finding still gets a reasonable budget.
+    """
+    sev = (severity or "").strip().upper()
+    return _SEVERITY_MAX_USES.get(sev, DEFAULT_VERIFICATION_MAX_USES)
 
 
 def build_web_search_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_USES) -> dict:
@@ -286,7 +366,15 @@ def build_web_search_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_USES) -> d
     }
 
 
-# Default web-search tool used when no per-call override is needed.
+def web_search_tool_for_severity(severity: str | None) -> dict:
+    """Build a web_search tool dict with a per-severity ``max_uses`` budget."""
+    return build_web_search_tool(
+        max_uses=web_search_max_uses_for_severity(severity),
+    )
+
+
+# Default web-search tool used when no per-call override is needed (preserved
+# for backward compatibility with any caller that imports the constant).
 WEB_SEARCH_TOOL = build_web_search_tool()
 
 

@@ -27,6 +27,7 @@ from .api_config import (
     system_prompt_with_cache,
     tools_with_cache,
     verification_max_tokens,
+    web_search_tool_for_severity,
 )
 from .structured_schemas import (
     REVIEW_TOOL_NAME,
@@ -237,7 +238,7 @@ def _extract_api_error_message(error_obj) -> str:
 
 
 def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_response_fn) -> list[Finding]:
-    from .verifier import VerificationResult, _collect_search_evidence, _search_gate_failure
+    from .verifier import VerificationResult, _search_gate_failure
     client = _get_client()
     for result in client.messages.batches.results(job.batch_id):
         meta = job.request_map.get(result.custom_id)
@@ -275,15 +276,11 @@ def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_
         if search_gate_failure:
             finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=search_gate_failure)
             continue
-        search_urls, _, _ = _collect_search_evidence(message)
-
+        # Source trimming (Phase 10): only the model's curated ``sources``
+        # array survives; bulk URLs across all searches are surfaced via
+        # diagnostics, not the per-finding sources list.
         if response_text.strip():
             parsed = parse_response_fn(response_text)
-            if search_urls:
-                existing = set(parsed.sources)
-                for url in search_urls:
-                    if url not in existing:
-                        parsed.sources.append(url)
             finding.verification = parsed
         else:
             finding.verification = VerificationResult(verdict="UNVERIFIED", explanation="Verification produced no text response.")
@@ -311,6 +308,7 @@ def _build_verification_request_params(
     assistant_content: list | None = None,
     continue_turn: bool = False,
     model: str | None = None,
+    severity: str | None = None,
 ) -> dict[str, Any]:
     from .structured_schemas import structured_outputs_enabled, verification_verdict_tool
 
@@ -320,11 +318,16 @@ def _build_verification_request_params(
     if continue_turn:
         messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
     selected_model = model or VERIFICATION_MODEL
+    # Per-severity web_search budget (CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3).
+    # Mirrors the real-time path so behavior is consistent across modes.
+    # ``severity`` falls back to the default budget when None — the only
+    # callers that omit it are legacy tests.
+    web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
     # Phase 2.5 (audit Section 6.5, Option B): include the verdict tool
     # alongside web_search. The system prompt instructs the model to call
     # ``submit_verification_verdict`` as the final step, so we get a strict
     # schema-validated verdict object after web grounding.
-    tool_list: list[dict] = [WEB_SEARCH_TOOL]
+    tool_list: list[dict] = [web_tool]
     if structured_outputs_enabled():
         tool_list.append(verification_verdict_tool())
     params: dict[str, Any] = {
@@ -358,6 +361,7 @@ def submit_verification_batch(
     request_map = {}
     for batch_idx, (finding_idx, finding) in enumerate(verifiable):
         custom_id = f"verify__{batch_idx}"
+        severity = (finding.severity or "").strip().upper() or "GRIPES"
         reqs.append(
             {
                 "custom_id": custom_id,
@@ -365,10 +369,16 @@ def submit_verification_batch(
                     prompt=build_prompt_fn(finding),
                     system_prompt=system_prompt_fn(cycle),
                     model=model,
+                    severity=severity,
                 ),
             }
         )
-        request_map[custom_id] = {"batch_idx": batch_idx, "finding_idx": finding_idx, "model": model or VERIFICATION_MODEL}
+        request_map[custom_id] = {
+            "batch_idx": batch_idx,
+            "finding_idx": finding_idx,
+            "model": model or VERIFICATION_MODEL,
+            "severity": severity,
+        }
 
     # Verification output is capped at 32k, well within both Sonnet and Opus
     # base ceilings, so the 300k extended-output beta is not needed. Use the
