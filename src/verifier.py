@@ -519,14 +519,18 @@ def _run_verification_call(
                     response = stream.get_final_message()
                 all_responses.append(response)
                 stop_reason = getattr(response, "stop_reason", None)
-                if stop_reason == "end_turn":
+                # ``tool_use`` is a successful terminal state when the model
+                # emits the structured ``submit_verification_verdict`` call as
+                # its final action; treat it like ``end_turn``.
+                if stop_reason in ("end_turn", "tool_use"):
                     break
                 if stop_reason == "pause_turn":
                     messages.append({"role": "assistant", "content": response.content})
                     messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
                     continue
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
-            if not all_responses or getattr(all_responses[-1], "stop_reason", None) != "end_turn":
+            final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
+            if final_stop not in ("end_turn", "tool_use"):
                 return _make_unverified("Verification did not complete after maximum continuation attempts.")
 
             response_text = ""
@@ -792,7 +796,10 @@ def _classify_wave_results(
                 )
             )
             continue
-        if stop_reason != "end_turn":
+        # ``tool_use`` is a successful terminal state when the model emits
+        # the structured ``submit_verification_verdict`` call as its final
+        # action; treat it like ``end_turn`` so the verdict is parsed.
+        if stop_reason not in ("end_turn", "tool_use"):
             outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=f"Verification response incomplete (stop_reason: {stop_reason})."))
             continue
         gate_failure = _search_gate_failure(message)
