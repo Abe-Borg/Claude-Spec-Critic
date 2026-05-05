@@ -863,6 +863,7 @@ def start_batch_verification(
         return None
     progress(60.0, f"Submitting {len(remaining)} verification requests...")
     job = start_verification_batch(remaining, cycle=cycle)
+    job.submitted_findings = remaining
     log(f"Verification batch submitted: {job.batch_id}", level="step")
     return job
 
@@ -877,9 +878,10 @@ def collect_batch_verification_results(
     poll_interval: int = 15,
     cache: VerificationCache | None = None,
 ) -> list[Finding]:
+    submitted = job.submitted_findings if job.submitted_findings is not None else findings
     return collect_verification_batch_results(
         job,
-        findings,
+        submitted,
         cycle=cycle,
         log=log,
         progress=lambda p, m: progress(60.0 + (p / 100.0) * 35.0, m),
