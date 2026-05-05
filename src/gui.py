@@ -35,6 +35,8 @@ from src.pipeline import (
     finalize_batch_result,
     BatchSubmission,
     CollectedBatchState,
+    _make_verification_cache,
+    _persist_verification_cache,
 )
 from src.batch import BatchStatus, BatchJob
 from src.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
@@ -1739,6 +1741,7 @@ class SpecReviewApp(_CTkDnDRoot):
 
                 verifiable_findings = list(rv.findings)
                 verification_completed = False
+                cache = _make_verification_cache(log=self._make_diag_log("verification", run_epoch))
                 if review_state.truncated_specs:
                     # Phase 7.3 actionable diagnostics: surface failed specs
                     # in the structured report so they appear in the summary
@@ -1760,6 +1763,7 @@ class SpecReviewApp(_CTkDnDRoot):
                         cycle=cycle,
                         log=self._make_diag_log("verification", run_epoch),
                         progress=self._make_diag_progress("verification", run_epoch),
+                        cache=cache,
                     )
                     if verification_job is None:
                         # Phase 3: every finding resolved locally / from cache.
@@ -1784,6 +1788,7 @@ class SpecReviewApp(_CTkDnDRoot):
                             cycle=cycle,
                             log=self._make_diag_log("verification", run_epoch),
                             progress=self._make_diag_progress("verification", run_epoch),
+                            cache=cache,
                         )
                         verification_completed = True
                     if diag:
@@ -1845,6 +1850,7 @@ class SpecReviewApp(_CTkDnDRoot):
                         cycle=cycle,
                         log=self._make_diag_log("cross_check_verification", run_epoch),
                         progress=self._make_diag_progress("cross_check_verification", run_epoch),
+                        cache=cache,
                     )
                     if cross_check_verification_job is None:
                         if diag:
@@ -1865,10 +1871,12 @@ class SpecReviewApp(_CTkDnDRoot):
                             cycle=cycle,
                             log=self._make_diag_log("cross_check_verification", run_epoch),
                             progress=self._make_diag_progress("cross_check_verification", run_epoch),
+                            cache=cache,
                         )
                         if diag:
                             diag.log("cross_check_verification", "success", "Cross-check verification complete")
 
+                _persist_verification_cache(cache, log=self._make_diag_log("finalization", run_epoch))
                 if diag:
                     diag.log("finalization", "step", "Finalizing batch results")
                 final_result = finalize_batch_result(review_state)
@@ -2065,6 +2073,7 @@ class SpecReviewApp(_CTkDnDRoot):
             def _do_resume_cross_check():
                 try:
                     cycle = AVAILABLE_CYCLES.get(getattr(self._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
+                    cache = _make_verification_cache()
 
                     def _on_progress(pct, msg):
                         self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
@@ -2084,6 +2093,7 @@ class SpecReviewApp(_CTkDnDRoot):
                             cycle=cycle,
                             log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                             progress=_on_progress,
+                            cache=cache,
                         )
                         if cross_check_verification_job is not None:
                             save_batch_state(build_resume_state(
@@ -2101,7 +2111,9 @@ class SpecReviewApp(_CTkDnDRoot):
                                 cycle=cycle,
                                 log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                                 progress=_on_progress,
+                                cache=cache,
                             )
+                    _persist_verification_cache(cache)
                     result = finalize_batch_result(review_state_local)
                     self._dispatch_if_current(run_epoch, lambda r=result: self._on_review_complete(r))
                 except Exception as e:
@@ -2134,6 +2146,8 @@ class SpecReviewApp(_CTkDnDRoot):
 
         def _do_resume_verification():
             try:
+                cache = _make_verification_cache()
+
                 def _on_progress(pct, msg):
                     self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
                     self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
@@ -2144,6 +2158,7 @@ class SpecReviewApp(_CTkDnDRoot):
                     cycle=cycle,
                     log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                     progress=_on_progress,
+                    cache=cache,
                 )
                 save_batch_state(build_resume_state(
                     phase=PHASE_CROSS_CHECK,
@@ -2167,6 +2182,7 @@ class SpecReviewApp(_CTkDnDRoot):
                         cycle=cycle,
                         log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                         progress=_on_progress,
+                        cache=cache,
                     )
                     if cross_check_verification_job is not None:
                         save_batch_state(build_resume_state(
@@ -2184,7 +2200,9 @@ class SpecReviewApp(_CTkDnDRoot):
                             cycle=cycle,
                             log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                             progress=_on_progress,
+                            cache=cache,
                         )
+                _persist_verification_cache(cache)
                 result = finalize_batch_result(review_state_local)
                 self._dispatch_if_current(run_epoch, lambda r=result: self._on_review_complete(r))
             except Exception as e:
@@ -2202,6 +2220,8 @@ class SpecReviewApp(_CTkDnDRoot):
 
         def _do_resume_cross_check_verification():
             try:
+                cache = _make_verification_cache()
+
                 def _on_progress(pct, msg):
                     self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
                     self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
@@ -2213,7 +2233,9 @@ class SpecReviewApp(_CTkDnDRoot):
                         cycle=cycle,
                         log=lambda msg: self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log(m, level="info")),
                         progress=_on_progress,
+                        cache=cache,
                     )
+                _persist_verification_cache(cache)
                 save_batch_state(build_resume_state(
                     phase=PHASE_FINALIZE,
                     submission=self._batch_submission,
