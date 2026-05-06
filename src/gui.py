@@ -1398,7 +1398,6 @@ class SpecReviewApp(_CTkDnDRoot):
             export_report(
                 result,
                 output_path,
-                project_context=getattr(self, "_project_context_for_review", ""),
                 verbose=getattr(self, "_verbose_for_review", True),
             )
             self.log.log_success(f"Report saved: {output_path}")
@@ -2261,7 +2260,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self._report_window = ReportWindow(
             self, review=review, files_reviewed=files_reviewed,
             leed_alerts=leed_alerts, placeholder_alerts=placeholder_alerts,
-            project_context=getattr(self, "_project_context_for_review", ""),
             cross_check_result=cross_check_result,
             verbose=verbose,
         )

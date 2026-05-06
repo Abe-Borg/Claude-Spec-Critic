@@ -27,7 +27,6 @@ Usage:
     export_report(
         pipeline_result=result,
         output_path=Path("review-report.docx"),
-        project_context="New 2-story elementary school",
     )
 """
 
@@ -181,7 +180,7 @@ def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
 # ---------------------------------------------------------------------------
 
 def _write_title_block(doc: Document, review, files_reviewed: list[str],
-                       project_context: str, cycle_label: str = "2025") -> None:
+                       cycle_label: str = "2025") -> None:
     """Write the report title and metadata.
 
     Uses separate paragraphs instead of \\n within runs to ensure
@@ -197,8 +196,6 @@ def _write_title_block(doc: Document, review, files_reviewed: list[str],
         f"Files Reviewed: {len(files_reviewed)}",
         f"Code Cycle: California {cycle_label}",
     ]
-    if project_context:
-        meta_lines.append(f"Project: {project_context}")
 
     for line in meta_lines:
         para = doc.add_paragraph()
@@ -780,7 +777,6 @@ def export_report(
     pipeline_result,
     output_path: Path,
     *,
-    project_context: str = "",
     verbose: bool = True,
 ) -> Path:
     """Export a complete review report to a Word document.
@@ -795,7 +791,6 @@ def export_report(
     Args:
         pipeline_result: PipelineResult from the review pipeline
         output_path: Path where the .docx file should be saved
-        project_context: Optional project description for the title block
 
     Returns:
         The output_path (for convenience / confirmation)
@@ -844,7 +839,6 @@ def export_report(
         doc,
         review,
         pipeline_result.files_reviewed,
-        project_context,
         cycle_label=cycle_label,
     )
     
