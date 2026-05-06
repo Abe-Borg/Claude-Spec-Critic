@@ -1084,13 +1084,13 @@ class EditSummaryDialog(ctk.CTkToplevel):
 # ============================================================================
 
 class ReportWindow(ctk.CTkToplevel):
-    def __init__(self, master, review, files_reviewed, leed_alerts, placeholder_alerts, project_context="", cross_check_result=None, verbose: bool = True, **kwargs):
+    def __init__(self, master, review, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result=None, verbose: bool = True, **kwargs):
         super().__init__(master, **kwargs)
         self.title("Spec Critic Report"); self.geometry("960x800"); self.minsize(700, 500)
         self.configure(fg_color=COLORS["bg_dark"])
         self._review = review; self._files_reviewed = files_reviewed
         self._leed_alerts = leed_alerts; self._placeholder_alerts = placeholder_alerts
-        self._project_context = project_context; self._cross_check_result = cross_check_result
+        self._cross_check_result = cross_check_result
         self._verbose = verbose
         self._card_refs: list[dict] = []
         self._build_ui(); self.lift(); self.focus_force()
@@ -1115,7 +1115,7 @@ class ReportWindow(ctk.CTkToplevel):
     def _export_json(self, review, files_reviewed, leed_alerts, placeholder_alerts):
         data = {
             "meta": {"model": review.model, "input_tokens": review.input_tokens, "output_tokens": review.output_tokens,
-                "elapsed_seconds": review.elapsed_seconds, "generated_at": datetime.now().isoformat(), "project_context": self._project_context},
+                "elapsed_seconds": review.elapsed_seconds, "generated_at": datetime.now().isoformat()},
             "files_reviewed": files_reviewed,
             "findings": [_finding_to_dict(f) for f in review.findings],
             "cross_check_findings": [_finding_to_dict(f) for f in self._cross_check_result.findings] if self._cross_check_result and self._cross_check_result.findings else [],
