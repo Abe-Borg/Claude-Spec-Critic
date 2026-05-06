@@ -100,7 +100,7 @@ def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResu
         if not result.explanation:
             result.explanation = "Verdict downgraded to UNVERIFIED: no external evidence."
         elif suffix not in result.explanation:
-            result.explanation = (result.explanation + suffix)[:500]
+            result.explanation = result.explanation + suffix
     return result
 
 
@@ -337,7 +337,7 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
 
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        return VerificationResult(verdict="UNVERIFIED", explanation=text[:500] or "Verification response did not contain structured JSON.")
+        return VerificationResult(verdict="UNVERIFIED", explanation=text or "Verification response did not contain structured JSON.")
     try:
         data = json.loads(text[start:end + 1])
     except json.JSONDecodeError:
@@ -348,9 +348,9 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
         verdict = "UNVERIFIED"
     return VerificationResult(
         verdict=verdict,
-        explanation=str(data.get("explanation") or "")[:500],
+        explanation=str(data.get("explanation") or ""),
         sources=[str(s) for s in data.get("sources", []) if s],
-        correction=(str(data.get("correction"))[:500] if data.get("correction") is not None else None),
+        correction=(str(data.get("correction")) if data.get("correction") is not None else None),
     )
 
 
@@ -371,10 +371,10 @@ def _verdict_from_tool_use(message) -> VerificationResult | None:
     sources_raw = payload.get("sources") or []
     sources = [str(s) for s in sources_raw if s] if isinstance(sources_raw, list) else []
     correction_raw = payload.get("correction")
-    correction = str(correction_raw)[:500] if correction_raw not in (None, "") else None
+    correction = str(correction_raw) if correction_raw not in (None, "") else None
     return VerificationResult(
         verdict=verdict,
-        explanation=str(payload.get("explanation") or "")[:500],
+        explanation=str(payload.get("explanation") or ""),
         sources=sources,
         correction=correction,
     )
