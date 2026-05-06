@@ -1,6 +1,6 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
-M&P Specification Review • California K-12 DSA • Claude Opus 4.6
+M&P Specification Review • California K-12 DSA • Claude Opus 4.7
 v2.8.0 - Batch-only enforcement, bounded polling, and reporting updates
 """
 import os, sys, json, time, threading, shlex
@@ -320,7 +320,7 @@ class SpecReviewApp(_CTkDnDRoot):
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._show_usage_dialog,
         ).pack(side="right", padx=(0, 8), pady=(4, 0))
-        ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.6", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.7", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
         # --- Accessibility row: sits between header and inputs card ---
         accessibility_bar = ctk.CTkFrame(c, fg_color="transparent")
@@ -486,7 +486,7 @@ class SpecReviewApp(_CTkDnDRoot):
         )
         self._verbose_cb.pack(side="left", padx=(12, 0))
         self._cross_check_hint = ctk.CTkLabel(options_frame,
-            text="Opus 4.6 \u2022 full content \u2022 finds inter-spec conflicts",
+            text="Opus 4.7 \u2022 full content \u2022 finds inter-spec conflicts",
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
@@ -1061,7 +1061,7 @@ class SpecReviewApp(_CTkDnDRoot):
         # Warning text
         warning_text = (
             f"You are about to run a real-time review of {num_specs} spec{'s' if num_specs != 1 else ''} "
-            f"using Claude Opus 4.6.\n\n"
+            f"using Claude Opus 4.7.\n\n"
             f"Real-time mode uses full-price API calls for every stage: "
             f"per-spec review, verification (one call per finding), and "
             f"cross-spec coordination (if enabled). Depending on the number "
@@ -1165,11 +1165,11 @@ class SpecReviewApp(_CTkDnDRoot):
         n = num_specs
         output_label = " \u2192 Export Report" if self._export_mode_for_review else ""
         if self._is_batch_mode:
-            self.log.log_step(f"Submitting {n} files for batch review (Opus 4.6){output_label}...")
+            self.log.log_step(f"Submitting {n} files for batch review (Opus 4.7){output_label}...")
             run_epoch = self._next_run_epoch()
             threading.Thread(target=self._submit_batch_thread, args=(run_epoch,), daemon=True).start()
         else:
-            self.log.log_step(f"Reviewing {n} files (Opus 4.6){output_label}...")
+            self.log.log_step(f"Reviewing {n} files (Opus 4.7){output_label}...")
             run_epoch = self._next_run_epoch()
             threading.Thread(target=self._run_review_thread, args=(run_epoch,), daemon=True).start()
 
@@ -1223,7 +1223,7 @@ class SpecReviewApp(_CTkDnDRoot):
             n = len(self._selected_files_for_review)
             self._dispatch_if_current(run_epoch, lambda: self.log.log_step("Starting per-spec review..."))
             cross_check_note = " + cross-check" if self._cross_check_for_review else ""
-            mode_info = f"Model: Opus 4.6  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled{cross_check_note}"
+            mode_info = f"Model: Opus 4.7  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled{cross_check_note}"
             self._dispatch_if_current(run_epoch, lambda: self.log.log(mode_info, level="muted"))
             if diag:
                 diag.log("review", "step", f"Starting real-time review of {n} specs")
@@ -1925,7 +1925,7 @@ class SpecReviewApp(_CTkDnDRoot):
 
         info_text = (
             f"Batch ID: {submission.job.batch_id[:30]}...\n"
-            f"Files: {len(submission.files_reviewed)} specs  \u2022  Model: Opus 4.6\n"
+            f"Files: {len(submission.files_reviewed)} specs  \u2022  Model: Opus 4.7\n"
             f"Submitted: {age_str}  \u2022  Phase: {phase}"
         )
         ctk.CTkLabel(inner, text=info_text, font=ctk.CTkFont(family="Consolas", size=11),
@@ -2312,7 +2312,7 @@ class SpecReviewApp(_CTkDnDRoot):
                 "don\u2019t cost any tokens."
             )),
             ("3.  Per-Spec Review", (
-                "Each specification is sent individually to Claude Opus 4.6. "
+                "Each specification is sent individually to Claude Opus 4.7. "
                 "Claude checks for code compliance issues (CBC, CMC, CPC, "
                 "Energy Code, CALGreen), DSA-specific requirements, outdated standards, "
                 "coordination problems, and constructability concerns. Each finding is "
@@ -2330,7 +2330,7 @@ class SpecReviewApp(_CTkDnDRoot):
                 "preserved internally so multi-file edits can target every affected spec."
             )),
             ("5.  Cross-Spec Coordination  (optional)", (
-                "If enabled, a separate Opus 4.6 call analyzes the full text of all your "
+                "If enabled, a separate Opus 4.7 call analyzes the full text of all your "
                 "specs together using the 1M token context window. It catches contradictions "
                 "between specs, missing cross-references, scope gaps and overlaps, "
                 "inconsistent equipment data, and division-of-work conflicts. Large projects "
@@ -2340,8 +2340,9 @@ class SpecReviewApp(_CTkDnDRoot):
             ("6.  Verification", (
                 "Every finding that needs external grounding is checked in a secondary AI "
                 "pass with web search. The default verifier is Claude Sonnet 4.6 (faster and "
-                "cheaper); Opus 4.6 is used as an escalation model for low-confidence "
-                "Critical/High findings. Verdicts are Confirmed, Corrected, Disputed, or "
+                "cheaper); Opus 4.7 is used as an escalation model for Critical/High "
+                "findings the first pass couldn’t ground (Unverified or no usable "
+                "web evidence). Verdicts are Confirmed, Corrected, Disputed, or "
                 "Unverified, and a verdict cannot be marked Confirmed/Corrected unless real "
                 "web evidence was actually returned. Internal-only issues (placeholders, "
                 "duplicates, internal contradictions) are resolved locally without web search. "
