@@ -187,7 +187,7 @@ Both inject the active review mode banner, the mode-specific task text, and the 
 
 ### code_cycles.py — California code cycles
 
-**Public API:** `CodeCycle`, `CALIFORNIA_2022`, `CALIFORNIA_2025`, `AVAILABLE_CYCLES`, `DEFAULT_CYCLE` (= `CALIFORNIA_2025`).
+**Public API:** `CodeCycle`, `CALIFORNIA_2025`, `AVAILABLE_CYCLES`, `DEFAULT_CYCLE` (= `CALIFORNIA_2025`).
 
 ### resume_state.py — Durable resume state
 
@@ -333,7 +333,6 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 
 ## 4) GUI Notes (gui.py / widgets.py)
 
-- Code-cycle selector segmented control (`2022` / `2025`)
 - Review-mode segmented control (Strict / Comprehensive / Safe edit)
 - Mode labels: `Real-time (FAST: Expensive!)` and `Batch (SLOW: Cheap!)`
 - Real-time cost confirmation dialog with batch-switch option
@@ -346,7 +345,7 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 
 ## 5) Prompting and Code-Cycle Behavior
 
-- Prompts are mode-aware (Strict / Comprehensive / Safe-edit) and cycle-aware (California 2022 / 2025).
+- Prompts are mode-aware (Strict / Comprehensive / Safe-edit) and target the California 2025 code cycle.
 - `get_system_prompt(cycle, mode=...)` injects the mode banner and editability clause; `get_single_spec_user_message(...)` emits the per-spec task text with project context.
 - The system prompt instructs the model to call the structured tool (`submit_review_findings`); a tagged-JSON fallback exists for compatibility with older paths.
 - `DEFAULT_CYCLE = CALIFORNIA_2025`. Cycle labels are part of the verification cache key, so switching cycles naturally invalidates prior entries.

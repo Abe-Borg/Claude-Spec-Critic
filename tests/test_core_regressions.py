@@ -8,7 +8,7 @@ from anthropic.types import TextBlock, ToolUseBlock
 from anthropic.types.beta.messages.batch_create_params import BatchCreateParams
 from docx import Document
 
-from src.code_cycles import CALIFORNIA_2022, CALIFORNIA_2025
+from src.code_cycles import CALIFORNIA_2025
 from src.extractor import (
     CONTEXT_ATTACHMENT_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
@@ -166,7 +166,6 @@ def _make_dummy_app():
     dummy.api_key_entry = _Entry()
     dummy.log = _Log()
     dummy.output_selector = _Selector(value="View in App")
-    dummy.cycle_selector = _Selector(value="2022")
     dummy._cross_check_var = _Var()
     dummy.run_button = _Button()
     dummy.progress_bar = _Progress()
@@ -216,10 +215,8 @@ def test_extract_context_text_supports_docx_and_pdf(tmp_path: Path):
         extract_context_text(bogus)
 
 
-def test_cycle_prompts_change():
-    p2022 = get_system_prompt(CALIFORNIA_2022)
+def test_cycle_prompt_includes_current_editions():
     p2025 = get_system_prompt(CALIFORNIA_2025)
-    assert "CBC 2022" in p2022
     assert "CBC 2025" in p2025
     assert "<findings_json>" in p2025
     assert "<FINDINGS_JSON>" not in p2025
