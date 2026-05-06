@@ -275,21 +275,24 @@ def test_cache_ttl_drops_old_entries_on_load(tmp_path, monkeypatch):
 
 
 def test_cache_cycle_label_isolation(tmp_path, monkeypatch):
-    """Switching code cycles must not pull verdicts from a prior cycle."""
+    """Cache keys are scoped by cycle label so a future cycle bump invalidates entries."""
     monkeypatch.setenv("SPEC_CRITIC_CACHE_PATH", str(tmp_path / "cache.json"))
-    from src.code_cycles import CALIFORNIA_2022, CALIFORNIA_2025
+    from dataclasses import replace
+
+    from src.code_cycles import CALIFORNIA_2025
     from src.verifier import VerificationResult
     from src.verification_cache import VerificationCache
 
     cache = VerificationCache()
     f = _make_finding(code_ref="CBC §1004", issue="Edition is current")
+    future_cycle = replace(CALIFORNIA_2025, label="2028", cbc="2028")
     cache.put(
-        f, cycle=CALIFORNIA_2022,
+        f, cycle=CALIFORNIA_2025,
         result=VerificationResult(verdict="CONFIRMED", grounded=True),
     )
-    # Same finding under the 2025 cycle — different cache key.
-    assert cache.get(f, cycle=CALIFORNIA_2025) is None
-    assert cache.get(f, cycle=CALIFORNIA_2022) is not None
+    # Same finding under a different cycle label — different cache key.
+    assert cache.get(f, cycle=future_cycle) is None
+    assert cache.get(f, cycle=CALIFORNIA_2025) is not None
 
 
 # ---------------------------------------------------------------------------

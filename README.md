@@ -4,7 +4,7 @@
 
 Spec Critic reviews mechanical and plumbing CSI-format `.docx` specifications against California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) using Claude. It produces structured findings with severity classifications, confidence scores, verification verdicts backed by web search, optional cross-spec coordination analysis, and either inline edits or yellow-highlighted suggestion annotations on a copy of each spec.
 
-The project is optimized for DSA-oriented K-12 workflows and California code cycle selection (2022 / 2025), with an emphasis on:
+The project is optimized for DSA-oriented K-12 workflows on the California 2025 code cycle, with an emphasis on:
 
 - structured, parseable model output (forced tool-use schemas — no fragile regex parsing),
 - evidence-grounded verification (web-search-backed verdicts; CONFIRMED / CORRECTED only when grounded),
@@ -108,7 +108,7 @@ The active mode is recorded in resume state so a resumed run uses the same promp
 | `src/report_exporter.py` | Word document report generation |
 | `src/resume_state.py` | Durable serialization with content + source-file SHA-256 digests for change detection |
 | `src/diagnostics.py` | In-memory diagnostics report — events, phase durations, token + cache usage, verification evidence, output / search-budget telemetry, edit skip reasons, ambiguous locator counts |
-| `src/code_cycles.py` | California code cycle definitions (2022, 2025) |
+| `src/code_cycles.py` | California 2025 code cycle definition |
 
 ## Verification Architecture
 
@@ -139,12 +139,7 @@ Annotate mode bypasses these gates by writing a yellow-highlighted suggestion pa
 
 ## Code Cycles
 
-Built-in support for:
-
-- **California 2022 code cycle**
-- **California 2025 code cycle** *(default)*
-
-Cycle selection drives prompt framing, code reference expectations, and cache keying. Switching cycles naturally invalidates persistent cache entries from the prior cycle (the cycle label is part of the cache key).
+Built-in support for the **California 2025 code cycle**. The cycle label is part of the verification cache key, so a future cycle bump naturally invalidates persistent cache entries from the prior cycle.
 
 ## Requirements
 

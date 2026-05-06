@@ -490,18 +490,10 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 6: Code Cycle ---
-        ctk.CTkLabel(self.inputs_content, text="Code Cycle", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=6, column=0, sticky="w", pady=8)
-        cycle_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        cycle_frame.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=8)
-        self.cycle_selector = ctk.CTkSegmentedButton(cycle_frame, values=["2022", "2025"], font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"], unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"], fg_color=COLORS["bg_input"], text_color=COLORS["text_primary"], height=32)
-        self.cycle_selector.set(DEFAULT_CYCLE.label)
-        self.cycle_selector.pack(side="left")
-
-        # --- Row 7: Review Mode (Phase 8 / plan section 12.1) ---
-        ctk.CTkLabel(self.inputs_content, text="Review Mode", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=7, column=0, sticky="w", pady=8)
+        # --- Row 6: Review Mode (Phase 8 / plan section 12.1) ---
+        ctk.CTkLabel(self.inputs_content, text="Review Mode", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=6, column=0, sticky="w", pady=8)
         mode_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        mode_frame.grid(row=7, column=1, sticky="w", padx=(8, 0), pady=8)
+        mode_frame.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=8)
         self._mode_label_to_enum: dict[str, ReviewMode] = {
             REVIEW_MODE_PROFILES[m].label: m for m in (
                 ReviewMode.STRICT, ReviewMode.COMPREHENSIVE, ReviewMode.SAFE_EDIT,
@@ -873,8 +865,7 @@ class SpecReviewApp(_CTkDnDRoot):
         # must not read Tkinter/CustomTkinter state directly — those reads
         # are not thread-safe and risk reading partially-updated values.
         project_context = self._get_project_context()
-        cycle_label = self.cycle_selector.get()
-        cycle = AVAILABLE_CYCLES.get(cycle_label, DEFAULT_CYCLE)
+        cycle = DEFAULT_CYCLE
 
         # Increment the analysis epoch and capture the value. Newer
         # analysis starts will bump the epoch; older threads will see their
@@ -1144,7 +1135,7 @@ class SpecReviewApp(_CTkDnDRoot):
         self._cross_check_for_review = self._cross_check_var.get()
         self._verbose_for_review = self._verbose_var.get()
         self._export_mode_for_review = self._is_export_mode
-        self._selected_cycle_label = self.cycle_selector.get()
+        self._selected_cycle_label = DEFAULT_CYCLE.label
         # Capture the segmented control's current value on the UI thread
         # (Phase 7.2 staleness-guard discipline) before kicking off the
         # background submission.
@@ -2002,8 +1993,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self._verbose_for_review = verbose_var.get() if verbose_var is not None else bool(getattr(self, "_verbose_for_review", True))
         self.output_selector.set("Export Report" if self._export_mode_for_review else "View in App")
         self._on_output_mode_change(self.output_selector.get())
-        if submission.cycle_label in AVAILABLE_CYCLES:
-            self.cycle_selector.set(submission.cycle_label)
         self._cross_check_var.set(bool(getattr(submission, "cross_check_enabled", False)))
         # Phase 8: restore the review mode that produced the saved batch so
         # any retry/repair calls (e.g. truncated review repair) keep using
@@ -2472,12 +2461,7 @@ class SpecReviewApp(_CTkDnDRoot):
                 "logic — findings should be equivalent; only the API dispatch path "
                 "differs. For more than a few specs, batch mode is strongly recommended."
             )),
-            ("5.  Select Code Cycle", (
-                "Choose the California code cycle for your project (2022 or "
-                "2025). This determines which edition of CBC, CMC, CPC, Energy "
-                "Code, CALGreen, and ASCE 7 the reviewer checks against."
-            )),
-            ("6.  Choose Review Mode", (
+            ("5.  Choose Review Mode", (
                 "Strict reports only evidence-backed contradictions, code-cycle "
                 "issues, and invalid references — fewer findings, higher precision. "
                 "Comprehensive (the default) adds AEC constructability, coordination, "
@@ -2486,7 +2470,7 @@ class SpecReviewApp(_CTkDnDRoot):
                 "precise, unambiguous, low-risk edit — useful when you intend to use "
                 "the auto-edit output."
             )),
-            ("7.  Enable Cross-Spec Coordination (Optional)", (
+            ("6.  Enable Cross-Spec Coordination (Optional)", (
                 "Check this option to run a separate coordination analysis that "
                 "sends all spec content to Claude in a single call. This catches "
                 "contradictions between specs, missing cross-references, and "
@@ -2494,7 +2478,7 @@ class SpecReviewApp(_CTkDnDRoot):
                 "automatically chunked by CSI division when the combined input "
                 "exceeds the recommended token ceiling."
             )),
-            ("8.  Choose Output Mode", (
+            ("7.  Choose Output Mode", (
                 "'View in App' renders results in a pop-out report window with "
                 "collapsible finding cards. 'Export Report' saves a formatted "
                 ".docx report. 'Auto-Edit' writes an edited copy of each spec — "
@@ -2504,13 +2488,13 @@ class SpecReviewApp(_CTkDnDRoot):
                 "paragraphs after each anchor without changing the original text. "
                 "Source files are never overwritten."
             )),
-            ("9.  Run the Review", (
+            ("8.  Run the Review", (
                 "Click Run Review (real-time) or Submit Batch (batch mode). "
                 "The activity log shows progress. In batch mode, you can close "
                 "the app and reopen it later — the pending batch state is saved "
                 "and you will be prompted to resume."
             )),
-            ("10.  Review the Results", (
+            ("9.  Review the Results", (
                 "Findings are grouped by severity (Critical, High, Medium, "
                 "Gripe) and sorted by confidence within each severity tier. Each finding "
                 "includes a verification verdict from a secondary AI pass with "

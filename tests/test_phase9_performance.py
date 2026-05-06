@@ -12,7 +12,7 @@ import pytest
 from docx import Document
 
 from src import extraction_cache
-from src.code_cycles import CALIFORNIA_2022, CALIFORNIA_2025
+from src.code_cycles import CALIFORNIA_2025
 from src.diagnostics import DiagnosticsReport
 from src.extraction_cache import (
     cache_token_count,
@@ -46,8 +46,8 @@ def test_stale_code_cycle_flags_old_cbc_when_cycle_is_2025():
 
 
 def test_stale_code_cycle_does_not_flag_current_cycle():
-    content = "Comply with 2022 CBC."
-    alerts = detect_stale_code_cycle_references(content, "spec.docx", CALIFORNIA_2022)
+    content = "Comply with 2025 CBC."
+    alerts = detect_stale_code_cycle_references(content, "spec.docx", CALIFORNIA_2025)
     assert alerts == []
 
 
@@ -209,10 +209,10 @@ def test_token_count_cache_round_trip():
 
 def test_token_count_cache_key_changes_with_cycle():
     a = token_count_cache_key(
-        model="m", system_prompt="s", user_message="u", cycle_label="2022", mode="strict",
+        model="m", system_prompt="s", user_message="u", cycle_label="2025", mode="strict",
     )
     b = token_count_cache_key(
-        model="m", system_prompt="s", user_message="u", cycle_label="2025", mode="strict",
+        model="m", system_prompt="s", user_message="u", cycle_label="2028", mode="strict",
     )
     assert a != b
 
