@@ -613,7 +613,7 @@ def _render_cross_check_section(parent, cross_check_result, card_refs: list | No
 
     ctk.CTkLabel(
         header_frame,
-        text="Opus 4.6",
+        text="Opus 4.7",
         font=ctk.CTkFont(family="Consolas", size=9),
         text_color=COLORS["text_muted"],
     ).pack(side="right")
