@@ -1,0 +1,72 @@
+"""Report export and report-window lifecycle.
+
+Coordinates the ``export_report`` call (with filedialog and progress
+logging) and the lifecycle of the in-app ``ReportWindow``. Returns
+status strings ("canceled" / "success" / "error") so the caller can
+decide what to log or whether to open the edit-selection dialog.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from tkinter import filedialog
+
+from .report_exporter import export_report
+from .widgets import ReportWindow
+
+
+def export_report_to_file(app, result) -> str:
+    default_name = f"spec-critic-report-{datetime.now().strftime('%Y-%m-%d')}.docx"
+    path = filedialog.asksaveasfilename(
+        title="Save Review Report",
+        defaultextension=".docx",
+        filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")],
+        initialfile=default_name,
+    )
+    if not path:
+        app.log.log_warning("Export canceled")
+        return "canceled"
+    try:
+        output_path = Path(path)
+        app.log.log_step(f"Exporting report to {output_path.name}...")
+        export_report(
+            result,
+            output_path,
+            verbose=getattr(app, "_verbose_for_review", True),
+        )
+        app.log.log_success(f"Report saved: {output_path}")
+        return "success"
+    except Exception as e:
+        app.log.log_error(f"Export failed: {e}")
+        return "error"
+
+
+def open_report_window(
+    app,
+    *,
+    review,
+    files_reviewed,
+    leed_alerts,
+    placeholder_alerts,
+    cross_check_result=None,
+    verbose: bool = True,
+) -> None:
+    close_report_window(app)
+    app._report_window = ReportWindow(
+        app,
+        review=review,
+        files_reviewed=files_reviewed,
+        leed_alerts=leed_alerts,
+        placeholder_alerts=placeholder_alerts,
+        cross_check_result=cross_check_result,
+        verbose=verbose,
+    )
+
+
+def close_report_window(app) -> None:
+    if app._report_window is not None:
+        try:
+            app._report_window.destroy()
+        except Exception:
+            pass
+        app._report_window = None

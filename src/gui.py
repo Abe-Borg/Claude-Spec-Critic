@@ -60,7 +60,6 @@ from src.review_modes import (
     ReviewMode,
     coerce_review_mode,
 )
-from src.report_exporter import export_report
 from src.edit_candidates import classify_edit_candidates
 from src.apply_edits import execute_edit_plan
 from src.spec_editor import EditReport
@@ -103,6 +102,17 @@ from src.batch_state_store import (
     delete_batch_state,
 )
 from src.about_usage_dialogs import show_about_dialog, show_usage_dialog
+from src.diagnostics_controller import (
+    make_diag_log,
+    make_diag_progress,
+    finalize_diagnostics,
+    open_diagnostics_window,
+)
+from src.report_controller import (
+    export_report_to_file,
+    open_report_window,
+    close_report_window,
+)
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
@@ -1066,48 +1076,13 @@ class SpecReviewApp(_CTkDnDRoot):
             threading.Thread(target=self._run_review_thread, args=(run_epoch,), daemon=True).start()
 
     def _make_diag_log(self, phase: str, run_epoch: int):
-        """Return a log callback that writes to both the EnhancedLog and the diagnostics report.
-
-        Phase 7.1 (audit Section 11.1): pipeline code now passes explicit
-        ``level`` and ``phase`` keywords. The constructed ``phase`` is used
-        as the default; when a caller (e.g., the verifier path) supplies
-        ``phase=``, it overrides on a per-call basis.
-        """
-        ui_level_map = {
-            "info": "info",
-            "success": "success",
-            "warning": "warning",
-            "error": "error",
-            "step": "step",
-            "muted": "muted",
-            "debug": "muted",
-        }
-
-        default_phase = phase
-
-        def _log(msg: str, *, level: str = "info", phase: str | None = None, **_extra):
-            ui_level = ui_level_map.get(level, "info")
-            self._dispatch_if_current(run_epoch, lambda m=msg, lv=ui_level: self.log.log(m, level=lv))
-            if self._diagnostics_report:
-                self._diagnostics_report.log(phase or default_phase, level, msg)
-        return _log
+        return make_diag_log(self, phase, run_epoch)
 
     def _make_diag_progress(self, phase: str, run_epoch: int):
-        """Return a progress callback that writes to both UI and diagnostics."""
-        default_phase = phase
-
-        def _on_progress(pct, msg, *, phase: str | None = None, **_extra):
-            self._dispatch_if_current(run_epoch, lambda m=msg: self.log.log_step(m))
-            self._dispatch_if_current(run_epoch, lambda p=pct: self.progress_bar.set(max(0.0, min(p / 100.0, 1.0))))
-            if self._diagnostics_report:
-                self._diagnostics_report.log(phase or default_phase, "step", msg, {"progress_pct": round(pct, 1)})
-        return _on_progress
+        return make_diag_progress(self, phase, run_epoch)
 
     def _finalize_diagnostics(self, phase: str, level: str, message: str) -> None:
-        if self._diagnostics_report:
-            self._diagnostics_report.log(phase, level, message)
-            self._diagnostics_report.finish()
-        self.diagnostics_button.configure(state="normal")
+        finalize_diagnostics(self, phase, level, message)
 
     def _run_review_thread(self, run_epoch: int):
         diag = self._diagnostics_report
@@ -1265,29 +1240,7 @@ class SpecReviewApp(_CTkDnDRoot):
         self.after(2500, self._reset_ui)
 
     def _export_report_to_file(self, result) -> str:
-        default_name = f"spec-critic-report-{datetime.now().strftime('%Y-%m-%d')}.docx"
-        path = filedialog.asksaveasfilename(
-            title="Save Review Report",
-            defaultextension=".docx",
-            filetypes=[("Word Documents", "*.docx"), ("All Files", "*.*")],
-            initialfile=default_name,
-        )
-        if not path:
-            self.log.log_warning("Export canceled")
-            return "canceled"
-        try:
-            output_path = Path(path)
-            self.log.log_step(f"Exporting report to {output_path.name}...")
-            export_report(
-                result,
-                output_path,
-                verbose=getattr(self, "_verbose_for_review", True),
-            )
-            self.log.log_success(f"Report saved: {output_path}")
-            return "success"
-        except Exception as e:
-            self.log.log_error(f"Export failed: {e}")
-            return "error"
+        return export_report_to_file(self, result)
 
     def _show_edit_selection_dialog(self, result) -> None:
         extracted_specs = list(self._extracted_specs)
@@ -2137,27 +2090,21 @@ class SpecReviewApp(_CTkDnDRoot):
     # ----- Pop-out report window -----
 
     def _open_report_window(self, review, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result=None, verbose: bool = True):
-        self._close_report_window()
-        self._report_window = ReportWindow(
-            self, review=review, files_reviewed=files_reviewed,
-            leed_alerts=leed_alerts, placeholder_alerts=placeholder_alerts,
+        open_report_window(
+            self,
+            review=review,
+            files_reviewed=files_reviewed,
+            leed_alerts=leed_alerts,
+            placeholder_alerts=placeholder_alerts,
             cross_check_result=cross_check_result,
             verbose=verbose,
         )
 
     def _close_report_window(self):
-        if self._report_window is not None:
-            try: self._report_window.destroy()
-            except Exception: pass
-            self._report_window = None
+        close_report_window(self)
 
     def _open_diagnostics_window(self):
-        if self._diagnostics_report is None:
-            return
-        if self._diagnostics_window is not None:
-            try: self._diagnostics_window.destroy()
-            except Exception: pass
-        self._diagnostics_window = DiagnosticsWindow(self, report=self._diagnostics_report)
+        open_diagnostics_window(self)
 
     def _show_about_dialog(self):
         show_about_dialog(self)
