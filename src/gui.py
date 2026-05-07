@@ -2,7 +2,7 @@
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus 4.7
 """
-import os, sys, time, threading, shlex
+import os, sys, time, threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -40,13 +40,7 @@ from src.pipeline import (
 from src.batch import BatchStatus, BatchJob
 from src.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from src.reviewer import MODEL_OPUS_47, REVIEW_MODELS, Finding
-from src.extractor import (
-    extract_text,
-    extract_context_text,
-    ExtractedSpec,
-    SUPPORTED_EXTENSIONS,
-    CONTEXT_ATTACHMENT_EXTENSIONS,
-)
+from src.extractor import extract_text, ExtractedSpec
 from src.tokenizer import (
     PROJECT_CONTEXT_MAX_TOKENS,
     RECOMMENDED_MAX,
@@ -118,20 +112,28 @@ from src.edit_workflow_controller import (
     apply_selected_edits,
     on_edits_applied,
 )
+from src.file_selection_controller import (
+    is_supported_spec as _is_supported_spec,
+    parse_dropped_paths,
+    browse_for_specs,
+    apply_selected_specs,
+    clear_file_state,
+    set_file_data,
+)
+from src.context_controller import (
+    context_focus_in,
+    context_focus_out,
+    get_project_context,
+    on_context_change,
+    do_context_change,
+    update_context_token_label,
+    set_context_text,
+    extract_context_attachments,
+    attach_context_files,
+    open_context_modal,
+)
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
-
-_SPEC_FILETYPES = [
-    ("Word Specifications", "*.docx"),
-    ("All Files", "*.*"),
-]
-
-_CONTEXT_FILETYPES = [
-    ("Documents", "*.docx *.pdf"),
-    ("Word Documents", "*.docx"),
-    ("PDF Documents", "*.pdf"),
-    ("All Files", "*.*"),
-]
 
 # Mode selector labels
 _MODE_REALTIME = "Real-time (FAST: Expensive!)"
@@ -146,10 +148,6 @@ _FONT_SCALE_OPTIONS = {
 
 # Consistent font size for all input row labels and controls
 _UI_FONT_SIZE = 12
-
-
-def _is_supported_spec(filepath: Path) -> bool:
-    return filepath.suffix.lower() in SUPPORTED_EXTENSIONS
 
 
 class SpecReviewApp(_CTkDnDRoot):
@@ -467,215 +465,34 @@ class SpecReviewApp(_CTkDnDRoot):
     # --- Project context placeholder helpers ---
 
     def _context_focus_in(self, event=None):
-        if self._context_has_placeholder:
-            self.context_textbox.delete("1.0", "end")
-            self.context_textbox.configure(text_color=COLORS["text_primary"])
-            self._context_has_placeholder = False
+        context_focus_in(self, event)
 
     def _context_focus_out(self, event=None):
-        text = self.context_textbox.get("1.0", "end").strip()
-        if not text:
-            self._context_has_placeholder = True
-            self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
-            self.context_textbox.configure(text_color=COLORS["text_muted"])
-            self._on_context_change()
+        context_focus_out(self, event)
 
     def _get_project_context(self) -> str:
-        if self._context_has_placeholder:
-            return ""
-        return self.context_textbox.get("1.0", "end").strip()
+        return get_project_context(self)
 
     def _on_context_change(self, event=None):
-        if self._context_debounce_id is not None:
-            self.after_cancel(self._context_debounce_id)
-        self._context_debounce_id = self.after(300, self._do_context_change)
+        on_context_change(self, event)
 
     def _do_context_change(self):
-        self._context_debounce_id = None
-        ctx = self._get_project_context()
-        if ctx:
-            from tiktoken import get_encoding
-            enc = get_encoding("cl100k_base")
-            self._project_context_tokens = len(enc.encode(ctx))
-        else:
-            self._project_context_tokens = 0
-        self._update_context_token_label()
-        if self._loaded_file_data:
-            self._on_file_selection_change()
+        do_context_change(self)
 
     def _update_context_token_label(self) -> None:
-        tokens = self._project_context_tokens
-        over = tokens > PROJECT_CONTEXT_MAX_TOKENS
-        text = f"{tokens:,} / {PROJECT_CONTEXT_MAX_TOKENS:,} tokens"
-        if over:
-            text += " — exceeds limit"
-            color = COLORS["error"]
-        elif tokens > int(PROJECT_CONTEXT_MAX_TOKENS * 0.9):
-            color = COLORS["warning"]
-        else:
-            color = COLORS["text_muted"]
-        if hasattr(self, "context_token_label"):
-            self.context_token_label.configure(text=text, text_color=color)
+        update_context_token_label(self)
 
     def _set_context_text(self, new_text: str) -> None:
-        """Replace the context textbox contents, restoring placeholder when empty."""
-        self.context_textbox.delete("1.0", "end")
-        if new_text:
-            self._context_has_placeholder = False
-            self.context_textbox.configure(text_color=COLORS["text_primary"])
-            self.context_textbox.insert("1.0", new_text)
-        else:
-            self._context_has_placeholder = True
-            self.context_textbox.insert("1.0", _CONTEXT_PLACEHOLDER)
-            self.context_textbox.configure(text_color=COLORS["text_muted"])
-        self._on_context_change()
+        set_context_text(self, new_text)
 
     def _extract_context_attachments(self, paths: list[Path]) -> tuple[str, list[str]]:
-        """Extract text from .docx/.pdf attachments. Returns (combined_text, errors)."""
-        sections: list[str] = []
-        errors: list[str] = []
-        for path in paths:
-            try:
-                text = extract_context_text(path).strip()
-            except Exception as exc:
-                errors.append(f"{path.name}: {exc}")
-                continue
-            if not text:
-                errors.append(f"{path.name}: no extractable text (scanned PDF?)")
-                continue
-            sections.append(
-                f"--- BEGIN ATTACHMENT: {path.name} ---\n{text}\n--- END ATTACHMENT: {path.name} ---"
-            )
-        return ("\n\n".join(sections), errors)
+        return extract_context_attachments(paths)
 
     def _attach_context_files(self, target_textbox=None) -> None:
-        """Open a file picker, extract .docx/.pdf text, and append to the context.
-
-        ``target_textbox`` lets the modal dialog reuse this flow against its
-        own textbox; when None, the inline context textbox is updated.
-        """
-        files = filedialog.askopenfilenames(
-            title="Attach project context documents",
-            filetypes=_CONTEXT_FILETYPES,
-        )
-        if not files:
-            return
-        paths = [Path(f) for f in files]
-        unsupported = [p for p in paths if p.suffix.lower() not in CONTEXT_ATTACHMENT_EXTENSIONS]
-        if unsupported:
-            messagebox.showwarning(
-                "Unsupported files",
-                "Only .docx and .pdf files can be attached. Skipping:\n"
-                + "\n".join(p.name for p in unsupported),
-            )
-            paths = [p for p in paths if p not in unsupported]
-        if not paths:
-            return
-
-        try:
-            self.configure(cursor="watch")
-            self.update_idletasks()
-            combined, errors = self._extract_context_attachments(paths)
-        finally:
-            self.configure(cursor="")
-
-        if errors:
-            messagebox.showwarning(
-                "Some attachments could not be read",
-                "\n".join(errors),
-            )
-        if not combined:
-            return
-
-        if target_textbox is None:
-            existing = self._get_project_context()
-        else:
-            existing = target_textbox.get("1.0", "end").strip()
-        merged = f"{existing}\n\n{combined}" if existing else combined
-
-        from tiktoken import get_encoding
-        enc = get_encoding("cl100k_base")
-        merged_tokens = len(enc.encode(merged))
-        if merged_tokens > PROJECT_CONTEXT_MAX_TOKENS:
-            messagebox.showerror(
-                "Project Context too large",
-                f"Attaching these file(s) would push Project Context to "
-                f"{merged_tokens:,} tokens, exceeding the {PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
-                f"Trim the existing context or attach smaller documents.",
-            )
-            return
-
-        if target_textbox is None:
-            self._set_context_text(merged)
-        else:
-            target_textbox.delete("1.0", "end")
-            target_textbox.insert("1.0", merged)
+        attach_context_files(self, target_textbox)
 
     def _open_context_modal(self):
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Project Context")
-        dialog.geometry("700x500")
-        dialog.configure(fg_color=COLORS["bg_dark"])
-        dialog.resizable(True, True)
-        dialog.minsize(400, 300)
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.lift()
-        dialog.focus_force()
-
-        outer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
-        outer.pack(fill="both", expand=True, padx=16, pady=16)
-
-        ctk.CTkLabel(
-            outer, text="Project Context",
-            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
-            text_color=COLORS["text_primary"],
-        ).pack(anchor="w", padx=16, pady=(16, 8))
-
-        modal_textbox = ctk.CTkTextbox(
-            outer, fg_color=COLORS["bg_input"], border_color=COLORS["border"],
-            border_width=2, text_color=COLORS["text_primary"],
-            font=ctk.CTkFont(family="Consolas", size=13), wrap="word",
-        )
-        modal_textbox.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-
-        current = self._get_project_context()
-        if current:
-            modal_textbox.insert("1.0", current)
-
-        def _save_and_close():
-            new_text = modal_textbox.get("1.0", "end").strip()
-            if new_text:
-                from tiktoken import get_encoding
-                enc = get_encoding("cl100k_base")
-                tokens = len(enc.encode(new_text))
-                if tokens > PROJECT_CONTEXT_MAX_TOKENS:
-                    messagebox.showerror(
-                        "Project Context too large",
-                        f"Project Context is {tokens:,} tokens, exceeding the "
-                        f"{PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
-                        f"Trim the text before saving.",
-                    )
-                    return
-            self._set_context_text(new_text)
-            dialog.destroy()
-
-        button_row = ctk.CTkFrame(outer, fg_color="transparent")
-        button_row.pack(fill="x", padx=16, pady=(0, 16))
-        ctk.CTkButton(
-            button_row, text="Attach Files…", width=120, height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=13),
-            fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
-            border_width=1, border_color=COLORS["border"],
-            text_color=COLORS["text_secondary"],
-            command=lambda: self._attach_context_files(target_textbox=modal_textbox),
-        ).pack(side="left")
-        ctk.CTkButton(
-            button_row, text="Save & Close", width=120, height=32,
-            font=ctk.CTkFont(family="Segoe UI", size=13),
-            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-            command=_save_and_close,
-        ).pack(side="right")
+        open_context_modal(self)
 
     def _on_mode_change(self, value: str):
         if value == _MODE_BATCH:
@@ -696,12 +513,9 @@ class SpecReviewApp(_CTkDnDRoot):
             self.inputs_content.pack(fill="x", padx=16, pady=(0, 16)); self.inputs_expand_label.configure(text="\u25bc"); self._inputs_expanded = True
 
     def _browse_files(self):
-        files = filedialog.askopenfilenames(
-            title="Select specification files",
-            filetypes=_SPEC_FILETYPES,
-        )
-        if files:
-            self._apply_selected_specs([Path(f) for f in files])
+        paths = browse_for_specs(self)
+        if paths:
+            apply_selected_specs(self, paths)
 
     def _register_specs_drop_target(self):
         if DND_FILES is None:
@@ -714,53 +528,20 @@ class SpecReviewApp(_CTkDnDRoot):
             print(f"[SpecCritic] Drag-and-drop unavailable: {e}")
 
     def _parse_dropped_paths(self, payload: str) -> list[Path]:
-        if not payload:
-            return []
-        raw_items: list[str] = []
-        try:
-            raw_items = list(self.tk.splitlist(payload))
-        except Exception:
-            pass
-        if not raw_items:
-            try:
-                raw_items = shlex.split(payload)
-            except ValueError:
-                raw_items = [payload]
-        cleaned: list[Path] = []
-        for item in raw_items:
-            normalized = item.strip().strip("{}").strip("\"")
-            if not normalized:
-                continue
-            cleaned.append(Path(normalized))
-        return cleaned
+        return parse_dropped_paths(self, payload)
 
     def _apply_selected_specs(self, candidate_paths: list[Path]):
-        paths = [p for p in candidate_paths if _is_supported_spec(p)]
-        if not paths:
-            self.log.log_warning("No supported .docx files selected")
-            return
-        self._selected_files = paths
-        self.input_dir = paths[0].parent
-        self.input_dir_entry.delete(0, "end")
-        self.input_dir_entry.insert(0, str(paths[0]) if len(paths) == 1 else f"{len(paths)} files selected")
-        self._analyze_tokens(paths)
+        apply_selected_specs(self, candidate_paths)
 
     def _on_specs_drop(self, event):
-        dropped_paths = self._parse_dropped_paths(getattr(event, "data", ""))
-        self._apply_selected_specs(dropped_paths)
+        dropped_paths = parse_dropped_paths(self, getattr(event, "data", ""))
+        apply_selected_specs(self, dropped_paths)
 
     def _clear_file_state(self):
-        self._loaded_file_data = []
-        self._extracted_specs = []
-        self.file_list_panel.reset()
-        self.token_gauge.reset()
-        self.run_button.configure(state="disabled")
+        clear_file_state(self)
 
     def _set_file_data(self, file_data, extracted_specs, sys_tokens, ctx_tokens):
-        self._loaded_file_data = file_data
-        self._extracted_specs = extracted_specs
-        self._system_prompt_tokens = sys_tokens
-        self._project_context_tokens = ctx_tokens
+        set_file_data(self, file_data, extracted_specs, sys_tokens, ctx_tokens)
 
     def _analyze_tokens(self, file_paths):
         if not file_paths:
