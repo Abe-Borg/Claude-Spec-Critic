@@ -627,7 +627,7 @@ def test_resume_verification_state_rejected_when_batch_missing(monkeypatch: pyte
     called = {"reset": 0, "resume": 0, "delete": 0}
     dummy._reset_ui = lambda: called.__setitem__("reset", called["reset"] + 1)
     dummy._resume_verification_poll = lambda _loaded: called.__setitem__("resume", called["resume"] + 1)
-    monkeypatch.setattr(gui, "delete_batch_state", lambda: called.__setitem__("delete", called["delete"] + 1))
+    monkeypatch.setattr(batch_state_store, "delete_batch_state", lambda: called.__setitem__("delete", called["delete"] + 1))
     submission = _make_submission(batch_id="msgbatch_invalid_verify_missing")
     review_state = _make_review_state(submission)
 
@@ -643,7 +643,7 @@ def test_resume_verification_state_rejected_when_batch_id_malformed(monkeypatch:
     called = {"reset": 0, "resume": 0, "delete": 0}
     dummy._reset_ui = lambda: called.__setitem__("reset", called["reset"] + 1)
     dummy._resume_verification_poll = lambda _loaded: called.__setitem__("resume", called["resume"] + 1)
-    monkeypatch.setattr(gui, "delete_batch_state", lambda: called.__setitem__("delete", called["delete"] + 1))
+    monkeypatch.setattr(batch_state_store, "delete_batch_state", lambda: called.__setitem__("delete", called["delete"] + 1))
     submission = _make_submission(batch_id="msgbatch_invalid_verify_bad_id")
     review_state = _make_review_state(submission)
     bad_batch = BatchJob(batch_id="bad_id", job_type="verify", request_map={"verify__0": {"finding_idx": 0}}, created_at=1.0)
@@ -660,7 +660,7 @@ def test_resume_verification_state_rejected_when_review_state_missing(monkeypatc
     called = {"reset": 0, "resume": 0, "delete": 0}
     dummy._reset_ui = lambda: called.__setitem__("reset", called["reset"] + 1)
     dummy._resume_verification_poll = lambda _loaded: called.__setitem__("resume", called["resume"] + 1)
-    monkeypatch.setattr(gui, "delete_batch_state", lambda: called.__setitem__("delete", called["delete"] + 1))
+    monkeypatch.setattr(batch_state_store, "delete_batch_state", lambda: called.__setitem__("delete", called["delete"] + 1))
     submission = _make_submission(batch_id="msgbatch_invalid_verify_missing_review")
     verification_batch = BatchJob(batch_id="msgbatch_verify_good", job_type="verify", request_map={"verify__0": {"finding_idx": 0}}, created_at=1.0)
 
@@ -761,7 +761,7 @@ def test_on_poll_result_terminal_status_collects_partial_results(monkeypatch: py
     dummy._diagnostics_report = None
     dummy.progress_bar = type("P", (), {"set": lambda self, _v: None})()
     dummy._schedule_next_poll = lambda _delay: None
-    monkeypatch.setattr(gui, "save_batch_state", lambda _state: called.__setitem__("save", called["save"] + 1))
+    monkeypatch.setattr(batch_state_store, "save_batch_state", lambda _state: called.__setitem__("save", called["save"] + 1))
 
     status = BatchStatus(status="failed", processing=0, succeeded=1, errored=1, canceled=0, expired=0, total=2)
     gui.SpecReviewApp._on_poll_result(dummy, status)
