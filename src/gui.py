@@ -1,13 +1,26 @@
+"""Spec Critic — main app shell.
+
+This file is a thin GUI shell. It builds the root window, the layout, and
+delegates all workflow concerns to focused controller modules:
+
+- ``app_paths`` / ``api_key_store`` / ``batch_state_store`` — persistence
+- ``about_usage_dialogs`` — static informational dialogs
+- ``file_selection_controller`` / ``context_controller`` /
+  ``token_analysis_controller`` — input handling
+- ``review_run_controller`` — real-time review orchestration + shared
+  run-lifecycle helpers
+- ``batch_controller`` — batch submission, polling, collection, resume
+- ``report_controller`` — report export and the report window
+- ``edit_workflow_controller`` — edit candidate selection + application
+- ``diagnostics_controller`` — diagnostics callbacks and window
 """
-Spec Critic - Modern GUI with CustomTkinter
-M&P Specification Review • California K-12 DSA • Claude Opus 4.7
-"""
-import os, sys, time, threading
-from datetime import datetime
+import os
+import sys
 from pathlib import Path
 from typing import Optional
+
 import customtkinter as ctk
-from tkinter import filedialog, messagebox
+
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
 except ImportError:
@@ -24,139 +37,109 @@ base_path = os.path.dirname(os.path.abspath(__file__))
 exe_dir = Path(base_path).parent
 sys.path.insert(0, str(exe_dir))
 
-from src.pipeline import (
-    run_review,
-    start_batch_review,
-    collect_review_batch_results,
-    run_cross_check_for_batch,
-    start_batch_verification,
-    collect_batch_verification_results,
-    finalize_batch_result,
-    BatchSubmission,
-    CollectedBatchState,
-    _make_verification_cache,
-    _persist_verification_cache,
-)
-from src.batch import BatchStatus, BatchJob
-from src.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
-from src.reviewer import MODEL_OPUS_47, REVIEW_MODELS, Finding
+# Type annotations on method signatures
+from src.batch import BatchStatus
+from src.diagnostics import DiagnosticsReport
 from src.extractor import ExtractedSpec
-from src.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
-from src.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
+from src.pipeline import BatchSubmission
 from src.review_modes import (
     DEFAULT_REVIEW_MODE,
     REVIEW_MODE_PROFILES,
     ReviewMode,
-    coerce_review_mode,
 )
-from src.edit_candidates import classify_edit_candidates
-from src.apply_edits import execute_edit_plan
+from src.reviewer import Finding
 from src.spec_editor import EditReport
-from src.resume_state import (
-    PHASE_REVIEW_POLL,
-    PHASE_REVIEW_COLLECT,
-    PHASE_VERIFICATION_POLL,
-    PHASE_VERIFICATION_WAVE_POLL,
-    PHASE_CROSS_CHECK,
-    PHASE_CROSS_CHECK_VERIFICATION_POLL,
-    PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL,
-    PHASE_FINALIZE,
-    SUPPORTED_PHASES,
-    build_resume_state,
-    deserialize_resume_state,
-)
+
+# Constants used by widgets
+from src.code_cycles import DEFAULT_CYCLE
+from src.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 
 from src.widgets import (
-    COLORS,
-    TokenGauge,
-    FileListPanel,
-    EnhancedLog,
     AnimatedButton,
-    ReportWindow,
+    COLORS,
     DiagnosticsWindow,
-    EditSelectionDialog,
-    EditSummaryDialog,
+    EnhancedLog,
+    FileListPanel,
+    ReportWindow,
+    TokenGauge,
 )
-from src.diagnostics import DiagnosticsReport
 
-from src.app_paths import (
-    API_KEY_FILENAME,
-    BATCH_STATE_FILENAME,
-    BATCH_STATE_MAX_AGE_HOURS,
-)
+# Persistence helpers (also re-exported for backward compatibility with
+# tests/external code that imports them from ``src.gui``)
 from src.api_key_store import load_api_key_from_file
 from src.batch_state_store import (
-    save_batch_state,
-    load_batch_state,
     delete_batch_state,
+    load_batch_state,
+    save_batch_state,
 )
+
+# Controllers
 from src.about_usage_dialogs import show_about_dialog, show_usage_dialog
-from src.diagnostics_controller import (
-    make_diag_log,
-    make_diag_progress,
-    finalize_diagnostics,
-    open_diagnostics_window,
-)
-from src.report_controller import (
-    export_report_to_file,
-    open_report_window,
-    close_report_window,
-)
-from src.edit_workflow_controller import (
-    show_edit_selection_dialog,
-    apply_selected_edits,
-    on_edits_applied,
-)
-from src.file_selection_controller import (
-    is_supported_spec as _is_supported_spec,
-    parse_dropped_paths,
-    browse_for_specs,
-    apply_selected_specs,
-    clear_file_state,
-    set_file_data,
+from src.batch_controller import (
+    check_pending_batch,
+    collect_batch_results,
+    format_batch_age,
+    is_valid_verification_resume_state,
+    on_batch_submitted,
+    on_poll_result,
+    poll_and_collect_thread,
+    poll_batch,
+    resume_batch,
+    resume_cross_check_verification_poll,
+    resume_verification_poll,
+    submit_batch_thread,
+    update_poll_progress,
 )
 from src.context_controller import (
+    attach_context_files,
     context_focus_in,
     context_focus_out,
+    do_context_change,
+    extract_context_attachments,
     get_project_context,
     on_context_change,
-    do_context_change,
-    update_context_token_label,
-    set_context_text,
-    extract_context_attachments,
-    attach_context_files,
     open_context_modal,
+    set_context_text,
+    update_context_token_label,
 )
-from src.token_analysis_controller import (
-    analyze_tokens,
-    refresh_exact_token_count,
-    on_file_selection_change,
+from src.diagnostics_controller import (
+    finalize_diagnostics,
+    make_diag_log,
+    make_diag_progress,
+    open_diagnostics_window,
+)
+from src.edit_workflow_controller import (
+    apply_selected_edits,
+    on_edits_applied,
+    show_edit_selection_dialog,
+)
+from src.file_selection_controller import (
+    apply_selected_specs,
+    browse_for_specs,
+    clear_file_state,
+    parse_dropped_paths,
+    set_file_data,
+)
+from src.report_controller import (
+    close_report_window,
+    export_report_to_file,
+    open_report_window,
 )
 from src.review_run_controller import (
-    validate_inputs,
-    next_run_epoch,
-    dispatch_if_current,
     confirm_realtime_cost,
-    start_review as _start_review,
-    run_review_thread,
+    dispatch_if_current,
+    next_run_epoch,
     on_review_complete,
     on_review_error,
     reset_ui,
+    run_review_thread,
+    start_review as _start_review,
+    validate_inputs,
 )
-from src.batch_controller import (
-    submit_batch_thread,
-    on_batch_submitted,
-    poll_batch,
-    update_poll_progress,
-    poll_and_collect_thread,
-    on_poll_result,
-    collect_batch_results,
-    check_pending_batch,
-    format_batch_age,
-    is_valid_verification_resume_state,
-    resume_batch,
-    resume_verification_poll,
-    resume_cross_check_verification_poll,
+from src.token_analysis_controller import (
+    analyze_tokens,
+    on_file_selection_change,
+    refresh_exact_token_count,
 )
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
@@ -175,8 +158,8 @@ _FONT_SCALE_OPTIONS = {
 # Consistent font size for all input row labels and controls
 _UI_FONT_SIZE = 12
 
-
 class SpecReviewApp(_CTkDnDRoot):
+
     def __init__(self):
         super().__init__()
         if TkinterDnD is not None:
@@ -485,6 +468,7 @@ class SpecReviewApp(_CTkDnDRoot):
         self._font_scale_label = value
 
     @property
+
     def _is_export_mode(self) -> bool:
         return self.output_selector.get() == "Export Report"
 
@@ -529,6 +513,7 @@ class SpecReviewApp(_CTkDnDRoot):
             self.run_button.configure(text="Run Review")
 
     @property
+
     def _is_batch_mode(self) -> bool:
         return self.mode_selector.get() == _MODE_BATCH
 
@@ -596,7 +581,6 @@ class SpecReviewApp(_CTkDnDRoot):
     def start_review(self):
         _start_review(self)
 
-
     def _make_diag_log(self, phase: str, run_epoch: int):
         return make_diag_log(self, phase, run_epoch)
 
@@ -608,8 +592,10 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _run_review_thread(self, run_epoch: int):
         run_review_thread(self, run_epoch)
+
     def _on_review_complete(self, result):
         on_review_complete(self, result)
+
     def _export_report_to_file(self, result) -> str:
         return export_report_to_file(self, result)
 
@@ -638,39 +624,54 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _on_review_error(self, err):
         on_review_error(self, err)
+
     # ----- Batch mode -----
 
     def _submit_batch_thread(self, run_epoch: int):
         submit_batch_thread(self, run_epoch)
+
     def _on_batch_submitted(self, submission: BatchSubmission):
         on_batch_submitted(self, submission)
+
     def _poll_batch(self):
         poll_batch(self)
+
     def _update_poll_progress(self, status: BatchStatus):
         update_poll_progress(self, status)
+
     def _poll_and_collect_thread(self, run_epoch: int):
         poll_and_collect_thread(self, run_epoch)
+
     # Backward-compatible helper retained for tests and legacy call paths.
     def _on_poll_result(self, status: BatchStatus):
         on_poll_result(self, status)
+
     def _collect_batch_results(self):
         collect_batch_results(self)
+
     def _reset_ui(self):
         reset_ui(self)
+
     # ----- Persistent batch state -----
 
     def _check_pending_batch(self):
         check_pending_batch(self)
+
     def _format_batch_age(self, created_at: float) -> str:
         return format_batch_age(created_at)
+
     def _resume_batch(self, loaded_state: dict):
         resume_batch(self, loaded_state)
+
     def _is_valid_verification_resume_state(self, loaded_state: dict) -> bool:
         return is_valid_verification_resume_state(loaded_state)
+
     def _resume_verification_poll(self, loaded_state: dict):
         resume_verification_poll(self, loaded_state)
+
     def _resume_cross_check_verification_poll(self, loaded_state: dict):
         resume_cross_check_verification_poll(self, loaded_state)
+
     # ----- Pop-out report window -----
 
     def _open_report_window(self, review, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result=None, verbose: bool = True):
@@ -701,6 +702,7 @@ def main():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
     SpecReviewApp().mainloop()
+
 
 if __name__ == "__main__":
     main()
