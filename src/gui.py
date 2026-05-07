@@ -40,13 +40,8 @@ from src.pipeline import (
 from src.batch import BatchStatus, BatchJob
 from src.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from src.reviewer import MODEL_OPUS_47, REVIEW_MODELS, Finding
-from src.extractor import extract_text, ExtractedSpec
-from src.tokenizer import (
-    PROJECT_CONTEXT_MAX_TOKENS,
-    RECOMMENDED_MAX,
-    exceeds_per_call_limit,
-)
-from src.prompts import get_system_prompt
+from src.extractor import ExtractedSpec
+from src.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 from src.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
 from src.review_modes import (
     DEFAULT_REVIEW_MODE,
@@ -131,6 +126,11 @@ from src.context_controller import (
     extract_context_attachments,
     attach_context_files,
     open_context_modal,
+)
+from src.token_analysis_controller import (
+    analyze_tokens,
+    refresh_exact_token_count,
+    on_file_selection_change,
 )
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
@@ -544,146 +544,16 @@ class SpecReviewApp(_CTkDnDRoot):
         set_file_data(self, file_data, extracted_specs, sys_tokens, ctx_tokens)
 
     def _analyze_tokens(self, file_paths):
-        if not file_paths:
-            self.log.log_warning("No supported files found"); self.token_gauge.reset(); self.file_list_panel.reset(); return
-        self.log.log_step(f"Analyzing {len(file_paths)} files...")
-
-        # Phase 7.2 (audit Section 11.2): capture every UI-thread value that
-        # the background pass needs *before* spawning the worker. The worker
-        # must not read Tkinter/CustomTkinter state directly — those reads
-        # are not thread-safe and risk reading partially-updated values.
-        project_context = self._get_project_context()
-        cycle = DEFAULT_CYCLE
-
-        # Increment the analysis epoch and capture the value. Newer
-        # analysis starts will bump the epoch; older threads will see their
-        # captured value differs from ``self._analysis_epoch`` and discard
-        # their result instead of overwriting fresher UI state.
-        self._analysis_epoch += 1
-        captured_epoch = self._analysis_epoch
-
-        def _is_current() -> bool:
-            return self._analysis_epoch == captured_epoch
-
-        def _dispatch_if_current(fn):
-            self.after(0, lambda: fn() if _is_current() else None)
-
-        def analyze():
-            try:
-                _dispatch_if_current(lambda: self._clear_file_state())
-                file_data = []
-                processed_names: list[str] = []
-                from tiktoken import get_encoding
-                enc = get_encoding("cl100k_base")
-                sys_tokens = len(enc.encode(get_system_prompt(cycle)))
-                ctx_tokens = len(enc.encode(project_context)) if project_context else 0
-                extracted_specs: list[ExtractedSpec] = []
-                for f in file_paths:
-                    try:
-                        spec = extract_text(f)
-                        tokens = len(enc.encode(spec.content))
-                        file_data.append({"path": f, "filename": spec.filename, "tokens": tokens, "content": spec.content})
-                        processed_names.append(f.name)
-                        extracted_specs.append(spec)
-                    except Exception as e:
-                        _dispatch_if_current(lambda err=str(e), n=f.name: self.log.log_warning(f"Could not read {n}: {err}"))
-                if processed_names:
-                    _dispatch_if_current(lambda names=processed_names: self.log.log_file_batch(names))
-                if file_data:
-                    _dispatch_if_current(lambda fd=file_data, es=extracted_specs, st=sys_tokens, ct=ctx_tokens:
-                        self._set_file_data(fd, es, st, ct))
-                    overhead = sys_tokens + ctx_tokens
-                    max_per_file = max(d["tokens"] for d in file_data)
-                    largest_call = overhead + max_per_file
-                    per_file_limit_exceeded = exceeds_per_call_limit(max_per_file, overhead)
-                    _dispatch_if_current(lambda fd=file_data: self.file_list_panel.load_files(fd))
-                    _dispatch_if_current(lambda lc=largest_call, fc=len(file_data): self.token_gauge.update_gauge(lc, fc))
-                    _dispatch_if_current(lambda lc=largest_call: self.log.log_success(f"Token analysis complete: largest spec call ~{lc:,} tokens"))
-                    if per_file_limit_exceeded:
-                        over_files = [d["filename"] for d in file_data if exceeds_per_call_limit(d["tokens"], overhead)]
-                        _dispatch_if_current(lambda of=over_files: self.log.log_warning(
-                            f"File too large for single API call: {', '.join(of)}"
-                        ))
-                    _dispatch_if_current(lambda b=per_file_limit_exceeded: self.run_button.configure(
-                        state="disabled" if b else "normal"
-                    ))
-                    _dispatch_if_current(lambda b=per_file_limit_exceeded: self.file_list_panel.set_over_limit(b))
-                    # Phase 2.3 (audit Section 6.3): after the cl100k_base
-                    # estimate, kick off an exact Anthropic count_tokens call
-                    # for the largest spec and re-render the gauge with the
-                    # exact value. The local estimate stays visible while
-                    # the API call is in flight.
-                    self._refresh_exact_token_count(file_data, extracted_specs, project_context, cycle, sys_tokens, ctx_tokens, _dispatch_if_current)
-            except Exception as e:
-                _dispatch_if_current(lambda err=e: self.log.log_error(f"Analysis failed: {err}"))
-
-        threading.Thread(target=analyze, daemon=True).start()
+        analyze_tokens(self, file_paths)
 
     def _refresh_exact_token_count(self, file_data, extracted_specs, project_context, cycle, sys_tokens, ctx_tokens, dispatch):
-        """Run Anthropic count_tokens for the largest spec and update the gauge.
-
-        Runs in its own background thread so the cl100k_base estimate stays
-        on screen while we wait. Falls back silently to the local estimate
-        when the API call fails or returns None.
-        """
-        from .tokenizer import count_tokens_via_api
-        from .prompts import get_single_spec_user_message, get_system_prompt
-        from .reviewer import MODEL_OPUS_47 as _model
-        from .review_modes import DEFAULT_REVIEW_MODE
-
-        biggest = max(file_data, key=lambda d: d["tokens"])
-        biggest_spec = next((s for s in extracted_specs if s.filename == biggest["filename"]), None)
-        if biggest_spec is None:
-            return
-
-        def _exact():
-            try:
-                system_prompt = get_system_prompt(cycle, mode=DEFAULT_REVIEW_MODE)
-                user_message = get_single_spec_user_message(
-                    biggest_spec.content,
-                    biggest_spec.filename,
-                    project_context=project_context,
-                    cycle=cycle,
-                    mode=DEFAULT_REVIEW_MODE,
-                )
-                exact = count_tokens_via_api(
-                    model=_model,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_message}],
-                )
-                if exact is None:
-                    return
-                fc = len(file_data)
-                dispatch(lambda lc=int(exact), n=fc: self.token_gauge.update_gauge(lc, n, is_exact=True))
-                dispatch(lambda lc=int(exact): self.log.log(
-                    f"Exact token count (API): {lc:,} tokens for largest spec",
-                    level="muted",
-                ))
-            except Exception:
-                # Silent fallback — the cl100k_base estimate is already on screen.
-                return
-
-        threading.Thread(target=_exact, daemon=True).start()
+        refresh_exact_token_count(
+            self, file_data, extracted_specs, project_context, cycle,
+            sys_tokens, ctx_tokens, dispatch,
+        )
 
     def _on_file_selection_change(self):
-        if not self._loaded_file_data: return
-        sel = set(self.file_list_panel.get_selected_files())
-        selected_data = [d for d in self._loaded_file_data if d["path"] in sel]
-        overhead = (
-            getattr(self, "_system_prompt_tokens", 0)
-            + getattr(self, "_project_context_tokens", 0)
-        )
-        fc = len(selected_data)
-        if fc > 0:
-            max_per_file = max(d["tokens"] for d in selected_data)
-            largest_call = overhead + max_per_file
-            per_file_exceeded = exceeds_per_call_limit(max_per_file, overhead)
-        else:
-            largest_call = 0
-            per_file_exceeded = False
-        self.token_gauge.update_gauge(largest_call, fc)
-        self.run_button.configure(state="normal" if (fc > 0 and not per_file_exceeded) else "disabled")
-        self.file_list_panel.set_over_limit(per_file_exceeded)
+        on_file_selection_change(self)
 
     def _validate_inputs(self):
         if not self.api_key_entry.get().strip(): self.log.log_error("API key is required"); return False
