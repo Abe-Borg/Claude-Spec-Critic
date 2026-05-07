@@ -132,6 +132,17 @@ from src.token_analysis_controller import (
     refresh_exact_token_count,
     on_file_selection_change,
 )
+from src.review_run_controller import (
+    validate_inputs,
+    next_run_epoch,
+    dispatch_if_current,
+    confirm_realtime_cost,
+    start_review as _start_review,
+    run_review_thread,
+    on_review_complete,
+    on_review_error,
+    reset_ui,
+)
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
@@ -556,180 +567,20 @@ class SpecReviewApp(_CTkDnDRoot):
         on_file_selection_change(self)
 
     def _validate_inputs(self):
-        if not self.api_key_entry.get().strip(): self.log.log_error("API key is required"); return False
-        if not self._selected_files: self.log.log_error("Select .docx specification files"); return False
-        missing = [f for f in self._selected_files if not f.exists()]
-        if missing: self.log.log_error(f"File not found: {missing[0].name}"); return False
-        if self.file_list_panel.get_selected_count() == 0: self.log.log_error("No files selected"); return False
-        ctx = self._get_project_context()
-        if ctx:
-            from tiktoken import get_encoding
-            ctx_tokens = len(get_encoding("cl100k_base").encode(ctx))
-            self._project_context_tokens = ctx_tokens
-            self._update_context_token_label()
-            if ctx_tokens > PROJECT_CONTEXT_MAX_TOKENS:
-                self.log.log_error(
-                    f"Project Context is {ctx_tokens:,} tokens — limit is "
-                    f"{PROJECT_CONTEXT_MAX_TOKENS:,}. Trim it before running."
-                )
-                messagebox.showerror(
-                    "Project Context too large",
-                    f"Project Context is {ctx_tokens:,} tokens, exceeding the "
-                    f"{PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
-                    f"Trim the context (or remove some attachments) before running.",
-                )
-                return False
-        return True
+        return validate_inputs(self)
 
     def _next_run_epoch(self) -> int:
-        self._run_epoch += 1
-        return self._run_epoch
+        return next_run_epoch(self)
 
     def _dispatch_if_current(self, epoch: int, fn):
-        self.after(0, lambda: fn() if self._run_epoch == epoch else None)
-
-    # ----- Real-time cost confirmation dialog -----
+        dispatch_if_current(self, epoch, fn)
 
     def _confirm_realtime_cost(self, num_specs: int) -> bool:
-        """Show a confirmation dialog warning about real-time mode costs.
-
-        Returns True if the user confirms, False if they cancel.
-        Uses wait_window to block until the dialog is closed.
-        """
-        self._realtime_confirmed = False
-
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Real-Time Mode — Cost Warning")
-        dialog.geometry("520x340")
-        dialog.configure(fg_color=COLORS["bg_dark"])
-        dialog.resizable(False, False)
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.lift()
-        dialog.focus_force()
-
-        inner = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
-        inner.pack(fill="both", expand=True, padx=16, pady=16)
-
-        # Warning icon + title
-        ctk.CTkLabel(inner, text="\u26a0  Real-Time Mode Cost Warning",
-            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
-            text_color=COLORS["warning"]).pack(anchor="w", padx=16, pady=(16, 8))
-
-        # Warning text
-        warning_text = (
-            f"You are about to run a real-time review of {num_specs} spec{'s' if num_specs != 1 else ''} "
-            f"using Claude Opus 4.7.\n\n"
-            f"Real-time mode uses full-price API calls for every stage: "
-            f"per-spec review, verification (one call per finding), and "
-            f"cross-spec coordination (if enabled). Depending on the number "
-            f"of specs and findings, this can cost anywhere from dozens to "
-            f"hundreds to thousands of dollars.\n\n"
-        )
-
-        if num_specs > 5:
-            warning_text += (
-                f"\u26a0  You have {num_specs} specs selected. For more than 5 specs, "
-                f"batch mode is strongly recommended — identical prompts, models, "
-                f"and review logic at 50% lower pricing. Findings should be equivalent."
-            )
-        else:
-            warning_text += (
-                f"Batch mode uses the same prompts, models, and review logic at 50% "
-                f"lower pricing — findings should be equivalent. "
-                f"({_BATCH_TIMING_COPY} instead of immediate in-session processing.)"
-            )
-
-        ctk.CTkLabel(inner, text=warning_text,
-            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-            text_color=COLORS["text_secondary"],
-            wraplength=460, justify="left").pack(anchor="w", padx=16, pady=(0, 16))
-
-        # Buttons
-        btn_frame = ctk.CTkFrame(inner, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=16, pady=(0, 16))
-        btn_kw = {"height": 36, "font": ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE, weight="bold"), "corner_radius": 6}
-
-        def _confirm():
-            self._realtime_confirmed = True
-            dialog.destroy()
-
-        def _cancel():
-            self._realtime_confirmed = False
-            dialog.destroy()
-
-        ctk.CTkButton(btn_frame, text="Switch to Batch Mode", width=180,
-            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-            command=_cancel, **btn_kw).pack(side="left", padx=(0, 8))
-
-        ctk.CTkButton(btn_frame, text="Proceed (Real-Time)", width=160,
-            fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
-            border_width=1, border_color=COLORS["warning"],
-            text_color=COLORS["warning"], command=_confirm, **btn_kw).pack(side="left")
-
-        # Block until dialog is closed
-        dialog.wait_window()
-        return self._realtime_confirmed
+        return confirm_realtime_cost(self, num_specs)
 
     def start_review(self):
-        if self.is_processing: return
-        if not self._validate_inputs(): return
+        _start_review(self)
 
-        selected_files = self.file_list_panel.get_selected_files()
-        num_specs = len(selected_files)
-
-        # Show cost confirmation for real-time mode
-        if not self._is_batch_mode:
-            confirmed = self._confirm_realtime_cost(num_specs)
-            if not confirmed:
-                # User chose to switch to batch mode
-                self.mode_selector.set(_MODE_BATCH)
-                self._on_mode_change(_MODE_BATCH)
-                self.log.log("Switched to batch mode.", level="info")
-                return
-
-        self._selected_files_for_review = selected_files
-        self._project_context_for_review = self._get_project_context()
-        self._cross_check_for_review = self._cross_check_var.get()
-        self._verbose_for_review = self._verbose_var.get()
-        self._export_mode_for_review = self._is_export_mode
-        self._selected_cycle_label = DEFAULT_CYCLE.label
-        # Capture the segmented control's current value on the UI thread
-        # (Phase 7.2 staleness-guard discipline) before kicking off the
-        # background submission.
-        self._review_mode_for_review = self._get_selected_review_mode()
-        self.is_processing = True
-        self._close_report_window()
-        self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
-        self.run_button.set_processing()
-        self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
-        self.progress_bar.set(0); self.progress_bar.configure(mode="determinate")
-        os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()
-
-        # Initialize diagnostics report for this run
-        mode = "batch" if self._is_batch_mode else "real-time"
-        self._diagnostics_report = DiagnosticsReport(
-            mode=mode,
-            model=MODEL_OPUS_47,
-            cycle_label=self._selected_cycle_label,
-            files_selected=[p.name for p in selected_files],
-            project_context_tokens=self._project_context_tokens,
-            cross_check_enabled=self._cross_check_for_review,
-            export_mode=self._export_mode_for_review,
-        )
-        self._diagnostics_report.log("init", "info", f"Run started: {mode} mode, {num_specs} files, cycle {self._selected_cycle_label}")
-        self.diagnostics_button.configure(state="disabled")
-
-        n = num_specs
-        output_label = " \u2192 Export Report" if self._export_mode_for_review else ""
-        if self._is_batch_mode:
-            self.log.log_step(f"Submitting {n} files for batch review (Opus 4.7){output_label}...")
-            run_epoch = self._next_run_epoch()
-            threading.Thread(target=self._submit_batch_thread, args=(run_epoch,), daemon=True).start()
-        else:
-            self.log.log_step(f"Reviewing {n} files (Opus 4.7){output_label}...")
-            run_epoch = self._next_run_epoch()
-            threading.Thread(target=self._run_review_thread, args=(run_epoch,), daemon=True).start()
 
     def _make_diag_log(self, phase: str, run_epoch: int):
         return make_diag_log(self, phase, run_epoch)
@@ -741,160 +592,9 @@ class SpecReviewApp(_CTkDnDRoot):
         finalize_diagnostics(self, phase, level, message)
 
     def _run_review_thread(self, run_epoch: int):
-        diag = self._diagnostics_report
-        try:
-            n = len(self._selected_files_for_review)
-            self._dispatch_if_current(run_epoch, lambda: self.log.log_step("Starting per-spec review..."))
-            cross_check_note = " + cross-check" if self._cross_check_for_review else ""
-            mode_info = f"Model: Opus 4.7  \u2022  {n} specs \u2022  1 API call per spec  \u2022  verification enabled{cross_check_note}"
-            self._dispatch_if_current(run_epoch, lambda: self.log.log(mode_info, level="muted"))
-            if diag:
-                diag.log("review", "step", f"Starting real-time review of {n} specs")
-
-            review_log = self._make_diag_log("review", run_epoch)
-            review_progress = self._make_diag_progress("review", run_epoch)
-            result = run_review(
-                input_dir=self.input_dir,
-                files=self._selected_files_for_review,
-                project_context=self._project_context_for_review,
-                model=MODEL_OPUS_47,
-                verify=True,
-                cross_check=self._cross_check_for_review,
-                dry_run=False, verbose=False,
-                cycle=AVAILABLE_CYCLES.get(self._selected_cycle_label, DEFAULT_CYCLE),
-                mode=self._review_mode_for_review,
-                log=review_log,
-                progress=review_progress,
-            )
-            # Capture structured diagnostics from the result
-            if diag and result.review_result:
-                rv = result.review_result
-                # Phase 9 plan 13.4: include the configured output cap so the
-                # diagnostics summary can compute utilization vs ceiling.
-                from .api_config import review_max_tokens as _review_cap
-                review_cap = _review_cap(batch=False, model=rv.model)
-                diag.log("review", "success", "Review completed", {
-                    "input_tokens": rv.input_tokens,
-                    "output_tokens": rv.output_tokens,
-                    "cache_creation_input_tokens": rv.cache_creation_input_tokens,
-                    "cache_read_input_tokens": rv.cache_read_input_tokens,
-                    "elapsed_seconds": round(rv.elapsed_seconds, 2),
-                    "stop_reason": rv.stop_reason,
-                    "parse_status": rv.parse_status,
-                    "max_output_tokens": review_cap,
-                    "severity_counts": {
-                        "CRITICAL": rv.critical_count,
-                        "HIGH": rv.high_count,
-                        "MEDIUM": rv.medium_count,
-                        "GRIPES": rv.gripe_count,
-                    },
-                    "total_findings": rv.total_count,
-                })
-                
-                if rv.error:
-                    diag.log("review", "error", f"Review error: {rv.error}")
-                    # Surface per-spec errors prominently in diagnostics
-                    diag.log("review", "warning", "One or more specs failed during review — check Reviewer's Notes for details.")
-                
-                if result.cross_check_result:
-                    cc = result.cross_check_result
-                    diag.log("cross_check", "info", f"Cross-check: {cc.cross_check_status}", {
-                        "finding_count": len(cc.findings),
-                        "input_tokens": cc.input_tokens,
-                        "output_tokens": cc.output_tokens,
-                        "cache_creation_input_tokens": cc.cache_creation_input_tokens,
-                        "cache_read_input_tokens": cc.cache_read_input_tokens,
-                    })
-                # Verification verdict breakdown (includes explanation for failure diagnosis)
-                for f in rv.findings:
-                    if f.verification:
-                        v = f.verification
-                        event_data = {
-                            "verdict": v.verdict,
-                            "finding_severity": f.severity,
-                            "confidence": f.confidence,
-                            "explanation": v.explanation or "",
-                            # Phase 3 evidence model — feeds DiagnosticsReport.summary()
-                            "grounded": v.grounded,
-                            "model_used": v.model_used,
-                            "escalated": v.escalated,
-                            "cache_status": v.cache_status,
-                            "web_search_requests": v.web_search_requests,
-                            "successful_source_count": v.successful_source_count,
-                            "search_error_count": v.search_error_count,
-                        }
-                        if v.sources:
-                            event_data["sources"] = v.sources[:3]
-                        if v.correction:
-                            event_data["correction"] = v.correction
-                        diag.log("verification", "info", f"Verified: {f.fileName} — {v.verdict}", event_data)
-                # Summarize verification failures for quick diagnosis
-                unverified = [f for f in rv.findings if f.verification and f.verification.verdict == "UNVERIFIED"]
-                if unverified:
-                    failure_reasons = list(set(
-                        (f.verification.explanation or "No explanation provided")
-                        for f in unverified
-                    ))
-                    diag.log("verification", "warning",
-                        f"{len(unverified)}/{len(rv.findings)} findings UNVERIFIED",
-                        {"failure_reasons": failure_reasons})
-                if result.leed_alerts:
-                    diag.log("preprocessing", "warning", f"LEED alerts: {len(result.leed_alerts)}")
-                if result.placeholder_alerts:
-                    diag.log("preprocessing", "warning", f"Placeholder alerts: {len(result.placeholder_alerts)}")
-            self._dispatch_if_current(run_epoch, lambda: self._on_review_complete(result))
-        except Exception as e:
-            import traceback
-            err = f"{e}\n{traceback.format_exc()}"
-            if diag:
-                diag.log("review", "error", f"Review failed: {e}", {"traceback": traceback.format_exc()})
-            self._dispatch_if_current(run_epoch, lambda: self._on_review_error(err))
-
+        run_review_thread(self, run_epoch)
     def _on_review_complete(self, result):
-        
-        self.progress_bar.set(1.0)
-        self._last_result = result
-        if result.review_result:
-            rv = result.review_result
-            # --- FIX 3: Distinguish zero-findings-with-errors from clean passes ---
-            has_review_errors = bool(rv.error)
-            if has_review_errors:
-                self.log.log_warning("Review completed with errors — some specs failed. See report for details.")
-                self.log.log_warning(rv.error)
-            else:
-                self.log.log_success("Review complete!")
-            self.log.log(f"Findings: {rv.critical_count} critical, {rv.high_count} high, {rv.medium_count} medium, {rv.gripe_count} gripes", level="info")
-            
-            if result.cross_check_result and result.cross_check_result.findings:
-                cc = result.cross_check_result
-                self.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
-            total_elapsed = result.total_elapsed_seconds if getattr(result, "total_elapsed_seconds", None) is not None else rv.elapsed_seconds
-            self.log.log(f"Time: {total_elapsed:.1f}s", level="muted")
-            if getattr(self, "_export_mode_for_review", False):
-                export_status = self._export_report_to_file(result)
-                if export_status == "canceled":
-                    self.log.log_warning("Export canceled; results are still available in memory.")
-                    self._finalize_diagnostics("finalization", "info", "Run completed after export canceled")
-                elif export_status == "error":
-                    self.log.log_warning("Export failed. Retry export or switch output mode to 'View in App' to open the report window.")
-                    self._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
-                elif export_status == "success":
-                    self._show_edit_selection_dialog(result)
-            else:
-                self._open_report_window(
-                    rv,
-                    result.files_reviewed,
-                    result.leed_alerts,
-                    result.placeholder_alerts,
-                    result.cross_check_result,
-                    verbose=getattr(self, "_verbose_for_review", True),
-                )
-        delete_batch_state()
-        if not (getattr(self, "_export_mode_for_review", False) and result.review_result):
-            self._finalize_diagnostics("finalization", "success", "Run completed successfully")
-        self.run_button.set_complete()
-        self.after(2500, self._reset_ui)
-
+        on_review_complete(self, result)
     def _export_report_to_file(self, result) -> str:
         return export_report_to_file(self, result)
 
@@ -922,11 +622,7 @@ class SpecReviewApp(_CTkDnDRoot):
         on_edits_applied(self, reports)
 
     def _on_review_error(self, err):
-        self.progress_bar.pack_forget()
-        self.log.log_error(f"Review failed: {err}")
-        self._finalize_diagnostics("error", "error", f"Run failed: {err}")
-        self.run_button.set_ready(); self.is_processing = False
-
+        on_review_error(self, err)
     # ----- Batch mode -----
 
     def _submit_batch_thread(self, run_epoch: int):
@@ -1220,13 +916,7 @@ class SpecReviewApp(_CTkDnDRoot):
         threading.Thread(target=_do_collect, daemon=True).start()
 
     def _reset_ui(self):
-        self.run_button.set_ready()
-        if self._is_batch_mode:
-            self.run_button.configure(text="Submit Batch")
-        self.progress_bar.pack_forget()
-        self.is_processing = False
-        self._batch_submission = None
-
+        reset_ui(self)
     # ----- Persistent batch state -----
 
     def _check_pending_batch(self):
