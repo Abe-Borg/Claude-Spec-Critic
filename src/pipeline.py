@@ -445,19 +445,18 @@ class BatchSubmission:
     prepared_specs: list[ExtractedSpec] | None = None
     cycle_label: str = DEFAULT_CYCLE.label
     cross_check_enabled: bool = False
-    export_mode: bool = False
     # Phase 8 / plan section 12.1: review mode that produced this batch.
     # Stored as the enum string value so resume-state JSON serialization is
     # trivial. ``coerce_review_mode`` handles None / unknown labels.
     review_mode: str = DEFAULT_REVIEW_MODE.value
 
 
-def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_47, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, export_mode: bool = False, mode: ReviewMode | str | None = None) -> BatchSubmission:
+def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_47, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, mode: ReviewMode | str | None = None) -> BatchSubmission:
     review_mode = coerce_review_mode(mode)
     prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode)
     job = submit_review_batch(prepared.specs, project_context=project_context, model=model, cycle=cycle, mode=review_mode)
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
-    return BatchSubmission(job=job, files_reviewed=[s.filename for s in prepared.specs], review_request_ids=ordered_ids, leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, model=model, project_context=project_context, prepared_specs=prepared.specs, cycle_label=cycle.label, cross_check_enabled=cross_check_enabled, export_mode=export_mode, review_mode=review_mode.value)
+    return BatchSubmission(job=job, files_reviewed=[s.filename for s in prepared.specs], review_request_ids=ordered_ids, leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, model=model, project_context=project_context, prepared_specs=prepared.specs, cycle_label=cycle.label, cross_check_enabled=cross_check_enabled, review_mode=review_mode.value)
 
 
 def _is_retryable_batch_review_result(rr: ReviewResult | None) -> bool:

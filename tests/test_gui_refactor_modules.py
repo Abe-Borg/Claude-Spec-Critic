@@ -94,7 +94,6 @@ def _make_minimal_submission(batch_id="msgbatch_test_state"):
         review_request_ids=["review__spec__0"],
         cycle_label="2025",
         cross_check_enabled=False,
-        export_mode=False,
     )
 
 

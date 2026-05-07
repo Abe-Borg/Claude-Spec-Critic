@@ -66,7 +66,7 @@ def test_extract_text_from_docx_builds_paragraph_map(tmp_path: Path):
     assert any(m.element_type == "table_cell" and m.table_index is not None for m in spec.paragraph_map)
 
 
-def _make_submission(*, batch_id: str = "msgbatch_test", cross_check_enabled: bool = True, export_mode: bool = True, prepared_specs: list[ExtractedSpec] | None = None) -> BatchSubmission:
+def _make_submission(*, batch_id: str = "msgbatch_test", cross_check_enabled: bool = True, prepared_specs: list[ExtractedSpec] | None = None) -> BatchSubmission:
     return BatchSubmission(
         job=BatchJob(
             batch_id=batch_id,
@@ -78,7 +78,6 @@ def _make_submission(*, batch_id: str = "msgbatch_test", cross_check_enabled: bo
         review_request_ids=["review__spec__0"],
         cycle_label="2025",
         cross_check_enabled=cross_check_enabled,
-        export_mode=export_mode,
         prepared_specs=prepared_specs,
     )
 
@@ -115,16 +114,6 @@ def _make_dummy_app():
     class _Entry:
         def get(self):
             return "key"
-
-    class _Selector:
-        def __init__(self, value="View in App"):
-            self.value = value
-
-        def set(self, value):
-            self.value = value
-
-        def get(self):
-            return self.value
 
     class _Var:
         def __init__(self):
@@ -166,7 +155,6 @@ def _make_dummy_app():
     dummy = type("Dummy", (), {})()
     dummy.api_key_entry = _Entry()
     dummy.log = _Log()
-    dummy.output_selector = _Selector(value="View in App")
     dummy._cross_check_var = _Var()
     dummy.run_button = _Button()
     dummy.progress_bar = _Progress()
@@ -175,7 +163,6 @@ def _make_dummy_app():
     dummy._resume_verification_poll = lambda _loaded: None
     dummy._on_review_complete = lambda _result: None
     dummy._reset_ui = lambda: None
-    dummy._on_output_mode_change = lambda _value: None
     dummy._is_valid_verification_resume_state = lambda loaded: gui.SpecReviewApp._is_valid_verification_resume_state(dummy, loaded)
     dummy.after = lambda *_args, **_kwargs: None
     return dummy
@@ -273,7 +260,7 @@ def test_round_trip_review_poll_via_gui_save_load(tmp_path: Path, monkeypatch: p
     monkeypatch.setattr(batch_state_store, "_batch_state_path", lambda: state_path)
 
     specs = [ExtractedSpec(filename="spec.docx", content="Section text", word_count=2, source_path="/tmp/spec.docx", source_format="docx")]
-    submission = _make_submission(batch_id="msgbatch_test_roundtrip", cross_check_enabled=True, export_mode=True, prepared_specs=specs)
+    submission = _make_submission(batch_id="msgbatch_test_roundtrip", cross_check_enabled=True, prepared_specs=specs)
 
     gui.save_batch_state(build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission))
     loaded = gui.load_batch_state()
@@ -284,7 +271,6 @@ def test_round_trip_review_poll_via_gui_save_load(tmp_path: Path, monkeypatch: p
     assert loaded_submission.job.batch_id == "msgbatch_test_roundtrip"
     assert loaded_submission.cycle_label == "2025"
     assert loaded_submission.cross_check_enabled is True
-    assert loaded_submission.export_mode is True
     assert loaded_submission.prepared_specs is not None
     assert loaded_submission.prepared_specs[0].filename == "spec.docx"
 
@@ -575,20 +561,9 @@ def test_load_batch_state_legacy_phase_migrates_to_review_poll(tmp_path: Path, m
     assert loaded["submission"].job.batch_id == "msgbatch_legacy"
 
 
-def test_resume_batch_uses_saved_export_mode_not_live_selector():
-    dummy = _make_dummy_app()
-    submission = _make_submission(batch_id="msgbatch_export", cross_check_enabled=False, export_mode=True)
-    state = {"phase": PHASE_REVIEW_POLL, "submission": submission}
-
-    gui.SpecReviewApp._resume_batch(dummy, state)
-
-    assert dummy._export_mode_for_review is True
-    assert dummy.output_selector.get() == "Export Report"
-
-
 def test_resume_batch_disables_cross_check_when_specs_missing():
     dummy = _make_dummy_app()
-    submission = _make_submission(batch_id="msgbatch_crosscheck_missing", cross_check_enabled=True, export_mode=False, prepared_specs=None)
+    submission = _make_submission(batch_id="msgbatch_crosscheck_missing", cross_check_enabled=True, prepared_specs=None)
 
     gui.SpecReviewApp._resume_batch(dummy, {"phase": PHASE_REVIEW_POLL, "submission": submission})
 

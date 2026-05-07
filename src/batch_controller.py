@@ -86,7 +86,6 @@ def submit_batch_thread(app, run_epoch: int) -> None:
             model=MODEL_OPUS_47,
             cycle=AVAILABLE_CYCLES.get(app._selected_cycle_label, DEFAULT_CYCLE),
             cross_check_enabled=app._cross_check_for_review,
-            export_mode=app._export_mode_for_review,
             mode=app._review_mode_for_review,
             log=app._make_diag_log("batch_submit", run_epoch),
             progress=app._make_diag_progress("batch_submit", run_epoch),
@@ -483,11 +482,8 @@ def resume_batch(app, loaded_state: dict) -> None:
         cross_check_skipped = True
     app._project_context_for_review = getattr(submission, "project_context", "")
     app._selected_cycle_label = getattr(submission, "cycle_label", DEFAULT_CYCLE.label)
-    app._export_mode_for_review = bool(getattr(submission, "export_mode", False))
     verbose_var = getattr(app, "_verbose_var", None)
     app._verbose_for_review = verbose_var.get() if verbose_var is not None else bool(getattr(app, "_verbose_for_review", True))
-    app.output_selector.set("Export Report" if app._export_mode_for_review else "View in App")
-    app._on_output_mode_change(app.output_selector.get())
     app._cross_check_var.set(bool(getattr(submission, "cross_check_enabled", False)))
     # Restore the review mode that produced the saved batch so any
     # retry/repair calls keep using the same prompt path.

@@ -89,7 +89,6 @@ def load_batch_state() -> Optional[dict]:
                 project_context=state.get("project_context", ""),
                 cycle_label=state.get("code_cycle", DEFAULT_CYCLE.label),
                 cross_check_enabled=state.get("cross_check_enabled", False),
-                export_mode=state.get("export_mode", False),
                 prepared_specs=[ExtractedSpec(**s) for s in (state.get("prepared_specs") or [])] if state.get("prepared_specs") else None,
             )
             phase = state.get("phase", "review")

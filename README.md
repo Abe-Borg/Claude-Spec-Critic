@@ -66,14 +66,12 @@ The active mode is recorded in resume state so a resumed run uses the same promp
 5. Deduplicate findings across specs and group them into `FindingGroup` / `FindingOccurrence` for display vs. per-file edit execution.
 6. Optionally run cross-spec coordination check to catch contradictions, scope gaps, and interface misses (chunked by CSI division on large projects).
 7. Run verification phase with web-search-backed adjudication for each finding (Sonnet default, Opus escalation, persistent claim cache, local-skip classification, optional Haiku triage).
-8. Present results in GUI report windows.
-9. Optionally export `.docx` review report.
-10. Optionally generate and apply surgical edits — or non-destructive annotations — back into source Word documents.
+8. Export the `.docx` review report.
+9. Optionally generate and apply surgical edits — or non-destructive annotations — back into source Word documents.
 
 ## Output Surfaces
 
-- **View in App** — Interactive report window with collapsible finding cards, severity grouping, JSON export, and a diagnostics window showing token usage, cache hits, verification grounding, output telemetry, and search-budget consumption.
-- **Export Report** — Formatted `.docx` report with Word-native heading collapse, colored severity table, verification verdicts with sources (cited URLs rendered inline in blue after the verdict/explanation/correction block), and coordination summary.
+- **Word Report** — Formatted `.docx` report with Word-native heading collapse, colored severity table, verification verdicts with sources (cited URLs rendered inline in blue after the verdict/explanation/correction block), and coordination summary.
 - **Apply Edits** — `Finding.affected_files` drives multi-file fan-out so a deduped finding edits (or annotates) every affected spec.
 
 ## Module Map
@@ -82,7 +80,7 @@ The active mode is recorded in resume state so a resumed run uses the same promp
 |---|---|
 | `main.py` | PyInstaller entry point |
 | `src/gui.py` | CustomTkinter GUI — inputs, mode selection, batch resume, diagnostics |
-| `src/widgets.py` | Custom GUI widgets — TokenGauge (with API-exact preflight), FileListPanel, EnhancedLog, ReportWindow, EditSelectionDialog, DiagnosticsWindow (renders token / cache / evidence / output / search telemetry) |
+| `src/widgets.py` | Custom GUI widgets — TokenGauge (with API-exact preflight), FileListPanel, EnhancedLog, EditSelectionDialog, DiagnosticsWindow (renders token / cache / evidence / output / search telemetry) |
 | `src/pipeline.py` | Core orchestration — preparation, review, cross-check, verification, finalization. Defines `FindingGroup` / `FindingOccurrence` for display vs. edit-execution split |
 | `src/api_config.py` | Centralized model identifiers, output-token caps, prompt-cache helpers, web-search tool config (severity-tiered max_uses, blocked-domain list), and feature flags |
 | `src/structured_schemas.py` | Tool-use schemas for review, cross-check, and verification (eliminates fragile tag-and-regex JSON parsing) |

@@ -189,13 +189,11 @@ def start_review(app) -> None:
     app._project_context_for_review = app._get_project_context()
     app._cross_check_for_review = app._cross_check_var.get()
     app._verbose_for_review = app._verbose_var.get()
-    app._export_mode_for_review = app._is_export_mode
     app._selected_cycle_label = DEFAULT_CYCLE.label
     # Capture the segmented control's current value on the UI thread
     # before kicking off the background submission.
     app._review_mode_for_review = app._get_selected_review_mode()
     app.is_processing = True
-    app._close_report_window()
     app.log.log("─" * 40, level="muted", timestamp=False, paced=False)
     app.run_button.set_processing()
     app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
@@ -211,7 +209,6 @@ def start_review(app) -> None:
         files_selected=[p.name for p in selected_files],
         project_context_tokens=app._project_context_tokens,
         cross_check_enabled=app._cross_check_for_review,
-        export_mode=app._export_mode_for_review,
     )
     app._diagnostics_report.log(
         "init", "info",
@@ -220,13 +217,12 @@ def start_review(app) -> None:
     app.diagnostics_button.configure(state="disabled")
 
     n = num_specs
-    output_label = " → Export Report" if app._export_mode_for_review else ""
     if app._is_batch_mode:
-        app.log.log_step(f"Submitting {n} files for batch review (Opus 4.7){output_label}...")
+        app.log.log_step(f"Submitting {n} files for batch review (Opus 4.7)...")
         run_epoch = app._next_run_epoch()
         threading.Thread(target=app._submit_batch_thread, args=(run_epoch,), daemon=True).start()
     else:
-        app.log.log_step(f"Reviewing {n} files (Opus 4.7){output_label}...")
+        app.log.log_step(f"Reviewing {n} files (Opus 4.7)...")
         run_epoch = app._next_run_epoch()
         threading.Thread(target=app._run_review_thread, args=(run_epoch,), daemon=True).start()
 
@@ -280,7 +276,7 @@ def run_review_thread(app, run_epoch: int) -> None:
 
             if rv.error:
                 diag.log("review", "error", f"Review error: {rv.error}")
-                diag.log("review", "warning", "One or more specs failed during review — check Reviewer's Notes for details.")
+                diag.log("review", "warning", "One or more specs failed during review — see report for details.")
 
             if result.cross_check_result:
                 cc = result.cross_check_result
@@ -362,27 +358,17 @@ def on_review_complete(app, result) -> None:
             else rv.elapsed_seconds
         )
         app.log.log(f"Time: {total_elapsed:.1f}s", level="muted")
-        if getattr(app, "_export_mode_for_review", False):
-            export_status = app._export_report_to_file(result)
-            if export_status == "canceled":
-                app.log.log_warning("Export canceled; results are still available in memory.")
-                app._finalize_diagnostics("finalization", "info", "Run completed after export canceled")
-            elif export_status == "error":
-                app.log.log_warning("Export failed. Retry export or switch output mode to 'View in App' to open the report window.")
-                app._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
-            elif export_status == "success":
-                app._show_edit_selection_dialog(result)
-        else:
-            app._open_report_window(
-                rv,
-                result.files_reviewed,
-                result.leed_alerts,
-                result.placeholder_alerts,
-                result.cross_check_result,
-                verbose=getattr(app, "_verbose_for_review", True),
-            )
+        export_status = app._export_report_to_file(result)
+        if export_status == "canceled":
+            app.log.log_warning("Export canceled; results are still available in memory.")
+            app._finalize_diagnostics("finalization", "info", "Run completed after export canceled")
+        elif export_status == "error":
+            app.log.log_warning("Export failed.")
+            app._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
+        elif export_status == "success":
+            app._show_edit_selection_dialog(result)
     delete_batch_state()
-    if not (getattr(app, "_export_mode_for_review", False) and result.review_result):
+    if not result.review_result:
         app._finalize_diagnostics("finalization", "success", "Run completed successfully")
     app.run_button.set_complete()
     app.after(2500, app._reset_ui)

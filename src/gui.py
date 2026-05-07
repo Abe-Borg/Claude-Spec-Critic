@@ -60,7 +60,6 @@ from src.widgets import (
     DiagnosticsWindow,
     EnhancedLog,
     FileListPanel,
-    ReportWindow,
     TokenGauge,
 )
 
@@ -120,11 +119,7 @@ from src.file_selection_controller import (
     parse_dropped_paths,
     set_file_data,
 )
-from src.report_controller import (
-    close_report_window,
-    export_report_to_file,
-    open_report_window,
-)
+from src.report_controller import export_report_to_file
 from src.review_run_controller import (
     confirm_realtime_cost,
     dispatch_if_current,
@@ -173,7 +168,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self.configure(fg_color=COLORS["bg_dark"])
         self.input_dir = None
         self.is_processing = False
-        self._report_window: Optional[ReportWindow] = None
         self._project_context_tokens = 0
         self._batch_submission: Optional[BatchSubmission] = None
         self._run_epoch = 0
@@ -194,7 +188,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self._project_context_for_review: str = ""
         self._cross_check_for_review: bool = False
         self._verbose_for_review: bool = True
-        self._export_mode_for_review: bool = False
         self._last_result = None
         self._diagnostics_report: Optional[DiagnosticsReport] = None
         self._diagnostics_window: Optional[DiagnosticsWindow] = None
@@ -356,31 +349,10 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._mode_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 4: Output ---
-        ctk.CTkLabel(self.inputs_content, text="Output", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
-        output_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        output_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
-        self._output_mode_var = ctk.StringVar(value="View in App")
-        self.output_selector = ctk.CTkSegmentedButton(
-            output_frame, values=["View in App", "Export Report"],
-            variable=self._output_mode_var,
-            command=self._on_output_mode_change,
-            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-            selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
-            unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
-            fg_color=COLORS["bg_input"], text_color=COLORS["text_primary"],
-            text_color_disabled=COLORS["text_muted"], height=32,
-        )
-        self.output_selector.set("View in App")
-        self.output_selector.pack(side="left")
-        self._output_hint = ctk.CTkLabel(output_frame, text="",
-            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
-        self._output_hint.pack(side="left", padx=(12, 0))
-
-        # --- Row 5: Options ---
-        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
+        # --- Row 4: Options ---
+        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
         options_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        options_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
+        options_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
         self._cross_check_var = ctk.BooleanVar(value=False)
         self._cross_check_cb = ctk.CTkCheckBox(
             options_frame, text="Cross-spec coordination check", variable=self._cross_check_var,
@@ -404,10 +376,10 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 6: Review Mode (Phase 8 / plan section 12.1) ---
-        ctk.CTkLabel(self.inputs_content, text="Review Mode", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=6, column=0, sticky="w", pady=8)
+        # --- Row 5: Review Mode (Phase 8 / plan section 12.1) ---
+        ctk.CTkLabel(self.inputs_content, text="Review Mode", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
         mode_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        mode_frame.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=8)
+        mode_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
         self._mode_label_to_enum: dict[str, ReviewMode] = {
             REVIEW_MODE_PROFILES[m].label: m for m in (
                 ReviewMode.STRICT, ReviewMode.COMPREHENSIVE, ReviewMode.SAFE_EDIT,
@@ -437,14 +409,6 @@ class SpecReviewApp(_CTkDnDRoot):
 
         self.inputs_content.columnconfigure(1, weight=1)
 
-    # --- Output mode helpers ---
-
-    def _on_output_mode_change(self, value: str):
-        if value == "Export Report":
-            self._output_hint.configure(text="Saves .docx report \u2022 no in-app rendering")
-        else:
-            self._output_hint.configure(text="")
-
     def _on_review_mode_change(self, value: str):
         mode = self._mode_label_to_enum.get(value, DEFAULT_REVIEW_MODE)
         self._review_mode = mode
@@ -466,11 +430,6 @@ class SpecReviewApp(_CTkDnDRoot):
         scale = _FONT_SCALE_OPTIONS.get(value, 1.0)
         ctk.set_widget_scaling(scale)
         self._font_scale_label = value
-
-    @property
-
-    def _is_export_mode(self) -> bool:
-        return self.output_selector.get() == "Export Report"
 
     # --- Project context placeholder helpers ---
 
@@ -671,22 +630,6 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _resume_cross_check_verification_poll(self, loaded_state: dict):
         resume_cross_check_verification_poll(self, loaded_state)
-
-    # ----- Pop-out report window -----
-
-    def _open_report_window(self, review, files_reviewed, leed_alerts, placeholder_alerts, cross_check_result=None, verbose: bool = True):
-        open_report_window(
-            self,
-            review=review,
-            files_reviewed=files_reviewed,
-            leed_alerts=leed_alerts,
-            placeholder_alerts=placeholder_alerts,
-            cross_check_result=cross_check_result,
-            verbose=verbose,
-        )
-
-    def _close_report_window(self):
-        close_report_window(self)
 
     def _open_diagnostics_window(self):
         open_diagnostics_window(self)

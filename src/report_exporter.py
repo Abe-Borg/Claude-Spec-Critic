@@ -1,8 +1,7 @@
 """
 Word document report exporter for Spec Critic.
 
-Generates a formatted .docx report from a PipelineResult, replicating
-everything the in-app ReportWindow shows:
+Generates a formatted .docx report from a PipelineResult:
     - Title block with generation metadata
     - Files reviewed list
     - Summary table (severity counts) with colored cell shading
@@ -10,7 +9,6 @@ everything the in-app ReportWindow shows:
     - Per-spec findings grouped by severity, sorted by confidence
     - Verification verdicts and corrections inline with findings
     - Cross-spec coordination findings (if cross-check was enabled)
-    - Reviewer's notes / analysis summary
 
 Collapsible findings (v2.5.0):
     Each finding header uses Word Heading 3 style. In Word 2016+ and
@@ -715,32 +713,6 @@ def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool 
         _write_narrative_text(doc, cross_check_result.thinking)
 
 
-# ---------------------------------------------------------------------------
-# Reviewer's notes
-# ---------------------------------------------------------------------------
-
-def _write_notes(doc: Document, thinking: str) -> None:
-    """Write the reviewer's analysis summary / notes."""
-    if not thinking:
-        return
-
-    doc.add_page_break()
-
-    heading = doc.add_heading("Reviewer's Notes", level=0)
-    heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
-    subtitle = doc.add_paragraph()
-    run = subtitle.add_run(
-        "Claude's analysis summary — the reviewer's take on these specifications."
-    )
-    run.font.size = Pt(11)
-    run.font.italic = True
-    run.font.color.rgb = RGBColor(128, 128, 128)
-    subtitle.paragraph_format.space_after = Pt(12)
-
-    _write_narrative_text(doc, thinking)
-
-
 def _sanitize_markdown_line(line: str) -> str:
     """Strip markdown header prefixes from a line."""
     stripped = line
@@ -781,9 +753,8 @@ def export_report(
 ) -> Path:
     """Export a complete review report to a Word document.
 
-    Generates a formatted .docx file containing everything the in-app
-    report shows: files reviewed, summary grid, alerts, per-spec findings,
-    cross-check findings, and reviewer's notes.
+    Generates a formatted .docx file containing files reviewed, summary
+    grid, alerts, per-spec findings, and cross-check findings.
 
     Each per-spec finding uses Heading 3 for its header line, enabling
     Word's native heading-collapse feature.
@@ -869,7 +840,6 @@ def export_report(
                   pipeline_result.placeholder_alerts)
     _write_findings_section(doc, review, verbose=verbose)
     _write_cross_check_section(doc, cross_check, verbose=verbose)
-    _write_notes(doc, review.thinking)
 
 
     # Save

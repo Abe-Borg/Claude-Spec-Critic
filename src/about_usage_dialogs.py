@@ -223,12 +223,12 @@ def show_usage_dialog(parent) -> None:
             "automatically chunked by CSI division when the combined input "
             "exceeds the recommended token ceiling."
         )),
-        ("7.  Choose Output Mode", (
-            "'View in App' renders results in a pop-out report window with "
-            "collapsible finding cards. 'Export Report' saves a formatted "
-            ".docx report. 'Auto-Edit' writes an edited copy of each spec — "
-            "only Auto-safe findings are applied; ambiguous, table, header/"
-            "footer, and richly formatted edits are downgraded to manual review. "
+        ("7.  Save the Report", (
+            "When the review completes, you'll be prompted to save a formatted "
+            ".docx report. After saving, you can choose to apply edits: "
+            "'Auto-Edit' writes an edited copy of each spec — only Auto-safe "
+            "findings are applied; ambiguous, table, header/footer, and "
+            "richly formatted edits are downgraded to manual review. "
             "'Annotate' writes a copy with yellow-highlighted suggestion "
             "paragraphs after each anchor without changing the original text. "
             "Source files are never overwritten."
@@ -244,8 +244,7 @@ def show_usage_dialog(parent) -> None:
             "Gripe) and sorted by confidence within each severity tier. Each finding "
             "includes a verification verdict from a secondary AI pass with "
             "web search, and shows whether the verdict was externally grounded "
-            "or escalated to Opus. Use Export JSON from the report window to "
-            "save structured results. Open the Diagnostics window to see "
+            "or escalated to Opus. Open the Diagnostics window to see "
             "model usage, prompt-cache hits, token counts by phase, "
             "verification evidence stats, and edit-skip reasons."
         )),

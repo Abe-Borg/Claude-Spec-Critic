@@ -447,7 +447,6 @@ def _submission_with_two_specs(specs: list[ExtractedSpec]) -> BatchSubmission:
         review_request_ids=["review__spec_a__0", "review__spec_b__1"],
         cycle_label="2025",
         cross_check_enabled=True,
-        export_mode=False,
         prepared_specs=specs,
     )
 
