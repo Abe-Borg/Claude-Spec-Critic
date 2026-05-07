@@ -6,7 +6,7 @@ This document is the engineering/operator reference for the Spec Critic codebase
 
 ## 1) What it is
 
-Spec Critic is a Python desktop application for reviewing mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. It extracts text from `.docx` files, performs local preprocessing, runs per-spec reviews (real-time or batch), optionally runs cross-spec coordination checks, verifies findings via web search (Sonnet by default with Opus escalation), and presents results in-app or as exported Word reports. Optional auto-edit and annotation modes write a copy of each spec with surgical edits or yellow-highlighted suggestions.
+Spec Critic is a Python desktop application for reviewing mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. It extracts text from `.docx` files, performs local preprocessing, runs per-spec reviews (real-time or batch), optionally runs cross-spec coordination checks, verifies findings via web search (Sonnet by default with Opus escalation), and exports the results as a Word report. Optional auto-edit and annotation modes write a copy of each spec with surgical edits or yellow-highlighted suggestions.
 
 The two processing modes (real-time and batch) share identical prompts, models, tool schemas, output caps, and parsing logic, so findings should be functionally equivalent across modes. The only intentional asymmetry is the 300k extended-output path, which is gated to the batch API by the `output-300k-2026-03-24` beta header (Anthropic does not honor it on streaming requests) and only triggers for inputs ≥200k tokens. Real-time pays full per-token pricing for immediate results; batch pays ~50% for asynchronous results delivered within ~45 min – 24 h.
 
@@ -87,7 +87,6 @@ User selects .docx files
          ▼                                  ▼                                │
     pipeline.finalize_batch_result / PipelineResult                          │
          │                                                                   │
-         ├──── View in App ──── widgets.ReportWindow + DiagnosticsWindow ────│
          ├──── Export Report ── report_exporter.export_report (.docx)        │
          └──── Apply edits ──── apply_edits.execute_edit_plan(mode=          │
                                 "edit"|"annotate")                           │

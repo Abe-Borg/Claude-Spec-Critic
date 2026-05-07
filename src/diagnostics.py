@@ -38,7 +38,6 @@ class DiagnosticsReport:
     files_selected: list[str] = field(default_factory=list)
     project_context_tokens: int = 0
     cross_check_enabled: bool = False
-    export_mode: bool = False
     events: list[DiagnosticEvent] = field(default_factory=list)
     # Phase 7.3 actionable fields. Populated by the pipeline / GUI when the
     # corresponding phase records actionable failure or skip information.
@@ -313,7 +312,6 @@ class DiagnosticsReport:
             "files_selected": self.files_selected,
             "project_context_tokens": self.project_context_tokens,
             "cross_check_enabled": self.cross_check_enabled,
-            "export_mode": self.export_mode,
             "summary": self.summary(),
             "events": [self._event_to_dict(e) for e in self.events],
         }
@@ -337,7 +335,6 @@ class DiagnosticsReport:
             lines.append(f"                   - {f}")
         lines.append(f"  Context Tokens:  {self.project_context_tokens:,}")
         lines.append(f"  Cross-Check:     {'Yes' if self.cross_check_enabled else 'No'}")
-        lines.append(f"  Export Mode:     {'Yes' if self.export_mode else 'No'}")
         started = datetime.fromtimestamp(self.started_at).strftime("%Y-%m-%d %H:%M:%S")
         lines.append(f"  Started:         {started}")
         if self.ended_at:

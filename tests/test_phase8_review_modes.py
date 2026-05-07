@@ -280,7 +280,6 @@ def test_legacy_submission_payload_defaults_to_comprehensive():
         "project_context": "",
         "code_cycle": "2025",
         "cross_check_enabled": False,
-        "export_mode": False,
         # No review_mode key.
     }
     restored = deserialize_submission(payload)
