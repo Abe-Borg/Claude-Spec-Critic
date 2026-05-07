@@ -1,10 +1,9 @@
 """
 Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus 4.7
-v2.8.0 - Batch-only enforcement, bounded polling, and reporting updates
 """
-import os, sys, json, time, threading, shlex
-from datetime import datetime, timezone
+import os, sys, time, threading, shlex
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import customtkinter as ctk
@@ -92,13 +91,17 @@ from src.widgets import (
 )
 from src.diagnostics import DiagnosticsReport
 
-
-from platformdirs import user_config_dir, user_state_dir
-
-API_KEY_FILENAME = "spec_critic_api_key.txt"
-BATCH_STATE_FILENAME = "batch_state.json"
-
-BATCH_STATE_MAX_AGE_HOURS = 24 * 30
+from src.app_paths import (
+    API_KEY_FILENAME,
+    BATCH_STATE_FILENAME,
+    BATCH_STATE_MAX_AGE_HOURS,
+)
+from src.api_key_store import load_api_key_from_file
+from src.batch_state_store import (
+    save_batch_state,
+    load_batch_state,
+    delete_batch_state,
+)
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
@@ -127,118 +130,6 @@ _FONT_SCALE_OPTIONS = {
 
 # Consistent font size for all input row labels and controls
 _UI_FONT_SIZE = 12
-
-
-def _app_config_dir() -> Path:
-    d = Path(user_config_dir("SpecCritic", appauthor=False))
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def _app_state_dir() -> Path:
-    d = Path(user_state_dir("SpecCritic", appauthor=False))
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def load_api_key_from_file():
-    kf = _app_config_dir() / API_KEY_FILENAME
-    if kf.exists():
-        try:
-            return kf.read_text(encoding="utf-8").strip()
-        except Exception:
-            pass
-    kf = exe_dir / API_KEY_FILENAME
-    if kf.exists():
-        try:
-            return kf.read_text(encoding="utf-8").strip()
-        except Exception:
-            pass
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# Persistent batch state
-# ---------------------------------------------------------------------------
-
-def _batch_state_path() -> Path:
-    return _app_state_dir() / BATCH_STATE_FILENAME
-
-
-def save_batch_state(state: dict) -> None:
-    try:
-        _batch_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[SpecCritic] Warning: Could not save batch state: {e}")
-
-
-def load_batch_state() -> Optional[dict]:
-    path = _batch_state_path()
-    if not path.exists():
-        return None
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        delete_batch_state()
-        return None
-    try:
-        saved_at = datetime.fromisoformat(state["saved_at"])
-        age_hours = (datetime.now(timezone.utc) - saved_at).total_seconds() / 3600
-        if age_hours > BATCH_STATE_MAX_AGE_HOURS:
-            delete_batch_state()
-            return None
-    except Exception:
-        delete_batch_state()
-        return None
-    try:
-        restored = deserialize_resume_state(state)
-        submission = restored["submission"]
-        if not isinstance(submission.job.batch_id, str) or not submission.job.batch_id.startswith("msgbatch_"):
-            delete_batch_state()
-            return None
-        return restored
-    except (KeyError, TypeError, ValueError):
-        # Intentionally retained for upgrade continuity with older installed versions
-        # that persisted pre-resume-state (v1) payloads.
-        try:
-            batch_id = state.get("batch_id", "")
-            if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
-                delete_batch_state()
-                return None
-            legacy_submission = BatchSubmission(
-                job=BatchJob(
-                    batch_id=batch_id,
-                    job_type=state.get("job_type", "review"),
-                    request_map=state["request_map"],
-                    created_at=state["created_at"],
-                ),
-                files_reviewed=state.get("files_reviewed", []),
-                review_request_ids=state.get("review_request_ids", []),
-                leed_alerts=state.get("leed_alerts", []),
-                placeholder_alerts=state.get("placeholder_alerts", []),
-                model=MODEL_OPUS_47,
-                project_context=state.get("project_context", ""),
-                cycle_label=state.get("code_cycle", DEFAULT_CYCLE.label),
-                cross_check_enabled=state.get("cross_check_enabled", False),
-                export_mode=state.get("export_mode", False),
-                prepared_specs=[ExtractedSpec(**s) for s in (state.get("prepared_specs") or [])] if state.get("prepared_specs") else None,
-            )
-            phase = state.get("phase", "review")
-            phase_map = {"review": PHASE_REVIEW_POLL}
-            migrated_phase = phase_map.get(phase, phase)
-            return {"phase": migrated_phase, "submission": legacy_submission, "resume_flags": {}}
-        except Exception:
-            delete_batch_state()
-            return None
-
-
-def delete_batch_state() -> None:
-    try:
-        path = _batch_state_path()
-        if path.exists():
-            path.unlink()
-    except Exception:
-        pass
 
 
 def _is_supported_spec(filepath: Path) -> bool:

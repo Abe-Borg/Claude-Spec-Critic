@@ -31,6 +31,7 @@ from src.reviewer import Finding, ReviewResult, _stream_review
 from src.cross_checker import run_cross_check
 from src.batch import BatchJob, BatchStatus, submit_verification_batch
 from src import gui
+from src import batch_state_store
 from src.verifier import verify_finding, collect_verification_batch_results, VerificationResult
 from src.diagnostics import DiagnosticsReport
 from src.resume_state import (
@@ -269,7 +270,7 @@ def test_stream_review_marks_incomplete_when_stop_reason_not_end_turn():
 
 def test_round_trip_review_poll_via_gui_save_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state_path = tmp_path / "batch_state.json"
-    monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
+    monkeypatch.setattr(batch_state_store, "_batch_state_path", lambda: state_path)
 
     specs = [ExtractedSpec(filename="spec.docx", content="Section text", word_count=2, source_path="/tmp/spec.docx", source_format="docx")]
     submission = _make_submission(batch_id="msgbatch_test_roundtrip", cross_check_enabled=True, export_mode=True, prepared_specs=specs)
@@ -547,7 +548,7 @@ def test_verification_batch_job_round_trip():
 
 def test_load_batch_state_legacy_phase_migrates_to_review_poll(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state_path = tmp_path / "batch_state.json"
-    monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
+    monkeypatch.setattr(batch_state_store, "_batch_state_path", lambda: state_path)
     # Use a fresh ``saved_at`` so the fixture does not age past
     # BATCH_STATE_MAX_AGE_HOURS as wall-clock time advances.
     saved_at = datetime.now(timezone.utc).isoformat()
@@ -672,7 +673,7 @@ def test_resume_verification_state_rejected_when_review_state_missing(monkeypatc
 
 def test_discard_pending_batch_deletes_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state_path = tmp_path / "batch_state.json"
-    monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
+    monkeypatch.setattr(batch_state_store, "_batch_state_path", lambda: state_path)
     submission = _make_submission(batch_id="msgbatch_discard")
     gui.save_batch_state(build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission))
 
@@ -683,7 +684,7 @@ def test_discard_pending_batch_deletes_state(tmp_path: Path, monkeypatch: pytest
 
 def test_load_batch_state_invalid_submission_batch_id_deletes_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     state_path = tmp_path / "batch_state.json"
-    monkeypatch.setattr(gui, "_batch_state_path", lambda: state_path)
+    monkeypatch.setattr(batch_state_store, "_batch_state_path", lambda: state_path)
     state_path.write_text(
         """{
   "version": "2.3.0",
