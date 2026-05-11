@@ -337,30 +337,57 @@ def _severity_rank(action: EditAction) -> int:
     return {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}.get(severity, 99)
 
 
-def _resolve_overlap_winner(action_a: EditAction, action_b: EditAction) -> EditAction:
+def _resolve_overlap_winner(action_a: EditAction, action_b: EditAction) -> EditAction | None:
+    """Pick a clear winner for two overlapping edits, or return None if ambiguous.
+
+    Chunk D3.1: We previously fell through to severity / confidence / span
+    heuristics when neither edit strictly contained the other. That silently
+    picked a winner for genuinely ambiguous partial overlaps and discarded
+    the loser's intent. Per the delta plan, ambiguous overlapping edits
+    should be flagged for manual review rather than misapplied.
+
+    Resolution rules:
+
+    * Strict containment (one edit's span is fully inside the other and they
+      are not identical): the broader edit wins. The narrower edit's intent
+      is included in the broader edit's replacement span, so applying the
+      broader edit is not a misapplication.
+    * Identical span: fall back to severity / confidence / span tie-breakers
+      so duplicate findings collapse to a single applied edit rather than
+      both being thrown away.
+    * Partial overlap (neither strictly contains the other): return ``None``.
+      The caller skips both edits with a manual-review detail; auto-applying
+      either one would discard the other's distinct intent.
+    """
     a_range = (action_a.location.match_start, action_a.location.match_end)
     b_range = (action_b.location.match_start, action_b.location.match_end)
 
     a_contains_b = a_range[0] <= b_range[0] and a_range[1] >= b_range[1]
     b_contains_a = b_range[0] <= a_range[0] and b_range[1] >= a_range[1]
+
+    if a_contains_b and b_contains_a:
+        # Identical spans — duplicate or near-duplicate findings. Keep the
+        # heuristic tie-breaker so dedup-survivors still collapse to one
+        # applied edit rather than both being lost to "ambiguous".
+        rank_a = _severity_rank(action_a)
+        rank_b = _severity_rank(action_b)
+        if rank_a != rank_b:
+            return action_a if rank_a < rank_b else action_b
+
+        conf_a = _action_confidence(action_a)
+        conf_b = _action_confidence(action_b)
+        if conf_a != conf_b:
+            return action_a if conf_a > conf_b else action_b
+
+        return action_a
+
     if a_contains_b and not b_contains_a:
         return action_a
     if b_contains_a and not a_contains_b:
         return action_b
 
-    rank_a = _severity_rank(action_a)
-    rank_b = _severity_rank(action_b)
-    if rank_a != rank_b:
-        return action_a if rank_a < rank_b else action_b
-
-    conf_a = _action_confidence(action_a)
-    conf_b = _action_confidence(action_b)
-    if conf_a != conf_b:
-        return action_a if conf_a > conf_b else action_b
-
-    span_a = a_range[1] - a_range[0]
-    span_b = b_range[1] - b_range[0]
-    return action_a if span_a >= span_b else action_b
+    # Partial overlap with no containment is ambiguous. Caller must skip both.
+    return None
 
 
 def _action_group_key(action: EditAction) -> tuple[int, str, int | None]:
@@ -399,14 +426,58 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
                 )
             continue
 
+        # Chunk D3.1: process the group in descending-start order so the
+        # higher-offset edit is checked first. Track tainted ranges from
+        # ambiguous-overlap resolutions so a third edit overlapping with
+        # either side of an already-discarded ambiguous pair is also
+        # skipped (rather than slipping through because the original
+        # conflicting actions were removed from ``accepted``).
         sorted_group = sorted(group, key=lambda item: item.location.match_start, reverse=True)
         accepted: list[EditAction] = []
+        ambiguous_ranges: list[tuple[int, int]] = []
+
+        def _spans_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
+            return start_a < end_b and end_a > start_b
+
         for action in sorted_group:
+            a_start = action.location.match_start
+            a_end = action.location.match_end
+
+            # If this action overlaps any previously-tainted region, it is
+            # also ambiguous: the original conflicting pair is gone from
+            # ``accepted`` but their span is still untrustworthy.
+            tainted = next(
+                (
+                    (start, end)
+                    for start, end in ambiguous_ranges
+                    if _spans_overlap(a_start, a_end, start, end)
+                ),
+                None,
+            )
+            if tainted is not None:
+                skipped.append(
+                    EditOutcome(
+                        action=action,
+                        status="skipped",
+                        detail=(
+                            "Skipped: overlaps a same-paragraph region already "
+                            "flagged for manual review due to ambiguous "
+                            f"conflicting edits [{tainted[0]}, {tainted[1]})."
+                        ),
+                        original_text=action.location.matched_text,
+                        new_text=None,
+                    )
+                )
+                continue
+
             overlap = None
             for existing in accepted:
-                starts_before_end = action.location.match_start < existing.location.match_end
-                ends_after_start = action.location.match_end > existing.location.match_start
-                if starts_before_end and ends_after_start:
+                if _spans_overlap(
+                    a_start,
+                    a_end,
+                    existing.location.match_start,
+                    existing.location.match_end,
+                ):
                     overlap = existing
                     break
 
@@ -415,6 +486,42 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
                 continue
 
             winner = _resolve_overlap_winner(action, overlap)
+            if winner is None:
+                # Chunk D3.1: ambiguous partial overlap — skip both edits and
+                # taint the union range so any further action overlapping
+                # this region is also routed to manual review.
+                accepted.remove(overlap)
+                detail = (
+                    "Skipped due to ambiguous overlapping edits in the same "
+                    "paragraph; manual review required to avoid silently "
+                    "picking one intent over the other."
+                )
+                skipped.append(
+                    EditOutcome(
+                        action=overlap,
+                        status="skipped",
+                        detail=detail,
+                        original_text=overlap.location.matched_text,
+                        new_text=None,
+                    )
+                )
+                skipped.append(
+                    EditOutcome(
+                        action=action,
+                        status="skipped",
+                        detail=detail,
+                        original_text=action.location.matched_text,
+                        new_text=None,
+                    )
+                )
+                ambiguous_ranges.append(
+                    (
+                        min(a_start, overlap.location.match_start),
+                        max(a_end, overlap.location.match_end),
+                    )
+                )
+                continue
+
             if winner is action:
                 accepted.remove(overlap)
                 skipped.append(
