@@ -137,6 +137,15 @@ class PipelineResult:
     cross_check_result: Optional[ReviewResult] = None
     cycle_label: str = DEFAULT_CYCLE.label
     total_elapsed_seconds: float | None = None
+    # Chunk O — the remaining deterministic alert types collected during
+    # preflight. Previously only ``leed_alerts`` / ``placeholder_alerts``
+    # made it to the result, so the report could not render the rest.
+    code_cycle_alerts: list[dict] = field(default_factory=list)
+    structural_alerts: list[dict] = field(default_factory=list)
+    naming_alerts: list[dict] = field(default_factory=list)
+    template_marker_alerts: list[dict] = field(default_factory=list)
+    invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
+    duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -149,6 +158,15 @@ class CollectedBatchState:
     cross_check_result: Optional[ReviewResult] = None
     cross_check_skipped_due_to_missing_specs: bool = False
     truncated_specs: list[str] = field(default_factory=list)
+    # Chunk O — propagate the rest of the deterministic alerts through the
+    # collect / finalize handoff so the resulting PipelineResult carries
+    # them. Existing resume-state payloads load with empty defaults.
+    code_cycle_alerts: list[dict] = field(default_factory=list)
+    structural_alerts: list[dict] = field(default_factory=list)
+    naming_alerts: list[dict] = field(default_factory=list)
+    template_marker_alerts: list[dict] = field(default_factory=list)
+    invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
+    duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
 
 
 def _get_spec_files(input_dir: Path) -> list[Path]:
@@ -349,7 +367,17 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
 class _PreparedSpecs:
     """Phase 9 plan 13.1: preflight alerts ride alongside the leed/placeholder
     alerts. Pipeline callers log them via diagnostics; the GUI/report can pick
-    them up in a follow-up commit without breaking serialization here."""
+    them up in a follow-up commit without breaking serialization here.
+
+    Chunk O additions: ``template_marker_alerts`` (TODO/FIXME/XXX/???),
+    ``invalid_code_cycle_alerts`` (year/code citations whose year is not a
+    real California cycle), and ``duplicate_paragraph_alerts`` (verbatim
+    long-paragraph duplicates) sit alongside the existing lists. The pipeline
+    forwards every one of them through the submission / collected-state /
+    pipeline-result chain so the report can render them — previously
+    ``code_cycle_alerts`` / ``structural_alerts`` / ``naming_alerts`` were
+    logged but silently dropped before the report saw them.
+    """
     specs: list[ExtractedSpec]
     leed_alerts: list[dict]
     placeholder_alerts: list[dict]
@@ -361,6 +389,10 @@ class _PreparedSpecs:
     code_cycle_alerts: list[dict] = field(default_factory=list)
     structural_alerts: list[dict] = field(default_factory=list)
     naming_alerts: list[dict] = field(default_factory=list)
+    # Chunk O additions
+    template_marker_alerts: list[dict] = field(default_factory=list)
+    invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
+    duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
 
 
 def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE, model: str = REVIEW_MODEL_DEFAULT) -> _PreparedSpecs:
@@ -373,6 +405,9 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     placeholder_alerts: list[dict] = []
     code_cycle_alerts: list[dict] = []
     structural_alerts: list[dict] = []
+    template_marker_alerts: list[dict] = []
+    invalid_code_cycle_alerts: list[dict] = []
+    duplicate_paragraph_alerts: list[dict] = []
     progress(0.0, "Extracting text from specifications...")
     # Phase 5.2 (audit Section 9.2): parallel extraction. Order is preserved
     # by extract_multiple_specs, so deterministic file ordering and per-spec
@@ -393,6 +428,9 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         placeholder_alerts.extend(pre.placeholder_alerts)
         code_cycle_alerts.extend(pre.code_cycle_alerts)
         structural_alerts.extend(pre.structural_alerts)
+        template_marker_alerts.extend(pre.template_marker_alerts)
+        invalid_code_cycle_alerts.extend(pre.invalid_code_cycle_alerts)
+        duplicate_paragraph_alerts.extend(pre.duplicate_paragraph_alerts)
         progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
     if not specs:
         raise FileNotFoundError("All files failed extraction. No specs to review.")
@@ -416,6 +454,24 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         log(
             f"Preflight: {len(naming_alerts)} file(s) use a non-dominant CSI "
             "naming style.",
+            level="warning",
+        )
+    if template_marker_alerts:
+        log(
+            f"Preflight: {len(template_marker_alerts)} unresolved template "
+            "marker(s) (TODO/FIXME/XXX/???) detected.",
+            level="warning",
+        )
+    if invalid_code_cycle_alerts:
+        log(
+            f"Preflight: {len(invalid_code_cycle_alerts)} invalid California "
+            "code-cycle citation(s) detected (year is not a real cycle).",
+            level="warning",
+        )
+    if duplicate_paragraph_alerts:
+        log(
+            f"Preflight: {len(duplicate_paragraph_alerts)} duplicate "
+            "paragraph(s) detected (verbatim copy-paste).",
             level="warning",
         )
 
@@ -522,6 +578,9 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         code_cycle_alerts=code_cycle_alerts,
         structural_alerts=structural_alerts,
         naming_alerts=naming_alerts,
+        template_marker_alerts=template_marker_alerts,
+        invalid_code_cycle_alerts=invalid_code_cycle_alerts,
+        duplicate_paragraph_alerts=duplicate_paragraph_alerts,
     )
 
 
@@ -541,6 +600,16 @@ class BatchSubmission:
     # Stored as the enum string value so resume-state JSON serialization is
     # trivial. ``coerce_review_mode`` handles None / unknown labels.
     review_mode: str = DEFAULT_REVIEW_MODE.value
+    # Chunk O — carry the remaining deterministic alert lists so the
+    # collect / finalize path can hand them off to the final PipelineResult.
+    # All default to empty lists so legacy callers that build BatchSubmission
+    # without these fields keep working.
+    code_cycle_alerts: list[dict] = field(default_factory=list)
+    structural_alerts: list[dict] = field(default_factory=list)
+    naming_alerts: list[dict] = field(default_factory=list)
+    template_marker_alerts: list[dict] = field(default_factory=list)
+    invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
+    duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
 
 
 def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_47, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, mode: ReviewMode | str | None = None) -> BatchSubmission:
@@ -548,7 +617,25 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
     prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode, model=model)
     job = submit_review_batch(prepared.specs, project_context=project_context, model=model, cycle=cycle, mode=review_mode)
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
-    return BatchSubmission(job=job, files_reviewed=[s.filename for s in prepared.specs], review_request_ids=ordered_ids, leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, model=model, project_context=project_context, prepared_specs=prepared.specs, cycle_label=cycle.label, cross_check_enabled=cross_check_enabled, review_mode=review_mode.value)
+    return BatchSubmission(
+        job=job,
+        files_reviewed=[s.filename for s in prepared.specs],
+        review_request_ids=ordered_ids,
+        leed_alerts=prepared.leed_alerts,
+        placeholder_alerts=prepared.placeholder_alerts,
+        model=model,
+        project_context=project_context,
+        prepared_specs=prepared.specs,
+        cycle_label=cycle.label,
+        cross_check_enabled=cross_check_enabled,
+        review_mode=review_mode.value,
+        code_cycle_alerts=prepared.code_cycle_alerts,
+        structural_alerts=prepared.structural_alerts,
+        naming_alerts=prepared.naming_alerts,
+        template_marker_alerts=prepared.template_marker_alerts,
+        invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
+        duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+    )
 
 
 def _is_retryable_batch_review_result(rr: ReviewResult | None) -> bool:
@@ -1004,6 +1091,14 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         leed_alerts=submission.leed_alerts,
         placeholder_alerts=submission.placeholder_alerts,
         truncated_specs=truncated_specs,
+        # Chunk O — forward every alert list the submission carries so
+        # finalize_batch_result can ship them on the PipelineResult.
+        code_cycle_alerts=list(submission.code_cycle_alerts),
+        structural_alerts=list(submission.structural_alerts),
+        naming_alerts=list(submission.naming_alerts),
+        template_marker_alerts=list(submission.template_marker_alerts),
+        invalid_code_cycle_alerts=list(submission.invalid_code_cycle_alerts),
+        duplicate_paragraph_alerts=list(submission.duplicate_paragraph_alerts),
     )
 
 
@@ -1118,6 +1213,13 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         cross_check_result=state.cross_check_result,
         cycle_label=state.submission.cycle_label,
         total_elapsed_seconds=time.time() - state.submission.job.created_at,
+        # Chunk O — pass the deterministic-check lists through to the report.
+        code_cycle_alerts=list(state.code_cycle_alerts),
+        structural_alerts=list(state.structural_alerts),
+        naming_alerts=list(state.naming_alerts),
+        template_marker_alerts=list(state.template_marker_alerts),
+        invalid_code_cycle_alerts=list(state.invalid_code_cycle_alerts),
+        duplicate_paragraph_alerts=list(state.duplicate_paragraph_alerts),
     )
 
 
@@ -1127,7 +1229,20 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode, model=model)
     specs = prepared.specs
     if dry_run:
-        return PipelineResult(review_result=ReviewResult(findings=[], model=model), files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cycle_label=cycle.label, total_elapsed_seconds=time.time() - start)
+        return PipelineResult(
+            review_result=ReviewResult(findings=[], model=model),
+            files_reviewed=[s.filename for s in specs],
+            leed_alerts=prepared.leed_alerts,
+            placeholder_alerts=prepared.placeholder_alerts,
+            cycle_label=cycle.label,
+            total_elapsed_seconds=time.time() - start,
+            code_cycle_alerts=prepared.code_cycle_alerts,
+            structural_alerts=prepared.structural_alerts,
+            naming_alerts=prepared.naming_alerts,
+            template_marker_alerts=prepared.template_marker_alerts,
+            invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
+            duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+        )
 
     findings: list[Finding] = []
     thinking: list[str] = []
@@ -1192,4 +1307,18 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
         combined.error = f"{len(errors)} spec(s) had errors: " + "; ".join(errors)
     _persist_verification_cache(cache, log=log)
     progress(100.0, "Done.")
-    return PipelineResult(review_result=combined, files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cross_check_result=cross, cycle_label=cycle.label, total_elapsed_seconds=combined.elapsed_seconds)
+    return PipelineResult(
+        review_result=combined,
+        files_reviewed=[s.filename for s in specs],
+        leed_alerts=prepared.leed_alerts,
+        placeholder_alerts=prepared.placeholder_alerts,
+        cross_check_result=cross,
+        cycle_label=cycle.label,
+        total_elapsed_seconds=combined.elapsed_seconds,
+        code_cycle_alerts=prepared.code_cycle_alerts,
+        structural_alerts=prepared.structural_alerts,
+        naming_alerts=prepared.naming_alerts,
+        template_marker_alerts=prepared.template_marker_alerts,
+        invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
+        duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+    )

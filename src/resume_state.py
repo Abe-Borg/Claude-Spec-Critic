@@ -408,6 +408,15 @@ def serialize_submission(submission: BatchSubmission) -> dict[str, Any]:
         # fall back to the default.
         "review_mode": submission.review_mode,
         "prepared_specs": [serialize_extracted_spec(s) for s in (submission.prepared_specs or [])],
+        # Chunk O — persist the remaining deterministic preflight alerts so a
+        # resume picks them up on the final PipelineResult without re-running
+        # extraction. Older payloads without these keys load with empty lists.
+        "code_cycle_alerts": list(submission.code_cycle_alerts),
+        "structural_alerts": list(submission.structural_alerts),
+        "naming_alerts": list(submission.naming_alerts),
+        "template_marker_alerts": list(submission.template_marker_alerts),
+        "invalid_code_cycle_alerts": list(submission.invalid_code_cycle_alerts),
+        "duplicate_paragraph_alerts": list(submission.duplicate_paragraph_alerts),
     }
 
 
@@ -428,6 +437,12 @@ def deserialize_submission(payload: dict[str, Any]) -> BatchSubmission:
         cross_check_enabled=bool(payload.get("cross_check_enabled", False)),
         review_mode=coerce_review_mode(payload.get("review_mode", DEFAULT_REVIEW_MODE.value)).value,
         prepared_specs=prepared_specs,
+        code_cycle_alerts=list(payload.get("code_cycle_alerts", [])),
+        structural_alerts=list(payload.get("structural_alerts", [])),
+        naming_alerts=list(payload.get("naming_alerts", [])),
+        template_marker_alerts=list(payload.get("template_marker_alerts", [])),
+        invalid_code_cycle_alerts=list(payload.get("invalid_code_cycle_alerts", [])),
+        duplicate_paragraph_alerts=list(payload.get("duplicate_paragraph_alerts", [])),
     )
 
 
@@ -440,6 +455,14 @@ def serialize_collected_batch_state(state: CollectedBatchState) -> dict[str, Any
         "placeholder_alerts": list(state.placeholder_alerts),
         "cross_check_skipped_due_to_missing_specs": bool(state.cross_check_skipped_due_to_missing_specs),
         "truncated_specs": list(state.truncated_specs),
+        # Chunk O — the collected state carries through to finalize, so
+        # persist the deterministic alert lists alongside the existing pair.
+        "code_cycle_alerts": list(state.code_cycle_alerts),
+        "structural_alerts": list(state.structural_alerts),
+        "naming_alerts": list(state.naming_alerts),
+        "template_marker_alerts": list(state.template_marker_alerts),
+        "invalid_code_cycle_alerts": list(state.invalid_code_cycle_alerts),
+        "duplicate_paragraph_alerts": list(state.duplicate_paragraph_alerts),
     }
 
 
@@ -456,6 +479,14 @@ def deserialize_collected_batch_state(payload: dict[str, Any], submission: Batch
         cross_check_result=deserialize_review_result(payload.get("cross_check_result")),
         cross_check_skipped_due_to_missing_specs=bool(payload.get("cross_check_skipped_due_to_missing_specs", False)),
         truncated_specs=[str(v) for v in payload.get("truncated_specs", [])],
+        # Chunk O — accept missing keys from older payloads by falling back to
+        # the submission's lists (or empty for legacy payloads with neither).
+        code_cycle_alerts=list(payload.get("code_cycle_alerts", submission.code_cycle_alerts)),
+        structural_alerts=list(payload.get("structural_alerts", submission.structural_alerts)),
+        naming_alerts=list(payload.get("naming_alerts", submission.naming_alerts)),
+        template_marker_alerts=list(payload.get("template_marker_alerts", submission.template_marker_alerts)),
+        invalid_code_cycle_alerts=list(payload.get("invalid_code_cycle_alerts", submission.invalid_code_cycle_alerts)),
+        duplicate_paragraph_alerts=list(payload.get("duplicate_paragraph_alerts", submission.duplicate_paragraph_alerts)),
     )
 
 
