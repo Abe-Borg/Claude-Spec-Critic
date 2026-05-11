@@ -18,8 +18,11 @@ from .api_config import (
     BATCH_OUTPUT_BETA,
     LARGE_REVIEW_INPUT_THRESHOLD,
     OPUS_MODELS,
+    PHASE_BATCH_REVIEW,
+    PHASE_VERIFICATION,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     WEB_SEARCH_TOOL,
+    apply_thinking_config,
     assert_extended_output_allowed,
     batch_service_tier,
     extract_cache_usage,
@@ -123,10 +126,10 @@ def submit_review_batch(
         params: dict[str, Any] = {
             "model": model,
             "max_tokens": output_limit,
-            "thinking": {"type": "adaptive"},
             "system": system_payload,
             "messages": [{"role": "user", "content": user_message}],
         }
+        apply_thinking_config(params, model=model, phase=PHASE_BATCH_REVIEW)
         tier = batch_service_tier()
         if tier:
             params["service_tier"] = tier
@@ -337,11 +340,11 @@ def _build_verification_request_params(
     params: dict[str, Any] = {
         "model": selected_model,
         "max_tokens": verification_max_tokens(model=selected_model),
-        "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(system_prompt),
         "tools": tools_with_cache(tool_list),
         "messages": messages,
     }
+    apply_thinking_config(params, model=selected_model, phase=PHASE_VERIFICATION)
     tier = batch_service_tier()
     if tier:
         params["service_tier"] = tier

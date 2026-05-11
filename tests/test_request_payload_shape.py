@@ -22,7 +22,9 @@ import pytest
 
 from src.api_config import (
     BATCH_OUTPUT_BETA,
+    MODEL_HAIKU_45,
     MODEL_OPUS_47,
+    MODEL_SONNET_46,
     REVIEW_OUTPUT_CAP,
     VERIFICATION_OUTPUT_CAP,
 )
@@ -591,3 +593,302 @@ class TestCrossCheckRequestShape:
         req = fake_client.captured[-1]
         names = [t.get("name") for t in req.tools()]
         assert CROSS_CHECK_TOOL_NAME in names
+
+    def test_cross_check_request_carries_adaptive_thinking_for_opus(self, fake_client, fake_anthropic):
+        from src.cross_checker import run_cross_check
+
+        cross_check_message = fake_anthropic.review_tool_use_response(
+            payload={"coordination_summary": "ok", "findings": []},
+        )
+        for block in cross_check_message.content:
+            if getattr(block, "type", None) == "tool_use":
+                block.name = CROSS_CHECK_TOOL_NAME
+        fake_client.queue_response(cross_check_message)
+
+        run_cross_check(
+            [_spec(content="A", filename="A.docx"), _spec(content="B", filename="B.docx")],
+            existing_findings=[],
+            cycle=DEFAULT_CYCLE,
+            model=MODEL_OPUS_47,
+        )
+        req = fake_client.captured[-1]
+        assert req.thinking() == {"type": "adaptive"}
+
+
+# ---------------------------------------------------------------------------
+# Chunk B regression coverage — model-aware thinking policy
+# ---------------------------------------------------------------------------
+
+
+class TestModelAwareThinkingRequestShape:
+    """Pin the per-model thinking behavior across every request builder.
+
+    Before Chunk B every path hard-coded ``thinking={"type": "adaptive"}``,
+    which produced an API error when the synthesis pass switched to Haiku.
+    These tests ensure unsupported models never carry the key.
+    """
+
+    # ----- Batch review ------------------------------------------------
+
+    def test_batch_review_omits_thinking_for_haiku(self, fake_client):
+        from src.batch import submit_review_batch
+
+        submit_review_batch([_spec()], model=MODEL_HAIKU_45, cycle=DEFAULT_CYCLE)
+        params = fake_client.captured[0].first_params()
+        assert "thinking" not in params
+
+    def test_batch_review_includes_thinking_for_sonnet(self, fake_client):
+        from src.batch import submit_review_batch
+
+        submit_review_batch([_spec()], model=MODEL_SONNET_46, cycle=DEFAULT_CYCLE)
+        params = fake_client.captured[0].first_params()
+        assert params.get("thinking") == {"type": "adaptive"}
+
+    def test_batch_review_omits_thinking_for_unknown_model(self, fake_client):
+        from src.batch import submit_review_batch
+
+        submit_review_batch([_spec()], model="claude-future-2030", cycle=DEFAULT_CYCLE)
+        params = fake_client.captured[0].first_params()
+        assert "thinking" not in params
+
+    # ----- Real-time review --------------------------------------------
+
+    def test_realtime_review_omits_thinking_for_haiku(self, fake_client, fake_anthropic):
+        from src.reviewer import _stream_review
+
+        fake_client.queue_response(fake_anthropic.review_tool_use_response())
+        _stream_review(
+            fake_client,
+            system_prompt="system",
+            user_message="user",
+            model=MODEL_HAIKU_45,
+            max_retries=1,
+        )
+        req = fake_client.captured[-1]
+        assert "thinking" not in req.kwargs
+
+    def test_realtime_review_includes_thinking_for_sonnet(self, fake_client, fake_anthropic):
+        from src.reviewer import _stream_review
+
+        fake_client.queue_response(fake_anthropic.review_tool_use_response())
+        _stream_review(
+            fake_client,
+            system_prompt="system",
+            user_message="user",
+            model=MODEL_SONNET_46,
+            max_retries=1,
+        )
+        req = fake_client.captured[-1]
+        assert req.thinking() == {"type": "adaptive"}
+
+    # ----- Batch verification ------------------------------------------
+
+    def test_batch_verification_includes_thinking_for_sonnet_default(self, fake_client):
+        from src.batch import submit_verification_batch
+
+        def _prompt(_f): return "verify"
+        def _system(_c): return "system"
+
+        submit_verification_batch(
+            [_finding()], _prompt, _system, cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46,
+        )
+        params = fake_client.captured[0].first_params()
+        assert params.get("thinking") == {"type": "adaptive"}
+
+    def test_batch_verification_omits_thinking_for_haiku(self, fake_client):
+        from src.batch import submit_verification_batch
+
+        def _prompt(_f): return "verify"
+        def _system(_c): return "system"
+
+        submit_verification_batch(
+            [_finding()], _prompt, _system, cycle=DEFAULT_CYCLE, model=MODEL_HAIKU_45,
+        )
+        params = fake_client.captured[0].first_params()
+        assert "thinking" not in params
+
+    # ----- Retry / continuation ----------------------------------------
+
+    def test_retry_request_includes_thinking_for_sonnet(self):
+        from src.verifier import _build_retry_request
+
+        req = _build_retry_request("prompt body", cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46)
+        assert req.get("thinking") == {"type": "adaptive"}
+
+    def test_retry_request_omits_thinking_for_haiku(self):
+        from src.verifier import _build_retry_request
+
+        req = _build_retry_request("prompt body", cycle=DEFAULT_CYCLE, model=MODEL_HAIKU_45)
+        assert "thinking" not in req
+
+    def test_continuation_request_includes_thinking_for_sonnet(self):
+        from src.verifier import _build_continuation_request
+
+        req = _build_continuation_request(
+            "prompt body",
+            [{"type": "text", "text": "partial"}],
+            cycle=DEFAULT_CYCLE,
+            model=MODEL_SONNET_46,
+        )
+        assert req.get("thinking") == {"type": "adaptive"}
+
+    def test_continuation_request_omits_thinking_for_haiku(self):
+        from src.verifier import _build_continuation_request
+
+        req = _build_continuation_request(
+            "prompt body",
+            [{"type": "text", "text": "partial"}],
+            cycle=DEFAULT_CYCLE,
+            model=MODEL_HAIKU_45,
+        )
+        assert "thinking" not in req
+
+    # ----- Cross-check -------------------------------------------------
+
+    def test_cross_check_omits_thinking_for_haiku(self, fake_client, fake_anthropic):
+        from src.cross_checker import run_cross_check
+
+        cross_check_message = fake_anthropic.review_tool_use_response(
+            payload={"coordination_summary": "ok", "findings": []},
+        )
+        for block in cross_check_message.content:
+            if getattr(block, "type", None) == "tool_use":
+                block.name = CROSS_CHECK_TOOL_NAME
+        fake_client.queue_response(cross_check_message)
+
+        run_cross_check(
+            [_spec(content="A", filename="A.docx"), _spec(content="B", filename="B.docx")],
+            existing_findings=[],
+            cycle=DEFAULT_CYCLE,
+            model=MODEL_HAIKU_45,
+        )
+        req = fake_client.captured[-1]
+        assert "thinking" not in req.kwargs
+
+
+class TestSynthesisRequestShape:
+    """Regression coverage for the headline Chunk B bug: the cross-discipline
+    synthesis pass defaulted to Haiku 4.5 while sending ``thinking``, which
+    Anthropic rejects. The request must omit ``thinking`` on the Haiku
+    default and add it back when an operator overrides synthesis to Opus."""
+
+    def _stub_chunk_results(self, fake_anthropic):
+        """Build the minimum input ``_run_cross_discipline_synthesis`` needs
+        to actually emit a request: two completed chunks each with one
+        finding, so the early-exit guards don't short-circuit the call."""
+        from src.reviewer import Finding, ReviewResult
+
+        f1 = Finding(
+            severity="HIGH",
+            fileName="23 05 00.docx",
+            section="2.1",
+            issue="HVAC seismic restraint conflict",
+            actionType="EDIT",
+            existingText="x",
+            replacementText="y",
+            codeReference=None,
+            confidence=0.7,
+        )
+        f2 = Finding(
+            severity="MEDIUM",
+            fileName="22 05 00.docx",
+            section="3.1",
+            issue="Plumbing chase routing overlap",
+            actionType="EDIT",
+            existingText="a",
+            replacementText="b",
+            codeReference=None,
+            confidence=0.6,
+        )
+        return [
+            ("div_23", ReviewResult(findings=[f1], cross_check_status="completed")),
+            ("div_22", ReviewResult(findings=[f2], cross_check_status="completed")),
+        ]
+
+    def _queue_synthesis_response(self, fake_client, fake_anthropic):
+        message = fake_anthropic.review_tool_use_response(
+            payload={"coordination_summary": "ok", "findings": []},
+        )
+        for block in message.content:
+            if getattr(block, "type", None) == "tool_use":
+                block.name = CROSS_CHECK_TOOL_NAME
+        fake_client.queue_response(message)
+
+    def test_synthesis_omits_thinking_on_haiku_default(self, fake_client, fake_anthropic):
+        """REGRESSION: synthesis used to send ``thinking`` to Haiku, which
+        produced an API error. The request must omit the key entirely now."""
+        from src.cross_checker import _run_cross_discipline_synthesis
+
+        self._queue_synthesis_response(fake_client, fake_anthropic)
+        chunk_results = self._stub_chunk_results(fake_anthropic)
+        _run_cross_discipline_synthesis(
+            chunk_results,
+            cycle=DEFAULT_CYCLE,
+            # No model override → falls back to SYNTHESIS_MODEL_DEFAULT (Haiku).
+        )
+        req = fake_client.captured[-1]
+        assert "thinking" not in req.kwargs
+
+    def test_synthesis_adds_thinking_when_overridden_to_opus(self, fake_client, fake_anthropic):
+        """Capability is positive on Opus; the helper adds the key back."""
+        from src.cross_checker import _run_cross_discipline_synthesis
+
+        self._queue_synthesis_response(fake_client, fake_anthropic)
+        chunk_results = self._stub_chunk_results(fake_anthropic)
+        _run_cross_discipline_synthesis(
+            chunk_results,
+            cycle=DEFAULT_CYCLE,
+            model=MODEL_OPUS_47,
+        )
+        req = fake_client.captured[-1]
+        assert req.thinking() == {"type": "adaptive"}
+
+    def test_synthesis_omits_thinking_for_sonnet_when_phase_intent_overrides(
+        self, fake_client, fake_anthropic, monkeypatch
+    ):
+        """If a future change adds the synthesis phase to ``_PHASES_NO_THINKING``,
+        Sonnet would also drop the key. Today the phase is not in the set
+        so Sonnet keeps thinking — pin that current behavior so an accidental
+        phase-set edit fails this test."""
+        from src.cross_checker import _run_cross_discipline_synthesis
+
+        self._queue_synthesis_response(fake_client, fake_anthropic)
+        chunk_results = self._stub_chunk_results(fake_anthropic)
+        _run_cross_discipline_synthesis(
+            chunk_results,
+            cycle=DEFAULT_CYCLE,
+            model=MODEL_SONNET_46,
+        )
+        req = fake_client.captured[-1]
+        assert req.thinking() == {"type": "adaptive"}
+
+
+class TestNoLiteralThinkingPayloadsRemain:
+    """Repo-wide guard: every Anthropic request path must go through
+    ``apply_thinking_config``. A future developer who hand-rolls
+    ``"thinking": {"type": "adaptive"}`` into a new path will trip this."""
+
+    def test_no_hardcoded_thinking_payloads_in_src(self):
+        import pathlib
+        import re
+
+        # api_config defines the literal inside the policy + comments.
+        # That's the one allowed location.
+        repo_src = pathlib.Path(__file__).resolve().parent.parent / "src"
+        offenders: list[str] = []
+        pattern = re.compile(r"""thinking["']?\s*[:=]\s*\{["']type["']""")
+        for path in repo_src.glob("*.py"):
+            if path.name == "api_config.py":
+                continue
+            text = path.read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if pattern.search(line) and "type" in line and "adaptive" in line:
+                    # Skip comment-only lines (e.g. docstring references).
+                    stripped = line.strip()
+                    if stripped.startswith("#") or stripped.startswith('"'):
+                        continue
+                    offenders.append(f"{path.name}:{lineno}: {stripped}")
+        assert not offenders, (
+            "Hardcoded thinking payloads found outside api_config.py: "
+            + "; ".join(offenders)
+        )

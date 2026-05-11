@@ -23,8 +23,12 @@ from .batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_ba
 from .reviewer import Finding, _get_client
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .api_config import (
+    PHASE_VERIFICATION,
+    PHASE_VERIFICATION_CONTINUATION,
+    PHASE_VERIFICATION_RETRY,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
+    apply_thinking_config,
     extract_cache_usage,
     system_prompt_with_cache,
     tools_with_cache,
@@ -506,6 +510,18 @@ def _run_verification_call(
     tools_payload = tools_with_cache([severity_tool])
     output_limit = verification_max_tokens(model=model)
 
+    # Centralized capability policy: omit ``thinking`` entirely on models
+    # that do not support it (e.g. Haiku 4.5). The verifier defaults to
+    # Sonnet 4.6 which supports adaptive thinking, but escalation paths or
+    # operator overrides may select a different model.
+    stream_kwargs: dict = {
+        "model": model,
+        "max_tokens": output_limit,
+        "system": system_payload,
+        "tools": tools_payload,
+    }
+    apply_thinking_config(stream_kwargs, model=model, phase=PHASE_VERIFICATION)
+
     for attempt in range(max_retries + 1):
         try:
             all_responses = []
@@ -518,12 +534,8 @@ def _run_verification_call(
             for _ in range(max_continuations + 1):
                 # --- Streaming API required for web search server tool ---
                 with client.messages.stream(
-                    model=model,
-                    max_tokens=output_limit,
-                    thinking={"type": "adaptive"},
-                    system=system_payload,
-                    tools=tools_payload,
                     messages=messages,
+                    **stream_kwargs,
                 ) as stream:
                     response = stream.get_final_message()
                 all_responses.append(response)
@@ -774,14 +786,15 @@ def _build_retry_request(
 ) -> dict:
     selected = model or initial_verification_model()
     web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
-    return {
+    request: dict = {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected),
-        "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
         "tools": tools_with_cache([web_tool]),
         "messages": [{"role": "user", "content": prompt}],
     }
+    apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_RETRY)
+    return request
 
 
 def _build_continuation_request(
@@ -794,10 +807,9 @@ def _build_continuation_request(
 ) -> dict:
     selected = model or initial_verification_model()
     web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
-    return {
+    request: dict = {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected),
-        "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
         "tools": tools_with_cache([web_tool]),
         "messages": [
@@ -806,6 +818,8 @@ def _build_continuation_request(
             {"role": "user", "content": [{"type": "text", "text": "continue"}]},
         ],
     }
+    apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_CONTINUATION)
+    return request
 
 
 def _extract_message_text(message) -> str:
