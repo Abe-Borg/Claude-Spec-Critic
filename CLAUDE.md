@@ -204,7 +204,7 @@ Phase 5.5: `serialize_extracted_spec` records SHA-256 digests of both the extrac
 - `submit_review_batch(specs, ..., mode)` — emits requests with the structured tool when enabled
 - `poll_batch(batch_id) -> BatchStatus`
 - `retrieve_review_results(job, *, model)` — extracts findings from the tool_use block (falls back to text)
-- `submit_verification_batch(...)`, `retrieve_verification_results(...)`, `cancel_batch(...)`
+- `submit_verification_batch(...)`, `retrieve_verification_results_detailed(...)`, `cancel_batch(...)`. The legacy text-only `retrieve_verification_results` was removed in Chunk D — wave parsing now lives in `verifier._classify_wave_results`, which routes through the canonical parser.
 
 ### batch_runtime.py — Polling runtime
 
@@ -223,6 +223,7 @@ Progressive poll backoff: base interval for ~5 minutes, then linearly ramps to 1
 - `prepare_findings_for_verification(findings, *, cycle, cache, log)` — Phase 3 pre-pass (resolves local-skip and cache hits in place)
 - `start_verification_batch(...)`, `collect_verification_batch_results(..., realtime_fallback_threshold=5)`
 - `_verdict_from_tool_use(message)` — unpack the strict `submit_verification_verdict` tool input (preferred over text parsing)
+- Canonical parser (Chunk D): `parse_verification_response(message_or_list) -> VerificationParseOutcome` returns a `(verdict, parse_status)` pair where `parse_status` is one of `PARSE_STATUS_STRUCTURED` / `PARSE_STATUS_TEXT` / `PARSE_STATUS_TEXT_PARSE_ERROR` / `PARSE_STATUS_NO_CONTENT`. Used by both `_run_verification_call` (real-time) and `_classify_wave_results` (batch). `classify_verification_stop_reason(stop_reason) -> STOP_CLASS_COMPLETE / STOP_CLASS_PAUSE / STOP_CLASS_INCOMPLETE` centralizes the stop-reason allowlist.
 
 ### verification_router.py — Phase 3 routing
 
