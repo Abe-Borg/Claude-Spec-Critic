@@ -186,7 +186,14 @@ def test_conflict_resolution_applies_non_overlapping_in_reverse_order(tmp_path: 
     assert report.edits_applied == 2
 
 
-def test_conflict_resolution_skips_lower_confidence_overlap(tmp_path: Path):
+def test_conflict_resolution_skips_both_on_ambiguous_partial_overlap(tmp_path: Path):
+    """Chunk D3.1: partial overlap (no containment) is ambiguous — skip both.
+
+    Previously the higher-confidence edit silently won and was applied. Per
+    the delta plan, ambiguous overlapping edits must be flagged for manual
+    review rather than auto-applied, since picking either intent silently
+    discards the other.
+    """
     source = tmp_path / "source.docx"
     output = tmp_path / "output.docx"
 
@@ -215,9 +222,14 @@ def test_conflict_resolution_skips_lower_confidence_overlap(tmp_path: Path):
     report = apply_edits_to_spec(source, output, build_edit_actions([low, high]))
     saved = Document(output)
 
-    assert saved.paragraphs[0].text == "abc XYZ ghi"
-    assert report.edits_applied == 1
-    assert report.edits_skipped == 1
+    # Paragraph unchanged; both edits routed to manual review.
+    assert saved.paragraphs[0].text == "abc def ghi"
+    assert report.edits_applied == 0
+    assert report.edits_skipped == 2
+    for outcome in report.outcomes:
+        assert outcome.status == "skipped"
+        assert "ambiguous" in outcome.detail.lower()
+        assert "manual review" in outcome.detail.lower()
 
 
 def test_conflict_resolution_prefers_broader_subsuming_edit(tmp_path: Path):

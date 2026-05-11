@@ -136,6 +136,12 @@ def _classify_locator_safety(
         category = SAFETY_AUTO_WITH_CAUTION
     elif method == "fuzzy":
         category = SAFETY_MANUAL_REVIEW
+    elif method == "section_anchored_fuzzy":
+        # Chunk D3.2: section-anchored matches whose underlying matcher was
+        # fuzzy are still fuzzy text rediscovery — narrowing the search
+        # window does not make a paraphrase identification safe enough for
+        # silent document mutation. Route to manual review only.
+        category = SAFETY_MANUAL_REVIEW
     elif method == "id":
         # Chunk K4: id-based match plus exact-text precondition is the
         # strictest signal the locator can produce — equivalent to an
@@ -427,16 +433,23 @@ def _section_anchored_match(existing_text: str, section: str, paragraph_map: lis
     if not neighborhood:
         return []
 
-    for matcher in (
-        lambda: _exact_match(existing_text, neighborhood, short_text=short_text),
-        lambda: _normalized_match(existing_text, neighborhood, short_text=short_text),
-        lambda: _fuzzy_match(existing_text, neighborhood),
-    ):
+    # Chunk D3.2: track which underlying matcher produced the hit so the
+    # classifier can route section-anchored fuzzy matches to manual review
+    # only. Previously every matcher's output was relabeled "section_anchored"
+    # and a fuzzy-derived match could slip into AUTO_WITH_CAUTION and
+    # auto-apply.
+    matchers: list[tuple[str, callable]] = [
+        ("exact", lambda: _exact_match(existing_text, neighborhood, short_text=short_text)),
+        ("normalized", lambda: _normalized_match(existing_text, neighborhood, short_text=short_text)),
+        ("fuzzy", lambda: _fuzzy_match(existing_text, neighborhood)),
+    ]
+    for underlying, matcher in matchers:
         matches = matcher()
         if matches:
+            method = "section_anchored_fuzzy" if underlying == "fuzzy" else "section_anchored"
             for location in matches:
                 location.match_confidence = 0.70 if short_text else max(0.70, location.match_confidence)
-                location.match_method = "section_anchored"
+                location.match_method = method
             return matches
 
     return []
