@@ -448,10 +448,14 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
     # parameter keeps the policy decision in api_config so a future
     # tuning pass touches one place.
     system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_REVIEW)
-    # Phase 2.4: when structured outputs are enabled, force the model to
-    # emit a tool_use block whose ``input`` matches the finding schema.
-    # ``tool_choice`` removes the "did the model wrap its output in tags?"
-    # parse-failure mode entirely.
+    # Phase 2.4: when structured outputs are enabled, expose the
+    # ``submit_review_findings`` tool whose ``input_schema`` matches the
+    # finding shape. ``tool_choice`` is ``{"type": "auto"}`` (see
+    # ``review_tool_choice``) because the API rejects a forcing
+    # ``tool_choice`` when adaptive thinking is enabled — with only one
+    # tool exposed and the system prompt instructing the model to call it,
+    # the tool is reliably (but not contractually) invoked, and the
+    # tagged-JSON text parser stays as a documented fallback.
     use_structured = structured_outputs_enabled()
     request_kwargs: dict = {
         "model": model,
