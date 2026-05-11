@@ -349,6 +349,107 @@ class TestBatchReviewRequestShape:
 
 
 # ---------------------------------------------------------------------------
+# Chunk D2.1 — system-prompt token counting must be hoisted out of the
+# per-spec loop in batch review submission. The system prompt is built from
+# batch-level parameters (cycle, mode) and is byte-identical for every spec
+# in a single submission, so it should be counted once, not N times.
+# ---------------------------------------------------------------------------
+
+
+class TestBatchTokenCountingHoisting:
+    def test_system_prompt_counted_once_for_multi_spec_batch(
+        self, fake_client, monkeypatch
+    ):
+        from src import batch as batch_mod
+        from src.prompts import get_system_prompt
+        from src.review_modes import DEFAULT_REVIEW_MODE
+
+        system_prompt = get_system_prompt(DEFAULT_CYCLE, mode=DEFAULT_REVIEW_MODE)
+
+        call_log: list[str] = []
+
+        def _counting_fake(text):
+            call_log.append(text or "")
+            return len((text or "").split()) * 2
+
+        # The autouse fixture above already patches ``src.batch.count_tokens``
+        # with a non-counting fake; override it here with a counting one so
+        # the per-call total is observable.
+        monkeypatch.setattr(batch_mod, "count_tokens", _counting_fake)
+
+        specs = [
+            _spec(filename=f"S{i}.docx", content=f"spec body number {i}")
+            for i in range(4)
+        ]
+        batch_mod.submit_review_batch(
+            specs, model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE
+        )
+
+        # Exactly one call should have passed the system prompt string —
+        # the hoisted ``system_tokens = count_tokens(system_prompt)`` line.
+        # If a future change moves that call back into the per-spec loop
+        # this assertion catches the regression.
+        sys_calls = sum(1 for t in call_log if t == system_prompt)
+        assert sys_calls == 1, (
+            f"System prompt counted {sys_calls} times in a 4-spec batch; "
+            f"expected exactly 1 (D2.1 hoisting invariant)."
+        )
+
+    def test_user_message_counted_per_spec(self, fake_client, monkeypatch):
+        from src import batch as batch_mod
+
+        call_log: list[str] = []
+
+        def _counting_fake(text):
+            call_log.append(text or "")
+            return len((text or "").split()) * 2
+
+        monkeypatch.setattr(batch_mod, "count_tokens", _counting_fake)
+
+        markers = ["alpha-body-unique", "beta-body-unique", "gamma-body-unique"]
+        specs = [
+            _spec(filename=f"S{i}.docx", content=marker)
+            for i, marker in enumerate(markers)
+        ]
+        batch_mod.submit_review_batch(
+            specs, model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE
+        )
+
+        # Each spec's user message should be measured once. The exact
+        # number of calls depends on the user-message structure; the
+        # invariant we lock in is that no marker is silently skipped.
+        for marker in markers:
+            assert any(marker in t for t in call_log), (
+                f"Per-spec count_tokens never saw '{marker}'; the user "
+                "message budget check was skipped for this spec."
+            )
+
+    def test_single_spec_batch_still_counts_system_prompt_once(
+        self, fake_client, monkeypatch
+    ):
+        from src import batch as batch_mod
+        from src.prompts import get_system_prompt
+        from src.review_modes import DEFAULT_REVIEW_MODE
+
+        system_prompt = get_system_prompt(DEFAULT_CYCLE, mode=DEFAULT_REVIEW_MODE)
+
+        call_log: list[str] = []
+
+        def _counting_fake(text):
+            call_log.append(text or "")
+            return len((text or "").split()) * 2
+
+        monkeypatch.setattr(batch_mod, "count_tokens", _counting_fake)
+
+        batch_mod.submit_review_batch(
+            [_spec()], model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE
+        )
+
+        sys_calls = sum(1 for t in call_log if t == system_prompt)
+        assert sys_calls == 1
+
+
+# ---------------------------------------------------------------------------
 # Batch verification request shape
 # ---------------------------------------------------------------------------
 

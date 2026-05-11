@@ -193,6 +193,10 @@ class SpecReviewApp(_CTkDnDRoot):
         self._diagnostics_window: Optional[DiagnosticsWindow] = None
         self._realtime_confirmed: bool = False
         self._context_debounce_id: str | None = None
+        # Chunk D2.2: debounce timer id for the exact-token-count refresh.
+        # Tracked here so rapid file-list churn cancels the prior timer
+        # instead of stacking up multiple outbound API calls.
+        self._exact_token_refresh_timer_id: str | None = None
         self._selected_cycle_label: str = DEFAULT_CYCLE.label
         # Phase 8 / plan section 12.1: GUI tracks the active review mode so
         # both the real-time and batch paths submit with the user's choice.
