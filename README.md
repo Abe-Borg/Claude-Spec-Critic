@@ -145,6 +145,22 @@ Built-in support for the **California 2025 code cycle**. The cycle label is part
 - Anthropic API key (`ANTHROPIC_API_KEY`)
 - Dependencies (see `requirements.txt`): `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic`
 
+## Testing
+
+The suite is hermetic by default — no Anthropic API key, no network. `tests/conftest.py` injects a placeholder `ANTHROPIC_API_KEY` so module imports work; tests that need real network access opt in via `@pytest.mark.network`. Run everything with `pytest -q`. GUI-dependent tests skip automatically when `tkinter` is not installed.
+
+Test categories (declared as pytest markers in `pyproject.toml`):
+
+| Marker | Purpose |
+|---|---|
+| `smoke` | Fast import / compile sanity checks (`tests/test_chunk_a_smoke.py`) |
+| `fixtures` | Round-trips the fake Anthropic response builders through the production parsers (`tests/test_chunk_a_fixtures.py`) |
+| `request_shape` | Captures the request kwargs production code passes to the Anthropic SDK so later refactors fail at the request layer, not at the API (`tests/test_request_payload_shape.py`) |
+| `slow` | Reserve for tests that are noticeably slower than the baseline |
+| `network` | Reserved for tests that hit a real Anthropic endpoint; skipped unless `ANTHROPIC_API_KEY` is set to a non-placeholder value |
+
+Run a single category with e.g. `pytest -m smoke` or `pytest -m request_shape`. The fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py` and cover the five canonical response cases: structured review tool call, structured verification verdict tool call (including `stop_reason="tool_use"`), JSON-text fallback, and `max_tokens` incomplete. Small in-memory DOCX builders are in `tests/fixtures/docx_fixtures.py` for edit-safety tests.
+
 ## Feature Flags
 
 All flags read from environment variables; the listed default applies when the variable is unset.

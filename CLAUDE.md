@@ -404,3 +404,20 @@ A blocked-domain list filters social/AI-assistant/forum/general-encyclopedia sou
 - Python 3.11+
 - Anthropic API key (`ANTHROPIC_API_KEY`)
 - Runtime packages: `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic` (see `requirements.txt` for pinned versions)
+
+---
+
+## 9) Test Harness
+
+The test suite is hermetic by default — no Anthropic API key, no network — and runs in a few seconds. Key conventions:
+
+- `tests/conftest.py` injects a placeholder `ANTHROPIC_API_KEY` so production modules import cleanly. Tests that require a real Anthropic endpoint use `@pytest.mark.network`; they are skipped unless `ANTHROPIC_API_KEY` is set to a non-placeholder value.
+- GUI-dependent tests (`test_core_regressions.py`, `test_gui_refactor_modules.py`) skip automatically at collection time when `tkinter` is unavailable — see `pytest_ignore_collect` in `tests/conftest.py`.
+- Test markers (declared in `pyproject.toml`):
+  - `smoke` — fast import/compile checks (`test_chunk_a_smoke.py`).
+  - `fixtures` — round-trips fake Anthropic responses through production parsers (`test_chunk_a_fixtures.py`).
+  - `request_shape` — captures kwargs passed to the Anthropic SDK without network (`test_request_payload_shape.py`).
+  - `slow` / `network` — opt-in.
+- Fake Anthropic response builders: `tests/fixtures/fake_anthropic.py`. Cases covered: structured review tool call, structured verification verdict tool call (incl. `stop_reason="tool_use"`), JSON-text fallback, `max_tokens` incomplete. Each builder accepts `dict_shape=True` to emit plain-dict responses (the batch retrieval path can return either form).
+- In-memory DOCX builders: `tests/fixtures/docx_fixtures.py` for paragraph / table / real-world-section specs used by locator and edit-safety tests.
+- Request-shape test plumbing: `FakeClient` in `test_request_payload_shape.py` captures `messages.stream`, `messages.batches.create`, and `beta.messages.batches.create` kwargs into `CapturedRequest` / `CapturedBatch`. Use `fake_client` (which monkeypatches `_get_client` in `reviewer` / `batch` / `verifier` / `cross_checker`) to exercise any request-building code path without a real client.
