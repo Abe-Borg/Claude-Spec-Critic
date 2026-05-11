@@ -37,6 +37,7 @@ src/
 ├── verification_router.py  # Initial / escalation model + local-skip classification
 ├── verification_cache.py   # Persistent claim-keyed verdict cache (JSON on disk)
 ├── verification_profiles.py # Verification profile classifier + per-profile search budgets (Chunk H)
+├── verification_modes.py   # Explicit verification modes + per-mode policy + routing (Chunk I)
 ├── source_grounding.py     # URL normalization + cited-source validation (Chunk H)
 ├── triage.py               # Haiku-based verification triage (opt-in)
 ├── verification_config.py  # Backward-compat re-exports from api_config
@@ -149,6 +150,8 @@ cache_read_input_tokens: int = 0
 Phase 3 evidence model: `grounded`, `model_used`, `escalated`, `cache_status`, `web_search_requests`, `successful_source_count`, `search_error_count`. Verdicts cannot be `CONFIRMED` / `CORRECTED` unless `grounded` is True.
 
 Chunk H source-grounding evidence: `searched_sources` (URLs the web_search tool actually fetched), `cited_sources` (URLs the model emitted in its verdict payload), `accepted_sources` (cited URLs that matched a searched URL after normalization), `rejected_sources` (`[{"url", "reason"}]` for cited URLs that did not match any searched URL), and `verification_profile` (one of `code_standard` / `california_ahj` / `manufacturer` / `constructability` / `internal_coordination`). The public `sources` list is replaced with `accepted_sources` so reports never echo model-invented URLs. When the model emits citations but every citation is ungrounded, `CONFIRMED` / `CORRECTED` is downgraded to `UNVERIFIED` inside `_apply_source_grounding`.
+
+Chunk I verification mode: `verification_mode` (one of `local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`) stamps the routing decision used for the verification call. `_local_skip_result()` stamps `local_skip`; `_run_verification_call` and `_classify_wave_results` stamp the mode returned by `verification_modes.select_verification_mode(...)`. The cache and resume state round-trip the field so a restored hit carries its original routing tag. Pre-Chunk-I records load with `verification_mode = ""`, which `mode_policy()` treats as STANDARD_REASONING for backward compatibility.
 
 ### BatchSubmission / CollectedBatchState (pipeline.py)
 Carry `review_mode: str` so resume restores the exact prompt path.
@@ -388,6 +391,19 @@ Every verification call classifies the finding into one of five `VerificationPro
 | `internal_coordination` | finding mentions internal contradiction / placeholder / LEED / typo / duplicate paragraph | 2 / 2 / 1 / 1 |
 
 `classify_finding_profile(finding)` lives in `src/verification_profiles.py`. Profile sets the ceiling and severity modulates within it (Chunk H Directive 7: severity is *subordinate* to profile). `build_verification_tools_for_profile(profile, severity)` in `batch.py` is the profile-aware variant of `build_verification_tools(severity)`; both real-time, batch initial, and batch retry / continuation builders route through it and stamp the profile string into `VerificationResult.verification_profile`.
+
+### Verification modes (Chunk I)
+
+`select_verification_mode(finding, *, local_skip, escalated, cached_mode)` in `src/verification_modes.py` picks one of four `VerificationMode` values:
+
+| Mode | When | Model | Thinking | Search budget | Escalates? |
+|---|---|---|---|---|---|
+| `local_skip` | keyword classifier or Haiku triage said `local_skip` | (none — no API call) | n/a | 0 (no search) | no |
+| `strict_structured` | GRIPES severity OR non-GRIPES `internal_coordination` profile | Sonnet | off | profile ceiling × 0.5, floor 1 | no |
+| `standard_reasoning` | default for substantive technical claims | Sonnet (defers to `VERIFICATION_MODEL_DEFAULT`) | on | full profile ceiling | yes (via `should_escalate_verification`) |
+| `deep_reasoning` | `escalated=True`, OR initial pass for CRITICAL `california_ahj` (when Sonnet-default is on) | Opus (defers to `VERIFICATION_ESCALATION_MODEL`) | on | full profile ceiling | no (terminal) |
+
+Rules in priority order: cache-hit replay → local_skip → escalated → CRITICAL `california_ahj` initial pass → GRIPES → non-GRIPES `internal_coordination` → default. `mode_policy(mode)` returns the frozen `ModePolicy` bundle (`model`, `thinking_enabled`, `search_budget_multiplier`, `web_search_enabled`, `allows_escalation`); `mode_search_budget(mode, *, profile_ceiling)` composes the multiplier with `profile_max_uses(...)` (floor of 1). `_run_verification_call` stamps the routed mode on every result; `_classify_wave_results` re-derives the mode per wave finding so retry-wave entries are tagged `deep_reasoning`. Diagnostics' `summary()` exposes `verification_modes` and `verification_profiles` count dicts, rendered as `Modes:` / `Profiles:` lines in `to_text()`.
 
 ### Source grounding (Chunk H)
 

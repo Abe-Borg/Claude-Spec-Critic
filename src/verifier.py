@@ -48,6 +48,12 @@ from .source_grounding import (
     validate_cited_sources,
 )
 from .verification_cache import VerificationCache
+from .verification_modes import (
+    VerificationMode,
+    mode_policy,
+    mode_search_budget,
+    select_verification_mode,
+)
 from .verification_profiles import (
     VerificationProfile,
     classify_finding_profile,
@@ -124,6 +130,12 @@ class VerificationResult:
     accepted_sources: list[str] = field(default_factory=list)
     rejected_sources: list[dict] = field(default_factory=list)
     verification_profile: str = ""
+    # ----- Chunk I verification mode --------------------------------------
+    # The :class:`VerificationMode` value that routed this verification. Stored
+    # as a string so the whole record round-trips through JSON cleanly. Empty
+    # string for pre-Chunk-I cache entries or unit-test results constructed
+    # without going through the router.
+    verification_mode: str = ""
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -227,6 +239,10 @@ def _local_skip_result(reason: str = "Locally classified: external grounding not
         # and diagnostics can label them consistently with everything
         # that flowed through the web-verification path.
         verification_profile=VerificationProfile.INTERNAL_COORDINATION.value,
+        # Chunk I: explicit mode tag. Local skip is the most-deterministic
+        # mode in the router; reports/diagnostics use this to count how
+        # many findings the keyword/Haiku classifiers caught.
+        verification_mode=VerificationMode.LOCAL_SKIP.value,
     )
 
 
@@ -800,7 +816,22 @@ def verify_finding(
     if local_skip_enabled() and classify_finding_for_verification(finding) == "local_skip":
         return _local_skip_result()
 
-    selected_model = model or initial_verification_model()
+    # Chunk I: pick the initial model from the verification mode unless
+    # the caller passed an explicit override. The mode policy already
+    # encodes "Sonnet for STANDARD_REASONING, Opus for CRITICAL
+    # California/AHJ initial pass, Sonnet for STRICT_STRUCTURED" so the
+    # initial model just falls out of the policy lookup. Falling back
+    # to :func:`initial_verification_model` keeps backward compatibility
+    # for the (unusual) case where the mode policy returns an empty
+    # string for ``model``.
+    if model is not None:
+        selected_model = model
+    else:
+        initial_mode = select_verification_mode(
+            finding, local_skip=False, escalated=escalated
+        )
+        initial_policy = mode_policy(initial_mode)
+        selected_model = initial_policy.model or initial_verification_model()
     result = _run_verification_call(
         finding,
         cycle=cycle,
@@ -860,6 +891,16 @@ def _run_verification_call(
     # can label what kind of claim this verdict belongs to. Classification
     # is pure-function over the finding text so there is no API cost.
     profile = classify_finding_profile(finding)
+    # Chunk I: explicit verification mode. Routing is a pure-function
+    # decision over the finding + the escalation flag (the local-skip
+    # branch is handled at the top of ``verify_finding`` so by the time
+    # we reach here the only LOCAL_SKIP path is the explicit local-skip
+    # result, not a remote call). The mode picks the model family +
+    # thinking config + search-budget multiplier — but an explicit
+    # ``model=`` keyword from the caller still wins so operator
+    # overrides and tests behave the same as before.
+    mode = select_verification_mode(finding, local_skip=False, escalated=escalated)
+    policy = mode_policy(mode)
 
     def _make_unverified(explanation: str, *, search_requests: int = 0, search_errors: int = 0, search_successes: int = 0) -> VerificationResult:
         return _enforce_grounding_invariant(VerificationResult(
@@ -873,6 +914,7 @@ def _run_verification_call(
             successful_source_count=search_successes,
             search_error_count=search_errors,
             verification_profile=profile.value,
+            verification_mode=mode.value,
         ))
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -891,28 +933,49 @@ def _run_verification_call(
         cycle, include_verdict_tool=include_verdict_tool
     )
     system_payload = system_prompt_with_cache(system_prompt)
-    # Chunk H: profile-aware web_search budget. The profile sets the
-    # ceiling for the kind of claim (e.g. internal-coordination caps
-    # very low; California/AHJ allows the most rope); severity modulates
-    # within the profile. We delegate to
-    # :func:`build_verification_tools_for_profile` so the batch / retry /
-    # continuation paths can pick up the same routing without reaching
-    # into the verifier internals.
+    # Chunk H/I: profile- and mode-aware web_search budget. The
+    # profile sets the ceiling for the kind of claim; severity
+    # modulates within it; the verification *mode* then applies a
+    # multiplier on top (STRICT_STRUCTURED gets half-budget, the
+    # rest get the full profile budget). The floor-of-1 inside
+    # :func:`mode_search_budget` ensures a profile/mode combination
+    # that scales to less than 1 still allows a single search so the
+    # model has *some* opportunity to ground.
+    profile_ceiling = profile_max_uses(profile, finding.severity)
+    effective_max_uses = mode_search_budget(mode, profile_ceiling=profile_ceiling)
     tool_list = build_verification_tools_for_profile(profile, finding.severity)
+    # If the mode policy narrowed the search budget, overwrite the
+    # ``max_uses`` on the web_search tool block. We only patch the
+    # web_search tool entry — the verdict tool entry (when present)
+    # has no ``max_uses`` field. Doing this here (rather than in
+    # :func:`build_verification_tools_for_profile`) keeps that helper
+    # ignorant of mode policy so the batch / retry / continuation
+    # paths can choose to apply mode scaling at a different layer.
+    if tool_list and effective_max_uses != tool_list[0].get("max_uses"):
+        scaled_tool = dict(tool_list[0])
+        scaled_tool["max_uses"] = effective_max_uses
+        tool_list = [scaled_tool, *tool_list[1:]]
     tools_payload = tools_with_cache(tool_list)
     output_limit = verification_max_tokens(model=model)
 
     # Centralized capability policy: omit ``thinking`` entirely on models
     # that do not support it (e.g. Haiku 4.5). The verifier defaults to
     # Sonnet 4.6 which supports adaptive thinking, but escalation paths or
-    # operator overrides may select a different model.
+    # operator overrides may select a different model. Chunk I: the
+    # mode policy can also opt out of thinking even on a model that
+    # supports it (STRICT_STRUCTURED does this so a GRIPES finding
+    # doesn't burn thinking tokens on what is fundamentally an
+    # editorial check). When the mode opts out, we just skip the
+    # :func:`apply_thinking_config` call entirely so the
+    # ``thinking`` key never lands on the request payload.
     stream_kwargs: dict = {
         "model": model,
         "max_tokens": output_limit,
         "system": system_payload,
         "tools": tools_payload,
     }
-    apply_thinking_config(stream_kwargs, model=model, phase=PHASE_VERIFICATION)
+    if policy.thinking_enabled:
+        apply_thinking_config(stream_kwargs, model=model, phase=PHASE_VERIFICATION)
 
     for attempt in range(max_retries + 1):
         try:
@@ -1010,6 +1073,7 @@ def _run_verification_call(
             parsed.successful_source_count = len(deduped_searched)
             parsed.search_error_count = total_search_errors
             parsed.verification_profile = profile.value
+            parsed.verification_mode = mode.value
             # Chunk H: validate cited sources against the URLs the API
             # actually fetched. Ungrounded citations are partitioned off
             # and the verdict is downgraded when every citation missed.
@@ -1364,6 +1428,15 @@ def _classify_wave_results(
         # nothing relative to the network round-trip we already took.
         profile = classify_finding_profile(findings[finding_idx])
         parsed.verification_profile = profile.value
+        # Chunk I: re-derive the verification mode so the batch wave
+        # path tags the result the same way the real-time path does.
+        # ``escalated`` here is whether this *finding* came from an
+        # escalation wave — the wave loop carries that through the
+        # request context.
+        wave_mode = select_verification_mode(
+            findings[finding_idx], local_skip=False, escalated=escalated
+        )
+        parsed.verification_mode = wave_mode.value
         parsed = _apply_source_grounding(parsed, searched=deduped_searched)
         parsed = _enforce_grounding_invariant(parsed)
         outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed))

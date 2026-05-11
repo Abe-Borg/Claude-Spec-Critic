@@ -48,6 +48,7 @@ _CORE_MODULES = [
     "src.triage",
     "src.verification_cache",
     "src.verification_config",
+    "src.verification_modes",
     "src.verification_profiles",
     "src.verification_router",
     "src.verifier",
@@ -103,6 +104,8 @@ def test_verification_result_has_phase3_fields() -> None:
         "web_search_requests",
         "successful_source_count",
         "search_error_count",
+        # Chunk I addition — verification routing decision.
+        "verification_mode",
     ):
         assert hasattr(r, field_name), f"VerificationResult missing field: {field_name}"
 

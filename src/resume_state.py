@@ -157,6 +157,11 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         "accepted_sources": list(result.accepted_sources),
         "rejected_sources": [dict(r) for r in result.rejected_sources],
         "verification_profile": result.verification_profile,
+        # Chunk I: verification mode round-trips through resume state so
+        # a session resumed after a crash still reports each finding's
+        # original routing decision. Pre-Chunk-I payloads deserialize
+        # with the empty-string default below.
+        "verification_mode": result.verification_mode,
     }
 
 
@@ -187,6 +192,7 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         accepted_sources=[str(s) for s in payload.get("accepted_sources", []) if s],
         rejected_sources=rejected,
         verification_profile=str(payload.get("verification_profile", "")),
+        verification_mode=str(payload.get("verification_mode", "")),
     )
 
 
