@@ -229,29 +229,91 @@ def _is_whole_paragraph_delete(action: EditAction) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class PreconditionResult:
+    """Outcome of revalidating a recorded edit precondition (Chunk F).
+
+    Carries the offsets that should be used for the actual mutation. If the
+    recorded offsets still match the live text, ``match_start`` /
+    ``match_end`` are returned unchanged. If the live text shifted but the
+    expected text is uniquely present at a different offset, the corrected
+    offsets are returned so the caller mutates the right span instead of the
+    stale one. ``ok`` is False for missing or duplicated text — the caller
+    must skip the edit rather than guess which occurrence to mutate.
+    """
+
+    ok: bool
+    match_start: int
+    match_end: int
+    detail: str
+
+
 def _precondition_holds_for_paragraph(
     paragraph: Paragraph,
     match_start: int,
     match_end: int,
     expected_text: str,
-) -> tuple[bool, str]:
-    """Verify the live paragraph still contains the expected slice (audit 8.3).
+) -> PreconditionResult:
+    """Verify the live paragraph still contains the expected slice (audit 8.3, Chunk F).
 
-    Returns (ok, detail). Falls back to substring presence if exact offsets no
-    longer line up but the original matched text is still uniquely present.
+    Strategy:
+
+    1. If the recorded offsets still slice out the expected text, accept
+       and return the recorded offsets unchanged.
+    2. Otherwise, if the expected text is uniquely present somewhere else
+       in the live paragraph, return ``ok=True`` with the corrected
+       offsets so the caller can mutate the actual occurrence rather than
+       a stale slice that may now contain unrelated characters.
+    3. If the expected text is missing or appears more than once, return
+       ``ok=False``. The caller must skip the edit — guessing between
+       multiple occurrences risks replacing the wrong span, and silently
+       trusting the stale offsets risks corrupting the paragraph.
     """
     current = paragraph.text
     if 0 <= match_start <= match_end <= len(current):
         if current[match_start:match_end] == expected_text:
-            return True, "Precondition matched at recorded offsets."
+            return PreconditionResult(
+                True,
+                match_start,
+                match_end,
+                "Precondition matched at recorded offsets.",
+            )
 
-    if expected_text and current.count(expected_text) == 1:
-        return True, "Precondition matched via single substring presence."
+    if not expected_text:
+        return PreconditionResult(
+            False,
+            match_start,
+            match_end,
+            "Precondition revalidation failed: paragraph text no longer matches "
+            "the recorded edit target and no expected text is recorded.",
+        )
 
-    return (
+    occurrences = current.count(expected_text)
+    if occurrences == 1:
+        new_start = current.find(expected_text)
+        new_end = new_start + len(expected_text)
+        return PreconditionResult(
+            True,
+            new_start,
+            new_end,
+            "Precondition matched via unique substring presence; offsets corrected "
+            f"from [{match_start}, {match_end}) to [{new_start}, {new_end}).",
+        )
+
+    if occurrences == 0:
+        return PreconditionResult(
+            False,
+            match_start,
+            match_end,
+            "Precondition revalidation failed: expected text is no longer present in the paragraph.",
+        )
+
+    return PreconditionResult(
         False,
-        "Precondition revalidation failed: paragraph text no longer matches "
-        "the recorded edit target.",
+        match_start,
+        match_end,
+        f"Precondition revalidation failed: expected text appears {occurrences} times "
+        "in the paragraph; manual review required to avoid wrong-span replacement.",
     )
 
 
@@ -388,7 +450,17 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
     return ordered, skipped
 
 
-def _resolve_cell_and_offsets(action: EditAction, row) -> tuple[Paragraph | None, int | None, int | None, str]:
+def _resolve_cell_and_offsets(
+    action: EditAction, row
+) -> tuple[Paragraph | None, int | None, int | None, str, str]:
+    """Locate the target paragraph and span for a table-cell edit.
+
+    Returns ``(paragraph, start, end, detail, status)`` where ``status`` is
+    one of ``"resolved"``, ``"failed"`` (data shape problem the caller
+    should treat as failed), or ``"skipped"`` (a deliberate Chunk F safety
+    refusal — duplicated or missing target text). The caller uses
+    ``status`` to record the right outcome.
+    """
     mapping = action.location.mapping
     row_text_parts: list[tuple[object, str]] = []
     for cell in row.cells:
@@ -397,36 +469,73 @@ def _resolve_cell_and_offsets(action: EditAction, row) -> tuple[Paragraph | None
             row_text_parts.append((cell, text))
 
     if not row_text_parts:
-        return None, None, None, "Row had no non-empty cells for mapped text."
+        return None, None, None, "Row had no non-empty cells for mapped text.", "failed"
 
     start = action.location.match_start
     end = action.location.match_end
     cursor = 0
     matched_cell = None
-    local_start = local_end = None
 
     for idx, (cell, text) in enumerate(row_text_parts):
         seg_start = cursor
         seg_end = seg_start + len(text)
         if start >= seg_start and end <= seg_end:
             matched_cell = cell
-            local_start = start - seg_start
-            local_end = end - seg_start
             break
         cursor = seg_end + 3
         if idx == len(row_text_parts) - 1:
             cursor = seg_end
 
-    if matched_cell is None or local_start is None or local_end is None:
-        return None, None, None, "Matched range crossed table-cell boundaries; skipping for safety."
+    if matched_cell is None:
+        return (
+            None,
+            None,
+            None,
+            "Matched range crossed table-cell boundaries; skipping for safety.",
+            "failed",
+        )
 
+    # Chunk F: enumerate every occurrence of the expected text across the
+    # cell's paragraphs and require uniqueness. The previous implementation
+    # picked the first ``paragraph.text.find()`` hit, which silently guessed
+    # when the text appeared multiple times in the cell.
+    expected = action.location.matched_text
+    if not expected:
+        return None, None, None, "No expected text recorded for table-cell edit.", "failed"
+
+    candidates: list[tuple[Paragraph, int]] = []
     for paragraph in matched_cell.paragraphs:
-        idx = paragraph.text.find(action.location.matched_text)
-        if idx == -1:
-            continue
-        return paragraph, idx, idx + len(action.location.matched_text), "Resolved table-cell paragraph target."
+        text = paragraph.text
+        scan = 0
+        while True:
+            hit = text.find(expected, scan)
+            if hit == -1:
+                break
+            candidates.append((paragraph, hit))
+            scan = hit + 1
 
-    return None, None, None, "Could not resolve target paragraph inside table cell."
+    if not candidates:
+        return (
+            None,
+            None,
+            None,
+            "Expected text is no longer present in any paragraph of the target cell.",
+            "skipped",
+        )
+    if len(candidates) > 1:
+        return (
+            None,
+            None,
+            None,
+            (
+                f"Expected text appears {len(candidates)} times across this cell's "
+                "paragraphs; manual review required to avoid wrong-span replacement."
+            ),
+            "skipped",
+        )
+
+    paragraph, hit = candidates[0]
+    return paragraph, hit, hit + len(expected), "Resolved table-cell paragraph target.", "resolved"
 
 
 def _apply_add_action(
@@ -652,21 +761,24 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             paragraph = Paragraph(element, doc)
             paragraph_before = paragraph.text
 
-            # Phase 4 (audit Section 8.3): revalidate immediately before
-            # mutating. If a previous edit in this pass changed the paragraph
-            # such that the recorded slice no longer matches, skip safely.
-            ok_pre, pre_detail = _precondition_holds_for_paragraph(
+            # Phase 4 (audit Section 8.3) + Chunk F: revalidate immediately
+            # before mutating. If a previous edit in this pass changed the
+            # paragraph such that the recorded slice no longer matches, the
+            # precondition returns corrected offsets when the expected text
+            # is uniquely present elsewhere; if it is missing or duplicated
+            # we skip the edit instead of replacing a stale span.
+            precondition = _precondition_holds_for_paragraph(
                 paragraph,
                 action.location.match_start,
                 action.location.match_end,
                 action.location.matched_text,
             )
-            if not ok_pre:
+            if not precondition.ok:
                 outcomes.append(
                     EditOutcome(
                         action=action,
                         status="skipped",
-                        detail=pre_detail,
+                        detail=precondition.detail,
                         original_text=paragraph_before,
                         new_text=None,
                     )
@@ -674,7 +786,12 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 continue
 
             replacement = action.replacement_text or ""
-            ok, detail = _replace_in_paragraph(paragraph, action.location.match_start, action.location.match_end, replacement)
+            ok, detail = _replace_in_paragraph(
+                paragraph,
+                precondition.match_start,
+                precondition.match_end,
+                replacement,
+            )
             outcomes.append(
                 EditOutcome(
                     action=action,
@@ -711,12 +828,14 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                     )
                 )
                 continue
-            target_paragraph, start, end, detail = _resolve_cell_and_offsets(action, table.rows[row_index])
+            target_paragraph, start, end, detail, resolve_status = _resolve_cell_and_offsets(
+                action, table.rows[row_index]
+            )
             if target_paragraph is None or start is None or end is None:
                 outcomes.append(
                     EditOutcome(
                         action=action,
-                        status="failed",
+                        status="skipped" if resolve_status == "skipped" else "failed",
                         detail=detail,
                         original_text=original_text,
                         new_text=None,
@@ -726,26 +845,34 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
 
             paragraph_before = target_paragraph.text
 
-            ok_pre, pre_detail = _precondition_holds_for_paragraph(
+            # Chunk F: same offset-safety contract as the paragraph path.
+            # The table-cell resolver finds the expected text by substring
+            # search, but a prior edit in this pass could have shifted or
+            # duplicated it; revalidate and use the precondition's
+            # (possibly corrected) offsets for the actual replacement.
+            precondition = _precondition_holds_for_paragraph(
                 target_paragraph,
                 start,
                 end,
                 action.location.matched_text,
             )
-            if not ok_pre:
+            if not precondition.ok:
                 outcomes.append(
                     EditOutcome(
                         action=action,
                         status="skipped",
-                        detail=pre_detail,
+                        detail=precondition.detail,
                         original_text=paragraph_before,
                         new_text=None,
                     )
                 )
                 continue
 
-            if action.action_type == "DELETE" and start == 0 and end == len(paragraph_before):
-                ok, replace_detail = _replace_in_paragraph(target_paragraph, start, end, "")
+            cell_start = precondition.match_start
+            cell_end = precondition.match_end
+
+            if action.action_type == "DELETE" and cell_start == 0 and cell_end == len(paragraph_before):
+                ok, replace_detail = _replace_in_paragraph(target_paragraph, cell_start, cell_end, "")
                 outcomes.append(
                     EditOutcome(
                         action=action,
@@ -758,7 +885,7 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 continue
 
             replacement = action.replacement_text or ""
-            ok, replace_detail = _replace_in_paragraph(target_paragraph, start, end, replacement)
+            ok, replace_detail = _replace_in_paragraph(target_paragraph, cell_start, cell_end, replacement)
             outcomes.append(
                 EditOutcome(
                     action=action,
@@ -828,18 +955,18 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         paragraph = Paragraph(element, doc)
         paragraph_before = paragraph.text
 
-        ok_pre, pre_detail = _precondition_holds_for_paragraph(
+        precondition = _precondition_holds_for_paragraph(
             paragraph,
             action.location.match_start,
             action.location.match_end,
             action.location.matched_text,
         )
-        if not ok_pre:
+        if not precondition.ok:
             outcomes.append(
                 EditOutcome(
                     action=action,
                     status="skipped",
-                    detail=pre_detail,
+                    detail=precondition.detail,
                     original_text=paragraph_before,
                     new_text=None,
                 )
