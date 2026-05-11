@@ -65,6 +65,58 @@ def _is_retryable_connection_error(exc: Exception) -> bool:
     return any(pattern in msg for pattern in _RETRYABLE_EXCEPTION_PATTERNS)
 
 
+# Chunk L / plan section "Separate Findings From Edit Proposals":
+# ``REPORT_ONLY`` is the explicit "no edit proposal" action type. Findings
+# tagged this way are surfaced in the report but never produce edit
+# candidates, so coordination/code findings that have no clean textual
+# fix no longer have to manufacture replacement text just to satisfy a
+# schema slot. ``EDIT_ACTION_TYPES`` is the set of action types that
+# *do* carry a real edit proposal — every consumer that has to decide
+# "is this thing editable?" routes through this constant so adding a
+# new edit action is a one-line change.
+REPORT_ONLY_ACTION: str = "REPORT_ONLY"
+EDIT_ACTION_TYPES: frozenset[str] = frozenset({"ADD", "EDIT", "DELETE"})
+
+
+@dataclass
+class EditProposal:
+    """An optional, separate, high-confidence action derived from a finding.
+
+    Chunk L / plan section 5: the previous schema forced every finding into
+    an edit shape (action / existingText / replacementText / ...). Many
+    findings — coordination problems, constructability concerns, code
+    interpretation questions — have no clean textual fix, so the model was
+    asked to invent one. This class is the explicit "there is a direct
+    text edit" half of the split: a finding either carries one or it does
+    not.
+
+    Fields mirror the legacy shape so the migration path stays local:
+
+    * ``action_type``       — ``ADD`` / ``EDIT`` / ``DELETE``.
+    * ``existing_text``     — verbatim text to edit/delete (None for ADD).
+    * ``replacement_text``  — proposed replacement / new text.
+    * ``anchor_text``       — ADD only: nearby paragraph used to locate the
+      insertion point.
+    * ``insert_position``   — ADD only: ``"before"`` / ``"after"``.
+    * ``target_element_id`` — optional ``ParagraphMapping.element_id`` of
+      the paragraph / row / heading the proposal targets. Disambiguates
+      identical text in different sections and revalidates against the
+      live element at apply time.
+    * ``edit_confidence``   — 0.0-1.0 model confidence in the edit itself,
+      separate from the finding's overall confidence. Defaults to the
+      finding-level confidence when the schema does not surface a
+      proposal-specific value.
+    """
+
+    action_type: str
+    existing_text: str | None = None
+    replacement_text: str | None = None
+    anchor_text: str | None = None
+    insert_position: str | None = None
+    target_element_id: str | None = None
+    edit_confidence: float = 0.5
+
+
 @dataclass
 class Finding:
     severity: str
@@ -89,6 +141,45 @@ class Finding:
     # exact-text quote against the live element before applying any edit.
     # Empty string is the legacy fallback path (text-based matching).
     evidenceElementId: str | None = None
+    # Chunk L / plan section "Separate Findings From Edit Proposals":
+    # the optional structured edit half. Findings with no clean textual fix
+    # leave this None and set ``actionType = "REPORT_ONLY"`` (or leave the
+    # legacy fields blank). The locator and edit-candidate paths route
+    # through :meth:`as_edit_proposal` so they see the same value whether
+    # the proposal arrived from the new schema slot or was reconstructed
+    # from legacy fields at runtime.
+    edit_proposal: EditProposal | None = None
+
+    def as_edit_proposal(self) -> EditProposal | None:
+        """Return the structured edit proposal for this finding, if any.
+
+        Chunk L accessor. When ``edit_proposal`` is set, it is the
+        authoritative answer. Otherwise the legacy fields are inspected:
+        an actionType of ADD / EDIT / DELETE materializes an ``EditProposal``
+        on the fly so older callers (resume-state loads, ad-hoc test
+        Findings) keep working. Any other actionType — including the new
+        ``REPORT_ONLY`` sentinel and the empty/legacy "no opinion" case —
+        returns ``None`` so consumers can branch cleanly on
+        "does this finding have a proposal?".
+        """
+        if self.edit_proposal is not None:
+            return self.edit_proposal
+        action = (self.actionType or "").strip().upper()
+        if action not in EDIT_ACTION_TYPES:
+            return None
+        return EditProposal(
+            action_type=action,
+            existing_text=self.existingText,
+            replacement_text=self.replacementText,
+            anchor_text=self.anchorText,
+            insert_position=self.insertPosition,
+            target_element_id=self.evidenceElementId,
+            edit_confidence=self.confidence,
+        )
+
+    def has_edit_proposal(self) -> bool:
+        """Convenience predicate — True iff :meth:`as_edit_proposal` is non-None."""
+        return self.as_edit_proposal() is not None
 
 
 @dataclass
@@ -212,9 +303,17 @@ def _parse_findings(data: list) -> list[Finding]:
         sev = str(item.get("severity", "")).strip().upper()
         if sev not in {"CRITICAL", "HIGH", "MEDIUM", "GRIPES"}:
             continue
-        action = str(item.get("actionType", "EDIT")).strip().upper()
-        if action not in {"ADD", "EDIT", "DELETE"}:
-            action = "EDIT"
+        # Chunk L: actionType is no longer forced to "EDIT". A finding that
+        # has no clean textual fix can declare ``REPORT_ONLY`` (or leave the
+        # field blank, treated as REPORT_ONLY) and skip the edit slot
+        # entirely. Anything outside the EDIT/ADD/DELETE/REPORT_ONLY set
+        # is downgraded to REPORT_ONLY rather than silently coerced to EDIT,
+        # so a model that hallucinates an unknown action type no longer
+        # produces a phantom edit candidate.
+        action_raw = item.get("actionType")
+        action = str(action_raw).strip().upper() if action_raw is not None else ""
+        if action not in EDIT_ACTION_TYPES and action != REPORT_ONLY_ACTION:
+            action = REPORT_ONLY_ACTION
         issue = str(item.get("issue") or "").strip()
         if not issue:
             continue
@@ -238,19 +337,49 @@ def _parse_findings(data: list) -> list[Finding]:
             evidence_id = None
         else:
             evidence_id = str(evidence_raw).strip() or None
+        existing_text = (
+            str(item.get("existingText")) if item.get("existingText") is not None else None
+        )
+        replacement_text = (
+            str(item.get("replacementText"))
+            if item.get("replacementText") is not None
+            else None
+        )
+        # Chunk L: build the structured EditProposal alongside the legacy
+        # fields. When the action is REPORT_ONLY the proposal is None and
+        # we zero out the edit-shaped legacy fields so a stale quote from a
+        # model that filled them in anyway cannot accidentally produce an
+        # edit candidate downstream.
+        if action in EDIT_ACTION_TYPES:
+            proposal: EditProposal | None = EditProposal(
+                action_type=action,
+                existing_text=existing_text,
+                replacement_text=replacement_text,
+                anchor_text=anchor_text,
+                insert_position=position,
+                target_element_id=evidence_id,
+                edit_confidence=confidence,
+            )
+        else:
+            proposal = None
+            existing_text = None
+            replacement_text = None
+            anchor_text = None
+            position = None
         findings.append(Finding(
             severity=sev,
             fileName=str(item.get("fileName") or "").strip(),
             section=str(item.get("section") or "").strip(),
             issue=issue,
             actionType=action,
-            existingText=str(item.get("existingText")) if item.get("existingText") is not None else None,
-            replacementText=str(item.get("replacementText")) if item.get("replacementText") is not None else None,
+            existingText=existing_text,
+            replacementText=replacement_text,
             codeReference=str(item.get("codeReference")) if item.get("codeReference") is not None else None,
             confidence=confidence,
             anchorText=anchor_text,
             insertPosition=position,
             evidenceElementId=evidence_id,
+            edit_proposal=proposal,
         ))
     return findings
 

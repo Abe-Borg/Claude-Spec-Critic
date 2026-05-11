@@ -79,16 +79,25 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
         },
         "actionType": {
             "type": "string",
-            "enum": ["ADD", "EDIT", "DELETE"],
-            "description": "Whether the fix is to add, edit, or delete text.",
+            # Chunk L / plan section "Separate Findings From Edit Proposals":
+            # ``REPORT_ONLY`` is the explicit "this finding has no clean
+            # textual fix" choice. Models no longer have to manufacture a
+            # replacement quote for coordination / interpretation findings
+            # — they emit REPORT_ONLY and leave the edit-shaped slots null.
+            "enum": ["ADD", "EDIT", "DELETE", "REPORT_ONLY"],
+            "description": (
+                "Whether the fix is to add, edit, or delete text, or "
+                "REPORT_ONLY when no clean textual fix exists (coordination "
+                "or interpretation finding)."
+            ),
         },
         "existingText": {
             "type": ["string", "null"],
-            "description": "For EDIT/DELETE: the exact verbatim text in the spec. For ADD: nullable.",
+            "description": "For EDIT/DELETE: the exact verbatim text in the spec. For ADD/REPORT_ONLY: nullable.",
         },
         "replacementText": {
             "type": ["string", "null"],
-            "description": "Suggested replacement / new text. For DELETE: nullable.",
+            "description": "Suggested replacement / new text. For DELETE/REPORT_ONLY: nullable.",
         },
         "codeReference": {
             "type": ["string", "null"],

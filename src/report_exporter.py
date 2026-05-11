@@ -531,27 +531,50 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         para.add_run(finding.issue or "")
         para.paragraph_format.space_after = Pt(3)
 
-    # --- Action type ---
-    para = doc.add_paragraph()
-    para.add_run("Action: ").bold = True
-    para.add_run(finding.actionType or "")
-    para.paragraph_format.space_after = Pt(3)
-
-    # --- Existing text (red) ---
-    if finding.existingText:
+    # --- Action / edit-proposal block ---
+    # Chunk L / plan section "Separate Findings From Edit Proposals":
+    # the report now distinguishes findings that carry an edit proposal
+    # from ones that don't. REPORT_ONLY findings render an explicit
+    # "No edit proposal — surfaced for review only" line so readers see
+    # the finding without expecting an edit; findings with a proposal
+    # keep the original Action / Existing / Replace With layout.
+    proposal = finding.as_edit_proposal()
+    if proposal is None:
         para = doc.add_paragraph()
-        para.add_run("Existing Text: ").bold = True
-        run = para.add_run(finding.existingText)
-        run.font.color.rgb = RGBColor(192, 0, 0)
+        run = para.add_run("Action: REPORT_ONLY")
+        run.bold = True
         para.paragraph_format.space_after = Pt(3)
 
-    # --- Replacement text (green) ---
-    if finding.replacementText:
+        note_para = doc.add_paragraph()
+        note_run = note_para.add_run(
+            "No edit proposal — surfaced for review only (coordination, "
+            "interpretation, or multi-paragraph rewrite required)."
+        )
+        note_run.font.italic = True
+        note_run.font.size = Pt(10)
+        note_run.font.color.rgb = RGBColor(100, 100, 100)
+        note_para.paragraph_format.space_after = Pt(3)
+    else:
         para = doc.add_paragraph()
-        para.add_run("Replace With: ").bold = True
-        run = para.add_run(finding.replacementText)
-        run.font.color.rgb = RGBColor(0, 128, 0)
+        para.add_run("Action: ").bold = True
+        para.add_run(proposal.action_type or "")
         para.paragraph_format.space_after = Pt(3)
+
+        # --- Existing text (red) ---
+        if proposal.existing_text:
+            para = doc.add_paragraph()
+            para.add_run("Existing Text: ").bold = True
+            run = para.add_run(proposal.existing_text)
+            run.font.color.rgb = RGBColor(192, 0, 0)
+            para.paragraph_format.space_after = Pt(3)
+
+        # --- Replacement text (green) ---
+        if proposal.replacement_text:
+            para = doc.add_paragraph()
+            para.add_run("Replace With: ").bold = True
+            run = para.add_run(proposal.replacement_text)
+            run.font.color.rgb = RGBColor(0, 128, 0)
+            para.paragraph_format.space_after = Pt(3)
 
     # --- Code reference (blue) ---
     if verbose and finding.codeReference:

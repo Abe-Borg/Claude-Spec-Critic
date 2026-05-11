@@ -280,6 +280,13 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
         group.sort(key=lambda f: (rank.get(f.severity, 99), -f.confidence))
         rep = group[0]
         files = list(dict.fromkeys([f.fileName for f in group if f.fileName]))
+        # Chunk L: carry the representative's edit_proposal (or legacy
+        # equivalent) onto the merged finding so REPORT_ONLY findings stay
+        # REPORT_ONLY after dedupe and so the locator/edit pipeline does
+        # not see a freshly-constructed Finding that lost its proposal
+        # half. ``as_edit_proposal()`` reconstructs from legacy fields
+        # when the representative was loaded from an older resume state.
+        merged_proposal = rep.as_edit_proposal()
         out.append(Finding(
             severity=rep.severity,
             fileName=files[0] if files else rep.fileName,
@@ -291,6 +298,10 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             codeReference=rep.codeReference,
             confidence=max(f.confidence for f in group),
             affected_files=files,
+            anchorText=rep.anchorText,
+            insertPosition=rep.insertPosition,
+            evidenceElementId=rep.evidenceElementId,
+            edit_proposal=merged_proposal,
         ))
     return out
 

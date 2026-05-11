@@ -161,16 +161,22 @@ def _classify_locator_safety(
 
 
 def _resolve_replacement_text(finding: Finding) -> str | None:
+    # Chunk L: pull replacement text off the edit proposal (when present)
+    # rather than the legacy field, so a REPORT_ONLY finding cannot
+    # accidentally surface a stale quote left in ``finding.replacementText``
+    # by an earlier code path.
+    proposal = finding.as_edit_proposal()
+    base_replacement = proposal.replacement_text if proposal is not None else None
     verification = finding.verification
     if verification is None:
-        return finding.replacementText
+        return base_replacement
     if verification.verdict == "CORRECTED" and verification.correction:
         return verification.correction
     if verification.verdict in ("CONFIRMED", "UNVERIFIED"):
-        return finding.replacementText
+        return base_replacement
     if verification.verdict == "DISPUTED":
         return None
-    return finding.replacementText
+    return base_replacement
 
 
 def _normalize_text(text: str) -> str:
@@ -569,14 +575,35 @@ def locate_edit(
     *,
     min_confidence: float = 0.60,
 ) -> LocatorResult:
+    # Chunk L / plan section "Separate Findings From Edit Proposals":
+    # findings without an edit proposal short-circuit here. REPORT_ONLY
+    # and other non-edit findings get a clear ``status="not_found"`` /
+    # ``safety_category=REPORT_ONLY`` result instead of falling through
+    # the locator and producing fuzzy not-found warnings rooted in the
+    # legacy ``finding.actionType="EDIT"`` default.
+    proposal = finding.as_edit_proposal()
+    if proposal is None:
+        return LocatorResult(
+            finding=finding,
+            status="not_found",
+            locations=[],
+            replacement_text=None,
+            action_type=(finding.actionType or "").upper(),
+            warning=(
+                "Finding has no edit proposal (REPORT_ONLY); locator returns "
+                "no target. The finding still appears in the report."
+            ),
+            safety_category=SAFETY_REPORT_ONLY,
+        )
+
     replacement = _resolve_replacement_text(finding)
-    action_type = (finding.actionType or "").upper()
-    existing_text = (finding.existingText or "").strip()
+    action_type = proposal.action_type.upper()
+    existing_text = (proposal.existing_text or "").strip()
 
     # ADD actions may rely on an explicit anchorText (audit Issue 5). If
     # provided, locate the anchor paragraph using the same matchers as EDIT.
     if action_type == "ADD":
-        anchor_candidate = (getattr(finding, "anchorText", None) or "").strip()
+        anchor_candidate = (proposal.anchor_text or "").strip()
         if anchor_candidate:
             existing_text = anchor_candidate
 
