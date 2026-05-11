@@ -15,6 +15,15 @@ not a cache.
 
 Only ``grounded=True`` results are stored, preserving the existing safety
 guarantee that cached verdicts are always backed by external evidence.
+
+The verifier model is intentionally omitted from the cache key. Cache entries
+represent grounded verdict semantics for a finding/cycle/action/claim, not the
+particular model that produced the verdict. ``model_used`` is still persisted
+as entry provenance for reports and future maintenance tools, but changing
+``SPEC_CRITIC_VERIFICATION_MODEL`` or ``SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL``
+does not invalidate existing hits; clear the cache file (see
+``default_cache_path``) or set ``SPEC_CRITIC_CACHE_PATH`` to a fresh file to
+force re-verification with a new model policy.
 """
 from __future__ import annotations
 
@@ -71,7 +80,17 @@ def _claim_summary(finding) -> str:
 
 
 def make_cache_key(finding, *, cycle: CodeCycle) -> str:
-    """Build a stable cache key for a finding under a given code cycle."""
+    """Build a stable cache key for a finding under a given code cycle.
+
+    The key includes the normalized cycle label, action type, code reference,
+    and a digest of the finding claim summary. It intentionally does *not*
+    include the verifier model: the cache is keyed by the grounded verification
+    question and code-cycle semantics, while ``VerificationResult.model_used``
+    is stored only as provenance. Changing verifier models therefore reuses
+    compatible grounded cache entries; delete ``default_cache_path()`` (or point
+    ``SPEC_CRITIC_CACHE_PATH`` at a new file) when a fresh model pass is
+    required.
+    """
     code_ref = _normalize(getattr(finding, "codeReference", "")) or "_no_ref"
     action = _normalize(getattr(finding, "actionType", "")) or "_no_action"
     cycle_label = _normalize(getattr(cycle, "label", "")) or "_no_cycle"
