@@ -40,6 +40,10 @@ def load_batch_state():
 
 def delete_batch_state():
     return _batch_state_store.delete_batch_state()
+
+
+def batch_state_nearing_expiry(created_at):
+    return _batch_state_store.batch_state_nearing_expiry(created_at)
 from .code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
 from .pipeline import (
     BatchSubmission,
@@ -426,10 +430,13 @@ def check_pending_batch(app) -> None:
     submission = loaded["submission"]
     phase = loaded.get("phase", PHASE_REVIEW_POLL)
     age_str = format_batch_age(submission.job.created_at)
+    # Chunk 1: warn before the local 28-day cutoff so the user can resume
+    # while the Anthropic result-download window is still open.
+    nearing_expiry = batch_state_nearing_expiry(submission.job.created_at)
 
     dialog = ctk.CTkToplevel(app)
     dialog.title("Pending Batch Found")
-    dialog.geometry("480x220")
+    dialog.geometry("480x260" if nearing_expiry else "480x220")
     dialog.configure(fg_color=COLORS["bg_dark"])
     dialog.resizable(False, False)
     dialog.transient(app)
@@ -455,6 +462,21 @@ def check_pending_batch(app) -> None:
         inner, text=info_text, font=ctk.CTkFont(family="Consolas", size=11),
         text_color=COLORS["text_secondary"], justify="left",
     ).pack(anchor="w", padx=16, pady=(0, 12))
+
+    if nearing_expiry:
+        ctk.CTkLabel(
+            inner,
+            text=(
+                "Heads up: this batch was submitted more than 25 days ago. "
+                "Results expire on the Anthropic side around day 29; "
+                "Spec Critic will drop this saved state at day 28. "
+                "Resume soon or discard."
+            ),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=COLORS["warning"],
+            wraplength=440,
+            justify="left",
+        ).pack(anchor="w", padx=16, pady=(0, 12))
 
     btn_frame = ctk.CTkFrame(inner, fg_color="transparent")
     btn_frame.pack(fill="x", padx=16, pady=(0, 16))
