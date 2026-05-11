@@ -331,14 +331,22 @@ def _build_verification_request_params(
     severity: str | None = None,
     profile: Any = None,
 ) -> dict[str, Any]:
+    # Chunk 4: this helper is now a legacy entry point. The production
+    # batch path (``submit_verification_batch``) routes through
+    # :func:`src.verification_routing.build_verification_request` so
+    # the shared routing decision (model, mode, thinking, search budget,
+    # tool inclusion) governs both batch and real-time. This function
+    # is preserved as a thin legacy adapter so tests that build a
+    # verification request from ``(severity, profile)`` rather than
+    # from a Finding still produce the pre-Chunk-4 (profile-only,
+    # mode-unaware) request shape. New callers should use
+    # :func:`src.verification_routing.build_verification_request`.
+    #
     # Chunk D1.1: this helper builds either the initial verification
     # request (no assistant_content) or a pause_turn resumption request
     # (assistant_content carries the prior assistant blocks). Server-tool
     # pause_turn is resumed by re-sending the assistant content as-is;
-    # no synthetic ``"continue"`` user turn is appended. The actual
-    # production continuation path lives in
-    # :func:`verifier._build_continuation_request` and routes through
-    # the same no-synthetic-user-turn shape.
+    # no synthetic ``"continue"`` user turn is appended.
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     if assistant_content is not None:
         messages.append({"role": "assistant", "content": assistant_content})
@@ -395,36 +403,50 @@ def submit_verification_batch(
     client = _get_client()
     reqs = []
     request_map = {}
-    # Chunk H: classify each finding once up front so the initial batch
-    # request inherits the same profile-aware web_search budget as the
-    # real-time path. The profile string also goes into ``request_map``
-    # so the wave loop can thread it into retry / continuation requests
-    # without re-classifying.
-    from .verification_profiles import classify_finding_profile  # local import
-    # to keep the public top-level surface of this module unchanged.
+    # Chunk 4: route every finding through the same selector and
+    # request builder as the real-time path. ``select_routing`` reads
+    # severity / profile / mode / model / thinking / search budget /
+    # tool inclusion in one place; ``build_verification_request``
+    # consumes the decision to produce the exact same request shape
+    # the streaming path uses. This removes the pre-Chunk-4 drift
+    # where the batch initial pass applied ``thinking`` unconditionally
+    # and used the profile-only ``max_uses`` ceiling regardless of
+    # mode (a GRIPES finding routed through batch got the full
+    # STANDARD_REASONING bundle even though real-time would have
+    # given it STRICT_STRUCTURED).
+    from .verification_routing import (
+        build_verification_request,
+        select_routing,
+    )
 
     for batch_idx, (finding_idx, finding) in enumerate(verifiable):
         custom_id = f"verify__{batch_idx}"
-        severity = (finding.severity or "").strip().upper() or "GRIPES"
-        finding_profile = classify_finding_profile(finding).value
-        reqs.append(
-            {
-                "custom_id": custom_id,
-                "params": _build_verification_request_params(
-                    prompt=build_prompt_fn(finding),
-                    system_prompt=system_prompt_fn(cycle),
-                    model=model,
-                    severity=severity,
-                    profile=finding_profile,
-                ),
-            }
+        decision = select_routing(
+            finding,
+            escalated=False,
+            local_skip=False,
+            model_override=model,
+            cache_phase=PHASE_VERIFICATION,
         )
+        params = build_verification_request(
+            decision,
+            prompt=build_prompt_fn(finding),
+            system_prompt=system_prompt_fn(cycle),
+            assistant_content=None,
+            include_service_tier=True,
+        )
+        reqs.append({"custom_id": custom_id, "params": params})
         request_map[custom_id] = {
             "batch_idx": batch_idx,
             "finding_idx": finding_idx,
-            "model": model or VERIFICATION_MODEL,
-            "severity": severity,
-            "profile": finding_profile,
+            "model": decision.model,
+            "severity": decision.severity,
+            "profile": decision.profile.value,
+            # Chunk 4: stash the full routing decision so the wave
+            # parser can stamp the result with the actual policy that
+            # produced this request (rather than re-deriving the mode
+            # from the finding alone).
+            "routing": decision.to_dict(),
         }
 
     # Verification output is capped at 32k, well within both Sonnet and Opus
