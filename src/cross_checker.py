@@ -35,6 +35,7 @@ from .api_config import (
     extract_cache_usage,
     synthesis_max_tokens,
     system_prompt_with_cache,
+    tools_with_cache,
 )
 from .structured_schemas import (
     CROSS_CHECK_TOOL_NAME,
@@ -179,7 +180,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     start = time.time()
     result = ReviewResult(model=model)
     output_limit = cross_check_max_tokens(model=model)
-    system_payload = system_prompt_with_cache(system_prompt)
+    system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_CROSS_CHECK)
     use_structured = structured_outputs_enabled()
     request_kwargs: dict = {
         "model": model,
@@ -189,7 +190,13 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     }
     apply_thinking_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
     if use_structured:
-        request_kwargs["tools"] = [cross_check_findings_tool()]
+        # Chunk J: cross-check tools cache under the cross_check phase
+        # policy. Today this is the global default (cache=on, ttl=1h);
+        # routing through ``tools_with_cache`` keeps the policy in one
+        # place if a future tuning pass diverges.
+        request_kwargs["tools"] = tools_with_cache(
+            [cross_check_findings_tool()], phase=PHASE_CROSS_CHECK
+        )
         request_kwargs["tool_choice"] = cross_check_tool_choice()
 
     for attempt in range(max_retries):
@@ -507,10 +514,14 @@ def _run_cross_discipline_synthesis(
     user_message = _build_cross_discipline_synthesis_input(chunk_results)
     output_limit = synthesis_max_tokens(model=selected_model)
 
+    # Chunk J: synthesis is one-off per run with a ~425-token system
+    # prompt, well below the cache minimum on every supported model.
+    # The PHASE_SYNTHESIS policy disables caching so the cache-write
+    # round-trip is not paid for nothing.
     request_kwargs: dict = {
         "model": selected_model,
         "max_tokens": output_limit,
-        "system": system_prompt_with_cache(system_prompt),
+        "system": system_prompt_with_cache(system_prompt, phase=PHASE_SYNTHESIS),
         "messages": [{"role": "user", "content": user_message}],
     }
     # Synthesis defaults to Haiku 4.5, which does not support adaptive
@@ -519,7 +530,9 @@ def _run_cross_discipline_synthesis(
     # synthesis model to Opus/Sonnet, thinking is added automatically.
     apply_thinking_config(request_kwargs, model=selected_model, phase=PHASE_SYNTHESIS)
     if structured_outputs_enabled():
-        request_kwargs["tools"] = [cross_check_findings_tool()]
+        request_kwargs["tools"] = tools_with_cache(
+            [cross_check_findings_tool()], phase=PHASE_SYNTHESIS
+        )
         request_kwargs["tool_choice"] = cross_check_tool_choice()
 
     try:

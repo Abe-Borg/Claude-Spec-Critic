@@ -90,7 +90,11 @@ def submit_review_batch(
         raise ValueError("No specs to submit for batch review")
     client = _get_client()
     system_prompt = get_system_prompt(cycle, mode=mode)
-    system_payload = system_prompt_with_cache(system_prompt)
+    # Chunk J: phase-aware cache policy. Batch review reuses the same
+    # system prompt and tool list across every spec in the batch, which
+    # is the highest-payoff caching context the app has. Routing the
+    # phase through here keeps the policy in one place.
+    system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_BATCH_REVIEW)
     # The 300k extended-output beta is only useful for genuinely large reviews.
     # Earlier versions enabled it by model identity alone, which meant every
     # batch request asked for 300k output regardless of input size — bypassing
@@ -99,7 +103,11 @@ def submit_review_batch(
     model_supports_extended = model in OPUS_MODELS
     system_tokens = count_tokens(system_prompt)
     use_structured = structured_outputs_enabled()
-    structured_tools = tools_with_cache([review_findings_tool()]) if use_structured else None
+    structured_tools = (
+        tools_with_cache([review_findings_tool()], phase=PHASE_BATCH_REVIEW)
+        if use_structured
+        else None
+    )
     structured_choice = review_tool_choice() if use_structured else None
     batch_requests = []
     request_map = {}
@@ -364,11 +372,15 @@ def _build_verification_request_params(
         tool_list = build_verification_tools_for_profile(profile, severity)
     else:
         tool_list = build_verification_tools(severity)
+    # Chunk J: PHASE_VERIFICATION cache policy applies to both the
+    # initial wave and the retry/continuation builders below. All three
+    # share the same system prompt and tool list across the wave, which
+    # is exactly the prefix-reuse pattern caching is designed for.
     params: dict[str, Any] = {
         "model": selected_model,
         "max_tokens": verification_max_tokens(model=selected_model),
-        "system": system_prompt_with_cache(system_prompt),
-        "tools": tools_with_cache(tool_list),
+        "system": system_prompt_with_cache(system_prompt, phase=PHASE_VERIFICATION),
+        "tools": tools_with_cache(tool_list, phase=PHASE_VERIFICATION),
         "messages": messages,
     }
     apply_thinking_config(params, model=selected_model, phase=PHASE_VERIFICATION)

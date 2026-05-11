@@ -375,15 +375,123 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Prompt caching
+# Prompt caching (Chunk J: centralized phase-aware policy)
 # ---------------------------------------------------------------------------
+#
+# Background: prior to Chunk J every call site decided independently to wrap
+# its system prompt and tool list through ``system_prompt_with_cache`` /
+# ``tools_with_cache``. The helpers themselves had a single global on/off and
+# a single TTL, so triage (375-token system prompt) and synthesis (425-token
+# system prompt, called once per run) paid the cache-write overhead even
+# though both prompts are below the Anthropic 1024-token cache minimum and
+# could never produce a hit.
+#
+# Chunk J directives 2–5 ask for the policy to be centralized and phase-aware
+# instead. Each phase declares whether its system prompt and tool list are
+# stable / large / repeated enough to benefit from caching. The defaults
+# below preserve current behavior for the high-value phases (review, batch
+# review, cross-check, verification + retry/continuation) and disable
+# caching for the two phases the directives explicitly call out as
+# inappropriate (synthesis = one-off, triage = small prompt).
+#
+# Operators can override individual phases via ``SPEC_CRITIC_CACHE_DISABLE``
+# without rebuilding the helpers — see :func:`_phase_disabled_via_env`.
+
 
 def prompt_caching_enabled() -> bool:
     """Whether to attach cache_control breakpoints to stable prompt prefixes."""
     return os.environ.get("SPEC_CRITIC_PROMPT_CACHE", "1") != "0"
 
 
-def _cache_control_block() -> dict:
+@dataclass(frozen=True)
+class CachePolicy:
+    """Per-phase cache policy.
+
+    ``cache_system`` and ``cache_tools`` independently control whether the
+    system prompt and the trailing tool block carry ``cache_control``
+    breakpoints. ``ttl`` is the desired cache TTL (``"5m"`` or ``"1h"``);
+    ``None`` defers to the global ``SPEC_CRITIC_PROMPT_CACHE_TTL`` setting,
+    which preserves the pre-Chunk-J default (``"1h"``).
+    """
+
+    cache_system: bool
+    cache_tools: bool
+    ttl: str | None = None
+
+    @property
+    def caches_anything(self) -> bool:
+        return self.cache_system or self.cache_tools
+
+
+# Default per-phase policies. The directive-driven rationale for each entry
+# is documented inline so future tuning has the reasoning in one place.
+_DEFAULT_PHASE_CACHE_POLICY = CachePolicy(cache_system=True, cache_tools=True, ttl=None)
+
+_PHASE_CACHE_POLICY: dict[str, CachePolicy] = {
+    # Real-time review: same review system prompt is reused across every
+    # spec in a multi-file selection, and the structured tool schema is
+    # stable. Worth caching at the 1h TTL because a typical project review
+    # touches 5–20 specs over several minutes.
+    PHASE_REVIEW: CachePolicy(cache_system=True, cache_tools=True, ttl=None),
+    # Batch review: dozens of identical system+tools prefixes go out in one
+    # shot. Anthropic explicitly documents that batch cache hits are
+    # best-effort but stack with batch pricing — directive 2 says "Main
+    # batch review likely yes."
+    PHASE_BATCH_REVIEW: CachePolicy(cache_system=True, cache_tools=True, ttl=None),
+    # Cross-check: only one or two calls per run when the input fits, but
+    # the chunked path can fire 5+ calls with the same system prompt.
+    PHASE_CROSS_CHECK: CachePolicy(cache_system=True, cache_tools=True, ttl=None),
+    # Synthesis: single one-off call per run, ~425-token system prompt.
+    # Below the 1024-token cache minimum for Sonnet/Opus and the 2048-
+    # token minimum for Haiku, so a cache write would be paid for nothing.
+    # Directive 5: "Avoid caching tiny, one-off prompts."
+    PHASE_SYNTHESIS: CachePolicy(cache_system=False, cache_tools=False, ttl=None),
+    # Verification: the system prompt and tool list are large and
+    # genuinely reused across waves. Directive 2: "Verification waves
+    # likely yes if prefixes/tools are reused."
+    PHASE_VERIFICATION: CachePolicy(cache_system=True, cache_tools=True, ttl=None),
+    PHASE_VERIFICATION_RETRY: CachePolicy(cache_system=True, cache_tools=True, ttl=None),
+    PHASE_VERIFICATION_CONTINUATION: CachePolicy(cache_system=True, cache_tools=True, ttl=None),
+    # Triage: ~375-token system prompt called in batches of up to 20.
+    # Below the cache minimum for Haiku (2048 tokens) so even repeated
+    # calls cannot hit. Directive 2: "Short triage likely no unless
+    # measurements justify it."
+    PHASE_TRIAGE: CachePolicy(cache_system=False, cache_tools=False, ttl=None),
+}
+
+
+def _phase_disabled_via_env(phase: str) -> bool:
+    """Whether ``SPEC_CRITIC_CACHE_DISABLE`` opts ``phase`` out of caching.
+
+    ``SPEC_CRITIC_CACHE_DISABLE`` is a comma-separated list of phase names.
+    Lets operators turn off caching for individual phases without flipping
+    the global ``SPEC_CRITIC_PROMPT_CACHE`` switch — useful when a particular
+    phase is misbehaving but the rest of the pipeline still benefits from
+    caching. Whitespace and case are ignored.
+    """
+    raw = os.environ.get("SPEC_CRITIC_CACHE_DISABLE", "").strip()
+    if not raw:
+        return False
+    disabled = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return phase.lower() in disabled
+
+
+def cache_policy_for(phase: str | None) -> CachePolicy:
+    """Return the per-phase :class:`CachePolicy`.
+
+    Unknown phases fall back to the conservative default (cache both system
+    prompt and tools at the global TTL). ``phase=None`` also returns the
+    default — used by callers that have not yet been migrated to phase-
+    aware caching.
+    """
+    if phase is not None and _phase_disabled_via_env(phase):
+        return CachePolicy(cache_system=False, cache_tools=False, ttl=None)
+    if phase is None:
+        return _DEFAULT_PHASE_CACHE_POLICY
+    return _PHASE_CACHE_POLICY.get(phase, _DEFAULT_PHASE_CACHE_POLICY)
+
+
+def _cache_control_block(*, ttl_override: str | None = None) -> dict:
     """Return the standard cache_control block.
 
     Spec Critic batch + verification waves run for 30 minutes to several hours,
@@ -391,38 +499,50 @@ def _cache_control_block() -> dict:
     costs 2x the cache write but typically pays back inside the second wave
     of a batch verification cycle, where the same system prompt is sent
     hundreds of times. Set ``SPEC_CRITIC_PROMPT_CACHE_TTL=5m`` to revert.
+
+    ``ttl_override`` lets the per-phase policy pick a different TTL than the
+    global default (currently unused — every phase inherits the global TTL —
+    but the lever exists for future tuning).
     """
-    ttl = os.environ.get("SPEC_CRITIC_PROMPT_CACHE_TTL", "1h").strip().lower()
+    ttl = (ttl_override or os.environ.get("SPEC_CRITIC_PROMPT_CACHE_TTL", "1h")).strip().lower()
     if ttl == "5m":
         return {"type": "ephemeral"}
     return {"type": "ephemeral", "ttl": "1h"}
 
 
-def system_prompt_with_cache(prompt: str):
+def system_prompt_with_cache(prompt: str, *, phase: str | None = None):
     """Return a system payload with a cache breakpoint when enabled.
 
-    When caching is enabled, returns a one-element list of TextBlockParam
-    dicts with cache_control set. When disabled, returns the original string
-    so the API call shape is unchanged.
+    When caching is enabled and the phase policy permits, returns a
+    one-element list of TextBlockParam dicts with cache_control set. When
+    disabled (globally, by phase policy, or by ``SPEC_CRITIC_CACHE_DISABLE``),
+    returns the original string so the API call shape is unchanged.
 
-    This is the primary mechanism for caching identical review/cross-check
-    /verification system prompts across many requests in a batch. Per the
-    Anthropic prompt-caching docs, including the same cache_control blocks
-    in every request in a batch lets later items hit the cache created by
-    earlier items.
+    ``phase`` selects the per-phase policy (Chunk J directive 3). Callers
+    that do not yet pass ``phase`` get the legacy default behavior, which
+    caches when the global flag is on. Migrating a call site is purely
+    additive — supplying ``phase`` lets the central registry decide whether
+    caching actually pays off for that phase.
+
+    Per the Anthropic prompt-caching docs, including the same cache_control
+    blocks in every request in a batch lets later items hit the cache
+    created by earlier items.
     """
     if not prompt_caching_enabled():
+        return prompt
+    policy = cache_policy_for(phase)
+    if not policy.cache_system:
         return prompt
     return [
         {
             "type": "text",
             "text": prompt,
-            "cache_control": _cache_control_block(),
+            "cache_control": _cache_control_block(ttl_override=policy.ttl),
         }
     ]
 
 
-def tools_with_cache(tools: list[dict]) -> list[dict]:
+def tools_with_cache(tools: list[dict], *, phase: str | None = None) -> list[dict]:
     """Attach a cache breakpoint to the last tool definition.
 
     Tool schemas are stable across verification calls. Caching the trailing
@@ -430,11 +550,18 @@ def tools_with_cache(tools: list[dict]) -> list[dict]:
     share one cache prefix. The system prompt has its own breakpoint via
     :func:`system_prompt_with_cache`, so changing only a tool definition
     invalidates only the tools-level cache entry.
+
+    ``phase`` selects the per-phase policy. When the policy disables tool
+    caching for the phase (e.g. triage / synthesis where the prompt is
+    below the cache minimum), the tool list is returned unchanged.
     """
     if not prompt_caching_enabled() or not tools:
         return tools
+    policy = cache_policy_for(phase)
+    if not policy.cache_tools:
+        return tools
     last = dict(tools[-1])
-    last["cache_control"] = _cache_control_block()
+    last["cache_control"] = _cache_control_block(ttl_override=policy.ttl)
     return [*tools[:-1], last]
 
 

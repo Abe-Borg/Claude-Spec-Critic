@@ -93,6 +93,57 @@ class DiagnosticsReport:
         self.edits_skipped_total += int(skipped)
         self.edits_failed_total += int(failed)
 
+    def record_api_call(
+        self,
+        *,
+        phase: str,
+        model: str = "",
+        message: str = "",
+        level: str = "info",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_creation_input_tokens: int = 0,
+        cache_read_input_tokens: int = 0,
+        web_search_requests: int = 0,
+        max_output_tokens: int = 0,
+        stop_reason: str | None = None,
+        mode: str | None = None,           # "realtime" | "batch"
+        retry_status: str | None = None,   # "initial" | "retry" | "continuation"
+        extra: dict | None = None,
+    ) -> None:
+        """Record a single Anthropic API call with normalized telemetry data.
+
+        Chunk J directive 6: every Anthropic call should record phase / model
+        / token usage / cache usage / web-search count / batch-vs-realtime /
+        retry-status under one consistent key set so the per-phase rollup in
+        :meth:`summary` can answer "which phases cost the most?" and
+        "which phases get cache hits?" without each call site re-inventing
+        the data shape.
+
+        ``extra`` is merged in last and can carry call-specific fields
+        (severity counts, verification_mode, etc.) without overriding any of
+        the standard telemetry keys.
+        """
+        data: dict = {
+            "model": model,
+            "input_tokens": int(input_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+            "cache_creation_input_tokens": int(cache_creation_input_tokens or 0),
+            "cache_read_input_tokens": int(cache_read_input_tokens or 0),
+            "web_search_requests": int(web_search_requests or 0),
+            "max_output_tokens": int(max_output_tokens or 0),
+            "stop_reason": stop_reason,
+            "api_call": True,
+        }
+        if mode is not None:
+            data["call_mode"] = mode
+        if retry_status is not None:
+            data["retry_status"] = retry_status
+        if extra:
+            for k, v in extra.items():
+                data.setdefault(k, v)
+        self.log(phase, level, message or f"API call ({phase})", data)
+
     def finish(self) -> None:
         if self.ended_at is None:
             self.ended_at = time.time()
@@ -128,6 +179,7 @@ class DiagnosticsReport:
         total_output_tokens = 0
         total_cache_creation_tokens = 0
         total_cache_read_tokens = 0
+        total_web_search_requests = 0
         # Phase 9 plan 13.4: output-size and search-budget telemetry. We track
         # the maximum output observed per phase, the count of truncated calls
         # (stop_reason != end_turn), and aggregate search budget consumption
@@ -137,27 +189,94 @@ class DiagnosticsReport:
         truncated_calls = 0
         truncated_phases: dict[str, int] = {}
         max_output_cap_observed = 0
+        # Chunk J directive 7: per-phase rollup so the summary can answer
+        # "which phases cost the most?" / "which phases get cache hits?" /
+        # "how many retries/continuations occurred?" / "which phases were
+        # batch vs real-time?" without re-walking events. Each phase entry
+        # accumulates calls, tokens, cache usage, search requests, and
+        # retry/continuation/realtime/batch counts as the loop runs.
+        def _new_phase_bucket() -> dict:
+            return {
+                "calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "web_search_requests": 0,
+                "models": [],          # ordered, deduped
+                "retries": 0,
+                "continuations": 0,
+                "realtime_calls": 0,
+                "batch_calls": 0,
+                "truncated_calls": 0,
+            }
+        phase_telemetry: dict[str, dict] = {}
         for e in self.events:
             if not e.data:
                 continue
             in_tok = int(e.data.get("input_tokens", 0) or 0)
             out_tok = int(e.data.get("output_tokens", 0) or 0)
+            cache_create = int(e.data.get("cache_creation_input_tokens", 0) or 0)
+            cache_read = int(e.data.get("cache_read_input_tokens", 0) or 0)
+            search_count = int(e.data.get("web_search_requests", 0) or 0)
             total_input_tokens += in_tok
             total_output_tokens += out_tok
-            total_cache_creation_tokens += int(e.data.get("cache_creation_input_tokens", 0) or 0)
-            total_cache_read_tokens += int(e.data.get("cache_read_input_tokens", 0) or 0)
+            total_cache_creation_tokens += cache_create
+            total_cache_read_tokens += cache_read
+            total_web_search_requests += search_count
             if out_tok > 0:
                 output_samples.append(out_tok)
                 phase_max = output_max_by_phase.get(e.phase, 0)
                 if out_tok > phase_max:
                     output_max_by_phase[e.phase] = out_tok
             stop_reason = e.data.get("stop_reason")
-            if stop_reason and stop_reason not in ("end_turn", "tool_use", None):
+            is_truncated = bool(
+                stop_reason and stop_reason not in ("end_turn", "tool_use", None)
+            )
+            if is_truncated:
                 truncated_calls += 1
                 truncated_phases[e.phase] = truncated_phases.get(e.phase, 0) + 1
             cap = int(e.data.get("max_output_tokens", 0) or 0)
             if cap > max_output_cap_observed:
                 max_output_cap_observed = cap
+
+            # Per-phase rollup. Only events that look like API calls (have
+            # any of the token/search/api_call markers) contribute to the
+            # phase ``calls`` counter so phase-tagged informational logs do
+            # not inflate the count.
+            looks_like_api_call = bool(
+                e.data.get("api_call")
+                or in_tok
+                or out_tok
+                or cache_create
+                or cache_read
+                or search_count
+                or e.data.get("model")
+            )
+            if not looks_like_api_call:
+                continue
+            bucket = phase_telemetry.setdefault(e.phase, _new_phase_bucket())
+            bucket["calls"] += 1
+            bucket["input_tokens"] += in_tok
+            bucket["output_tokens"] += out_tok
+            bucket["cache_creation_input_tokens"] += cache_create
+            bucket["cache_read_input_tokens"] += cache_read
+            bucket["web_search_requests"] += search_count
+            model = str(e.data.get("model") or "").strip()
+            if model and model not in bucket["models"]:
+                bucket["models"].append(model)
+            retry_status = str(e.data.get("retry_status") or "").lower()
+            if retry_status == "retry":
+                bucket["retries"] += 1
+            elif retry_status == "continuation":
+                bucket["continuations"] += 1
+            call_mode = str(e.data.get("call_mode") or "").lower()
+            if call_mode == "realtime":
+                bucket["realtime_calls"] += 1
+            elif call_mode == "batch":
+                bucket["batch_calls"] += 1
+            if is_truncated:
+                bucket["truncated_calls"] += 1
 
         # Verification verdict breakdown + Phase 3 evidence telemetry
         verdicts: dict[str, int] = {}
@@ -263,6 +382,28 @@ class DiagnosticsReport:
                 for sev, cnt in e.data["severity_counts"].items():
                     severities[sev] = severities.get(sev, 0) + cnt
 
+        # Chunk J directive 7: derive per-phase ``cache_hit_ratio`` and a
+        # cross-phase rollup so a glance at the summary tells you whether
+        # caching is actually paying off. Ratio is reads / (reads + creates),
+        # the same shape Anthropic recommends for prompt-cache effectiveness.
+        for bucket in phase_telemetry.values():
+            denom = bucket["cache_creation_input_tokens"] + bucket["cache_read_input_tokens"]
+            bucket["cache_hit_ratio"] = (
+                round(bucket["cache_read_input_tokens"] / denom, 4) if denom else 0.0
+            )
+        cache_total = total_cache_creation_tokens + total_cache_read_tokens
+        cost_summary = {
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "total_cache_creation_input_tokens": total_cache_creation_tokens,
+            "total_cache_read_input_tokens": total_cache_read_tokens,
+            "total_web_search_requests": total_web_search_requests,
+            "cache_hit_ratio": (
+                round(total_cache_read_tokens / cache_total, 4) if cache_total else 0.0
+            ),
+            "phases": dict(phase_telemetry),
+        }
+
         return {
             "run_id": self.run_id,
             "mode": self.mode,
@@ -279,6 +420,7 @@ class DiagnosticsReport:
             "total_output_tokens": total_output_tokens,
             "total_cache_creation_input_tokens": total_cache_creation_tokens,
             "total_cache_read_input_tokens": total_cache_read_tokens,
+            "total_web_search_requests": total_web_search_requests,
             "verification_verdicts": verdicts,
             "verification_evidence": verification_stats,
             # Chunk I: explicit routing visibility. Per-mode counts
@@ -289,6 +431,13 @@ class DiagnosticsReport:
             "search_budget": search_budget,
             "output_telemetry": output_telemetry,
             "severity_counts": severities,
+            # Chunk J: per-phase telemetry rollup + a small ``cost_summary``
+            # block. ``phase_telemetry`` is the per-phase breakdown the
+            # directive asks for; ``cost_summary`` echoes the cross-phase
+            # totals plus the global cache hit ratio so reports do not have
+            # to recompute them.
+            "phase_telemetry": dict(phase_telemetry),
+            "cost_summary": cost_summary,
             # Phase 7.3 actionable fields.
             "failed_specs": list(self.failed_specs),
             "skipped_specs": list(self.skipped_specs),
@@ -375,6 +524,13 @@ class DiagnosticsReport:
         if cache_create or cache_read:
             lines.append(f"  Cache Creation:  {cache_create:,} tokens")
             lines.append(f"  Cache Read:      {cache_read:,} tokens")
+            # Chunk J: surface the global cache hit ratio so an operator can
+            # see at a glance whether caching is actually paying off without
+            # eyeballing the per-phase rollup below.
+            cache_total = cache_create + cache_read
+            if cache_total:
+                hit_ratio = cache_read / cache_total
+                lines.append(f"  Cache Hit Ratio: {hit_ratio:.1%}")
         if s["severity_counts"]:
             lines.append(f"  Findings:        {s['severity_counts']}")
         if s["verification_verdicts"]:
@@ -433,6 +589,48 @@ class DiagnosticsReport:
                 f"p50={budget['p50']}, p95={budget['p95']}, "
                 f"total={budget['total']}{saturated_part}"
             )
+        # Chunk J: per-phase telemetry rollup. One line per phase that
+        # actually made API calls so an operator can see at a glance which
+        # phase dominated the token spend, which got cache hits, and
+        # whether retries / continuations piled up. Phases with zero API
+        # calls (e.g., extraction-only events) are intentionally omitted
+        # to keep the output compact.
+        per_phase = s.get("phase_telemetry") or {}
+        if per_phase:
+            lines.append("")
+            lines.append("  Phase Telemetry:")
+            for phase_name, bucket in per_phase.items():
+                bits = [f"calls={bucket['calls']}"]
+                bits.append(
+                    f"in={bucket['input_tokens']:,}/out={bucket['output_tokens']:,}"
+                )
+                cache_total = (
+                    bucket["cache_creation_input_tokens"]
+                    + bucket["cache_read_input_tokens"]
+                )
+                if cache_total:
+                    bits.append(
+                        f"cache_hit={bucket['cache_hit_ratio']:.0%} "
+                        f"(read={bucket['cache_read_input_tokens']:,}, "
+                        f"create={bucket['cache_creation_input_tokens']:,})"
+                    )
+                if bucket["web_search_requests"]:
+                    bits.append(f"searches={bucket['web_search_requests']}")
+                if bucket["retries"]:
+                    bits.append(f"retries={bucket['retries']}")
+                if bucket["continuations"]:
+                    bits.append(f"continuations={bucket['continuations']}")
+                if bucket["truncated_calls"]:
+                    bits.append(f"truncated={bucket['truncated_calls']}")
+                if bucket["realtime_calls"] or bucket["batch_calls"]:
+                    bits.append(
+                        f"realtime={bucket['realtime_calls']}/"
+                        f"batch={bucket['batch_calls']}"
+                    )
+                if bucket["models"]:
+                    bits.append("models=" + ",".join(bucket["models"]))
+                lines.append(f"    {phase_name:20s} {', '.join(bits)}")
+
         # Phase 7.3 actionable section: surface failed specs, skipped edits,
         # ambiguous locator count, and event truncation so users can see
         # what required attention without scanning the timeline.
