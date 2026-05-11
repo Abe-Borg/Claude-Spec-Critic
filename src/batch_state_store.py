@@ -8,10 +8,19 @@ installed versions.
 
 This module knows nothing about GUI widgets — it returns plain dicts (or
 ``None``) and lets the controller decide how to display messages.
+
+Chunk D7.1 — writes are atomic: the resume-state JSON is rendered to a
+temp file in the same directory, flushed + fsynced, and then
+``os.replace``\\d into place. A crash or partial write therefore cannot
+leave a truncated resume-state file; the previously valid target is
+preserved verbatim. The pattern mirrors ``verification_cache.save_to_disk``
+and adds the fsync step required by the delta plan.
 """
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -35,9 +44,45 @@ from .reviewer import MODEL_OPUS_47
 
 
 def save_batch_state(state: dict) -> None:
+    """Atomically persist the resume state.
+
+    Chunk D7.1: write a temp file in the same directory, flush + fsync,
+    then ``os.replace`` to the target. A crash mid-write leaves the
+    previous valid target untouched and the half-written temp file is
+    removed on failure. Exceptions from any step are caught and logged
+    (the same swallow-and-warn behavior the pre-D7.1 implementation
+    had) because resume-state persistence is best-effort: a save
+    failure should not crash an in-flight batch run.
+    """
+    target = _batch_state_path()
     try:
-        _batch_state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(state, indent=2)
     except Exception as e:
+        print(f"[SpecCritic] Warning: Could not save batch state: {e}")
+        return
+
+    try:
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=".batch_state.",
+            suffix=".tmp",
+            dir=str(target.parent),
+        )
+    except Exception as e:
+        print(f"[SpecCritic] Warning: Could not save batch state: {e}")
+        return
+
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fp:
+            fp.write(payload)
+            fp.flush()
+            os.fsync(fp.fileno())
+        os.replace(tmp_name, str(target))
+    except Exception as e:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
         print(f"[SpecCritic] Warning: Could not save batch state: {e}")
 
 
