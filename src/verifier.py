@@ -932,7 +932,10 @@ def _run_verification_call(
     system_prompt = _get_verification_system_prompt(
         cycle, include_verdict_tool=include_verdict_tool
     )
-    system_payload = system_prompt_with_cache(system_prompt)
+    # Chunk J: real-time verification reuses the same system prompt and
+    # tool list across every finding in a run, so the PHASE_VERIFICATION
+    # cache policy applies. Tool caching also wraps below.
+    system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_VERIFICATION)
     # Chunk H/I: profile- and mode-aware web_search budget. The
     # profile sets the ceiling for the kind of claim; severity
     # modulates within it; the verification *mode* then applies a
@@ -955,7 +958,7 @@ def _run_verification_call(
         scaled_tool = dict(tool_list[0])
         scaled_tool["max_uses"] = effective_max_uses
         tool_list = [scaled_tool, *tool_list[1:]]
-    tools_payload = tools_with_cache(tool_list)
+    tools_payload = tools_with_cache(tool_list, phase=PHASE_VERIFICATION)
     output_limit = verification_max_tokens(model=model)
 
     # Centralized capability policy: omit ``thinking`` entirely on models
@@ -1279,11 +1282,14 @@ def _build_retry_request(
     # Chunk E directive 6: route the retry budget through the centralized
     # phase registry so a future tuning pass can give retries a different
     # cap from the initial verification call by touching one map.
+    # Chunk J: retry requests share the same prefix as the initial wave.
+    # The PHASE_VERIFICATION_RETRY policy currently mirrors PHASE_VERIFICATION
+    # (cache=on); the parameter keeps the lever in the central registry.
     request: dict = {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected, phase=PHASE_VERIFICATION_RETRY),
-        "system": system_prompt_with_cache(system_prompt),
-        "tools": tools_with_cache(tool_list),
+        "system": system_prompt_with_cache(system_prompt, phase=PHASE_VERIFICATION_RETRY),
+        "tools": tools_with_cache(tool_list, phase=PHASE_VERIFICATION_RETRY),
         "messages": [{"role": "user", "content": prompt}],
     }
     apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_RETRY)
@@ -1317,11 +1323,15 @@ def _build_continuation_request(
     # Chunk E directive 6: tag this call site with the continuation phase
     # so the phase registry owns the cap. Today retry and continuation
     # share the verification cap; the parameter keeps the lever available.
+    # Chunk J: continuation requests reuse the same system+tools prefix as
+    # the initial / retry calls. The PHASE_VERIFICATION_CONTINUATION policy
+    # mirrors PHASE_VERIFICATION today; routing through the central
+    # registry keeps the policy decisions co-located.
     request: dict = {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected, phase=PHASE_VERIFICATION_CONTINUATION),
-        "system": system_prompt_with_cache(system_prompt),
-        "tools": tools_with_cache(tool_list),
+        "system": system_prompt_with_cache(system_prompt, phase=PHASE_VERIFICATION_CONTINUATION),
+        "tools": tools_with_cache(tool_list, phase=PHASE_VERIFICATION_CONTINUATION),
         "messages": [
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": assistant_content_blocks},

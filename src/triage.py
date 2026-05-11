@@ -32,6 +32,7 @@ from typing import Callable, Iterable
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
 from .api_config import (
+    PHASE_TRIAGE,
     TRIAGE_MODEL_DEFAULT,
     system_prompt_with_cache,
     tools_with_cache,
@@ -177,8 +178,12 @@ def _classify_batch(
     request_kwargs: dict = {
         "model": model,
         "max_tokens": triage_max_tokens(model=model),
-        "system": system_prompt_with_cache(_TRIAGE_SYSTEM_PROMPT),
-        "tools": tools_with_cache([triage_classifications_tool()]),
+        # Chunk J: phase-aware cache policy. Triage prompts run ~375 tokens,
+        # well under the Anthropic 2048-token cache minimum for Haiku, so a
+        # cache write would be paid for nothing. The phase policy disables
+        # caching here; the helper still no-ops cleanly when caching is on.
+        "system": system_prompt_with_cache(_TRIAGE_SYSTEM_PROMPT, phase=PHASE_TRIAGE),
+        "tools": tools_with_cache([triage_classifications_tool()], phase=PHASE_TRIAGE),
         "tool_choice": triage_tool_choice(),
         "messages": [{"role": "user", "content": user_prompt}],
     }

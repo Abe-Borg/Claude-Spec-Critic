@@ -247,7 +247,11 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
     # findings cannot diverge between modes; the 300k extended path is a
     # batch-only API capability (300k beta header is not honored on stream).
     output_limit = review_max_tokens(model=model)
-    system_payload = system_prompt_with_cache(system_prompt)
+    # Chunk J: phase-aware cache policy. Real-time review uses the
+    # PHASE_REVIEW policy (cache=on, ttl=1h). Routing through the phase
+    # parameter keeps the policy decision in api_config so a future
+    # tuning pass touches one place.
+    system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_REVIEW)
     # Phase 2.4: when structured outputs are enabled, force the model to
     # emit a tool_use block whose ``input`` matches the finding schema.
     # ``tool_choice`` removes the "did the model wrap its output in tags?"

@@ -256,23 +256,34 @@ def run_review_thread(app, run_epoch: int) -> None:
         if diag and result.review_result:
             rv = result.review_result
             review_cap = _review_max_tokens(batch=False, model=rv.model)
-            diag.log("review", "success", "Review completed", {
-                "input_tokens": rv.input_tokens,
-                "output_tokens": rv.output_tokens,
-                "cache_creation_input_tokens": rv.cache_creation_input_tokens,
-                "cache_read_input_tokens": rv.cache_read_input_tokens,
-                "elapsed_seconds": round(rv.elapsed_seconds, 2),
-                "stop_reason": rv.stop_reason,
-                "parse_status": rv.parse_status,
-                "max_output_tokens": review_cap,
-                "severity_counts": {
-                    "CRITICAL": rv.critical_count,
-                    "HIGH": rv.high_count,
-                    "MEDIUM": rv.medium_count,
-                    "GRIPES": rv.gripe_count,
+            # Chunk J: route through ``record_api_call`` so the per-phase
+            # rollup in ``DiagnosticsReport.summary`` picks up consistent
+            # call_mode / retry_status / model fields.
+            diag.record_api_call(
+                phase="review",
+                model=rv.model,
+                level="success",
+                message="Review completed",
+                input_tokens=rv.input_tokens,
+                output_tokens=rv.output_tokens,
+                cache_creation_input_tokens=rv.cache_creation_input_tokens,
+                cache_read_input_tokens=rv.cache_read_input_tokens,
+                max_output_tokens=review_cap,
+                stop_reason=rv.stop_reason,
+                mode="realtime",
+                retry_status="initial",
+                extra={
+                    "elapsed_seconds": round(rv.elapsed_seconds, 2),
+                    "parse_status": rv.parse_status,
+                    "severity_counts": {
+                        "CRITICAL": rv.critical_count,
+                        "HIGH": rv.high_count,
+                        "MEDIUM": rv.medium_count,
+                        "GRIPES": rv.gripe_count,
+                    },
+                    "total_findings": rv.total_count,
                 },
-                "total_findings": rv.total_count,
-            })
+            )
 
             if rv.error:
                 diag.log("review", "error", f"Review error: {rv.error}")
@@ -280,13 +291,19 @@ def run_review_thread(app, run_epoch: int) -> None:
 
             if result.cross_check_result:
                 cc = result.cross_check_result
-                diag.log("cross_check", "info", f"Cross-check: {cc.cross_check_status}", {
-                    "finding_count": len(cc.findings),
-                    "input_tokens": cc.input_tokens,
-                    "output_tokens": cc.output_tokens,
-                    "cache_creation_input_tokens": cc.cache_creation_input_tokens,
-                    "cache_read_input_tokens": cc.cache_read_input_tokens,
-                })
+                diag.record_api_call(
+                    phase="cross_check",
+                    model=cc.model,
+                    message=f"Cross-check: {cc.cross_check_status}",
+                    input_tokens=cc.input_tokens,
+                    output_tokens=cc.output_tokens,
+                    cache_creation_input_tokens=cc.cache_creation_input_tokens,
+                    cache_read_input_tokens=cc.cache_read_input_tokens,
+                    stop_reason=cc.stop_reason,
+                    mode="realtime",
+                    retry_status="initial",
+                    extra={"finding_count": len(cc.findings)},
+                )
             for f in rv.findings:
                 if f.verification:
                     v = f.verification
@@ -307,6 +324,14 @@ def run_review_thread(app, run_epoch: int) -> None:
                         # many findings each mode handled.
                         "verification_mode": v.verification_mode,
                         "verification_profile": v.verification_profile,
+                        # Chunk J: ``api_call`` flag tells the per-phase
+                        # rollup whether to count this verification toward
+                        # the verification phase's call count. Cache hits
+                        # and local skips are already attributed to the
+                        # initial wave's API call.
+                        "api_call": v.cache_status not in ("hit", "local_skip"),
+                        "call_mode": "realtime",
+                        "model": v.model_used,
                     }
                     if v.sources:
                         event_data["sources"] = v.sources[:3]

@@ -196,19 +196,31 @@ def collect_batch_results(app) -> None:
             )
             rv = review_state.review_result
             if diag:
-                diag.log("batch_collect", "success", "Review results collected", {
-                    "input_tokens": rv.input_tokens,
-                    "output_tokens": rv.output_tokens,
-                    "cache_creation_input_tokens": rv.cache_creation_input_tokens,
-                    "cache_read_input_tokens": rv.cache_read_input_tokens,
-                    "elapsed_seconds": round(rv.elapsed_seconds, 2),
-                    "parse_status": rv.parse_status,
-                    "severity_counts": {
-                        "CRITICAL": rv.critical_count, "HIGH": rv.high_count,
-                        "MEDIUM": rv.medium_count, "GRIPES": rv.gripe_count,
+                # Chunk J: route through ``record_api_call`` so the per-
+                # phase rollup gets a consistent ``call_mode="batch"`` tag
+                # that distinguishes batch review from real-time review.
+                diag.record_api_call(
+                    phase="batch_collect",
+                    model=rv.model,
+                    level="success",
+                    message="Review results collected",
+                    input_tokens=rv.input_tokens,
+                    output_tokens=rv.output_tokens,
+                    cache_creation_input_tokens=rv.cache_creation_input_tokens,
+                    cache_read_input_tokens=rv.cache_read_input_tokens,
+                    stop_reason=rv.stop_reason,
+                    mode="batch",
+                    retry_status="initial",
+                    extra={
+                        "elapsed_seconds": round(rv.elapsed_seconds, 2),
+                        "parse_status": rv.parse_status,
+                        "severity_counts": {
+                            "CRITICAL": rv.critical_count, "HIGH": rv.high_count,
+                            "MEDIUM": rv.medium_count, "GRIPES": rv.gripe_count,
+                        },
+                        "total_findings": rv.total_count,
                     },
-                    "total_findings": rv.total_count,
-                })
+                )
                 if rv.error:
                     diag.log("batch_collect", "error", f"Review errors: {rv.error}")
 
@@ -282,6 +294,14 @@ def collect_batch_results(app) -> None:
                                     "grounded": f.verification.grounded,
                                     "cache_status": f.verification.cache_status,
                                     "escalated": f.verification.escalated,
+                                    # Chunk J: tag remote verifications as
+                                    # batch API calls so the per-phase
+                                    # rollup's call_mode counters reflect
+                                    # the path that actually ran.
+                                    "api_call": f.verification.cache_status not in ("hit", "local_skip"),
+                                    "call_mode": "batch",
+                                    "model": f.verification.model_used,
+                                    "web_search_requests": f.verification.web_search_requests,
                                 })
                     diag.log("verification", "success", "Verification complete", {"verdicts": verdicts})
 
@@ -311,13 +331,22 @@ def collect_batch_results(app) -> None:
                     diag.log("cross_check", "warning", "Cross-check skipped: missing resumable extracted specs")
             if diag and review_state.cross_check_result:
                 cc = review_state.cross_check_result
-                diag.log("cross_check", "info", f"Cross-check: {cc.cross_check_status}", {
-                    "finding_count": len(cc.findings),
-                    "input_tokens": cc.input_tokens,
-                    "output_tokens": cc.output_tokens,
-                    "cache_creation_input_tokens": cc.cache_creation_input_tokens,
-                    "cache_read_input_tokens": cc.cache_read_input_tokens,
-                })
+                # Chunk J: cross-check after batch review is real-time
+                # (the cross-check pass always runs live regardless of
+                # the review path), so the call_mode reflects that.
+                diag.record_api_call(
+                    phase="cross_check",
+                    model=cc.model,
+                    message=f"Cross-check: {cc.cross_check_status}",
+                    input_tokens=cc.input_tokens,
+                    output_tokens=cc.output_tokens,
+                    cache_creation_input_tokens=cc.cache_creation_input_tokens,
+                    cache_read_input_tokens=cc.cache_read_input_tokens,
+                    stop_reason=cc.stop_reason,
+                    mode="realtime",
+                    retry_status="initial",
+                    extra={"finding_count": len(cc.findings)},
+                )
 
             cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []
             if cross_check_findings:

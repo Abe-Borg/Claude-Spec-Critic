@@ -167,7 +167,7 @@ Carry `review_mode: str` so resume restores the exact prompt path.
 - Defaults: `REVIEW_MODEL_DEFAULT` (Opus 4.7), `CROSS_CHECK_MODEL_DEFAULT` (Opus 4.7), `VERIFICATION_MODEL_DEFAULT` (Sonnet 4.6 by default), `VERIFICATION_ESCALATION_MODEL` (Opus 4.7), `SYNTHESIS_MODEL_DEFAULT` (Haiku 4.5), `TRIAGE_MODEL_DEFAULT` (Haiku 4.5)
 - Output caps: `review_max_tokens()`, `cross_check_max_tokens()`, `verification_max_tokens(model, *, phase=PHASE_VERIFICATION)`, `synthesis_max_tokens()`, `triage_max_tokens()`, `output_cap_for_model()`, `phase_output_cap(phase, *, model)` (centralized phase→budget registry; every helper routes through it), `assert_extended_output_allowed()`
 - Model capability policy (Chunk B): `ModelCapabilities` frozen dataclass, `model_capabilities(model)`, `model_supports_adaptive_thinking(model)`, `thinking_config_for(*, model, phase)`, `apply_thinking_config(kwargs, *, model, phase)`. Whitelist registry covers Opus 4.6/4.7, Sonnet 4.6, Haiku 4.5; unknown models fall back to safe defaults that disable every capability flag. The `thinking` request key is added only when both the model supports adaptive thinking and the phase is not in the opt-out set. Phase identifiers: `PHASE_REVIEW`, `PHASE_BATCH_REVIEW`, `PHASE_CROSS_CHECK`, `PHASE_SYNTHESIS`, `PHASE_VERIFICATION`, `PHASE_VERIFICATION_RETRY`, `PHASE_VERIFICATION_CONTINUATION`, `PHASE_TRIAGE`.
-- Prompt caching: `prompt_caching_enabled()`, `system_prompt_with_cache()`, `tools_with_cache()`, `extract_cache_usage()`
+- Prompt caching (Chunk J): `prompt_caching_enabled()`, `CachePolicy` frozen dataclass, `cache_policy_for(phase)`, `system_prompt_with_cache(prompt, *, phase=None)`, `tools_with_cache(tools, *, phase=None)`, `extract_cache_usage()`. The per-phase registry encodes the directive-driven defaults: `PHASE_REVIEW` / `PHASE_BATCH_REVIEW` / `PHASE_CROSS_CHECK` / `PHASE_VERIFICATION` (+ retry / continuation) cache both system prompt and tools at the global TTL; `PHASE_SYNTHESIS` and `PHASE_TRIAGE` skip caching because the prompts are below the Anthropic 1024-token cache minimum (Sonnet/Opus) / 2048-token minimum (Haiku) and synthesis is one-off per run. Operators can disable individual phases via `SPEC_CRITIC_CACHE_DISABLE` (comma-separated phase names) without flipping the global `SPEC_CRITIC_PROMPT_CACHE` switch. Callers that omit the `phase=` keyword get the legacy "cache when enabled" behavior.
 - Token counting: `token_count_preflight_enabled()` (default on)
 - Sonnet routing: `verification_sonnet_default_enabled()` (default on)
 - Web-search tool: `WEB_SEARCH_TOOL` (web_search_20260209, blocked-only domain list, default `max_uses=5`); per-severity budget via `web_search_max_uses_for_severity(severity)` and `web_search_tool_for_severity(severity)`
@@ -353,6 +353,8 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 
 `DiagnosticsReport.summary()` returns a dict with totals + `failed_specs`, `skipped_specs`, `edit_skip_reasons`, `ambiguous_locator_count`, `edits_applied_total/skipped_total/failed_total`, `verification_evidence` (grounded / ungrounded / escalated / cache_hits / local_skips / search_errors / search_requests), `output_telemetry` (max_observed / p50 / p95 / truncated_calls / max_cap_observed), `search_budget` (ceiling / saturated_calls / p50 / p95). The `DiagnosticsWindow` widget renders all of these inline; `to_text()` and `to_dict()` produce the export formats.
 
+Chunk J telemetry: `DiagnosticsReport.record_api_call(*, phase, model, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, web_search_requests, max_output_tokens, stop_reason, mode, retry_status, extra=...)` is the standardized helper for recording a single Anthropic call with a normalized event payload. `summary()` adds `phase_telemetry` (per-phase rollup with `calls` / `input_tokens` / `output_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens` / `web_search_requests` / `cache_hit_ratio` / `retries` / `continuations` / `truncated_calls` / `realtime_calls` / `batch_calls` / `models`) and `cost_summary` (cross-phase totals + global `cache_hit_ratio`). `to_text()` renders a `Phase Telemetry:` section with one compact line per phase plus a `Cache Hit Ratio:` line in the global summary so operators can spot whether caching is paying off.
+
 ---
 
 ## 4) GUI Notes (gui.py / widgets.py)
@@ -426,7 +428,9 @@ A blocked-domain list filters social/AI-assistant/forum/general-encyclopedia sou
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPEC_CRITIC_PROMPT_CACHE` | `1` | `0` disables prompt caching |
+| `SPEC_CRITIC_PROMPT_CACHE` | `1` | `0` disables prompt caching globally |
+| `SPEC_CRITIC_PROMPT_CACHE_TTL` | `1h` | `5m` switches to ephemeral 5-minute cache (lower write cost, narrower payback window) |
+| `SPEC_CRITIC_CACHE_DISABLE` | (empty) | Comma-separated phase names to opt out of caching individually (e.g. `verification,cross_check`) — phase-aware override that leaves the other phases caching normally |
 | `SPEC_CRITIC_STRUCTURED_OUTPUTS` | `1` | `0` falls back to tagged-JSON parsing |
 | `SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT` | `1` | `0` skips Anthropic count_tokens |
 | `SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT` | `1` | `0` reverts to Opus-everywhere |
