@@ -631,6 +631,312 @@ class TestEffortPolicyWiredIntoRealtimeReview:
         assert params.get("output_config") == {"effort": "high"}
 
 
+# ===========================================================================
+# Chunk D1.3 — verification escalation telemetry
+# ===========================================================================
+
+
+class TestEscalationTelemetryStampsLiveResult:
+    """The verifier records before-and-after fields whenever the Opus
+    escalation path fires. ``escalation_attempted`` is True regardless
+    of whether the escalated result was the one we kept; the remaining
+    fields describe the transition for diagnostics aggregation."""
+
+    def _patch_escalation_path(
+        self,
+        monkeypatch,
+        *,
+        initial: VerificationResult,
+        escalated: VerificationResult,
+        do_escalate: bool = True,
+    ):
+        from src import verifier as verifier_mod
+
+        # Force ``classify_finding_for_verification`` to return ``web_required``
+        # so the local-skip short-circuit doesn't fire.
+        monkeypatch.setattr(
+            verifier_mod, "classify_finding_for_verification", lambda _f: "web_required"
+        )
+        # Pretend the escalation router fires (so we exercise the branch).
+        monkeypatch.setattr(
+            verifier_mod, "should_escalate_verification",
+            lambda *_a, **_k: do_escalate,
+        )
+        # Stage two _run_verification_call returns: first the initial
+        # Sonnet pass, then the Opus escalation pass.
+        queue = [initial, escalated]
+
+        def _fake_run(_finding, *, cycle, model, max_retries, escalated):
+            return queue.pop(0)
+
+        monkeypatch.setattr(verifier_mod, "_run_verification_call", _fake_run)
+        # Pin both routing endpoints so this test is robust to other
+        # tests that ``importlib.reload`` api_config / verification_modes
+        # (which leaves the verifier module's bound names stale).
+        monkeypatch.setattr(
+            verifier_mod, "initial_verification_model", lambda: "claude-sonnet-4-6"
+        )
+        monkeypatch.setattr(
+            verifier_mod, "escalation_verification_model", lambda: "claude-opus-4-7"
+        )
+
+    def test_escalation_changed_verdict_records_before_and_after(self, monkeypatch):
+        from src.verifier import verify_finding
+
+        initial = VerificationResult(
+            verdict="UNVERIFIED",
+            explanation="Initial Sonnet failed to ground",
+            grounded=False,
+            model_used="claude-sonnet-4-6",
+            escalated=False,
+            cache_status="miss",
+            web_search_requests=2,
+            successful_source_count=0,
+            search_error_count=0,
+        )
+        escalated = VerificationResult(
+            verdict="CONFIRMED",
+            explanation="Opus found the citation",
+            grounded=True,
+            model_used="claude-opus-4-7",
+            escalated=True,
+            cache_status="miss",
+            web_search_requests=3,
+            successful_source_count=1,
+            search_error_count=0,
+            sources=["https://example.gov/x"],
+        )
+        self._patch_escalation_path(monkeypatch, initial=initial, escalated=escalated)
+
+        # Pass ``model=`` explicitly so the function bypasses the
+        # mode-policy lookup (which other tests in the suite may have
+        # invalidated by reloading verification_modes).
+        result = verify_finding(
+            _finding(severity="CRITICAL"),
+            max_retries=0,
+            model="claude-sonnet-4-6",
+        )
+        assert result.escalation_attempted is True
+        assert result.initial_model == "claude-sonnet-4-6"
+        assert result.initial_verdict == "UNVERIFIED"
+        # The kept result IS the escalated one (it grounded).
+        assert result.verdict == "CONFIRMED"
+        assert result.escalation_changed_verdict is True
+        # initial_unverified is the canonical reason tag (router branch:
+        # verdict == UNVERIFIED).
+        assert result.escalation_reason == "initial_unverified"
+
+    def test_escalation_no_change_still_records_attempt(self, monkeypatch):
+        """Escalation that did not change the verdict still records
+        ``escalation_attempted=True`` and ``escalation_changed_verdict=False``.
+        This is the metric for "wasted escalation budget."""
+        from src.verifier import verify_finding
+
+        initial = VerificationResult(
+            verdict="UNVERIFIED",
+            explanation="Initial Sonnet failed",
+            grounded=False,
+            model_used="claude-sonnet-4-6",
+            escalated=False,
+            cache_status="miss",
+            web_search_requests=2,
+            successful_source_count=0,
+            search_error_count=0,
+        )
+        # Escalation also produced UNVERIFIED, ungrounded — the verifier
+        # falls back to the initial result.
+        escalated = VerificationResult(
+            verdict="UNVERIFIED",
+            explanation="Opus also failed to ground",
+            grounded=False,
+            model_used="claude-opus-4-7",
+            escalated=True,
+            cache_status="miss",
+            web_search_requests=4,
+            successful_source_count=0,
+            search_error_count=0,
+        )
+        self._patch_escalation_path(monkeypatch, initial=initial, escalated=escalated)
+
+        result = verify_finding(
+            _finding(severity="HIGH"),
+            max_retries=0,
+            model="claude-sonnet-4-6",
+        )
+        assert result.escalation_attempted is True
+        # Verdict did not change.
+        assert result.initial_verdict == "UNVERIFIED"
+        assert result.verdict == "UNVERIFIED"
+        assert result.escalation_changed_verdict is False
+
+    def test_no_escalation_leaves_telemetry_empty(self, monkeypatch):
+        """When the router does not request escalation, the new
+        telemetry fields stay at their defaults (no false positives)."""
+        from src.verifier import verify_finding
+
+        initial = VerificationResult(
+            verdict="CONFIRMED",
+            explanation="Sonnet got it on the first pass",
+            grounded=True,
+            model_used="claude-sonnet-4-6",
+            escalated=False,
+            cache_status="miss",
+            web_search_requests=2,
+            successful_source_count=1,
+            search_error_count=0,
+            sources=["https://example.gov/x"],
+        )
+        # The escalated value should never be consumed; using a sentinel
+        # makes a misrouted code path obvious.
+        sentinel = VerificationResult(verdict="DISPUTED")
+        self._patch_escalation_path(
+            monkeypatch, initial=initial, escalated=sentinel, do_escalate=False
+        )
+
+        result = verify_finding(
+            _finding(severity="HIGH"),
+            max_retries=0,
+            model="claude-sonnet-4-6",
+        )
+        assert result.escalation_attempted is False
+        assert result.initial_model == ""
+        assert result.initial_verdict == ""
+        assert result.escalation_changed_verdict is False
+        assert result.escalation_reason == ""
+
+    def test_escalation_reason_classifies_router_branch(self):
+        """The escalation reason tag mirrors which router branch fired."""
+        from src.verifier import _classify_escalation_reason
+
+        unverified = VerificationResult(
+            verdict="UNVERIFIED", grounded=False, search_error_count=0
+        )
+        ungrounded = VerificationResult(
+            verdict="CONFIRMED", grounded=False, search_error_count=0
+        )
+        all_errors = VerificationResult(
+            verdict="CONFIRMED",
+            grounded=True,
+            search_error_count=2,
+            successful_source_count=0,
+        )
+
+        assert _classify_escalation_reason(unverified) == "initial_unverified"
+        assert _classify_escalation_reason(ungrounded) == "initial_ungrounded"
+        assert _classify_escalation_reason(all_errors) == "initial_all_search_errors"
+
+
+class TestEscalationTelemetryDiagnostics:
+    """The diagnostics summary rolls up the new fields into an
+    ``escalation_stats`` block so reports can answer "is escalation
+    actually paying off?"."""
+
+    def test_no_escalation_attempts_produces_zero_stats(self):
+        from src.diagnostics import DiagnosticsReport
+
+        diag = DiagnosticsReport()
+        diag.log(
+            "verification",
+            "info",
+            "Verified",
+            {
+                "verdict": "CONFIRMED",
+                "finding_severity": "HIGH",
+                "escalation_attempted": False,
+                "verification_mode": "standard_reasoning",
+            },
+        )
+        stats = diag.summary()["escalation_stats"]
+        assert stats["attempts"] == 0
+        assert stats["change_rate"] == 0.0
+
+    def test_attempts_with_change_aggregate(self):
+        from src.diagnostics import DiagnosticsReport
+
+        diag = DiagnosticsReport()
+        # One CRITICAL escalation that changed the verdict.
+        diag.log(
+            "verification",
+            "info",
+            "Verified",
+            {
+                "verdict": "CONFIRMED",
+                "finding_severity": "CRITICAL",
+                "escalation_attempted": True,
+                "escalation_changed_verdict": True,
+                "initial_verdict": "UNVERIFIED",
+                "escalation_reason": "initial_unverified",
+            },
+        )
+        # One HIGH escalation that did NOT change the verdict.
+        diag.log(
+            "verification",
+            "info",
+            "Verified",
+            {
+                "verdict": "UNVERIFIED",
+                "finding_severity": "HIGH",
+                "escalation_attempted": True,
+                "escalation_changed_verdict": False,
+                "initial_verdict": "UNVERIFIED",
+                "escalation_reason": "initial_unverified",
+            },
+        )
+
+        stats = diag.summary()["escalation_stats"]
+        assert stats["attempts"] == 2
+        assert stats["changed_verdict"] == 1
+        assert stats["no_change"] == 1
+        assert stats["change_rate"] == 0.5
+        assert stats["by_reason"] == {"initial_unverified": 2}
+        assert stats["by_severity"] == {"CRITICAL": 1, "HIGH": 1}
+        assert stats["by_initial_verdict"] == {"UNVERIFIED": 2}
+        assert stats["by_final_verdict"] == {"CONFIRMED": 1, "UNVERIFIED": 1}
+
+    def test_to_text_renders_escalation_block_when_attempted(self):
+        from src.diagnostics import DiagnosticsReport
+
+        diag = DiagnosticsReport()
+        diag.log(
+            "verification",
+            "info",
+            "Verified",
+            {
+                "verdict": "CONFIRMED",
+                "finding_severity": "CRITICAL",
+                "escalation_attempted": True,
+                "escalation_changed_verdict": True,
+                "initial_verdict": "UNVERIFIED",
+                "escalation_reason": "initial_unverified",
+            },
+        )
+
+        text = diag.to_text()
+        assert "Escalation:" in text
+        assert "attempts=1" in text
+        assert "changed=1" in text
+        # change rate should render as a percentage.
+        assert "100.0%" in text
+
+    def test_to_text_omits_escalation_block_when_no_attempts(self):
+        """Hide the escalation section on runs with no escalation activity
+        so the diagnostics output stays compact."""
+        from src.diagnostics import DiagnosticsReport
+
+        diag = DiagnosticsReport()
+        diag.log(
+            "verification",
+            "info",
+            "Verified",
+            {
+                "verdict": "CONFIRMED",
+                "finding_severity": "HIGH",
+                "escalation_attempted": False,
+            },
+        )
+        assert "Escalation:" not in diag.to_text()
+
+
 class TestEffortPolicyWiredIntoCrossChecker:
     def test_cross_check_request_carries_effort_high(
         self, monkeypatch, fake_anthropic, _patched_fake_count_tokens

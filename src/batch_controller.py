@@ -294,6 +294,18 @@ def collect_batch_results(app) -> None:
                                     "grounded": f.verification.grounded,
                                     "cache_status": f.verification.cache_status,
                                     "escalated": f.verification.escalated,
+                                    # Chunk D1.3: escalation telemetry. See
+                                    # the matching block in
+                                    # ``review_run_controller`` for the
+                                    # rationale — keeping the batch and
+                                    # real-time payloads aligned means the
+                                    # diagnostics summary aggregates the
+                                    # same shape in either mode.
+                                    "escalation_attempted": f.verification.escalation_attempted,
+                                    "initial_model": f.verification.initial_model,
+                                    "initial_verdict": f.verification.initial_verdict,
+                                    "escalation_changed_verdict": f.verification.escalation_changed_verdict,
+                                    "escalation_reason": f.verification.escalation_reason,
                                     # Chunk J: tag remote verifications as
                                     # batch API calls so the per-phase
                                     # rollup's call_mode counters reflect

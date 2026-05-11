@@ -324,6 +324,16 @@ def run_review_thread(app, run_epoch: int) -> None:
                         # many findings each mode handled.
                         "verification_mode": v.verification_mode,
                         "verification_profile": v.verification_profile,
+                        # Chunk D1.3: escalation telemetry. ``escalation_attempted``
+                        # is True whenever a second pass ran (regardless of
+                        # whether it changed the verdict); the remaining
+                        # fields let the summary report "did escalation
+                        # actually pay off?".
+                        "escalation_attempted": v.escalation_attempted,
+                        "initial_model": v.initial_model,
+                        "initial_verdict": v.initial_verdict,
+                        "escalation_changed_verdict": v.escalation_changed_verdict,
+                        "escalation_reason": v.escalation_reason,
                         # Chunk J: ``api_call`` flag tells the per-phase
                         # rollup whether to count this verification toward
                         # the verification phase's call count. Cache hits

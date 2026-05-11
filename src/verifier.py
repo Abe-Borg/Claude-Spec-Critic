@@ -137,6 +137,29 @@ class VerificationResult:
     # string for pre-Chunk-I cache entries or unit-test results constructed
     # without going through the router.
     verification_mode: str = ""
+    # ----- Chunk D1.3 escalation telemetry --------------------------------
+    # The existing ``escalated: bool`` records "this result was produced by
+    # the Opus escalation path." The fields below answer the harder
+    # question: did escalation actually pay off?
+    #
+    # ``escalation_attempted`` is True whenever
+    # :func:`verification_router.should_escalate_verification` fired and the
+    # escalation call was issued — regardless of whether the escalated result
+    # was kept. ``escalated`` (above) is the subset where the escalated
+    # result became the final one.
+    # ``initial_model`` / ``initial_verdict`` capture the first-pass model
+    # and verdict so reports can show before-and-after.
+    # ``escalation_changed_verdict`` is True iff the final verdict differs
+    # from the initial verdict (the metric the delta plan calls out).
+    # ``escalation_reason`` is a short tag describing why escalation fired
+    # (e.g. ``"ungrounded_critical_high"``); empty when escalation did not
+    # fire. The string is intentionally machine-readable so a future
+    # aggregation pass can bucket by reason without parsing free text.
+    escalation_attempted: bool = False
+    initial_model: str = ""
+    initial_verdict: str = ""
+    escalation_changed_verdict: bool = False
+    escalation_reason: str = ""
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -853,6 +876,13 @@ def verify_finding(
     ):
         escalated_model = escalation_verification_model()
         if escalated_model and escalated_model != selected_model:
+            # Chunk D1.3: snapshot the initial state before the escalation
+            # call so the telemetry below can report before-and-after even
+            # when the escalated result is the one we keep.
+            initial_verdict_snapshot = result.verdict
+            initial_model_snapshot = result.model_used or selected_model
+            escalation_reason = _classify_escalation_reason(result)
+
             esc_result = _run_verification_call(
                 finding,
                 cycle=cycle,
@@ -868,9 +898,47 @@ def verify_finding(
             ):
                 result = esc_result
 
+            # Stamp escalation telemetry on whichever result we kept.
+            # ``escalation_attempted`` records that the second pass ran
+            # (regardless of which result became final); the comparison
+            # below uses the original initial verdict so the answer to
+            # "did escalation change the verdict?" is well-defined.
+            result.escalation_attempted = True
+            result.initial_model = initial_model_snapshot
+            result.initial_verdict = initial_verdict_snapshot
+            result.escalation_changed_verdict = (
+                result.verdict != initial_verdict_snapshot
+            )
+            result.escalation_reason = escalation_reason
+
     if cache is not None and result.cache_status == "miss":
         cache.put(finding, cycle=cycle, result=result)
     return result
+
+
+def _classify_escalation_reason(initial_result: VerificationResult) -> str:
+    """Return a short machine-readable tag for why escalation fired.
+
+    Mirrors the decision tree in
+    :func:`verification_router.should_escalate_verification` so the
+    telemetry says exactly which branch triggered escalation. Tags are
+    intentionally short and stable so downstream aggregation can bucket
+    by reason without parsing free text.
+    """
+    verdict = (initial_result.verdict or "").strip().upper()
+    if verdict == "UNVERIFIED":
+        return "initial_unverified"
+    if not initial_result.grounded:
+        return "initial_ungrounded"
+    if (
+        initial_result.search_error_count > 0
+        and initial_result.successful_source_count == 0
+    ):
+        return "initial_all_search_errors"
+    # Defensive fallback — the router would not have asked for escalation
+    # without one of the above being true, but a future router rule should
+    # remain visible.
+    return "router_decision"
 
 
 def _run_verification_call(
