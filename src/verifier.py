@@ -349,9 +349,9 @@ def _get_verification_system_prompt(
         include_verdict_tool = verification_request_includes_verdict_tool()
     base_lines = [
         "You are a construction specification verification assistant for California K-12 DSA projects.",
-        "Your sole job is to verify or dispute a single finding using web search evidence.",
+        "Your job is to verify or dispute a single finding using web search evidence.",
         "",
-        "You MUST use web search before rendering a verdict.",
+        "Use web search before rendering a verdict.",
         "Do not speculate; if evidence is weak or ambiguous, return UNVERIFIED.",
         "Do not invent URLs. Leave sources as [] if reliable references are unavailable.",
         "",
