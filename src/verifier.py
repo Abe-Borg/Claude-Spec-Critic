@@ -13,10 +13,12 @@ from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitErr
 
 from .batch import (
     BatchJob,
+    build_verification_tools,
     poll_batch,  # Backward-compatibility export for older tests/patching.
     retrieve_verification_results_detailed,
     submit_verification_batch,
     submit_verification_followup_wave,
+    verification_request_includes_verdict_tool,
     _extract_api_error_message,
 )
 from .batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
@@ -33,9 +35,6 @@ from .api_config import (
     system_prompt_with_cache,
     tools_with_cache,
     verification_max_tokens,
-    web_search_max_uses_for_severity,
-    web_search_tool_for_severity,
-    WEB_SEARCH_TOOL,
 )
 from .verification_cache import VerificationCache
 from .verification_router import (
@@ -128,21 +127,45 @@ def _xml_escape(value: str | None) -> str:
     )
 
 
-def _build_verification_prompt(finding: Finding, *, cycle: CodeCycle = DEFAULT_CYCLE) -> str:
+def _build_verification_prompt(
+    finding: Finding,
+    *,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    include_verdict_tool: bool | None = None,
+) -> str:
     """Build the user prompt for a single-finding verification call.
 
     Spec-derived fields (issue / existingText / replacementText / codeReference)
     are wrapped in XML so the model treats them as data, not instructions —
     a low-effort hedge against prompt injection from spec content.
+
+    Chunk C: when ``include_verdict_tool`` is False the prompt does not
+    instruct the model to call ``submit_verification_verdict`` (because the
+    request payload won't include it). Defaults to mirroring
+    :func:`verification_request_includes_verdict_tool` so the prompt always
+    matches the request.
     """
+    if include_verdict_tool is None:
+        include_verdict_tool = verification_request_includes_verdict_tool()
     issue = _xml_escape(finding.issue)
     code_ref = _xml_escape(finding.codeReference) or "none"
     existing = _xml_escape(finding.existingText) or "none"
     replacement = _xml_escape(finding.replacementText) or "none"
+    if include_verdict_tool:
+        intro = (
+            "Verify the finding below using web search evidence, then call\n"
+            "submit_verification_verdict exactly once with the result.\n"
+            "Keep explanation to 1-2 sentences.\n"
+        )
+    else:
+        intro = (
+            "Verify the finding below using web search evidence, then emit\n"
+            "the verdict as a JSON object with fields verdict, explanation,\n"
+            "sources, and (for CORRECTED only) correction.\n"
+            "Keep explanation to 1-2 sentences.\n"
+        )
     return (
-        "Verify the finding below using web search evidence, then call\n"
-        "submit_verification_verdict exactly once with the result.\n"
-        "Keep explanation to 1-2 sentences.\n"
+        f"{intro}"
         "\n"
         f"<finding>\n"
         f"  <file>{_xml_escape(finding.fileName)}</file>\n"
@@ -163,8 +186,23 @@ def _build_verification_prompt(finding: Finding, *, cycle: CodeCycle = DEFAULT_C
     )
 
 
-def _get_verification_system_prompt(cycle: CodeCycle) -> str:
-    return "\n".join([
+def _get_verification_system_prompt(
+    cycle: CodeCycle,
+    *,
+    include_verdict_tool: bool | None = None,
+) -> str:
+    """Build the verifier system prompt.
+
+    Chunk C: the Tool usage section is conditional on
+    ``include_verdict_tool``. When False, the prompt must not claim the
+    model has the verdict tool because the request payload won't include
+    it. Defaults to mirroring
+    :func:`verification_request_includes_verdict_tool` so the prompt
+    always matches the request the caller will actually send.
+    """
+    if include_verdict_tool is None:
+        include_verdict_tool = verification_request_includes_verdict_tool()
+    base_lines = [
         "You are a construction specification verification assistant for California K-12 DSA projects.",
         "Your sole job is to verify or dispute a single finding using web search evidence.",
         "",
@@ -215,19 +253,37 @@ def _get_verification_system_prompt(cycle: CodeCycle) -> str:
         "regulatory source as authoritative.",
         "Any credible primary source is better than returning UNVERIFIED.",
         "",
-        "Tool usage:",
-        "",
-        "- The available tools are ``web_search`` (server-side) and",
-        "  ``submit_verification_verdict`` (the structured verdict tool).",
-        "- Call web_search first, then call submit_verification_verdict exactly",
-        "  once as the final step of your turn with verdict, explanation, sources,",
-        "  and (for CORRECTED only) the corrected reference.",
-        "- Strongly prefer the structured tool over plain text. Fallback only:",
-        "  if you cannot call the tool, emit the verdict as a JSON object with",
-        "  the same field names (verdict, explanation, sources, correction) so",
-        "  it can still be parsed.",
-        "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
-    ])
+    ]
+    if include_verdict_tool:
+        tool_lines = [
+            "Tool usage:",
+            "",
+            "- The available tools are ``web_search`` (server-side) and",
+            "  ``submit_verification_verdict`` (the structured verdict tool).",
+            "- Call web_search first, then call submit_verification_verdict exactly",
+            "  once as the final step of your turn with verdict, explanation, sources,",
+            "  and (for CORRECTED only) the corrected reference.",
+            "- Strongly prefer the structured tool over plain text. Fallback only:",
+            "  if you cannot call the tool, emit the verdict as a JSON object with",
+            "  the same field names (verdict, explanation, sources, correction) so",
+            "  it can still be parsed.",
+            "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
+        ]
+    else:
+        # Structured outputs disabled: the request payload only includes
+        # web_search, so the prompt must not advertise the verdict tool.
+        # The model emits a plain JSON object that the text fallback parser
+        # in :func:`_parse_verification_response` consumes.
+        tool_lines = [
+            "Tool usage:",
+            "",
+            "- The available tool is ``web_search`` (server-side).",
+            "- Call web_search first, then emit your verdict as a JSON object",
+            "  with the fields verdict, explanation, sources, and (for CORRECTED",
+            "  only) correction so it can be parsed.",
+            "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
+        ]
+    return "\n".join(base_lines + tool_lines)
 
 
 def _content_block_to_plain(block) -> dict | None:
@@ -498,16 +554,25 @@ def _run_verification_call(
         return _make_unverified("No API key available for verification.")
 
     client = _get_client()
-    prompt = _build_verification_prompt(finding, cycle=cycle)
-    system_prompt = _get_verification_system_prompt(cycle)
+    # Chunk C: build prompt + tools through the shared helpers so the
+    # real-time path matches batch initial / retry / continuation. The
+    # ``include_verdict_tool`` flag is computed once and threaded into both
+    # so the prompt cannot claim a tool the request omits (or vice versa).
+    include_verdict_tool = verification_request_includes_verdict_tool()
+    prompt = _build_verification_prompt(
+        finding, cycle=cycle, include_verdict_tool=include_verdict_tool
+    )
+    system_prompt = _get_verification_system_prompt(
+        cycle, include_verdict_tool=include_verdict_tool
+    )
     system_payload = system_prompt_with_cache(system_prompt)
     # Per-severity web_search budget. CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3.
     # The web_search tool is the first entry in the tools list; the prompt-
     # cache breakpoint sits on the *last* tool, so changing max_uses by
     # severity only varies the cache prefix (one cache entry per severity
     # tier) and never invalidates the verdict-tool cache.
-    severity_tool = web_search_tool_for_severity(finding.severity)
-    tools_payload = tools_with_cache([severity_tool])
+    tool_list = build_verification_tools(finding.severity)
+    tools_payload = tools_with_cache(tool_list)
     output_limit = verification_max_tokens(model=model)
 
     # Centralized capability policy: omit ``thinking`` entirely on models
@@ -768,10 +833,19 @@ def verify_findings_batch(
 
 
 def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, model: str | None = None) -> BatchJob:
+    # Chunk C: compute include_verdict_tool once and thread it through both
+    # the user-prompt builder and the system-prompt builder so the batch
+    # request payload (built by submit_verification_batch via
+    # build_verification_tools) and the prompt agree on tool availability.
+    include_verdict_tool = verification_request_includes_verdict_tool()
     return submit_verification_batch(
         findings,
-        build_prompt_fn=lambda finding: _build_verification_prompt(finding, cycle=cycle),
-        system_prompt_fn=_get_verification_system_prompt,
+        build_prompt_fn=lambda finding: _build_verification_prompt(
+            finding, cycle=cycle, include_verdict_tool=include_verdict_tool
+        ),
+        system_prompt_fn=lambda c: _get_verification_system_prompt(
+            c, include_verdict_tool=include_verdict_tool
+        ),
         cycle=cycle,
         model=model or initial_verification_model(),
     )
@@ -785,12 +859,20 @@ def _build_retry_request(
     severity: str | None = None,
 ) -> dict:
     selected = model or initial_verification_model()
-    web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
+    # Chunk C: route through the shared tool builder so retry includes the
+    # verdict tool whenever structured outputs are enabled. Previously the
+    # retry path advertised submit_verification_verdict in the prompt but
+    # never attached it to the request, forcing fragile JSON-text fallback.
+    include_verdict_tool = verification_request_includes_verdict_tool()
+    tool_list = build_verification_tools(severity)
+    system_prompt = _get_verification_system_prompt(
+        cycle, include_verdict_tool=include_verdict_tool
+    )
     request: dict = {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected),
-        "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
-        "tools": tools_with_cache([web_tool]),
+        "system": system_prompt_with_cache(system_prompt),
+        "tools": tools_with_cache(tool_list),
         "messages": [{"role": "user", "content": prompt}],
     }
     apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_RETRY)
@@ -806,12 +888,19 @@ def _build_continuation_request(
     severity: str | None = None,
 ) -> dict:
     selected = model or initial_verification_model()
-    web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
+    # Chunk C: same fix as _build_retry_request — continuation requests
+    # also drop into structured-tool territory so the verdict tool must
+    # accompany web_search whenever the prompt mentions it.
+    include_verdict_tool = verification_request_includes_verdict_tool()
+    tool_list = build_verification_tools(severity)
+    system_prompt = _get_verification_system_prompt(
+        cycle, include_verdict_tool=include_verdict_tool
+    )
     request: dict = {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected),
-        "system": system_prompt_with_cache(_get_verification_system_prompt(cycle)),
-        "tools": tools_with_cache([web_tool]),
+        "system": system_prompt_with_cache(system_prompt),
+        "tools": tools_with_cache(tool_list),
         "messages": [
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": assistant_content_blocks},

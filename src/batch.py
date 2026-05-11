@@ -34,10 +34,12 @@ from .api_config import (
 )
 from .structured_schemas import (
     REVIEW_TOOL_NAME,
+    VERIFICATION_TOOL_NAME,
     extract_tool_use_block,
     review_findings_tool,
     review_tool_choice,
     structured_outputs_enabled,
+    verification_verdict_tool,
 )
 
 
@@ -308,6 +310,39 @@ def retrieve_verification_results_detailed(job: BatchJob) -> dict[str, Any]:
     return results
 
 
+def verification_request_includes_verdict_tool() -> bool:
+    """Whether verification request paths will attach the verdict tool.
+
+    Source of truth for both the request payload and the system prompt.
+    Wherever the prompt mentions ``submit_verification_verdict``, the
+    request must actually include it — and vice versa. Defaults to mirror
+    ``structured_outputs_enabled()``.
+    """
+    return structured_outputs_enabled()
+
+
+def build_verification_tools(severity: str | None = None) -> list[dict]:
+    """Build the verification request tool list (Chunk C).
+
+    Single source of truth for verification tool payloads. Returns the
+    web_search tool with the severity-tiered ``max_uses`` budget plus the
+    custom ``submit_verification_verdict`` tool when structured outputs are
+    enabled. Cache controls are NOT applied here — wrap with
+    :func:`tools_with_cache` at the call site if a cache breakpoint should
+    pin the tools prefix.
+
+    Every verification path (real-time initial, batch initial, batch retry,
+    batch continuation) must build its tools through this helper. The
+    Chunk C invariant is that the prompt and the tools list never disagree
+    about which tools the model has access to.
+    """
+    web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
+    tools: list[dict] = [web_tool]
+    if verification_request_includes_verdict_tool():
+        tools.append(verification_verdict_tool())
+    return tools
+
+
 def _build_verification_request_params(
     *,
     prompt: str,
@@ -317,26 +352,18 @@ def _build_verification_request_params(
     model: str | None = None,
     severity: str | None = None,
 ) -> dict[str, Any]:
-    from .structured_schemas import structured_outputs_enabled, verification_verdict_tool
-
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     if assistant_content is not None:
         messages.append({"role": "assistant", "content": assistant_content})
     if continue_turn:
         messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
     selected_model = model or VERIFICATION_MODEL
-    # Per-severity web_search budget (CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3).
-    # Mirrors the real-time path so behavior is consistent across modes.
-    # ``severity`` falls back to the default budget when None — the only
-    # callers that omit it are legacy tests.
-    web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
-    # Phase 2.5 (audit Section 6.5, Option B): include the verdict tool
-    # alongside web_search. The system prompt instructs the model to call
-    # ``submit_verification_verdict`` as the final step, so we get a strict
-    # schema-validated verdict object after web grounding.
-    tool_list: list[dict] = [web_tool]
-    if structured_outputs_enabled():
-        tool_list.append(verification_verdict_tool())
+    # Phase 2.5 (audit Section 6.5, Option B) / Chunk C: include the verdict
+    # tool alongside web_search via the shared :func:`build_verification_tools`
+    # helper so every verification path agrees on the tool list. The system
+    # prompt is built by the caller and must mirror this decision (see
+    # ``verifier._get_verification_system_prompt``).
+    tool_list = build_verification_tools(severity)
     params: dict[str, Any] = {
         "model": selected_model,
         "max_tokens": verification_max_tokens(model=selected_model),
