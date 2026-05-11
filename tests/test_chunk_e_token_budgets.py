@@ -383,6 +383,11 @@ def stub_count_tokens(monkeypatch):
 
     monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
+    # Chunk 3: the central review request builder also imports
+    # ``count_tokens`` to gate the extended-output decision.
+    monkeypatch.setattr(
+        "src.review_request_builder.count_tokens", _fake_count, raising=False
+    )
     return _fake_count
 
 
@@ -508,8 +513,19 @@ class TestPipelinePreflightExactCountAuthoritative:
         monkeypatch.setenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "0")
         # Make the local counter return a value past the recommended max.
         # cl100k value alone is over budget — no safety factor needed.
+        # Chunk 3: the local gate routes through
+        # ``review_request_builder.estimate_local_request_tokens``, so the
+        # patch must hit the builder's binding (the pipeline binding stays
+        # patched for any direct-from-pipeline callers).
         monkeypatch.setattr(
-            "src.pipeline.count_tokens", lambda text: RECOMMENDED_MAX + 1_000
+            "src.pipeline.count_tokens",
+            lambda text: RECOMMENDED_MAX + 1_000,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "src.review_request_builder.count_tokens",
+            lambda text: RECOMMENDED_MAX + 1_000,
+            raising=False,
         )
 
         with pytest.raises(ValueError) as excinfo:
@@ -562,9 +578,13 @@ def fake_client_e(monkeypatch):
         return len((text or "").split()) * 2
 
     monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
-    monkeypatch.setattr("src.batch.count_tokens", _fake_count)
     monkeypatch.setattr("src.cross_checker.count_tokens", _fake_count)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
+    # Chunk 3: ``src.batch`` no longer imports ``count_tokens``; the
+    # central builder does instead.
+    monkeypatch.setattr(
+        "src.review_request_builder.count_tokens", _fake_count, raising=False
+    )
     return client
 
 

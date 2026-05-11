@@ -50,9 +50,13 @@ def _stub_count_tokens_local(monkeypatch):
         return len((text or "").split()) * 2
 
     monkeypatch.setattr("src.tokenizer.count_tokens", _fake)
-    monkeypatch.setattr("src.batch.count_tokens", _fake)
     monkeypatch.setattr("src.cross_checker.count_tokens", _fake)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake, raising=False)
+    # Chunk 3: ``src.batch`` no longer imports ``count_tokens`` — every
+    # batch token count is computed inside the central builder.
+    monkeypatch.setattr(
+        "src.review_request_builder.count_tokens", _fake, raising=False
+    )
 
 
 @pytest.fixture
@@ -142,12 +146,15 @@ class TestBatchExtendedOutputUsesCapabilityRegistry:
         each user message; returning 200k+ for the user message alone
         guarantees the threshold trips regardless of cycle/mode defaults.
         """
-        from src import batch as batch_mod
-
         def _fake(text):
             return 250_000
 
-        monkeypatch.setattr(batch_mod, "count_tokens", _fake)
+        # Chunk 3: the extended-output decision moved into the central
+        # ``review_request_builder``; patch the counter binding there so
+        # every batched spec sees the inflated count.
+        monkeypatch.setattr(
+            "src.review_request_builder.count_tokens", _fake, raising=False
+        )
 
     def test_sonnet_46_large_input_emits_extended_output_beta(
         self, fake_client, monkeypatch

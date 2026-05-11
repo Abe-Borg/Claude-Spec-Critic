@@ -282,11 +282,14 @@ def stub_count_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
-    # ``batch.py`` imports ``count_tokens`` at module scope, so it has its
-    # own binding that ``src.tokenizer.count_tokens`` won't catch. Patch
-    # the batch binding too so the per-spec budget check inside
-    # ``submit_review_batch`` doesn't trip the lazy tiktoken download.
-    monkeypatch.setattr("src.batch.count_tokens", _fake_count, raising=False)
+    # Chunk 3: ``src.batch`` no longer imports ``count_tokens`` directly —
+    # every batch token count is computed inside the central review
+    # request builder. Patch the binding there so the per-spec
+    # extended-output gating and the local preflight estimate don't trip
+    # the lazy tiktoken download.
+    monkeypatch.setattr(
+        "src.review_request_builder.count_tokens", _fake_count, raising=False
+    )
     monkeypatch.setenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "0")
 
 

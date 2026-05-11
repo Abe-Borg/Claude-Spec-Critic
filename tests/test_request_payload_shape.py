@@ -241,9 +241,16 @@ def _stub_count_tokens(monkeypatch):
     def _fake_count(text: str | None) -> int:
         return len((text or "").split()) * 2  # rough words→tokens proxy
     monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
-    monkeypatch.setattr("src.batch.count_tokens", _fake_count)
     monkeypatch.setattr("src.cross_checker.count_tokens", _fake_count)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
+    # Chunk 3: ``src.batch`` no longer imports ``count_tokens`` — every
+    # token count for the batch path is computed inside the central
+    # review_request_builder. Patch that binding instead so the per-spec
+    # extended-output gating and the local preflight estimate use the
+    # fast offline stub.
+    monkeypatch.setattr(
+        "src.review_request_builder.count_tokens", _fake_count, raising=False
+    )
 
 
 @pytest.fixture
@@ -357,43 +364,16 @@ class TestBatchReviewRequestShape:
 
 
 class TestBatchTokenCountingHoisting:
-    def test_system_prompt_counted_once_for_multi_spec_batch(
-        self, fake_client, monkeypatch
-    ):
-        from src import batch as batch_mod
-        from src.prompts import get_system_prompt
-        from src.review_modes import DEFAULT_REVIEW_MODE
+    """Chunk 3 — per-spec request build is the single source of truth.
 
-        system_prompt = get_system_prompt(DEFAULT_CYCLE, mode=DEFAULT_REVIEW_MODE)
-
-        call_log: list[str] = []
-
-        def _counting_fake(text):
-            call_log.append(text or "")
-            return len((text or "").split()) * 2
-
-        # The autouse fixture above already patches ``src.batch.count_tokens``
-        # with a non-counting fake; override it here with a counting one so
-        # the per-call total is observable.
-        monkeypatch.setattr(batch_mod, "count_tokens", _counting_fake)
-
-        specs = [
-            _spec(filename=f"S{i}.docx", content=f"spec body number {i}")
-            for i in range(4)
-        ]
-        batch_mod.submit_review_batch(
-            specs, model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE
-        )
-
-        # Exactly one call should have passed the system prompt string —
-        # the hoisted ``system_tokens = count_tokens(system_prompt)`` line.
-        # If a future change moves that call back into the per-spec loop
-        # this assertion catches the regression.
-        sys_calls = sum(1 for t in call_log if t == system_prompt)
-        assert sys_calls == 1, (
-            f"System prompt counted {sys_calls} times in a 4-spec batch; "
-            f"expected exactly 1 (D2.1 hoisting invariant)."
-        )
+    The D2.1-era invariant ("system prompt counted exactly once per batch")
+    was an optimization detail tied to the old in-line batch loop. Chunk 3
+    intentionally retires that path so :mod:`src.review_request_builder`
+    can be the sole point that materializes batch and real-time request
+    shapes. The new invariant the tests below lock in is the user-facing
+    contract: every spec's user message — including the pre-detected
+    alert block — feeds the budget check, and no spec is silently skipped.
+    """
 
     def test_user_message_counted_per_spec(self, fake_client, monkeypatch):
         from src import batch as batch_mod
@@ -404,7 +384,15 @@ class TestBatchTokenCountingHoisting:
             call_log.append(text or "")
             return len((text or "").split()) * 2
 
-        monkeypatch.setattr(batch_mod, "count_tokens", _counting_fake)
+        # Chunk 3: ``src.batch`` no longer imports ``count_tokens`` — the
+        # per-spec counting now happens inside the central
+        # ``review_request_builder``. Patch the binding there so we can
+        # still observe the per-call totals.
+        monkeypatch.setattr(
+            "src.review_request_builder.count_tokens",
+            _counting_fake,
+            raising=False,
+        )
 
         markers = ["alpha-body-unique", "beta-body-unique", "gamma-body-unique"]
         specs = [
@@ -424,29 +412,37 @@ class TestBatchTokenCountingHoisting:
                 "message budget check was skipped for this spec."
             )
 
-    def test_single_spec_batch_still_counts_system_prompt_once(
+    def test_each_spec_routes_through_central_builder(
         self, fake_client, monkeypatch
     ):
+        """Every batched spec must produce one ``build_review_request`` call.
+
+        If a future refactor adds a second code path that hand-rolls the
+        params dict (the very drift Chunk 3 closes) this assertion catches
+        it at the builder boundary instead of at runtime.
+        """
         from src import batch as batch_mod
-        from src.prompts import get_system_prompt
-        from src.review_modes import DEFAULT_REVIEW_MODE
+        from src import review_request_builder as builder_mod
 
-        system_prompt = get_system_prompt(DEFAULT_CYCLE, mode=DEFAULT_REVIEW_MODE)
+        call_count = {"n": 0}
+        real_builder = builder_mod.build_review_request
 
-        call_log: list[str] = []
+        def _counting_builder(spec):
+            call_count["n"] += 1
+            return real_builder(spec)
 
-        def _counting_fake(text):
-            call_log.append(text or "")
-            return len((text or "").split()) * 2
+        monkeypatch.setattr(batch_mod, "build_review_request", _counting_builder)
 
-        monkeypatch.setattr(batch_mod, "count_tokens", _counting_fake)
-
+        specs = [_spec(filename=f"S{i}.docx") for i in range(4)]
         batch_mod.submit_review_batch(
-            [_spec()], model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE
+            specs, model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE
         )
 
-        sys_calls = sum(1 for t in call_log if t == system_prompt)
-        assert sys_calls == 1
+        assert call_count["n"] == 4, (
+            f"Expected 4 build_review_request calls for a 4-spec batch; "
+            f"got {call_count['n']}. A bypass of the central builder is a "
+            f"Chunk 3 regression."
+        )
 
 
 # ---------------------------------------------------------------------------

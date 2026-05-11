@@ -576,9 +576,12 @@ def _patched_fake_count_tokens(monkeypatch):
     def _fake_count(text):
         return len((text or "").split()) * 2
     monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
-    monkeypatch.setattr("src.batch.count_tokens", _fake_count)
     monkeypatch.setattr("src.cross_checker.count_tokens", _fake_count)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
+    # Chunk 3: ``src.batch`` no longer imports count_tokens directly.
+    monkeypatch.setattr(
+        "src.review_request_builder.count_tokens", _fake_count, raising=False
+    )
 
 
 class TestEffortPolicyWiredIntoBatchReview:

@@ -8,16 +8,12 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
-from .prompts import get_system_prompt, get_single_spec_user_message
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
-from .tokenizer import MAX_OUTPUT_TOKENS_OPUS, MAX_OUTPUT_TOKENS_SONNET, count_tokens
+from .review_request_builder import ReviewRequestSpec, build_review_request
 from .api_config import (
-    BATCH_MAX_OUTPUT_TOKENS,
     BATCH_OUTPUT_BETA,
-    LARGE_REVIEW_INPUT_THRESHOLD,
-    PHASE_BATCH_REVIEW,
     PHASE_VERIFICATION,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     WEB_SEARCH_TOOL,
@@ -26,8 +22,6 @@ from .api_config import (
     assert_extended_output_allowed,
     batch_service_tier,
     extract_cache_usage,
-    model_supports_extended_output_beta,
-    review_max_tokens,
     system_prompt_with_cache,
     tools_with_cache,
     verification_max_tokens,
@@ -37,8 +31,6 @@ from .structured_schemas import (
     REVIEW_TOOL_NAME,
     VERIFICATION_TOOL_NAME,
     extract_tool_use_block,
-    review_findings_tool,
-    review_tool_choice,
     structured_tool_output_enabled,
     verification_verdict_tool,
 )
@@ -91,37 +83,12 @@ def submit_review_batch(
     if not specs:
         raise ValueError("No specs to submit for batch review")
     client = _get_client()
-    system_prompt = get_system_prompt(cycle, mode=mode)
-    # Chunk J: phase-aware cache policy. Batch review reuses the same
-    # system prompt and tool list across every spec in the batch, which
-    # is the highest-payoff caching context the app has. Routing the
-    # phase through here keeps the policy in one place.
-    system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_BATCH_REVIEW)
-    # The 300k extended-output beta is only useful for genuinely large reviews.
-    # Earlier versions enabled it by model identity alone, which meant every
-    # batch request asked for 300k output regardless of input size — bypassing
-    # the per-call cap and disabling cost guards. Now: the model must support
-    # extended output AND the input must be large enough to plausibly need it.
-    # Chunk 1: read the capability from the central registry rather than
-    # testing ``model in OPUS_MODELS``. Sonnet 4.6 also supports the
-    # ``output-300k-2026-03-24`` beta on Message Batches, and a family-style
-    # check silently excluded it.
-    model_supports_extended = model_supports_extended_output_beta(model)
-    # Chunk D2.1: the system prompt is built once above from batch-level
-    # parameters (``cycle``, ``mode``) that do not change inside the
-    # per-spec loop. Counting it once here and reusing ``system_tokens``
-    # for every spec's budget check avoids paying the same cl100k cost N
-    # times. If a future change ever varies the system prompt per spec,
-    # both this hoist and the cache breakpoint above need to move back
-    # inside the loop together.
-    system_tokens = count_tokens(system_prompt)
-    use_structured_tool = structured_tool_output_enabled()
-    structured_tools = (
-        tools_with_cache([review_findings_tool()], phase=PHASE_BATCH_REVIEW)
-        if use_structured_tool
-        else None
-    )
-    structured_choice = review_tool_choice() if use_structured_tool else None
+    # Chunk 3: route every spec through the central review request builder
+    # so the batch path, the real-time path, and the token preflight share
+    # the same request-shape contributors (system prompt + cache control,
+    # user message with paragraph map / pre_detected alerts, structured
+    # tool, thinking, effort, max_tokens, service tier). A future change
+    # to any of those lands in one place rather than three.
     batch_requests = []
     request_map = {}
     any_extended_output = False
@@ -130,66 +97,35 @@ def submit_review_batch(
         spec_pre_detected = (
             pre_detected_alerts.get(spec.filename) if pre_detected_alerts else None
         )
-        user_message = get_single_spec_user_message(
-            spec.content,
-            spec.filename,
-            project_context=project_context,
-            cycle=cycle,
-            mode=mode,
-            # Chunk K2: surfacing the paragraph map gives the model element
-            # ids it can cite back in findings. When ids are disabled
-            # (``SPEC_CRITIC_ELEMENT_IDS=0``) the prompt builder ignores
-            # the map and falls back to the legacy plain-body rendering.
-            paragraph_map=spec.paragraph_map,
-            # Chunk D4.1: forward the per-spec deterministic alerts so the
-            # model knows what local rules already detected and skips
-            # duplicating them as new findings. ``None`` keeps the legacy
-            # message shape for callers (older tests, repair-batch path
-            # when alerts aren't recomputed) that don't pass the map.
-            pre_detected_alerts=spec_pre_detected,
+        built = build_review_request(
+            ReviewRequestSpec(
+                spec_content=spec.content,
+                filename=spec.filename,
+                model=model,
+                cycle=cycle,
+                mode=mode if isinstance(mode, ReviewMode) else DEFAULT_REVIEW_MODE,
+                project_context=project_context,
+                paragraph_map=spec.paragraph_map,
+                pre_detected_alerts=spec_pre_detected,
+                retry_instruction=retry_instruction,
+                batch=True,
+            )
         )
-        if retry_instruction:
-            user_message += f"\n\n{retry_instruction}"
-        approx_input_tokens = system_tokens + count_tokens(user_message)
-        allow_extended = (
-            model_supports_extended
-            and approx_input_tokens >= LARGE_REVIEW_INPUT_THRESHOLD
-        )
-        if allow_extended:
+        if built.allow_extended_output:
             any_extended_output = True
-        output_limit = review_max_tokens(
-            batch=True,
-            model=model,
-            allow_extended_output=allow_extended,
+        # Fail-fast guard: 300k requires the batch beta header. Plan
+        # Sprint 2 item 8 — never let a 300k request slip through without
+        # it. The builder still computes ``max_tokens`` for the extended
+        # path so the check fires before we hand the params to the SDK.
+        betas = (
+            [BATCH_OUTPUT_BETA]
+            if (built.allow_extended_output and hasattr(client, "beta"))
+            else None
         )
-        # Fail-fast guard: 300k requires the batch beta header. Plan Sprint
-        # 2 item 8 — never let a 300k request slip through without it.
-        betas = [BATCH_OUTPUT_BETA] if (allow_extended and hasattr(client, "beta")) else None
-        assert_extended_output_allowed(max_tokens=output_limit, betas=betas)
-        params: dict[str, Any] = {
-            "model": model,
-            "max_tokens": output_limit,
-            "system": system_payload,
-            "messages": [{"role": "user", "content": user_message}],
-        }
-        apply_thinking_config(params, model=model, phase=PHASE_BATCH_REVIEW)
-        # Chunk D1.2: pair the effort policy with the thinking config so
-        # batch review requests carry ``output_config.effort=high`` on
-        # supported models. ``apply_effort_config`` omits the field on
-        # Haiku / unknown models.
-        apply_effort_config(params, model=model, phase=PHASE_BATCH_REVIEW)
-        tier = batch_service_tier()
-        if tier:
-            params["service_tier"] = tier
-        if use_structured_tool:
-            # Same best-effort tool-use shape as the streaming path so batch
-            # results can be unpacked from a tool_use block instead of
-            # regex-extracting tagged JSON from the response text. With
-            # ``tool_choice=auto`` the model may still return text; the
-            # batch retrieval path keeps the tagged-JSON fallback reachable.
-            params["tools"] = structured_tools
-            params["tool_choice"] = structured_choice
-        batch_requests.append({"custom_id": custom_id, "params": params})
+        assert_extended_output_allowed(
+            max_tokens=built.params["max_tokens"], betas=betas
+        )
+        batch_requests.append({"custom_id": custom_id, "params": built.params})
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}
 
     use_beta = any_extended_output and hasattr(client, "beta")

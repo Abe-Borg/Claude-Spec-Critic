@@ -17,7 +17,6 @@ from .extraction_cache import (
     extract_multiple_specs_cached,
     extraction_cache_stats,
     get_cached_token_count,
-    token_count_cache_key,
 )
 from .preprocessor import preprocess_spec, detect_inconsistent_file_naming
 from .tokenizer import (
@@ -29,6 +28,12 @@ from .tokenizer import (
     safe_local_estimate,
 )
 from .reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_47, StreamCallback
+from .review_request_builder import (
+    ReviewRequestSpec,
+    build_token_count_request,
+    estimate_local_request_tokens,
+    review_request_cache_key,
+)
 from .batch import BatchJob, submit_review_batch, retrieve_review_results
 from .batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from .api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
@@ -43,7 +48,6 @@ from .verifier import (
 from .verification_cache import VerificationCache, cache_persist_enabled
 from .cross_checker import run_cross_check, run_chunked_cross_check
 from .code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
-from .prompts import get_system_prompt
 from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode, coerce_review_mode
 
 # Phase 7.1 (audit Section 11.1): log/progress callbacks accept explicit
@@ -403,6 +407,86 @@ class _PreparedSpecs:
     pre_detected_by_filename: dict[str, list[dict]] = field(default_factory=dict)
 
 
+# Chunk 3: how many specs we exact-count before falling back to a top-K
+# selection. The Anthropic ``count_tokens`` endpoint is a real API call —
+# every spec we count adds latency to preflight and consumes a token-
+# counting request. For typical project sizes (≤ this many specs) we count
+# every one so no spec slips past. Above the threshold we exact-count the
+# top K candidates ranked by the FULL local request shape, not the raw
+# spec body (plan task 7).
+_PREFLIGHT_EXACT_COUNT_ALL_THRESHOLD = 8
+_PREFLIGHT_EXACT_COUNT_TOP_K = 4
+
+
+def _run_exact_token_preflight(
+    request_specs: list[ReviewRequestSpec],
+    *,
+    model: str,
+    log: LogFn,
+) -> None:
+    """Validate each request fits under :data:`RECOMMENDED_MAX` with exact counts.
+
+    Chunk 3: counts the *same* request shape that the batch path will
+    submit (system prompt + user message including the ``<pre_detected>``
+    block + tool schema + cache controls). The cache is keyed on a hash
+    of the full request shape so a cached count is only reused when those
+    inputs are unchanged — adding or removing a ``pre_detected`` alert
+    deterministically invalidates the entry.
+
+    For small batches (``≤ _PREFLIGHT_EXACT_COUNT_ALL_THRESHOLD``) every
+    spec is exact-counted. Above the threshold the top-K ranked by full
+    local estimate are counted; the local-only gate in
+    :func:`_prepare_specs` still applies the model-aware safety factor
+    to the rest so an undercount cannot mask an overage.
+
+    Raises ``ValueError`` when any exact count exceeds the recommended
+    maximum. ``count_tokens_via_api`` returning ``None`` (preflight
+    disabled, missing key, SDK mismatch) is treated as "preflight
+    unavailable" — the local gate is the fallback authority.
+    """
+    if not request_specs:
+        return
+
+    if len(request_specs) <= _PREFLIGHT_EXACT_COUNT_ALL_THRESHOLD:
+        candidates = list(request_specs)
+    else:
+        # Rank by the FULL local request shape (system + user_message
+        # including pre_detected alerts). Reordering files cannot cause a
+        # smaller raw spec to bypass exact-count when its alert block
+        # makes the real request larger — plan task 7.
+        scored = sorted(
+            ((estimate_local_request_tokens(rs), idx, rs) for idx, rs in enumerate(request_specs)),
+            key=lambda triple: triple[0],
+            reverse=True,
+        )
+        candidates = [rs for _, _, rs in scored[:_PREFLIGHT_EXACT_COUNT_TOP_K]]
+
+    for rs in candidates:
+        cache_key = review_request_cache_key(rs)
+        exact_tokens = get_cached_token_count(cache_key)
+        if exact_tokens is None:
+            _, count_kwargs = build_token_count_request(rs)
+            exact_tokens = count_tokens_via_api(**count_kwargs)
+            if exact_tokens is not None:
+                cache_token_count(cache_key, exact_tokens)
+        if exact_tokens is None:
+            # Preflight unavailable for this spec — the local gate will
+            # still apply the model-aware safety factor in the caller.
+            continue
+        local = estimate_local_request_tokens(rs)
+        log(
+            f"Token preflight ({rs.filename}, model={model}): "
+            f"local~{local:,} | exact={exact_tokens:,}",
+            level="info",
+        )
+        if exact_tokens > RECOMMENDED_MAX:
+            raise ValueError(
+                f"Spec '{rs.filename}' is too large for a single API call: "
+                f"exact API token count {exact_tokens:,} exceeds recommended "
+                f"maximum {RECOMMENDED_MAX:,} for model {model}."
+            )
+
+
 def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE, model: str = REVIEW_MODEL_DEFAULT) -> _PreparedSpecs:
     spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
     if not spec_files:
@@ -506,96 +590,65 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             level="warning",
         )
 
-    system_prompt = get_system_prompt(cycle, mode=mode)
-    # Chunk D2.1: ``system_prompt`` is a function of batch-level inputs
-    # (``cycle``, ``mode``) and does not vary per spec, so count it once
-    # and reuse ``system_tokens`` in the per-spec local gate below.
-    # Same stability assumption as the batch submission path.
-    system_tokens = count_tokens(system_prompt)
-    ctx_tokens = count_tokens(project_context) if project_context else 0
+    # Chunk 3: build a ReviewRequestSpec per ExtractedSpec so the preflight
+    # counts the same request shape that the batch path will submit. The
+    # builder owns the prompt construction including the ``<pre_detected>``
+    # alert block and the id-tagged paragraph rendering, so a spec with a
+    # small body but a large alert block cannot slip past preflight.
+    request_specs: list[ReviewRequestSpec] = [
+        ReviewRequestSpec(
+            spec_content=spec.content,
+            filename=spec.filename,
+            model=model,
+            cycle=cycle,
+            mode=mode,
+            project_context=project_context,
+            paragraph_map=spec.paragraph_map,
+            pre_detected_alerts=pre_detected_by_filename.get(spec.filename),
+            batch=True,
+        )
+        for spec in specs
+    ]
 
     # Chunk E directive 3: when the Anthropic ``count_tokens`` endpoint
     # returns a number, that is the authoritative gate. The local
     # cl100k_base count is only used as a fast pre-check and as the
-    # fallback when the API call is disabled or fails. The exact preflight
-    # below runs against the *largest* spec (it owns the worst case) and
-    # raises if that one exceeds the budget; before this fix, the local
-    # count was the only hard gate and the exact result was demoted to a
-    # log warning, so a real overage slid through silently.
-    from .prompts import get_single_spec_user_message
-    from .structured_schemas import review_findings_tool, structured_tool_output_enabled
-
-    exact_tokens: int | None = None
-    if token_count_preflight_enabled() and specs:
-        # Pick the largest spec by local count — it owns the worst-case
-        # input. Anthropic's exact count for that spec defines whether the
-        # whole job fits under ``RECOMMENDED_MAX``.
-        biggest = max(specs, key=lambda s: count_tokens(s.content))
-        user_message = get_single_spec_user_message(
-            biggest.content,
-            biggest.filename,
-            project_context=project_context,
-            cycle=cycle,
-            mode=mode,
-            # Chunk K2: preflight must measure the *real* user message, so
-            # the paragraph map flows in just like the production call.
-            paragraph_map=biggest.paragraph_map,
-        )
-        # Match the actual request shape: when the custom-tool flag is on,
-        # the tool definition adds real input tokens that the preflight
-        # should count. Including tools in the cache key prevents stale
-        # hits when the tool schema changes between runs. Chunk E directive
-        # 2: use the *selected* model so the count reflects the model that
-        # will actually run the request (Haiku tokenization differs from Opus).
-        preflight_tools = [review_findings_tool()] if structured_tool_output_enabled() else None
-        cache_key = token_count_cache_key(
+    # fallback when the API call is disabled or fails.
+    #
+    # Chunk 3 plan task 7: rank candidates by the FULL local request shape
+    # (system + user_message including pre_detected alerts) rather than by
+    # raw spec body length. Reordering files cannot cause a smaller raw
+    # spec to bypass exact-count when its wrapper / alerts make the real
+    # request larger.
+    if token_count_preflight_enabled() and request_specs:
+        _run_exact_token_preflight(
+            request_specs,
             model=model,
-            system_prompt=system_prompt,
-            user_message=user_message,
-            project_context=project_context,
-            cycle_label=cycle.label,
-            mode=mode.value,
-            tools=preflight_tools,
+            log=log,
         )
-        exact_tokens = get_cached_token_count(cache_key)
-        if exact_tokens is None:
-            exact_tokens = count_tokens_via_api(
-                model=model,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
-                tools=preflight_tools,
-            )
-            if exact_tokens is not None:
-                cache_token_count(cache_key, exact_tokens)
-        if exact_tokens is not None:
-            local = system_tokens + ctx_tokens + count_tokens(biggest.content)
-            log(
-                f"Token preflight ({biggest.filename}, model={model}): "
-                f"local~{local:,} | exact={exact_tokens:,}",
-                level="info",
-            )
-            if exact_tokens > RECOMMENDED_MAX:
-                raise ValueError(
-                    f"Spec '{biggest.filename}' is too large for a single API call: "
-                    f"exact API token count {exact_tokens:,} exceeds recommended "
-                    f"maximum {RECOMMENDED_MAX:,} for model {model}."
-                )
 
     # Per-spec local gate. Runs whether or not the exact preflight fired;
-    # if exact_tokens is available the largest spec is already known safe,
-    # but smaller specs may still trip the local + safety-factor gate.
+    # if exact counts are available the candidates are already known safe,
+    # but every spec must still pass the local + safety-factor gate.
     # Chunk E directive 5: apply the model-specific safety multiplier so a
     # cl100k_base undercount cannot mask a real overage.
+    # Chunk 3: the local gate also uses the *full* request shape (system +
+    # the materialized user message with pre_detected alerts) so the gate
+    # no longer undercounts when alerts dominate the request body.
     safety = local_estimate_safety_factor(model)
-    for spec in specs:
-        spec_tokens = count_tokens(spec.content)
-        est = system_tokens + ctx_tokens + spec_tokens
-        if exceeds_per_call_limit_for_model(spec_tokens, system_tokens + ctx_tokens, model=model):
-            padded = safe_local_estimate(est, model=model)
+    for spec, rs in zip(specs, request_specs):
+        total_local = estimate_local_request_tokens(rs)
+        # The exceeds-limit helper compares (spec + overhead) against the
+        # recommended max with the safety factor. We feed it ``total_local``
+        # as the spec component and zero overhead so the existing helper
+        # still applies the model-aware safety factor to the full count.
+        if exceeds_per_call_limit_for_model(total_local, 0, model=model):
+            padded = safe_local_estimate(total_local, model=model)
             raise ValueError(
                 f"Spec '{spec.filename}' is too large for a single API call: "
-                f"~{est:,} cl100k tokens (×{safety:.2f} safety factor for {model} "
-                f"→ ~{padded:,}) exceeds recommended max {RECOMMENDED_MAX:,}."
+                f"~{total_local:,} cl100k tokens (×{safety:.2f} safety factor "
+                f"for {model} → ~{padded:,}) exceeds recommended max "
+                f"{RECOMMENDED_MAX:,}."
             )
 
     cache_stats = extraction_cache_stats()
