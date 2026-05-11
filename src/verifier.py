@@ -13,7 +13,6 @@ from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitErr
 
 from .batch import (
     BatchJob,
-    build_verification_tools,
     build_verification_tools_for_profile,
     poll_batch,  # Backward-compatibility export for older tests/patching.
     retrieve_verification_results_detailed,
@@ -31,11 +30,7 @@ from .api_config import (
     PHASE_VERIFICATION_RETRY,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
-    apply_effort_config,
-    apply_thinking_config,
-    extract_cache_usage,
-    system_prompt_with_cache,
-    tools_with_cache,
+    model_supports_adaptive_thinking,
     verification_max_tokens,
 )
 from .prompt_serialization import (
@@ -53,11 +48,9 @@ from .verification_modes import (
     VerificationMode,
     mode_policy,
     mode_search_budget,
-    select_verification_mode,
 )
 from .verification_profiles import (
     VerificationProfile,
-    classify_finding_profile,
     profile_max_uses,
 )
 from .verification_router import (
@@ -66,6 +59,12 @@ from .verification_router import (
     initial_verification_model,
     local_skip_enabled,
     should_escalate_verification,
+)
+from .verification_routing import (
+    VerificationRoutingDecision,
+    apply_routing_to_result,
+    build_verification_request,
+    select_routing,
 )
 
 # VERIFICATION_MAX_TOKENS is computed once at import for backward-compat
@@ -852,22 +851,22 @@ def verify_finding(
     if local_skip_enabled() and classify_finding_for_verification(finding) == "local_skip":
         return _local_skip_result()
 
-    # Chunk I: pick the initial model from the verification mode unless
-    # the caller passed an explicit override. The mode policy already
-    # encodes "Sonnet for STANDARD_REASONING, Opus for CRITICAL
-    # California/AHJ initial pass, Sonnet for STRICT_STRUCTURED" so the
-    # initial model just falls out of the policy lookup. Falling back
-    # to :func:`initial_verification_model` keeps backward compatibility
-    # for the (unusual) case where the mode policy returns an empty
-    # string for ``model``.
+    # Chunk 4: route the initial-model selection through the central
+    # decision selector so ``verify_finding`` and ``_run_verification_call``
+    # agree on which model the request will run on (the alternative —
+    # asking ``mode_policy`` directly here — risks diverging if the
+    # routing rules grow a new branch). The decision is recomputed
+    # inside ``_run_verification_call`` so the request build cannot
+    # accept a stale model; consulting it here is purely so the caller
+    # can pass ``selected_model`` into the call and let the
+    # ``model_override=`` keyword wire it through.
     if model is not None:
         selected_model = model
     else:
-        initial_mode = select_verification_mode(
-            finding, local_skip=False, escalated=escalated
+        initial_decision = select_routing(
+            finding, escalated=escalated, local_skip=False
         )
-        initial_policy = mode_policy(initial_mode)
-        selected_model = initial_policy.model or initial_verification_model()
+        selected_model = initial_decision.model or initial_verification_model()
     result = _run_verification_call(
         finding,
         cycle=cycle,
@@ -965,23 +964,32 @@ def _run_verification_call(
 
     Always returns a VerificationResult with the Phase 3 evidence fields
     populated (``model_used``, ``grounded``, ``escalated``, search counts).
+
+    Chunk 4: the routing decision and request shape are built through
+    :mod:`verification_routing` so the real-time path uses the same
+    selector and request builder as the batch initial / retry /
+    continuation paths.
     """
-    # Chunk H: classify the verification profile once per call. The
-    # profile drives the web_search budget (subordinate to severity per
-    # Directive 7) and stamps onto the result so reports and the cache
-    # can label what kind of claim this verdict belongs to. Classification
-    # is pure-function over the finding text so there is no API cost.
-    profile = classify_finding_profile(finding)
-    # Chunk I: explicit verification mode. Routing is a pure-function
-    # decision over the finding + the escalation flag (the local-skip
-    # branch is handled at the top of ``verify_finding`` so by the time
-    # we reach here the only LOCAL_SKIP path is the explicit local-skip
-    # result, not a remote call). The mode picks the model family +
-    # thinking config + search-budget multiplier — but an explicit
-    # ``model=`` keyword from the caller still wins so operator
-    # overrides and tests behave the same as before.
-    mode = select_verification_mode(finding, local_skip=False, escalated=escalated)
-    policy = mode_policy(mode)
+    # Chunk 4: single routing decision. The decision encodes profile,
+    # mode, model, thinking, search budget, escalation eligibility, and
+    # tool inclusion in one record. Both real-time and batch construct
+    # the same decision for the same finding, so the two paths cannot
+    # drift on which policy bundle is applied.
+    #
+    # ``local_skip=False`` is explicit: by the time we reach this
+    # function, ``verify_finding`` has already short-circuited the
+    # local-skip branch via ``classify_finding_for_verification``. We
+    # pass ``False`` so the selector does not re-run the classifier on
+    # the remote path.
+    decision = select_routing(
+        finding,
+        escalated=escalated,
+        local_skip=False,
+        model_override=model,
+        cache_phase=PHASE_VERIFICATION,
+    )
+    profile = decision.profile
+    mode = decision.mode
 
     def _make_unverified(explanation: str, *, search_requests: int = 0, search_errors: int = 0, search_successes: int = 0) -> VerificationResult:
         return _enforce_grounding_invariant(VerificationResult(
@@ -1006,76 +1014,45 @@ def _run_verification_call(
     # real-time path matches batch initial / retry / continuation. The
     # ``include_verdict_tool`` flag is computed once and threaded into both
     # so the prompt cannot claim a tool the request omits (or vice versa).
-    include_verdict_tool = verification_request_includes_verdict_tool()
+    include_verdict_tool = decision.include_verdict_tool
     prompt = _build_verification_prompt(
         finding, cycle=cycle, include_verdict_tool=include_verdict_tool
     )
     system_prompt = _get_verification_system_prompt(
         cycle, include_verdict_tool=include_verdict_tool
     )
-    # Chunk J: real-time verification reuses the same system prompt and
-    # tool list across every finding in a run, so the PHASE_VERIFICATION
-    # cache policy applies. Tool caching also wraps below.
-    system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_VERIFICATION)
-    # Chunk H/I: profile- and mode-aware web_search budget. The
-    # profile sets the ceiling for the kind of claim; severity
-    # modulates within it; the verification *mode* then applies a
-    # multiplier on top (STRICT_STRUCTURED gets half-budget, the
-    # rest get the full profile budget). The floor-of-1 inside
-    # :func:`mode_search_budget` ensures a profile/mode combination
-    # that scales to less than 1 still allows a single search so the
-    # model has *some* opportunity to ground.
-    profile_ceiling = profile_max_uses(profile, finding.severity)
-    effective_max_uses = mode_search_budget(mode, profile_ceiling=profile_ceiling)
-    tool_list = build_verification_tools_for_profile(profile, finding.severity)
-    # If the mode policy narrowed the search budget, overwrite the
-    # ``max_uses`` on the web_search tool block. We only patch the
-    # web_search tool entry — the verdict tool entry (when present)
-    # has no ``max_uses`` field. Doing this here (rather than in
-    # :func:`build_verification_tools_for_profile`) keeps that helper
-    # ignorant of mode policy so the batch / retry / continuation
-    # paths can choose to apply mode scaling at a different layer.
-    if tool_list and effective_max_uses != tool_list[0].get("max_uses"):
-        scaled_tool = dict(tool_list[0])
-        scaled_tool["max_uses"] = effective_max_uses
-        tool_list = [scaled_tool, *tool_list[1:]]
-    tools_payload = tools_with_cache(tool_list, phase=PHASE_VERIFICATION)
-    output_limit = verification_max_tokens(model=model)
-
-    # Centralized capability policy: omit ``thinking`` entirely on models
-    # that do not support it (e.g. Haiku 4.5). The verifier defaults to
-    # Sonnet 4.6 which supports adaptive thinking, but escalation paths or
-    # operator overrides may select a different model. Chunk I: the
-    # mode policy can also opt out of thinking even on a model that
-    # supports it (STRICT_STRUCTURED does this so a GRIPES finding
-    # doesn't burn thinking tokens on what is fundamentally an
-    # editorial check). When the mode opts out, we just skip the
-    # :func:`apply_thinking_config` call entirely so the
-    # ``thinking`` key never lands on the request payload.
-    stream_kwargs: dict = {
-        "model": model,
-        "max_tokens": output_limit,
-        "system": system_payload,
-        "tools": tools_payload,
-    }
-    if policy.thinking_enabled:
-        apply_thinking_config(stream_kwargs, model=model, phase=PHASE_VERIFICATION)
-    # Chunk D1.2: pair the effort policy with the thinking config. The
-    # effort lookup is model-aware: Sonnet on the initial pass receives
-    # ``medium`` and Opus on the escalation pass receives ``high``. The
-    # helper omits ``output_config`` for models that do not support it
-    # so a future Haiku-based verification mode would not break.
-    apply_effort_config(stream_kwargs, model=model, phase=PHASE_VERIFICATION)
+    # Chunk 4: route through the central :func:`build_verification_request`
+    # so the real-time path uses the same shape as the batch initial /
+    # retry / continuation paths. The builder applies cache controls,
+    # thinking, effort, and the mode-scaled web_search max_uses in one
+    # place; the only call-site decision is whether to include the
+    # batch ``service_tier`` (not for the streaming path).
+    stream_kwargs = build_verification_request(
+        decision,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        include_service_tier=False,
+    )
+    # The streaming path uses ``client.messages.stream(...)`` which
+    # accepts ``messages`` as a top-level kwarg, but the builder bundles
+    # it into the params dict. Lift it out so we can keep the same
+    # ``messages.append(...)`` continuation loop below.
+    messages = stream_kwargs.pop("messages")
 
     for attempt in range(max_retries + 1):
         try:
             all_responses = []
+            # Reset messages each attempt — the builder produces a fresh
+            # ``[{"role": "user", "content": prompt}]`` list and the
+            # continuation loop appends assistant turns as pauses occur.
             messages = [{"role": "user", "content": prompt}]
             # Each pause/continue cycle re-sends prompt + tools (cached, so
             # cheap on the prefix) but adds the prior assistant content to
-            # the context (uncached). 5 continuations covers normal web-
-            # search-heavy turns without unbounded growth on edge cases.
-            max_continuations = 5
+            # the context (uncached). Default 5 continuations covers normal
+            # web-search-heavy turns without unbounded growth on edge cases;
+            # the routing decision carries the cap so a future tuning pass
+            # can shrink it per mode.
+            max_continuations = decision.max_continuations
             for _ in range(max_continuations + 1):
                 # --- Streaming API required for web search server tool ---
                 with client.messages.stream(
@@ -1170,8 +1147,11 @@ def _run_verification_call(
             parsed.web_search_requests = total_search_requests
             parsed.successful_source_count = len(deduped_searched)
             parsed.search_error_count = total_search_errors
-            parsed.verification_profile = profile.value
-            parsed.verification_mode = mode.value
+            # Chunk 4: stamp the routed decision (mode/profile/escalation
+            # flag) onto the result via the centralized helper so the
+            # real-time path and the batch wave path use the same
+            # stamping routine.
+            apply_routing_to_result(decision, parsed)
             # Chunk H: validate cited sources against the URLs the API
             # actually fetched. Ungrounded citations are partitioned off
             # and the verdict is downgraded when every citation missed.
@@ -1356,43 +1336,37 @@ def _build_retry_request(
     model: str | None = None,
     severity: str | None = None,
     profile: VerificationProfile | str | None = None,
+    finding: Finding | None = None,
+    escalated: bool = False,
 ) -> dict:
-    selected = model or initial_verification_model()
-    # Chunk C: route through the shared tool builder so retry includes the
-    # verdict tool whenever structured outputs are enabled. Previously the
-    # retry path advertised submit_verification_verdict in the prompt but
-    # never attached it to the request, forcing fragile JSON-text fallback.
-    include_verdict_tool = verification_request_includes_verdict_tool()
-    # Chunk H: when a profile is known, route through the profile-aware
-    # tool builder so retry budgets match the initial call. Falling back
-    # to the severity-only builder keeps the legacy code path intact for
-    # callers (and tests) that have not supplied a profile.
-    if profile is not None:
-        tool_list = build_verification_tools_for_profile(profile, severity)
-    else:
-        tool_list = build_verification_tools(severity)
-    system_prompt = _get_verification_system_prompt(
-        cycle, include_verdict_tool=include_verdict_tool
+    """Build a verification retry request.
+
+    Chunk 4: routes through the central
+    :func:`verification_routing.build_verification_request` so the
+    retry path applies the same mode/profile/thinking/effort/budget
+    policy as the initial call. When the caller supplies a ``finding``
+    the decision is selected from it; otherwise we synthesize a
+    minimal stand-in from the legacy ``severity`` / ``profile`` /
+    ``model`` parameters so the legacy call sites and tests keep
+    working (the wave loop passes the finding through now).
+    """
+    decision = _retry_routing_decision(
+        finding=finding,
+        model_override=model,
+        severity=severity,
+        profile=profile,
+        escalated=escalated,
+        cache_phase=PHASE_VERIFICATION_RETRY,
     )
-    # Chunk E directive 6: route the retry budget through the centralized
-    # phase registry so a future tuning pass can give retries a different
-    # cap from the initial verification call by touching one map.
-    # Chunk J: retry requests share the same prefix as the initial wave.
-    # The PHASE_VERIFICATION_RETRY policy currently mirrors PHASE_VERIFICATION
-    # (cache=on); the parameter keeps the lever in the central registry.
-    request: dict = {
-        "model": selected,
-        "max_tokens": verification_max_tokens(model=selected, phase=PHASE_VERIFICATION_RETRY),
-        "system": system_prompt_with_cache(system_prompt, phase=PHASE_VERIFICATION_RETRY),
-        "tools": tools_with_cache(tool_list, phase=PHASE_VERIFICATION_RETRY),
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_RETRY)
-    # Chunk D1.2: retry waves reuse the verification-phase effort default
-    # so the retry request shape matches the initial wave on supported
-    # models.
-    apply_effort_config(request, model=selected, phase=PHASE_VERIFICATION_RETRY)
-    return request
+    system_prompt = _get_verification_system_prompt(
+        cycle, include_verdict_tool=decision.include_verdict_tool
+    )
+    return build_verification_request(
+        decision,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        include_service_tier=False,
+    )
 
 
 def _build_continuation_request(
@@ -1403,55 +1377,156 @@ def _build_continuation_request(
     model: str | None = None,
     severity: str | None = None,
     profile: VerificationProfile | str | None = None,
+    finding: Finding | None = None,
+    escalated: bool = False,
 ) -> dict:
-    selected = model or initial_verification_model()
-    # Chunk C: same fix as _build_retry_request — continuation requests
-    # also drop into structured-tool territory so the verdict tool must
-    # accompany web_search whenever the prompt mentions it.
-    include_verdict_tool = verification_request_includes_verdict_tool()
-    # Chunk H: prefer the profile-aware builder when the caller supplies
-    # a profile (the wave path threads it in from the finding); fall back
-    # to severity-only otherwise for backward compatibility.
-    if profile is not None:
-        tool_list = build_verification_tools_for_profile(profile, severity)
-    else:
-        tool_list = build_verification_tools(severity)
-    system_prompt = _get_verification_system_prompt(
-        cycle, include_verdict_tool=include_verdict_tool
+    """Build a verification continuation request.
+
+    Chunk 4: same routing path as the retry builder. The continuation
+    is distinguished by the ``assistant_content_blocks`` argument
+    which gets appended to the message list as the prior assistant
+    turn (no synthetic ``"continue"`` user turn — Chunk D1.1).
+    """
+    decision = _retry_routing_decision(
+        finding=finding,
+        model_override=model,
+        severity=severity,
+        profile=profile,
+        escalated=escalated,
+        cache_phase=PHASE_VERIFICATION_CONTINUATION,
     )
-    # Chunk E directive 6: tag this call site with the continuation phase
-    # so the phase registry owns the cap. Today retry and continuation
-    # share the verification cap; the parameter keeps the lever available.
-    # Chunk J: continuation requests reuse the same system+tools prefix as
-    # the initial / retry calls. The PHASE_VERIFICATION_CONTINUATION policy
-    # mirrors PHASE_VERIFICATION today; routing through the central
-    # registry keeps the policy decisions co-located.
-    #
-    # Chunk D1.1: server-tool ``pause_turn`` is resumed by re-sending the
-    # assistant response content as-is — no synthetic user ``"continue"``
-    # turn. The previous payload appended a ``{"role": "user", "content":
-    # [{"type": "text", "text": "continue"}]}`` block, which wasted tokens
-    # and interfered with thinking / tool-state continuity. The assistant
-    # block (with thinking blocks and tool_use_ids preserved exactly via
-    # ``_content_block_to_plain``) is enough for the model to resume.
-    request: dict = {
-        "model": selected,
-        "max_tokens": verification_max_tokens(model=selected, phase=PHASE_VERIFICATION_CONTINUATION),
-        "system": system_prompt_with_cache(system_prompt, phase=PHASE_VERIFICATION_CONTINUATION),
-        "tools": tools_with_cache(tool_list, phase=PHASE_VERIFICATION_CONTINUATION),
-        "messages": [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": assistant_content_blocks},
-        ],
-    }
-    apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_CONTINUATION)
-    # Chunk D1.2: continuations reuse the verification-phase effort default
-    # so the resumed request shape matches the original. Per D1.1, the
-    # resumed call carries the assistant content back as-is — pairing the
-    # effort policy here means the resumed request also keeps its effort
-    # tag instead of silently dropping back to the API default.
-    apply_effort_config(request, model=selected, phase=PHASE_VERIFICATION_CONTINUATION)
-    return request
+    system_prompt = _get_verification_system_prompt(
+        cycle, include_verdict_tool=decision.include_verdict_tool
+    )
+    return build_verification_request(
+        decision,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        assistant_content=assistant_content_blocks,
+        include_service_tier=False,
+    )
+
+
+def _retry_routing_decision(
+    *,
+    finding: Finding | None,
+    model_override: str | None,
+    severity: str | None,
+    profile: VerificationProfile | str | None,
+    escalated: bool,
+    cache_phase: str,
+) -> VerificationRoutingDecision:
+    """Build a routing decision for a retry / continuation request.
+
+    When the caller has the original ``finding`` we route through
+    :func:`select_routing` so the retry request inherits the same
+    mode / profile / thinking / budget policy as the initial call.
+
+    Otherwise (legacy callers / tests that lack the finding object)
+    we construct the decision directly from the legacy
+    ``(severity, profile)`` parameters via
+    :func:`_decision_from_legacy_params` — without round-tripping
+    through a synthetic Finding, which would invoke the keyword
+    classifier on whatever stand-in text we picked and could
+    accidentally route to a different mode than the caller meant.
+    """
+    if finding is not None:
+        return select_routing(
+            finding,
+            escalated=escalated,
+            local_skip=False,
+            model_override=model_override,
+            cache_phase=cache_phase,
+        )
+    return _decision_from_legacy_params(
+        severity=severity,
+        profile=profile,
+        model_override=model_override,
+        escalated=escalated,
+        cache_phase=cache_phase,
+    )
+
+
+def _decision_from_legacy_params(
+    *,
+    severity: str | None,
+    profile: VerificationProfile | str | None,
+    model_override: str | None,
+    escalated: bool,
+    cache_phase: str,
+) -> VerificationRoutingDecision:
+    """Build a routing decision from raw ``(severity, profile)`` inputs.
+
+    Used by the retry / continuation builders when the caller did not
+    supply a Finding. The decision is computed manually (mode_policy +
+    profile_max_uses + mode_search_budget) so the keyword classifier is
+    never consulted — passing the profile in explicitly is enough.
+
+    Falls back to STANDARD_REASONING for callers that pass no severity
+    and no profile (the most common legacy shape), matching the pre-
+    Chunk-4 behavior where retry / continuation used the default
+    verification phase shape (Sonnet + thinking + full budget).
+    """
+    from dataclasses import replace as _dc_replace  # local import
+
+    sev = (severity or "MEDIUM").strip().upper() or "MEDIUM"
+
+    # Resolve the profile. Unknown strings fall back to CONSTRUCTABILITY
+    # (the most permissive bucket) so a typo cannot route a real claim
+    # into INTERNAL_COORDINATION's tiny budget.
+    if profile is None:
+        resolved_profile = VerificationProfile.CONSTRUCTABILITY
+    elif isinstance(profile, VerificationProfile):
+        resolved_profile = profile
+    else:
+        try:
+            resolved_profile = VerificationProfile(str(profile))
+        except ValueError:
+            resolved_profile = VerificationProfile.CONSTRUCTABILITY
+
+    # Mode: escalation forces DEEP_REASONING; GRIPES → STRICT_STRUCTURED;
+    # non-GRIPES internal-coordination → STRICT_STRUCTURED; otherwise
+    # STANDARD_REASONING. This mirrors the priority order in
+    # :func:`select_verification_mode` minus the local-skip branch
+    # (legacy retry / continuation never receives a local-skip finding,
+    # so we don't bother computing it).
+    if escalated:
+        mode = VerificationMode.DEEP_REASONING
+    elif sev == "GRIPES":
+        mode = VerificationMode.STRICT_STRUCTURED
+    elif resolved_profile is VerificationProfile.INTERNAL_COORDINATION:
+        mode = VerificationMode.STRICT_STRUCTURED
+    else:
+        mode = VerificationMode.STANDARD_REASONING
+
+    policy = mode_policy(mode)
+    selected_model = model_override or policy.model or initial_verification_model()
+
+    thinking_enabled = (
+        policy.thinking_enabled and model_supports_adaptive_thinking(selected_model)
+    )
+    profile_ceiling = profile_max_uses(resolved_profile, sev)
+    max_uses = mode_search_budget(mode, profile_ceiling=profile_ceiling)
+
+    include_verdict_tool = verification_request_includes_verdict_tool()
+
+    return VerificationRoutingDecision(
+        finding_id="",
+        severity=sev,
+        profile=resolved_profile,
+        mode=mode,
+        model=selected_model,
+        thinking_enabled=thinking_enabled,
+        web_search_enabled=policy.web_search_enabled,
+        web_search_max_uses=max_uses,
+        include_verdict_tool=include_verdict_tool,
+        cache_phase=cache_phase,
+        max_continuations=5,
+        escalation_eligible=policy.allows_escalation,
+        local_skip=False,
+        escalated=escalated,
+        trace_reason="legacy_retry_continuation",
+    )
 
 
 def _extract_message_text(message) -> str:
@@ -1543,22 +1618,30 @@ def _classify_wave_results(
         parsed.web_search_requests = _web_search_count(message)
         parsed.successful_source_count = len(deduped_searched)
         parsed.search_error_count = error_count
-        # Chunk H: stamp the verification profile on the result and run
-        # the source-grounding validator so the batch path produces the
-        # same accepted/rejected partition as the real-time path. The
-        # profile classifier is pure-function so calling it here costs
-        # nothing relative to the network round-trip we already took.
-        profile = classify_finding_profile(findings[finding_idx])
-        parsed.verification_profile = profile.value
-        # Chunk I: re-derive the verification mode so the batch wave
-        # path tags the result the same way the real-time path does.
-        # ``escalated`` here is whether this *finding* came from an
-        # escalation wave — the wave loop carries that through the
-        # request context.
-        wave_mode = select_verification_mode(
-            findings[finding_idx], local_skip=False, escalated=escalated
-        )
-        parsed.verification_mode = wave_mode.value
+        # Chunk 4: prefer the stored routing decision from the request
+        # context so the wave parser stamps the result with the *same*
+        # mode/profile/escalation the request was actually built against.
+        # Re-deriving from the finding alone (the pre-Chunk-4 behavior)
+        # could disagree with the request that ran — e.g. a STRICT_STRUCTURED
+        # initial call would get re-stamped as STANDARD_REASONING if the
+        # routing rules ever changed mid-flight, or vice versa.
+        stored_routing = context.get("routing")
+        if isinstance(stored_routing, dict):
+            decision = VerificationRoutingDecision.from_dict(stored_routing)
+            apply_routing_to_result(decision, parsed)
+        else:
+            # Legacy / first-wave path: rebuild the decision from the
+            # finding. This still flows through the same selector as the
+            # real-time path, so the result is identical to what would
+            # have been stored if Chunk 4 had been on at submission time.
+            decision = select_routing(
+                findings[finding_idx],
+                escalated=escalated,
+                local_skip=False,
+                model_override=model_used,
+                cache_phase=PHASE_VERIFICATION,
+            )
+            apply_routing_to_result(decision, parsed)
         parsed = _apply_source_grounding(parsed, searched=deduped_searched)
         parsed = _enforce_grounding_invariant(parsed)
         outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed))
@@ -1593,12 +1676,19 @@ def collect_verification_batch_results(
         if realtime_fallback_threshold is not None
         else _REALTIME_FALLBACK_THRESHOLD
     )
+    # Chunk 4: thread the routing decision from the batch submission's
+    # request_map into the wave-loop's request_contexts so the wave
+    # parser stamps results with the SAME decision the request was
+    # built against. Pre-Chunk-4 submissions stored no ``routing`` key,
+    # in which case the wave parser falls back to re-deriving the
+    # decision from the finding (matching the legacy behavior).
     request_contexts = {
         custom_id: {
             "finding_idx": meta["finding_idx"],
             "original_prompt": _build_verification_prompt(findings[meta["finding_idx"]], cycle=cycle),
             "model": meta.get("model") or initial_verification_model(),
             "escalated": False,
+            **({"routing": meta["routing"]} if meta.get("routing") else {}),
         }
         for custom_id, meta in job.request_map.items()
     }
@@ -1688,24 +1778,106 @@ def collect_verification_batch_results(
         next_contexts: dict[str, dict] = {}
         for item in needs_retry:
             original = request_contexts[item.original_custom_id]
-            wave_model = original.get("model") or initial_verification_model()
-            wave_severity = (findings[item.finding_idx].severity or "").strip().upper() or "GRIPES"
-            # Chunk H: thread the per-finding profile through retry waves so
-            # the search budget matches the initial call's profile-aware tier.
-            wave_profile = classify_finding_profile(findings[item.finding_idx]).value
+            wave_finding = findings[item.finding_idx]
+            wave_escalated = bool(original.get("escalated", False))
+            # Chunk 4: rebuild the routing decision for the retry wave
+            # through the central selector. ``model`` may have been
+            # set by the initial call (sticky across waves); pass it
+            # as an override so the retry uses the same model unless
+            # the decision selector explicitly chose a different one
+            # (it does not today, but stays consistent if it ever does).
+            retry_decision = select_routing(
+                wave_finding,
+                escalated=wave_escalated,
+                local_skip=False,
+                model_override=original.get("model"),
+                cache_phase=PHASE_VERIFICATION_RETRY,
+            )
+            wave_model = retry_decision.model
+            wave_severity = retry_decision.severity
+            wave_profile = retry_decision.profile.value
             custom_id = f"verify_retry_{wave_index + 1}__{item.original_custom_id}"
-            next_requests.append({"custom_id": custom_id, "params": _build_retry_request(original["original_prompt"], cycle=cycle, model=wave_model, severity=wave_severity, profile=wave_profile)})
-            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "retry", "model": wave_model, "severity": wave_severity, "profile": wave_profile}
-            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False), "severity": wave_severity, "profile": wave_profile}
+            next_requests.append({
+                "custom_id": custom_id,
+                "params": _build_retry_request(
+                    original["original_prompt"],
+                    cycle=cycle,
+                    model=wave_model,
+                    severity=wave_severity,
+                    profile=wave_profile,
+                    finding=wave_finding,
+                    escalated=wave_escalated,
+                ),
+            })
+            next_request_map[custom_id] = {
+                "finding_idx": item.finding_idx,
+                "wave": wave_index + 2,
+                "type": "retry",
+                "model": wave_model,
+                "severity": wave_severity,
+                "profile": wave_profile,
+                # Chunk 4: stash the full routing decision so the wave
+                # parser can stamp the result with the *actual* mode
+                # the request was built against, not a re-derived one.
+                "routing": retry_decision.to_dict(),
+            }
+            next_contexts[custom_id] = {
+                "finding_idx": item.finding_idx,
+                "original_prompt": original["original_prompt"],
+                "resolved": False,
+                "model": wave_model,
+                "escalated": wave_escalated,
+                "severity": wave_severity,
+                "profile": wave_profile,
+                "routing": retry_decision.to_dict(),
+            }
         for item in needs_continue:
             original = request_contexts[item.original_custom_id]
-            wave_model = original.get("model") or initial_verification_model()
-            wave_severity = (findings[item.finding_idx].severity or "").strip().upper() or "GRIPES"
-            wave_profile = classify_finding_profile(findings[item.finding_idx]).value
+            wave_finding = findings[item.finding_idx]
+            wave_escalated = bool(original.get("escalated", False))
+            cont_decision = select_routing(
+                wave_finding,
+                escalated=wave_escalated,
+                local_skip=False,
+                model_override=original.get("model"),
+                cache_phase=PHASE_VERIFICATION_CONTINUATION,
+            )
+            wave_model = cont_decision.model
+            wave_severity = cont_decision.severity
+            wave_profile = cont_decision.profile.value
             custom_id = f"verify_cont_{wave_index + 1}__{item.original_custom_id}"
-            next_requests.append({"custom_id": custom_id, "params": _build_continuation_request(original["original_prompt"], item.assistant_content_blocks or [], cycle=cycle, model=wave_model, severity=wave_severity, profile=wave_profile)})
-            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "continuation", "model": wave_model, "severity": wave_severity, "profile": wave_profile}
-            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False), "severity": wave_severity, "profile": wave_profile}
+            next_requests.append({
+                "custom_id": custom_id,
+                "params": _build_continuation_request(
+                    original["original_prompt"],
+                    item.assistant_content_blocks or [],
+                    cycle=cycle,
+                    model=wave_model,
+                    severity=wave_severity,
+                    profile=wave_profile,
+                    finding=wave_finding,
+                    escalated=wave_escalated,
+                ),
+            })
+            next_request_map[custom_id] = {
+                "finding_idx": item.finding_idx,
+                "wave": wave_index + 2,
+                "type": "continuation",
+                "model": wave_model,
+                "severity": wave_severity,
+                "profile": wave_profile,
+                "routing": cont_decision.to_dict(),
+            }
+            next_contexts[custom_id] = {
+                "finding_idx": item.finding_idx,
+                "original_prompt": original["original_prompt"],
+                "resolved": False,
+                "model": wave_model,
+                "escalated": wave_escalated,
+                "severity": wave_severity,
+                "profile": wave_profile,
+                "routing": cont_decision.to_dict(),
+            }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         current_job = submit_verification_followup_wave(next_requests, next_request_map)
         request_contexts = next_contexts

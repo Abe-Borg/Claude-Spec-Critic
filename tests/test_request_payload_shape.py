@@ -528,7 +528,15 @@ class TestBatchVerificationRequestShape:
         assert params["max_tokens"] <= VERIFICATION_OUTPUT_CAP
 
     def test_web_search_budget_varies_by_severity(self, fake_client):
-        # CRITICAL = 7; GRIPES = 3.
+        # Chunk 4: budget is mode-scaled. The fixture finding's
+        # ``codeReference="CBC 2025"`` routes it to the CODE_STANDARD
+        # profile (max_uses 7/7/5/3 for CRITICAL/HIGH/MEDIUM/GRIPES).
+        # CRITICAL CODE_STANDARD → STANDARD_REASONING mode (1.0×) = 7.
+        # GRIPES CODE_STANDARD → STRICT_STRUCTURED mode (0.5×) = round(3*0.5) → 2,
+        # with a floor of 1 so a non-zero multiplier always allows one search.
+        # The pre-Chunk-4 batch path returned the profile-only value (3 for
+        # GRIPES, no mode scaling); Chunk 4 aligns batch with real-time so
+        # both paths apply the mode multiplier.
         self._build(fake_client, severity="CRITICAL")
         critical_params = fake_client.captured[0].first_params()
         critical_web = next(
@@ -543,7 +551,7 @@ class TestBatchVerificationRequestShape:
             t for t in gripes_params["tools"]
             if (t.get("type") or "").startswith("web_search_")
         )
-        assert gripes_web["max_uses"] == 3
+        assert gripes_web["max_uses"] == 2
 
     def test_verification_request_messages_shape(self, fake_client):
         self._build(fake_client)
