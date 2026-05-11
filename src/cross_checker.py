@@ -14,7 +14,10 @@ from .tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .api_config import (
     CROSS_CHECK_MODEL_DEFAULT,
+    PHASE_CROSS_CHECK,
+    PHASE_SYNTHESIS,
     SYNTHESIS_MODEL_DEFAULT,
+    apply_thinking_config,
     cross_check_max_tokens,
     extract_cache_usage,
     synthesis_max_tokens,
@@ -161,10 +164,10 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     request_kwargs: dict = {
         "model": model,
         "max_tokens": output_limit,
-        "thinking": {"type": "adaptive"},
         "system": system_payload,
         "messages": [{"role": "user", "content": user_message}],
     }
+    apply_thinking_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
     if use_structured:
         request_kwargs["tools"] = [cross_check_findings_tool()]
         request_kwargs["tool_choice"] = cross_check_tool_choice()
@@ -474,10 +477,14 @@ def _run_cross_discipline_synthesis(
     request_kwargs: dict = {
         "model": selected_model,
         "max_tokens": output_limit,
-        "thinking": {"type": "adaptive"},
         "system": system_prompt_with_cache(system_prompt),
         "messages": [{"role": "user", "content": user_message}],
     }
+    # Synthesis defaults to Haiku 4.5, which does not support adaptive
+    # thinking; ``apply_thinking_config`` omits the key for unsupported
+    # models so the request stays valid. If an operator overrides the
+    # synthesis model to Opus/Sonnet, thinking is added automatically.
+    apply_thinking_config(request_kwargs, model=selected_model, phase=PHASE_SYNTHESIS)
     if structured_outputs_enabled():
         request_kwargs["tools"] = [cross_check_findings_tool()]
         request_kwargs["tool_choice"] = cross_check_tool_choice()

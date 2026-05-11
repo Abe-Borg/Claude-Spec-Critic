@@ -45,6 +45,7 @@ Feature flags (default-on unless noted):
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Iterable
 
 # ---------------------------------------------------------------------------
@@ -197,6 +198,132 @@ def assert_extended_output_allowed(*, max_tokens: int, betas: Iterable[str] | No
             f"Requested max_tokens={max_tokens:,} requires beta header "
             f"'{BATCH_OUTPUT_BETA}'. Refusing to submit without it."
         )
+
+
+# ---------------------------------------------------------------------------
+# Model capability policy (Chunk B)
+# ---------------------------------------------------------------------------
+#
+# Whitelist-style registry of per-model capabilities. The Anthropic API
+# rejects requests that include feature parameters the selected model does
+# not support — most notably ``thinking`` against Haiku 4.5, which produces
+# an API error. Prior to this policy, every request path hard-coded
+# ``thinking={"type": "adaptive"}``, which blew up the cross-discipline
+# synthesis path the moment its default model moved to Haiku.
+#
+# To add a new model: register it in ``_MODEL_CAPABILITIES``. Unknown model
+# IDs fall through to ``_DEFAULT_CAPABILITIES``, which disables every
+# capability flag — intentional. Stripping a feature from a future model is
+# strictly safer than sending an invalid request that fails deep in the
+# request lifecycle.
+
+
+@dataclass(frozen=True)
+class ModelCapabilities:
+    """Per-model feature support. Drives request-shape decisions."""
+
+    supports_adaptive_thinking: bool
+    max_output_tokens: int
+    supports_extended_output_beta: bool  # 300k batch-only beta header
+    context_window: int
+
+
+_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    MODEL_OPUS_46: ModelCapabilities(
+        supports_adaptive_thinking=True,
+        max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
+        supports_extended_output_beta=True,
+        context_window=1_000_000,
+    ),
+    MODEL_OPUS_47: ModelCapabilities(
+        supports_adaptive_thinking=True,
+        max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
+        supports_extended_output_beta=True,
+        context_window=1_000_000,
+    ),
+    MODEL_SONNET_46: ModelCapabilities(
+        supports_adaptive_thinking=True,
+        max_output_tokens=MAX_OUTPUT_TOKENS_SONNET,
+        supports_extended_output_beta=False,
+        context_window=1_000_000,
+    ),
+    MODEL_HAIKU_45: ModelCapabilities(
+        # Anthropic models overview lists Haiku 4.5 without adaptive
+        # thinking support; sending ``thinking`` to it returns an API error.
+        supports_adaptive_thinking=False,
+        max_output_tokens=MAX_OUTPUT_TOKENS_HAIKU,
+        supports_extended_output_beta=False,
+        context_window=200_000,
+    ),
+}
+
+
+# Unknown models: every capability flag defaults to False so we never
+# construct an invalid request payload. Output cap defaults to the Sonnet
+# ceiling, the most conservative of the supported models that still leaves
+# room for a meaningful response.
+_DEFAULT_CAPABILITIES = ModelCapabilities(
+    supports_adaptive_thinking=False,
+    max_output_tokens=MAX_OUTPUT_TOKENS_SONNET,
+    supports_extended_output_beta=False,
+    context_window=200_000,
+)
+
+
+def model_capabilities(model: str) -> ModelCapabilities:
+    """Return the capability record for ``model`` (or safe defaults)."""
+    return _MODEL_CAPABILITIES.get(model, _DEFAULT_CAPABILITIES)
+
+
+def model_supports_adaptive_thinking(model: str) -> bool:
+    """Whether ``model`` accepts the ``thinking`` request parameter."""
+    return model_capabilities(model).supports_adaptive_thinking
+
+
+# Phase identifiers used by ``thinking_config_for``. Strings (not an Enum)
+# to match the rest of the codebase. The set ``_PHASES_NO_THINKING`` is the
+# extension point for phases that should never request thinking regardless
+# of model capability — currently only the Haiku triage classifier, which
+# is a shallow batch-classification pass.
+PHASE_REVIEW = "review"
+PHASE_BATCH_REVIEW = "batch_review"
+PHASE_CROSS_CHECK = "cross_check"
+PHASE_SYNTHESIS = "synthesis"
+PHASE_VERIFICATION = "verification"
+PHASE_VERIFICATION_RETRY = "verification_retry"
+PHASE_VERIFICATION_CONTINUATION = "verification_continuation"
+PHASE_TRIAGE = "triage"
+
+
+_PHASES_NO_THINKING: frozenset[str] = frozenset({PHASE_TRIAGE})
+
+
+def thinking_config_for(*, model: str, phase: str) -> dict | None:
+    """Return the ``thinking`` request parameter for ``(model, phase)``.
+
+    Returns ``None`` when the parameter should be omitted entirely —
+    either the phase opts out, or the model does not support adaptive
+    thinking. Callers should branch on ``is None``; the Anthropic API
+    rejects ``thinking=null``.
+    """
+    if phase in _PHASES_NO_THINKING:
+        return None
+    if not model_supports_adaptive_thinking(model):
+        return None
+    return {"type": "adaptive"}
+
+
+def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
+    """Insert the ``thinking`` key into ``kwargs`` only when applicable.
+
+    Mutates and returns ``kwargs`` for fluent use. The key is omitted
+    entirely (not set to ``None``) when thinking is not applicable, because
+    the Anthropic API rejects ``thinking=null``.
+    """
+    config = thinking_config_for(model=model, phase=phase)
+    if config is not None:
+        kwargs["thinking"] = config
+    return kwargs
 
 
 # ---------------------------------------------------------------------------

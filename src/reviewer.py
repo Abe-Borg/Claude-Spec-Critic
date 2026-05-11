@@ -19,7 +19,9 @@ from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
 from .api_config import (
     MODEL_OPUS_46,
     MODEL_OPUS_47,
+    PHASE_REVIEW,
     REVIEW_MODEL_DEFAULT,
+    apply_thinking_config,
     extract_cache_usage,
     review_max_tokens,
     system_prompt_with_cache,
@@ -254,10 +256,10 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
     request_kwargs: dict = {
         "model": model,
         "max_tokens": output_limit,
-        "thinking": {"type": "adaptive"},
         "system": system_payload,
         "messages": [{"role": "user", "content": user_message}],
     }
+    apply_thinking_config(request_kwargs, model=model, phase=PHASE_REVIEW)
     if use_structured:
         request_kwargs["tools"] = [review_findings_tool()]
         request_kwargs["tool_choice"] = review_tool_choice()
