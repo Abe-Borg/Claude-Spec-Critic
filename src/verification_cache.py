@@ -49,7 +49,15 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # JSON schema version for the on-disk cache file. Bumped when the entry
 # shape changes incompatibly so older readers can refuse to load instead of
 # silently mis-deserializing.
-_CACHE_SCHEMA_VERSION = 1
+#
+# Chunk 5 — bumped to 2 to invalidate pre-Chunk-5 entries that may have
+# stored a CONFIRMED/CORRECTED verdict without an accepted external
+# citation. The strengthened
+# :func:`src.verifier._enforce_grounding_invariant` would now downgrade
+# those verdicts, so silently reusing them would let the old behavior
+# leak through. Bumping the version drops every v1 cache file on first
+# load; users get fresh verifications under the new invariant.
+_CACHE_SCHEMA_VERSION = 2
 
 
 def _normalize(text: str | None) -> str:
@@ -162,6 +170,16 @@ class VerificationCache:
         # results that came from an unsuccessful local skip path. We only
         # want to share *grounded* verdicts across findings.
         if not getattr(result, "grounded", False):
+            return
+        # Chunk 5: also refuse to cache a CONFIRMED/CORRECTED that lacks
+        # any accepted external citation. The verifier's
+        # ``_enforce_grounding_invariant`` would have downgraded such a
+        # result to UNVERIFIED before reaching here; this is defense in
+        # depth against a test or future call site that puts directly.
+        verdict_upper = (getattr(result, "verdict", "") or "").strip().upper()
+        if verdict_upper in ("CONFIRMED", "CORRECTED") and not (
+            getattr(result, "accepted_sources", None) or getattr(result, "sources", None)
+        ):
             return
         key = make_cache_key(finding, cycle=cycle)
         with self._lock:
@@ -285,6 +303,18 @@ class VerificationCache:
                 if not entry_result.grounded:
                     # Defensive: only grounded entries should ever be on
                     # disk, but reject any that slipped in.
+                    continue
+                # Chunk 5: belt-and-suspenders. The schema bump drops
+                # every v1 entry, but a v2 entry that somehow shipped
+                # without an accepted citation should still be rejected
+                # here — otherwise it would silently power a
+                # source-less CONFIRMED on a cache hit. Mirrors the
+                # invariant in
+                # :func:`src.verifier._enforce_grounding_invariant`.
+                verdict_upper = (entry_result.verdict or "").strip().upper()
+                if verdict_upper in ("CONFIRMED", "CORRECTED") and not (
+                    entry_result.accepted_sources or entry_result.sources
+                ):
                     continue
                 self._entries[key] = _CacheEntry(
                     result=entry_result,

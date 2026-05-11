@@ -125,7 +125,18 @@ def test_verification_cache_distinguishes_different_claims():
     f2 = _make_finding(issue="CBC 2025 has been withdrawn", existing="per CBC 2025")
     # Same codeReference, different claim → different keys.
     assert make_cache_key(f1, cycle=DEFAULT_CYCLE) != make_cache_key(f2, cycle=DEFAULT_CYCLE)
-    cache.put(f1, cycle=DEFAULT_CYCLE, result=VerificationResult(verdict="CONFIRMED", grounded=True))
+    # Chunk 5: a CONFIRMED result must carry at least one source to be
+    # cacheable. Include one so this test is exercising key distinction
+    # rather than coincidentally hitting the new put-time reject path.
+    cache.put(
+        f1,
+        cycle=DEFAULT_CYCLE,
+        result=VerificationResult(
+            verdict="CONFIRMED",
+            grounded=True,
+            sources=["https://dgs.ca.gov"],
+        ),
+    )
     assert cache.get(f2, cycle=DEFAULT_CYCLE) is None
     assert cache.stats()["misses"] == 1
 
@@ -191,9 +202,17 @@ def test_prepare_findings_for_verification_resolves_local_and_cached(monkeypatch
 
     cache = VerificationCache()
     cached_finding = _make_finding(issue="cached claim")
+    # Chunk 5: cached CONFIRMED must carry an accepted citation. The
+    # cache silently refuses to store CONFIRMED/CORRECTED results
+    # without one (the strengthened invariant), so the test asserts the
+    # cache-hit path with a well-formed source-bearing entry.
     cache.put(
         cached_finding, cycle=DEFAULT_CYCLE,
-        result=VerificationResult(verdict="CONFIRMED", grounded=True),
+        result=VerificationResult(
+            verdict="CONFIRMED",
+            grounded=True,
+            sources=["https://dgs.ca.gov"],
+        ),
     )
 
     skip_finding = _make_finding(severity="GRIPES", code_ref=None, issue="placeholder TBD content")

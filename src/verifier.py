@@ -172,16 +172,70 @@ class VerificationResult:
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
     """Downgrade verified-but-ungrounded verdicts to UNVERIFIED.
 
-    Plan 7.5 acceptance: a result cannot be marked verified if ``grounded``
-    is False. Locally-skipped findings are exempt — they are explicitly
-    UNVERIFIED already and never claim CONFIRMED.
+    Chunk 5 tightens the invariant: an *externally* verified
+    ``CONFIRMED`` / ``CORRECTED`` result must carry at least one
+    accepted external citation. The previous behavior only required
+    ``grounded=True`` (i.e., the search tool returned at least one
+    successful block); that permitted a CONFIRMED to slip through with
+    ``cited_sources=[]`` because the model declined to cite anything,
+    which is an audit liability for the report.
+
+    Two separate downgrade paths now flow through this single function:
+
+    1. ``not grounded`` — search did not produce any usable evidence at
+       all. This is the original Phase 3 / plan 7.5 invariant.
+    2. ``grounded`` but no accepted citation — search ran, but the
+       model either cited nothing or every cited URL was rejected by
+       :func:`_apply_source_grounding`. The plan calls this out
+       explicitly: "Ensure invented, uncited, or unaccepted sources are
+       not used to satisfy the invariant."
+
+    Locally-skipped findings are exempt by construction — they are
+    already ``UNVERIFIED`` with ``cache_status="local_skip"`` so the
+    CONFIRMED/CORRECTED branch can never match.
+
+    For backward compatibility with unit tests that construct a result
+    directly (without flowing through :func:`_apply_source_grounding`),
+    the helper accepts either ``accepted_sources`` or the legacy public
+    ``sources`` list as evidence — in production these two lists are
+    kept in sync by ``_apply_source_grounding``, so the OR check only
+    matters for tests that pre-date Chunk H.
     """
     verdict = (result.verdict or "").strip().upper()
-    if verdict in ("CONFIRMED", "CORRECTED") and not result.grounded:
+    if verdict not in ("CONFIRMED", "CORRECTED"):
+        return result
+
+    if not result.grounded:
         result.verdict = "UNVERIFIED"
         suffix = " (downgraded: verdict lacked external grounding)"
         if not result.explanation:
             result.explanation = "Verdict downgraded to UNVERIFIED: no external evidence."
+        elif suffix not in result.explanation:
+            result.explanation = result.explanation + suffix
+        return result
+
+    # Chunk 5: a grounded search alone is not enough — the model must
+    # actually cite at least one source that survived
+    # :func:`_apply_source_grounding`. ``accepted_sources`` is the
+    # canonical post-validation list; ``sources`` is checked too only
+    # so legacy unit tests that bypass the partition still pass (the
+    # production path keeps both lists in sync).
+    has_accepted = bool(result.accepted_sources) or bool(result.sources)
+    if not has_accepted:
+        result.verdict = "UNVERIFIED"
+        # The downgrade implies the result is no longer "grounded" for
+        # report-status purposes — keeps :func:`classify_status` from
+        # promoting it back to VERIFIED_SUPPORTED on a stale ``grounded``
+        # flag.
+        result.grounded = False
+        suffix = (
+            " (downgraded: no accepted external citation was provided)"
+        )
+        if not result.explanation:
+            result.explanation = (
+                "Verdict downgraded to UNVERIFIED: no accepted external "
+                "citation was provided."
+            )
         elif suffix not in result.explanation:
             result.explanation = result.explanation + suffix
     return result

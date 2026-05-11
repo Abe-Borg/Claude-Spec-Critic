@@ -97,10 +97,20 @@ def _verification(
     rejected: list[dict] | None = None,
     correction: str | None = None,
 ) -> VerificationResult:
+    # Chunk 5: a grounded CONFIRMED/CORRECTED requires at least one
+    # accepted external citation. Default to a representative one so
+    # individual tests focused on status / edit-action classification
+    # do not have to thread sources through every call.
+    if sources is None:
+        sources = (
+            ["https://dgs.ca.gov"]
+            if grounded and verdict.upper() in ("CONFIRMED", "CORRECTED")
+            else []
+        )
     return VerificationResult(
         verdict=verdict,
         explanation=explanation,
-        sources=list(sources or []),
+        sources=list(sources),
         correction=correction,
         grounded=grounded,
         cache_status=cache_status,

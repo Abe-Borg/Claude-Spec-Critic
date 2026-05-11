@@ -143,9 +143,14 @@ def test_cache_save_atomic_does_not_corrupt_existing(tmp_path, monkeypatch):
 
     cache = VerificationCache()
     f = _make_finding(severity="HIGH", code_ref="CBC 2025")
+    # Chunk 5: CONFIRMED entries must carry at least one source.
     cache.put(
         f, cycle=DEFAULT_CYCLE,
-        result=VerificationResult(verdict="CONFIRMED", grounded=True),
+        result=VerificationResult(
+            verdict="CONFIRMED",
+            grounded=True,
+            sources=["https://dgs.ca.gov"],
+        ),
     )
     cache.save_to_disk()
     original_bytes = (tmp_path / "cache.json").read_bytes()
@@ -157,7 +162,9 @@ def test_cache_save_atomic_does_not_corrupt_existing(tmp_path, monkeypatch):
     cache.save_to_disk()
     new_bytes = (tmp_path / "cache.json").read_bytes()
     payload = json.loads(new_bytes.decode("utf-8"))
-    assert payload["version"] == 1
+    # Chunk 5: schema version bumped to 2 to invalidate pre-Chunk-5
+    # entries that may have stored source-less CONFIRMED/CORRECTED.
+    assert payload["version"] == 2
     assert len(payload["entries"]) == 1
 
 
@@ -227,8 +234,10 @@ def test_cache_ttl_drops_old_entries_on_load(tmp_path, monkeypatch):
     monkeypatch.setenv("SPEC_CRITIC_CACHE_PATH", str(cache_path))
     monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS", "30")
 
+    # Chunk 5: schema version is now 2; the test entries must carry an
+    # accepted source (or the load-time invariant check rejects them).
     payload = {
-        "version": 1,
+        "version": 2,
         "saved_at": time.time(),
         "entries": {
             "stale_key": {
@@ -236,7 +245,8 @@ def test_cache_ttl_drops_old_entries_on_load(tmp_path, monkeypatch):
                 "result": {
                     "verdict": "CONFIRMED",
                     "grounded": True,
-                    "sources": [],
+                    "sources": ["https://dgs.ca.gov"],
+                    "accepted_sources": ["https://dgs.ca.gov"],
                     "explanation": "old",
                     "model_used": "claude-sonnet-4-6",
                     "escalated": False,
@@ -251,7 +261,8 @@ def test_cache_ttl_drops_old_entries_on_load(tmp_path, monkeypatch):
                 "result": {
                     "verdict": "CONFIRMED",
                     "grounded": True,
-                    "sources": [],
+                    "sources": ["https://dgs.ca.gov"],
+                    "accepted_sources": ["https://dgs.ca.gov"],
                     "explanation": "fresh",
                     "model_used": "claude-sonnet-4-6",
                     "escalated": False,
@@ -286,9 +297,14 @@ def test_cache_cycle_label_isolation(tmp_path, monkeypatch):
     cache = VerificationCache()
     f = _make_finding(code_ref="CBC §1004", issue="Edition is current")
     future_cycle = replace(CALIFORNIA_2025, label="2028", cbc="2028")
+    # Chunk 5: CONFIRMED requires an accepted source.
     cache.put(
         f, cycle=CALIFORNIA_2025,
-        result=VerificationResult(verdict="CONFIRMED", grounded=True),
+        result=VerificationResult(
+            verdict="CONFIRMED",
+            grounded=True,
+            sources=["https://dgs.ca.gov"],
+        ),
     )
     # Same finding under a different cycle label — different cache key.
     assert cache.get(f, cycle=future_cycle) is None
