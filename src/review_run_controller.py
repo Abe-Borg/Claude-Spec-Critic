@@ -302,6 +302,11 @@ def run_review_thread(app, run_epoch: int) -> None:
                         "web_search_requests": v.web_search_requests,
                         "successful_source_count": v.successful_source_count,
                         "search_error_count": v.search_error_count,
+                        # Chunk I: surface the routing decision in
+                        # diagnostics so a run summary can show how
+                        # many findings each mode handled.
+                        "verification_mode": v.verification_mode,
+                        "verification_profile": v.verification_profile,
                     }
                     if v.sources:
                         event_data["sources"] = v.sources[:3]

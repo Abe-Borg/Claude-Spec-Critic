@@ -272,6 +272,16 @@ def collect_batch_results(app) -> None:
                                     "finding_severity": f.severity,
                                     "confidence": f.confidence,
                                     "explanation": f.verification.explanation or "",
+                                    # Chunk I: keep the batch path's
+                                    # event payload aligned with the
+                                    # real-time path so diagnostics
+                                    # totals come out the same shape
+                                    # in either mode.
+                                    "verification_mode": f.verification.verification_mode,
+                                    "verification_profile": f.verification.verification_profile,
+                                    "grounded": f.verification.grounded,
+                                    "cache_status": f.verification.cache_status,
+                                    "escalated": f.verification.escalated,
                                 })
                     diag.log("verification", "success", "Verification complete", {"verdicts": verdicts})
 

@@ -29,6 +29,7 @@ markers = [
     "token_budget: Chunk E token counting and output budget regression tests",
     "prompt_serialization: Chunk G prompt boundary / serialization hardening tests",
     "source_grounding: Chunk H source-grounding and verification-profile tests",
+    "verification_modes: Chunk I verification-mode and model-routing tests",
     "slow: tests that are noticeably slower than the rest of the suite",
     "network: tests that require real Anthropic API access (skipped by default)",
 ]

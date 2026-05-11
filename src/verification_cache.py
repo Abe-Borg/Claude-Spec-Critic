@@ -253,6 +253,13 @@ class VerificationCache:
                         verification_profile=str(
                             result_payload.get("verification_profile") or ""
                         ),
+                        # Chunk I: stored verification mode. Missing on
+                        # pre-Chunk-I entries — defaults to "" so the
+                        # routing logic falls back to current behavior
+                        # the next time the entry is used.
+                        verification_mode=str(
+                            result_payload.get("verification_mode") or ""
+                        ),
                     )
                 except Exception:
                     continue
@@ -330,6 +337,11 @@ def _result_to_dict(result: "VerificationResult") -> dict:
         "accepted_sources": list(result.accepted_sources),
         "rejected_sources": [dict(r) for r in result.rejected_sources],
         "verification_profile": result.verification_profile,
+        # Chunk I: persist the verification mode so a restored cache hit
+        # carries the original routing decision into reports and
+        # diagnostics. Pre-Chunk-I entries (without this field) load as
+        # empty string; the routing logic treats that as STANDARD_REASONING.
+        "verification_mode": result.verification_mode,
     }
 
 
@@ -352,6 +364,7 @@ def _clone_for_store(result: "VerificationResult") -> "VerificationResult":
         accepted_sources=list(result.accepted_sources),
         rejected_sources=[dict(r) for r in result.rejected_sources],
         verification_profile=result.verification_profile,
+        verification_mode=result.verification_mode,
     )
 
 
@@ -374,4 +387,5 @@ def _clone_for_hit(stored: "VerificationResult") -> "VerificationResult":
         accepted_sources=list(stored.accepted_sources),
         rejected_sources=[dict(r) for r in stored.rejected_sources],
         verification_profile=stored.verification_profile,
+        verification_mode=stored.verification_mode,
     )

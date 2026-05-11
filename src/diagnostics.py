@@ -171,6 +171,14 @@ class DiagnosticsReport:
             "search_errors": 0,
             "search_requests": 0,
         }
+        # Chunk I: per-mode counter. Keys are the
+        # :class:`VerificationMode` string values; missing-mode events
+        # are bucketed under ``"unknown"`` so a legacy entry without a
+        # mode is still visible.
+        verification_modes: dict[str, int] = {}
+        # Chunk I: per-profile counter so reports can tell at a glance
+        # which kinds of claims dominated a run.
+        verification_profiles: dict[str, int] = {}
         for e in self.events:
             if e.data and "verdict" in e.data:
                 v = e.data["verdict"]
@@ -191,6 +199,10 @@ class DiagnosticsReport:
                     verification_stats["local_skips"] += 1
                 verification_stats["search_errors"] += int(e.data.get("search_error_count", 0) or 0)
                 verification_stats["search_requests"] += int(e.data.get("web_search_requests", 0) or 0)
+                mode_key = str(e.data.get("verification_mode") or "unknown")
+                verification_modes[mode_key] = verification_modes.get(mode_key, 0) + 1
+                profile_key = str(e.data.get("verification_profile") or "unknown")
+                verification_profiles[profile_key] = verification_profiles.get(profile_key, 0) + 1
 
         # Phase 9 plan 13.4: search-budget telemetry. We aggregate per-finding
         # search-request counts so a future tuning pass can see whether the
@@ -269,6 +281,11 @@ class DiagnosticsReport:
             "total_cache_read_input_tokens": total_cache_read_tokens,
             "verification_verdicts": verdicts,
             "verification_evidence": verification_stats,
+            # Chunk I: explicit routing visibility. Per-mode counts
+            # answer "which path handled how many findings?"; per-
+            # profile counts answer "what kind of claims dominated?".
+            "verification_modes": verification_modes,
+            "verification_profiles": verification_profiles,
             "search_budget": search_budget,
             "output_telemetry": output_telemetry,
             "severity_counts": severities,
@@ -373,6 +390,12 @@ class DiagnosticsReport:
                 f"local_skips={evidence['local_skips']}, "
                 f"search_errors={evidence['search_errors']}"
             )
+        modes_breakdown = s.get("verification_modes") or {}
+        if modes_breakdown:
+            lines.append(f"  Modes:           {modes_breakdown}")
+        profiles_breakdown = s.get("verification_profiles") or {}
+        if profiles_breakdown:
+            lines.append(f"  Profiles:        {profiles_breakdown}")
         if s["phase_durations"]:
             lines.append("  Phase Durations:")
             for phase, dur in s["phase_durations"].items():
