@@ -36,6 +36,8 @@ src/
 ├── verifier.py             # Verification (Sonnet/Opus routing, real-time fallback)
 ├── verification_router.py  # Initial / escalation model + local-skip classification
 ├── verification_cache.py   # Persistent claim-keyed verdict cache (JSON on disk)
+├── verification_profiles.py # Verification profile classifier + per-profile search budgets (Chunk H)
+├── source_grounding.py     # URL normalization + cited-source validation (Chunk H)
 ├── triage.py               # Haiku-based verification triage (opt-in)
 ├── verification_config.py  # Backward-compat re-exports from api_config
 ├── batch.py                # Anthropic Message Batches API wrapper
@@ -145,6 +147,8 @@ cache_read_input_tokens: int = 0
 
 ### VerificationResult (verifier.py)
 Phase 3 evidence model: `grounded`, `model_used`, `escalated`, `cache_status`, `web_search_requests`, `successful_source_count`, `search_error_count`. Verdicts cannot be `CONFIRMED` / `CORRECTED` unless `grounded` is True.
+
+Chunk H source-grounding evidence: `searched_sources` (URLs the web_search tool actually fetched), `cited_sources` (URLs the model emitted in its verdict payload), `accepted_sources` (cited URLs that matched a searched URL after normalization), `rejected_sources` (`[{"url", "reason"}]` for cited URLs that did not match any searched URL), and `verification_profile` (one of `code_standard` / `california_ahj` / `manufacturer` / `constructability` / `internal_coordination`). The public `sources` list is replaced with `accepted_sources` so reports never echo model-invented URLs. When the model emits citations but every citation is ungrounded, `CONFIRMED` / `CORRECTED` is downgraded to `UNVERIFIED` inside `_apply_source_grounding`.
 
 ### BatchSubmission / CollectedBatchState (pipeline.py)
 Carry `review_mode: str` so resume restores the exact prompt path.
@@ -371,19 +375,30 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 
 ## 6) Verification Routing and Web Search
 
-### Severity-tiered web-search budget
+### Verification profiles (Chunk H)
 
-| Severity | `web_search` `max_uses` |
-|---|---|
-| CRITICAL / HIGH | 7 |
-| MEDIUM | 5 |
-| GRIPES | 3 |
+Every verification call classifies the finding into one of five `VerificationProfile` values before the request is built:
 
-Applied identically in real-time and batch verification paths via `web_search_tool_for_severity(severity)`. Higher severities get more rope; editorial gripes get less. The grounding invariant still gates verdicts (`CONFIRMED` / `CORRECTED` require `grounded=True`), so cap variation never lets weak verdicts through.
+| Profile | When | `max_uses` ceiling (CRITICAL → HIGH → MEDIUM → GRIPES) |
+|---|---|---|
+| `california_ahj` | finding mentions California / DSA / HCAI / Title 24 / AHJ | 8 / 7 / 5 / 3 |
+| `code_standard` | finding cites a code section or a standards body (CBC, NFPA, ASHRAE, IAPMO, …) without California signals | 7 / 7 / 5 / 3 |
+| `manufacturer` | finding mentions a manufacturer / model number / datasheet / submittal | 6 / 5 / 4 / 3 |
+| `constructability` | default for substantive technical claims with no clear kind signal | 5 / 5 / 4 / 3 |
+| `internal_coordination` | finding mentions internal contradiction / placeholder / LEED / typo / duplicate paragraph | 2 / 2 / 1 / 1 |
 
-### Sources list
+`classify_finding_profile(finding)` lives in `src/verification_profiles.py`. Profile sets the ceiling and severity modulates within it (Chunk H Directive 7: severity is *subordinate* to profile). `build_verification_tools_for_profile(profile, severity)` in `batch.py` is the profile-aware variant of `build_verification_tools(severity)`; both real-time, batch initial, and batch retry / continuation builders route through it and stamp the profile string into `VerificationResult.verification_profile`.
 
-`VerificationResult.sources` contains only the URLs the model cited in its `submit_verification_verdict` payload. The full set of URLs the model retrieved across all `web_search` calls is preserved on `successful_source_count` for diagnostics.
+### Source grounding (Chunk H)
+
+Once a verdict is parsed, `_apply_source_grounding` (verifier.py) partitions sources into four explicit concepts:
+
+- `searched_sources` — URLs the web_search server tool actually retrieved.
+- `cited_sources` — URLs the model emitted in its `submit_verification_verdict` payload.
+- `accepted_sources` — cited URLs whose normalized form matched a searched URL.
+- `rejected_sources` — `[{"url", "reason"}]` for cited URLs that did not match any searched URL.
+
+Normalization (`source_grounding.normalize_url`) folds `http`/`https`, drops default ports / fragments / tracking params, sorts query params, and trims trailing slashes / cosmetic punctuation so trivial differences never cause a real citation to be rejected. The public `VerificationResult.sources` list is replaced with `accepted_sources` so reports and the verification cache never persist model-invented URLs. If the model emitted citations but **every citation was ungrounded**, `CONFIRMED` / `CORRECTED` is downgraded to `UNVERIFIED` with an explanation suffix (`(downgraded: model cited sources that did not appear in web_search results)`). Verdicts with no citations are not affected by this helper — the Phase 3 `_enforce_grounding_invariant` continues to handle the "no citations AND no searched sources" case.
 
 ### Source-quality blocklist
 

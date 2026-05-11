@@ -209,6 +209,16 @@ class VerificationCache:
                 if not isinstance(result_payload, dict):
                     continue
                 try:
+                    raw_rejected = result_payload.get("rejected_sources") or []
+                    rejected: list[dict] = []
+                    for r in raw_rejected:
+                        if isinstance(r, dict):
+                            rejected.append(
+                                {
+                                    "url": str(r.get("url") or ""),
+                                    "reason": str(r.get("reason") or ""),
+                                }
+                            )
                     entry_result = VerificationResult(
                         verdict=str(result_payload.get("verdict") or "UNVERIFIED"),
                         explanation=str(result_payload.get("explanation") or ""),
@@ -227,6 +237,22 @@ class VerificationCache:
                             result_payload.get("successful_source_count", 0) or 0
                         ),
                         search_error_count=int(result_payload.get("search_error_count", 0) or 0),
+                        # Chunk H source-grounding evidence. Pre-Chunk-H
+                        # entries lack these keys; the defaults below
+                        # preserve the cached verdict exactly.
+                        searched_sources=[
+                            str(s) for s in (result_payload.get("searched_sources") or []) if s
+                        ],
+                        cited_sources=[
+                            str(s) for s in (result_payload.get("cited_sources") or []) if s
+                        ],
+                        accepted_sources=[
+                            str(s) for s in (result_payload.get("accepted_sources") or []) if s
+                        ],
+                        rejected_sources=rejected,
+                        verification_profile=str(
+                            result_payload.get("verification_profile") or ""
+                        ),
                     )
                 except Exception:
                     continue
@@ -296,6 +322,14 @@ def _result_to_dict(result: "VerificationResult") -> dict:
         "web_search_requests": int(result.web_search_requests),
         "successful_source_count": int(result.successful_source_count),
         "search_error_count": int(result.search_error_count),
+        # Chunk H: persist the source-grounding partition + profile so a
+        # restored cache hit still shows reports the same accepted /
+        # rejected sources the original run produced.
+        "searched_sources": list(result.searched_sources),
+        "cited_sources": list(result.cited_sources),
+        "accepted_sources": list(result.accepted_sources),
+        "rejected_sources": [dict(r) for r in result.rejected_sources],
+        "verification_profile": result.verification_profile,
     }
 
 
@@ -313,6 +347,11 @@ def _clone_for_store(result: "VerificationResult") -> "VerificationResult":
         web_search_requests=result.web_search_requests,
         successful_source_count=result.successful_source_count,
         search_error_count=result.search_error_count,
+        searched_sources=list(result.searched_sources),
+        cited_sources=list(result.cited_sources),
+        accepted_sources=list(result.accepted_sources),
+        rejected_sources=[dict(r) for r in result.rejected_sources],
+        verification_profile=result.verification_profile,
     )
 
 
@@ -330,4 +369,9 @@ def _clone_for_hit(stored: "VerificationResult") -> "VerificationResult":
         web_search_requests=stored.web_search_requests,
         successful_source_count=stored.successful_source_count,
         search_error_count=stored.search_error_count,
+        searched_sources=list(stored.searched_sources),
+        cited_sources=list(stored.cited_sources),
+        accepted_sources=list(stored.accepted_sources),
+        rejected_sources=[dict(r) for r in stored.rejected_sources],
+        verification_profile=stored.verification_profile,
     )

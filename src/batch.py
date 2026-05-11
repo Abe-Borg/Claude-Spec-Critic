@@ -302,6 +302,38 @@ def build_verification_tools(severity: str | None = None) -> list[dict]:
     return tools
 
 
+def build_verification_tools_for_profile(
+    profile,
+    severity: str | None = None,
+) -> list[dict]:
+    """Profile-aware variant of :func:`build_verification_tools` (Chunk H).
+
+    The web_search ``max_uses`` is taken from
+    :func:`src.verification_profiles.profile_max_uses(profile, severity)`
+    so profile sets the ceiling and severity modulates within it. The
+    verdict tool inclusion still respects
+    :func:`verification_request_includes_verdict_tool`, identical to the
+    severity-only helper, so structured outputs being disabled has the
+    same effect on both paths.
+
+    ``profile`` can be a :class:`VerificationProfile`, its string value,
+    or ``None`` (treated as the constructability default). The helper
+    lives in :mod:`batch` rather than :mod:`verifier` to mirror the
+    existing helper and avoid a circular import — :mod:`verifier`
+    already depends on :mod:`batch`, not the reverse.
+    """
+    from .api_config import build_web_search_tool  # local import — keeps the
+    # `api_config` import surface inside this module small
+    from .verification_profiles import profile_max_uses as _profile_max_uses
+
+    max_uses = _profile_max_uses(profile, severity)
+    web_tool = build_web_search_tool(max_uses=max_uses)
+    tools: list[dict] = [web_tool]
+    if verification_request_includes_verdict_tool():
+        tools.append(verification_verdict_tool())
+    return tools
+
+
 def _build_verification_request_params(
     *,
     prompt: str,
@@ -310,6 +342,7 @@ def _build_verification_request_params(
     continue_turn: bool = False,
     model: str | None = None,
     severity: str | None = None,
+    profile: Any = None,
 ) -> dict[str, Any]:
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     if assistant_content is not None:
@@ -322,7 +355,15 @@ def _build_verification_request_params(
     # helper so every verification path agrees on the tool list. The system
     # prompt is built by the caller and must mirror this decision (see
     # ``verifier._get_verification_system_prompt``).
-    tool_list = build_verification_tools(severity)
+    # Chunk H: prefer the profile-aware helper when the caller supplied a
+    # profile so the batch path uses the same per-kind budget as the
+    # real-time path. Falling back to the severity-only helper keeps
+    # backward compatibility for callers (and tests) that have not
+    # opted in.
+    if profile is not None:
+        tool_list = build_verification_tools_for_profile(profile, severity)
+    else:
+        tool_list = build_verification_tools(severity)
     params: dict[str, Any] = {
         "model": selected_model,
         "max_tokens": verification_max_tokens(model=selected_model),
@@ -352,9 +393,18 @@ def submit_verification_batch(
     client = _get_client()
     reqs = []
     request_map = {}
+    # Chunk H: classify each finding once up front so the initial batch
+    # request inherits the same profile-aware web_search budget as the
+    # real-time path. The profile string also goes into ``request_map``
+    # so the wave loop can thread it into retry / continuation requests
+    # without re-classifying.
+    from .verification_profiles import classify_finding_profile  # local import
+    # to keep the public top-level surface of this module unchanged.
+
     for batch_idx, (finding_idx, finding) in enumerate(verifiable):
         custom_id = f"verify__{batch_idx}"
         severity = (finding.severity or "").strip().upper() or "GRIPES"
+        finding_profile = classify_finding_profile(finding).value
         reqs.append(
             {
                 "custom_id": custom_id,
@@ -363,6 +413,7 @@ def submit_verification_batch(
                     system_prompt=system_prompt_fn(cycle),
                     model=model,
                     severity=severity,
+                    profile=finding_profile,
                 ),
             }
         )
@@ -371,6 +422,7 @@ def submit_verification_batch(
             "finding_idx": finding_idx,
             "model": model or VERIFICATION_MODEL,
             "severity": severity,
+            "profile": finding_profile,
         }
 
     # Verification output is capped at 32k, well within both Sonnet and Opus
