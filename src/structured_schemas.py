@@ -158,6 +158,53 @@ REVIEW_FINDINGS_SCHEMA: dict[str, Any] = {
 }
 
 
+# Chunk M / plan section "Cross-Check Dependency Tracking": cross-check
+# findings extend the shared finding schema with two dependency-tracking
+# fields so post-verification suppression can be deterministic instead of
+# heuristic. Both fields are required arrays — empty is the explicit "no
+# dependency" / "no independent evidence" signal — so strict-mode
+# constrained sampling still has a deterministic shape. The shared
+# ``_FINDING_OBJECT_SCHEMA`` is untouched so review findings stay clean.
+def _build_cross_check_finding_object_schema() -> dict[str, Any]:
+    properties: dict[str, Any] = dict(_FINDING_OBJECT_SCHEMA["properties"])
+    properties["upstreamFindingIds"] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "Stable ids (e.g. 'rf-abc123def456') of the per-spec review "
+            "findings this coordination claim depends on. Cite each id "
+            "exactly as it appears in the ``id=\"...\"`` attribute on the "
+            "<prior> blocks. Use an empty array when the finding stands on "
+            "raw spec evidence alone."
+        ),
+    }
+    properties["independentEvidenceIds"] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "Element ids (e.g. 'p17', 't2r3') from the <para>/<row>/<heading> "
+            "wrappers in <spec> that independently support this coordination "
+            "claim — quoted spec text the finding stands on without needing "
+            "any per-spec review finding to be true. Use an empty array if "
+            "the finding is purely a coordination conclusion drawn from "
+            "prior findings with no raw-spec evidence of its own."
+        ),
+    }
+    required: list[str] = list(_FINDING_OBJECT_SCHEMA["required"]) + [
+        "upstreamFindingIds",
+        "independentEvidenceIds",
+    ]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": required,
+        "properties": properties,
+    }
+
+
+_CROSS_CHECK_FINDING_OBJECT_SCHEMA: dict[str, Any] = _build_cross_check_finding_object_schema()
+
+
 CROSS_CHECK_FINDINGS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -172,7 +219,7 @@ CROSS_CHECK_FINDINGS_SCHEMA: dict[str, Any] = {
         },
         "findings": {
             "type": "array",
-            "items": _FINDING_OBJECT_SCHEMA,
+            "items": _CROSS_CHECK_FINDING_OBJECT_SCHEMA,
             "description": "Zero or more cross-spec coordination findings.",
         },
     },

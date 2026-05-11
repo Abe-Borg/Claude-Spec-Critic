@@ -261,8 +261,36 @@ def _dedup_key(f: Finding) -> tuple:
     )
 
 
+def compute_finding_id(f: Finding) -> str:
+    """Compute a stable, deterministic id for a finding.
+
+    Chunk M / plan section "Cross-Check Dependency Tracking": each review
+    finding gets a stable id at dedup time so the cross-check pass can cite
+    those ids in ``upstreamFindingIds`` and the post-verification
+    suppression filter can match dependencies deterministically instead of
+    falling back to file/section overlap.
+
+    The id is derived from the same key the dedup helper uses, so two
+    findings with the same dedup identity share the same id (and a
+    representative carries the id of the group). The hash is truncated to
+    12 hex chars — collision risk is negligible at the per-run scale we
+    operate at (typically <100 findings) and the short form keeps the id
+    readable in transcripts and reports.
+    """
+    key = _dedup_key(f)
+    digest = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
+    return f"rf-{digest[:12]}"
+
+
 def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
     if len(findings) <= 1:
+        # Chunk M: singleton lists still need a stable finding_id so the
+        # cross-check pass can cite the review finding via upstream ids.
+        # The early-return path used to skip the loop below, which left
+        # the one finding unstamped.
+        for f in findings:
+            if not f.finding_id:
+                f.finding_id = compute_finding_id(f)
         return findings
     groups: dict[tuple, list[Finding]] = {}
     for f in findings:
@@ -275,6 +303,11 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             f = group[0]
             if not f.affected_files and f.fileName:
                 f.affected_files = [f.fileName]
+            # Chunk M: stamp a stable finding id so the cross-check pass can
+            # cite it via upstream_finding_ids. Computed from the dedup key
+            # so the id is deterministic across runs of the same content.
+            if not f.finding_id:
+                f.finding_id = compute_finding_id(f)
             out.append(f)
             continue
         group.sort(key=lambda f: (rank.get(f.severity, 99), -f.confidence))
@@ -287,6 +320,11 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
         # half. ``as_edit_proposal()`` reconstructs from legacy fields
         # when the representative was loaded from an older resume state.
         merged_proposal = rep.as_edit_proposal()
+        # Chunk M: derive the merged finding's id from the representative
+        # before issue-text mutation. The dedup key already collapses the
+        # whole group to one identity, so every member would hash to the
+        # same id; using rep is the cheaper of the two equivalent paths.
+        merged_id = rep.finding_id or compute_finding_id(rep)
         out.append(Finding(
             severity=rep.severity,
             fileName=files[0] if files else rep.fileName,
@@ -302,6 +340,7 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             insertPosition=rep.insertPosition,
             evidenceElementId=rep.evidenceElementId,
             edit_proposal=merged_proposal,
+            finding_id=merged_id,
         ))
     return out
 
@@ -605,21 +644,49 @@ def _log_cross_check_status(log: LogFn, cross: ReviewResult):
         log(f"Cross-check failed: {cross.error}", level="error")
 
 
-def _drop_cross_check_findings_with_disputed_upstream(
+def classify_cross_check_dependencies(
     cross_findings: list[Finding],
     review_findings: list[Finding],
     *,
     log: LogFn = _noop_log,
-) -> list[Finding]:
-    """Filter cross-check findings whose upstream review findings are DISPUTED.
+) -> tuple[list[Finding], list[Finding]]:
+    """Partition cross-check findings into (kept, suppressed) by upstream verdict.
 
-    Phase 5.3 (audit Section 9.3): when cross-check ran in parallel with
-    review verification, it may reference a review finding that ended up
-    DISPUTED. Coordination claims rooted in discredited upstream evidence
-    should not consume verification tokens. Match by ``(filename, section)``
-    overlap with at least one DISPUTED review finding; if no match is found
-    the cross-check finding is kept (provisional).
+    Chunk M / plan section "Cross-Check Dependency Tracking": when a
+    cross-check finding cites upstream review ids in ``upstream_finding_ids``,
+    those ids are the authoritative dependency check. The rules are:
+
+    * If at least one cited upstream is NOT DISPUTED, keep the finding —
+      the dependency still holds on the surviving upstream(s).
+    * If every cited upstream is DISPUTED but the finding has
+      ``independent_evidence_ids``, keep it — raw spec evidence stands on
+      its own even when the upstream finding falls.
+    * If every cited upstream is DISPUTED and there is no independent
+      evidence, suppress the finding with a reason naming the disputed
+      upstream(s) so the report can explain the decision.
+    * If the finding cites no upstream ids, fall back to the prior file +
+      section overlap heuristic. The fallback is labeled as such so
+      operators can see when the model failed to emit ids — typically a
+      sign that a future ID rollout is incomplete or that the fallback
+      tagged-JSON parser was used. ``suppression_reason`` carries the
+      fallback marker so the report can render the reduced confidence.
+
+    Returns ``(kept, suppressed)``. Suppressed findings have their
+    ``suppression_reason`` field set; callers should stash them on
+    ``ReviewResult.suppressed_findings`` rather than dropping them silently.
     """
+    # Build lookups keyed by stable finding id (Chunk M) and by the legacy
+    # (filename, section) tuple (pre-Chunk-M heuristic fallback). The id
+    # path is preferred when both are populated.
+    id_to_verdict: dict[str, str] = {}
+    id_to_finding: dict[str, Finding] = {}
+    for f in review_findings:
+        if not f.finding_id:
+            continue
+        verdict = (f.verification.verdict if f.verification else "") or ""
+        id_to_verdict[f.finding_id] = verdict
+        id_to_finding[f.finding_id] = f
+
     disputed_keys: set[tuple[str, str]] = set()
     for f in review_findings:
         if not f.verification or f.verification.verdict != "DISPUTED":
@@ -627,27 +694,114 @@ def _drop_cross_check_findings_with_disputed_upstream(
         files = list(f.affected_files) or [f.fileName]
         for fname in files:
             disputed_keys.add(((fname or "").strip().lower(), (f.section or "").strip().lower()))
-    if not disputed_keys:
-        return cross_findings
+
     kept: list[Finding] = []
-    dropped = 0
+    suppressed: list[Finding] = []
+    id_dropped = 0
+    fallback_dropped = 0
+
     for f in cross_findings:
+        upstream_ids = [uid for uid in (f.upstream_finding_ids or []) if uid]
+        if upstream_ids:
+            # ID-based path. Inspect every cited upstream's verdict to decide.
+            cited = [(uid, id_to_verdict.get(uid, "")) for uid in upstream_ids]
+            disputed_upstream = [
+                (uid, id_to_finding.get(uid))
+                for uid, verdict in cited
+                if verdict == "DISPUTED"
+            ]
+            non_disputed = [uid for uid, verdict in cited if verdict != "DISPUTED"]
+            if non_disputed:
+                # At least one upstream still stands — keep the finding.
+                kept.append(f)
+                continue
+            if f.independent_evidence_ids:
+                # Independent raw-spec evidence holds even when every cited
+                # upstream is discredited.
+                kept.append(f)
+                continue
+            # Every cited upstream disputed, no independent evidence — drop.
+            disputed_labels: list[str] = []
+            for uid, upstream in disputed_upstream:
+                if upstream is None:
+                    disputed_labels.append(uid)
+                    continue
+                label_parts = [uid]
+                if upstream.fileName:
+                    label_parts.append(upstream.fileName)
+                if upstream.section:
+                    label_parts.append(upstream.section)
+                disputed_labels.append(" — ".join(label_parts))
+            reason = (
+                "All cited upstream review findings were DISPUTED and no "
+                "independent spec evidence was provided. Disputed upstream(s): "
+                + "; ".join(disputed_labels)
+                + "."
+            )
+            f.suppression_reason = reason
+            suppressed.append(f)
+            id_dropped += 1
+            continue
+
+        # Fallback path: the model did not cite upstream ids (older payload,
+        # tagged-JSON fallback, or a coordination claim the model genuinely
+        # could not attribute). Use the legacy file+section heuristic.
+        if not disputed_keys:
+            kept.append(f)
+            continue
         files = list(f.affected_files) or [f.fileName]
         section_key = (f.section or "").strip().lower()
-        depends_on_disputed = any(
-            ((fname or "").strip().lower(), section_key) in disputed_keys
+        matched_keys = [
+            ((fname or "").strip().lower(), section_key)
             for fname in files
-        )
-        if depends_on_disputed:
-            dropped += 1
+            if ((fname or "").strip().lower(), section_key) in disputed_keys
+        ]
+        if not matched_keys:
+            kept.append(f)
             continue
-        kept.append(f)
-    if dropped:
+        reason = (
+            "Heuristic fallback: matched a DISPUTED review finding by "
+            f"(file, section) overlap on {matched_keys[0][0] or '<no file>'} / "
+            f"{matched_keys[0][1] or '<no section>'} because the cross-check "
+            "finding did not cite an upstream id."
+        )
+        f.suppression_reason = reason
+        suppressed.append(f)
+        fallback_dropped += 1
+
+    if id_dropped:
         log(
-            f"Cross-check: dropping {dropped} finding(s) whose upstream review "
-            "finding was DISPUTED.",
+            f"Cross-check: suppressing {id_dropped} finding(s) whose every "
+            "cited upstream review finding was DISPUTED (id-based).",
             level="warning",
         )
+    if fallback_dropped:
+        log(
+            f"Cross-check: suppressing {fallback_dropped} finding(s) whose "
+            "upstream review finding was DISPUTED (heuristic fallback by "
+            "file/section overlap because the cross-check finding did not "
+            "cite an upstream id).",
+            level="warning",
+        )
+    return kept, suppressed
+
+
+def _drop_cross_check_findings_with_disputed_upstream(
+    cross_findings: list[Finding],
+    review_findings: list[Finding],
+    *,
+    log: LogFn = _noop_log,
+) -> list[Finding]:
+    """Backward-compatible wrapper around :func:`classify_cross_check_dependencies`.
+
+    Returns only the kept findings so older callers (and the Phase 5 / 7
+    tests) keep their existing list-of-Finding signature. New pipeline code
+    should call :func:`classify_cross_check_dependencies` directly so it
+    can stash suppressed findings on the cross-check result for reporting.
+    """
+    kept, _suppressed = classify_cross_check_dependencies(
+        cross_findings, review_findings, log=log,
+    )
     return kept
 
 
@@ -738,16 +892,29 @@ def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, c
         # cross-check did not have access to verified findings yet, so it
         # may have built coordination claims on review findings that have
         # since been DISPUTED. Drop those before spending tokens verifying
-        # them. The reference is by section + filename + issue overlap;
-        # if no upstream is identifiable we keep the finding (provisional).
+        # them.
+        #
+        # Chunk M: the suppression is now ID-based when the model cited
+        # upstream review finding ids in ``upstream_finding_ids``. Findings
+        # that cited no ids fall back to the legacy (file, section)
+        # heuristic, labeled as a fallback in logs. Both paths stash the
+        # dropped findings on ``cross_check_result.suppressed_findings``
+        # with an explanatory ``suppression_reason`` so the report can
+        # explain the decision rather than silently making the finding
+        # disappear.
         if parallel and cross_verifiable:
-            cross_verifiable = _drop_cross_check_findings_with_disputed_upstream(
+            cross_verifiable, suppressed = classify_cross_check_dependencies(
                 cross_verifiable,
                 state.review_result.findings,
                 log=log,
             )
             if state.cross_check_result is not None:
                 state.cross_check_result.findings = cross_verifiable
+                # Preserve any prior suppressions (e.g., from a resumed
+                # session) and append the ones produced this round.
+                state.cross_check_result.suppressed_findings = (
+                    list(state.cross_check_result.suppressed_findings) + suppressed
+                )
         if verify and cross_verifiable:
             try:
                 progress(90.0, f"Submitting {len(cross_verifiable)} cross-check verification requests...")

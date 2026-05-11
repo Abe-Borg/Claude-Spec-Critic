@@ -136,9 +136,15 @@ class Finding:
     anchorText: str | None = None        # ADD only
     insertPosition: str | None = None    # "before" | "after" (ADD only)
     evidenceElementId: str | None = None # Chunk K3: cite a ParagraphMapping.element_id
+    finding_id: str = ""                                                 # Chunk M
+    upstream_finding_ids: list[str] = field(default_factory=list)        # Chunk M
+    independent_evidence_ids: list[str] = field(default_factory=list)    # Chunk M
+    suppression_reason: str | None = None                                # Chunk M
 ```
 
 Chunk K3: `evidenceElementId` is the optional pointer to the paragraph / row / heading the finding quotes. The structured tool schema lists it as required-but-nullable so strict-mode constrained sampling still has a deterministic shape; the parser normalizes empty strings to `None` and the resume serializer round-trips it. Legacy payloads (pre-Chunk-K) load with `evidenceElementId=None` and continue to flow through the existing text-matching locator path.
+
+Chunk M — cross-check dependency tracking: every review finding is stamped with a stable `finding_id` by `pipeline._deduplicate_findings` (derived from `_dedup_key` via `compute_finding_id`, so two findings with the same dedup identity share the same id). Cross-check findings carry the dependency-tracking fields: `upstream_finding_ids` cites the review-finding ids the coordination claim depends on, and `independent_evidence_ids` cites `ParagraphMapping.element_id` values from raw spec text that independently support the claim. The post-verification suppression filter (`pipeline.classify_cross_check_dependencies`) drops a cross-check finding only when every cited upstream is DISPUTED *and* there is no independent spec evidence — otherwise the finding survives. Findings without cited ids fall back to the legacy `(filename, section)` heuristic, labeled as such in logs. Dropped findings land on `ReviewResult.suppressed_findings` with `suppression_reason` set so the report can explain the decision rather than silently making the finding disappear. Pre-Chunk-M resume payloads load with `finding_id=""` and empty lists; the suppression filter falls back to the heuristic until the next cross-check pass populates the new fields.
 
 ### FindingGroup / FindingOccurrence (pipeline.py)
 Phase 1.3 formalization of the display-dedup vs. per-file edit-execution split. `group_findings(findings)` returns one `FindingGroup` per deduped finding, with one `FindingOccurrence` per file in `affected_files`. `expand_to_occurrences(findings)` flattens to per-file occurrences, skipping placeholders.
@@ -184,6 +190,8 @@ Carry `review_mode: str` so resume restores the exact prompt path.
 - `verification_verdict_tool()` (no forcing tool_choice; web_search runs first)
 - `extract_tool_use_block(response, tool_name)` — pulls the matching tool's `input` off a response (works on SDK objects and plain dicts)
 - `structured_outputs_enabled()` — env-toggle (default on)
+
+Chunk M: the cross-check tool uses `_CROSS_CHECK_FINDING_OBJECT_SCHEMA` (a chunk-M extension of the shared `_FINDING_OBJECT_SCHEMA`) which adds two required arrays — `upstreamFindingIds` (review-finding ids the coordination claim depends on) and `independentEvidenceIds` (raw-spec element ids that independently support the claim). Both arrays may be empty. The review tool continues to use the shared schema unchanged so review findings stay clean.
 
 ### review_modes.py — Review mode profiles
 
@@ -243,6 +251,8 @@ Progressive poll backoff: base interval for ~5 minutes, then linearly ramps to 1
 - `run_cross_check(specs, existing_findings, ...)` — single-pass
 - `run_chunked_cross_check(specs, existing_findings, ...)` — chunks by CSI division (Div 21 / 22 / 23 / Controls / 25 + 01) when the combined input exceeds the recommended cap; merges chunk results locally
 
+Chunk M — dependency tracking: `_build_cross_check_input` renders every `<prior>` block with the review finding's stable `finding_id` as an `id="..."` attribute, plus its section, so the cross-check model can cite review findings by id when emitting `upstreamFindingIds`. The system prompt has a `<dependency_tracking>` section that tells the model when to cite upstream ids and when to point at raw spec evidence via `independentEvidenceIds` (the `<para>`/`<row>`/`<heading>` element ids from Chunk K2). Pre-Chunk-M review findings without a `finding_id` still render in `<prior>` (without an `id` attribute) so the legacy / heuristic-fallback path keeps working.
+
 ### verifier.py — Web-search verification
 
 - `verify_findings(findings, *, progress, cycle, cache)` — real-time path (Sonnet default, Opus escalation)
@@ -291,7 +301,8 @@ Convenience wrapper: `collect_batch_results(submission, ...)`.
 Helpers:
 - `_phase_tagged_log(log, phase)` / `_phase_tagged_progress(progress, phase)` — let the verifier path tag its callbacks so the GUI doesn't keyword-sniff message text
 - `group_findings(findings)` / `expand_to_occurrences(findings)` — Phase 1.3 formal types
-- `_parallel_cross_check_enabled()` — default on; cross-check runs concurrently with verification poll, then `_drop_cross_check_findings_with_disputed_upstream` filters cross-check findings whose upstream review verdict became DISPUTED
+- `_parallel_cross_check_enabled()` — default on; cross-check runs concurrently with verification poll, then `classify_cross_check_dependencies` (Chunk M) partitions cross-check findings into `(kept, suppressed)` using the model-emitted `upstream_finding_ids` / `independent_evidence_ids`; findings without cited ids fall back to the legacy `(filename, section)` heuristic, labeled as such in logs. Dropped findings are stashed on `cross_check_result.suppressed_findings` with `suppression_reason` set so the report can show the decision. `_drop_cross_check_findings_with_disputed_upstream` is preserved as a thin wrapper returning only the kept list for the Phase 5 / 7 tests.
+- `compute_finding_id(finding)` (Chunk M) returns a stable `rf-<12hex>` id derived from `_dedup_key`; `_deduplicate_findings` stamps it on every review finding (singleton and merged-group paths alike) so the cross-check pass can cite review findings by id.
 - `_recover_retryable_review_batch_results(...)` — small repair batch for parse_error / incomplete review specs
 
 ### preprocessor.py — Local preflight

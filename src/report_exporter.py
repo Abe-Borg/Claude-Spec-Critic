@@ -729,11 +729,96 @@ def _write_findings_section(doc: Document, review, verbose: bool = True) -> None
 # Cross-spec coordination section
 # ---------------------------------------------------------------------------
 
-def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool = True) -> None:
+def _write_dependency_note(
+    doc: Document,
+    finding,
+    upstream_lookup: dict,
+) -> None:
+    """Render the Chunk M dependency annotation for a kept cross-check finding.
+
+    When a cross-check finding cites ``upstream_finding_ids`` or
+    ``independent_evidence_ids``, surface that information in the report so
+    a reviewer can trace the coordination claim back to its sources without
+    having to inspect the raw structured payload. The cited review findings
+    are looked up in ``upstream_lookup`` (finding_id → review Finding); when
+    a cited id is unknown — for example, a stale resume payload referencing
+    an id from a prior run — it is rendered verbatim so the gap is visible.
+    """
+    upstream_ids = [uid for uid in (getattr(finding, "upstream_finding_ids", []) or []) if uid]
+    independent_ids = [
+        eid for eid in (getattr(finding, "independent_evidence_ids", []) or []) if eid
+    ]
+    if not upstream_ids and not independent_ids:
+        return
+
+    if upstream_ids:
+        para = doc.add_paragraph()
+        run = para.add_run("Depends on review finding(s): ")
+        run.bold = True
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(100, 100, 100)
+        for i, uid in enumerate(upstream_ids):
+            if i > 0:
+                sep = para.add_run("; ")
+                sep.font.size = Pt(10)
+                sep.font.color.rgb = RGBColor(100, 100, 100)
+            upstream = upstream_lookup.get(uid)
+            if upstream is None:
+                label = f"[{uid}] (not found in current review)"
+            else:
+                verdict = ""
+                if upstream.verification and upstream.verification.verdict:
+                    verdict = f" — {upstream.verification.verdict}"
+                file_section = " — ".join(
+                    p for p in [upstream.fileName, upstream.section] if p
+                )
+                label = f"[{upstream.severity}] {file_section}{verdict}"
+            entry = para.add_run(label)
+            entry.font.size = Pt(10)
+            entry.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(3)
+
+    if independent_ids:
+        para = doc.add_paragraph()
+        run = para.add_run("Independent spec evidence: ")
+        run.bold = True
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(100, 100, 100)
+        entry = para.add_run(", ".join(independent_ids))
+        entry.font.size = Pt(10)
+        entry.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(3)
+
+
+def _write_suppression_reason(doc: Document, finding) -> None:
+    """Render the Chunk M suppression reason underneath a finding entry."""
+    reason = getattr(finding, "suppression_reason", None)
+    if not reason:
+        return
+    para = doc.add_paragraph()
+    label = para.add_run("Suppressed: ")
+    label.bold = True
+    label.font.size = Pt(10)
+    label.font.color.rgb = RGBColor(192, 0, 0)
+    body = para.add_run(reason)
+    body.font.size = Pt(10)
+    body.font.italic = True
+    body.font.color.rgb = RGBColor(100, 100, 100)
+    para.paragraph_format.space_after = Pt(3)
+
+
+def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool = True, review_result=None) -> None:
     """Write cross-spec coordination section and explicit status.
 
     Cross-check findings are rendered with the same collapsible structure
     as per-spec findings.
+
+    Chunk M: kept findings that cite ``upstream_finding_ids`` get a
+    "Depends on review finding(s)" annotation so readers can trace the
+    coordination claim. Findings dropped by the suppression filter are
+    rendered under a dedicated "Suppressed Coordination Findings" sub-
+    heading along with the recorded reason, so the decision is visible
+    instead of silently making the finding disappear.
     """
     if not cross_check_result:
         return
@@ -745,25 +830,41 @@ def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool 
 
     status = getattr(cross_check_result, "cross_check_status", None)
     count = len(cross_check_result.findings)
+    suppressed = list(getattr(cross_check_result, "suppressed_findings", []) or [])
     subtitle = doc.add_paragraph()
     if status == "skipped":
         run = subtitle.add_run(f"Cross-check was skipped: {cross_check_result.thinking}")
     elif status == "failed":
         run = subtitle.add_run(f"Cross-check failed: {cross_check_result.error}")
-    elif status == "completed" and count == 0:
+    elif status == "completed" and count == 0 and not suppressed:
         run = subtitle.add_run("Cross-check completed — no coordination issues found.")
     else:
+        suppressed_note = ""
+        if suppressed:
+            suppressed_note = (
+                f" ({len(suppressed)} suppressed by upstream-disputed filter)"
+            )
         run = subtitle.add_run(
             f"Opus 4.6 coordination analysis — "
-            f"{count} issue{'s' if count != 1 else ''} found."
+            f"{count} issue{'s' if count != 1 else ''} found{suppressed_note}."
         )
     run.font.size = Pt(11)
     run.font.italic = True
     run.font.color.rgb = RGBColor(128, 128, 128)
     subtitle.paragraph_format.space_after = Pt(12)
 
-    if status in ("skipped", "failed") or count == 0:
+    if status in ("skipped", "failed"):
         return
+
+    # Chunk M: build an id → review Finding lookup once so dependency
+    # annotations on the kept findings can be rendered without scanning
+    # the review list for every cross-check finding.
+    upstream_lookup: dict = {}
+    if review_result is not None:
+        for f in getattr(review_result, "findings", []) or []:
+            fid = getattr(f, "finding_id", "")
+            if fid:
+                upstream_lookup[fid] = f
 
     # Sort by severity then confidence
     severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
@@ -774,11 +875,38 @@ def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool 
 
     for idx, finding in enumerate(sorted_findings, 1):
         _write_finding_entry(doc, finding, idx, verbose=verbose)
+        _write_dependency_note(doc, finding, upstream_lookup)
 
     # Coordination summary narrative
     if cross_check_result.thinking:
         doc.add_heading("Coordination Summary", level=2)
         _write_narrative_text(doc, cross_check_result.thinking)
+
+    # Chunk M: suppressed findings rendered under a dedicated sub-heading
+    # so the report makes the suppression decision visible. The "Suppressed:"
+    # line on each entry carries the reason recorded by the dependency
+    # classifier (id-based when the model emitted upstream ids, heuristic
+    # fallback otherwise).
+    if suppressed:
+        doc.add_heading("Suppressed Coordination Findings", level=2)
+        intro = doc.add_paragraph()
+        intro_run = intro.add_run(
+            "The findings below were dropped by the upstream-disputed filter "
+            "after the per-spec review verification verdicts came in. They "
+            "are shown for traceability — they were not re-verified."
+        )
+        intro_run.font.size = Pt(10)
+        intro_run.font.italic = True
+        intro_run.font.color.rgb = RGBColor(100, 100, 100)
+        intro.paragraph_format.space_after = Pt(8)
+
+        sorted_suppressed = sorted(
+            suppressed,
+            key=lambda f: (severity_rank.get(f.severity, 99), -f.confidence),
+        )
+        for idx, finding in enumerate(sorted_suppressed, 1):
+            _write_finding_entry(doc, finding, idx, verbose=verbose)
+            _write_suppression_reason(doc, finding)
 
 
 def _sanitize_markdown_line(line: str) -> str:
@@ -907,7 +1035,7 @@ def export_report(
     _write_alerts(doc, pipeline_result.leed_alerts,
                   pipeline_result.placeholder_alerts)
     _write_findings_section(doc, review, verbose=verbose)
-    _write_cross_check_section(doc, cross_check, verbose=verbose)
+    _write_cross_check_section(doc, cross_check, verbose=verbose, review_result=review)
 
 
     # Save

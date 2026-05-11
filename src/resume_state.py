@@ -268,6 +268,15 @@ def serialize_finding(finding: Finding) -> dict[str, Any]:
         # and the deserializer falls back to ``as_edit_proposal()`` on
         # the loaded legacy fields.
         "edit_proposal": serialize_edit_proposal(finding.edit_proposal),
+        # Chunk M: stable finding id (review findings) and the cross-check
+        # dependency-tracking fields. Pre-Chunk-M payloads load with these
+        # missing; the deserializer treats them as empty so a resumed run
+        # falls back to the heuristic suppression path until the next
+        # cross-check pass populates the new fields.
+        "finding_id": finding.finding_id,
+        "upstream_finding_ids": list(finding.upstream_finding_ids),
+        "independent_evidence_ids": list(finding.independent_evidence_ids),
+        "suppression_reason": finding.suppression_reason,
     }
 
 
@@ -307,6 +316,16 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
             target_element_id=evidence_id,
             edit_confidence=float(payload.get("confidence", 0.5)),
         )
+    # Chunk M: legacy resume payloads (pre-Chunk-M) lack the dependency
+    # tracking fields. Treat them as empty/unset so a resumed run behaves
+    # like the old heuristic path until the next cross-check pass
+    # populates the new fields.
+    upstream_ids_raw = payload.get("upstream_finding_ids", []) or []
+    upstream_ids = [str(uid).strip() for uid in upstream_ids_raw if str(uid).strip()]
+    independent_ids_raw = payload.get("independent_evidence_ids", []) or []
+    independent_ids = [str(eid).strip() for eid in independent_ids_raw if str(eid).strip()]
+    suppression_raw = payload.get("suppression_reason")
+    suppression_reason = str(suppression_raw) if suppression_raw is not None else None
     return Finding(
         severity=str(payload.get("severity", "MEDIUM")),
         fileName=str(payload.get("fileName", "")),
@@ -323,6 +342,10 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
         insertPosition=insert_pos,
         evidenceElementId=evidence_id,
         edit_proposal=proposal,
+        finding_id=str(payload.get("finding_id", "")),
+        upstream_finding_ids=upstream_ids,
+        independent_evidence_ids=independent_ids,
+        suppression_reason=suppression_reason,
     )
 
 
@@ -341,6 +364,10 @@ def serialize_review_result(result: ReviewResult | None) -> dict[str, Any] | Non
         "stop_reason": result.stop_reason,
         "parse_status": result.parse_status,
         "cross_check_status": result.cross_check_status,
+        # Chunk M: persist suppressed cross-check findings so a resumed
+        # session restores the same report-time visibility into which
+        # coordination claims were dropped and why.
+        "suppressed_findings": [serialize_finding(f) for f in result.suppressed_findings],
     }
 
 
@@ -359,6 +386,9 @@ def deserialize_review_result(payload: dict[str, Any] | None) -> ReviewResult | 
         stop_reason=(str(payload["stop_reason"]) if payload.get("stop_reason") is not None else None),
         parse_status=(str(payload["parse_status"]) if payload.get("parse_status") is not None else None),
         cross_check_status=(str(payload["cross_check_status"]) if payload.get("cross_check_status") is not None else None),
+        suppressed_findings=[
+            deserialize_finding(f) for f in payload.get("suppressed_findings", []) or []
+        ],
     )
 
 

@@ -149,6 +149,27 @@ class Finding:
     # the proposal arrived from the new schema slot or was reconstructed
     # from legacy fields at runtime.
     edit_proposal: EditProposal | None = None
+    # Chunk M / plan section "Cross-Check Dependency Tracking": stable
+    # identifier assigned at dedup time. Cross-check findings cite these
+    # ids in ``upstream_finding_ids`` so post-verification suppression can
+    # be deterministic instead of relying on file/section overlap. Empty
+    # string is the pre-Chunk-M / legacy path (suppression falls back to
+    # heuristic matching).
+    finding_id: str = ""
+    # Chunk M: per-cross-check-finding dependency tracking. Populated only
+    # on cross-check findings; review findings leave both empty. The model
+    # emits these via the cross-check tool schema's ``upstreamFindingIds``
+    # and ``independentEvidenceIds`` slots; the suppression filter uses
+    # them to drop coordination claims whose every upstream went DISPUTED
+    # while keeping claims that have independent spec evidence.
+    upstream_finding_ids: list[str] = field(default_factory=list)
+    independent_evidence_ids: list[str] = field(default_factory=list)
+    # Chunk M: when the suppression filter drops a cross-check finding,
+    # it stamps a human-readable reason here so the report can explain the
+    # decision instead of silently omitting the finding. ``None`` is the
+    # default "not suppressed" state; non-None implies the finding lives
+    # on ``ReviewResult.suppressed_findings`` rather than the main list.
+    suppression_reason: str | None = None
 
     def as_edit_proposal(self) -> EditProposal | None:
         """Return the structured edit proposal for this finding, if any.
@@ -199,6 +220,13 @@ class ReviewResult:
     stop_reason: str | None = None
     parse_status: str | None = None
     cross_check_status: str | None = None
+    # Chunk M / plan section "Cross-Check Dependency Tracking": findings
+    # dropped by the upstream-disputed suppression filter live here, each
+    # stamped with a ``suppression_reason``. The report renders them under
+    # a dedicated "Suppressed coordination findings" subsection so the
+    # decision is visible rather than silently making the finding vanish.
+    # Verification skips suppressed findings — they are end-state.
+    suppressed_findings: list[Finding] = field(default_factory=list)
 
     @property
     def critical_count(self) -> int: return sum(1 for f in self.findings if f.severity == "CRITICAL")
@@ -337,6 +365,28 @@ def _parse_findings(data: list) -> list[Finding]:
             evidence_id = None
         else:
             evidence_id = str(evidence_raw).strip() or None
+        # Chunk M: cross-check findings can cite upstream review finding
+        # ids and independent raw-spec evidence ids. The review schema does
+        # not surface these fields, so review findings parse as empty lists.
+        # The cross-check schema lists them as required arrays (possibly
+        # empty), so a missing field on a well-formed cross-check payload
+        # is unusual but tolerated to keep fallback parsing robust.
+        upstream_raw = item.get("upstreamFindingIds")
+        upstream_ids: list[str] = []
+        if isinstance(upstream_raw, list):
+            upstream_ids = [
+                str(uid).strip()
+                for uid in upstream_raw
+                if str(uid).strip()
+            ]
+        independent_raw = item.get("independentEvidenceIds")
+        independent_ids: list[str] = []
+        if isinstance(independent_raw, list):
+            independent_ids = [
+                str(eid).strip()
+                for eid in independent_raw
+                if str(eid).strip()
+            ]
         existing_text = (
             str(item.get("existingText")) if item.get("existingText") is not None else None
         )
@@ -380,6 +430,8 @@ def _parse_findings(data: list) -> list[Finding]:
             insertPosition=position,
             evidenceElementId=evidence_id,
             edit_proposal=proposal,
+            upstream_finding_ids=upstream_ids,
+            independent_evidence_ids=independent_ids,
         ))
     return findings
 
