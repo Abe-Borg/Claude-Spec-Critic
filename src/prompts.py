@@ -127,14 +127,20 @@ def _editability_clause(mode: ReviewMode) -> str:
             "verbatim, do not emit the finding.\n"
         )
     if mode is ReviewMode.COMPREHENSIVE:
+        # Chunk L / plan section "Separate Findings From Edit Proposals":
+        # comprehensive mode no longer asks the model to invent edit text
+        # for findings that aren't clean edits. The model picks REPORT_ONLY
+        # and leaves the edit slots null instead of stuffing the issue
+        # field with apology text. The report still surfaces these
+        # findings; only the edit pipeline filters them out.
         return (
             "\nWhen a finding cannot be expressed as a clean edit (e.g., it requires "
             "spec-author judgement, a meeting between disciplines, or a multi-paragraph "
-            "rewrite), still report it: set actionType to the closest match, leave "
-            "existingText as the most representative quote, and explain the required "
-            "follow-up in the issue field. Downstream code marks ambiguous edits for "
-            "manual review automatically; do not self-censor real coordination problems "
-            "just because the fix is not a one-line replacement.\n"
+            "rewrite), set actionType to REPORT_ONLY and leave existingText, "
+            "replacementText, anchorText, and insertPosition null. Use the issue field "
+            "to describe the problem and the recommended follow-up. The report still "
+            "surfaces REPORT_ONLY findings — do not self-censor real coordination "
+            "problems just because the fix is not a one-line replacement.\n"
         )
     return ""
 
@@ -182,6 +188,11 @@ Notes that are not enforced by schema:
   verbatim nearby paragraph and insertPosition with "before" or "after".
   When no reliable anchor exists, leave anchorText null — the edit will
   be flagged for manual review.
+- For actionType "REPORT_ONLY", leave existingText, replacementText,
+  anchorText, and insertPosition all null. Use this when the finding is
+  real but cannot be expressed as a clean text edit (coordination,
+  interpretation, multi-paragraph rewrite). The report still includes
+  REPORT_ONLY findings; only the edit pipeline skips them.
 - Use null (not empty string) for fields that don't apply.
 
 Fallback: if for any reason you cannot call the submit_review_findings

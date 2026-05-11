@@ -13,7 +13,7 @@ from .batch import BatchJob
 from .code_cycles import DEFAULT_CYCLE
 from .extractor import ExtractedSpec
 from .pipeline import BatchSubmission, CollectedBatchState
-from .reviewer import Finding, ReviewResult, MODEL_OPUS_46
+from .reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, MODEL_OPUS_46, ReviewResult
 from .verifier import VerificationResult
 
 _log = logging.getLogger(__name__)
@@ -196,6 +196,54 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
     )
 
 
+def serialize_edit_proposal(proposal: EditProposal | None) -> dict[str, Any] | None:
+    # Chunk L: persist the structured edit proposal alongside the legacy
+    # fields. Findings with no proposal (REPORT_ONLY) round-trip as None
+    # so a resumed session sees the same "no edit half" state the original
+    # run saw.
+    if proposal is None:
+        return None
+    return {
+        "action_type": proposal.action_type,
+        "existing_text": proposal.existing_text,
+        "replacement_text": proposal.replacement_text,
+        "anchor_text": proposal.anchor_text,
+        "insert_position": proposal.insert_position,
+        "target_element_id": proposal.target_element_id,
+        "edit_confidence": proposal.edit_confidence,
+    }
+
+
+def deserialize_edit_proposal(payload: dict[str, Any] | None) -> EditProposal | None:
+    if not payload:
+        return None
+    insert_pos_raw = payload.get("insert_position")
+    if insert_pos_raw is not None:
+        normalized = str(insert_pos_raw).strip().lower()
+        insert_pos: str | None = normalized if normalized in {"before", "after"} else None
+    else:
+        insert_pos = None
+    return EditProposal(
+        action_type=str(payload.get("action_type", "EDIT")).strip().upper(),
+        existing_text=(
+            str(payload["existing_text"]) if payload.get("existing_text") is not None else None
+        ),
+        replacement_text=(
+            str(payload["replacement_text"]) if payload.get("replacement_text") is not None else None
+        ),
+        anchor_text=(
+            str(payload["anchor_text"]) if payload.get("anchor_text") is not None else None
+        ),
+        insert_position=insert_pos,
+        target_element_id=(
+            str(payload["target_element_id"])
+            if payload.get("target_element_id") is not None
+            else None
+        ),
+        edit_confidence=float(payload.get("edit_confidence", 0.5)),
+    )
+
+
 def serialize_finding(finding: Finding) -> dict[str, Any]:
     return {
         "severity": finding.severity,
@@ -214,6 +262,12 @@ def serialize_finding(finding: Finding) -> dict[str, Any]:
         # Chunk K3: round-trip the evidence id so resume restores the
         # same locator behavior the original review picked.
         "evidenceElementId": finding.evidenceElementId,
+        # Chunk L: round-trip the structured edit proposal so a resumed
+        # session sees the same REPORT_ONLY vs. edit split the original
+        # parser produced. Pre-Chunk-L payloads load with this missing
+        # and the deserializer falls back to ``as_edit_proposal()`` on
+        # the loaded legacy fields.
+        "edit_proposal": serialize_edit_proposal(finding.edit_proposal),
     }
 
 
@@ -227,12 +281,38 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
         evidence_id: str | None = None
     else:
         evidence_id = str(evidence_id_raw).strip() or None
+    proposal = deserialize_edit_proposal(payload.get("edit_proposal"))
+    action_type = str(payload.get("actionType", "EDIT"))
+    # Chunk L: legacy resume payloads (pre-Chunk-L) lack ``edit_proposal``.
+    # Synthesize one from the legacy fields so the loaded Finding behaves
+    # identically to a freshly-parsed Finding. The synthesis only fires
+    # when the action type is a real edit; REPORT_ONLY-shaped legacy
+    # payloads (rare; only present in test fixtures) correctly land at
+    # ``proposal=None``.
+    if proposal is None and action_type.strip().upper() in EDIT_ACTION_TYPES:
+        proposal = EditProposal(
+            action_type=action_type.strip().upper(),
+            existing_text=(
+                str(payload["existingText"]) if payload.get("existingText") is not None else None
+            ),
+            replacement_text=(
+                str(payload["replacementText"])
+                if payload.get("replacementText") is not None
+                else None
+            ),
+            anchor_text=(
+                str(payload["anchorText"]) if payload.get("anchorText") is not None else None
+            ),
+            insert_position=insert_pos,
+            target_element_id=evidence_id,
+            edit_confidence=float(payload.get("confidence", 0.5)),
+        )
     return Finding(
         severity=str(payload.get("severity", "MEDIUM")),
         fileName=str(payload.get("fileName", "")),
         section=str(payload.get("section", "")),
         issue=str(payload.get("issue", "")),
-        actionType=str(payload.get("actionType", "EDIT")),
+        actionType=action_type,
         existingText=(str(payload["existingText"]) if payload.get("existingText") is not None else None),
         replacementText=(str(payload["replacementText"]) if payload.get("replacementText") is not None else None),
         codeReference=(str(payload["codeReference"]) if payload.get("codeReference") is not None else None),
@@ -242,6 +322,7 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
         anchorText=(str(payload["anchorText"]) if payload.get("anchorText") is not None else None),
         insertPosition=insert_pos,
         evidenceElementId=evidence_id,
+        edit_proposal=proposal,
     )
 
 
