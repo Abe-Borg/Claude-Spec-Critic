@@ -52,6 +52,7 @@ src/
 ├── spec_editor.py          # Surgical edits + annotation/change-log mode
 ├── apply_edits.py          # locate → action build → apply / annotate
 ├── report_exporter.py      # Word (.docx) report generation
+├── report_status.py        # Chunk N: ReportStatus / EditActionLabel + classifiers
 ├── resume_state.py         # Durable resume state (with file-hash validation)
 ├── diagnostics.py          # In-memory diagnostics report
 └── code_cycles.py          # California code cycle definitions
@@ -366,6 +367,16 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 ### report_exporter.py — Word export
 
 `export_report(result, output_path, *, project_context, cross_check_enabled, cycle_label)`.
+
+Chunk N — trust-model labels in the report: every finding renders a `Status:` line right under its Heading 3 header (one of the seven `ReportStatus` values from `report_status.py`) plus an `Edit:` action label (one of `AUTO_EDIT_CANDIDATE` / `MANUAL_EDIT_CANDIDATE` / `REPORT_ONLY` / `SUPPRESSED`). A new "Trust Model Summary" section between the severity table and the alerts renders the per-status histogram (one cell per visible status) and a one-line edit-action breakdown so a reader sees "how many of these findings are actually trustworthy?" before scrolling to individual findings. The previous `Existing Text:` / `Replace With:` / unlabeled-explanation layout is replaced with explicit `Spec evidence:` / `Proposed replacement:` / `Verification rationale:` labels and the collapsible Sources sub-heading now distinguishes `Web/code evidence` (accepted citations) from `Unsupported / rejected sources` (the model cited URLs the search tool never returned), so the four evidence concepts in the Chunk N plan are rendered as distinct sections.
+
+### report_status.py — Trust-model statuses (Chunk N)
+
+Single closed set of `ReportStatus` values every finding maps to for display (`VERIFIED_SUPPORTED`, `VERIFIED_CONTRADICTED`, `DISPUTED`, `INSUFFICIENT_EVIDENCE`, `LOCALLY_CLASSIFIED`, `NOT_CHECKED`, `MANUAL_REVIEW_REQUIRED`) plus the matching `EditActionLabel` set (`AUTO_EDIT_CANDIDATE`, `MANUAL_EDIT_CANDIDATE`, `REPORT_ONLY`, `SUPPRESSED`). Both are *derived* from already-stored Finding fields (`verification`, `suppression_reason`, `edit_proposal`) — nothing on `Finding` changes and the verification cache doesn't need a new column.
+
+`classify_status(finding)` applies rules in priority order: suppression beats no-verification beats local-skip beats verdict-based mapping. `classify_edit_action(finding)` short-circuits on `suppression_reason`, returns `REPORT_ONLY` for findings without an edit proposal, then splits the remaining proposals into `AUTO_EDIT_CANDIDATE` (supportive status — `VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED` / `LOCALLY_CLASSIFIED` — *and* `edit_confidence >= AUTO_EDIT_CONFIDENCE_FLOOR` (0.7)) vs `MANUAL_EDIT_CANDIDATE` (anything else with a proposal). `LOCALLY_CLASSIFIED` qualifies as supportive because the router decided the finding is self-evident from the spec itself (placeholders, LEED references, internal duplicates); the locator/spec_editor preconditions still gate the actual mutation so a false-supportive router result cannot cause a wrong-text replacement.
+
+Public helpers: `status_label(status)`, `status_glyph(status)`, `edit_action_label(action)` (all accept enum or raw string and fall back to the raw value for unknown inputs so legacy data round-trips cleanly), `summarize_statuses(findings)` / `summarize_edit_actions(findings)` (zero-filled histograms used by `report_exporter._write_trust_model_summary`), and the `STATUS_DISPLAY_ORDER` / `EDIT_ACTION_DISPLAY_ORDER` tuples that pin the table ordering.
 
 ### diagnostics.py — Diagnostics report
 

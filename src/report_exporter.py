@@ -42,6 +42,20 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from lxml import etree
 
+from .report_status import (
+    EDIT_ACTION_DISPLAY_ORDER,
+    EditActionLabel,
+    ReportStatus,
+    STATUS_DISPLAY_ORDER,
+    classify_edit_action,
+    classify_status,
+    edit_action_label,
+    status_glyph,
+    status_label,
+    summarize_edit_actions,
+    summarize_statuses,
+)
+
 
 # ---------------------------------------------------------------------------
 # Color constants
@@ -85,6 +99,38 @@ CONFIDENCE_COLORS = {
 COORDINATION_COLOR = RGBColor(6, 182, 212)  # Cyan
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]
+
+# Chunk N — closed-set status display colors. The plan (Directive 5) calls
+# out "avoid presenting all findings as equally certain", so each status
+# gets a distinct color so a quick scroll of the report makes the
+# evidence picture visible. Status color hex strings double as the
+# summary-table cell shading values.
+STATUS_COLORS: dict[ReportStatus, RGBColor] = {
+    ReportStatus.VERIFIED_SUPPORTED: RGBColor(0, 128, 0),          # Green
+    ReportStatus.VERIFIED_CONTRADICTED: RGBColor(204, 132, 0),     # Amber
+    ReportStatus.DISPUTED: RGBColor(192, 0, 0),                    # Red
+    ReportStatus.INSUFFICIENT_EVIDENCE: RGBColor(128, 128, 128),   # Gray
+    ReportStatus.LOCALLY_CLASSIFIED: RGBColor(59, 130, 246),       # Blue
+    ReportStatus.NOT_CHECKED: RGBColor(100, 100, 100),             # Dark gray
+    ReportStatus.MANUAL_REVIEW_REQUIRED: RGBColor(255, 102, 0),    # Orange
+}
+
+STATUS_SHADING: dict[ReportStatus, str] = {
+    ReportStatus.VERIFIED_SUPPORTED: "008000",
+    ReportStatus.VERIFIED_CONTRADICTED: "CC8400",
+    ReportStatus.DISPUTED: "C00000",
+    ReportStatus.INSUFFICIENT_EVIDENCE: "808080",
+    ReportStatus.LOCALLY_CLASSIFIED: "3B82F6",
+    ReportStatus.NOT_CHECKED: "646464",
+    ReportStatus.MANUAL_REVIEW_REQUIRED: "FF6600",
+}
+
+EDIT_ACTION_COLORS: dict[EditActionLabel, RGBColor] = {
+    EditActionLabel.AUTO_EDIT_CANDIDATE: RGBColor(0, 128, 0),       # Green
+    EditActionLabel.MANUAL_EDIT_CANDIDATE: RGBColor(204, 132, 0),   # Amber
+    EditActionLabel.REPORT_ONLY: RGBColor(100, 100, 100),           # Gray
+    EditActionLabel.SUPPRESSED: RGBColor(192, 0, 0),                # Red
+}
 
 
 # ---------------------------------------------------------------------------
@@ -221,10 +267,20 @@ def _write_files_reviewed(doc: Document, files_reviewed: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _summarize_verification_outcomes(findings: list) -> dict[str, object]:
+    """Roll up the trust-model statuses + raw verdict counts for the methodology note.
+
+    Chunk N: the status histogram (computed via
+    :func:`report_status.summarize_statuses`) drives the methodology
+    narrative and the new trust-model summary table. The verdict-count
+    breakdown is preserved alongside it so existing summary lines
+    (``CONFIRMED / CORRECTED / DISPUTED / UNVERIFIED``) keep working.
+    """
     stats = {
         "total_findings": len(findings),
         "with_verification": 0,
         "verdict_counts": {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0},
+        "status_counts": summarize_statuses(findings),
+        "edit_action_counts": summarize_edit_actions(findings),
     }
     for finding in findings:
         verification = getattr(finding, "verification", None)
@@ -403,6 +459,91 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
 
 
 # ---------------------------------------------------------------------------
+# Trust-model summary (Chunk N)
+# ---------------------------------------------------------------------------
+
+def _write_trust_model_summary(
+    doc: Document,
+    status_counts: dict,
+    edit_action_counts: dict,
+) -> None:
+    """Render the per-status / per-edit-action histograms.
+
+    Chunk N Directive 1+4: every finding receives one status and one
+    edit-action label. The table here gives a top-of-report at-a-glance
+    picture of how much of the run is supported vs. uncertain vs.
+    suppressed, before the reader gets to individual findings. The
+    severity table above answers "how many issues are critical?"; this
+    one answers "how many of them are actually trustworthy?"
+    """
+    total_status = sum(status_counts.values())
+    if total_status == 0:
+        return
+
+    doc.add_heading("Trust Model Summary", level=1)
+    intro = doc.add_paragraph()
+    intro_run = intro.add_run(
+        "Every finding is tagged with a trust status and an edit-action "
+        "label. The two histograms below give the at-a-glance picture; "
+        "individual findings carry the same labels inline."
+    )
+    intro_run.font.size = Pt(10)
+    intro_run.font.italic = True
+    intro_run.font.color.rgb = RGBColor(100, 100, 100)
+    intro.paragraph_format.space_after = Pt(6)
+
+    # --- Status histogram table ---
+    visible_statuses = [
+        s for s in STATUS_DISPLAY_ORDER if status_counts.get(s, 0) > 0
+    ]
+    if visible_statuses:
+        table = doc.add_table(rows=2, cols=len(visible_statuses))
+        table.style = "Table Grid"
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+        for col_idx, status in enumerate(visible_statuses):
+            hex_color = STATUS_SHADING[status]
+            header_cell = table.rows[0].cells[col_idx]
+            _set_cell_shading(header_cell, hex_color)
+            header_cell.text = ""
+            p = header_cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(status_label(status))
+            run.bold = True
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(255, 255, 255)
+
+            count_cell = table.rows[1].cells[col_idx]
+            count_cell.text = ""
+            p = count_cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = p.add_run(str(status_counts[status]))
+            run.bold = True
+            run.font.size = Pt(14)
+            run.font.color.rgb = STATUS_COLORS[status]
+
+    # --- Edit-action histogram (compact inline form) ---
+    visible_actions = [
+        a for a in EDIT_ACTION_DISPLAY_ORDER if edit_action_counts.get(a, 0) > 0
+    ]
+    if visible_actions:
+        para = doc.add_paragraph()
+        para.paragraph_format.space_before = Pt(6)
+        label_run = para.add_run("Edit eligibility: ")
+        label_run.bold = True
+        for i, action in enumerate(visible_actions):
+            if i > 0:
+                sep = para.add_run("  •  ")
+                sep.font.color.rgb = RGBColor(160, 160, 160)
+            count_run = para.add_run(f"{edit_action_counts[action]} ")
+            count_run.bold = True
+            count_run.font.color.rgb = EDIT_ACTION_COLORS[action]
+            name_run = para.add_run(edit_action_label(action).lower())
+            name_run.font.color.rgb = EDIT_ACTION_COLORS[action]
+        para.paragraph_format.space_after = Pt(6)
+
+
+# ---------------------------------------------------------------------------
 # Alerts
 # ---------------------------------------------------------------------------
 
@@ -476,15 +617,31 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
     The finding header is rendered as a Heading 3 paragraph, which enables
     Word's native heading-collapse feature. Users can click the collapse
     triangle that appears on hover to hide the finding's body content.
+
+    Chunk N changes:
+        - Adds a "Status" line right under the header so the trust-model
+          status is the first thing readers see (Directive 5: avoid
+          presenting all findings as equally certain).
+        - Adds an "Edit eligibility" line so readers can tell at a glance
+          whether the finding is an auto-edit candidate, a manual edit
+          candidate, report-only, or suppressed.
+        - Renames the spec quote / web sources / rationale / rejected
+          sources sub-labels so the four evidence concepts (Directive 3)
+          are explicit rather than implied.
+
     Layout:
-        Heading 3: [SEVERITY] 92% — filename.docx — Section ref
-        Normal:    Issue: ...
-        Normal:    Action: ...
-        Normal:    Existing Text: ... (red)
-        Normal:    Replace With: ... (green)
-        Normal:    Reference: ... (blue)
-        Normal:    Verification: ... (if applicable)
-        Normal:    Sources: ... (if verbose and available)
+        Heading 3:  [SEVERITY] 92% — filename.docx — Section ref
+        Normal:     Status: <status>  •  Edit: <edit_action>
+        Normal:     Issue: ...
+        Normal:     Action: ...
+        Normal:     Spec evidence: ... (existingText, red)
+        Normal:     Proposed replacement: ... (green)
+        Normal:     Reference: ... (blue)
+        Normal:     Verification verdict: ... (if applicable)
+        Normal:     Verification rationale: ... (if applicable)
+        Heading 4:  Sources (collapsed by default)
+        Normal:       Web/code evidence: <accepted_sources>
+        Normal:       Unsupported / rejected sources: <rejected_sources>
     """
     severity_color = SEVERITY_COLORS.get(finding.severity, RGBColor(0, 0, 0))
     conf_tier = _confidence_tier(finding.confidence)
@@ -524,6 +681,42 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
 
     # --- Body content (Normal paragraphs, hidden when heading is collapsed) ---
 
+    # --- Status + edit-action line (Chunk N) ---
+    # The trust-model status renders right under the header so readers
+    # see "Verified — supported" / "Disputed" / "Insufficient evidence"
+    # before they read the issue. The edit-action label sits on the
+    # same line so a reader scanning by finding can also see whether
+    # there's an actionable edit attached.
+    status = classify_status(finding)
+    edit_action = classify_edit_action(finding)
+    status_color = STATUS_COLORS[status]
+    action_color = EDIT_ACTION_COLORS[edit_action]
+
+    status_para = doc.add_paragraph()
+    status_label_run = status_para.add_run("Status: ")
+    status_label_run.bold = True
+    status_label_run.font.size = Pt(10)
+    glyph_run = status_para.add_run(f"{status_glyph(status)} ")
+    glyph_run.bold = True
+    glyph_run.font.color.rgb = status_color
+    glyph_run.font.size = Pt(10)
+    value_run = status_para.add_run(status_label(status))
+    value_run.bold = True
+    value_run.font.color.rgb = status_color
+    value_run.font.size = Pt(10)
+    # Separator + edit-action.
+    sep_run = status_para.add_run("  •  ")
+    sep_run.font.color.rgb = RGBColor(160, 160, 160)
+    sep_run.font.size = Pt(10)
+    edit_label_run = status_para.add_run("Edit: ")
+    edit_label_run.bold = True
+    edit_label_run.font.size = Pt(10)
+    edit_value_run = status_para.add_run(edit_action_label(edit_action))
+    edit_value_run.bold = True
+    edit_value_run.font.color.rgb = action_color
+    edit_value_run.font.size = Pt(10)
+    status_para.paragraph_format.space_after = Pt(3)
+
     # --- Issue ---
     if verbose:
         para = doc.add_paragraph()
@@ -538,6 +731,11 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
     # "No edit proposal — surfaced for review only" line so readers see
     # the finding without expecting an edit; findings with a proposal
     # keep the original Action / Existing / Replace With layout.
+    #
+    # Chunk N: the "Existing Text" label becomes "Spec evidence" so the
+    # quoted-from-the-spec source is explicitly the *spec evidence*
+    # concept in Directive 3, distinct from web/code evidence (sources)
+    # and verification rationale (explanation).
     proposal = finding.as_edit_proposal()
     if proposal is None:
         para = doc.add_paragraph()
@@ -560,18 +758,18 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         para.add_run(proposal.action_type or "")
         para.paragraph_format.space_after = Pt(3)
 
-        # --- Existing text (red) ---
+        # --- Spec evidence (red) — the text quoted from the source spec ---
         if proposal.existing_text:
             para = doc.add_paragraph()
-            para.add_run("Existing Text: ").bold = True
+            para.add_run("Spec evidence: ").bold = True
             run = para.add_run(proposal.existing_text)
             run.font.color.rgb = RGBColor(192, 0, 0)
             para.paragraph_format.space_after = Pt(3)
 
-        # --- Replacement text (green) ---
+        # --- Proposed replacement (green) ---
         if proposal.replacement_text:
             para = doc.add_paragraph()
-            para.add_run("Replace With: ").bold = True
+            para.add_run("Proposed replacement: ").bold = True
             run = para.add_run(proposal.replacement_text)
             run.font.color.rgb = RGBColor(0, 128, 0)
             para.paragraph_format.space_after = Pt(3)
@@ -584,23 +782,30 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         run.font.color.rgb = RGBColor(59, 130, 246)
         para.paragraph_format.space_after = Pt(3)
 
-    # --- Verification verdict ---
+    # --- Verification verdict + rationale ---
     if finding.verification:
         vr = finding.verification
         verdict_color = VERDICT_COLORS.get(vr.verdict, VERDICT_COLORS["UNVERIFIED"])
         verdict_icon = VERDICT_ICONS.get(vr.verdict, "—")
 
         para = doc.add_paragraph()
-        run = para.add_run(f"Verification: {verdict_icon} {vr.verdict}")
+        run = para.add_run(f"Verification verdict: {verdict_icon} {vr.verdict}")
         run.bold = True
         run.font.color.rgb = verdict_color
         para.paragraph_format.space_after = Pt(3)
 
+        # Chunk N Directive 3: the explanation is "Verification rationale"
+        # — distinct from "Spec evidence" (the quoted text) and from the
+        # accepted/rejected source URLs that follow under "Sources".
         if verbose and vr.explanation:
             para = doc.add_paragraph()
-            run = para.add_run(vr.explanation)
-            run.font.size = Pt(10)
-            run.font.color.rgb = RGBColor(100, 100, 100)
+            label_run = para.add_run("Verification rationale: ")
+            label_run.bold = True
+            label_run.font.size = Pt(10)
+            label_run.font.color.rgb = RGBColor(100, 100, 100)
+            body_run = para.add_run(vr.explanation)
+            body_run.font.size = Pt(10)
+            body_run.font.color.rgb = RGBColor(100, 100, 100)
             para.paragraph_format.space_after = Pt(3)
 
         if vr.verdict == "CORRECTED" and vr.correction:
@@ -625,6 +830,10 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         # ``{"url", "reason"}`` dicts. Both sections live under the same
         # collapsed-by-default "Sources" heading so the open-time collapse
         # zone hides everything until the user explicitly expands it.
+        #
+        # Chunk N: the "Accepted sources" label becomes "Web/code evidence"
+        # and "Rejected sources" becomes "Unsupported / rejected sources"
+        # so the four evidence concepts in Directive 3 read naturally.
         accepted = list(vr.sources or [])
         rejected = list(getattr(vr, "rejected_sources", []) or [])
         if verbose and (accepted or rejected):
@@ -634,7 +843,7 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
             if accepted:
                 label_para = doc.add_paragraph()
                 _set_paragraph_outline_level(label_para, 8)
-                label_run = label_para.add_run("Accepted sources (cited and found in search results):")
+                label_run = label_para.add_run("Web/code evidence (cited and found in search results):")
                 label_run.font.size = Pt(9)
                 label_run.bold = True
                 label_run.font.color.rgb = RGBColor(0, 100, 0)
@@ -653,7 +862,7 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
                 label_para = doc.add_paragraph()
                 _set_paragraph_outline_level(label_para, 8)
                 label_run = label_para.add_run(
-                    "Rejected sources (cited by the model but not present in web_search results):"
+                    "Unsupported / rejected sources (cited by the model but not present in web_search results):"
                 )
                 label_run.font.size = Pt(9)
                 label_run.bold = True
@@ -971,9 +1180,16 @@ def export_report(
 
     review = pipeline_result.review_result
     cross_check = pipeline_result.cross_check_result
+    # Chunk N: include suppressed cross-check findings in the trust-model
+    # summary so the "manual review required" count is accurate. The
+    # severity table above is intentionally unaffected — suppressed
+    # findings already render under a dedicated section so they don't
+    # contribute to severity counts.
     all_findings = list(review.findings)
     if cross_check and cross_check.findings:
         all_findings.extend(cross_check.findings)
+    if cross_check and getattr(cross_check, "suppressed_findings", None):
+        all_findings.extend(cross_check.suppressed_findings)
     verification_stats = _summarize_verification_outcomes(all_findings)
 
     doc = Document()
@@ -1031,6 +1247,14 @@ def export_report(
         total_elapsed_seconds=getattr(pipeline_result, "total_elapsed_seconds", None),
     )
 
+    # Chunk N — trust-model histogram. Renders right after the severity
+    # summary so the reader sees "how many issues are critical?" and
+    # "how many of them are actually trustworthy?" together.
+    _write_trust_model_summary(
+        doc,
+        verification_stats.get("status_counts", {}),
+        verification_stats.get("edit_action_counts", {}),
+    )
 
     _write_alerts(doc, pipeline_result.leed_alerts,
                   pipeline_result.placeholder_alerts)
