@@ -476,6 +476,10 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         )
 
     system_prompt = get_system_prompt(cycle, mode=mode)
+    # Chunk D2.1: ``system_prompt`` is a function of batch-level inputs
+    # (``cycle``, ``mode``) and does not vary per spec, so count it once
+    # and reuse ``system_tokens`` in the per-spec local gate below.
+    # Same stability assumption as the batch submission path.
     system_tokens = count_tokens(system_prompt)
     ctx_tokens = count_tokens(project_context) if project_context else 0
 

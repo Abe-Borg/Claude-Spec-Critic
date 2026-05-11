@@ -102,6 +102,13 @@ def submit_review_batch(
     # the per-call cap and disabling cost guards. Now: the model must support
     # extended output AND the input must be large enough to plausibly need it.
     model_supports_extended = model in OPUS_MODELS
+    # Chunk D2.1: the system prompt is built once above from batch-level
+    # parameters (``cycle``, ``mode``) that do not change inside the
+    # per-spec loop. Counting it once here and reusing ``system_tokens``
+    # for every spec's budget check avoids paying the same cl100k cost N
+    # times. If a future change ever varies the system prompt per spec,
+    # both this hoist and the cache breakpoint above need to move back
+    # inside the loop together.
     system_tokens = count_tokens(system_prompt)
     use_structured = structured_outputs_enabled()
     structured_tools = (
