@@ -45,6 +45,16 @@ class PreprocessResult:
             code cycle (e.g. ``2019 CBC`` when the selected cycle is 2025).
         structural_alerts: Phase 9 (plan 13.1) — empty sections and duplicate
             headings detected without spending model tokens.
+        template_marker_alerts: Chunk O — additional editorial markers
+            (``TODO``, ``FIXME``, ``XXX``, ``???``, lorem-ipsum boilerplate)
+            that the existing ``placeholder_alerts`` regexes do not match.
+        invalid_code_cycle_alerts: Chunk O — California code citations whose
+            year is not a real cycle (e.g. ``2018 CBC`` or ``2020 CMC``). The
+            existing ``code_cycle_alerts`` only catches *stale* but otherwise
+            plausible years; an invalid year is a clear typo or fabrication.
+        duplicate_paragraph_alerts: Chunk O — verbatim duplicate paragraphs of
+            substantial length (≥80 chars by default). A clear deterministic
+            signal for copy-paste mistakes that does not require LLM tokens.
 
     Each alert is a dict with keys:
         - filename: Source file name
@@ -52,11 +62,52 @@ class PreprocessResult:
         - match: The actual matched text
         - context: ~120 char window around the match for human review
         - position: Character offset in the document
+        - deterministic_rule: Chunk O — stable rule id (``leed_reference``,
+          ``placeholder``, ``stale_code_cycle``, ``stale_asce7``,
+          ``empty_section``, ``duplicate_heading``, ``template_marker``,
+          ``invalid_code_cycle``, ``duplicate_paragraph``,
+          ``inconsistent_filename``) so reports / verification routing /
+          diagnostics can branch on the rule without keyword-sniffing the
+          human-readable ``type`` string.
     """
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     code_cycle_alerts: list[dict] = field(default_factory=list)
     structural_alerts: list[dict] = field(default_factory=list)
+    template_marker_alerts: list[dict] = field(default_factory=list)
+    invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
+    duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+
+
+# Chunk O directive 2: stable rule identifiers so every consumer (report,
+# verification router, diagnostics) can branch on a known string instead of
+# sniffing the human-readable ``type`` field. Defined at module level so
+# tests and downstream modules can import the canonical names.
+DETERMINISTIC_RULE_LEED: str = "leed_reference"
+DETERMINISTIC_RULE_PLACEHOLDER: str = "placeholder"
+DETERMINISTIC_RULE_STALE_CODE_CYCLE: str = "stale_code_cycle"
+DETERMINISTIC_RULE_STALE_ASCE7: str = "stale_asce7"
+DETERMINISTIC_RULE_EMPTY_SECTION: str = "empty_section"
+DETERMINISTIC_RULE_DUPLICATE_HEADING: str = "duplicate_heading"
+DETERMINISTIC_RULE_TEMPLATE_MARKER: str = "template_marker"
+DETERMINISTIC_RULE_INVALID_CODE_CYCLE: str = "invalid_code_cycle"
+DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH: str = "duplicate_paragraph"
+DETERMINISTIC_RULE_INCONSISTENT_FILENAME: str = "inconsistent_filename"
+
+# Every rule id in one place so the report / diagnostics / tests can iterate
+# without enumerating constants individually.
+DETERMINISTIC_RULES: frozenset[str] = frozenset({
+    DETERMINISTIC_RULE_LEED,
+    DETERMINISTIC_RULE_PLACEHOLDER,
+    DETERMINISTIC_RULE_STALE_CODE_CYCLE,
+    DETERMINISTIC_RULE_STALE_ASCE7,
+    DETERMINISTIC_RULE_EMPTY_SECTION,
+    DETERMINISTIC_RULE_DUPLICATE_HEADING,
+    DETERMINISTIC_RULE_TEMPLATE_MARKER,
+    DETERMINISTIC_RULE_INVALID_CODE_CYCLE,
+    DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH,
+    DETERMINISTIC_RULE_INCONSISTENT_FILENAME,
+})
 
 
 # -----------------------------------------------------------------------------
@@ -93,13 +144,24 @@ PLACEHOLDER_PATTERNS: list[tuple[str, str]] = [
 # -----------------------------------------------------------------------------
 # Detection Functions
 # -----------------------------------------------------------------------------
-def _find_matches(patterns: Iterable[tuple[str, str]], content: str, filename: str, max_matches: int) -> list[dict]:
+def _find_matches(
+    patterns: Iterable[tuple[str, str]],
+    content: str,
+    filename: str,
+    max_matches: int,
+    *,
+    rule_id: str = "",
+) -> list[dict]:
     """Find all matches for a set of regex patterns in content.
 
     Uses span-based deduplication: if a match's character range is fully
     contained within an already-recorded span, it is skipped. This prevents
     e.g. "LEED-NC" from producing both a "LEED-NC reference" alert and a
     duplicate "LEED reference" alert for the "LEED" substring.
+
+    Chunk O: every alert is stamped with ``deterministic_rule = rule_id`` so
+    downstream consumers can branch on the rule without keyword-sniffing
+    the human-readable ``type`` string.
     """
     alerts: list[dict] = []
     seen_spans: list[tuple[int, int]] = []
@@ -123,6 +185,7 @@ def _find_matches(patterns: Iterable[tuple[str, str]], content: str, filename: s
                         "match": match.group(0),
                         "context": ctx,
                         "position": m_start,
+                        "deterministic_rule": rule_id,
                     }
                 )
 
@@ -135,12 +198,24 @@ def _find_matches(patterns: Iterable[tuple[str, str]], content: str, filename: s
 
 def detect_leed_references(content: str, filename: str, max_matches: int = 50) -> list[dict]:
     """Detect LEED-related references in spec content."""
-    return _find_matches(LEED_PATTERNS, content, filename, max_matches=max_matches)
+    return _find_matches(
+        LEED_PATTERNS,
+        content,
+        filename,
+        max_matches=max_matches,
+        rule_id=DETERMINISTIC_RULE_LEED,
+    )
 
 
 def detect_placeholders(content: str, filename: str, max_matches: int = 200) -> list[dict]:
     """Detect unresolved placeholders and editorial markers in spec content."""
-    return _find_matches(PLACEHOLDER_PATTERNS, content, filename, max_matches=max_matches)
+    return _find_matches(
+        PLACEHOLDER_PATTERNS,
+        content,
+        filename,
+        max_matches=max_matches,
+        rule_id=DETERMINISTIC_RULE_PLACEHOLDER,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -230,6 +305,7 @@ def detect_stale_code_cycle_references(
                     "position": span[0],
                     "expected_year": target_year,
                     "found_year": year,
+                    "deterministic_rule": DETERMINISTIC_RULE_STALE_CODE_CYCLE,
                 }
             )
             if len(alerts) >= max_matches:
@@ -261,6 +337,7 @@ def detect_stale_code_cycle_references(
                     "position": span[0],
                     "expected_edition": cycle.asce7,
                     "found_edition": f"7-{edition}",
+                    "deterministic_rule": DETERMINISTIC_RULE_STALE_ASCE7,
                 }
             )
             if len(alerts) >= max_matches:
@@ -320,6 +397,7 @@ def detect_empty_sections(
                 "position": h_start,
                 "section_number": number,
                 "section_title": title,
+                "deterministic_rule": DETERMINISTIC_RULE_EMPTY_SECTION,
             }
         )
         if len(alerts) >= max_matches:
@@ -360,6 +438,7 @@ def detect_duplicate_headings(
                     "position": h_start,
                     "section_number": number,
                     "occurrence_count": len(occurrences),
+                    "deterministic_rule": DETERMINISTIC_RULE_DUPLICATE_HEADING,
                 }
             )
             if len(alerts) >= max_matches:
@@ -413,8 +492,199 @@ def detect_inconsistent_file_naming(filenames: list[str]) -> list[dict]:
                 "position": 0,
                 "dominant_style": dominant,
                 "found_style": style,
+                "deterministic_rule": DETERMINISTIC_RULE_INCONSISTENT_FILENAME,
             }
         )
+    return alerts
+
+
+# -----------------------------------------------------------------------------
+# Chunk O — additional deterministic checks.
+#
+# These rules expand the local preflight surface so simple, repetitive,
+# high-confidence issues can be found without paying LLM tokens. Each rule:
+#   - Produces the same alert-dict shape as the existing detectors.
+#   - Stamps ``deterministic_rule`` with a stable id (see DETERMINISTIC_RULE_*).
+#   - Documents its intentional scope so we do not "overreach into code
+#     interpretation" (Chunk O directive 3).
+# -----------------------------------------------------------------------------
+
+# Template markers that the existing PLACEHOLDER_PATTERNS does *not* catch.
+# Each rule below has been chosen to minimize false positives:
+#   - TODO / FIXME / XXX / HACK / NOTE — require a delimiter ("\bTODO:" or
+#     "TODO followed by an uppercase word" so phrases like "to do list"
+#     don't trigger).
+#   - "???"  — three or more consecutive question marks; valid prose almost
+#     never has this.
+#   - "Lorem ipsum" — fragment of the canonical lorem-ipsum boilerplate
+#     occasionally left in template starter specs.
+_TEMPLATE_MARKER_PATTERNS: list[tuple[str, str]] = [
+    (r"\bTODO\s*:", "TODO marker"),
+    (r"\bTODO\b(?=\s+[A-Z])", "TODO marker"),
+    (r"\bFIXME\b", "FIXME marker"),
+    (r"\bXXX\b(?!\d|-)", "XXX marker"),
+    (r"\bHACK\b\s*:", "HACK marker"),
+    (r"\?{3,}", "Question-mark placeholder"),
+    (r"(?i)\bLorem ipsum\b", "Lorem ipsum boilerplate"),
+]
+
+
+def detect_unresolved_template_markers(
+    content: str,
+    filename: str,
+    *,
+    max_matches: int = 200,
+) -> list[dict]:
+    """Flag editorial / template markers missed by ``detect_placeholders``.
+
+    Catches ``TODO:``, ``FIXME``, ``XXX``, ``???`` and lorem-ipsum text.
+    The regexes are intentionally conservative — see _TEMPLATE_MARKER_PATTERNS
+    for the per-rule rationale — so that prose like "to do list" or model
+    numbers containing "XXX-12" never trigger a false positive.
+    """
+    return _find_matches(
+        _TEMPLATE_MARKER_PATTERNS,
+        content,
+        filename,
+        max_matches=max_matches,
+        rule_id=DETERMINISTIC_RULE_TEMPLATE_MARKER,
+    )
+
+
+# Known California code-cycle years. California publishes a new cycle every
+# three years (with a six-month grace period); ``2025`` is the active cycle
+# and ``2028`` is the next anticipated cycle. Any year/code citation outside
+# this set is almost certainly a typo or fabrication (e.g. ``2018 CBC``).
+#
+# Distinct from ``_PLAUSIBLE_CODE_YEARS`` above (used by the *stale*-cycle
+# detector to flag known historical cycles that aren't current). Stale and
+# invalid are different problems: ``2019 CBC`` is stale-but-historical;
+# ``2018 CBC`` is invalid because California never published a 2018 cycle.
+_VALID_CALIFORNIA_CODE_YEARS: frozenset[str] = frozenset(_PLAUSIBLE_CODE_YEARS) | {"2028"}
+
+
+def detect_invalid_code_cycle_strings(
+    content: str,
+    filename: str,
+    *,
+    max_matches: int = 100,
+) -> list[dict]:
+    """Flag year/code citations whose year is not a real California cycle.
+
+    California publishes code cycles every three years: 2010, 2013, 2016,
+    2019, 2022, 2025 (and the next cycle is 2028). A reference like
+    ``2018 CBC`` or ``2024 CMC`` is a clear typo / fabrication that the LLM
+    review does not need to discover — surface it locally.
+
+    The detector reuses the same year/code patterns as the stale-cycle
+    detector but applies a *different* admissibility test:
+        - Stale-cycle path : year is in _PLAUSIBLE_CODE_YEARS but not the
+          selected cycle's year.
+        - Invalid path     : year matches a real-looking ``20\\d{2}`` but is
+          NOT in _VALID_CALIFORNIA_CODE_YEARS.
+    The two detectors do not collide because their admissibility sets are
+    disjoint by construction.
+    """
+    alerts: list[dict] = []
+    seen_spans: list[tuple[int, int]] = []
+    for pattern in _STALE_CYCLE_PATTERNS:
+        for match in pattern.finditer(content):
+            year = next((g for g in match.groups() if g and re.fullmatch(r"20\d{2}", g)), None)
+            if year is None or year in _VALID_CALIFORNIA_CODE_YEARS:
+                continue
+            span = (match.start(), match.end())
+            if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
+                continue
+            seen_spans.append(span)
+            ctx_start = max(0, span[0] - 60)
+            ctx_end = min(len(content), span[1] + 60)
+            alerts.append(
+                {
+                    "filename": filename,
+                    "type": f"Invalid California code cycle year ({year})",
+                    "match": match.group(0),
+                    "context": content[ctx_start:ctx_end].replace("\n", " ").strip(),
+                    "position": span[0],
+                    "found_year": year,
+                    "deterministic_rule": DETERMINISTIC_RULE_INVALID_CODE_CYCLE,
+                }
+            )
+            if len(alerts) >= max_matches:
+                return alerts
+    return alerts
+
+
+# Minimum length (in characters) for a paragraph to be considered for the
+# duplicate-paragraph detector. Short paragraphs ("PART 1", "SECTION 23 21 13",
+# numbered subheadings, etc.) repeat by design and would generate noise. 80
+# characters is roughly one short sentence — large enough that an exact
+# duplicate is meaningful, small enough to catch a single repeated bullet.
+_DUPLICATE_PARAGRAPH_MIN_LENGTH: int = 80
+
+
+def detect_duplicate_paragraphs(
+    content: str,
+    filename: str,
+    *,
+    min_length: int = _DUPLICATE_PARAGRAPH_MIN_LENGTH,
+    max_matches: int = 50,
+) -> list[dict]:
+    """Flag substantial paragraphs that appear verbatim more than once.
+
+    A common copy-paste mistake in DSA specs is duplicating a boilerplate
+    paragraph (a Submittals item, a Quality Assurance clause, etc.). This
+    detector finds paragraphs of ``min_length`` characters or more that
+    appear at least twice in the same document and reports each occurrence
+    after the first so the editor sees every duplicate.
+
+    Intentional scope:
+      - Operates on the *content* string, not the paragraph map, so it
+        catches both real DOCX paragraphs and any text that the extractor
+        merged onto a single line.
+      - Skips paragraphs whose stripped text is shorter than ``min_length``.
+        This avoids flagging numbered subheadings ("PART 1 - GENERAL") that
+        repeat across sections by design.
+      - Compares with ``casefold()`` + collapsed whitespace so a duplicate
+        with trailing whitespace or capitalization differences still flags.
+        The reported ``match`` is the verbatim original text, so the user
+        can locate it.
+    """
+    if not content:
+        return []
+    seen: dict[str, list[tuple[str, int]]] = {}
+    cursor = 0
+    for para in content.split("\n\n"):
+        # ``cursor`` is the absolute offset of ``para`` in the original
+        # content. Bump it by the paragraph length + the 2-char separator
+        # we just consumed so subsequent positions stay accurate.
+        para_start = cursor
+        cursor += len(para) + 2
+        stripped = para.strip()
+        if len(stripped) < min_length:
+            continue
+        key = re.sub(r"\s+", " ", stripped).casefold()
+        seen.setdefault(key, []).append((stripped, para_start))
+
+    alerts: list[dict] = []
+    for occurrences in seen.values():
+        if len(occurrences) < 2:
+            continue
+        # Report each occurrence after the first so users see every dup.
+        for original, position in occurrences[1:]:
+            preview = original if len(original) <= 140 else original[:140] + "…"
+            alerts.append(
+                {
+                    "filename": filename,
+                    "type": "Duplicate paragraph",
+                    "match": preview,
+                    "context": preview,
+                    "position": position,
+                    "occurrence_count": len(occurrences),
+                    "deterministic_rule": DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH,
+                }
+            )
+            if len(alerts) >= max_matches:
+                return alerts
     return alerts
 
 
@@ -430,6 +700,9 @@ def preprocess_spec(
     code-cycle detection and structural checks. ``cycle=None`` preserves the
     pre-Phase-9 behavior so callers that have not yet plumbed the cycle do
     not regress.
+
+    Chunk O additions: template-marker, invalid-code-cycle, and
+    duplicate-paragraph detection always run (none of them require a cycle).
     """
     code_cycle_alerts: list[dict] = []
     if cycle is not None:
@@ -443,4 +716,7 @@ def preprocess_spec(
         placeholder_alerts=detect_placeholders(content, filename),
         code_cycle_alerts=code_cycle_alerts,
         structural_alerts=structural_alerts,
+        template_marker_alerts=detect_unresolved_template_markers(content, filename),
+        invalid_code_cycle_alerts=detect_invalid_code_cycle_strings(content, filename),
+        duplicate_paragraph_alerts=detect_duplicate_paragraphs(content, filename),
     )

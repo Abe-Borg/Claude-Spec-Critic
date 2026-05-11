@@ -547,64 +547,144 @@ def _write_trust_model_summary(
 # Alerts
 # ---------------------------------------------------------------------------
 
-def _write_alerts(doc: Document, leed_alerts: list[dict],
-                  placeholder_alerts: list[dict]) -> None:
-    """Write LEED and placeholder alert sections with bullet lists."""
-    if not leed_alerts and not placeholder_alerts:
+def _write_alert_section(
+    doc: Document,
+    title: str,
+    description: str,
+    alerts: list[dict],
+) -> None:
+    """Render one named alert section with per-file bullet groups.
+
+    Chunk O — every deterministic alert category goes through this helper
+    so the section layout stays consistent. Each section also gets a
+    "(deterministic check)" suffix so the reader can tell at a glance which
+    alerts came from local rules vs. LLM findings — Chunk O Directive 2
+    asks for deterministic findings to be clearly labeled.
+    """
+    if not alerts:
+        return
+    doc.add_heading(f"{title} (deterministic check)", level=2)
+    _add_styled_paragraph(doc, description, size=10, space_after=6)
+    by_file: dict[str, list[dict]] = {}
+    for alert in alerts:
+        by_file.setdefault(alert.get("filename", ""), []).append(alert)
+    for filename, items in by_file.items():
+        para = doc.add_paragraph()
+        para.add_run(f"{filename}").bold = True
+        for alert in items[:5]:
+            context = alert.get("context", alert.get("match", ""))
+            doc.add_paragraph(context, style='List Bullet')
+        if len(items) > 5:
+            doc.add_paragraph(
+                f"... and {len(items) - 5} more",
+                style='List Bullet',
+            )
+
+
+def _write_alerts(
+    doc: Document,
+    leed_alerts: list[dict],
+    placeholder_alerts: list[dict],
+    *,
+    code_cycle_alerts: list[dict] | None = None,
+    structural_alerts: list[dict] | None = None,
+    naming_alerts: list[dict] | None = None,
+    template_marker_alerts: list[dict] | None = None,
+    invalid_code_cycle_alerts: list[dict] | None = None,
+    duplicate_paragraph_alerts: list[dict] | None = None,
+) -> None:
+    """Write the Alerts section with every deterministic-check category.
+
+    Chunk O — previously this rendered only ``leed_alerts`` and
+    ``placeholder_alerts``; ``code_cycle_alerts`` / ``structural_alerts`` /
+    ``naming_alerts`` were collected during preflight but silently dropped
+    before the report saw them, so users had to read the log to discover
+    them. The new optional kwargs default to ``None`` (treated as empty) so
+    legacy callers — including older snapshot tests — keep working.
+    """
+    code_cycle_alerts = code_cycle_alerts or []
+    structural_alerts = structural_alerts or []
+    naming_alerts = naming_alerts or []
+    template_marker_alerts = template_marker_alerts or []
+    invalid_code_cycle_alerts = invalid_code_cycle_alerts or []
+    duplicate_paragraph_alerts = duplicate_paragraph_alerts or []
+    if not any((
+        leed_alerts,
+        placeholder_alerts,
+        code_cycle_alerts,
+        structural_alerts,
+        naming_alerts,
+        template_marker_alerts,
+        invalid_code_cycle_alerts,
+        duplicate_paragraph_alerts,
+    )):
         return
 
     doc.add_heading("Alerts", level=1)
-
-    if leed_alerts:
-        doc.add_heading("LEED References Detected", level=2)
-        _add_styled_paragraph(
-            doc,
-            "The following LEED references were found. "
-            "Since this is not a LEED project, these should be removed:",
-            size=10,
-            space_after=6,
-        )
-
-        by_file: dict[str, list[dict]] = {}
-        for alert in leed_alerts:
-            by_file.setdefault(alert["filename"], []).append(alert)
-
-        for filename, alerts in by_file.items():
-            para = doc.add_paragraph()
-            para.add_run(f"{filename}").bold = True
-            for alert in alerts[:5]:
-                context = alert.get("context", alert.get("match", ""))
-                doc.add_paragraph(context, style='List Bullet')
-            if len(alerts) > 5:
-                doc.add_paragraph(
-                    f"... and {len(alerts) - 5} more",
-                    style='List Bullet',
-                )
-
-    if placeholder_alerts:
-        doc.add_heading("Unresolved Placeholders", level=2)
-        _add_styled_paragraph(
-            doc,
-            "The following placeholders need to be resolved:",
-            size=10,
-            space_after=6,
-        )
-
-        by_file: dict[str, list[dict]] = {}
-        for alert in placeholder_alerts:
-            by_file.setdefault(alert["filename"], []).append(alert)
-
-        for filename, alerts in by_file.items():
-            para = doc.add_paragraph()
-            para.add_run(f"{filename}").bold = True
-            for alert in alerts[:5]:
-                context = alert.get("context", alert.get("match", ""))
-                doc.add_paragraph(context, style='List Bullet')
-            if len(alerts) > 5:
-                doc.add_paragraph(
-                    f"... and {len(alerts) - 5} more",
-                    style='List Bullet',
-                )
+    _add_styled_paragraph(
+        doc,
+        "These items were detected locally by deterministic rules; no LLM "
+        "tokens were spent on them. They sit alongside the LLM findings "
+        "below.",
+        size=10,
+        space_after=6,
+    )
+    _write_alert_section(
+        doc,
+        "LEED References Detected",
+        "The following LEED references were found. Since this is not a "
+        "LEED project, these should be removed:",
+        leed_alerts,
+    )
+    _write_alert_section(
+        doc,
+        "Unresolved Placeholders",
+        "The following editorial placeholders need to be resolved:",
+        placeholder_alerts,
+    )
+    _write_alert_section(
+        doc,
+        "Unresolved Template Markers",
+        "The following TODO / FIXME / XXX / ??? markers are still in the "
+        "spec and should be resolved before issuing:",
+        template_marker_alerts,
+    )
+    _write_alert_section(
+        doc,
+        "Stale California Code Cycle References",
+        "The following references cite a historical California code cycle "
+        "rather than the one selected for this review:",
+        code_cycle_alerts,
+    )
+    _write_alert_section(
+        doc,
+        "Invalid California Code Cycle Years",
+        "The following references cite a year that is not a real California "
+        "code cycle (California publishes cycles every 3 years: 2010, 2013, "
+        "2016, 2019, 2022, 2025). These are likely typos:",
+        invalid_code_cycle_alerts,
+    )
+    _write_alert_section(
+        doc,
+        "Structural Issues",
+        "Empty sections and duplicate section headings detected in the "
+        "spec body:",
+        structural_alerts,
+    )
+    _write_alert_section(
+        doc,
+        "Duplicate Paragraphs",
+        "These paragraphs appear verbatim more than once in the same spec — "
+        "likely copy-paste mistakes:",
+        duplicate_paragraph_alerts,
+    )
+    _write_alert_section(
+        doc,
+        "Inconsistent Filenames",
+        "These files use a CSI naming style that differs from the project's "
+        "dominant style:",
+        naming_alerts,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1256,8 +1336,21 @@ def export_report(
         verification_stats.get("edit_action_counts", {}),
     )
 
-    _write_alerts(doc, pipeline_result.leed_alerts,
-                  pipeline_result.placeholder_alerts)
+    # Chunk O — fall back to ``getattr`` for the new alert lists so
+    # ``_StubPipelineResult`` style ad-hoc test doubles (and any legacy
+    # callers that build the result by hand without the new fields)
+    # keep working. The real ``PipelineResult`` dataclass always has them.
+    _write_alerts(
+        doc,
+        pipeline_result.leed_alerts,
+        pipeline_result.placeholder_alerts,
+        code_cycle_alerts=getattr(pipeline_result, "code_cycle_alerts", None),
+        structural_alerts=getattr(pipeline_result, "structural_alerts", None),
+        naming_alerts=getattr(pipeline_result, "naming_alerts", None),
+        template_marker_alerts=getattr(pipeline_result, "template_marker_alerts", None),
+        invalid_code_cycle_alerts=getattr(pipeline_result, "invalid_code_cycle_alerts", None),
+        duplicate_paragraph_alerts=getattr(pipeline_result, "duplicate_paragraph_alerts", None),
+    )
     _write_findings_section(doc, review, verbose=verbose)
     _write_cross_check_section(doc, cross_check, verbose=verbose, review_result=review)
 

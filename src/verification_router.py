@@ -31,19 +31,39 @@ _ESCALATION_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
 
 # Tokens that strongly indicate a finding is a local quality gripe / placeholder
 # / duplicate, where web search adds no signal. Conservative on purpose.
+#
+# Chunk O — extended with the additional rule names produced by the new
+# deterministic checks. A GRIPES-severity finding whose ``issue`` text says
+# "duplicate paragraph" or "invalid code cycle year" should not pay for a
+# Sonnet+web_search round-trip because the preprocessor already detected
+# the same problem locally. Keep this aligned with
+# ``preprocessor.DETERMINISTIC_RULES`` for parity with the rule labels the
+# report renders.
 _LOCAL_SKIP_KEYWORDS = (
     "placeholder",
     "[select]",
     "[verify]",
     "[insert",
     "tbd",
+    "todo",
+    "fixme",
+    "xxx",
+    "???",
+    "lorem ipsum",
     "duplicate paragraph",
     "duplicate heading",
+    "duplicate section",
+    "empty section",
     "internal contradiction",
     "missing placeholder",
     "leed",
     "formatting",
     "typo",
+    "invalid code cycle",
+    "invalid california code cycle",
+    "template marker",
+    "inconsistent csi",
+    "inconsistent filename",
 )
 
 
