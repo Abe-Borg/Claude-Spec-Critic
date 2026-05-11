@@ -31,6 +31,7 @@ from .api_config import (
     PHASE_VERIFICATION_RETRY,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
+    apply_effort_config,
     apply_thinking_config,
     extract_cache_usage,
     system_prompt_with_cache,
@@ -136,6 +137,29 @@ class VerificationResult:
     # string for pre-Chunk-I cache entries or unit-test results constructed
     # without going through the router.
     verification_mode: str = ""
+    # ----- Chunk D1.3 escalation telemetry --------------------------------
+    # The existing ``escalated: bool`` records "this result was produced by
+    # the Opus escalation path." The fields below answer the harder
+    # question: did escalation actually pay off?
+    #
+    # ``escalation_attempted`` is True whenever
+    # :func:`verification_router.should_escalate_verification` fired and the
+    # escalation call was issued — regardless of whether the escalated result
+    # was kept. ``escalated`` (above) is the subset where the escalated
+    # result became the final one.
+    # ``initial_model`` / ``initial_verdict`` capture the first-pass model
+    # and verdict so reports can show before-and-after.
+    # ``escalation_changed_verdict`` is True iff the final verdict differs
+    # from the initial verdict (the metric the delta plan calls out).
+    # ``escalation_reason`` is a short tag describing why escalation fired
+    # (e.g. ``"ungrounded_critical_high"``); empty when escalation did not
+    # fire. The string is intentionally machine-readable so a future
+    # aggregation pass can bucket by reason without parsing free text.
+    escalation_attempted: bool = False
+    initial_model: str = ""
+    initial_verdict: str = ""
+    escalation_changed_verdict: bool = False
+    escalation_reason: str = ""
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -852,6 +876,13 @@ def verify_finding(
     ):
         escalated_model = escalation_verification_model()
         if escalated_model and escalated_model != selected_model:
+            # Chunk D1.3: snapshot the initial state before the escalation
+            # call so the telemetry below can report before-and-after even
+            # when the escalated result is the one we keep.
+            initial_verdict_snapshot = result.verdict
+            initial_model_snapshot = result.model_used or selected_model
+            escalation_reason = _classify_escalation_reason(result)
+
             esc_result = _run_verification_call(
                 finding,
                 cycle=cycle,
@@ -867,9 +898,47 @@ def verify_finding(
             ):
                 result = esc_result
 
+            # Stamp escalation telemetry on whichever result we kept.
+            # ``escalation_attempted`` records that the second pass ran
+            # (regardless of which result became final); the comparison
+            # below uses the original initial verdict so the answer to
+            # "did escalation change the verdict?" is well-defined.
+            result.escalation_attempted = True
+            result.initial_model = initial_model_snapshot
+            result.initial_verdict = initial_verdict_snapshot
+            result.escalation_changed_verdict = (
+                result.verdict != initial_verdict_snapshot
+            )
+            result.escalation_reason = escalation_reason
+
     if cache is not None and result.cache_status == "miss":
         cache.put(finding, cycle=cycle, result=result)
     return result
+
+
+def _classify_escalation_reason(initial_result: VerificationResult) -> str:
+    """Return a short machine-readable tag for why escalation fired.
+
+    Mirrors the decision tree in
+    :func:`verification_router.should_escalate_verification` so the
+    telemetry says exactly which branch triggered escalation. Tags are
+    intentionally short and stable so downstream aggregation can bucket
+    by reason without parsing free text.
+    """
+    verdict = (initial_result.verdict or "").strip().upper()
+    if verdict == "UNVERIFIED":
+        return "initial_unverified"
+    if not initial_result.grounded:
+        return "initial_ungrounded"
+    if (
+        initial_result.search_error_count > 0
+        and initial_result.successful_source_count == 0
+    ):
+        return "initial_all_search_errors"
+    # Defensive fallback — the router would not have asked for escalation
+    # without one of the above being true, but a future router rule should
+    # remain visible.
+    return "router_decision"
 
 
 def _run_verification_call(
@@ -979,6 +1048,12 @@ def _run_verification_call(
     }
     if policy.thinking_enabled:
         apply_thinking_config(stream_kwargs, model=model, phase=PHASE_VERIFICATION)
+    # Chunk D1.2: pair the effort policy with the thinking config. The
+    # effort lookup is model-aware: Sonnet on the initial pass receives
+    # ``medium`` and Opus on the escalation pass receives ``high``. The
+    # helper omits ``output_config`` for models that do not support it
+    # so a future Haiku-based verification mode would not break.
+    apply_effort_config(stream_kwargs, model=model, phase=PHASE_VERIFICATION)
 
     for attempt in range(max_retries + 1):
         try:
@@ -1007,8 +1082,16 @@ def _run_verification_call(
                 if stop_class == STOP_CLASS_COMPLETE:
                     break
                 if stop_class == STOP_CLASS_PAUSE:
+                    # Chunk D1.1: server-tool ``pause_turn`` is resumed by
+                    # re-sending the assistant response as-is. Appending a
+                    # synthetic ``"continue"`` user turn (the prior behavior)
+                    # wastes tokens, changes the model's continuation
+                    # behavior, and interferes with thinking / tool-state
+                    # continuity. Anthropic's stop_reason docs explicitly
+                    # call out that the correct response is to put the
+                    # assistant content back into ``messages`` and reissue
+                    # the same request — without a new user turn.
                     messages.append({"role": "assistant", "content": response.content})
-                    messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
                     continue
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
             final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
@@ -1293,6 +1376,10 @@ def _build_retry_request(
         "messages": [{"role": "user", "content": prompt}],
     }
     apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_RETRY)
+    # Chunk D1.2: retry waves reuse the verification-phase effort default
+    # so the retry request shape matches the initial wave on supported
+    # models.
+    apply_effort_config(request, model=selected, phase=PHASE_VERIFICATION_RETRY)
     return request
 
 
@@ -1327,6 +1414,14 @@ def _build_continuation_request(
     # the initial / retry calls. The PHASE_VERIFICATION_CONTINUATION policy
     # mirrors PHASE_VERIFICATION today; routing through the central
     # registry keeps the policy decisions co-located.
+    #
+    # Chunk D1.1: server-tool ``pause_turn`` is resumed by re-sending the
+    # assistant response content as-is — no synthetic user ``"continue"``
+    # turn. The previous payload appended a ``{"role": "user", "content":
+    # [{"type": "text", "text": "continue"}]}`` block, which wasted tokens
+    # and interfered with thinking / tool-state continuity. The assistant
+    # block (with thinking blocks and tool_use_ids preserved exactly via
+    # ``_content_block_to_plain``) is enough for the model to resume.
     request: dict = {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected, phase=PHASE_VERIFICATION_CONTINUATION),
@@ -1335,10 +1430,15 @@ def _build_continuation_request(
         "messages": [
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": assistant_content_blocks},
-            {"role": "user", "content": [{"type": "text", "text": "continue"}]},
         ],
     }
     apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_CONTINUATION)
+    # Chunk D1.2: continuations reuse the verification-phase effort default
+    # so the resumed request shape matches the original. Per D1.1, the
+    # resumed call carries the assistant content back as-is — pairing the
+    # effort policy here means the resumed request also keeps its effort
+    # tag instead of silently dropping back to the API default.
+    apply_effort_config(request, model=selected, phase=PHASE_VERIFICATION_CONTINUATION)
     return request
 
 

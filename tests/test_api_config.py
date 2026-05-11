@@ -326,9 +326,11 @@ class TestRequestShapeWiring:
         assert isinstance(req["system"], list)
         sys_cc = req["system"][0]["cache_control"]
         assert sys_cc["type"] == "ephemeral"
-        # Continuation has user/assistant/user pattern.
+        # Chunk D1.1: server-tool ``pause_turn`` resumption resends the
+        # assistant content as-is — no synthetic ``"continue"`` user turn.
+        # The prior payload shape (user/assistant/user) wasted tokens.
         roles = [m["role"] for m in req["messages"]]
-        assert roles == ["user", "assistant", "user"]
+        assert roles == ["user", "assistant"]
 
     def test_verifier_system_prompt_no_longer_mentions_code_execution(self):
         from src.code_cycles import DEFAULT_CYCLE

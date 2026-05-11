@@ -310,6 +310,33 @@ class DiagnosticsReport:
             "search_errors": 0,
             "search_requests": 0,
         }
+        # Chunk D1.3: escalation telemetry rollup. The verifier records
+        # before-and-after fields on every result that triggered the
+        # Sonnet -> Opus escalation path; aggregating them here answers
+        # "is escalation actually changing verdicts?".
+        #
+        # - ``attempts`` counts findings where a second pass ran, regardless
+        #   of whether the escalated result was kept.
+        # - ``changed_verdict`` counts findings whose final verdict differs
+        #   from the initial Sonnet verdict.
+        # - ``no_change`` is the difference, useful for spotting wasted
+        #   escalations.
+        # - ``by_reason`` buckets attempts by the router's classification
+        #   tag (``initial_unverified`` / ``initial_ungrounded`` / etc.).
+        # - ``by_initial_verdict`` and ``by_final_verdict`` track the
+        #   verdict transitions for a future routing-tuning pass.
+        # - ``by_severity`` reports counts per finding severity so a
+        #   future routing-tuning pass can see whether escalation pays
+        #   off more on CRITICAL than HIGH.
+        escalation_stats = {
+            "attempts": 0,
+            "changed_verdict": 0,
+            "no_change": 0,
+            "by_reason": {},          # type: dict[str, int]
+            "by_initial_verdict": {}, # type: dict[str, int]
+            "by_final_verdict": {},   # type: dict[str, int]
+            "by_severity": {},        # type: dict[str, int]
+        }
         # Chunk I: per-mode counter. Keys are the
         # :class:`VerificationMode` string values; missing-mode events
         # are bucketed under ``"unknown"`` so a legacy entry without a
@@ -342,6 +369,32 @@ class DiagnosticsReport:
                 verification_modes[mode_key] = verification_modes.get(mode_key, 0) + 1
                 profile_key = str(e.data.get("verification_profile") or "unknown")
                 verification_profiles[profile_key] = verification_profiles.get(profile_key, 0) + 1
+                # Chunk D1.3: aggregate escalation telemetry per-finding.
+                # Missing keys (legacy events / non-escalation events)
+                # are treated as ``escalation_attempted=False`` and
+                # silently skipped.
+                if e.data.get("escalation_attempted") is True:
+                    escalation_stats["attempts"] += 1
+                    if e.data.get("escalation_changed_verdict") is True:
+                        escalation_stats["changed_verdict"] += 1
+                    else:
+                        escalation_stats["no_change"] += 1
+                    reason_key = str(e.data.get("escalation_reason") or "unknown")
+                    escalation_stats["by_reason"][reason_key] = (
+                        escalation_stats["by_reason"].get(reason_key, 0) + 1
+                    )
+                    iv_key = str(e.data.get("initial_verdict") or "unknown")
+                    escalation_stats["by_initial_verdict"][iv_key] = (
+                        escalation_stats["by_initial_verdict"].get(iv_key, 0) + 1
+                    )
+                    fv_key = str(e.data.get("verdict") or "unknown")
+                    escalation_stats["by_final_verdict"][fv_key] = (
+                        escalation_stats["by_final_verdict"].get(fv_key, 0) + 1
+                    )
+                    sev_key = str(e.data.get("finding_severity") or "unknown")
+                    escalation_stats["by_severity"][sev_key] = (
+                        escalation_stats["by_severity"].get(sev_key, 0) + 1
+                    )
 
         # Phase 9 plan 13.4: search-budget telemetry. We aggregate per-finding
         # search-request counts so a future tuning pass can see whether the
@@ -448,6 +501,25 @@ class DiagnosticsReport:
             # profile counts answer "what kind of claims dominated?".
             "verification_modes": verification_modes,
             "verification_profiles": verification_profiles,
+            # Chunk D1.3: escalation telemetry rollup. ``escalation_stats``
+            # carries the per-reason / per-severity / per-verdict counts
+            # plus a derived ``change_rate`` so an operator can answer
+            # "is the Sonnet -> Opus escalation actually paying off?"
+            # at a glance. ``change_rate`` is 0.0 on runs with no
+            # escalation attempts (avoiding divide-by-zero) and is
+            # rounded to four decimal places for stable JSON output.
+            "escalation_stats": {
+                **escalation_stats,
+                "change_rate": (
+                    round(
+                        escalation_stats["changed_verdict"]
+                        / escalation_stats["attempts"],
+                        4,
+                    )
+                    if escalation_stats["attempts"]
+                    else 0.0
+                ),
+            },
             "search_budget": search_budget,
             "output_telemetry": output_telemetry,
             "severity_counts": severities,
@@ -574,6 +646,23 @@ class DiagnosticsReport:
         profiles_breakdown = s.get("verification_profiles") or {}
         if profiles_breakdown:
             lines.append(f"  Profiles:        {profiles_breakdown}")
+        # Chunk D1.3: render the escalation rollup only when at least one
+        # escalation was attempted, so legacy runs (and runs that did not
+        # trigger any escalation) stay compact.
+        esc_stats = s.get("escalation_stats") or {}
+        if esc_stats.get("attempts"):
+            change_rate = esc_stats.get("change_rate") or 0.0
+            lines.append(
+                "  Escalation:      "
+                f"attempts={esc_stats['attempts']}, "
+                f"changed={esc_stats['changed_verdict']}, "
+                f"no_change={esc_stats['no_change']}, "
+                f"change_rate={change_rate:.1%}"
+            )
+            if esc_stats.get("by_reason"):
+                lines.append(f"    by_reason:     {esc_stats['by_reason']}")
+            if esc_stats.get("by_severity"):
+                lines.append(f"    by_severity:   {esc_stats['by_severity']}")
         if s["phase_durations"]:
             lines.append("  Phase Durations:")
             for phase, dur in s["phase_durations"].items():

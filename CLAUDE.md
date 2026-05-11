@@ -164,6 +164,8 @@ Chunk H source-grounding evidence: `searched_sources` (URLs the web_search tool 
 
 Chunk I verification mode: `verification_mode` (one of `local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`) stamps the routing decision used for the verification call. `_local_skip_result()` stamps `local_skip`; `_run_verification_call` and `_classify_wave_results` stamp the mode returned by `verification_modes.select_verification_mode(...)`. The cache and resume state round-trip the field so a restored hit carries its original routing tag. Pre-Chunk-I records load with `verification_mode = ""`, which `mode_policy()` treats as STANDARD_REASONING for backward compatibility.
 
+Chunk D1.3 escalation telemetry: `escalation_attempted: bool` (True iff the Sonnet → Opus second pass ran this run), `initial_model: str` / `initial_verdict: str` (first-pass snapshot), `escalation_changed_verdict: bool` (final verdict differs from initial), `escalation_reason: str` (one of `initial_unverified` / `initial_ungrounded` / `initial_all_search_errors` / `router_decision`). Stamped by `verify_finding` whenever `should_escalate_verification` fires — both when the escalated result wins AND when the first-pass result wins (the "wasted escalation" case). Not persisted by the verification cache (`_result_to_dict` / `_clone_for_store` / `_clone_for_hit`) so cache hits don't propagate prior-run escalation counts; the existing `escalated` field still records "this verdict came from Opus" as part of provenance. The fields flow through both `review_run_controller` and `batch_controller` into the diagnostics event payload so `summary()["escalation_stats"]` aggregates `attempts` / `changed_verdict` / `change_rate` / `by_reason` / `by_severity` / `by_initial_verdict` / `by_final_verdict`.
+
 ### BatchSubmission / CollectedBatchState (pipeline.py)
 Carry `review_mode: str` so resume restores the exact prompt path.
 
@@ -394,6 +396,8 @@ Chunk J telemetry: `DiagnosticsReport.record_api_call(*, phase, model, input_tok
 
 Chunk K5 locator telemetry: `DiagnosticsReport.record_locator_method(method)` increments a per-method counter (`id` / `exact` / `normalized` / `section_anchored` / `fuzzy`) so the summary can answer "how often did the model actually cite an id?". `summary()` exposes `locator_methods` (empty dict on runs that did not invoke `apply_edits.execute_edit_plan`); `to_text()` renders a `Locator Methods:` line only when at least one method was recorded. The counter is wired in `apply_edits.execute_edit_plan` through an optional `diagnostics: DiagnosticsReport | None` parameter — id-anchored matches also emit a `located via id=…` log line so a future debugging pass can grep the per-spec log without parsing the JSON dump.
 
+Chunk D1.3 escalation telemetry: `VerificationResult` carries `escalation_attempted` (True iff the Sonnet → Opus second pass actually ran this run), `initial_model` / `initial_verdict` (snapshot of the first-pass result), `escalation_changed_verdict` (final verdict differs from initial), and `escalation_reason` (one of `initial_unverified` / `initial_ungrounded` / `initial_all_search_errors` / `router_decision`). `verify_finding` stamps these on the kept result whenever `should_escalate_verification` fires — including the wasted-escalation case where the first-pass result wins. `_classify_escalation_reason(initial_result)` mirrors the router branches so a future tuning pass can bucket by reason without re-running the router. The fields are NOT persisted by `verification_cache._result_to_dict` / `_clone_for_store` / `_clone_for_hit` (per the delta plan's "telemetry describes runtime behavior" note — cache hits don't propagate prior-run escalation counts). Both `review_run_controller` and `batch_controller` thread the fields into the diagnostics verification-event payload so `DiagnosticsReport.summary()` produces an `escalation_stats` block with `attempts` / `changed_verdict` / `no_change` / `by_reason` / `by_severity` / `by_initial_verdict` / `by_final_verdict` and a derived `change_rate`; `to_text()` renders an `Escalation:` section only when at least one attempt was made.
+
 ---
 
 ## 4) GUI Notes (gui.py / widgets.py)
@@ -489,6 +493,8 @@ A blocked-domain list filters social/AI-assistant/forum/general-encyclopedia sou
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override cache path |
 | `SPEC_CRITIC_EXTRACTION_CACHE` | `1` | `0` disables file-extraction cache |
 | `SPEC_CRITIC_ELEMENT_IDS` | `1` | Chunk K2 — `0` reverts spec rendering to the legacy plain-body `<spec>` wrapper (no id-tagged `<para>`/`<row>`/`<heading>` elements). Default on; flip to `0` to roll back the id-tagged path without redeploying. |
+| `SPEC_CRITIC_EFFORT_POLICY` | `1` | Chunk D1.2 — `0` disables the `output_config.effort` policy globally so requests omit the field. Use as a quick rollback if a future model regresses. |
+| `SPEC_CRITIC_EFFORT_OVERRIDE` | (empty) | Chunk D1.2 — when set, forces every effort-capable request to use the given level (`low` / `medium` / `high` / `xhigh`). Invalid values raise at request-build time. |
 
 ---
 

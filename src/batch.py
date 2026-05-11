@@ -22,6 +22,7 @@ from .api_config import (
     PHASE_VERIFICATION,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     WEB_SEARCH_TOOL,
+    apply_effort_config,
     apply_thinking_config,
     assert_extended_output_allowed,
     batch_service_tier,
@@ -151,6 +152,11 @@ def submit_review_batch(
             "messages": [{"role": "user", "content": user_message}],
         }
         apply_thinking_config(params, model=model, phase=PHASE_BATCH_REVIEW)
+        # Chunk D1.2: pair the effort policy with the thinking config so
+        # batch review requests carry ``output_config.effort=high`` on
+        # supported models. ``apply_effort_config`` omits the field on
+        # Haiku / unknown models.
+        apply_effort_config(params, model=model, phase=PHASE_BATCH_REVIEW)
         tier = batch_service_tier()
         if tier:
             params["service_tier"] = tier
@@ -358,16 +364,21 @@ def _build_verification_request_params(
     prompt: str,
     system_prompt: str,
     assistant_content: list | None = None,
-    continue_turn: bool = False,
     model: str | None = None,
     severity: str | None = None,
     profile: Any = None,
 ) -> dict[str, Any]:
+    # Chunk D1.1: this helper builds either the initial verification
+    # request (no assistant_content) or a pause_turn resumption request
+    # (assistant_content carries the prior assistant blocks). Server-tool
+    # pause_turn is resumed by re-sending the assistant content as-is;
+    # no synthetic ``"continue"`` user turn is appended. The actual
+    # production continuation path lives in
+    # :func:`verifier._build_continuation_request` and routes through
+    # the same no-synthetic-user-turn shape.
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     if assistant_content is not None:
         messages.append({"role": "assistant", "content": assistant_content})
-    if continue_turn:
-        messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
     selected_model = model or VERIFICATION_MODEL
     # Phase 2.5 (audit Section 6.5, Option B) / Chunk C: include the verdict
     # tool alongside web_search via the shared :func:`build_verification_tools`
@@ -395,6 +406,11 @@ def _build_verification_request_params(
         "messages": messages,
     }
     apply_thinking_config(params, model=selected_model, phase=PHASE_VERIFICATION)
+    # Chunk D1.2: pair effort with thinking so batch verification requests
+    # carry the verification-phase effort default (``medium`` for Sonnet,
+    # ``high`` for Opus escalation). The helper omits the field for
+    # Haiku / unknown models.
+    apply_effort_config(params, model=selected_model, phase=PHASE_VERIFICATION)
     tier = batch_service_tier()
     if tier:
         params["service_tier"] = tier
