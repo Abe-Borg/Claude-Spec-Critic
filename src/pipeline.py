@@ -390,7 +390,16 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         # input. Anthropic's exact count for that spec defines whether the
         # whole job fits under ``RECOMMENDED_MAX``.
         biggest = max(specs, key=lambda s: count_tokens(s.content))
-        user_message = get_single_spec_user_message(biggest.content, biggest.filename, project_context=project_context, cycle=cycle, mode=mode)
+        user_message = get_single_spec_user_message(
+            biggest.content,
+            biggest.filename,
+            project_context=project_context,
+            cycle=cycle,
+            mode=mode,
+            # Chunk K2: preflight must measure the *real* user message, so
+            # the paragraph map flows in just like the production call.
+            paragraph_map=biggest.paragraph_map,
+        )
         # Match the actual request shape: when structured outputs are on, the
         # tool definition adds real input tokens that the preflight should
         # count. Including tools in the cache key prevents stale hits when
@@ -948,7 +957,19 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     errors: list[str] = []
     for i, spec in enumerate(specs, start=1):
         progress(25.0 + ((i - 1) / len(specs)) * 25.0, f"Reviewing {spec.filename} ({i}/{len(specs)})...")
-        rr = review_single_spec(spec.content, spec.filename, project_context=project_context, model=model, verbose=verbose, stream_callback=stream_callback, cycle=cycle, mode=review_mode)
+        rr = review_single_spec(
+            spec.content,
+            spec.filename,
+            project_context=project_context,
+            model=model,
+            verbose=verbose,
+            stream_callback=stream_callback,
+            cycle=cycle,
+            mode=review_mode,
+            # Chunk K2: forward the paragraph map so the prompt builder
+            # can render id-tagged elements and the model can cite ids.
+            paragraph_map=spec.paragraph_map,
+        )
         if rr.parse_status == "incomplete":
             log(f"  {spec.filename}: Response incomplete — model ran out of output tokens. No findings extracted.", level="warning")
         if rr.error:

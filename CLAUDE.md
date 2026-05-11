@@ -110,10 +110,11 @@ class ExtractedSpec:
     source_path: str = ""
     source_format: str = ""
     paragraph_map: list[ParagraphMapping] | None = None
+    document_id: str = ""                # Chunk K1: filename stem
 ```
 
 ### ParagraphMapping (extractor.py)
-Per-element record used by the locator. Includes `body_index`, `element_type`, `section_index`, plus Phase 4 formatting fields (`run_count`, `distinct_formatting_runs`).
+Per-element record used by the locator. Includes `body_index`, `element_type`, `section_index`, plus Phase 4 formatting fields (`run_count`, `distinct_formatting_runs`). Chunk K1 adds `element_id` (stable per-run id — `p<body_index>` for body paragraphs, `t<table>r<row>` for table cells, `s<section><h|f><i>` for header/footer paragraphs, `meta:hf` for the synthetic header/footer delimiter) and `section_id` (the most recent heading paragraph text seen during extraction; best-effort attribution via `_is_heading_paragraph`).
 
 ### Finding (reviewer.py)
 Canonical issue object containing raw model content, token usage, elapsed time, stop reason, parse status, and optional error context. Schema:
@@ -134,7 +135,10 @@ class Finding:
     affected_files: list[str] = field(default_factory=list)
     anchorText: str | None = None        # ADD only
     insertPosition: str | None = None    # "before" | "after" (ADD only)
+    evidenceElementId: str | None = None # Chunk K3: cite a ParagraphMapping.element_id
 ```
+
+Chunk K3: `evidenceElementId` is the optional pointer to the paragraph / row / heading the finding quotes. The structured tool schema lists it as required-but-nullable so strict-mode constrained sampling still has a deterministic shape; the parser normalizes empty strings to `None` and the resume serializer round-trips it. Legacy payloads (pre-Chunk-K) load with `evidenceElementId=None` and continue to flow through the existing text-matching locator path.
 
 ### FindingGroup / FindingOccurrence (pipeline.py)
 Phase 1.3 formalization of the display-dedup vs. per-file edit-execution split. `group_findings(findings)` returns one `FindingGroup` per deduped finding, with one `FindingOccurrence` per file in `affected_files`. `expand_to_occurrences(findings)` flattens to per-file occurrences, skipping placeholders.
@@ -203,9 +207,11 @@ Single source of truth for safely embedding untrusted content (spec bodies, proj
 - `wrap_data_block(tag, content, *, attrs=None)` — single-line `<tag k="v">body</tag>` with both halves escaped.
 - `wrap_document_block(tag, content, *, attrs=None)` — multi-line equivalent for spec / context bodies; wrapper tags land on their own lines so the body's newline layout is preserved.
 - `render_blocks(iterable)` — `\n`-join that drops empties.
-- Wrapper-tag string constants: `TAG_SPEC`, `TAG_PROJECT_CONTEXT`, `TAG_CORPUS`, `TAG_ALREADY_IDENTIFIED`, `TAG_PRIOR_FINDING`, `TAG_FINDING`, `TAG_FINDINGS`, `TAG_CHUNK_FINDINGS`, `TAG_CHUNK`.
+- Wrapper-tag string constants: `TAG_SPEC`, `TAG_PROJECT_CONTEXT`, `TAG_CORPUS`, `TAG_ALREADY_IDENTIFIED`, `TAG_PRIOR_FINDING`, `TAG_FINDING`, `TAG_FINDINGS`, `TAG_CHUNK_FINDINGS`, `TAG_CHUNK`, plus the Chunk K2 element tags `TAG_PARA`, `TAG_ROW`, `TAG_HEADING`.
 
-Used by `prompts.py`, `cross_checker.py`, `triage.py`, and `verifier.py`. The stable instruction prefix in each prompt builder is unchanged byte-for-byte, so prompt-caching breakpoints remain pinned (verified by `TestPromptCacheBreakpointSafety` in `tests/test_chunk_g_prompt_serialization.py`).
+Chunk K2 — id-tagged document rendering: `render_spec_with_ids(content, paragraph_map, *, filename)` emits one `<para id="p7" section="1.01 SUMMARY">…</para>` (or `<row id="t0r0" …>` / `<heading id="p0">`) per `ParagraphMapping` so the model can cite `evidenceElementId` alongside the exact quote. `element_ids_enabled()` is the env toggle (`SPEC_CRITIC_ELEMENT_IDS=0` reverts to the legacy `<spec>`-only rendering). The id rendering only touches the *body* of the user message — the cached system-prompt prefix and the surrounding instruction text up to the new id hint line are unchanged byte-for-byte, so prompt-cache breakpoints continue to land where they did.
+
+Used by `prompts.py`, `cross_checker.py`, `triage.py`, and `verifier.py`. The stable instruction prefix in each prompt builder is unchanged byte-for-byte, so prompt-caching breakpoints remain pinned (verified by `TestPromptCacheBreakpointSafety` in `tests/test_chunk_g_prompt_serialization.py` and the Chunk K2 cache-prefix test in `tests/test_chunk_k_stable_ids.py`).
 
 ### code_cycles.py — California code cycles
 
@@ -330,6 +336,7 @@ Output caps live in `api_config.py`:
 - `LocatorResult.safety_category` (Phase 4) — AUTO_SAFE / AUTO_WITH_CAUTION / MANUAL_REVIEW / REPORT_ONLY
 - `_fuzzy_match` (Phase 9.3) — length-ratio + `quick_ratio` prefilters before paying for `SequenceMatcher.ratio()`
 - `_section_anchored_match` — narrows by section header neighborhood
+- Chunk K4: `_id_anchored_match(finding, existing_text, paragraph_map)` is the new fast path. When `Finding.evidenceElementId` is set, the locator looks up the mapping by `element_id` and revalidates the recorded `existingText` quote (exact substring first, then normalized) against the live element. A successful id+quote match becomes a `LocatorResult` with `match_method="id"` and AUTO_SAFE safety for body paragraphs (table cells stay AUTO_WITH_CAUTION so the table-cell precondition revalidation in `spec_editor` still gates the mutation). When the id is set but unusable — id missing from the map, or quote no longer matches the cited element — the locator returns `status="not_found"` with `safety_category=SAFETY_MANUAL_REVIEW` and **does not** fall back to whole-document text matching. The fuzzy/text path is reached only when `evidenceElementId is None` (the legacy / pre-Chunk-K compatibility path).
 
 ### edit_candidates.py — Safety categories
 
@@ -354,6 +361,8 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 `DiagnosticsReport.summary()` returns a dict with totals + `failed_specs`, `skipped_specs`, `edit_skip_reasons`, `ambiguous_locator_count`, `edits_applied_total/skipped_total/failed_total`, `verification_evidence` (grounded / ungrounded / escalated / cache_hits / local_skips / search_errors / search_requests), `output_telemetry` (max_observed / p50 / p95 / truncated_calls / max_cap_observed), `search_budget` (ceiling / saturated_calls / p50 / p95). The `DiagnosticsWindow` widget renders all of these inline; `to_text()` and `to_dict()` produce the export formats.
 
 Chunk J telemetry: `DiagnosticsReport.record_api_call(*, phase, model, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, web_search_requests, max_output_tokens, stop_reason, mode, retry_status, extra=...)` is the standardized helper for recording a single Anthropic call with a normalized event payload. `summary()` adds `phase_telemetry` (per-phase rollup with `calls` / `input_tokens` / `output_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens` / `web_search_requests` / `cache_hit_ratio` / `retries` / `continuations` / `truncated_calls` / `realtime_calls` / `batch_calls` / `models`) and `cost_summary` (cross-phase totals + global `cache_hit_ratio`). `to_text()` renders a `Phase Telemetry:` section with one compact line per phase plus a `Cache Hit Ratio:` line in the global summary so operators can spot whether caching is paying off.
+
+Chunk K5 locator telemetry: `DiagnosticsReport.record_locator_method(method)` increments a per-method counter (`id` / `exact` / `normalized` / `section_anchored` / `fuzzy`) so the summary can answer "how often did the model actually cite an id?". `summary()` exposes `locator_methods` (empty dict on runs that did not invoke `apply_edits.execute_edit_plan`); `to_text()` renders a `Locator Methods:` line only when at least one method was recorded. The counter is wired in `apply_edits.execute_edit_plan` through an optional `diagnostics: DiagnosticsReport | None` parameter — id-anchored matches also emit a `located via id=…` log line so a future debugging pass can grep the per-spec log without parsing the JSON dump.
 
 ---
 
@@ -449,6 +458,7 @@ A blocked-domain list filters social/AI-assistant/forum/general-encyclopedia sou
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `0` | Positive integer enables age-based cache pruning |
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override cache path |
 | `SPEC_CRITIC_EXTRACTION_CACHE` | `1` | `0` disables file-extraction cache |
+| `SPEC_CRITIC_ELEMENT_IDS` | `1` | Chunk K2 — `0` reverts spec rendering to the legacy plain-body `<spec>` wrapper (no id-tagged `<para>`/`<row>`/`<heading>` elements). Default on; flip to `0` to roll back the id-tagged path without redeploying. |
 
 ---
 

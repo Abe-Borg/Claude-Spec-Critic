@@ -148,6 +148,10 @@ def apply_selected_edits(
                 log=lambda msg: app._dispatch_if_current(
                     run_epoch, lambda m=msg: app.log.log(m, level="info")
                 ),
+                # Chunk K5: forwarding the diagnostics report lets
+                # execute_edit_plan tally locator methods so the summary
+                # shows how often the id path was used.
+                diagnostics=app._diagnostics_report,
             )
             app._dispatch_if_current(
                 run_epoch, lambda r=reports: on_edits_applied(app, r)

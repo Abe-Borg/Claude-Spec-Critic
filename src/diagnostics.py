@@ -48,6 +48,14 @@ class DiagnosticsReport:
     edits_applied_total: int = 0
     edits_skipped_total: int = 0
     edits_failed_total: int = 0
+    # Chunk K5: locator-method telemetry. Surfaces how many findings the
+    # locator resolved via the id path vs. text-based fallbacks so a
+    # future tuning pass can tell whether the model is actually citing
+    # ids and whether the id rendering in the prompt is pulling its
+    # weight. Keys are :attr:`EditLocation.match_method` values
+    # (``"id"`` / ``"exact"`` / ``"normalized"`` / ``"section_anchored"``
+    # / ``"fuzzy"``) so the breakdown reads cleanly in diagnostics.
+    locator_methods: dict[str, int] = field(default_factory=dict)
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
 
@@ -92,6 +100,18 @@ class DiagnosticsReport:
         self.edits_applied_total += int(applied)
         self.edits_skipped_total += int(skipped)
         self.edits_failed_total += int(failed)
+
+    def record_locator_method(self, method: str) -> None:
+        """Chunk K5: count how many findings used each locator method.
+
+        Called by ``apply_edits.execute_edit_plan`` for every successful
+        locator match. The ``id`` bucket measures the Chunk K rollout —
+        the higher its share, the less the pipeline depends on fuzzy
+        text rediscovery.
+        """
+        if not method:
+            return
+        self.locator_methods[method] = self.locator_methods.get(method, 0) + 1
 
     def record_api_call(
         self,
@@ -446,6 +466,8 @@ class DiagnosticsReport:
             "edits_applied_total": self.edits_applied_total,
             "edits_skipped_total": self.edits_skipped_total,
             "edits_failed_total": self.edits_failed_total,
+            # Chunk K5: locator method telemetry. Empty dict on legacy runs.
+            "locator_methods": dict(self.locator_methods),
             "events_dropped": self.events_dropped,
         }
 
@@ -657,6 +679,11 @@ class DiagnosticsReport:
                 f"skipped={s['edits_skipped_total']}, "
                 f"failed={s['edits_failed_total']}"
             )
+        # Chunk K5: locator-method breakdown. Hidden when no edit plan ran
+        # so legacy runs (no apply_edits invocation) stay clean.
+        locator_methods = s.get("locator_methods") or {}
+        if locator_methods:
+            lines.append(f"  Locator Methods: {locator_methods}")
         if s.get("events_dropped"):
             lines.append(
                 f"  Events Dropped:  {s['events_dropped']} "

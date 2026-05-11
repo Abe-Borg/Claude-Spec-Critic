@@ -139,6 +139,9 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
                 project_context=project_context,
                 cycle=cycle,
                 mode=DEFAULT_REVIEW_MODE,
+                # Chunk K2: the GUI token gauge must measure the real
+                # request, so id-tagged element overhead is reflected.
+                paragraph_map=biggest_spec.paragraph_map,
             )
             exact = count_tokens_via_api(
                 model=selected_model,

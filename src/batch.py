@@ -114,7 +114,18 @@ def submit_review_batch(
     any_extended_output = False
     for idx, spec in enumerate(specs):
         custom_id = f"review__{_sanitize_custom_id(spec.filename)}__{idx}"
-        user_message = get_single_spec_user_message(spec.content, spec.filename, project_context=project_context, cycle=cycle, mode=mode)
+        user_message = get_single_spec_user_message(
+            spec.content,
+            spec.filename,
+            project_context=project_context,
+            cycle=cycle,
+            mode=mode,
+            # Chunk K2: surfacing the paragraph map gives the model element
+            # ids it can cite back in findings. When ids are disabled
+            # (``SPEC_CRITIC_ELEMENT_IDS=0``) the prompt builder ignores
+            # the map and falls back to the legacy plain-body rendering.
+            paragraph_map=spec.paragraph_map,
+        )
         if retry_instruction:
             user_message += f"\n\n{retry_instruction}"
         approx_input_tokens = system_tokens + count_tokens(user_message)

@@ -1,5 +1,15 @@
 """Safe serialization helpers for embedding untrusted content in prompts.
 
+Chunk K2 adds an opt-in id-tagged document rendering so findings can cite a
+stable :attr:`ParagraphMapping.element_id` alongside the exact quote. The
+id-tagged path lives in this module so the wrapper escaping rules from
+Chunk G stay in one place; the system-prompt prefix is unchanged byte-for-
+byte, so prompt-caching breakpoints continue to land where they did. The
+opt-in is exposed via :func:`element_ids_enabled` so a future regression
+can be rolled back without redeploying — set
+``SPEC_CRITIC_ELEMENT_IDS=0`` to revert to the legacy plain-body rendering.
+
+
 Spec content, finding text, project context, and other reviewer- or
 document-supplied strings are wrapped in pseudo-XML blocks in our prompts
 to make boundaries clear to the model. Without escaping, document text
@@ -33,7 +43,11 @@ this file.
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping
+import os
+from typing import Iterable, Mapping, Sequence, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .extractor import ParagraphMapping
 
 
 # Tag names used as wrappers across the codebase. Centralized so a future
@@ -48,6 +62,12 @@ TAG_FINDING = "finding"
 TAG_FINDINGS = "findings"
 TAG_CHUNK_FINDINGS = "chunk_findings"
 TAG_CHUNK = "chunk"
+# Chunk K2: element-level wrappers used when the id-tagged rendering is on.
+# The model receives one ``<para id="...">…</para>`` (or ``<row …>``) per
+# extracted element so it can cite ``evidenceElementId`` precisely.
+TAG_PARA = "para"
+TAG_ROW = "row"
+TAG_HEADING = "heading"
 
 
 def escape_text(value: str | None) -> str:
@@ -154,3 +174,95 @@ def render_blocks(blocks: Iterable[str]) -> str:
     its own ``"\\n".join`` and falsy-check.
     """
     return "\n".join(block for block in blocks if block)
+
+
+# ---------------------------------------------------------------------------
+# Chunk K2: id-tagged document rendering
+# ---------------------------------------------------------------------------
+
+
+def element_ids_enabled() -> bool:
+    """Whether prompt builders should emit element ids alongside spec text.
+
+    Default on. Set ``SPEC_CRITIC_ELEMENT_IDS=0`` to revert to the legacy
+    plain-body rendering (the wrapper-only Chunk G shape). The toggle is
+    cheap because the new rendering only changes the *body* of the
+    ``<spec>`` block, not the surrounding instruction prefix — so prompt-
+    cache breakpoints stay where they were.
+    """
+    return os.environ.get("SPEC_CRITIC_ELEMENT_IDS", "1") != "0"
+
+
+def _element_tag(mapping: "ParagraphMapping") -> str:
+    """Pick the wrapper tag that matches an element's role.
+
+    Headings get their own tag so the model can spot section boundaries
+    without having to parse the body text. Table-cell rows are flattened
+    into a single ``<row>`` per row (cells are joined with ``" | "`` in the
+    extractor, so any finer-grained tagging would be misleading). Header
+    / footer / meta entries pass through as ``<para>`` so the model still
+    sees the marker text alongside an id, but they are clearly excluded
+    from edit-eligible content by the surrounding text.
+    """
+    if mapping.element_type == "table_cell":
+        return TAG_ROW
+    # Best-effort heading detection: the extractor stamps section_id on
+    # every paragraph, but only the heading paragraph's section_id equals
+    # its own text. Using that equality (after a strip+casefold) keeps
+    # the rule trivial and avoids re-importing _is_heading_paragraph here.
+    if (
+        mapping.element_type == "paragraph"
+        and mapping.section_id
+        and mapping.section_id.strip().casefold()
+        == (mapping.text or "").strip().casefold()
+    ):
+        return TAG_HEADING
+    return TAG_PARA
+
+
+def render_spec_with_ids(
+    spec_content: str,
+    paragraph_map: Sequence["ParagraphMapping"] | None,
+    *,
+    filename: str | None = None,
+) -> str:
+    """Render an extracted spec as id-tagged elements inside ``<spec>``.
+
+    Each element gets one wrapper line of the form
+    ``<para id="p7" section="1.01 SUMMARY">…</para>`` (or ``<row …>`` /
+    ``<heading …>``) so a finding can cite the id alongside the exact
+    quoted text. When the paragraph map is missing — for example, when a
+    legacy resume payload feeds a string body without a map — this falls
+    back to :func:`wrap_document_block`. That keeps existing callers
+    correct and avoids a hard dependency on the K1 metadata.
+
+    Filenames flow through :func:`escape_attr` so any reserved character
+    in a filename cannot break the opening tag.
+    """
+    attrs: dict[str, str | None] = {}
+    if filename:
+        attrs["filename"] = filename
+
+    if not paragraph_map:
+        return wrap_document_block(TAG_SPEC, spec_content, attrs=attrs)
+
+    body_lines: list[str] = []
+    for mapping in paragraph_map:
+        eid = (getattr(mapping, "element_id", "") or "").strip()
+        if not eid:
+            # Mapping predates Chunk K1 — fall back to a plain ``<para>``
+            # without an id so the model still sees the body text.
+            body_lines.append(wrap_data_block(TAG_PARA, mapping.text))
+            continue
+        tag = _element_tag(mapping)
+        attr_block: dict[str, str | None] = {"id": eid}
+        section = (getattr(mapping, "section_id", "") or "").strip()
+        # Don't repeat the heading text in its own ``section`` attribute —
+        # that wastes tokens for no information gain.
+        if section and tag != TAG_HEADING:
+            attr_block["section"] = section
+        body_lines.append(wrap_data_block(tag, mapping.text, attrs=attr_block))
+
+    body = "\n".join(body_lines)
+    attr_str = _render_attrs(attrs)
+    return f"<{TAG_SPEC}{attr_str}>\n{body}\n</{TAG_SPEC}>"

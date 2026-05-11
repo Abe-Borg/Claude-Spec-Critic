@@ -10,13 +10,20 @@ shift. Comprehensive adds the broader AEC categories listed in plan section
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Sequence
+
 from .code_cycles import CodeCycle
 from .prompt_serialization import (
     TAG_PROJECT_CONTEXT,
     TAG_SPEC,
+    element_ids_enabled,
+    render_spec_with_ids,
     wrap_document_block,
 )
 from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode, coerce_review_mode
+
+if TYPE_CHECKING:
+    from .extractor import ParagraphMapping
 
 
 _STRICT_CATEGORIES = """\
@@ -200,6 +207,7 @@ def get_single_spec_user_message(
     *,
     cycle: CodeCycle,
     mode: ReviewMode | str | None = None,
+    paragraph_map: "Sequence[ParagraphMapping] | None" = None,
 ) -> str:
     """Build user message for reviewing a single spec in isolation.
 
@@ -209,6 +217,14 @@ def get_single_spec_user_message(
     close the wrapper. The filename attribute is escaped through the same
     helper so attribute-breaking characters in a filename cannot truncate
     the opening tag either.
+
+    Chunk K2: when ``paragraph_map`` is supplied and element ids are
+    enabled, the spec body is rendered as id-tagged ``<para>`` / ``<row>``
+    / ``<heading>`` elements via :func:`render_spec_with_ids`. The
+    surrounding instruction text gains one extra "cite the element id"
+    line so the model knows the ids exist. The system prompt is unchanged
+    — keeping the cached prefix byte-stable is what makes the new path
+    safe to roll back via ``SPEC_CRITIC_ELEMENT_IDS=0``.
     """
     selected = coerce_review_mode(mode) if not isinstance(mode, ReviewMode) else mode
     if selected is None:
@@ -235,9 +251,23 @@ def get_single_spec_user_message(
         ),
     }[selected]
 
-    spec_block = wrap_document_block(
-        TAG_SPEC, spec_content, attrs={"filename": filename}
-    )
+    use_ids = bool(paragraph_map) and element_ids_enabled()
+    if use_ids:
+        spec_block = render_spec_with_ids(
+            spec_content, paragraph_map, filename=filename
+        )
+        id_hint = (
+            "- Each spec element is wrapped in <para id=\"…\">, <row id=\"…\">, or "
+            "<heading id=\"…\"> tags. When you can identify the exact element the "
+            "finding refers to, include its id in evidenceElementId (and still "
+            "quote the exact text in existingText / anchorText).\n"
+        )
+    else:
+        spec_block = wrap_document_block(
+            TAG_SPEC, spec_content, attrs={"filename": filename}
+        )
+        id_hint = ""
+
     return (
         "Review the following specification document for a California K-12 project under DSA jurisdiction.\n\n"
         f"Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, "
@@ -246,7 +276,8 @@ def get_single_spec_user_message(
         "Reminders:\n"
         "- Review every section in the file.\n"
         "- Submit findings via the submit_review_findings tool.\n"
-        "- Include confidence (0.0-1.0) with each finding.\n\n"
+        "- Include confidence (0.0-1.0) with each finding.\n"
+        f"{id_hint}\n"
         f"{context_block}"
         f"{spec_block}\n"
     )

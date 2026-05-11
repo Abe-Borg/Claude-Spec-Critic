@@ -20,8 +20,10 @@ from .prompt_serialization import (
     TAG_PRIOR_FINDING,
     TAG_PROJECT_CONTEXT,
     TAG_SPEC,
+    element_ids_enabled,
     escape_attr,
     render_blocks,
+    render_spec_with_ids,
     wrap_data_block,
     wrap_document_block,
 )
@@ -87,11 +89,28 @@ def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list
     flow through :func:`escape_attr` so attribute-breaking characters
     cannot truncate the opening tag either. ``render_blocks`` joins the
     pieces with newlines, dropping empties.
+
+    Chunk K2: when element ids are enabled and the spec has a paragraph
+    map, the body is rendered with one id-tagged element per paragraph /
+    row / heading so the cross-check model can cite ids in its findings.
+    Specs without a map (the rare path that hands raw strings around)
+    keep the legacy plain-body rendering automatically.
     """
-    spec_blocks = [
-        wrap_document_block(TAG_SPEC, spec.content, attrs={"filename": spec.filename})
-        for spec in specs
-    ]
+    use_ids = element_ids_enabled()
+    spec_blocks: list[str] = []
+    for spec in specs:
+        if use_ids and spec.paragraph_map:
+            spec_blocks.append(
+                render_spec_with_ids(
+                    spec.content, spec.paragraph_map, filename=spec.filename,
+                )
+            )
+        else:
+            spec_blocks.append(
+                wrap_document_block(
+                    TAG_SPEC, spec.content, attrs={"filename": spec.filename},
+                )
+            )
     corpus_inner = render_blocks(spec_blocks)
     sections = [f"<{TAG_CORPUS}>\n{corpus_inner}\n</{TAG_CORPUS}>"]
     if existing_findings:
