@@ -136,18 +136,24 @@ def classify_status(finding) -> ReportStatus:
        not pretend to be supported.
     2. No ``verification`` → ``NOT_CHECKED``.
     3. ``cache_status == "local_skip"`` → ``LOCALLY_CLASSIFIED``.
-    4. Verdict ``CONFIRMED`` + grounded → ``VERIFIED_SUPPORTED``.
-    5. Verdict ``CORRECTED`` + grounded → ``VERIFIED_CONTRADICTED``.
+    4. Verdict ``CONFIRMED`` + grounded + accepted citation
+       → ``VERIFIED_SUPPORTED``.
+    5. Verdict ``CORRECTED`` + grounded + accepted citation
+       → ``VERIFIED_CONTRADICTED``.
     6. Verdict ``DISPUTED`` → ``DISPUTED``.
     7. Everything else (UNVERIFIED, an ungrounded CONFIRMED/CORRECTED
-       that slipped past :func:`_enforce_grounding_invariant`, unknown
-       verdict strings) → ``INSUFFICIENT_EVIDENCE``.
+       that slipped past :func:`_enforce_grounding_invariant`, a
+       CONFIRMED/CORRECTED with no accepted citation, unknown verdict
+       strings) → ``INSUFFICIENT_EVIDENCE``.
 
-    The grounding invariant downgrades ungrounded CONFIRMED/CORRECTED to
-    UNVERIFIED before this function ever sees them, so rules 4/5 are
-    normally only reached when ``grounded`` is True. The explicit
-    ``grounded`` check is a belt-and-suspenders guard for unit tests
-    that construct ``VerificationResult`` instances directly.
+    Chunk 5 — the explicit accepted-citation check on rules 4/5 is
+    belt-and-suspenders for the case where a finding reaches the report
+    without going through :func:`src.verifier._enforce_grounding_invariant`
+    (e.g. a future call site that bypasses the verifier wrapper, or a
+    unit test that constructs the result directly). The verifier
+    invariant already downgrades these to UNVERIFIED in production; the
+    duplicate check here means the report cannot accidentally show
+    "Verified — supported" for a source-less verdict.
     """
     if getattr(finding, "suppression_reason", None):
         return ReportStatus.MANUAL_REVIEW_REQUIRED
@@ -158,9 +164,13 @@ def classify_status(finding) -> ReportStatus:
         return ReportStatus.LOCALLY_CLASSIFIED
     verdict = (getattr(verification, "verdict", "") or "").strip().upper()
     grounded = bool(getattr(verification, "grounded", False))
-    if verdict == _VERDICT_CONFIRMED and grounded:
+    has_accepted = bool(
+        getattr(verification, "accepted_sources", None)
+        or getattr(verification, "sources", None)
+    )
+    if verdict == _VERDICT_CONFIRMED and grounded and has_accepted:
         return ReportStatus.VERIFIED_SUPPORTED
-    if verdict == _VERDICT_CORRECTED and grounded:
+    if verdict == _VERDICT_CORRECTED and grounded and has_accepted:
         return ReportStatus.VERIFIED_CONTRADICTED
     if verdict == _VERDICT_DISPUTED:
         return ReportStatus.DISPUTED
