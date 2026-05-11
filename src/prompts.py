@@ -11,6 +11,11 @@ shift. Comprehensive adds the broader AEC categories listed in plan section
 from __future__ import annotations
 
 from .code_cycles import CodeCycle
+from .prompt_serialization import (
+    TAG_PROJECT_CONTEXT,
+    TAG_SPEC,
+    wrap_document_block,
+)
 from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode, coerce_review_mode
 
 
@@ -188,16 +193,6 @@ Categories:
 </review_scope>"""
 
 
-def _xml_escape(value: str | None) -> str:
-    if not value:
-        return ""
-    return (
-        value.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-
-
 def get_single_spec_user_message(
     spec_content: str,
     filename: str,
@@ -206,15 +201,23 @@ def get_single_spec_user_message(
     cycle: CodeCycle,
     mode: ReviewMode | str | None = None,
 ) -> str:
-    """Build user message for reviewing a single spec in isolation."""
+    """Build user message for reviewing a single spec in isolation.
+
+    Chunk G: both ``project_context`` and ``spec_content`` are now serialized
+    through :func:`wrap_document_block`, which escapes the body so a literal
+    ``</spec>`` (or any other reserved character) inside a document cannot
+    close the wrapper. The filename attribute is escaped through the same
+    helper so attribute-breaking characters in a filename cannot truncate
+    the opening tag either.
+    """
     selected = coerce_review_mode(mode) if not isinstance(mode, ReviewMode) else mode
     if selected is None:
         selected = DEFAULT_REVIEW_MODE
     context_block = ""
     if project_context.strip():
-        context_block = (
-            f"<project_context>\n{project_context.strip()}\n</project_context>\n\n"
-        )
+        context_block = wrap_document_block(
+            TAG_PROJECT_CONTEXT, project_context.strip()
+        ) + "\n\n"
 
     mode_reminder = {
         ReviewMode.STRICT: (
@@ -232,6 +235,9 @@ def get_single_spec_user_message(
         ),
     }[selected]
 
+    spec_block = wrap_document_block(
+        TAG_SPEC, spec_content, attrs={"filename": filename}
+    )
     return (
         "Review the following specification document for a California K-12 project under DSA jurisdiction.\n\n"
         f"Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, "
@@ -242,7 +248,5 @@ def get_single_spec_user_message(
         "- Submit findings via the submit_review_findings tool.\n"
         "- Include confidence (0.0-1.0) with each finding.\n\n"
         f"{context_block}"
-        f'<spec filename="{_xml_escape(filename)}">\n'
-        f"{spec_content}\n"
-        "</spec>\n"
+        f"{spec_block}\n"
     )

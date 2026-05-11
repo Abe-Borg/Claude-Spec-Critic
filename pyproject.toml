@@ -27,6 +27,7 @@ markers = [
     "fixtures: exercises the fake Anthropic response fixtures themselves",
     "parser_unification: Chunk D verification parser regression tests",
     "token_budget: Chunk E token counting and output budget regression tests",
+    "prompt_serialization: Chunk G prompt boundary / serialization hardening tests",
     "slow: tests that are noticeably slower than the rest of the suite",
     "network: tests that require real Anthropic API access (skipped by default)",
 ]

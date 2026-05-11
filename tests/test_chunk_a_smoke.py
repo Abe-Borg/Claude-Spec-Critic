@@ -36,6 +36,7 @@ _CORE_MODULES = [
     "src.extractor",
     "src.pipeline",
     "src.preprocessor",
+    "src.prompt_serialization",
     "src.prompts",
     "src.resume_state",
     "src.review_modes",
