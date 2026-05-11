@@ -5,6 +5,13 @@ off an Anthropic ``count_tokens`` call for the largest spec to replace
 the gauge value with the exact API count when it returns. All UI updates
 go through ``_dispatch_if_current``-style callbacks so a stale background
 pass cannot overwrite fresher state.
+
+Chunk D2.2: the exact-token-count refresh is debounced via a Tk ``after``
+timer so that rapid sequential file changes (multiple drops, a quick
+re-browse) collapse into a single outbound API call. The cl100k_base
+estimate stays visible during the debounce window; only the final state
+pays for an exact ``count_tokens`` call. Stale-result protection inside
+``dispatch`` is unchanged.
 """
 from __future__ import annotations
 
@@ -14,6 +21,14 @@ from .code_cycles import DEFAULT_CYCLE
 from .extractor import ExtractedSpec, extract_text
 from .prompts import get_system_prompt
 from .tokenizer import exceeds_per_call_limit
+
+
+# Chunk D2.2: 300–500 ms recommended by the delta plan. 400 ms balances
+# perceived responsiveness against absorbing typical file-toggle bursts;
+# the existing project-context typing debounce (``_context_debounce_id``)
+# uses 300 ms, and a slightly longer window here covers file-load churn
+# (drops + browse) which is naturally slower than keystroke typing.
+EXACT_TOKEN_REFRESH_DEBOUNCE_MS = 400
 
 
 def analyze_tokens(app, file_paths) -> None:
@@ -104,6 +119,15 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
     on screen while we wait. Falls back silently to the local estimate
     when the API call fails or returns None.
 
+    Chunk D2.2: the actual API-call thread launch is debounced through
+    ``app.after``. Each invocation cancels any pending timer and
+    reschedules ``EXACT_TOKEN_REFRESH_DEBOUNCE_MS`` later, so a burst of
+    rapid file changes produces at most one outbound API call after the
+    burst settles. Already-running blocking HTTP requests are not
+    cancelled — the debounce only prevents unnecessary calls from
+    starting. Stale-result protection inside ``dispatch`` (the
+    ``_analysis_epoch`` guard) is unchanged.
+
     Chunk E directive 2: ``count_tokens`` is called with the same model the
     review will run against. The GUI exposes the selected model via
     ``app._get_selected_model`` when available; otherwise we fall back to
@@ -160,7 +184,27 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
             # Silent fallback — the cl100k_base estimate is already on screen.
             return
 
-    threading.Thread(target=_exact, daemon=True).start()
+    def _launch_thread():
+        # Clear the timer id before launching so the next refresh call
+        # doesn't try to cancel an already-fired timer.
+        app._exact_token_refresh_timer_id = None
+        threading.Thread(target=_exact, daemon=True).start()
+
+    # Cancel any pending debounce timer and reschedule. Each rapid
+    # invocation slides the deadline forward — only the final state
+    # ever launches the thread.
+    prev_timer_id = getattr(app, "_exact_token_refresh_timer_id", None)
+    if prev_timer_id is not None:
+        try:
+            app.after_cancel(prev_timer_id)
+        except Exception:
+            # Already fired or invalid id; safe to ignore — we always
+            # overwrite ``_exact_token_refresh_timer_id`` immediately
+            # below.
+            pass
+    app._exact_token_refresh_timer_id = app.after(
+        EXACT_TOKEN_REFRESH_DEBOUNCE_MS, _launch_thread,
+    )
 
 
 def on_file_selection_change(app) -> None:
