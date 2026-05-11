@@ -13,25 +13,22 @@ if TYPE_CHECKING:
 
 from anthropic import Anthropic, APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .prompts import get_system_prompt, get_single_spec_user_message
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
 from .api_config import (
     MODEL_OPUS_46,
     MODEL_OPUS_47,
-    PHASE_REVIEW,
     REVIEW_MODEL_DEFAULT,
-    apply_effort_config,
-    apply_thinking_config,
     extract_cache_usage,
-    review_max_tokens,
-    system_prompt_with_cache,
+)
+from .review_request_builder import (
+    ReviewRequestSpec,
+    build_realtime_review_kwargs,
+    build_review_request,
 )
 from .structured_schemas import (
     REVIEW_TOOL_NAME,
     extract_tool_use_block,
-    review_findings_tool,
-    review_tool_choice,
     structured_tool_output_enabled,
 )
 
@@ -457,36 +454,20 @@ def _parse_findings(data: list) -> list[Finding]:
 def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = MODEL_OPUS_47, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
     start_time = time.time()
     result = ReviewResult(model=model)
-    # Per-call output cap. Real-time and batch share the same baseline so
-    # findings cannot diverge between modes; the 300k extended path is a
-    # batch-only API capability (300k beta header is not honored on stream).
-    output_limit = review_max_tokens(model=model)
-    # Chunk J: phase-aware cache policy. Real-time review uses the
-    # PHASE_REVIEW policy (cache=on, ttl=1h). Routing through the phase
-    # parameter keeps the policy decision in api_config so a future
-    # tuning pass touches one place.
-    system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_REVIEW)
-    # Best-effort tool-use output: when the flag is on, expose the
-    # ``submit_review_findings`` tool whose ``input_schema`` matches the
-    # finding shape. ``tool_choice`` is ``{"type": "auto"}`` (see
-    # ``review_tool_choice``) because the API rejects a forcing
-    # ``tool_choice`` when adaptive thinking is enabled — the model is
-    # reliably *but not contractually* invoked, so the tagged-JSON text
-    # parser is the documented fallback for the path where it does not.
-    use_structured_tool = structured_tool_output_enabled()
-    request_kwargs: dict = {
-        "model": model,
-        "max_tokens": output_limit,
-        "system": system_payload,
-        "messages": [{"role": "user", "content": user_message}],
-    }
-    apply_thinking_config(request_kwargs, model=model, phase=PHASE_REVIEW)
-    # Chunk D1.2: pair the effort policy with the thinking config so the
-    # request shape carries both controls when the model supports them.
-    apply_effort_config(request_kwargs, model=model, phase=PHASE_REVIEW)
-    if use_structured_tool:
-        request_kwargs["tools"] = [review_findings_tool()]
-        request_kwargs["tool_choice"] = review_tool_choice()
+    # Chunk 3: request kwargs come from the central review request builder
+    # so the real-time streaming path, batch submission, and token
+    # preflight cannot drift. The builder applies the cache breakpoint,
+    # max_tokens, thinking config, effort config, and the structured
+    # ``submit_review_findings`` tool with ``tool_choice=auto`` in one
+    # place. The tagged-JSON text parser stays reachable because
+    # ``tool_choice=auto`` does not contractually force a tool call when
+    # adaptive thinking is enabled.
+    request_kwargs = build_realtime_review_kwargs(
+        system_prompt=system_prompt,
+        user_message=user_message,
+        model=model,
+    )
+    use_structured_tool = "tools" in request_kwargs
     last_exception: Exception | None = None
     for attempt in range(max_retries):
         is_last_attempt = attempt == max_retries - 1
@@ -607,20 +588,32 @@ def review_single_spec(
     produced by the preprocessor so the model is told what was already
     found locally and does not duplicate those items as new findings.
     ``None`` keeps the legacy message shape.
+
+    Chunk 3: this is the production real-time entry point. It builds a
+    :class:`ReviewRequestSpec` and routes through
+    :func:`build_review_request` so the prompt builder, structured-tool
+    flag, cache breakpoint, max_tokens, thinking config, and effort
+    policy come from the same code as the batch path. The streaming
+    transport keeps the older ``_stream_review`` signature for the
+    handful of tests that inject raw prompt strings; that wrapper also
+    routes through the central builder.
     """
-    client = _get_client()
+    request_spec = ReviewRequestSpec(
+        spec_content=spec_content,
+        filename=filename,
+        model=model,
+        cycle=cycle,
+        mode=mode if isinstance(mode, ReviewMode) else DEFAULT_REVIEW_MODE,
+        project_context=project_context,
+        paragraph_map=paragraph_map,
+        pre_detected_alerts=pre_detected_alerts,
+        batch=False,
+    )
+    built = build_review_request(request_spec)
     return _stream_review(
-        client,
-        get_system_prompt(cycle, mode=mode),
-        get_single_spec_user_message(
-            spec_content,
-            filename,
-            project_context=project_context,
-            cycle=cycle,
-            mode=mode,
-            paragraph_map=paragraph_map,
-            pre_detected_alerts=pre_detected_alerts,
-        ),
+        _get_client(),
+        built.system_prompt,
+        built.user_message,
         model=model,
         max_retries=max_retries,
         verbose=verbose,
