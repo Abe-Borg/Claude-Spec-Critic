@@ -246,58 +246,17 @@ def _extract_api_error_message(error_obj) -> str:
     return s[:200] if len(s) > 200 else s
 
 
-def retrieve_verification_results(job: BatchJob, findings: list[Finding], parse_response_fn) -> list[Finding]:
-    from .verifier import VerificationResult, _search_gate_failure
-    client = _get_client()
-    for result in client.messages.batches.results(job.batch_id):
-        meta = job.request_map.get(result.custom_id)
-        if not meta:
-            continue
-        idx = meta["finding_idx"]
-        if idx < 0 or idx >= len(findings):
-            continue
-        finding = findings[idx]
-        if result.result.type != "succeeded":
-            # Extract clean error message instead of dumping raw ErrorResponse repr
-            error_msg = _extract_api_error_message(
-                getattr(result.result, "error", None)
-            )
-            status_type = result.result.type  # "errored", "expired", "canceled"
-            explanation = f"Verification failed: batch request {status_type}"
-            if error_msg:
-                explanation += f" ({error_msg})"
-            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=explanation)
-            continue
-        message = result.result.message
-        stop_reason = getattr(message, "stop_reason", None)
-        if stop_reason == "pause_turn":
-            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation="Verification returned pause_turn in batch mode; retry via real-time verification path.")
-            continue
-        if stop_reason != "end_turn":
-            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification response incomplete (stop_reason: {stop_reason}).")
-            continue
-
-        response_text = ""
-        for block in message.content:
-            if hasattr(block, "text"):
-                response_text += block.text
-        search_gate_failure = _search_gate_failure(message)
-        if search_gate_failure:
-            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=search_gate_failure)
-            continue
-        # Source trimming (Phase 10): only the model's curated ``sources``
-        # array survives; bulk URLs across all searches are surfaced via
-        # diagnostics, not the per-finding sources list.
-        if response_text.strip():
-            parsed = parse_response_fn(response_text)
-            finding.verification = parsed
-        else:
-            finding.verification = VerificationResult(verdict="UNVERIFIED", explanation="Verification produced no text response.")
-
-    for f in findings:
-        if f.verification is None:
-            f.verification = VerificationResult(verdict="UNVERIFIED", explanation="No verification result returned from batch.")
-    return findings
+# Chunk D: ``retrieve_verification_results`` (text-only legacy batch
+# parser) was removed because (a) it had no callers, and (b) it pre-dates
+# structured tool use and treated every non-``end_turn`` stop reason as
+# incomplete. Under structured outputs the model frequently stops with
+# ``tool_use`` after emitting ``submit_verification_verdict``; the legacy
+# function would have misclassified those as failures. The canonical
+# parser lives in ``verifier.parse_verification_response`` and is consumed
+# by both the real-time path (``verifier._run_verification_call``) and the
+# batch wave path (``verifier._classify_wave_results``). The
+# detail-retrieval helper below remains; it returns the raw batch result
+# envelopes so wave parsing in ``verifier`` owns the parse decisions.
 
 
 def retrieve_verification_results_detailed(job: BatchJob) -> dict[str, Any]:

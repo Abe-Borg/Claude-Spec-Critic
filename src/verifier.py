@@ -382,6 +382,39 @@ def _search_gate_failure(message) -> str | None:
     return "Verification did not perform web search. Verdict requires external grounding."
 
 
+_VALID_VERDICTS = ("CONFIRMED", "CORRECTED", "UNVERIFIED", "DISPUTED")
+
+
+def _normalize_verdict(value) -> str:
+    """Coerce a raw verdict value to one of the four canonical names.
+
+    Unknown / missing values become ``UNVERIFIED`` so callers never see an
+    out-of-enum verdict slip through.
+    """
+    verdict = str(value or "UNVERIFIED").upper().strip()
+    if verdict not in _VALID_VERDICTS:
+        return "UNVERIFIED"
+    return verdict
+
+
+def _normalize_sources(value) -> list[str]:
+    """Coerce a raw ``sources`` field to a list of non-empty strings.
+
+    The schema requires ``sources`` to be a list of strings, but the
+    fallback text path and malformed tool payloads may yield ``None``, a
+    bare string, or a list containing non-string entries. The canonical
+    parser must not crash on those — Chunk D directive 9 covers
+    "Source list malformed".
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [str(s) for s in value if s]
+    return []
+
+
 def _parse_verification_response(response_text: str) -> VerificationResult:
     """Fallback verifier-output parser.
 
@@ -389,6 +422,11 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
     :func:`_verdict_from_tool_use` (which reads the strict ``submit_verification_verdict``
     tool input) and only fall back to this text parser when no tool block
     is present.
+
+    Production callers should route through :func:`parse_verification_response`
+    (Chunk D), which consults this text fallback only after the structured
+    tool path. Tests and legacy consumers may still call this helper
+    directly when they have a raw text body.
     """
     text = response_text.strip()
     if text.startswith("```"):
@@ -397,20 +435,27 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
 
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        return VerificationResult(verdict="UNVERIFIED", explanation=text or "Verification response did not contain structured JSON.")
+        # Chunk D: always emit the recognizable parse-error prefix so the
+        # canonical parser can flag this as ``text_parse_error`` regardless
+        # of what raw text the model returned. The raw text is preserved
+        # (truncated) for debugging.
+        explanation = "Verification response did not contain structured JSON."
+        if text:
+            explanation += f" Raw text: {text[:200]}"
+        return VerificationResult(verdict="UNVERIFIED", explanation=explanation)
     try:
         data = json.loads(text[start:end + 1])
     except json.JSONDecodeError:
         return VerificationResult(verdict="UNVERIFIED", explanation="Verification response was not valid JSON.")
+    if not isinstance(data, dict):
+        return VerificationResult(verdict="UNVERIFIED", explanation="Verification response JSON was not an object.")
 
-    verdict = str(data.get("verdict", "UNVERIFIED")).upper().strip()
-    if verdict not in ("CONFIRMED", "CORRECTED", "UNVERIFIED", "DISPUTED"):
-        verdict = "UNVERIFIED"
+    correction_raw = data.get("correction")
     return VerificationResult(
-        verdict=verdict,
+        verdict=_normalize_verdict(data.get("verdict")),
         explanation=str(data.get("explanation") or ""),
-        sources=[str(s) for s in data.get("sources", []) if s],
-        correction=(str(data.get("correction")) if data.get("correction") is not None else None),
+        sources=_normalize_sources(data.get("sources")),
+        correction=(str(correction_raw) if correction_raw not in (None, "") else None),
     )
 
 
@@ -425,19 +470,147 @@ def _verdict_from_tool_use(message) -> VerificationResult | None:
     payload = extract_tool_use_block(message, VERIFICATION_TOOL_NAME)
     if not isinstance(payload, dict):
         return None
-    verdict = str(payload.get("verdict", "UNVERIFIED")).upper().strip()
-    if verdict not in ("CONFIRMED", "CORRECTED", "UNVERIFIED", "DISPUTED"):
-        verdict = "UNVERIFIED"
-    sources_raw = payload.get("sources") or []
-    sources = [str(s) for s in sources_raw if s] if isinstance(sources_raw, list) else []
     correction_raw = payload.get("correction")
-    correction = str(correction_raw) if correction_raw not in (None, "") else None
     return VerificationResult(
-        verdict=verdict,
+        verdict=_normalize_verdict(payload.get("verdict")),
         explanation=str(payload.get("explanation") or ""),
-        sources=sources,
-        correction=correction,
+        sources=_normalize_sources(payload.get("sources")),
+        correction=(str(correction_raw) if correction_raw not in (None, "") else None),
     )
+
+
+# ---------------------------------------------------------------------------
+# Chunk D: canonical verification parser
+#
+# Every verification result path (real-time initial, batch initial, batch
+# retry, batch continuation) feeds through :func:`parse_verification_response`
+# so the same precedence rules and verdict normalization apply everywhere.
+# Stop-reason classification is :func:`classify_verification_stop_reason`;
+# the two helpers are intentionally split because the right response for a
+# given stop_reason differs per path (real-time runs continuations inline,
+# the wave path schedules a follow-up batch wave).
+# ---------------------------------------------------------------------------
+
+# Parse status sentinels. Callers branch on these to decide whether to keep
+# the verdict, run a retry, or emit a terminal unverified outcome. The set
+# is small and closed; future status additions should preserve the existing
+# names to avoid silent caller-side fallthrough.
+PARSE_STATUS_STRUCTURED = "structured"
+PARSE_STATUS_TEXT = "text"
+PARSE_STATUS_TEXT_PARSE_ERROR = "text_parse_error"
+PARSE_STATUS_NO_CONTENT = "no_content"
+
+# Stop reason classification sentinels (see classify_verification_stop_reason).
+STOP_CLASS_COMPLETE = "complete"
+STOP_CLASS_PAUSE = "pause"
+STOP_CLASS_INCOMPLETE = "incomplete"
+
+
+@dataclass
+class VerificationParseOutcome:
+    """Result of canonical verification message parsing.
+
+    ``verdict`` is the parsed :class:`VerificationResult` when a verdict was
+    recovered (even if that verdict is ``UNVERIFIED``-with-parse-error), or
+    ``None`` when no content was available at all. ``parse_status`` is one
+    of the ``PARSE_STATUS_*`` sentinels above.
+    """
+
+    verdict: VerificationResult | None
+    parse_status: str
+
+
+def classify_verification_stop_reason(stop_reason) -> str:
+    """Categorize a verification message's ``stop_reason``.
+
+    Returns one of:
+        - :data:`STOP_CLASS_COMPLETE`   — ``tool_use`` or ``end_turn``
+          (the model finished its turn; the canonical parser should be
+          consulted for the verdict).
+        - :data:`STOP_CLASS_PAUSE`      — ``pause_turn`` (caller should
+          continue the conversation; verdict parsing not applicable).
+        - :data:`STOP_CLASS_INCOMPLETE` — any other value, including
+          ``max_tokens``, ``stop_sequence``, or ``None``.
+
+    Chunk D fix: ``tool_use`` is a successful terminal state whenever the
+    model emits a structured ``submit_verification_verdict`` call as its
+    final action. The legacy batch parser previously treated only
+    ``end_turn`` as success, which silently broke structured outputs.
+    """
+    if stop_reason in ("end_turn", "tool_use"):
+        return STOP_CLASS_COMPLETE
+    if stop_reason == "pause_turn":
+        return STOP_CLASS_PAUSE
+    return STOP_CLASS_INCOMPLETE
+
+
+def parse_verification_response(messages) -> VerificationParseOutcome:
+    """Canonical parser for a verification message (or sequence of messages).
+
+    Chunk D: every verification result path — real-time initial, batch
+    initial, batch retry, batch continuation — feeds through this function
+    so the same precedence rules and verdict normalization apply across
+    the whole codebase. The legacy text-only path is no longer reachable
+    from production callers; the structured tool input is always tried
+    first.
+
+    ``messages`` may be a single response/message object or a list of
+    them. For the real-time path, the list typically holds the
+    ``pause_turn`` continuations followed by the final terminal response.
+    For the batch / retry / continuation paths it is a single message.
+
+    Order of attempts:
+
+    1. Structured ``submit_verification_verdict`` tool input — searched in
+       reverse order across the message list so the most recent verdict
+       wins when the model emitted the tool in any continuation step.
+    2. Strict JSON text fallback over the concatenated text of every
+       message (allows the text path to survive content split across
+       continuation responses).
+    3. Conservative classification when neither path produced a verdict.
+
+    Stop-reason handling is NOT done here — callers must classify the
+    stop_reason of each message separately because the right response
+    differs per path.
+    """
+    if messages is None:
+        return VerificationParseOutcome(verdict=None, parse_status=PARSE_STATUS_NO_CONTENT)
+    if not isinstance(messages, (list, tuple)):
+        messages = [messages]
+    if not messages:
+        return VerificationParseOutcome(verdict=None, parse_status=PARSE_STATUS_NO_CONTENT)
+
+    # Prefer the final structured payload — the verdict tool is invoked in
+    # the last terminal response under normal flow, but iterating in
+    # reverse means a verdict from any earlier message still wins over a
+    # text-only fallback on a malformed final message.
+    for msg in reversed(messages):
+        structured = _verdict_from_tool_use(msg)
+        if structured is not None:
+            return VerificationParseOutcome(
+                verdict=structured, parse_status=PARSE_STATUS_STRUCTURED
+            )
+
+    response_text = "".join(_extract_message_text(m) for m in messages)
+    if not response_text.strip():
+        return VerificationParseOutcome(verdict=None, parse_status=PARSE_STATUS_NO_CONTENT)
+
+    text_parsed = _parse_verification_response(response_text)
+    # Surface parse errors explicitly so callers can choose to treat them
+    # as terminal failures rather than supported UNVERIFIED verdicts.
+    # Directive 8 of Chunk D: invalid/malformed payloads must not be
+    # silently trusted. The two error explanations emitted by the text
+    # parser are matched here as the parse-error sentinel.
+    explanation = (text_parsed.explanation or "").lower()
+    if text_parsed.verdict == "UNVERIFIED" and (
+        "not valid json" in explanation
+        or "did not contain structured json" in explanation
+        or "not an object" in explanation
+    ):
+        return VerificationParseOutcome(
+            verdict=text_parsed, parse_status=PARSE_STATUS_TEXT_PARSE_ERROR
+        )
+    return VerificationParseOutcome(verdict=text_parsed, parse_status=PARSE_STATUS_TEXT)
 
 
 @dataclass
@@ -605,30 +778,28 @@ def _run_verification_call(
                     response = stream.get_final_message()
                 all_responses.append(response)
                 stop_reason = getattr(response, "stop_reason", None)
+                stop_class = classify_verification_stop_reason(stop_reason)
                 # ``tool_use`` is a successful terminal state when the model
                 # emits the structured ``submit_verification_verdict`` call as
-                # its final action; treat it like ``end_turn``.
-                if stop_reason in ("end_turn", "tool_use"):
+                # its final action; treat it like ``end_turn``. Chunk D
+                # routes that decision through ``classify_verification_stop_reason``
+                # so the wave path and real-time path agree.
+                if stop_class == STOP_CLASS_COMPLETE:
                     break
-                if stop_reason == "pause_turn":
+                if stop_class == STOP_CLASS_PAUSE:
                     messages.append({"role": "assistant", "content": response.content})
                     messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
                     continue
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
             final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
-            if final_stop not in ("end_turn", "tool_use"):
+            if classify_verification_stop_reason(final_stop) != STOP_CLASS_COMPLETE:
                 return _make_unverified("Verification did not complete after maximum continuation attempts.")
 
-            response_text = ""
             all_search_urls: list[str] = []
             success_blocks = 0
             total_search_errors = 0
             total_search_requests = 0
             for resp in all_responses:
-                for block in getattr(resp, "content", []) or []:
-                    if hasattr(block, "text") and block.text is not None:
-                        response_text += block.text
-
                 search_urls, successes, errors = _collect_search_evidence(resp)
                 all_search_urls.extend(search_urls)
                 success_blocks += successes
@@ -649,24 +820,26 @@ def _run_verification_call(
                     search_errors=total_search_errors,
                 )
 
-            # Phase 2.5: prefer the structured tool_use verdict when the
-            # model called ``submit_verification_verdict``. The verdict is
-            # always in the final (end_turn) response — earlier responses
-            # are pause_turn continuations carrying web search activity.
-            parsed = None
-            for resp in reversed(all_responses):
-                parsed = _verdict_from_tool_use(resp)
-                if parsed is not None:
-                    break
-            if parsed is None:
-                if not response_text.strip():
-                    return _make_unverified(
-                        "Verification produced no text response.",
-                        search_requests=total_search_requests,
-                        search_errors=total_search_errors,
-                        search_successes=success_blocks,
-                    )
-                parsed = _parse_verification_response(response_text)
+            # Phase 2.5 / Chunk D: route the structured-then-text parsing
+            # through the canonical :func:`parse_verification_response` so
+            # the real-time path and the batch wave path produce identical
+            # verdicts for identical responses. The canonical parser
+            # prefers the ``submit_verification_verdict`` tool input, falls
+            # back to JSON-in-text, and finally reports ``no_content`` when
+            # neither path produced a verdict.
+            outcome = parse_verification_response(all_responses)
+            if outcome.parse_status == PARSE_STATUS_NO_CONTENT:
+                return _make_unverified(
+                    "Verification produced no text response.",
+                    search_requests=total_search_requests,
+                    search_errors=total_search_errors,
+                    search_successes=success_blocks,
+                )
+            # text_parse_error and text both produce a (UNVERIFIED) result
+            # that should flow through the grounding invariant. The
+            # explanation already documents the parse failure; downgrading
+            # a real verdict to UNVERIFIED is the safe behavior here.
+            parsed = outcome.verdict
             # Source trimming: keep only the URLs the model actually cited
             # in its ``submit_verification_verdict`` payload. The full set of
             # URLs the model saw across all web_search calls is preserved in
@@ -942,7 +1115,8 @@ def _classify_wave_results(
             continue
         message = result.result.message
         stop_reason = getattr(message, "stop_reason", None)
-        if stop_reason == "pause_turn":
+        stop_class = classify_verification_stop_reason(stop_reason)
+        if stop_class == STOP_CLASS_PAUSE:
             raw_blocks = getattr(message, "content", []) or []
             plain_blocks = [b for b in (_content_block_to_plain(rb) for rb in raw_blocks) if b is not None]
             outcomes.append(
@@ -958,29 +1132,32 @@ def _classify_wave_results(
                 )
             )
             continue
-        # ``tool_use`` is a successful terminal state when the model emits
-        # the structured ``submit_verification_verdict`` call as its final
-        # action; treat it like ``end_turn`` so the verdict is parsed.
-        if stop_reason not in ("end_turn", "tool_use"):
+        # Chunk D: ``tool_use`` is a successful terminal state when the
+        # model emits the structured ``submit_verification_verdict`` call
+        # as its final action. ``classify_verification_stop_reason``
+        # collapses ``tool_use`` and ``end_turn`` into ``complete`` so the
+        # batch wave path and the real-time path agree.
+        if stop_class != STOP_CLASS_COMPLETE:
             outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=f"Verification response incomplete (stop_reason: {stop_reason})."))
             continue
         gate_failure = _search_gate_failure(message)
         if gate_failure:
             outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=gate_failure))
             continue
-        # Phase 2.5: prefer the structured verdict tool_use block over text
-        # parsing. ``response_text`` is only consulted when no tool block is
-        # present (legacy / fallback path).
-        parsed = _verdict_from_tool_use(message)
-        response_text = _extract_message_text(message)
-        if parsed is None:
-            if not response_text.strip():
-                outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason="Verification produced no text response."))
-                continue
-            parsed = _parse_verification_response(response_text)
-            if parsed.verdict == "UNVERIFIED" and "valid JSON" in (parsed.explanation or ""):
-                outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=parsed.explanation))
-                continue
+        # Chunk D: canonical parser. Structured tool input first, then JSON
+        # text fallback, then conservative classification. A text-fallback
+        # parse error is surfaced as a ``terminal_unverified`` outcome so
+        # the retry loop does not re-run on a deterministically broken
+        # response, and so the result is never cached as a supported
+        # verdict.
+        outcome = parse_verification_response(message)
+        if outcome.parse_status == PARSE_STATUS_NO_CONTENT:
+            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason="Verification produced no text response."))
+            continue
+        if outcome.parse_status == PARSE_STATUS_TEXT_PARSE_ERROR:
+            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=outcome.verdict.explanation))
+            continue
+        parsed = outcome.verdict
         search_urls, success_blocks, error_count = _collect_search_evidence(message)
         # Source trimming (Phase 10): keep only the model's cited sources from
         # the structured verdict payload. ``successful_source_count`` still

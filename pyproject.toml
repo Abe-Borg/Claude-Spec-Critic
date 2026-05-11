@@ -25,6 +25,7 @@ markers = [
     "request_shape: inspects request payloads passed to the Anthropic SDK without making network calls",
     "smoke: fast import / compile sanity checks that should pass on a clean checkout",
     "fixtures: exercises the fake Anthropic response fixtures themselves",
+    "parser_unification: Chunk D verification parser regression tests",
     "slow: tests that are noticeably slower than the rest of the suite",
     "network: tests that require real Anthropic API access (skipped by default)",
 ]
