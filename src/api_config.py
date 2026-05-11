@@ -143,6 +143,19 @@ HAIKU_TRIAGE_OUTPUT_CAP = 8_000
 LARGE_REVIEW_INPUT_THRESHOLD = 200_000
 
 
+# Phase identifiers. Defined here (before the phase→budget registry) so
+# the registry can reference them directly. ``thinking_config_for`` and
+# ``apply_thinking_config`` further below also consume these.
+PHASE_REVIEW = "review"
+PHASE_BATCH_REVIEW = "batch_review"
+PHASE_CROSS_CHECK = "cross_check"
+PHASE_SYNTHESIS = "synthesis"
+PHASE_VERIFICATION = "verification"
+PHASE_VERIFICATION_RETRY = "verification_retry"
+PHASE_VERIFICATION_CONTINUATION = "verification_continuation"
+PHASE_TRIAGE = "triage"
+
+
 def output_cap_for_model(model: str, *, requested: int) -> int:
     """Clamp ``requested`` to the model's hard output ceiling."""
     if model in OPUS_MODELS:
@@ -154,12 +167,48 @@ def output_cap_for_model(model: str, *, requested: int) -> int:
     return min(requested, ceiling)
 
 
+# Chunk E directive 6: a single registry of per-phase output budgets so
+# verification retry/continuation, synthesis, and triage all resolve through
+# the same lookup. Each phase declares its desired cap; ``phase_output_cap``
+# clamps that to the selected model's ceiling. The phase helpers below stay
+# as thin wrappers so callers can keep their existing imports.
+#
+# Verification retry/continuation reuse the verification cap by default —
+# the verdict envelope is unchanged across retries, so granting more output
+# only invites the model to ramble. If a future investigation shows
+# continuations need more headroom, this is the one place to tune it.
+_PHASE_OUTPUT_BUDGET: dict[str, int] = {
+    PHASE_REVIEW: REVIEW_OUTPUT_CAP,
+    PHASE_BATCH_REVIEW: REVIEW_OUTPUT_CAP,
+    PHASE_CROSS_CHECK: CROSS_CHECK_OUTPUT_CAP,
+    PHASE_SYNTHESIS: SYNTHESIS_OUTPUT_CAP,
+    PHASE_VERIFICATION: VERIFICATION_OUTPUT_CAP,
+    PHASE_VERIFICATION_RETRY: VERIFICATION_OUTPUT_CAP,
+    PHASE_VERIFICATION_CONTINUATION: VERIFICATION_OUTPUT_CAP,
+    PHASE_TRIAGE: HAIKU_TRIAGE_OUTPUT_CAP,
+}
+
+
+def phase_output_cap(phase: str, *, model: str) -> int:
+    """Return the centralized per-phase max_tokens budget for ``model``.
+
+    Directive 6 of Chunk E: every phase resolves its output cap here so
+    review, batch review, cross-check, synthesis, verification, verification
+    retry, verification continuation, and triage all share one registry.
+    Unknown phases fall back to the verification cap, the most conservative
+    value in the registry — a future phase that forgets to register loses
+    headroom instead of accidentally inheriting the 128k review cap.
+    """
+    requested = _PHASE_OUTPUT_BUDGET.get(phase, VERIFICATION_OUTPUT_CAP)
+    return output_cap_for_model(model, requested=requested)
+
+
 def synthesis_max_tokens(*, model: str = SYNTHESIS_MODEL_DEFAULT) -> int:
-    return output_cap_for_model(model, requested=SYNTHESIS_OUTPUT_CAP)
+    return phase_output_cap(PHASE_SYNTHESIS, model=model)
 
 
 def triage_max_tokens(*, model: str = TRIAGE_MODEL_DEFAULT) -> int:
-    return output_cap_for_model(model, requested=HAIKU_TRIAGE_OUTPUT_CAP)
+    return phase_output_cap(PHASE_TRIAGE, model=model)
 
 
 def review_max_tokens(*, batch: bool = False, model: str = REVIEW_MODEL_DEFAULT, allow_extended_output: bool = False) -> int:
@@ -172,15 +221,24 @@ def review_max_tokens(*, batch: bool = False, model: str = REVIEW_MODEL_DEFAULT,
     """
     if batch and allow_extended_output:
         return min(BATCH_MAX_OUTPUT_TOKENS, REVIEW_OUTPUT_CAP_BATCH_EXTENDED)
-    return output_cap_for_model(model, requested=REVIEW_OUTPUT_CAP)
+    phase = PHASE_BATCH_REVIEW if batch else PHASE_REVIEW
+    return phase_output_cap(phase, model=model)
 
 
 def cross_check_max_tokens(*, model: str = CROSS_CHECK_MODEL_DEFAULT) -> int:
-    return output_cap_for_model(model, requested=CROSS_CHECK_OUTPUT_CAP)
+    return phase_output_cap(PHASE_CROSS_CHECK, model=model)
 
 
-def verification_max_tokens(*, model: str = VERIFICATION_MODEL_DEFAULT) -> int:
-    return output_cap_for_model(model, requested=VERIFICATION_OUTPUT_CAP)
+def verification_max_tokens(*, model: str = VERIFICATION_MODEL_DEFAULT, phase: str = PHASE_VERIFICATION) -> int:
+    """Return a per-call max_tokens for a verification request.
+
+    ``phase`` defaults to ``PHASE_VERIFICATION``; pass
+    ``PHASE_VERIFICATION_RETRY`` or ``PHASE_VERIFICATION_CONTINUATION`` to
+    pick up retry-specific or continuation-specific budgets from the central
+    registry. Today all three resolve to the same cap; the parameter exists
+    so a future tuning pass touches one place.
+    """
+    return phase_output_cap(phase, model=model)
 
 
 def assert_extended_output_allowed(*, max_tokens: int, betas: Iterable[str] | None) -> None:
@@ -280,21 +338,11 @@ def model_supports_adaptive_thinking(model: str) -> bool:
     return model_capabilities(model).supports_adaptive_thinking
 
 
-# Phase identifiers used by ``thinking_config_for``. Strings (not an Enum)
-# to match the rest of the codebase. The set ``_PHASES_NO_THINKING`` is the
+# Phase identifiers (declared above so the phase→budget registry can use
+# them) gate per-phase request decisions. ``_PHASES_NO_THINKING`` is the
 # extension point for phases that should never request thinking regardless
 # of model capability — currently only the Haiku triage classifier, which
 # is a shallow batch-classification pass.
-PHASE_REVIEW = "review"
-PHASE_BATCH_REVIEW = "batch_review"
-PHASE_CROSS_CHECK = "cross_check"
-PHASE_SYNTHESIS = "synthesis"
-PHASE_VERIFICATION = "verification"
-PHASE_VERIFICATION_RETRY = "verification_retry"
-PHASE_VERIFICATION_CONTINUATION = "verification_continuation"
-PHASE_TRIAGE = "triage"
-
-
 _PHASES_NO_THINKING: frozenset[str] = frozenset({PHASE_TRIAGE})
 
 

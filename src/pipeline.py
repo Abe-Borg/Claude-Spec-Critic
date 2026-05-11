@@ -20,11 +20,18 @@ from .extraction_cache import (
     token_count_cache_key,
 )
 from .preprocessor import preprocess_spec, detect_inconsistent_file_naming
-from .tokenizer import RECOMMENDED_MAX, count_tokens, count_tokens_via_api, exceeds_per_call_limit
+from .tokenizer import (
+    RECOMMENDED_MAX,
+    count_tokens,
+    count_tokens_via_api,
+    exceeds_per_call_limit_for_model,
+    local_estimate_safety_factor,
+    safe_local_estimate,
+)
 from .reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_47, StreamCallback
 from .batch import BatchJob, submit_review_batch, retrieve_review_results
 from .batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
-from .api_config import token_count_preflight_enabled
+from .api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
 from .verifier import (
     verify_findings,
     verify_findings_batch,
@@ -306,7 +313,7 @@ class _PreparedSpecs:
     naming_alerts: list[dict] = field(default_factory=list)
 
 
-def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE) -> _PreparedSpecs:
+def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE, model: str = REVIEW_MODEL_DEFAULT) -> _PreparedSpecs:
     spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
     if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
@@ -365,29 +372,34 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     system_prompt = get_system_prompt(cycle, mode=mode)
     system_tokens = count_tokens(system_prompt)
     ctx_tokens = count_tokens(project_context) if project_context else 0
-    for spec in specs:
-        spec_tokens = count_tokens(spec.content)
-        est = system_tokens + ctx_tokens + spec_tokens
-        if exceeds_per_call_limit(spec_tokens, system_tokens + ctx_tokens):
-            raise ValueError(f"Spec '{spec.filename}' is too large for a single API call: ~{est:,} tokens (recommended max: {RECOMMENDED_MAX:,}).")
 
-    # Optional Anthropic token-counting preflight. Plan section 6.3: prefer
-    # exact counts for final routing/guardrail decisions; fall back to the
-    # local estimate when the API call fails. This is opt-in via env to
-    # avoid forcing a network round-trip for every preview.
+    # Chunk E directive 3: when the Anthropic ``count_tokens`` endpoint
+    # returns a number, that is the authoritative gate. The local
+    # cl100k_base count is only used as a fast pre-check and as the
+    # fallback when the API call is disabled or fails. The exact preflight
+    # below runs against the *largest* spec (it owns the worst case) and
+    # raises if that one exceeds the budget; before this fix, the local
+    # count was the only hard gate and the exact result was demoted to a
+    # log warning, so a real overage slid through silently.
+    from .prompts import get_single_spec_user_message
+    from .structured_schemas import review_findings_tool, structured_outputs_enabled
+
+    exact_tokens: int | None = None
     if token_count_preflight_enabled() and specs:
-        # Pick the largest spec by local count and verify the API agrees.
+        # Pick the largest spec by local count — it owns the worst-case
+        # input. Anthropic's exact count for that spec defines whether the
+        # whole job fits under ``RECOMMENDED_MAX``.
         biggest = max(specs, key=lambda s: count_tokens(s.content))
-        from .prompts import get_single_spec_user_message
-        from .structured_schemas import review_findings_tool, structured_outputs_enabled
         user_message = get_single_spec_user_message(biggest.content, biggest.filename, project_context=project_context, cycle=cycle, mode=mode)
         # Match the actual request shape: when structured outputs are on, the
         # tool definition adds real input tokens that the preflight should
         # count. Including tools in the cache key prevents stale hits when
-        # the tool schema changes between runs.
+        # the tool schema changes between runs. Chunk E directive 2: use
+        # the *selected* model so the count reflects the model that will
+        # actually run the request (Haiku tokenization differs from Opus).
         preflight_tools = [review_findings_tool()] if structured_outputs_enabled() else None
         cache_key = token_count_cache_key(
-            model=MODEL_OPUS_47,
+            model=model,
             system_prompt=system_prompt,
             user_message=user_message,
             project_context=project_context,
@@ -395,25 +407,46 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             mode=mode.value,
             tools=preflight_tools,
         )
-        exact = get_cached_token_count(cache_key)
-        if exact is None:
-            exact = count_tokens_via_api(
-                model=MODEL_OPUS_47,
+        exact_tokens = get_cached_token_count(cache_key)
+        if exact_tokens is None:
+            exact_tokens = count_tokens_via_api(
+                model=model,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
                 tools=preflight_tools,
             )
-            if exact is not None:
-                cache_token_count(cache_key, exact)
-        if exact is not None:
+            if exact_tokens is not None:
+                cache_token_count(cache_key, exact_tokens)
+        if exact_tokens is not None:
             local = system_tokens + ctx_tokens + count_tokens(biggest.content)
-            log(f"Token preflight ({biggest.filename}): local~{local:,} | exact={exact:,}", level="info")
-            if exact > RECOMMENDED_MAX:
-                log(
-                    f"WARNING: exact token count {exact:,} exceeds recommended {RECOMMENDED_MAX:,}. "
-                    "Response may be truncated.",
-                    level="warning",
+            log(
+                f"Token preflight ({biggest.filename}, model={model}): "
+                f"local~{local:,} | exact={exact_tokens:,}",
+                level="info",
+            )
+            if exact_tokens > RECOMMENDED_MAX:
+                raise ValueError(
+                    f"Spec '{biggest.filename}' is too large for a single API call: "
+                    f"exact API token count {exact_tokens:,} exceeds recommended "
+                    f"maximum {RECOMMENDED_MAX:,} for model {model}."
                 )
+
+    # Per-spec local gate. Runs whether or not the exact preflight fired;
+    # if exact_tokens is available the largest spec is already known safe,
+    # but smaller specs may still trip the local + safety-factor gate.
+    # Chunk E directive 5: apply the model-specific safety multiplier so a
+    # cl100k_base undercount cannot mask a real overage.
+    safety = local_estimate_safety_factor(model)
+    for spec in specs:
+        spec_tokens = count_tokens(spec.content)
+        est = system_tokens + ctx_tokens + spec_tokens
+        if exceeds_per_call_limit_for_model(spec_tokens, system_tokens + ctx_tokens, model=model):
+            padded = safe_local_estimate(est, model=model)
+            raise ValueError(
+                f"Spec '{spec.filename}' is too large for a single API call: "
+                f"~{est:,} cl100k tokens (×{safety:.2f} safety factor for {model} "
+                f"→ ~{padded:,}) exceeds recommended max {RECOMMENDED_MAX:,}."
+            )
 
     cache_stats = extraction_cache_stats()
     if cache_stats["hits"]:
@@ -453,7 +486,7 @@ class BatchSubmission:
 
 def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_47, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, mode: ReviewMode | str | None = None) -> BatchSubmission:
     review_mode = coerce_review_mode(mode)
-    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode)
+    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode, model=model)
     job = submit_review_batch(prepared.specs, project_context=project_context, model=model, cycle=cycle, mode=review_mode)
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
     return BatchSubmission(job=job, files_reviewed=[s.filename for s in prepared.specs], review_request_ids=ordered_ids, leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, model=model, project_context=project_context, prepared_specs=prepared.specs, cycle_label=cycle.label, cross_check_enabled=cross_check_enabled, review_mode=review_mode.value)
@@ -904,7 +937,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
 def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_47, verify: bool = True, cross_check: bool = False, dry_run: bool = False, verbose: bool = False, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode | str | None = None) -> PipelineResult:
     start = time.time()
     review_mode = coerce_review_mode(mode)
-    prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode)
+    prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode, model=model)
     specs = prepared.specs
     if dry_run:
         return PipelineResult(review_result=ReviewResult(findings=[], model=model), files_reviewed=[s.filename for s in specs], leed_alerts=prepared.leed_alerts, placeholder_alerts=prepared.placeholder_alerts, cycle_label=cycle.label, total_elapsed_seconds=time.time() - start)

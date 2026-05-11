@@ -103,11 +103,27 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
     Runs in its own background thread so the cl100k_base estimate stays
     on screen while we wait. Falls back silently to the local estimate
     when the API call fails or returns None.
+
+    Chunk E directive 2: ``count_tokens`` is called with the same model the
+    review will run against. The GUI exposes the selected model via
+    ``app._get_selected_model`` when available; otherwise we fall back to
+    ``REVIEW_MODEL_DEFAULT`` so headless and partially-initialized callers
+    still get a sensible count.
     """
+    from .api_config import REVIEW_MODEL_DEFAULT
     from .tokenizer import count_tokens_via_api
     from .prompts import get_single_spec_user_message, get_system_prompt
-    from .reviewer import MODEL_OPUS_47 as _model
     from .review_modes import DEFAULT_REVIEW_MODE
+
+    selected_model = REVIEW_MODEL_DEFAULT
+    model_getter = getattr(app, "_get_selected_model", None)
+    if callable(model_getter):
+        try:
+            override = model_getter()
+        except Exception:
+            override = None
+        if isinstance(override, str) and override:
+            selected_model = override
 
     biggest = max(file_data, key=lambda d: d["tokens"])
     biggest_spec = next((s for s in extracted_specs if s.filename == biggest["filename"]), None)
@@ -125,7 +141,7 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
                 mode=DEFAULT_REVIEW_MODE,
             )
             exact = count_tokens_via_api(
-                model=_model,
+                model=selected_model,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             )
