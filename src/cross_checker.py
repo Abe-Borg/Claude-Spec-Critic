@@ -114,14 +114,30 @@ def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list
     corpus_inner = render_blocks(spec_blocks)
     sections = [f"<{TAG_CORPUS}>\n{corpus_inner}\n</{TAG_CORPUS}>"]
     if existing_findings:
-        prior_blocks = [
-            "  " + wrap_data_block(
-                TAG_PRIOR_FINDING,
-                (f.issue or "")[:160],
-                attrs={"severity": f.severity, "file": f.fileName},
+        # Chunk M: every per-spec review finding has been stamped with a
+        # stable id by ``pipeline._deduplicate_findings``. Render each
+        # ``<prior>`` block with its id so the cross-check model can cite
+        # them back in ``upstreamFindingIds``. Findings without an id (e.g.
+        # legacy resume payloads or hand-built test fixtures) still appear
+        # but are unaddressable — they fall through to the heuristic
+        # suppression path.
+        prior_blocks: list[str] = []
+        for f in existing_findings:
+            attrs: dict[str, str | None] = {
+                "severity": f.severity,
+                "file": f.fileName,
+            }
+            if f.section:
+                attrs["section"] = f.section
+            if f.finding_id:
+                attrs["id"] = f.finding_id
+            prior_blocks.append(
+                "  " + wrap_data_block(
+                    TAG_PRIOR_FINDING,
+                    (f.issue or "")[:160],
+                    attrs=attrs,
+                )
             )
-            for f in existing_findings
-        ]
         note_attr = escape_attr("Do NOT repeat these findings.")
         sections.append(
             f'\n<{TAG_ALREADY_IDENTIFIED} note="{note_attr}">\n'
@@ -154,6 +170,21 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
         "MEDIUM — meaningful cross-reference or consistency issues with moderate impact.\n"
         "GRIPES — minor coordination polish items.\n"
         "</severity_definitions>\n\n"
+        "<dependency_tracking>\n"
+        "Each <prior> block in <already_identified> carries an ``id`` attribute (e.g. "
+        "``id=\"rf-abc123def456\"``). When your coordination claim depends on one or more "
+        "of those per-spec findings being true (for example: 'Spec A says X and Spec B "
+        "contradicts that' — where the 'X' claim came from a per-spec finding), cite the "
+        "relevant ``id`` value(s) in ``upstreamFindingIds``. The pipeline uses these ids "
+        "to suppress coordination claims whose every upstream finding is later disputed; "
+        "if no upstream is cited, the suppression falls back to a coarser file/section "
+        "heuristic.\n\n"
+        "When your coordination claim is independently supported by raw spec text — a "
+        "specific quote from a <para id=\"...\">, <row id=\"...\">, or <heading id=\"...\"> "
+        "element inside <spec> — list the element ids in ``independentEvidenceIds``. A "
+        "finding with independent evidence survives even if its cited upstream findings "
+        "are later disputed. Use empty arrays for either field when it does not apply.\n"
+        "</dependency_tracking>\n\n"
         "<output>\n"
         "Submit findings by calling the ``submit_cross_check_findings`` tool exactly once.\n"
         "The tool's input schema is the source of truth for field shapes.\n\n"
