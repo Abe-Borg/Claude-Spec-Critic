@@ -594,19 +594,64 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         # Word's open-time collapse treats it as part of the Sources heading's
         # zone (plain body paragraphs without an outline level are ignored at
         # open time). The next Heading 3 (next finding) terminates the zone.
-        if verbose and vr.sources:
+        #
+        # Chunk H: distinguish accepted (grounded) sources from rejected
+        # (cited-but-not-grounded) sources. ``vr.sources`` already holds the
+        # accepted citations (the verifier replaces it with the validator's
+        # accepted list); ``vr.rejected_sources`` is a list of
+        # ``{"url", "reason"}`` dicts. Both sections live under the same
+        # collapsed-by-default "Sources" heading so the open-time collapse
+        # zone hides everything until the user explicitly expands it.
+        accepted = list(vr.sources or [])
+        rejected = list(getattr(vr, "rejected_sources", []) or [])
+        if verbose and (accepted or rejected):
             sources_heading = doc.add_heading("Sources", level=4)
             _set_paragraph_collapsed(sources_heading)
 
-            para = doc.add_paragraph()
-            _set_paragraph_outline_level(para, 8)
-            para.paragraph_format.space_after = Pt(3)
-            for i, url in enumerate(vr.sources):
-                if i > 0:
-                    para.add_run("  •  ")
-                run = para.add_run(url)
-                run.font.size = Pt(9)
-                run.font.color.rgb = RGBColor(59, 130, 246)
+            if accepted:
+                label_para = doc.add_paragraph()
+                _set_paragraph_outline_level(label_para, 8)
+                label_run = label_para.add_run("Accepted sources (cited and found in search results):")
+                label_run.font.size = Pt(9)
+                label_run.bold = True
+                label_run.font.color.rgb = RGBColor(0, 100, 0)
+
+                para = doc.add_paragraph()
+                _set_paragraph_outline_level(para, 8)
+                para.paragraph_format.space_after = Pt(3)
+                for i, url in enumerate(accepted):
+                    if i > 0:
+                        para.add_run("  •  ")
+                    run = para.add_run(url)
+                    run.font.size = Pt(9)
+                    run.font.color.rgb = RGBColor(59, 130, 246)
+
+            if rejected:
+                label_para = doc.add_paragraph()
+                _set_paragraph_outline_level(label_para, 8)
+                label_run = label_para.add_run(
+                    "Rejected sources (cited by the model but not present in web_search results):"
+                )
+                label_run.font.size = Pt(9)
+                label_run.bold = True
+                label_run.font.color.rgb = RGBColor(192, 0, 0)
+
+                rej_para = doc.add_paragraph()
+                _set_paragraph_outline_level(rej_para, 8)
+                rej_para.paragraph_format.space_after = Pt(3)
+                for i, entry in enumerate(rejected):
+                    if i > 0:
+                        rej_para.add_run("  •  ")
+                    url = entry.get("url") if isinstance(entry, dict) else str(entry)
+                    reason = entry.get("reason") if isinstance(entry, dict) else ""
+                    url_run = rej_para.add_run(url or "(empty)")
+                    url_run.font.size = Pt(9)
+                    url_run.font.color.rgb = RGBColor(128, 128, 128)
+                    url_run.font.italic = True
+                    if reason:
+                        reason_run = rej_para.add_run(f" [{reason}]")
+                        reason_run.font.size = Pt(9)
+                        reason_run.font.color.rgb = RGBColor(192, 0, 0)
 
 
 # ---------------------------------------------------------------------------

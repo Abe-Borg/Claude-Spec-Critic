@@ -149,12 +149,27 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         "web_search_requests": result.web_search_requests,
         "successful_source_count": result.successful_source_count,
         "search_error_count": result.search_error_count,
+        # Chunk H source-grounding evidence + verification profile. All
+        # are optional on the way in so legacy payloads (pre-Chunk H)
+        # still deserialize with safe defaults.
+        "searched_sources": list(result.searched_sources),
+        "cited_sources": list(result.cited_sources),
+        "accepted_sources": list(result.accepted_sources),
+        "rejected_sources": [dict(r) for r in result.rejected_sources],
+        "verification_profile": result.verification_profile,
     }
 
 
 def deserialize_verification_result(payload: dict[str, Any] | None) -> VerificationResult | None:
     if not payload:
         return None
+    raw_rejected = payload.get("rejected_sources", []) or []
+    rejected: list[dict] = []
+    for entry in raw_rejected:
+        if isinstance(entry, dict):
+            url = str(entry.get("url") or "")
+            reason = str(entry.get("reason") or "")
+            rejected.append({"url": url, "reason": reason})
     return VerificationResult(
         verdict=str(payload.get("verdict", "UNVERIFIED")),
         explanation=str(payload.get("explanation", "")),
@@ -167,6 +182,11 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         web_search_requests=int(payload.get("web_search_requests", 0) or 0),
         successful_source_count=int(payload.get("successful_source_count", 0) or 0),
         search_error_count=int(payload.get("search_error_count", 0) or 0),
+        searched_sources=[str(s) for s in payload.get("searched_sources", []) if s],
+        cited_sources=[str(s) for s in payload.get("cited_sources", []) if s],
+        accepted_sources=[str(s) for s in payload.get("accepted_sources", []) if s],
+        rejected_sources=rejected,
+        verification_profile=str(payload.get("verification_profile", "")),
     )
 
 

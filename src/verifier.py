@@ -14,6 +14,7 @@ from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitErr
 from .batch import (
     BatchJob,
     build_verification_tools,
+    build_verification_tools_for_profile,
     poll_batch,  # Backward-compatibility export for older tests/patching.
     retrieve_verification_results_detailed,
     submit_verification_batch,
@@ -40,7 +41,18 @@ from .prompt_serialization import (
     TAG_FINDING,
     wrap_data_block,
 )
+from .source_grounding import (
+    REJECT_UNGROUNDED,
+    SearchedSource,
+    dedupe_searched_sources,
+    validate_cited_sources,
+)
 from .verification_cache import VerificationCache
+from .verification_profiles import (
+    VerificationProfile,
+    classify_finding_profile,
+    profile_max_uses,
+)
 from .verification_router import (
     classify_finding_for_verification,
     escalation_verification_model,
@@ -74,6 +86,10 @@ def _noop_verify_progress(_: int, __: int, ___: str) -> None:
 class VerificationResult:
     verdict: str
     explanation: str = ""
+    # ``sources`` is the publicly-rendered source list. Chunk H makes it
+    # contain only **accepted** citations (model-cited URLs that matched
+    # an actual web_search result). The raw cited / accepted / rejected
+    # fields below let reports and diagnostics show the full picture.
     sources: list[str] = field(default_factory=list)
     correction: str | None = None
     # ----- Phase 3 evidence model (plan 7.5) -------------------------------
@@ -91,6 +107,23 @@ class VerificationResult:
     web_search_requests: int = 0
     successful_source_count: int = 0
     search_error_count: int = 0
+    # ----- Chunk H source-grounding evidence -------------------------------
+    # The four concepts (Chunk H Directive 4):
+    #   - searched_sources  : URLs the web_search server tool actually fetched.
+    #   - cited_sources     : URLs the model included in its verdict payload.
+    #   - accepted_sources  : cited URLs that matched a searched URL after
+    #                         normalization. ``sources`` is kept in sync for
+    #                         backward compatibility with cache + report code.
+    #   - rejected_sources  : cited URLs that did NOT match any searched URL.
+    #                         Each entry is ``{"url": ..., "reason": ...}``.
+    # ``verification_profile`` is the :class:`VerificationProfile` value used
+    # to route the search budget for this call. Stored as a string so the
+    # whole record round-trips through JSON cleanly.
+    searched_sources: list[str] = field(default_factory=list)
+    cited_sources: list[str] = field(default_factory=list)
+    accepted_sources: list[str] = field(default_factory=list)
+    rejected_sources: list[dict] = field(default_factory=list)
+    verification_profile: str = ""
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -111,6 +144,77 @@ def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResu
     return result
 
 
+def _apply_source_grounding(
+    result: VerificationResult,
+    *,
+    searched: list[SearchedSource],
+) -> VerificationResult:
+    """Validate the model's cited sources against actual search results.
+
+    Chunk H Directives 1-4: separate searched / cited / accepted /
+    rejected sources, and downgrade verdicts whose cited URLs cannot be
+    matched to anything the API actually fetched.
+
+    The four invariants this helper enforces:
+
+    1. ``searched_sources`` is set from the deduped list the search
+       tool returned, regardless of model behavior.
+    2. ``cited_sources`` is set from the verdict tool's ``sources``
+       payload, regardless of validation outcome.
+    3. ``sources`` (the public/report list) is replaced with only the
+       *accepted* citations — model-cited URLs whose normalized form
+       appears in the searched set. This keeps reports from rendering
+       URLs the model invented.
+    4. ``rejected_sources`` records the ungrounded / malformed citations
+       so diagnostics can audit them and reports can show the user the
+       evidence that was *not* accepted.
+
+    When the model emitted CONFIRMED / CORRECTED with citations but
+    every citation is ungrounded, the verdict is downgraded to
+    UNVERIFIED. A CONFIRMED with no citations *and* no searched
+    sources is already blocked by :func:`_enforce_grounding_invariant`;
+    this helper handles the inverse case (citations present but none
+    actually grounded).
+    """
+    # Carry the raw searched URLs (deduped) onto the result regardless
+    # of the cited-source path so diagnostics see the full retrieval
+    # picture even when the model emitted no citations.
+    searched_urls = [s.url for s in searched]
+    result.searched_sources = searched_urls
+
+    cited_raw = list(result.sources or [])
+    result.cited_sources = cited_raw
+
+    outcome = validate_cited_sources(
+        cited=cited_raw,
+        searched=searched_urls,
+    )
+    result.accepted_sources = list(outcome.accepted)
+    result.rejected_sources = [dict(r) for r in outcome.rejected]
+    # ``sources`` is the public list — keep only accepted citations so
+    # downstream reports and the cache don't echo invented URLs.
+    result.sources = list(outcome.accepted)
+
+    if cited_raw and not outcome.has_any_grounded_citation():
+        verdict = (result.verdict or "").strip().upper()
+        if verdict in ("CONFIRMED", "CORRECTED"):
+            result.verdict = "UNVERIFIED"
+            suffix = (
+                " (downgraded: model cited sources that did not appear in "
+                "web_search results)"
+            )
+            if not result.explanation:
+                result.explanation = (
+                    "Verdict downgraded to UNVERIFIED: cited sources were not "
+                    "found in the web_search results."
+                )
+            elif suffix not in result.explanation:
+                result.explanation = result.explanation + suffix
+            # The downgrade implies no longer grounded for invariant purposes.
+            result.grounded = False
+    return result
+
+
 def _local_skip_result(reason: str = "Locally classified: external grounding not required for this finding.") -> VerificationResult:
     return VerificationResult(
         verdict="UNVERIFIED",
@@ -118,6 +222,11 @@ def _local_skip_result(reason: str = "Locally classified: external grounding not
         grounded=False,
         cache_status="local_skip",
         model_used="local",
+        # Chunk H: locally-skipped findings are by definition internal-
+        # coordination claims. Stamping the profile here means reports
+        # and diagnostics can label them consistently with everything
+        # that flowed through the web-verification path.
+        verification_profile=VerificationProfile.INTERNAL_COORDINATION.value,
     )
 
 
@@ -323,7 +432,31 @@ def _content_block_to_plain(block) -> dict | None:
 
 
 def _collect_search_evidence(message) -> tuple[list[str], int, int]:
-    search_urls: list[str] = []
+    """Backward-compatible URL-only accessor over a message's search evidence.
+
+    Existing callers (Phase 3 grounding gate, batch wave parser, source-
+    trimming regression test) need only the flat URL list. The Chunk H
+    grounding helpers consume :func:`_collect_search_evidence_detailed`,
+    which preserves the per-result title alongside the URL so reports
+    and the source-grounding validator can run without re-walking the
+    message.
+    """
+    detailed, success_count, error_count = _collect_search_evidence_detailed(message)
+    return [s.url for s in detailed], success_count, error_count
+
+
+def _collect_search_evidence_detailed(
+    message,
+) -> tuple[list[SearchedSource], int, int]:
+    """Walk a message's content blocks and pull out searched sources.
+
+    Returns a list of :class:`SearchedSource` (one per web_search_result
+    with a usable URL), the count of *successful* tool-result blocks,
+    and the count of error items observed. Only blocks that contained
+    at least one usable result count as successful — an error-only
+    block does NOT pass the external-grounding gate.
+    """
+    detailed: list[SearchedSource] = []
     success_count = 0
     error_count = 0
     for block in getattr(message, "content", []) or []:
@@ -340,16 +473,17 @@ def _collect_search_evidence(message) -> tuple[list[str], int, int]:
                 # external-grounding gate without any real evidence.
                 block_had_valid_result = False
                 for item in block_content:
-                    item_type = getattr(item, "type", None)
+                    item_type = _maybe_attr(item, "type")
                     if item_type == "web_search_tool_result_error":
                         error_count += 1
                         continue
                     if item_type not in (None, "web_search_result"):
                         continue
                     block_had_valid_result = True
-                    url = getattr(item, "url", None)
+                    url = _maybe_attr(item, "url")
                     if url:
-                        search_urls.append(url)
+                        title = _maybe_attr(item, "title") or ""
+                        detailed.append(SearchedSource(url=str(url), title=str(title)))
                 if block_had_valid_result:
                     success_count += 1
             elif getattr(block_content, "type", None) == "web_search_tool_result_error":
@@ -359,7 +493,21 @@ def _collect_search_evidence(message) -> tuple[list[str], int, int]:
         elif block_type == "web_search_tool_result_error":
             # Backward-compatible fallback in case SDK/server emits top-level error blocks.
             error_count += 1
-    return search_urls, success_count, error_count
+    return detailed, success_count, error_count
+
+
+def _maybe_attr(item, name: str):
+    """Best-effort attribute lookup over SDK Pydantic objects and dicts.
+
+    Search-result items come back as SDK objects on the streaming path
+    and as plain dicts on the batch-results path; the verifier needs to
+    read ``type`` / ``url`` / ``title`` from either shape without
+    crashing on the wrong one.
+    """
+    value = getattr(item, name, None)
+    if value is None and isinstance(item, dict):
+        value = item.get(name)
+    return value
 
 
 def _web_search_count(message) -> int:
@@ -706,6 +854,13 @@ def _run_verification_call(
     Always returns a VerificationResult with the Phase 3 evidence fields
     populated (``model_used``, ``grounded``, ``escalated``, search counts).
     """
+    # Chunk H: classify the verification profile once per call. The
+    # profile drives the web_search budget (subordinate to severity per
+    # Directive 7) and stamps onto the result so reports and the cache
+    # can label what kind of claim this verdict belongs to. Classification
+    # is pure-function over the finding text so there is no API cost.
+    profile = classify_finding_profile(finding)
+
     def _make_unverified(explanation: str, *, search_requests: int = 0, search_errors: int = 0, search_successes: int = 0) -> VerificationResult:
         return _enforce_grounding_invariant(VerificationResult(
             verdict="UNVERIFIED",
@@ -717,6 +872,7 @@ def _run_verification_call(
             web_search_requests=search_requests,
             successful_source_count=search_successes,
             search_error_count=search_errors,
+            verification_profile=profile.value,
         ))
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -735,12 +891,14 @@ def _run_verification_call(
         cycle, include_verdict_tool=include_verdict_tool
     )
     system_payload = system_prompt_with_cache(system_prompt)
-    # Per-severity web_search budget. CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3.
-    # The web_search tool is the first entry in the tools list; the prompt-
-    # cache breakpoint sits on the *last* tool, so changing max_uses by
-    # severity only varies the cache prefix (one cache entry per severity
-    # tier) and never invalidates the verdict-tool cache.
-    tool_list = build_verification_tools(finding.severity)
+    # Chunk H: profile-aware web_search budget. The profile sets the
+    # ceiling for the kind of claim (e.g. internal-coordination caps
+    # very low; California/AHJ allows the most rope); severity modulates
+    # within the profile. We delegate to
+    # :func:`build_verification_tools_for_profile` so the batch / retry /
+    # continuation paths can pick up the same routing without reaching
+    # into the verifier internals.
+    tool_list = build_verification_tools_for_profile(profile, finding.severity)
     tools_payload = tools_with_cache(tool_list)
     output_limit = verification_max_tokens(model=model)
 
@@ -791,16 +949,20 @@ def _run_verification_call(
             if classify_verification_stop_reason(final_stop) != STOP_CLASS_COMPLETE:
                 return _make_unverified("Verification did not complete after maximum continuation attempts.")
 
-            all_search_urls: list[str] = []
+            all_searched: list[SearchedSource] = []
             success_blocks = 0
             total_search_errors = 0
             total_search_requests = 0
             for resp in all_responses:
-                search_urls, successes, errors = _collect_search_evidence(resp)
-                all_search_urls.extend(search_urls)
+                detailed, successes, errors = _collect_search_evidence_detailed(resp)
+                all_searched.extend(detailed)
                 success_blocks += successes
                 total_search_errors += errors
                 total_search_requests += _web_search_count(resp)
+
+            # Chunk H Directive 4: dedupe across waves with normalized URLs
+            # so two queries that landed on the same page are counted once.
+            deduped_searched = dedupe_searched_sources(all_searched)
 
             grounded = success_blocks > 0
             if not grounded:
@@ -845,8 +1007,13 @@ def _run_verification_call(
             parsed.escalated = escalated
             parsed.cache_status = "miss"
             parsed.web_search_requests = total_search_requests
-            parsed.successful_source_count = len(all_search_urls)
+            parsed.successful_source_count = len(deduped_searched)
             parsed.search_error_count = total_search_errors
+            parsed.verification_profile = profile.value
+            # Chunk H: validate cited sources against the URLs the API
+            # actually fetched. Ungrounded citations are partitioned off
+            # and the verdict is downgraded when every citation missed.
+            parsed = _apply_source_grounding(parsed, searched=deduped_searched)
             return _enforce_grounding_invariant(parsed)
         except RateLimitError:
             if attempt < max_retries:
@@ -1026,6 +1193,7 @@ def _build_retry_request(
     cycle: CodeCycle,
     model: str | None = None,
     severity: str | None = None,
+    profile: VerificationProfile | str | None = None,
 ) -> dict:
     selected = model or initial_verification_model()
     # Chunk C: route through the shared tool builder so retry includes the
@@ -1033,7 +1201,14 @@ def _build_retry_request(
     # retry path advertised submit_verification_verdict in the prompt but
     # never attached it to the request, forcing fragile JSON-text fallback.
     include_verdict_tool = verification_request_includes_verdict_tool()
-    tool_list = build_verification_tools(severity)
+    # Chunk H: when a profile is known, route through the profile-aware
+    # tool builder so retry budgets match the initial call. Falling back
+    # to the severity-only builder keeps the legacy code path intact for
+    # callers (and tests) that have not supplied a profile.
+    if profile is not None:
+        tool_list = build_verification_tools_for_profile(profile, severity)
+    else:
+        tool_list = build_verification_tools(severity)
     system_prompt = _get_verification_system_prompt(
         cycle, include_verdict_tool=include_verdict_tool
     )
@@ -1058,13 +1233,20 @@ def _build_continuation_request(
     cycle: CodeCycle,
     model: str | None = None,
     severity: str | None = None,
+    profile: VerificationProfile | str | None = None,
 ) -> dict:
     selected = model or initial_verification_model()
     # Chunk C: same fix as _build_retry_request — continuation requests
     # also drop into structured-tool territory so the verdict tool must
     # accompany web_search whenever the prompt mentions it.
     include_verdict_tool = verification_request_includes_verdict_tool()
-    tool_list = build_verification_tools(severity)
+    # Chunk H: prefer the profile-aware builder when the caller supplies
+    # a profile (the wave path threads it in from the finding); fall back
+    # to severity-only otherwise for backward compatibility.
+    if profile is not None:
+        tool_list = build_verification_tools_for_profile(profile, severity)
+    else:
+        tool_list = build_verification_tools(severity)
     system_prompt = _get_verification_system_prompt(
         cycle, include_verdict_tool=include_verdict_tool
     )
@@ -1160,7 +1342,8 @@ def _classify_wave_results(
             outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=outcome.verdict.explanation))
             continue
         parsed = outcome.verdict
-        search_urls, success_blocks, error_count = _collect_search_evidence(message)
+        searched_detailed, success_blocks, error_count = _collect_search_evidence_detailed(message)
+        deduped_searched = dedupe_searched_sources(searched_detailed)
         # Source trimming (Phase 10): keep only the model's cited sources from
         # the structured verdict payload. ``successful_source_count`` still
         # records how many distinct URLs the model retrieved across searches
@@ -1172,8 +1355,16 @@ def _classify_wave_results(
         parsed.escalated = escalated
         parsed.cache_status = "miss"
         parsed.web_search_requests = _web_search_count(message)
-        parsed.successful_source_count = len(search_urls)
+        parsed.successful_source_count = len(deduped_searched)
         parsed.search_error_count = error_count
+        # Chunk H: stamp the verification profile on the result and run
+        # the source-grounding validator so the batch path produces the
+        # same accepted/rejected partition as the real-time path. The
+        # profile classifier is pure-function so calling it here costs
+        # nothing relative to the network round-trip we already took.
+        profile = classify_finding_profile(findings[finding_idx])
+        parsed.verification_profile = profile.value
+        parsed = _apply_source_grounding(parsed, searched=deduped_searched)
         parsed = _enforce_grounding_invariant(parsed)
         outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed))
     return outcomes
@@ -1304,18 +1495,22 @@ def collect_verification_batch_results(
             original = request_contexts[item.original_custom_id]
             wave_model = original.get("model") or initial_verification_model()
             wave_severity = (findings[item.finding_idx].severity or "").strip().upper() or "GRIPES"
+            # Chunk H: thread the per-finding profile through retry waves so
+            # the search budget matches the initial call's profile-aware tier.
+            wave_profile = classify_finding_profile(findings[item.finding_idx]).value
             custom_id = f"verify_retry_{wave_index + 1}__{item.original_custom_id}"
-            next_requests.append({"custom_id": custom_id, "params": _build_retry_request(original["original_prompt"], cycle=cycle, model=wave_model, severity=wave_severity)})
-            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "retry", "model": wave_model, "severity": wave_severity}
-            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False), "severity": wave_severity}
+            next_requests.append({"custom_id": custom_id, "params": _build_retry_request(original["original_prompt"], cycle=cycle, model=wave_model, severity=wave_severity, profile=wave_profile)})
+            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "retry", "model": wave_model, "severity": wave_severity, "profile": wave_profile}
+            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False), "severity": wave_severity, "profile": wave_profile}
         for item in needs_continue:
             original = request_contexts[item.original_custom_id]
             wave_model = original.get("model") or initial_verification_model()
             wave_severity = (findings[item.finding_idx].severity or "").strip().upper() or "GRIPES"
+            wave_profile = classify_finding_profile(findings[item.finding_idx]).value
             custom_id = f"verify_cont_{wave_index + 1}__{item.original_custom_id}"
-            next_requests.append({"custom_id": custom_id, "params": _build_continuation_request(original["original_prompt"], item.assistant_content_blocks or [], cycle=cycle, model=wave_model, severity=wave_severity)})
-            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "continuation", "model": wave_model, "severity": wave_severity}
-            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False), "severity": wave_severity}
+            next_requests.append({"custom_id": custom_id, "params": _build_continuation_request(original["original_prompt"], item.assistant_content_blocks or [], cycle=cycle, model=wave_model, severity=wave_severity, profile=wave_profile)})
+            next_request_map[custom_id] = {"finding_idx": item.finding_idx, "wave": wave_index + 2, "type": "continuation", "model": wave_model, "severity": wave_severity, "profile": wave_profile}
+            next_contexts[custom_id] = {"finding_idx": item.finding_idx, "original_prompt": original["original_prompt"], "resolved": False, "model": wave_model, "escalated": original.get("escalated", False), "severity": wave_severity, "profile": wave_profile}
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         current_job = submit_verification_followup_wave(next_requests, next_request_map)
         request_contexts = next_contexts
