@@ -30,6 +30,7 @@ src/
 ├── structured_schemas.py   # Tool-use schemas for review/cross-check/verification
 ├── review_modes.py         # Strict / Comprehensive / Safe-edit profiles
 ├── prompts.py              # System + user prompt builders (mode-aware)
+├── prompt_serialization.py # Central escape / wrap helpers for prompt boundaries
 ├── reviewer.py             # Anthropic API client (streaming + tool-use parsing)
 ├── cross_checker.py        # Cross-spec coordination (chunked by CSI division)
 ├── verifier.py             # Verification (Sonnet/Opus routing, real-time fallback)
@@ -184,6 +185,20 @@ Carry `review_mode: str` so resume restores the exact prompt path.
 - `get_single_spec_user_message(spec_content, filename, project_context, *, cycle, mode=...)`
 
 Both inject the active review mode banner, the mode-specific task text, and the editability clause. The system prompt instructs the model to call the structured tool (with a tagged-JSON fallback for compatibility).
+
+### prompt_serialization.py — Central prompt-boundary helpers (Chunk G)
+
+Single source of truth for safely embedding untrusted content (spec bodies, project context, finding fields, filenames) in pseudo-XML wrappers. The previous behavior had three separate `_xml_escape` helpers that escaped element content only, leaving attribute values vulnerable to quote injection and several wrappers (spec body, project context, triage findings) entirely unescaped.
+
+**Public API:**
+- `escape_text(value)` — escape `&`, `<`, `>` for element content.
+- `escape_attr(value)` — escape `&`, `<`, `>`, `"`, `'` for attribute values (the previous helpers only handled the three element-content reserved characters, so a filename like `weird".docx` silently truncated the opening tag).
+- `wrap_data_block(tag, content, *, attrs=None)` — single-line `<tag k="v">body</tag>` with both halves escaped.
+- `wrap_document_block(tag, content, *, attrs=None)` — multi-line equivalent for spec / context bodies; wrapper tags land on their own lines so the body's newline layout is preserved.
+- `render_blocks(iterable)` — `\n`-join that drops empties.
+- Wrapper-tag string constants: `TAG_SPEC`, `TAG_PROJECT_CONTEXT`, `TAG_CORPUS`, `TAG_ALREADY_IDENTIFIED`, `TAG_PRIOR_FINDING`, `TAG_FINDING`, `TAG_FINDINGS`, `TAG_CHUNK_FINDINGS`, `TAG_CHUNK`.
+
+Used by `prompts.py`, `cross_checker.py`, `triage.py`, and `verifier.py`. The stable instruction prefix in each prompt builder is unchanged byte-for-byte, so prompt-caching breakpoints remain pinned (verified by `TestPromptCacheBreakpointSafety` in `tests/test_chunk_g_prompt_serialization.py`).
 
 ### code_cycles.py — California code cycles
 

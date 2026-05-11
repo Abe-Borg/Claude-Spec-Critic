@@ -12,6 +12,19 @@ from .extractor import ExtractedSpec
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
 from .tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
+from .prompt_serialization import (
+    TAG_ALREADY_IDENTIFIED,
+    TAG_CHUNK,
+    TAG_CHUNK_FINDINGS,
+    TAG_CORPUS,
+    TAG_PRIOR_FINDING,
+    TAG_PROJECT_CONTEXT,
+    TAG_SPEC,
+    escape_attr,
+    render_blocks,
+    wrap_data_block,
+    wrap_document_block,
+)
 from .api_config import (
     CROSS_CHECK_MODEL_DEFAULT,
     PHASE_CROSS_CHECK,
@@ -64,38 +77,38 @@ def _sanitize_narrative(text: str) -> str:
     return '\n'.join(cleaned)
 
 
-def _xml_escape(value: str | None) -> str:
-    if not value:
-        return ""
-    return (
-        value.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-
-
 def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list[Finding]) -> str:
     """Render spec corpus for cross-check.
 
-    Wrapping each spec in a ``<spec>`` element makes the boundaries unambiguous
-    to the model and signals that interior content is data, not instructions —
-    a low-effort hedge against prompt injection from spec text.
+    Chunk G: each spec is serialized through :func:`wrap_document_block` so
+    a literal ``</spec>`` (or any other reserved character) inside a spec
+    body cannot close the wrapper. Filename and finding-attribute values
+    flow through :func:`escape_attr` so attribute-breaking characters
+    cannot truncate the opening tag either. ``render_blocks`` joins the
+    pieces with newlines, dropping empties.
     """
-    parts: list[str] = ["<corpus>"]
-    for spec in specs:
-        parts.append(f'<spec filename="{_xml_escape(spec.filename)}">')
-        parts.append(spec.content)
-        parts.append("</spec>")
-    parts.append("</corpus>")
+    spec_blocks = [
+        wrap_document_block(TAG_SPEC, spec.content, attrs={"filename": spec.filename})
+        for spec in specs
+    ]
+    corpus_inner = render_blocks(spec_blocks)
+    sections = [f"<{TAG_CORPUS}>\n{corpus_inner}\n</{TAG_CORPUS}>"]
     if existing_findings:
-        parts.append("\n<already_identified note=\"Do NOT repeat these findings.\">")
-        for f in existing_findings:
-            parts.append(
-                f'  <prior severity="{_xml_escape(f.severity)}" file="{_xml_escape(f.fileName)}">'
-                f"{_xml_escape((f.issue or '')[:160])}</prior>"
+        prior_blocks = [
+            "  " + wrap_data_block(
+                TAG_PRIOR_FINDING,
+                (f.issue or "")[:160],
+                attrs={"severity": f.severity, "file": f.fileName},
             )
-        parts.append("</already_identified>")
-    return "\n".join(parts)
+            for f in existing_findings
+        ]
+        note_attr = escape_attr("Do NOT repeat these findings.")
+        sections.append(
+            f'\n<{TAG_ALREADY_IDENTIFIED} note="{note_attr}">\n'
+            + "\n".join(prior_blocks)
+            + f"\n</{TAG_ALREADY_IDENTIFIED}>"
+        )
+    return "\n".join(sections)
 
 
 def _cross_system_prompt(cycle: CodeCycle) -> str:
@@ -141,7 +154,14 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
 
 
 def _get_cross_check_user_message(spec_input: str, file_count: int, project_context: str = "") -> str:
-    ctx = f"\n<project_context>\n{project_context.strip()}\n</project_context>\n" if project_context.strip() else ""
+    # Chunk G: project_context serialized via wrap_document_block so a literal
+    # ``</project_context>`` (or any reserved character) inside the operator-
+    # supplied context cannot escape the wrapper.
+    ctx = (
+        "\n" + wrap_document_block(TAG_PROJECT_CONTEXT, project_context.strip()) + "\n"
+        if project_context.strip()
+        else ""
+    )
     return f"Review the following {file_count} specs for cross-spec coordination only.\n{ctx}\n{spec_input}"
 
 
@@ -421,24 +441,37 @@ def _build_cross_discipline_synthesis_input(
     Only severity/file/section/issue are passed — full spec text would defeat
     the token-budget reason for chunking in the first place. Findings are
     grouped by chunk so the model can attribute each one to its discipline.
+
+    Chunk G: every attribute value and inline body is escaped through
+    :mod:`prompt_serialization` so an attacker-controlled (or just
+    weirdly-named) chunk id, file, section, or affected-files list cannot
+    break the wrapper structure.
     """
-    parts: list[str] = ["<chunk_findings>"]
+    parts: list[str] = [f"<{TAG_CHUNK_FINDINGS}>"]
     for chunk_id, result in chunk_results:
         if result.cross_check_status != "completed" or not result.findings:
             continue
         label = _chunk_label(chunk_id)
-        parts.append(f'  <chunk id="{_xml_escape(chunk_id)}" label="{_xml_escape(label)}">')
+        parts.append(
+            f'  <{TAG_CHUNK} id="{escape_attr(chunk_id)}" '
+            f'label="{escape_attr(label)}">'
+        )
         for f in result.findings:
-            issue = _xml_escape((f.issue or "")[:300])
-            files = ", ".join(_xml_escape(n) for n in (f.affected_files or [f.fileName]) if n)
+            affected = ", ".join(n for n in (f.affected_files or [f.fileName]) if n)
             parts.append(
-                f'    <finding severity="{_xml_escape(f.severity)}" '
-                f'file="{_xml_escape(f.fileName)}" '
-                f'section="{_xml_escape(f.section)}" '
-                f'affected="{files}">{issue}</finding>'
+                "    " + wrap_data_block(
+                    "finding",
+                    (f.issue or "")[:300],
+                    attrs={
+                        "severity": f.severity,
+                        "file": f.fileName,
+                        "section": f.section,
+                        "affected": affected,
+                    },
+                )
             )
-        parts.append("  </chunk>")
-    parts.append("</chunk_findings>")
+        parts.append(f"  </{TAG_CHUNK}>")
+    parts.append(f"</{TAG_CHUNK_FINDINGS}>")
     return "\n".join(parts)
 
 
