@@ -211,6 +211,9 @@ def serialize_finding(finding: Finding) -> dict[str, Any]:
         "verification": serialize_verification_result(finding.verification),
         "anchorText": finding.anchorText,
         "insertPosition": finding.insertPosition,
+        # Chunk K3: round-trip the evidence id so resume restores the
+        # same locator behavior the original review picked.
+        "evidenceElementId": finding.evidenceElementId,
     }
 
 
@@ -219,6 +222,11 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
     if insert_pos is not None:
         normalized_pos = str(insert_pos).strip().lower()
         insert_pos = normalized_pos if normalized_pos in {"before", "after"} else None
+    evidence_id_raw = payload.get("evidenceElementId")
+    if evidence_id_raw is None:
+        evidence_id: str | None = None
+    else:
+        evidence_id = str(evidence_id_raw).strip() or None
     return Finding(
         severity=str(payload.get("severity", "MEDIUM")),
         fileName=str(payload.get("fileName", "")),
@@ -233,6 +241,7 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
         verification=deserialize_verification_result(payload.get("verification")),
         anchorText=(str(payload["anchorText"]) if payload.get("anchorText") is not None else None),
         insertPosition=insert_pos,
+        evidenceElementId=evidence_id,
     )
 
 

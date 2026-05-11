@@ -114,6 +114,10 @@ def sample_review_findings_payload() -> dict[str, Any]:
                 "confidence": 0.85,
                 "anchorText": None,
                 "insertPosition": None,
+                # Chunk K3: the schema now requires evidenceElementId on
+                # every finding (nullable). Fixture findings cite an id
+                # so request-shape tests cover the populated path.
+                "evidenceElementId": "p17",
             }
         ],
     }

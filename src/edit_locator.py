@@ -136,6 +136,14 @@ def _classify_locator_safety(
         category = SAFETY_AUTO_WITH_CAUTION
     elif method == "fuzzy":
         category = SAFETY_MANUAL_REVIEW
+    elif method == "id":
+        # Chunk K4: id-based match plus exact-text precondition is the
+        # strictest signal the locator can produce — equivalent to an
+        # exact text match but immune to whole-document duplicates.
+        # Body paragraphs go AUTO_SAFE; table cells stay AUTO_WITH_CAUTION
+        # so the table-cell precondition revalidation in spec_editor
+        # still gates the actual mutation.
+        category = SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
     elif method == "exact" and confidence >= 0.95:
         category = SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
     elif method == "normalized" and confidence >= 0.85:
@@ -459,6 +467,102 @@ def _cross_paragraph_exact(existing_text: str, paragraph_map: list[ParagraphMapp
     return matches
 
 
+def _id_anchored_match(
+    finding: Finding,
+    existing_text: str,
+    paragraph_map: list[ParagraphMapping],
+) -> tuple[list[EditLocation], str | None]:
+    """Locate the edit target by ``evidenceElementId`` with text revalidation.
+
+    Chunk K4: when the model emitted an element id, we trust it as the
+    primary locator signal but still revalidate the recorded exact-text
+    quote against the live element. The validation guarantees the id
+    points at the same text the model saw at review time — if a later
+    edit shifted the paragraph, the precondition will fail at apply time
+    and the id-based ``LocatorResult`` will be regenerated from the live
+    map on the next pass.
+
+    Returns ``(locations, warning)`` where ``warning`` is non-empty only
+    when the id was set but the locator could not turn it into a usable
+    match — the caller treats that as a manual-review signal rather than
+    silently falling back to fuzzy matching against the whole document
+    (which would defeat the point of asking the model for an id).
+    """
+    evidence_id = (getattr(finding, "evidenceElementId", None) or "").strip()
+    if not evidence_id:
+        return [], None
+
+    mapping = next(
+        (m for m in paragraph_map if (m.element_id or "") == evidence_id),
+        None,
+    )
+    if mapping is None:
+        return [], (
+            f"Finding cited evidenceElementId={evidence_id!r} but no element "
+            "with that id exists in the extracted paragraph map. Manual "
+            "review required."
+        )
+
+    # ADD without existingText: the id alone names the anchor paragraph.
+    # We use the full text span so downstream ``_apply_add_action`` can
+    # treat the whole paragraph as the anchor.
+    if not existing_text:
+        location = EditLocation(
+            mapping=mapping,
+            match_start=0,
+            match_end=len(mapping.text),
+            matched_text=mapping.text,
+            match_confidence=1.0,
+            match_method="id",
+        )
+        return [location], None
+
+    # EDIT/DELETE (and ADD with anchorText): the model cited a specific
+    # element AND a specific quote. Validate the quote inside that
+    # element. We try exact substring first, then a normalized match so
+    # whitespace/case differences in the quote don't break the id path.
+    idx = mapping.text.find(existing_text)
+    if idx != -1:
+        location = EditLocation(
+            mapping=mapping,
+            match_start=idx,
+            match_end=idx + len(existing_text),
+            matched_text=mapping.text[idx:idx + len(existing_text)],
+            match_confidence=1.0,
+            match_method="id",
+        )
+        return [location], None
+
+    norm_needle = _normalize_text(existing_text)
+    if norm_needle:
+        norm_text, index_map = _normalize_with_index_map(mapping.text)
+        n_start = norm_text.find(norm_needle)
+        if n_start != -1 and index_map:
+            n_end = n_start + len(norm_needle) - 1
+            if n_end < len(index_map):
+                start = index_map[n_start]
+                end = index_map[n_end] + 1
+                location = EditLocation(
+                    mapping=mapping,
+                    match_start=start,
+                    match_end=end,
+                    matched_text=mapping.text[start:end],
+                    match_confidence=0.95,
+                    match_method="id",
+                )
+                return [location], None
+
+    # The id is real but the quote no longer matches. Don't silently fall
+    # back — that defeats the entire purpose of asking the model to cite
+    # an id (the audit's "stop depending on fuzzy text rediscovery"). The
+    # caller demotes the result to manual review.
+    return [], (
+        f"Finding cited evidenceElementId={evidence_id!r} but the "
+        "existingText quote was not found inside that element. Manual "
+        "review required to avoid wrong-span edits."
+    )
+
+
 def locate_edit(
     finding: Finding,
     paragraph_map: list[ParagraphMapping],
@@ -475,6 +579,54 @@ def locate_edit(
         anchor_candidate = (getattr(finding, "anchorText", None) or "").strip()
         if anchor_candidate:
             existing_text = anchor_candidate
+
+    # Chunk K4: prefer the element id when the model supplied one. The id
+    # path validates the exact-text quote against the live element; if the
+    # quote no longer matches, we return early with a manual-review
+    # warning instead of falling through to fuzzy text matching. That
+    # preserves the audit's "ID + exact text are both used" rule and
+    # makes wrong-span replacements impossible on the id path.
+    id_locations, id_warning = _id_anchored_match(
+        finding, existing_text, paragraph_map,
+    )
+    if id_locations:
+        return LocatorResult(
+            finding=finding,
+            status="matched",
+            locations=id_locations,
+            replacement_text=replacement,
+            action_type=action_type,
+            warning=None,
+            # The id path is strictly safer than text matching: the model
+            # asserted "this element" and the exact-text quote still
+            # holds inside that element. Whole-paragraph id matches on a
+            # body paragraph qualify as AUTO_SAFE, but the existing
+            # formatting downgrades still apply via the standard
+            # classifier (multi-format paragraph → MANUAL_REVIEW), so
+            # we route through ``_classify_locator_safety`` for
+            # consistency rather than hard-coding AUTO_SAFE here.
+            safety_category=_classify_locator_safety(
+                status="matched",
+                action_type=action_type,
+                locations=id_locations,
+                replacement_text=replacement,
+                cross_paragraph=False,
+            ),
+        )
+    if id_warning:
+        # Id was set but unusable — manual review only. Do not fall back
+        # to text matching: the model named a specific element, so a
+        # different paragraph that happens to contain similar text is
+        # almost certainly the wrong target.
+        return LocatorResult(
+            finding=finding,
+            status="not_found",
+            locations=[],
+            replacement_text=replacement,
+            action_type=action_type,
+            warning=id_warning,
+            safety_category=SAFETY_MANUAL_REVIEW,
+        )
 
     if not existing_text:
         return LocatorResult(

@@ -32,6 +32,20 @@ class ParagraphMapping:
     # paragraphs and runs; treat them via the table-cell caution path).
     run_count: int = 0
     distinct_formatting_runs: int = 0
+    # Chunk K1: stable, deterministic element identifier scoped to a single
+    # extracted document. The format is human-readable so a finding that
+    # cites it can be debugged at a glance: ``p<body_index>`` for body
+    # paragraphs, ``t<table>r<row>`` for table-cell rows, ``s<n>h<i>`` /
+    # ``s<n>f<i>`` for section header / footer paragraphs, and ``meta<n>``
+    # for the synthetic header/footer delimiter. The id is stable within a
+    # single extraction run; for cross-run stability the document_id of the
+    # owning ``ExtractedSpec`` should also be checked. Empty string for
+    # legacy mappings constructed by tests that predate Chunk K.
+    element_id: str = ""
+    # Section heading text the element belongs to (best-effort). Surfacing
+    # this lets the locator disambiguate identical text in different
+    # sections without re-scanning the paragraph map.
+    section_id: str = ""
 
 
 @dataclass
@@ -42,6 +56,53 @@ class ExtractedSpec:
     source_path: str = ""
     source_format: str = ""
     paragraph_map: list[ParagraphMapping] | None = None
+    # Chunk K1: stable, human-debuggable document identifier. Defaults to
+    # the filename without extension; when filenames could collide the
+    # caller can override. Element ids are only unique inside a single
+    # document, so the locator pairs ``(document_id, element_id)`` when it
+    # disambiguates findings that cite an id.
+    document_id: str = ""
+
+
+def _derive_document_id(filename: str) -> str:
+    """Return a stable, human-readable document id for ``filename``.
+
+    Chunk K1 keeps ids debuggable: the filename without its extension is
+    enough for a per-run locator and reads cleanly in logs. Callers that
+    expect cross-run stability across renames should override
+    ``ExtractedSpec.document_id`` themselves.
+    """
+    if not filename:
+        return ""
+    return Path(filename).stem or filename
+
+
+def _is_heading_paragraph(text: str) -> bool:
+    """Heuristic match for a CSI / DSA spec heading paragraph.
+
+    Chunk K1 needs a cheap, deterministic section attribution so the
+    paragraph map can carry a ``section_id`` without re-walking the doc.
+    The locator already has a more elaborate header detector
+    (``edit_locator._header_level``); we deliberately don't import it here
+    to avoid a circular dependency, and the heuristic only has to be
+    close enough that downstream prompts and reports can group paragraphs
+    by section. False positives are harmless — they shift the section
+    boundary by one paragraph.
+    """
+    stripped = (text or "").strip()
+    if not stripped or len(stripped) > 80:
+        return False
+    # "PART 1 GENERAL" / "SECTION 23 05 23" — explicit headings.
+    upper = stripped.upper()
+    if upper.startswith("PART ") or upper.startswith("SECTION "):
+        return True
+    # "1.01 SUMMARY" / "2.3.A …" — numbered CSI subheadings.
+    first_token = stripped.split(maxsplit=1)[0]
+    if first_token and first_token[0].isdigit() and any(
+        ch == "." for ch in first_token
+    ):
+        return True
+    return False
 
 
 def _summarize_paragraph_formatting(paragraph: Paragraph) -> tuple[int, int]:
@@ -90,6 +151,11 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     paragraphs: list[str] = []
     paragraph_map: list[ParagraphMapping] = []
     table_counter = 0
+    # Chunk K1: track the most recently seen heading paragraph so each
+    # element below it can carry a ``section_id``. Reset to empty when the
+    # extractor crosses a top-level "PART ..." boundary so subsequent
+    # subheadings nest under the right ancestor.
+    current_section: str = ""
 
     for body_index, child in enumerate(doc.element.body):
         if child.tag.endswith("}p"):
@@ -98,6 +164,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             if text:
                 paragraphs.append(text)
                 run_count, distinct_fmt = _summarize_paragraph_formatting(para)
+                if _is_heading_paragraph(text):
+                    current_section = text
                 paragraph_map.append(
                     ParagraphMapping(
                         body_index=body_index,
@@ -108,6 +176,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                         cell_index=None,
                         run_count=run_count,
                         distinct_formatting_runs=distinct_fmt,
+                        element_id=f"p{body_index}",
+                        section_id=current_section,
                     )
                 )
         elif child.tag.endswith("}tbl"):
@@ -125,6 +195,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                             table_index=table_counter,
                             row_index=row_index,
                             cell_index=None,
+                            element_id=f"t{table_counter}r{row_index}",
+                            section_id=current_section,
                         )
                     )
             table_counter += 1
@@ -132,11 +204,12 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     header_footer_entries: list[ParagraphMapping] = []
     for section_index, section in enumerate(doc.sections):
         for container_name, container in (("header", section.header), ("footer", section.footer)):
-            for para in container.paragraphs:
+            for para_index, para in enumerate(container.paragraphs):
                 text = para.text.strip()
                 if not text:
                     continue
                 prefixed = f"[{container_name.title()}] {text}"
+                container_tag = "h" if container_name == "header" else "f"
                 header_footer_entries.append(
                     ParagraphMapping(
                         body_index=-1,
@@ -147,6 +220,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                         cell_index=None,
                         section_index=section_index,
                         container_type=container_name,
+                        element_id=f"s{section_index}{container_tag}{para_index}",
+                        section_id="",
                     )
                 )
 
@@ -162,6 +237,8 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                 cell_index=None,
                 section_index=None,
                 container_type="header_footer",
+                element_id="meta:hf",
+                section_id="",
             )
         )
         paragraph_map.extend(header_footer_entries)
@@ -185,6 +262,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         source_path=str(filepath),
         source_format="docx",
         paragraph_map=paragraph_map,
+        document_id=_derive_document_id(filepath.name),
     )
 
 

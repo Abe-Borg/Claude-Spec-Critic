@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from typing import TYPE_CHECKING
+
 from .edit_locator import locate_edits
 from .extractor import ExtractedSpec, extract_text_from_docx
 from .reviewer import Finding
@@ -18,6 +20,9 @@ from .spec_editor import (
     apply_edits_to_spec,
     build_edit_actions,
 )
+
+if TYPE_CHECKING:
+    from .diagnostics import DiagnosticsReport
 
 
 def _ensure_paragraph_maps(specs: list[ExtractedSpec], source_paths: list[Path]) -> list[ExtractedSpec]:
@@ -85,6 +90,7 @@ def execute_edit_plan(
     *,
     log: Callable[[str], None] = lambda _: None,
     mode: str = "edit",
+    diagnostics: "DiagnosticsReport | None" = None,
 ) -> list[EditReport]:
     """Run locate -> action build -> apply workflow for selected findings.
 
@@ -158,6 +164,23 @@ def execute_edit_plan(
                 log(f"[{filename}] Finding #{original_index} matched multiple locations; skipped — review and apply manually.")
             if locator_result.warning:
                 log(f"[{filename}] Finding #{original_index} warning: {locator_result.warning}")
+            # Chunk K5: record locator-method telemetry and surface a
+            # human-readable trace for id-based matches so a future
+            # debugging session can grep the logs for "via id=" and tell
+            # which findings carried evidence pointers.
+            if locator_result.locations:
+                best = max(
+                    locator_result.locations,
+                    key=lambda loc: loc.match_confidence,
+                )
+                if diagnostics is not None:
+                    diagnostics.record_locator_method(best.match_method)
+                if best.match_method == "id":
+                    log(
+                        f"[{filename}] Finding #{original_index} located via "
+                        f"id={best.mapping.element_id!r} "
+                        f"(body_index={best.mapping.body_index})."
+                    )
 
         # Annotate mode is intentionally permissive about which actions it
         # accepts: even MANUAL_REVIEW / ambiguous candidates can produce a

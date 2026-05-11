@@ -83,6 +83,12 @@ class Finding:
     # instead of falling back to brittle prefix/suffix text heuristics.
     anchorText: str | None = None
     insertPosition: str | None = None  # "before" | "after" | None
+    # Chunk K3 / plan section "Stable Document IDs": optional pointer to
+    # the paragraph / row / heading id (see ``ParagraphMapping.element_id``).
+    # The locator prefers this id when it is non-empty and revalidates the
+    # exact-text quote against the live element before applying any edit.
+    # Empty string is the legacy fallback path (text-based matching).
+    evidenceElementId: str | None = None
 
 
 @dataclass
@@ -224,6 +230,14 @@ def _parse_findings(data: list) -> list[Finding]:
         position = str(position_raw).strip().lower() if position_raw is not None else None
         if position not in {"before", "after"}:
             position = None
+        # Chunk K3: ``evidenceElementId`` is optional. Normalize to None on
+        # empty / null so downstream "id is truthy" checks remain simple.
+        evidence_raw = item.get("evidenceElementId")
+        evidence_id: str | None
+        if evidence_raw is None:
+            evidence_id = None
+        else:
+            evidence_id = str(evidence_raw).strip() or None
         findings.append(Finding(
             severity=sev,
             fileName=str(item.get("fileName") or "").strip(),
@@ -236,6 +250,7 @@ def _parse_findings(data: list) -> list[Finding]:
             confidence=confidence,
             anchorText=anchor_text,
             insertPosition=position,
+            evidenceElementId=evidence_id,
         ))
     return findings
 
@@ -360,12 +375,39 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
     return result
 
 
-def review_single_spec(spec_content: str, filename: str, *, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE) -> ReviewResult:
+def review_single_spec(
+    spec_content: str,
+    filename: str,
+    *,
+    project_context: str = "",
+    model: str = REVIEW_MODEL_DEFAULT,
+    max_retries: int = 3,
+    verbose: bool = False,
+    stream_callback: Optional[StreamCallback] = None,
+    cycle: CodeCycle = DEFAULT_CYCLE,
+    mode: ReviewMode = DEFAULT_REVIEW_MODE,
+    paragraph_map=None,
+) -> ReviewResult:
+    """Stream a real-time review for one spec.
+
+    Chunk K2: callers that have an ``ExtractedSpec`` should forward its
+    ``paragraph_map`` so the model sees element ids alongside the spec
+    text. Legacy callers (a raw ``spec_content`` string) keep working
+    unchanged because the prompt builder falls back to the plain-body
+    rendering when no map is provided.
+    """
     client = _get_client()
     return _stream_review(
         client,
         get_system_prompt(cycle, mode=mode),
-        get_single_spec_user_message(spec_content, filename, project_context=project_context, cycle=cycle, mode=mode),
+        get_single_spec_user_message(
+            spec_content,
+            filename,
+            project_context=project_context,
+            cycle=cycle,
+            mode=mode,
+            paragraph_map=paragraph_map,
+        ),
         model=model,
         max_retries=max_retries,
         verbose=verbose,
