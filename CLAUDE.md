@@ -157,7 +157,7 @@ Carry `review_mode: str` so resume restores the exact prompt path.
 **Public API:**
 - Model identifiers: `MODEL_OPUS_46`, `MODEL_OPUS_47`, `MODEL_SONNET_46`, `MODEL_HAIKU_45`
 - Defaults: `REVIEW_MODEL_DEFAULT` (Opus 4.7), `CROSS_CHECK_MODEL_DEFAULT` (Opus 4.7), `VERIFICATION_MODEL_DEFAULT` (Sonnet 4.6 by default), `VERIFICATION_ESCALATION_MODEL` (Opus 4.7), `SYNTHESIS_MODEL_DEFAULT` (Haiku 4.5), `TRIAGE_MODEL_DEFAULT` (Haiku 4.5)
-- Output caps: `review_max_tokens()`, `cross_check_max_tokens()`, `verification_max_tokens()`, `synthesis_max_tokens()`, `triage_max_tokens()`, `output_cap_for_model()`, `assert_extended_output_allowed()`
+- Output caps: `review_max_tokens()`, `cross_check_max_tokens()`, `verification_max_tokens(model, *, phase=PHASE_VERIFICATION)`, `synthesis_max_tokens()`, `triage_max_tokens()`, `output_cap_for_model()`, `phase_output_cap(phase, *, model)` (centralized phase→budget registry; every helper routes through it), `assert_extended_output_allowed()`
 - Model capability policy (Chunk B): `ModelCapabilities` frozen dataclass, `model_capabilities(model)`, `model_supports_adaptive_thinking(model)`, `thinking_config_for(*, model, phase)`, `apply_thinking_config(kwargs, *, model, phase)`. Whitelist registry covers Opus 4.6/4.7, Sonnet 4.6, Haiku 4.5; unknown models fall back to safe defaults that disable every capability flag. The `thinking` request key is added only when both the model supports adaptive thinking and the phase is not in the opt-out set. Phase identifiers: `PHASE_REVIEW`, `PHASE_BATCH_REVIEW`, `PHASE_CROSS_CHECK`, `PHASE_SYNTHESIS`, `PHASE_VERIFICATION`, `PHASE_VERIFICATION_RETRY`, `PHASE_VERIFICATION_CONTINUATION`, `PHASE_TRIAGE`.
 - Prompt caching: `prompt_caching_enabled()`, `system_prompt_with_cache()`, `tools_with_cache()`, `extract_cache_usage()`
 - Token counting: `token_count_preflight_enabled()` (default on)
@@ -282,6 +282,7 @@ Helpers:
 
 - `count_tokens(text)` — local cl100k_base
 - `count_tokens_via_api(model, system, messages, *, client=None)` — Anthropic exact (`None` on failure)
+- Chunk E — model-aware fallback gate: `local_estimate_safety_factor(model)` returns a model-specific multiplier (Opus/Sonnet 1.10×, Haiku 1.15×, unknown/None 1.20×) applied to cl100k counts when the exact API count is unavailable. `safe_local_estimate(local_tokens, *, model)` rounds the padded estimate up; `exceeds_per_call_limit_for_model(spec_tokens, overhead_tokens, *, model)` is the model-aware version of `exceeds_per_call_limit`. The exact Anthropic count remains authoritative when available — these helpers only run on the fallback path. The pipeline preflight (`_prepare_specs`) now (a) uses the selected model for `count_tokens_via_api` instead of hard-coding Opus, and (b) raises `ValueError` when the exact count exceeds `RECOMMENDED_MAX` (previously it only logged a warning while the cl100k count was the only hard gate).
 
 Constants:
 - `MAX_CONTEXT_TOKENS = 1_000_000`

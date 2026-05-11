@@ -1041,9 +1041,12 @@ def _build_retry_request(
     system_prompt = _get_verification_system_prompt(
         cycle, include_verdict_tool=include_verdict_tool
     )
+    # Chunk E directive 6: route the retry budget through the centralized
+    # phase registry so a future tuning pass can give retries a different
+    # cap from the initial verification call by touching one map.
     request: dict = {
         "model": selected,
-        "max_tokens": verification_max_tokens(model=selected),
+        "max_tokens": verification_max_tokens(model=selected, phase=PHASE_VERIFICATION_RETRY),
         "system": system_prompt_with_cache(system_prompt),
         "tools": tools_with_cache(tool_list),
         "messages": [{"role": "user", "content": prompt}],
@@ -1069,9 +1072,12 @@ def _build_continuation_request(
     system_prompt = _get_verification_system_prompt(
         cycle, include_verdict_tool=include_verdict_tool
     )
+    # Chunk E directive 6: tag this call site with the continuation phase
+    # so the phase registry owns the cap. Today retry and continuation
+    # share the verification cap; the parameter keeps the lever available.
     request: dict = {
         "model": selected,
-        "max_tokens": verification_max_tokens(model=selected),
+        "max_tokens": verification_max_tokens(model=selected, phase=PHASE_VERIFICATION_CONTINUATION),
         "system": system_prompt_with_cache(system_prompt),
         "tools": tools_with_cache(tool_list),
         "messages": [

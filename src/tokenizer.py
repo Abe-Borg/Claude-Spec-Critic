@@ -79,8 +79,80 @@ CROSS_CHECK_RECOMMENDED_MAX = (
 
 
 def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
-    """Check if a single spec would exceed the per-call token limit."""
+    """Check if a single spec would exceed the per-call token limit.
+
+    Backward-compatible wrapper: no safety factor applied. New code that
+    needs model-aware behavior should call
+    :func:`exceeds_per_call_limit_for_model` instead.
+    """
     return (overhead_tokens + spec_tokens) > RECOMMENDED_MAX
+
+
+# ---------------------------------------------------------------------------
+# Model-specific safety multipliers for the local cl100k_base estimate
+# ---------------------------------------------------------------------------
+#
+# cl100k_base is OpenAI's tokenizer and does not exactly match Claude's
+# tokenization. The undercount is usually modest for English prose
+# (≤10%) but can be larger for structured spec text full of section
+# numbers, table cells, and unicode punctuation. Without a safety factor
+# the local estimate looks reassuring even when the real Claude count
+# would breach the per-call budget — directive 4 of Chunk E calls this
+# out as "local tokenizer estimates no longer create false confidence."
+#
+# The multipliers below are intentionally conservative. They are only
+# consulted on the fallback path when the Anthropic ``count_tokens``
+# endpoint is unavailable; once we have an exact count, that becomes
+# the authoritative gate (directive 3).
+_DEFAULT_LOCAL_SAFETY_FACTOR = 1.20  # unknown models — widest margin
+_LOCAL_SAFETY_FACTORS: dict[str, float] = {
+    # Opus / Sonnet share Claude's main tokenizer; the cl100k_base
+    # undercount is small but non-zero.
+    "claude-opus-4-6": 1.10,
+    "claude-opus-4-7": 1.10,
+    "claude-sonnet-4-6": 1.10,
+    # Haiku 4.5 tokenization tends to undercount cl100k a bit more on
+    # structured construction-spec text in practice. Pad more.
+    "claude-haiku-4-5": 1.15,
+}
+
+
+def local_estimate_safety_factor(model: str | None) -> float:
+    """Return the cl100k→Claude safety multiplier for ``model``.
+
+    The factor is a conservative multiplier ≥ 1.0 applied to the local
+    cl100k_base count whenever it is used as a budget gate. Unknown
+    models fall back to ``_DEFAULT_LOCAL_SAFETY_FACTOR`` (the widest
+    margin) so a future model never silently sails through a budget
+    check that would have been blocked under a known model.
+    """
+    return _LOCAL_SAFETY_FACTORS.get(model or "", _DEFAULT_LOCAL_SAFETY_FACTOR)
+
+
+def safe_local_estimate(local_tokens: int, *, model: str | None) -> int:
+    """Return ``local_tokens`` padded by the model-specific safety factor."""
+    factor = local_estimate_safety_factor(model)
+    # Round up — the factor is a safety margin, not a midpoint estimate.
+    return int(round(local_tokens * factor + 0.5))
+
+
+def exceeds_per_call_limit_for_model(
+    spec_tokens: int,
+    overhead_tokens: int,
+    *,
+    model: str | None,
+) -> bool:
+    """Model-aware version of :func:`exceeds_per_call_limit`.
+
+    Applies the model-specific safety factor to ``spec_tokens + overhead``
+    before comparing against ``RECOMMENDED_MAX``. Use this when the local
+    cl100k_base count is the only signal available (e.g. the API preflight
+    failed or was disabled). When an exact Anthropic count is available,
+    bypass this helper and compare the exact count directly to
+    ``RECOMMENDED_MAX`` — the exact number is authoritative (directive 3).
+    """
+    padded = safe_local_estimate(overhead_tokens + spec_tokens, model=model)
+    return padded > RECOMMENDED_MAX
 
 
 def get_encoder():
