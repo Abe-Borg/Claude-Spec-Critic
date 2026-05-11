@@ -31,6 +31,7 @@ from .api_config import (
     PHASE_VERIFICATION_RETRY,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
+    apply_effort_config,
     apply_thinking_config,
     extract_cache_usage,
     system_prompt_with_cache,
@@ -979,6 +980,12 @@ def _run_verification_call(
     }
     if policy.thinking_enabled:
         apply_thinking_config(stream_kwargs, model=model, phase=PHASE_VERIFICATION)
+    # Chunk D1.2: pair the effort policy with the thinking config. The
+    # effort lookup is model-aware: Sonnet on the initial pass receives
+    # ``medium`` and Opus on the escalation pass receives ``high``. The
+    # helper omits ``output_config`` for models that do not support it
+    # so a future Haiku-based verification mode would not break.
+    apply_effort_config(stream_kwargs, model=model, phase=PHASE_VERIFICATION)
 
     for attempt in range(max_retries + 1):
         try:
@@ -1301,6 +1308,10 @@ def _build_retry_request(
         "messages": [{"role": "user", "content": prompt}],
     }
     apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_RETRY)
+    # Chunk D1.2: retry waves reuse the verification-phase effort default
+    # so the retry request shape matches the initial wave on supported
+    # models.
+    apply_effort_config(request, model=selected, phase=PHASE_VERIFICATION_RETRY)
     return request
 
 
@@ -1354,6 +1365,12 @@ def _build_continuation_request(
         ],
     }
     apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_CONTINUATION)
+    # Chunk D1.2: continuations reuse the verification-phase effort default
+    # so the resumed request shape matches the original. Per D1.1, the
+    # resumed call carries the assistant content back as-is — pairing the
+    # effort policy here means the resumed request also keeps its effort
+    # tag instead of silently dropping back to the API default.
+    apply_effort_config(request, model=selected, phase=PHASE_VERIFICATION_CONTINUATION)
     return request
 
 

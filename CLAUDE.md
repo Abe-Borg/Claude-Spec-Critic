@@ -489,6 +489,8 @@ A blocked-domain list filters social/AI-assistant/forum/general-encyclopedia sou
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override cache path |
 | `SPEC_CRITIC_EXTRACTION_CACHE` | `1` | `0` disables file-extraction cache |
 | `SPEC_CRITIC_ELEMENT_IDS` | `1` | Chunk K2 — `0` reverts spec rendering to the legacy plain-body `<spec>` wrapper (no id-tagged `<para>`/`<row>`/`<heading>` elements). Default on; flip to `0` to roll back the id-tagged path without redeploying. |
+| `SPEC_CRITIC_EFFORT_POLICY` | `1` | Chunk D1.2 — `0` disables the `output_config.effort` policy globally so requests omit the field. Use as a quick rollback if a future model regresses. |
+| `SPEC_CRITIC_EFFORT_OVERRIDE` | (empty) | Chunk D1.2 — when set, forces every effort-capable request to use the given level (`low` / `medium` / `high` / `xhigh`). Invalid values raise at request-build time. |
 
 ---
 

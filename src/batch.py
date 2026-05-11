@@ -22,6 +22,7 @@ from .api_config import (
     PHASE_VERIFICATION,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     WEB_SEARCH_TOOL,
+    apply_effort_config,
     apply_thinking_config,
     assert_extended_output_allowed,
     batch_service_tier,
@@ -151,6 +152,11 @@ def submit_review_batch(
             "messages": [{"role": "user", "content": user_message}],
         }
         apply_thinking_config(params, model=model, phase=PHASE_BATCH_REVIEW)
+        # Chunk D1.2: pair the effort policy with the thinking config so
+        # batch review requests carry ``output_config.effort=high`` on
+        # supported models. ``apply_effort_config`` omits the field on
+        # Haiku / unknown models.
+        apply_effort_config(params, model=model, phase=PHASE_BATCH_REVIEW)
         tier = batch_service_tier()
         if tier:
             params["service_tier"] = tier
@@ -400,6 +406,11 @@ def _build_verification_request_params(
         "messages": messages,
     }
     apply_thinking_config(params, model=selected_model, phase=PHASE_VERIFICATION)
+    # Chunk D1.2: pair effort with thinking so batch verification requests
+    # carry the verification-phase effort default (``medium`` for Sonnet,
+    # ``high`` for Opus escalation). The helper omits the field for
+    # Haiku / unknown models.
+    apply_effort_config(params, model=selected_model, phase=PHASE_VERIFICATION)
     tier = batch_service_tier()
     if tier:
         params["service_tier"] = tier

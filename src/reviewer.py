@@ -21,6 +21,7 @@ from .api_config import (
     MODEL_OPUS_47,
     PHASE_REVIEW,
     REVIEW_MODEL_DEFAULT,
+    apply_effort_config,
     apply_thinking_config,
     extract_cache_usage,
     review_max_tokens,
@@ -464,6 +465,9 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
         "messages": [{"role": "user", "content": user_message}],
     }
     apply_thinking_config(request_kwargs, model=model, phase=PHASE_REVIEW)
+    # Chunk D1.2: pair the effort policy with the thinking config so the
+    # request shape carries both controls when the model supports them.
+    apply_effort_config(request_kwargs, model=model, phase=PHASE_REVIEW)
     if use_structured:
         request_kwargs["tools"] = [review_findings_tool()]
         request_kwargs["tool_choice"] = review_tool_choice()

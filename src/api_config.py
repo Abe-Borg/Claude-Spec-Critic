@@ -284,6 +284,12 @@ class ModelCapabilities:
     max_output_tokens: int
     supports_extended_output_beta: bool  # 300k batch-only beta header
     context_window: int
+    # Chunk D1.2: whether the model accepts ``output_config.effort``. The
+    # parameter controls token eagerness and tool-call behavior. Sending
+    # it to an unsupported model returns an API error, so the policy in
+    # :func:`effort_config_for` must consult this flag before attaching
+    # the field. Default ``False`` so unknown models silently omit it.
+    supports_effort: bool = False
 
 
 _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
@@ -292,18 +298,21 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
         supports_extended_output_beta=True,
         context_window=1_000_000,
+        supports_effort=True,
     ),
     MODEL_OPUS_47: ModelCapabilities(
         supports_adaptive_thinking=True,
         max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
         supports_extended_output_beta=True,
         context_window=1_000_000,
+        supports_effort=True,
     ),
     MODEL_SONNET_46: ModelCapabilities(
         supports_adaptive_thinking=True,
         max_output_tokens=MAX_OUTPUT_TOKENS_SONNET,
         supports_extended_output_beta=False,
         context_window=1_000_000,
+        supports_effort=True,
     ),
     MODEL_HAIKU_45: ModelCapabilities(
         # Anthropic models overview lists Haiku 4.5 without adaptive
@@ -312,6 +321,10 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         max_output_tokens=MAX_OUTPUT_TOKENS_HAIKU,
         supports_extended_output_beta=False,
         context_window=200_000,
+        # The Anthropic effort docs list Haiku 4.5 without effort support.
+        # Omit ``output_config.effort`` for Haiku to keep request shapes
+        # safe across model swaps (e.g. triage / synthesis).
+        supports_effort=False,
     ),
 }
 
@@ -325,6 +338,7 @@ _DEFAULT_CAPABILITIES = ModelCapabilities(
     max_output_tokens=MAX_OUTPUT_TOKENS_SONNET,
     supports_extended_output_beta=False,
     context_window=200_000,
+    supports_effort=False,
 )
 
 
@@ -336,6 +350,17 @@ def model_capabilities(model: str) -> ModelCapabilities:
 def model_supports_adaptive_thinking(model: str) -> bool:
     """Whether ``model`` accepts the ``thinking`` request parameter."""
     return model_capabilities(model).supports_adaptive_thinking
+
+
+def model_supports_effort(model: str) -> bool:
+    """Whether ``model`` accepts the ``output_config.effort`` parameter.
+
+    Chunk D1.2: callers MUST check this before attaching
+    ``output_config={"effort": ...}`` to a request. Unsupported models
+    (Haiku 4.5, unknown / future models) silently omit the field — the
+    field is opt-in per model, so omitting it is always safe.
+    """
+    return model_capabilities(model).supports_effort
 
 
 # Phase identifiers (declared above so the phase→budget registry can use
@@ -371,6 +396,156 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
     config = thinking_config_for(model=model, phase=phase)
     if config is not None:
         kwargs["thinking"] = config
+    return kwargs
+
+
+# ---------------------------------------------------------------------------
+# Output-config effort policy (Chunk D1.2)
+# ---------------------------------------------------------------------------
+#
+# The Anthropic API accepts an ``output_config.effort`` parameter on
+# supported models. The value tunes how eagerly the model produces tokens
+# and how aggressively it pursues tool calls. The four documented levels
+# are ``low`` / ``medium`` / ``high`` / ``xhigh`` (plus ``max``); we don't
+# use ``max`` because it overshoots the verification verdict envelope.
+#
+# Effort is a request-policy decision, not a prompt one. Centralizing it
+# here keeps every request site (review / batch review / cross-check /
+# verification / retry / continuation) reaching for the same lever via
+# :func:`apply_effort_config`. Unsupported models silently omit the
+# parameter via :func:`model_supports_effort`.
+#
+# Default policy:
+#
+# - Sonnet verification (PHASE_VERIFICATION{,_RETRY,_CONTINUATION}): medium.
+# - Opus verification (i.e. escalation): high.
+# - Opus/Sonnet deep review (PHASE_REVIEW, PHASE_BATCH_REVIEW,
+#   PHASE_CROSS_CHECK): high.
+# - Synthesis / triage (Haiku): omit (Haiku does not support effort).
+# - Unknown model: omit.
+#
+# Operators can override the policy globally with
+# ``SPEC_CRITIC_EFFORT_OVERRIDE``. Invalid values fail fast at request-
+# build time so a typo cannot silently disable the policy.
+
+EFFORT_LOW = "low"
+EFFORT_MEDIUM = "medium"
+EFFORT_HIGH = "high"
+EFFORT_XHIGH = "xhigh"
+
+_VALID_EFFORT_LEVELS: frozenset[str] = frozenset(
+    {EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH}
+)
+
+# Phases whose request paths route through ``output_config.effort``.
+# Synthesis and triage are intentionally omitted — both default to Haiku
+# which does not support effort, and even on a hypothetical migration to
+# a supporting model the workloads are small classification passes that
+# do not benefit from elevated effort.
+_PHASE_DEFAULT_EFFORT: dict[str, str] = {
+    PHASE_REVIEW: EFFORT_HIGH,
+    PHASE_BATCH_REVIEW: EFFORT_HIGH,
+    PHASE_CROSS_CHECK: EFFORT_HIGH,
+    PHASE_VERIFICATION: EFFORT_MEDIUM,
+    PHASE_VERIFICATION_RETRY: EFFORT_MEDIUM,
+    PHASE_VERIFICATION_CONTINUATION: EFFORT_MEDIUM,
+}
+
+# Verification phases get the model-aware bump: Opus on verification is
+# always the escalation tier, so the policy lifts effort to ``high``.
+_VERIFICATION_PHASES: frozenset[str] = frozenset(
+    {
+        PHASE_VERIFICATION,
+        PHASE_VERIFICATION_RETRY,
+        PHASE_VERIFICATION_CONTINUATION,
+    }
+)
+
+
+def effort_policy_enabled() -> bool:
+    """Whether to attach ``output_config.effort`` to requests.
+
+    Default on. Set ``SPEC_CRITIC_EFFORT_POLICY=0`` to omit the field
+    everywhere — useful as a quick rollback if a future model regresses
+    on the parameter.
+    """
+    return os.environ.get("SPEC_CRITIC_EFFORT_POLICY", "1") != "0"
+
+
+def _validated_effort_override() -> str | None:
+    """Return a validated env override for the effort level (or ``None``).
+
+    Raises ``ValueError`` for invalid values so the failure surfaces at
+    request-build time rather than via a 400 from the Anthropic API.
+    """
+    raw = os.environ.get("SPEC_CRITIC_EFFORT_OVERRIDE", "").strip().lower()
+    if not raw:
+        return None
+    if raw not in _VALID_EFFORT_LEVELS:
+        raise ValueError(
+            f"SPEC_CRITIC_EFFORT_OVERRIDE='{raw}' is not one of "
+            f"{sorted(_VALID_EFFORT_LEVELS)}"
+        )
+    return raw
+
+
+def effort_config_for(*, model: str, phase: str) -> dict | None:
+    """Return the ``output_config`` dict for ``(model, phase)``, or ``None``.
+
+    Returns ``None`` (i.e. "omit the field") when:
+
+    - the global policy is disabled,
+    - the model does not support effort (Haiku, unknown / future models),
+    - the phase has no registered default (synthesis, triage — both
+      default to Haiku, which already short-circuits above).
+
+    Otherwise returns ``{"effort": <level>}`` where the level is:
+
+    - the env override when ``SPEC_CRITIC_EFFORT_OVERRIDE`` is set,
+    - ``high`` for Opus on a verification phase (the escalation tier),
+    - the phase default from :data:`_PHASE_DEFAULT_EFFORT` otherwise.
+
+    The model-aware bump for Opus + verification is the directive-3
+    behavior: "Opus escalation default: high or xhigh".
+    """
+    if not effort_policy_enabled():
+        return None
+    if not model_supports_effort(model):
+        return None
+
+    override = _validated_effort_override()
+    if override is not None:
+        return {"effort": override}
+
+    if phase in _VERIFICATION_PHASES:
+        # Opus on a verification phase is the escalation tier — every
+        # initial verification call routes to Sonnet by default. The
+        # ``high`` bump matches the directive's "Opus escalation default".
+        if model in OPUS_MODELS:
+            return {"effort": EFFORT_HIGH}
+        # Sonnet verification default per the directive.
+        return {"effort": EFFORT_MEDIUM}
+
+    level = _PHASE_DEFAULT_EFFORT.get(phase)
+    if level is None:
+        return None
+    return {"effort": level}
+
+
+def apply_effort_config(kwargs: dict, *, model: str, phase: str) -> dict:
+    """Insert ``output_config`` into ``kwargs`` only when applicable.
+
+    Mutates and returns ``kwargs`` for fluent use. The key is omitted
+    entirely (not set to ``None``) when effort is not applicable, because
+    the Anthropic API rejects ``output_config=null``.
+
+    Mirrors :func:`apply_thinking_config` so request builders pair the
+    two helpers the same way per directive 4 ("Pair effort decisions
+    with thinking decisions where appropriate").
+    """
+    config = effort_config_for(model=model, phase=phase)
+    if config is not None:
+        kwargs["output_config"] = config
     return kwargs
 
 

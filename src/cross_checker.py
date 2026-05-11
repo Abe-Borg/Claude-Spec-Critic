@@ -32,6 +32,7 @@ from .api_config import (
     PHASE_CROSS_CHECK,
     PHASE_SYNTHESIS,
     SYNTHESIS_MODEL_DEFAULT,
+    apply_effort_config,
     apply_thinking_config,
     cross_check_max_tokens,
     extract_cache_usage,
@@ -239,6 +240,10 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
         "messages": [{"role": "user", "content": user_message}],
     }
     apply_thinking_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
+    # Chunk D1.2: pair the effort policy with the thinking config so the
+    # cross-check request includes ``output_config.effort`` on models
+    # that support it (Opus / Sonnet — both standard cross-check models).
+    apply_effort_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
     if use_structured:
         # Chunk J: cross-check tools cache under the cross_check phase
         # policy. Today this is the global default (cache=on, ttl=1h);

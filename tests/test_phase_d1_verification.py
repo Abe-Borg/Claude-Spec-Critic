@@ -248,3 +248,419 @@ class TestPauseTurnContinuationSemantics:
         resumed = captured_messages[1]
         assert resumed[1]["role"] == "assistant"
         assert resumed[1]["content"] is pause_content
+
+
+# ===========================================================================
+# Chunk D1.2 — model-aware output_config.effort policy
+# ===========================================================================
+
+
+class TestEffortConfigForHelper:
+    """Unit-level coverage for the centralized policy helper. The request-
+    shape tests below assert that wiring delivers the same answers."""
+
+    def test_sonnet_verification_default_is_medium(self):
+        from src.api_config import (
+            MODEL_SONNET_46,
+            PHASE_VERIFICATION,
+            effort_config_for,
+        )
+
+        cfg = effort_config_for(model=MODEL_SONNET_46, phase=PHASE_VERIFICATION)
+        assert cfg == {"effort": "medium"}
+
+    def test_opus_verification_is_high_for_escalation(self):
+        from src.api_config import (
+            MODEL_OPUS_47,
+            PHASE_VERIFICATION,
+            effort_config_for,
+        )
+
+        cfg = effort_config_for(model=MODEL_OPUS_47, phase=PHASE_VERIFICATION)
+        assert cfg == {"effort": "high"}
+
+    def test_review_phase_uses_high(self):
+        from src.api_config import (
+            MODEL_OPUS_47,
+            PHASE_REVIEW,
+            effort_config_for,
+        )
+
+        assert effort_config_for(model=MODEL_OPUS_47, phase=PHASE_REVIEW) == {
+            "effort": "high"
+        }
+
+    def test_batch_review_phase_uses_high(self):
+        from src.api_config import (
+            MODEL_OPUS_47,
+            PHASE_BATCH_REVIEW,
+            effort_config_for,
+        )
+
+        assert effort_config_for(model=MODEL_OPUS_47, phase=PHASE_BATCH_REVIEW) == {
+            "effort": "high"
+        }
+
+    def test_cross_check_phase_uses_high(self):
+        from src.api_config import (
+            MODEL_OPUS_47,
+            PHASE_CROSS_CHECK,
+            effort_config_for,
+        )
+
+        assert effort_config_for(model=MODEL_OPUS_47, phase=PHASE_CROSS_CHECK) == {
+            "effort": "high"
+        }
+
+    def test_haiku_models_omit_effort(self):
+        """Directive: do not pass effort to Haiku."""
+        from src.api_config import (
+            MODEL_HAIKU_45,
+            PHASE_TRIAGE,
+            PHASE_SYNTHESIS,
+            PHASE_VERIFICATION,
+            effort_config_for,
+        )
+
+        assert effort_config_for(model=MODEL_HAIKU_45, phase=PHASE_TRIAGE) is None
+        assert effort_config_for(model=MODEL_HAIKU_45, phase=PHASE_SYNTHESIS) is None
+        # Even if a future code path pointed Haiku at the verification
+        # phase, the per-model capability flag must short-circuit.
+        assert (
+            effort_config_for(model=MODEL_HAIKU_45, phase=PHASE_VERIFICATION) is None
+        )
+
+    def test_unknown_model_omits_effort(self):
+        """Directive 1: whitelist of models that support effort."""
+        from src.api_config import (
+            PHASE_REVIEW,
+            PHASE_VERIFICATION,
+            effort_config_for,
+        )
+
+        assert effort_config_for(model="future-fancy-model", phase=PHASE_REVIEW) is None
+        assert (
+            effort_config_for(model="future-fancy-model", phase=PHASE_VERIFICATION)
+            is None
+        )
+
+    def test_synthesis_and_triage_omit_effort_even_on_supporting_model(self):
+        """Synthesis / triage are intentionally not in the phase effort map.
+        Even if an operator overrides those phases to Opus / Sonnet (which
+        the capability flag does permit), the policy still omits effort
+        because the workloads are small classification passes."""
+        from src.api_config import (
+            MODEL_OPUS_47,
+            PHASE_SYNTHESIS,
+            PHASE_TRIAGE,
+            effort_config_for,
+        )
+
+        assert effort_config_for(model=MODEL_OPUS_47, phase=PHASE_SYNTHESIS) is None
+        assert effort_config_for(model=MODEL_OPUS_47, phase=PHASE_TRIAGE) is None
+
+    def test_env_disable_flag_omits_effort_everywhere(self, monkeypatch):
+        from src.api_config import (
+            MODEL_OPUS_47,
+            MODEL_SONNET_46,
+            PHASE_REVIEW,
+            PHASE_VERIFICATION,
+            effort_config_for,
+        )
+
+        monkeypatch.setenv("SPEC_CRITIC_EFFORT_POLICY", "0")
+        assert effort_config_for(model=MODEL_OPUS_47, phase=PHASE_REVIEW) is None
+        assert (
+            effort_config_for(model=MODEL_SONNET_46, phase=PHASE_VERIFICATION) is None
+        )
+
+    def test_env_override_forces_level(self, monkeypatch):
+        from src.api_config import (
+            MODEL_OPUS_47,
+            PHASE_VERIFICATION,
+            effort_config_for,
+        )
+
+        monkeypatch.setenv("SPEC_CRITIC_EFFORT_OVERRIDE", "low")
+        # Even though Opus on verification would normally bump to "high",
+        # the override wins.
+        assert effort_config_for(model=MODEL_OPUS_47, phase=PHASE_VERIFICATION) == {
+            "effort": "low"
+        }
+
+    def test_env_override_invalid_value_raises(self, monkeypatch):
+        from src.api_config import (
+            MODEL_OPUS_47,
+            PHASE_VERIFICATION,
+            effort_config_for,
+        )
+
+        monkeypatch.setenv("SPEC_CRITIC_EFFORT_OVERRIDE", "bananas")
+        with pytest.raises(ValueError):
+            effort_config_for(model=MODEL_OPUS_47, phase=PHASE_VERIFICATION)
+
+    def test_unknown_model_with_override_still_omits(self, monkeypatch):
+        """Override only applies when the model supports effort. An override
+        on an unsupported model still omits the field — sending it would
+        return a 400 from the API."""
+        from src.api_config import PHASE_REVIEW, effort_config_for
+
+        monkeypatch.setenv("SPEC_CRITIC_EFFORT_OVERRIDE", "high")
+        assert effort_config_for(model="future-fancy-model", phase=PHASE_REVIEW) is None
+
+
+class TestApplyEffortConfig:
+    """``apply_effort_config`` mirrors ``apply_thinking_config``: it sets
+    the key only when applicable, and omits it entirely otherwise."""
+
+    def test_inserts_output_config_for_supported(self):
+        from src.api_config import (
+            MODEL_SONNET_46,
+            PHASE_VERIFICATION,
+            apply_effort_config,
+        )
+
+        kwargs: dict = {"model": MODEL_SONNET_46}
+        apply_effort_config(kwargs, model=MODEL_SONNET_46, phase=PHASE_VERIFICATION)
+        assert kwargs["output_config"] == {"effort": "medium"}
+
+    def test_omits_key_for_unsupported(self):
+        from src.api_config import (
+            MODEL_HAIKU_45,
+            PHASE_SYNTHESIS,
+            apply_effort_config,
+        )
+
+        kwargs: dict = {"model": MODEL_HAIKU_45}
+        apply_effort_config(kwargs, model=MODEL_HAIKU_45, phase=PHASE_SYNTHESIS)
+        assert "output_config" not in kwargs
+
+
+# ===========================================================================
+# Chunk D1.2 — request-shape wiring assertions
+# ===========================================================================
+#
+# Directive 5: tests assert the actual request payload shape, not just the
+# helper return values. The helpers below build the real request kwargs
+# that the production code would send to the Anthropic SDK.
+
+
+class TestEffortPolicyWiredIntoVerifierBuilders:
+    def test_retry_request_carries_effort_medium_on_sonnet(self):
+        from src.api_config import MODEL_SONNET_46
+        from src.verifier import _build_retry_request
+
+        req = _build_retry_request("prompt", cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46)
+        assert req.get("output_config") == {"effort": "medium"}
+
+    def test_retry_request_carries_effort_high_on_opus(self):
+        from src.api_config import MODEL_OPUS_47
+        from src.verifier import _build_retry_request
+
+        req = _build_retry_request("prompt", cycle=DEFAULT_CYCLE, model=MODEL_OPUS_47)
+        assert req.get("output_config") == {"effort": "high"}
+
+    def test_continuation_request_carries_effort(self):
+        from src.api_config import MODEL_SONNET_46
+        from src.verifier import _build_continuation_request
+
+        req = _build_continuation_request(
+            "prompt",
+            [{"type": "text", "text": "..."}],
+            cycle=DEFAULT_CYCLE,
+            model=MODEL_SONNET_46,
+        )
+        assert req.get("output_config") == {"effort": "medium"}
+
+
+class TestEffortPolicyWiredIntoBatchVerificationBuilder:
+    def test_batch_verification_request_carries_effort_medium_on_sonnet(self):
+        from src.api_config import MODEL_SONNET_46
+        from src.batch import _build_verification_request_params
+
+        params = _build_verification_request_params(
+            prompt="verify",
+            system_prompt="system",
+            model=MODEL_SONNET_46,
+            severity="HIGH",
+        )
+        assert params.get("output_config") == {"effort": "medium"}
+
+    def test_batch_verification_request_carries_effort_high_on_opus(self):
+        from src.api_config import MODEL_OPUS_47
+        from src.batch import _build_verification_request_params
+
+        params = _build_verification_request_params(
+            prompt="verify",
+            system_prompt="system",
+            model=MODEL_OPUS_47,
+            severity="HIGH",
+        )
+        assert params.get("output_config") == {"effort": "high"}
+
+    def test_disabled_globally_omits_field(self, monkeypatch):
+        from src.api_config import MODEL_SONNET_46
+        from src.batch import _build_verification_request_params
+
+        monkeypatch.setenv("SPEC_CRITIC_EFFORT_POLICY", "0")
+        params = _build_verification_request_params(
+            prompt="verify",
+            system_prompt="system",
+            model=MODEL_SONNET_46,
+            severity="HIGH",
+        )
+        assert "output_config" not in params
+
+
+class _InlineStreamCtx:
+    """Inline mini-version of the fake stream context. Used to keep the
+    D1.2 wiring tests self-contained — the broader ``FakeClient`` and
+    ``fake_client`` fixture live in ``test_request_payload_shape.py``
+    and are not exposed via ``conftest.py``."""
+
+    def __init__(self, final_message):
+        self._final = final_message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @property
+    def text_stream(self):
+        return iter([])
+
+    def get_final_message(self):
+        return self._final
+
+
+class _InlineFakeClient:
+    """Minimal stand-in capturing stream / batch kwargs."""
+
+    def __init__(self, next_message=None):
+        self.captured_stream: list[dict] = []
+        self.captured_batches: list[dict] = []
+        self._next_message = next_message
+
+    def queue(self, msg):
+        self._next_message = msg
+
+    class _MessagesNamespace:
+        def __init__(self, outer):
+            self._outer = outer
+
+        def stream(self, **kwargs):
+            self._outer.captured_stream.append(dict(kwargs))
+            return _InlineStreamCtx(self._outer._next_message)
+
+        @property
+        def batches(self):
+            return _InlineFakeClient._BatchesNamespace(self._outer)
+
+    class _BatchesNamespace:
+        def __init__(self, outer):
+            self._outer = outer
+
+        def create(self, **kwargs):
+            self._outer.captured_batches.append(dict(kwargs))
+            return SimpleNamespace(id="batch_fake_1")
+
+    @property
+    def messages(self):
+        return _InlineFakeClient._MessagesNamespace(self)
+
+
+@pytest.fixture
+def _patched_fake_count_tokens(monkeypatch):
+    def _fake_count(text):
+        return len((text or "").split()) * 2
+    monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
+    monkeypatch.setattr("src.batch.count_tokens", _fake_count)
+    monkeypatch.setattr("src.cross_checker.count_tokens", _fake_count)
+    monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
+
+
+class TestEffortPolicyWiredIntoBatchReview:
+    def test_batch_review_carries_effort_high_on_opus(
+        self, monkeypatch, _patched_fake_count_tokens
+    ):
+        from src.api_config import MODEL_OPUS_47, REVIEW_OUTPUT_CAP
+        from src.batch import submit_review_batch
+        from src import batch as batch_mod
+        from src.extractor import ExtractedSpec
+
+        client = _InlineFakeClient()
+        monkeypatch.setattr(batch_mod, "_get_client", lambda: client)
+
+        spec = ExtractedSpec(
+            filename="A.docx",
+            content="Spec body.",
+            word_count=2,
+            source_path="",
+            source_format="docx",
+            paragraph_map=None,
+        )
+        submit_review_batch([spec], model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE)
+        assert client.captured_batches
+        first_params = client.captured_batches[0]["requests"][0]["params"]
+        assert first_params.get("output_config") == {"effort": "high"}
+        # Sanity check on cap so the test fails noisily if wiring also
+        # broke the unrelated request shape.
+        assert first_params["max_tokens"] == REVIEW_OUTPUT_CAP
+
+
+class TestEffortPolicyWiredIntoRealtimeReview:
+    def test_realtime_review_request_carries_effort_high(
+        self, monkeypatch, fake_anthropic, _patched_fake_count_tokens
+    ):
+        from src.api_config import MODEL_OPUS_47
+        from src.reviewer import _stream_review
+        from src import reviewer as reviewer_mod
+
+        client = _InlineFakeClient(next_message=fake_anthropic.review_tool_use_response())
+        monkeypatch.setattr(reviewer_mod, "_get_client", lambda: client)
+        _stream_review(
+            client,
+            system_prompt="sys",
+            user_message="user",
+            model=MODEL_OPUS_47,
+        )
+        assert client.captured_stream
+        params = client.captured_stream[0]
+        assert params.get("output_config") == {"effort": "high"}
+
+
+class TestEffortPolicyWiredIntoCrossChecker:
+    def test_cross_check_request_carries_effort_high(
+        self, monkeypatch, fake_anthropic, _patched_fake_count_tokens
+    ):
+        from src.api_config import MODEL_OPUS_47
+        from src import cross_checker as cc
+        from src.extractor import ExtractedSpec
+
+        client = _InlineFakeClient(next_message=fake_anthropic.review_tool_use_response())
+        monkeypatch.setattr(cc, "_get_client", lambda: client)
+
+        specs = [
+            ExtractedSpec(
+                filename="A.docx",
+                content="A " * 50,
+                word_count=50,
+                source_path="",
+                source_format="docx",
+                paragraph_map=None,
+            ),
+            ExtractedSpec(
+                filename="B.docx",
+                content="B " * 50,
+                word_count=50,
+                source_path="",
+                source_format="docx",
+                paragraph_map=None,
+            ),
+        ]
+        cc.run_cross_check(specs, existing_findings=[], model=MODEL_OPUS_47)
+        assert client.captured_stream, "cross_checker should have issued a request"
+        params = client.captured_stream[0]
+        assert params.get("output_config") == {"effort": "high"}
