@@ -17,7 +17,6 @@ from .api_config import (
     BATCH_MAX_OUTPUT_TOKENS,
     BATCH_OUTPUT_BETA,
     LARGE_REVIEW_INPUT_THRESHOLD,
-    OPUS_MODELS,
     PHASE_BATCH_REVIEW,
     PHASE_VERIFICATION,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
@@ -27,6 +26,7 @@ from .api_config import (
     assert_extended_output_allowed,
     batch_service_tier,
     extract_cache_usage,
+    model_supports_extended_output_beta,
     review_max_tokens,
     system_prompt_with_cache,
     tools_with_cache,
@@ -102,7 +102,11 @@ def submit_review_batch(
     # batch request asked for 300k output regardless of input size — bypassing
     # the per-call cap and disabling cost guards. Now: the model must support
     # extended output AND the input must be large enough to plausibly need it.
-    model_supports_extended = model in OPUS_MODELS
+    # Chunk 1: read the capability from the central registry rather than
+    # testing ``model in OPUS_MODELS``. Sonnet 4.6 also supports the
+    # ``output-300k-2026-03-24`` beta on Message Batches, and a family-style
+    # check silently excluded it.
+    model_supports_extended = model_supports_extended_output_beta(model)
     # Chunk D2.1: the system prompt is built once above from batch-level
     # parameters (``cycle``, ``mode``) that do not change inside the
     # per-spec loop. Counting it once here and reusing ``system_tokens``

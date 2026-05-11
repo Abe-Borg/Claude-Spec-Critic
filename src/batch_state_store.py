@@ -24,7 +24,11 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
-from .app_paths import BATCH_STATE_MAX_AGE_HOURS, batch_state_path
+from .app_paths import (
+    BATCH_STATE_MAX_AGE_HOURS,
+    BATCH_STATE_WARNING_AGE_HOURS,
+    batch_state_path,
+)
 from .batch import BatchJob
 
 
@@ -152,3 +156,19 @@ def delete_batch_state() -> None:
             path.unlink()
     except Exception:
         pass
+
+
+def batch_state_nearing_expiry(created_at: float) -> bool:
+    """Whether a batch submitted at ``created_at`` is close to local expiry.
+
+    Chunk 1: returns ``True`` once the submission age crosses
+    :data:`BATCH_STATE_WARNING_AGE_HOURS` (25 days) so the GUI can warn the
+    user before the 28-day local cutoff drops the state. ``created_at`` is
+    a unix timestamp consistent with :attr:`BatchJob.created_at`.
+    """
+    try:
+        age_seconds = datetime.now(timezone.utc).timestamp() - float(created_at)
+    except (TypeError, ValueError):
+        return False
+    age_hours = age_seconds / 3600
+    return age_hours >= BATCH_STATE_WARNING_AGE_HOURS

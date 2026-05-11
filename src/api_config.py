@@ -310,7 +310,11 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     MODEL_SONNET_46: ModelCapabilities(
         supports_adaptive_thinking=True,
         max_output_tokens=MAX_OUTPUT_TOKENS_SONNET,
-        supports_extended_output_beta=False,
+        # Chunk 1: Sonnet 4.6 supports the ``output-300k-2026-03-24`` beta
+        # on Message Batches. The prior ``False`` value predated that
+        # capability rollout and forced the batch path to gate extended
+        # output by Opus-only family membership.
+        supports_extended_output_beta=True,
         context_window=1_000_000,
         supports_effort=True,
     ),
@@ -361,6 +365,17 @@ def model_supports_effort(model: str) -> bool:
     field is opt-in per model, so omitting it is always safe.
     """
     return model_capabilities(model).supports_effort
+
+
+def model_supports_extended_output_beta(model: str) -> bool:
+    """Whether ``model`` is eligible for the 300k batch-output beta.
+
+    Chunk 1: the extended-output decision must read from the capability
+    registry rather than testing ``model in OPUS_MODELS``. Sonnet 4.6
+    supports the ``output-300k-2026-03-24`` beta on Message Batches,
+    which the family-style check incorrectly excluded.
+    """
+    return model_capabilities(model).supports_extended_output_beta
 
 
 # Phase identifiers (declared above so the phase→budget registry can use

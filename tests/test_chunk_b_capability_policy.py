@@ -61,12 +61,15 @@ class TestModelCapabilitiesRegistry:
         assert caps.max_output_tokens == MAX_OUTPUT_TOKENS_OPUS
         assert caps.supports_extended_output_beta is True
 
-    def test_sonnet_46_supports_thinking_not_extended_output(self) -> None:
+    def test_sonnet_46_supports_thinking_and_extended_output(self) -> None:
         caps = model_capabilities(MODEL_SONNET_46)
         assert caps.supports_adaptive_thinking is True
         assert caps.max_output_tokens == MAX_OUTPUT_TOKENS_SONNET
-        # 300k extended-output beta is Opus-only.
-        assert caps.supports_extended_output_beta is False
+        # Chunk 1: Sonnet 4.6 supports the ``output-300k-2026-03-24`` beta
+        # on Message Batches. Prior to Chunk 1 the registry incorrectly
+        # marked this False, and the batch path relied on a family-style
+        # ``model in OPUS_MODELS`` check that silently excluded Sonnet.
+        assert caps.supports_extended_output_beta is True
 
     def test_haiku_45_does_not_support_thinking(self) -> None:
         """Regression: synthesis defaulted to Haiku while sending thinking,
