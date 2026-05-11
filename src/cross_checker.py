@@ -45,7 +45,7 @@ from .structured_schemas import (
     cross_check_findings_tool,
     cross_check_tool_choice,
     extract_tool_use_block,
-    structured_outputs_enabled,
+    structured_tool_output_enabled,
 )
 
 StreamCallback = Callable[[str], None]
@@ -232,7 +232,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     result = ReviewResult(model=model)
     output_limit = cross_check_max_tokens(model=model)
     system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_CROSS_CHECK)
-    use_structured = structured_outputs_enabled()
+    use_structured_tool = structured_tool_output_enabled()
     request_kwargs: dict = {
         "model": model,
         "max_tokens": output_limit,
@@ -244,7 +244,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     # cross-check request includes ``output_config.effort`` on models
     # that support it (Opus / Sonnet — both standard cross-check models).
     apply_effort_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
-    if use_structured:
+    if use_structured_tool:
         # Chunk J: cross-check tools cache under the cross_check phase
         # policy. Today this is the global default (cache=on, ttl=1h);
         # routing through ``tools_with_cache`` keeps the policy in one
@@ -282,10 +282,11 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 result.elapsed_seconds = time.time() - start
                 return result
 
-            payload = extract_tool_use_block(resp, CROSS_CHECK_TOOL_NAME) if use_structured else None
+            payload = extract_tool_use_block(resp, CROSS_CHECK_TOOL_NAME) if use_structured_tool else None
             if isinstance(payload, dict):
                 data = payload.get("findings") or []
                 thinking = _sanitize_narrative(str(payload.get("coordination_summary") or ""))
+                result.structured_payload = payload
             else:
                 data, thinking = _extract_json_array(result.raw_response, stop_reason=result.stop_reason)
                 thinking = _sanitize_narrative(thinking)
@@ -584,7 +585,7 @@ def _run_cross_discipline_synthesis(
     # models so the request stays valid. If an operator overrides the
     # synthesis model to Opus/Sonnet, thinking is added automatically.
     apply_thinking_config(request_kwargs, model=selected_model, phase=PHASE_SYNTHESIS)
-    if structured_outputs_enabled():
+    if structured_tool_output_enabled():
         request_kwargs["tools"] = tools_with_cache(
             [cross_check_findings_tool()], phase=PHASE_SYNTHESIS
         )
@@ -604,7 +605,7 @@ def _run_cross_discipline_synthesis(
                 level="warning",
             )
             return [], ""
-        payload = extract_tool_use_block(resp, CROSS_CHECK_TOOL_NAME) if structured_outputs_enabled() else None
+        payload = extract_tool_use_block(resp, CROSS_CHECK_TOOL_NAME) if structured_tool_output_enabled() else None
         if isinstance(payload, dict):
             data = payload.get("findings") or []
             summary = _sanitize_narrative(str(payload.get("coordination_summary") or ""))

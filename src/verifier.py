@@ -160,6 +160,14 @@ class VerificationResult:
     initial_verdict: str = ""
     escalation_changed_verdict: bool = False
     escalation_reason: str = ""
+    # ----- Chunk 2 structured-payload preservation -----------------------
+    # When the model invoked ``submit_verification_verdict`` (the success
+    # path under the best-effort tool-output flag), this is the raw
+    # parsed tool input. Held in memory so diagnostics can preserve the
+    # actual structured payload alongside the regular telemetry. Not
+    # persisted by ``verification_cache`` — only the derived semantic
+    # fields are cached.
+    structured_payload: dict | None = None
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -644,10 +652,13 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
 
 
 def _verdict_from_tool_use(message) -> VerificationResult | None:
-    """Extract a verdict from the structured ``submit_verification_verdict`` tool call.
+    """Extract a verdict from the ``submit_verification_verdict`` tool call.
 
     Returns None when no matching tool_use block is present so the caller
-    can fall back to text parsing.
+    can fall back to text parsing. When the block is present, the raw
+    parsed tool input is preserved on
+    :attr:`VerificationResult.structured_payload` so diagnostics retain
+    the actual structured payload.
     """
     from .structured_schemas import VERIFICATION_TOOL_NAME, extract_tool_use_block
 
@@ -660,6 +671,7 @@ def _verdict_from_tool_use(message) -> VerificationResult | None:
         explanation=str(payload.get("explanation") or ""),
         sources=_normalize_sources(payload.get("sources")),
         correction=(str(correction_raw) if correction_raw not in (None, "") else None),
+        structured_payload=payload,
     )
 
 

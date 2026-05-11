@@ -523,7 +523,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     # count was the only hard gate and the exact result was demoted to a
     # log warning, so a real overage slid through silently.
     from .prompts import get_single_spec_user_message
-    from .structured_schemas import review_findings_tool, structured_outputs_enabled
+    from .structured_schemas import review_findings_tool, structured_tool_output_enabled
 
     exact_tokens: int | None = None
     if token_count_preflight_enabled() and specs:
@@ -541,13 +541,13 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             # the paragraph map flows in just like the production call.
             paragraph_map=biggest.paragraph_map,
         )
-        # Match the actual request shape: when structured outputs are on, the
-        # tool definition adds real input tokens that the preflight should
-        # count. Including tools in the cache key prevents stale hits when
-        # the tool schema changes between runs. Chunk E directive 2: use
-        # the *selected* model so the count reflects the model that will
-        # actually run the request (Haiku tokenization differs from Opus).
-        preflight_tools = [review_findings_tool()] if structured_outputs_enabled() else None
+        # Match the actual request shape: when the custom-tool flag is on,
+        # the tool definition adds real input tokens that the preflight
+        # should count. Including tools in the cache key prevents stale
+        # hits when the tool schema changes between runs. Chunk E directive
+        # 2: use the *selected* model so the count reflects the model that
+        # will actually run the request (Haiku tokenization differs from Opus).
+        preflight_tools = [review_findings_tool()] if structured_tool_output_enabled() else None
         cache_key = token_count_cache_key(
             model=model,
             system_prompt=system_prompt,

@@ -39,7 +39,7 @@ from .structured_schemas import (
     extract_tool_use_block,
     review_findings_tool,
     review_tool_choice,
-    structured_outputs_enabled,
+    structured_tool_output_enabled,
     verification_verdict_tool,
 )
 
@@ -115,13 +115,13 @@ def submit_review_batch(
     # both this hoist and the cache breakpoint above need to move back
     # inside the loop together.
     system_tokens = count_tokens(system_prompt)
-    use_structured = structured_outputs_enabled()
+    use_structured_tool = structured_tool_output_enabled()
     structured_tools = (
         tools_with_cache([review_findings_tool()], phase=PHASE_BATCH_REVIEW)
-        if use_structured
+        if use_structured_tool
         else None
     )
-    structured_choice = review_tool_choice() if use_structured else None
+    structured_choice = review_tool_choice() if use_structured_tool else None
     batch_requests = []
     request_map = {}
     any_extended_output = False
@@ -181,10 +181,12 @@ def submit_review_batch(
         tier = batch_service_tier()
         if tier:
             params["service_tier"] = tier
-        if use_structured:
-            # Phase 2.4: same tool-forcing behavior as the streaming path so
-            # batch results can be unpacked from a tool_use block instead of
-            # regex-extracting tagged JSON from the response text.
+        if use_structured_tool:
+            # Same best-effort tool-use shape as the streaming path so batch
+            # results can be unpacked from a tool_use block instead of
+            # regex-extracting tagged JSON from the response text. With
+            # ``tool_choice=auto`` the model may still return text; the
+            # batch retrieval path keeps the tagged-JSON fallback reachable.
             params["tools"] = structured_tools
             params["tool_choice"] = structured_choice
         batch_requests.append({"custom_id": custom_id, "params": params})
@@ -227,7 +229,8 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
         cache = extract_cache_usage(usage)
         stop_reason = getattr(message, "stop_reason", None)
 
-        # Tool-use stops are the success path under structured outputs.
+        # Tool-use stops are the success path when the model invoked the
+        # ``submit_review_findings`` custom tool.
         if stop_reason not in ("end_turn", "tool_use"):
             results[custom_id] = ReviewResult(
                 findings=[], raw_response=response_text, stop_reason=stop_reason,
@@ -245,8 +248,10 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
                 if not isinstance(data, list):
                     data = []
                 thinking = str(structured_payload.get("analysis_summary") or "")
+                payload_for_diag: dict | None = structured_payload
             else:
                 data, thinking = _extract_json_array(response_text, stop_reason=stop_reason)
+                payload_for_diag = None
             findings = _parse_findings(data)
             results[custom_id] = ReviewResult(
                 findings=findings, raw_response=response_text, thinking=thinking,
@@ -254,6 +259,7 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
                 cache_creation_input_tokens=cache["cache_creation_input_tokens"],
                 cache_read_input_tokens=cache["cache_read_input_tokens"],
                 stop_reason=stop_reason, parse_status="ok",
+                structured_payload=payload_for_diag,
             )
         except Exception as e:
             results[custom_id] = ReviewResult(
@@ -321,9 +327,9 @@ def verification_request_includes_verdict_tool() -> bool:
     Source of truth for both the request payload and the system prompt.
     Wherever the prompt mentions ``submit_verification_verdict``, the
     request must actually include it — and vice versa. Defaults to mirror
-    ``structured_outputs_enabled()``.
+    ``structured_tool_output_enabled()``.
     """
-    return structured_outputs_enabled()
+    return structured_tool_output_enabled()
 
 
 def build_verification_tools(severity: str | None = None) -> list[dict]:
@@ -331,8 +337,8 @@ def build_verification_tools(severity: str | None = None) -> list[dict]:
 
     Single source of truth for verification tool payloads. Returns the
     web_search tool with the severity-tiered ``max_uses`` budget plus the
-    custom ``submit_verification_verdict`` tool when structured outputs are
-    enabled. Cache controls are NOT applied here — wrap with
+    custom ``submit_verification_verdict`` tool when the tool-output flag
+    is on. Cache controls are NOT applied here — wrap with
     :func:`tools_with_cache` at the call site if a cache breakpoint should
     pin the tools prefix.
 

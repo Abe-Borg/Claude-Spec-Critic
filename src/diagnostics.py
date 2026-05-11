@@ -16,6 +16,47 @@ from typing import Optional
 # the report still surface that older events were dropped.
 _DEFAULT_MAX_EVENTS = 5000
 
+# Chunk 2: structured tool payloads (the parsed ``submit_review_findings`` /
+# ``submit_verification_verdict`` input dicts) preserve "what the model
+# actually emitted" alongside the regular telemetry. The serialized form is
+# byte-capped so a large findings array on a 50-spec batch run cannot blow
+# up diagnostics memory or report size.
+_STRUCTURED_PAYLOAD_MAX_BYTES = 4096
+
+
+def bound_structured_payload(
+    payload: object, *, max_bytes: int = _STRUCTURED_PAYLOAD_MAX_BYTES
+) -> dict | None:
+    """Serialize a structured tool payload into a byte-bounded diagnostic record.
+
+    Returns ``None`` when there is nothing useful to record. Otherwise
+    returns a dict carrying a JSON serialization of the payload, the
+    serialized byte length, and a ``truncated`` flag. The serialized
+    form is intentionally a string field so the byte cap is enforced
+    even when the same payload would later be re-serialized for the
+    on-disk diagnostics report.
+    """
+    if payload is None:
+        return None
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return None
+    encoded = serialized.encode("utf-8", errors="replace")
+    truncated = False
+    if len(encoded) > max_bytes:
+        truncated = True
+        cut = encoded[:max_bytes].decode("utf-8", errors="ignore")
+        serialized = cut + "...(truncated)"
+        encoded_len = len(serialized.encode("utf-8", errors="replace"))
+    else:
+        encoded_len = len(encoded)
+    return {
+        "serialized": serialized,
+        "bytes": encoded_len,
+        "truncated": truncated,
+    }
+
 
 @dataclass
 class DiagnosticEvent:
@@ -129,6 +170,7 @@ class DiagnosticsReport:
         stop_reason: str | None = None,
         mode: str | None = None,           # "realtime" | "batch"
         retry_status: str | None = None,   # "initial" | "retry" | "continuation"
+        structured_payload: object = None,
         extra: dict | None = None,
     ) -> None:
         """Record a single Anthropic API call with normalized telemetry data.
@@ -139,6 +181,12 @@ class DiagnosticsReport:
         :meth:`summary` can answer "which phases cost the most?" and
         "which phases get cache hits?" without each call site re-inventing
         the data shape.
+
+        Chunk 2: ``structured_payload`` is the parsed tool input dict from
+        ``submit_review_findings`` / ``submit_verification_verdict`` when
+        the model invoked the custom tool. It is byte-bounded via
+        :func:`bound_structured_payload` before being recorded so a large
+        findings array cannot blow up the diagnostics in-memory footprint.
 
         ``extra`` is merged in last and can carry call-specific fields
         (severity counts, verification_mode, etc.) without overriding any of
@@ -159,6 +207,9 @@ class DiagnosticsReport:
             data["call_mode"] = mode
         if retry_status is not None:
             data["retry_status"] = retry_status
+        bounded = bound_structured_payload(structured_payload)
+        if bounded is not None:
+            data["structured_payload"] = bounded
         if extra:
             for k, v in extra.items():
                 data.setdefault(k, v)
