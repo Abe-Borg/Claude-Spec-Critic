@@ -215,6 +215,7 @@ def collect_batch_results(app) -> None:
                     stop_reason=rv.stop_reason,
                     mode="batch",
                     retry_status="initial",
+                    structured_payload=rv.structured_payload,
                     extra={
                         "elapsed_seconds": round(rv.elapsed_seconds, 2),
                         "parse_status": rv.parse_status,
@@ -277,48 +278,53 @@ def collect_batch_results(app) -> None:
                     )
                     verification_completed = True
                 if diag:
+                    from .diagnostics import bound_structured_payload
                     verdicts = {}
                     for f in verifiable_findings:
                         if f.verification:
                             v = f.verification.verdict
                             verdicts[v] = verdicts.get(v, 0) + 1
+                            event_data = {
+                                "verdict": f.verification.verdict,
+                                "finding_severity": f.severity,
+                                "confidence": f.confidence,
+                                "explanation": f.verification.explanation or "",
+                                # Chunk I: keep the batch path's
+                                # event payload aligned with the
+                                # real-time path so diagnostics
+                                # totals come out the same shape
+                                # in either mode.
+                                "verification_mode": f.verification.verification_mode,
+                                "verification_profile": f.verification.verification_profile,
+                                "grounded": f.verification.grounded,
+                                "cache_status": f.verification.cache_status,
+                                "escalated": f.verification.escalated,
+                                # Chunk D1.3: escalation telemetry. See
+                                # the matching block in
+                                # ``review_run_controller`` for the
+                                # rationale — keeping the batch and
+                                # real-time payloads aligned means the
+                                # diagnostics summary aggregates the
+                                # same shape in either mode.
+                                "escalation_attempted": f.verification.escalation_attempted,
+                                "initial_model": f.verification.initial_model,
+                                "initial_verdict": f.verification.initial_verdict,
+                                "escalation_changed_verdict": f.verification.escalation_changed_verdict,
+                                "escalation_reason": f.verification.escalation_reason,
+                                # Chunk J: tag remote verifications as
+                                # batch API calls so the per-phase
+                                # rollup's call_mode counters reflect
+                                # the path that actually ran.
+                                "api_call": f.verification.cache_status not in ("hit", "local_skip"),
+                                "call_mode": "batch",
+                                "model": f.verification.model_used,
+                                "web_search_requests": f.verification.web_search_requests,
+                            }
+                            bounded_payload = bound_structured_payload(f.verification.structured_payload)
+                            if bounded_payload is not None:
+                                event_data["structured_payload"] = bounded_payload
                             diag.log("verification", "info",
-                                f"Verified: {f.fileName} — {f.verification.verdict}", {
-                                    "verdict": f.verification.verdict,
-                                    "finding_severity": f.severity,
-                                    "confidence": f.confidence,
-                                    "explanation": f.verification.explanation or "",
-                                    # Chunk I: keep the batch path's
-                                    # event payload aligned with the
-                                    # real-time path so diagnostics
-                                    # totals come out the same shape
-                                    # in either mode.
-                                    "verification_mode": f.verification.verification_mode,
-                                    "verification_profile": f.verification.verification_profile,
-                                    "grounded": f.verification.grounded,
-                                    "cache_status": f.verification.cache_status,
-                                    "escalated": f.verification.escalated,
-                                    # Chunk D1.3: escalation telemetry. See
-                                    # the matching block in
-                                    # ``review_run_controller`` for the
-                                    # rationale — keeping the batch and
-                                    # real-time payloads aligned means the
-                                    # diagnostics summary aggregates the
-                                    # same shape in either mode.
-                                    "escalation_attempted": f.verification.escalation_attempted,
-                                    "initial_model": f.verification.initial_model,
-                                    "initial_verdict": f.verification.initial_verdict,
-                                    "escalation_changed_verdict": f.verification.escalation_changed_verdict,
-                                    "escalation_reason": f.verification.escalation_reason,
-                                    # Chunk J: tag remote verifications as
-                                    # batch API calls so the per-phase
-                                    # rollup's call_mode counters reflect
-                                    # the path that actually ran.
-                                    "api_call": f.verification.cache_status not in ("hit", "local_skip"),
-                                    "call_mode": "batch",
-                                    "model": f.verification.model_used,
-                                    "web_search_requests": f.verification.web_search_requests,
-                                })
+                                f"Verified: {f.fileName} — {f.verification.verdict}", event_data)
                     diag.log("verification", "success", "Verification complete", {"verdicts": verdicts})
 
             save_batch_state(build_resume_state(
@@ -361,6 +367,7 @@ def collect_batch_results(app) -> None:
                     stop_reason=cc.stop_reason,
                     mode="realtime",
                     retry_status="initial",
+                    structured_payload=cc.structured_payload,
                     extra={"finding_count": len(cc.findings)},
                 )
 

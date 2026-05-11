@@ -272,6 +272,7 @@ def run_review_thread(app, run_epoch: int) -> None:
                 stop_reason=rv.stop_reason,
                 mode="realtime",
                 retry_status="initial",
+                structured_payload=rv.structured_payload,
                 extra={
                     "elapsed_seconds": round(rv.elapsed_seconds, 2),
                     "parse_status": rv.parse_status,
@@ -302,6 +303,7 @@ def run_review_thread(app, run_epoch: int) -> None:
                     stop_reason=cc.stop_reason,
                     mode="realtime",
                     retry_status="initial",
+                    structured_payload=cc.structured_payload,
                     extra={"finding_count": len(cc.findings)},
                 )
             for f in rv.findings:
@@ -347,6 +349,13 @@ def run_review_thread(app, run_epoch: int) -> None:
                         event_data["sources"] = v.sources[:3]
                     if v.correction:
                         event_data["correction"] = v.correction
+                    # Chunk 2: preserve the parsed verdict-tool payload in
+                    # diagnostics so structured-output debugging does not
+                    # have to rely on regenerating the call.
+                    from .diagnostics import bound_structured_payload
+                    bounded_payload = bound_structured_payload(v.structured_payload)
+                    if bounded_payload is not None:
+                        event_data["structured_payload"] = bounded_payload
                     diag.log("verification", "info", f"Verified: {f.fileName} — {v.verdict}", event_data)
             unverified = [f for f in rv.findings if f.verification and f.verification.verdict == "UNVERIFIED"]
             if unverified:

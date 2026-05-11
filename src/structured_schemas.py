@@ -1,22 +1,35 @@
-"""Structured-output JSON schemas for review, cross-check, and verification.
+"""Best-effort tool-output schemas for review, cross-check, and verification.
 
-Phase 2.4 / 2.5 (audit Sections 6.4–6.5): replace fragile ``<findings_json>``
-tag-and-regex parsing with Anthropic tool-use schemas. The model is given
-a single tool whose ``input_schema`` matches the existing finding shape.
+Chunk 2 / repair plan terminology fix: this module formerly used the phrase
+"structured outputs" to describe what is really best-effort custom-tool
+output. The actual contract is:
 
-``tool_choice`` is intentionally ``{"type": "auto"}`` rather than a forcing
-choice because the API rejects forcing tool_choice (``{"type": "tool", ...}``
-or ``{"type": "any"}``) when adaptive thinking is enabled. With only one
-tool exposed and the system prompt instructing the model to call it, the
-tool is reliably invoked. The tagged-JSON parser remains as the
-documented fallback for the rare cases where the model emits text instead
-of calling the tool.
+* Every review / cross-check / verification call exposes a single custom
+  tool whose ``input_schema`` matches the desired payload shape.
+* ``tool_choice`` is ``{"type": "auto"}`` because the API rejects forcing
+  tool_choice when adaptive thinking is enabled.
+* The model is *instructed* to call the tool, but with ``auto`` it MAY
+  return a plain-text response instead. Callers must therefore keep the
+  tagged-JSON text fallback parsers reachable.
+* Strict-mode constrained sampling (``SPEC_CRITIC_STRICT_TOOLS=1``) is an
+  opt-in tightening, not the default. It is NOT the same thing as the
+  Anthropic Structured Outputs API.
+
+In short: this is a tool-schema convention, not a contractually guaranteed
+JSON-schema final response. The renamed helper
+:func:`structured_tool_output_enabled` makes that explicit; the legacy
+:func:`structured_outputs_enabled` name is preserved as a deprecation
+alias for one release so external callers and tests keep working.
 
 Toggles:
-    SPEC_CRITIC_STRUCTURED_OUTPUTS — "0" disables; default on.
-    SPEC_CRITIC_STRICT_TOOLS       — "1" enables strict tool-input
-                                      sampling; default off pending real-
-                                      call verification under thinking.
+    SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT — "0" disables; default on.
+        Preferred name as of Chunk 2.
+    SPEC_CRITIC_STRUCTURED_OUTPUTS    — legacy alias for the same flag.
+        Kept working for one release; new code should use the preferred
+        name. If both are set, the preferred name wins.
+    SPEC_CRITIC_STRICT_TOOLS          — "1" enables strict tool-input
+        constrained sampling; default off pending real-call verification
+        under thinking.
 """
 from __future__ import annotations
 
@@ -24,14 +37,40 @@ import os
 from typing import Any
 
 
-def structured_outputs_enabled() -> bool:
-    """Whether to force structured tool-use outputs on review/cross-check/verification.
+_TOOL_OUTPUT_ENV = "SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT"
+_LEGACY_TOOL_OUTPUT_ENV = "SPEC_CRITIC_STRUCTURED_OUTPUTS"
 
-    Default on. Set ``SPEC_CRITIC_STRUCTURED_OUTPUTS=0`` to revert to the
-    previous tagged-JSON-in-text path (kept as a fallback inside the
-    parsers).
+
+def structured_tool_output_enabled() -> bool:
+    """Whether review/cross-check/verification expose their custom tool schemas.
+
+    Default on. With this flag on, every request includes the appropriate
+    custom tool (``submit_review_findings`` / ``submit_cross_check_findings``
+    / ``submit_verification_verdict``) and ``tool_choice={"type": "auto"}``.
+    The model is *expected* but not *required* to call the tool; the
+    tagged-JSON text-fallback parsers stay reachable for the rare case
+    where the model emits plain text instead.
+
+    Setting ``SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT=0`` (or the legacy
+    ``SPEC_CRITIC_STRUCTURED_OUTPUTS=0``) reverts to the text-only path
+    end-to-end. If both env vars are set, the preferred name wins.
     """
-    return os.environ.get("SPEC_CRITIC_STRUCTURED_OUTPUTS", "1") != "0"
+    preferred = os.environ.get(_TOOL_OUTPUT_ENV)
+    if preferred is not None:
+        return preferred != "0"
+    return os.environ.get(_LEGACY_TOOL_OUTPUT_ENV, "1") != "0"
+
+
+def structured_outputs_enabled() -> bool:
+    """Deprecated alias for :func:`structured_tool_output_enabled` (Chunk 2).
+
+    The previous name overclaimed: with ``tool_choice=auto`` we get
+    best-effort tool-schema output, not a guaranteed JSON-schema final
+    response. Prefer the renamed helper in new code. Both names dispatch
+    to the same logic, so existing callers and the legacy
+    ``SPEC_CRITIC_STRUCTURED_OUTPUTS`` env var continue to work.
+    """
+    return structured_tool_output_enabled()
 
 
 # ---------------------------------------------------------------------------
@@ -391,8 +430,9 @@ def review_tool_choice() -> dict[str, Any]:
     # Any forcing tool_choice ({"type": "tool", "name": ...} or {"type": "any"})
     # is rejected by the API when ``thinking`` is enabled. Use {"type": "auto"}
     # so adaptive thinking is preserved; with only one tool exposed and the
-    # system prompt instructing the model to call it, the tool is reliably
-    # invoked, and the tagged-JSON parser stays as a fallback.
+    # system prompt instructing the model to call it, the tool is reliably —
+    # but not contractually — invoked. The tagged-JSON text parser is the
+    # documented fallback for the path where the model returns text instead.
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 def cross_check_tool_choice() -> dict[str, Any]:
