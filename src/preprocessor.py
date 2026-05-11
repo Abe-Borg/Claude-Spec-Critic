@@ -258,6 +258,84 @@ _ASCE7_PATTERN = re.compile(r"\bASCE[\s-]*7[\s-]*(\d{2})\b", flags=re.IGNORECASE
 _ASCE7_PLAUSIBLE_EDITIONS = {"05", "10", "16", "22"}
 
 
+# Chunk D4.2: terms that, when they appear shortly *before* a stale-cycle
+# match, signal the author is describing an old reference rather than
+# requiring it. The window is intentionally small so a negation in a
+# different sentence does not silently suppress an active requirement.
+#
+# Each pattern is a whole-word match (and ``no longer`` is matched as a
+# two-word phrase). The phrase ``not`` is included per the delta plan, but
+# the matcher only treats it as a suppressor when it is genuinely a verb-
+# phrase negation — see ``_should_suppress_stale_cycle``.
+_STALE_CYCLE_SUPPRESS_WINDOW: int = 80
+
+_STALE_CYCLE_SUPPRESS_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"\bpreviously\b", flags=re.IGNORECASE),
+    re.compile(r"\bformerly\b", flags=re.IGNORECASE),
+    re.compile(r"\bsuperseded\b", flags=re.IGNORECASE),
+    re.compile(r"\bwithdrawn\b", flags=re.IGNORECASE),
+    re.compile(r"\bobsolete\b", flags=re.IGNORECASE),
+    # "no longer" only as a phrase — single-word ``no`` is too noisy.
+    re.compile(r"\bno\s+longer\b", flags=re.IGNORECASE),
+    # ``prior`` and ``historical`` are common enough in spec prose that we
+    # only suppress when the keyword appears in the immediately preceding
+    # window (the regex itself is whole-word).
+    re.compile(r"\bprior\b", flags=re.IGNORECASE),
+    re.compile(r"\bhistorical\b", flags=re.IGNORECASE),
+    # ``shall not / will not / does not / is not`` plus a small set of
+    # related contractions: the model author is explicitly negating the
+    # requirement that follows. We deliberately do NOT match bare ``not``
+    # because phrases like "Section X is also referenced in 2019 CBC and
+    # not 2022 CBC" would otherwise suppress the wrong year.
+    re.compile(r"\b(?:shall|will|does|do|is|are|was|were|must|may|can)\s+not\b", flags=re.IGNORECASE),
+    re.compile(r"\b(?:isn't|wasn't|aren't|weren't|won't|don't|doesn't|shan't|mustn't|can't|cannot)\b", flags=re.IGNORECASE),
+)
+
+
+def _should_suppress_stale_cycle(
+    content: str, match_start: int, match_end: int
+) -> bool:
+    """Return True when a stale-cycle match is qualified by a negation term.
+
+    Chunk D4.2: search up to ``_STALE_CYCLE_SUPPRESS_WINDOW`` characters
+    on either side of the match for a whole-word negation / historical
+    keyword (e.g. ``previously per 2019 CBC`` or ``2022 CBC is no longer
+    used``). When found, treat the citation as descriptive (not an active
+    requirement) and skip the alert. The window is capped so a negation
+    in a different sentence does not bleed across; sentence-terminating
+    punctuation (``.``, ``;``, ``\\n\\n``) inside the window narrows the
+    effective scan to the matching sentence to keep false-suppressions
+    rare in dense prose.
+    """
+    if not content:
+        return False
+    pre_start = max(0, match_start - _STALE_CYCLE_SUPPRESS_WINDOW)
+    pre_window = content[pre_start:match_start]
+    # Restrict the *preceding* window to the current sentence so a
+    # negation in a previous clause doesn't suppress the active one.
+    for term in (".", ";", "\n\n"):
+        cut = pre_window.rfind(term)
+        if cut >= 0:
+            pre_window = pre_window[cut + len(term):]
+    post_end = min(len(content), match_end + _STALE_CYCLE_SUPPRESS_WINDOW)
+    post_window = content[match_end:post_end]
+    # Same for the *trailing* window: stop at the next sentence boundary.
+    for term in (".", ";", "\n\n"):
+        cut = post_window.find(term)
+        if cut >= 0:
+            post_window = post_window[:cut]
+            break
+    candidates = (pre_window, post_window)
+    if not any(w.strip() for w in candidates):
+        return False
+    return any(
+        pat.search(w)
+        for w in candidates
+        if w
+        for pat in _STALE_CYCLE_SUPPRESS_PATTERNS
+    )
+
+
 def detect_stale_code_cycle_references(
     content: str,
     filename: str,
@@ -293,6 +371,13 @@ def detect_stale_code_cycle_references(
             span = (match.start(), match.end())
             if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
                 continue
+            # Chunk D4.2: skip citations preceded by a negation / historical
+            # keyword in the immediate window. Recorded spans still get
+            # tracked above so a suppressed match doesn't bleed into the
+            # overlap dedup for downstream patterns.
+            if _should_suppress_stale_cycle(content, span[0], span[1]):
+                seen_spans.append(span)
+                continue
             seen_spans.append(span)
             ctx_start = max(0, span[0] - 60)
             ctx_end = min(len(content), span[1] + 60)
@@ -324,6 +409,12 @@ def detect_stale_code_cycle_references(
                 continue
             span = (match.start(), match.end())
             if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
+                continue
+            # Chunk D4.2: same suppression for ASCE 7 — a sentence that
+            # explicitly says "no longer use ASCE 7-10" is descriptive,
+            # not a directive to follow it.
+            if _should_suppress_stale_cycle(content, span[0], span[1]):
+                seen_spans.append(span)
                 continue
             seen_spans.append(span)
             ctx_start = max(0, span[0] - 60)

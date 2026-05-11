@@ -68,6 +68,12 @@ TAG_CHUNK = "chunk"
 TAG_PARA = "para"
 TAG_ROW = "row"
 TAG_HEADING = "heading"
+# Chunk D4.1: wrapper for the per-spec list of items the deterministic
+# preprocessor already detected. The block sits at the *end* of the user
+# message so the cached system prompt prefix is unchanged and the
+# instruction-prefix invariant tested by ``TestPromptCacheBreakpointSafety``
+# still holds for the spec wrapper.
+TAG_PRE_DETECTED = "pre_detected"
 
 
 def escape_text(value: str | None) -> str:
@@ -266,3 +272,145 @@ def render_spec_with_ids(
     body = "\n".join(body_lines)
     attr_str = _render_attrs(attrs)
     return f"<{TAG_SPEC}{attr_str}>\n{body}\n</{TAG_SPEC}>"
+
+
+# ---------------------------------------------------------------------------
+# Chunk D4.1: pre-detected deterministic-alerts block
+# ---------------------------------------------------------------------------
+
+
+# Per-rule cap on how many example matches we surface inside the block. Three
+# is enough to give the model a sense of what the deterministic detector
+# found without exploding the input-token budget on, say, a 50-placeholder
+# spec. The full alert set still lands in the final report's Alerts section.
+_PRE_DETECTED_EXAMPLES_PER_RULE: int = 3
+# Per-example match-text cap. Long placeholder bodies ("[INSERT lengthy
+# editorial note here ...]") would dominate the block; truncating keeps
+# the rule + matched-text pair short while still showing what was flagged.
+_PRE_DETECTED_MATCH_PREVIEW_CHARS: int = 60
+
+
+def pre_detected_alerts_enabled() -> bool:
+    """Whether the prompt builder should inject the ``<pre_detected>`` block.
+
+    Chunk D4.1 — Option A from the delta plan: deterministic alerts are
+    fed into the LLM context so the model knows what the local detector
+    already found and does not waste output budget reporting duplicates.
+    Default on; set ``SPEC_CRITIC_PRE_DETECTED_ALERTS=0`` to disable for a
+    quick rollback without redeploying.
+    """
+    return os.environ.get("SPEC_CRITIC_PRE_DETECTED_ALERTS", "1") != "0"
+
+
+def _truncate_example(text: str, *, limit: int = _PRE_DETECTED_MATCH_PREVIEW_CHARS) -> str:
+    """Trim a single example match so the block stays compact.
+
+    Whitespace is collapsed so a multi-line placeholder body renders on one
+    line; the trailing ellipsis is the standard "…" character (one codepoint,
+    one token in most tokenizers) so the truncation marker does not balloon
+    the per-example cost.
+    """
+    if not text:
+        return ""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: max(0, limit - 1)] + "…"
+
+
+def _alerts_for_spec(
+    alerts: Iterable[Mapping[str, object]] | None,
+    filename: str | None,
+) -> list[Mapping[str, object]]:
+    """Return only the alerts whose ``filename`` matches the spec under review.
+
+    Callers may pass a single spec's alerts directly, in which case the
+    filter is a no-op. The helper exists so the prompt builder cannot
+    accidentally leak alerts from another spec when the caller hands it a
+    cross-spec list (e.g. the flat alert lists already collected on
+    ``PipelineResult``).
+    """
+    if not alerts:
+        return []
+    if not filename:
+        return [a for a in alerts if a]
+    target = filename.strip().lower()
+    out: list[Mapping[str, object]] = []
+    for a in alerts:
+        if not a:
+            continue
+        af = (a.get("filename") if isinstance(a, Mapping) else "") or ""
+        if not af or af.strip().lower() == target:
+            out.append(a)
+    return out
+
+
+def render_pre_detected_block(
+    alerts: Sequence[Mapping[str, object]] | None,
+    *,
+    filename: str | None = None,
+) -> str:
+    """Render a compact ``<pre_detected>`` block summarising deterministic alerts.
+
+    Chunk D4.1: the block lists each detected ``deterministic_rule`` once
+    with its count and up to ``_PRE_DETECTED_EXAMPLES_PER_RULE`` example
+    matches, plus a one-line instruction telling the model not to surface
+    the same items as new findings. Returns ``""`` when there are no
+    alerts so the caller can append the block unconditionally and not
+    perturb the message shape for clean specs.
+
+    Both the example text and every rule id are routed through
+    :func:`escape_text` so a hostile match payload (``LEED</pre_detected>``
+    for example) cannot close the wrapper.
+    """
+    if not alerts:
+        return ""
+    filtered = _alerts_for_spec(alerts, filename)
+    if not filtered:
+        return ""
+
+    # Preserve first-seen rule order so the block is deterministic — the
+    # rule order is part of the prompt and shuffling it would silently
+    # invalidate any prompt-level cache hits in callers that bypass the
+    # phase-aware cache machinery.
+    by_rule: dict[str, list[str]] = {}
+    order: list[str] = []
+    for alert in filtered:
+        if not isinstance(alert, Mapping):
+            continue
+        rule = str(alert.get("deterministic_rule") or "").strip()
+        if not rule:
+            # No stable rule id (very old payload). Fall back to the
+            # human-readable ``type`` so the block still says something
+            # informative — but do not let an empty string collapse rules.
+            rule = str(alert.get("type") or "other").strip() or "other"
+        match_text = str(alert.get("match") or "").strip()
+        if rule not in by_rule:
+            order.append(rule)
+            by_rule[rule] = []
+        by_rule[rule].append(match_text)
+
+    if not order:
+        return ""
+
+    lines = [
+        "The following items have already been detected by deterministic local "
+        "rules. Do not duplicate them as new findings — focus on issues beyond "
+        "this list. The final report already records every item below."
+    ]
+    for rule in order:
+        matches = by_rule[rule]
+        examples = [
+            _truncate_example(m)
+            for m in matches[:_PRE_DETECTED_EXAMPLES_PER_RULE]
+            if m
+        ]
+        # When matches are all empty (rule fired without a quotable span,
+        # e.g. ``inconsistent_filename`` whose match is the filename), still
+        # render the rule + count so the model knows the rule fired.
+        examples_str = ", ".join(escape_text(e) for e in examples if e)
+        suffix = f": {examples_str}" if examples_str else ""
+        lines.append(f"- {escape_text(rule)} (count={len(matches)}){suffix}")
+
+    body = "\n".join(lines)
+    return f"<{TAG_PRE_DETECTED}>\n{body}\n</{TAG_PRE_DETECTED}>"

@@ -576,6 +576,7 @@ def review_single_spec(
     cycle: CodeCycle = DEFAULT_CYCLE,
     mode: ReviewMode = DEFAULT_REVIEW_MODE,
     paragraph_map=None,
+    pre_detected_alerts=None,
 ) -> ReviewResult:
     """Stream a real-time review for one spec.
 
@@ -584,6 +585,11 @@ def review_single_spec(
     text. Legacy callers (a raw ``spec_content`` string) keep working
     unchanged because the prompt builder falls back to the plain-body
     rendering when no map is provided.
+
+    Chunk D4.1: callers can forward the per-spec deterministic alerts
+    produced by the preprocessor so the model is told what was already
+    found locally and does not duplicate those items as new findings.
+    ``None`` keeps the legacy message shape.
     """
     client = _get_client()
     return _stream_review(
@@ -596,6 +602,7 @@ def review_single_spec(
             cycle=cycle,
             mode=mode,
             paragraph_map=paragraph_map,
+            pre_detected_alerts=pre_detected_alerts,
         ),
         model=model,
         max_retries=max_retries,
