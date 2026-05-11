@@ -1007,8 +1007,16 @@ def _run_verification_call(
                 if stop_class == STOP_CLASS_COMPLETE:
                     break
                 if stop_class == STOP_CLASS_PAUSE:
+                    # Chunk D1.1: server-tool ``pause_turn`` is resumed by
+                    # re-sending the assistant response as-is. Appending a
+                    # synthetic ``"continue"`` user turn (the prior behavior)
+                    # wastes tokens, changes the model's continuation
+                    # behavior, and interferes with thinking / tool-state
+                    # continuity. Anthropic's stop_reason docs explicitly
+                    # call out that the correct response is to put the
+                    # assistant content back into ``messages`` and reissue
+                    # the same request — without a new user turn.
                     messages.append({"role": "assistant", "content": response.content})
-                    messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
                     continue
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
             final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
@@ -1327,6 +1335,14 @@ def _build_continuation_request(
     # the initial / retry calls. The PHASE_VERIFICATION_CONTINUATION policy
     # mirrors PHASE_VERIFICATION today; routing through the central
     # registry keeps the policy decisions co-located.
+    #
+    # Chunk D1.1: server-tool ``pause_turn`` is resumed by re-sending the
+    # assistant response content as-is — no synthetic user ``"continue"``
+    # turn. The previous payload appended a ``{"role": "user", "content":
+    # [{"type": "text", "text": "continue"}]}`` block, which wasted tokens
+    # and interfered with thinking / tool-state continuity. The assistant
+    # block (with thinking blocks and tool_use_ids preserved exactly via
+    # ``_content_block_to_plain``) is enough for the model to resume.
     request: dict = {
         "model": selected,
         "max_tokens": verification_max_tokens(model=selected, phase=PHASE_VERIFICATION_CONTINUATION),
@@ -1335,7 +1351,6 @@ def _build_continuation_request(
         "messages": [
             {"role": "user", "content": prompt},
             {"role": "assistant", "content": assistant_content_blocks},
-            {"role": "user", "content": [{"type": "text", "text": "continue"}]},
         ],
     }
     apply_thinking_config(request, model=selected, phase=PHASE_VERIFICATION_CONTINUATION)

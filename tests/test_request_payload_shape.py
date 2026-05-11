@@ -479,7 +479,12 @@ class TestVerifierRetryAndContinuationShape:
         names = [t.get("name") for t in req["tools"]]
         assert VERIFICATION_TOOL_NAME in names
 
-    def test_continuation_request_user_assistant_user_pattern(self):
+    def test_continuation_request_user_assistant_pattern(self):
+        """Chunk D1.1: server-tool ``pause_turn`` resumption sends the
+        assistant content back as-is with no synthetic user ``"continue"``
+        turn. The prior payload shape (``user/assistant/user``) wasted
+        tokens and broke thinking / tool-state continuity per Anthropic's
+        stop_reason docs."""
         from src.verifier import _build_continuation_request
 
         req = _build_continuation_request(
@@ -488,7 +493,14 @@ class TestVerifierRetryAndContinuationShape:
             cycle=DEFAULT_CYCLE,
         )
         roles = [m["role"] for m in req["messages"]]
-        assert roles == ["user", "assistant", "user"]
+        assert roles == ["user", "assistant"]
+        # No trailing literal "continue" user turn — see Chunk D1.1.
+        for m in req["messages"]:
+            content = m.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        assert block.get("text") != "continue"
 
     def test_retry_uses_verification_cap_not_review_cap(self):
         from src.verifier import _build_retry_request

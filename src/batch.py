@@ -358,16 +358,21 @@ def _build_verification_request_params(
     prompt: str,
     system_prompt: str,
     assistant_content: list | None = None,
-    continue_turn: bool = False,
     model: str | None = None,
     severity: str | None = None,
     profile: Any = None,
 ) -> dict[str, Any]:
+    # Chunk D1.1: this helper builds either the initial verification
+    # request (no assistant_content) or a pause_turn resumption request
+    # (assistant_content carries the prior assistant blocks). Server-tool
+    # pause_turn is resumed by re-sending the assistant content as-is;
+    # no synthetic ``"continue"`` user turn is appended. The actual
+    # production continuation path lives in
+    # :func:`verifier._build_continuation_request` and routes through
+    # the same no-synthetic-user-turn shape.
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     if assistant_content is not None:
         messages.append({"role": "assistant", "content": assistant_content})
-    if continue_turn:
-        messages.append({"role": "user", "content": [{"type": "text", "text": "continue"}]})
     selected_model = model or VERIFICATION_MODEL
     # Phase 2.5 (audit Section 6.5, Option B) / Chunk C: include the verdict
     # tool alongside web_search via the shared :func:`build_verification_tools`
