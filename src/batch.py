@@ -86,6 +86,7 @@ def submit_review_batch(
     cycle: CodeCycle = DEFAULT_CYCLE,
     retry_instruction: str | None = None,
     mode: ReviewMode = DEFAULT_REVIEW_MODE,
+    pre_detected_alerts: dict[str, list[dict]] | None = None,
 ) -> BatchJob:
     if not specs:
         raise ValueError("No specs to submit for batch review")
@@ -122,6 +123,9 @@ def submit_review_batch(
     any_extended_output = False
     for idx, spec in enumerate(specs):
         custom_id = f"review__{_sanitize_custom_id(spec.filename)}__{idx}"
+        spec_pre_detected = (
+            pre_detected_alerts.get(spec.filename) if pre_detected_alerts else None
+        )
         user_message = get_single_spec_user_message(
             spec.content,
             spec.filename,
@@ -133,6 +137,12 @@ def submit_review_batch(
             # (``SPEC_CRITIC_ELEMENT_IDS=0``) the prompt builder ignores
             # the map and falls back to the legacy plain-body rendering.
             paragraph_map=spec.paragraph_map,
+            # Chunk D4.1: forward the per-spec deterministic alerts so the
+            # model knows what local rules already detected and skips
+            # duplicating them as new findings. ``None`` keeps the legacy
+            # message shape for callers (older tests, repair-batch path
+            # when alerts aren't recomputed) that don't pass the map.
+            pre_detected_alerts=spec_pre_detected,
         )
         if retry_instruction:
             user_message += f"\n\n{retry_instruction}"

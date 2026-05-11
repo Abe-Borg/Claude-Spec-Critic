@@ -393,6 +393,14 @@ class _PreparedSpecs:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Chunk D4.1: per-spec view of every deterministic alert that fired for
+    # that filename. The reviewer / batch paths use this to populate the
+    # ``<pre_detected>`` block in each per-spec user message so the model is
+    # told what was already detected locally and does not duplicate it.
+    # Naming-style alerts attach to the file they describe; the project-wide
+    # ``inconsistent_filename`` rule is still surfaced because each alert is
+    # tagged with the offending filename.
+    pre_detected_by_filename: dict[str, list[dict]] = field(default_factory=dict)
 
 
 def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE, model: str = REVIEW_MODEL_DEFAULT) -> _PreparedSpecs:
@@ -408,6 +416,10 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     template_marker_alerts: list[dict] = []
     invalid_code_cycle_alerts: list[dict] = []
     duplicate_paragraph_alerts: list[dict] = []
+    # Chunk D4.1: per-filename view of the per-spec alerts so the reviewer
+    # / batch paths can hand each spec only its own alerts when building
+    # the ``<pre_detected>`` block.
+    pre_detected_by_filename: dict[str, list[dict]] = {}
     progress(0.0, "Extracting text from specifications...")
     # Phase 5.2 (audit Section 9.2): parallel extraction. Order is preserved
     # by extract_multiple_specs, so deterministic file ordering and per-spec
@@ -431,6 +443,19 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         template_marker_alerts.extend(pre.template_marker_alerts)
         invalid_code_cycle_alerts.extend(pre.invalid_code_cycle_alerts)
         duplicate_paragraph_alerts.extend(pre.duplicate_paragraph_alerts)
+        # Chunk D4.1: cache this spec's alerts under its filename so the
+        # reviewer / batch paths can hand them to the prompt builder.
+        # Naming-style alerts are appended below once the project-wide
+        # check runs (they aren't part of ``preprocess_spec``).
+        pre_detected_by_filename[spec.filename] = [
+            *pre.leed_alerts,
+            *pre.placeholder_alerts,
+            *pre.code_cycle_alerts,
+            *pre.structural_alerts,
+            *pre.template_marker_alerts,
+            *pre.invalid_code_cycle_alerts,
+            *pre.duplicate_paragraph_alerts,
+        ]
         progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
     if not specs:
         raise FileNotFoundError("All files failed extraction. No specs to review.")
@@ -438,6 +463,12 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     # Phase 9 plan 13.1: project-level naming consistency check. Logged so
     # users see it before submission; never raises.
     naming_alerts = detect_inconsistent_file_naming([s.filename for s in specs])
+    # Chunk D4.1: route project-level naming alerts back to the file they
+    # describe so the model sees them in its ``<pre_detected>`` block too.
+    for alert in naming_alerts:
+        fname = alert.get("filename")
+        if fname:
+            pre_detected_by_filename.setdefault(fname, []).append(alert)
     if code_cycle_alerts:
         log(
             f"Preflight: {len(code_cycle_alerts)} stale code-cycle reference(s) "
@@ -585,6 +616,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         template_marker_alerts=template_marker_alerts,
         invalid_code_cycle_alerts=invalid_code_cycle_alerts,
         duplicate_paragraph_alerts=duplicate_paragraph_alerts,
+        pre_detected_by_filename=pre_detected_by_filename,
     )
 
 
@@ -619,7 +651,17 @@ class BatchSubmission:
 def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = MODEL_OPUS_47, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, mode: ReviewMode | str | None = None) -> BatchSubmission:
     review_mode = coerce_review_mode(mode)
     prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode, model=model)
-    job = submit_review_batch(prepared.specs, project_context=project_context, model=model, cycle=cycle, mode=review_mode)
+    job = submit_review_batch(
+        prepared.specs,
+        project_context=project_context,
+        model=model,
+        cycle=cycle,
+        mode=review_mode,
+        # Chunk D4.1: feed each spec's deterministic alerts to the prompt
+        # builder so the model is told what local rules already detected
+        # and skips duplicating those items as new findings.
+        pre_detected_alerts=prepared.pre_detected_by_filename,
+    )
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
     return BatchSubmission(
         job=job,
@@ -684,6 +726,22 @@ def _recover_retryable_review_batch_results(
         return results_by_request
 
     log(f"Submitting review repair batch for {len(repair_specs)} failed item(s)...", level="step")
+    # Chunk D4.1: the repair batch reuses the same prompt builder, so it
+    # should also tell the model what was already detected locally. Alerts
+    # are deterministic given (content, filename, cycle), so we recompute
+    # them here rather than threading the original map through resume state.
+    repair_pre_detected: dict[str, list[dict]] = {}
+    for spec in repair_specs:
+        pre = preprocess_spec(spec.content, spec.filename, cycle=cycle)
+        repair_pre_detected[spec.filename] = [
+            *pre.leed_alerts,
+            *pre.placeholder_alerts,
+            *pre.code_cycle_alerts,
+            *pre.structural_alerts,
+            *pre.template_marker_alerts,
+            *pre.invalid_code_cycle_alerts,
+            *pre.duplicate_paragraph_alerts,
+        ]
     repair_job = submit_review_batch(
         repair_specs,
         project_context=submission.project_context,
@@ -695,6 +753,7 @@ def _recover_retryable_review_batch_results(
             "Spend the entire output budget on the findings array."
         ),
         mode=coerce_review_mode(submission.review_mode),
+        pre_detected_alerts=repair_pre_detected,
     )
     outcome = poll_batch_bounded(
         repair_job.batch_id,
@@ -1266,6 +1325,10 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
             # Chunk K2: forward the paragraph map so the prompt builder
             # can render id-tagged elements and the model can cite ids.
             paragraph_map=spec.paragraph_map,
+            # Chunk D4.1: forward the per-spec deterministic alerts so the
+            # model is told what local rules already detected and skips
+            # duplicating them as new findings.
+            pre_detected_alerts=prepared.pre_detected_by_filename.get(spec.filename),
         )
         if rr.parse_status == "incomplete":
             log(f"  {spec.filename}: Response incomplete — model ran out of output tokens. No findings extracted.", level="warning")

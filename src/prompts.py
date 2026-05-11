@@ -10,13 +10,15 @@ shift. Comprehensive adds the broader AEC categories listed in plan section
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from .code_cycles import CodeCycle
 from .prompt_serialization import (
     TAG_PROJECT_CONTEXT,
     TAG_SPEC,
     element_ids_enabled,
+    pre_detected_alerts_enabled,
+    render_pre_detected_block,
     render_spec_with_ids,
     wrap_document_block,
 )
@@ -219,6 +221,7 @@ def get_single_spec_user_message(
     cycle: CodeCycle,
     mode: ReviewMode | str | None = None,
     paragraph_map: "Sequence[ParagraphMapping] | None" = None,
+    pre_detected_alerts: "Sequence[Mapping[str, object]] | None" = None,
 ) -> str:
     """Build user message for reviewing a single spec in isolation.
 
@@ -236,6 +239,16 @@ def get_single_spec_user_message(
     line so the model knows the ids exist. The system prompt is unchanged
     — keeping the cached prefix byte-stable is what makes the new path
     safe to roll back via ``SPEC_CRITIC_ELEMENT_IDS=0``.
+
+    Chunk D4.1: when ``pre_detected_alerts`` is supplied and the toggle is
+    on, a compact ``<pre_detected>`` block is appended *after* the spec
+    body listing the deterministic local-rule alerts that already fired
+    for this filename. The model is instructed not to report duplicates.
+    The block is appended at the end so the stable instruction prefix
+    (everything before ``<spec …>``) is unchanged — the prompt-cache
+    breakpoint invariant tested by ``TestPromptCacheBreakpointSafety``
+    still holds. Passing ``None`` or an empty sequence is byte-stable
+    with the legacy message.
     """
     selected = coerce_review_mode(mode) if not isinstance(mode, ReviewMode) else mode
     if selected is None:
@@ -279,6 +292,14 @@ def get_single_spec_user_message(
         )
         id_hint = ""
 
+    pre_detected_block = ""
+    if pre_detected_alerts and pre_detected_alerts_enabled():
+        rendered = render_pre_detected_block(
+            pre_detected_alerts, filename=filename
+        )
+        if rendered:
+            pre_detected_block = "\n\n" + rendered
+
     return (
         "Review the following specification document for a California K-12 project under DSA jurisdiction.\n\n"
         f"Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, "
@@ -290,5 +311,6 @@ def get_single_spec_user_message(
         "- Include confidence (0.0-1.0) with each finding.\n"
         f"{id_hint}\n"
         f"{context_block}"
-        f"{spec_block}\n"
+        f"{spec_block}"
+        f"{pre_detected_block}\n"
     )
