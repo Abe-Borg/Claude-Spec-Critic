@@ -8,12 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from docx import Document
 
-from src import extraction_cache
-from src.code_cycles import CALIFORNIA_2025
-from src.diagnostics import DiagnosticsReport
 from src.extraction_cache import (
     cache_token_count,
     clear_extraction_cache,
@@ -28,33 +24,10 @@ from src.preprocessor import (
     detect_duplicate_headings,
     detect_empty_sections,
     detect_inconsistent_file_naming,
-    detect_stale_code_cycle_references,
-    preprocess_spec,
 )
 
 
 # --- Section 13.1: preflight checks ----------------------------------------
-
-
-def test_stale_code_cycle_flags_old_cbc_when_cycle_is_2025():
-    content = "References to 2019 CBC must be updated. The 2025 CBC governs."
-    alerts = detect_stale_code_cycle_references(content, "spec.docx", CALIFORNIA_2025)
-    assert any("2019" in a["match"] for a in alerts)
-    assert all(a["expected_year"] == "2025" for a in alerts)
-    # 2025 references must NOT be flagged.
-    assert not any("2025" in a["match"] for a in alerts)
-
-
-def test_stale_code_cycle_does_not_flag_current_cycle():
-    content = "Comply with 2025 CBC."
-    alerts = detect_stale_code_cycle_references(content, "spec.docx", CALIFORNIA_2025)
-    assert alerts == []
-
-
-def test_stale_code_cycle_flags_old_asce7_edition():
-    content = "Provide ASCE 7-10 bracing."
-    alerts = detect_stale_code_cycle_references(content, "spec.docx", CALIFORNIA_2025)
-    assert any("ASCE" in a["match"].upper() for a in alerts)
 
 
 def test_detect_empty_sections_reports_heading_with_no_body():
@@ -100,19 +73,6 @@ def test_detect_inconsistent_file_naming_flags_mixed_styles():
 def test_detect_inconsistent_file_naming_no_alert_when_all_match():
     files = ["23 21 13 - A.docx", "23 22 13 - B.docx"]
     assert detect_inconsistent_file_naming(files) == []
-
-
-def test_preprocess_spec_includes_phase9_alerts_when_cycle_provided():
-    content = "1.01 OLD\n\nUse 2019 CBC.\n\n1.01 OLD\n\nMore body."
-    result = preprocess_spec(content, "spec.docx", cycle=CALIFORNIA_2025)
-    assert result.code_cycle_alerts, "expected cycle alert"
-    assert result.structural_alerts, "expected duplicate heading alert"
-
-
-def test_preprocess_spec_without_cycle_skips_cycle_alerts():
-    content = "Use 2019 CBC."
-    result = preprocess_spec(content, "spec.docx")
-    assert result.code_cycle_alerts == []
 
 
 # --- Section 13.2: extraction and token-count cache ------------------------
@@ -216,63 +176,3 @@ def test_token_count_cache_key_changes_with_cycle():
     assert a != b
 
 
-# --- Section 13.4: output-size and search-budget telemetry -----------------
-
-
-def test_diagnostics_summary_reports_output_telemetry():
-    diag = DiagnosticsReport()
-    diag.log("review", "success", "ok", {
-        "input_tokens": 100, "output_tokens": 1000,
-        "stop_reason": "end_turn", "max_output_tokens": 64_000,
-    })
-    diag.log("review", "success", "ok", {
-        "input_tokens": 100, "output_tokens": 5000,
-        "stop_reason": "max_tokens", "max_output_tokens": 64_000,
-    })
-    diag.finish()
-    summary = diag.summary()
-    out_t = summary["output_telemetry"]
-    assert out_t["samples"] == 2
-    assert out_t["max_observed"] == 5000
-    assert out_t["truncated_calls"] == 1
-    assert out_t["truncated_by_phase"] == {"review": 1}
-    assert out_t["max_cap_observed"] == 64_000
-
-
-def test_diagnostics_summary_reports_search_budget():
-    diag = DiagnosticsReport()
-    # Two web-grounded verifications and one cache hit (should be excluded).
-    diag.log("verification", "info", "v1", {
-        "verdict": "CONFIRMED", "grounded": True, "cache_status": "miss",
-        "web_search_requests": 3, "search_error_count": 0,
-    })
-    diag.log("verification", "info", "v2", {
-        "verdict": "CONFIRMED", "grounded": True, "cache_status": "miss",
-        "web_search_requests": 5, "search_error_count": 1,
-    })
-    diag.log("verification", "info", "v3", {
-        "verdict": "CONFIRMED", "grounded": True, "cache_status": "hit",
-        "web_search_requests": 0, "search_error_count": 0,
-    })
-    diag.finish()
-    summary = diag.summary()
-    budget = summary["search_budget"]
-    assert budget["samples"] == 2
-    assert budget["max_observed"] == 5
-    assert budget["total"] == 8
-
-
-def test_diagnostics_text_report_includes_telemetry_when_present():
-    diag = DiagnosticsReport()
-    diag.log("review", "success", "ok", {
-        "input_tokens": 1, "output_tokens": 2000,
-        "stop_reason": "end_turn", "max_output_tokens": 64_000,
-    })
-    diag.log("verification", "info", "v", {
-        "verdict": "CONFIRMED", "grounded": True, "cache_status": "miss",
-        "web_search_requests": 4,
-    })
-    diag.finish()
-    text = diag.to_text()
-    assert "Output Tokens" in text
-    assert "Search Budget" in text

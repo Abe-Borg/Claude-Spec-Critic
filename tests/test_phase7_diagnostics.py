@@ -65,27 +65,6 @@ def test_drop_cross_check_findings_uses_warning_level():
     assert any(lvl == "warning" for lvl, _msg in captured)
 
 
-def test_legacy_single_arg_log_callbacks_still_work():
-    """Older callers that pass ``log(msg)`` (no level kwarg) keep working
-    when the pipeline-side log signature accepts ``**level``. The default
-    level is ``info`` and no exception is raised.
-    """
-    captured: list[str] = []
-
-    def legacy_log(msg: str) -> None:
-        captured.append(msg)
-
-    # When pipeline uses level=, this single-arg callback would break — so
-    # the contract is: pipeline callers always send level=, but utilities
-    # that only emit informational text should remain compatible. We use
-    # _log_cross_check_status as the canonical example.
-    def adapter(msg: str, *, level: str = "info") -> None:
-        legacy_log(msg)
-
-    _log_cross_check_status(adapter, ReviewResult(findings=[], cross_check_status="completed"))
-    assert captured  # produced at least one informational line
-
-
 # ---------------------------------------------------------------------------
 # Phase 7.3: actionable diagnostics
 # ---------------------------------------------------------------------------

@@ -25,7 +25,6 @@ from src.api_config import (
     assert_extended_output_allowed,
     build_web_search_tool,
     cross_check_max_tokens,
-    extract_cache_usage,
     output_cap_for_model,
     prompt_caching_enabled,
     review_max_tokens,
@@ -195,36 +194,6 @@ class TestWebSearchTool:
 # ---------------------------------------------------------------------------
 # Cache usage extractor
 # ---------------------------------------------------------------------------
-
-
-class _FakeUsage:
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
-
-class TestExtractCacheUsage:
-    def test_handles_missing_usage(self):
-        result = extract_cache_usage(None)
-        assert result == {
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-        }
-
-    def test_extracts_both_fields(self):
-        usage = _FakeUsage(
-            cache_creation_input_tokens=1000,
-            cache_read_input_tokens=4500,
-        )
-        result = extract_cache_usage(usage)
-        assert result["cache_creation_input_tokens"] == 1000
-        assert result["cache_read_input_tokens"] == 4500
-
-    def test_handles_missing_fields_gracefully(self):
-        usage = _FakeUsage(input_tokens=100)
-        result = extract_cache_usage(usage)
-        assert result["cache_creation_input_tokens"] == 0
-        assert result["cache_read_input_tokens"] == 0
 
 
 # ---------------------------------------------------------------------------

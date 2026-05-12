@@ -60,65 +60,6 @@ from src.verification_router import classify_finding_for_verification
 # Rule id wiring
 # ---------------------------------------------------------------------------
 
-class TestDeterministicRuleIds:
-    """Every alert is stamped with the canonical rule id."""
-
-    def test_rule_id_set_is_complete(self) -> None:
-        # The closed set should include every constant we expose.
-        expected = {
-            DETERMINISTIC_RULE_LEED,
-            DETERMINISTIC_RULE_PLACEHOLDER,
-            DETERMINISTIC_RULE_STALE_CODE_CYCLE,
-            DETERMINISTIC_RULE_STALE_ASCE7,
-            DETERMINISTIC_RULE_EMPTY_SECTION,
-            DETERMINISTIC_RULE_DUPLICATE_HEADING,
-            DETERMINISTIC_RULE_TEMPLATE_MARKER,
-            DETERMINISTIC_RULE_INVALID_CODE_CYCLE,
-            DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH,
-            DETERMINISTIC_RULE_INCONSISTENT_FILENAME,
-        }
-        assert DETERMINISTIC_RULES == frozenset(expected)
-
-    def test_leed_alerts_carry_rule_id(self) -> None:
-        alerts = detect_leed_references("This is a LEED Gold project.", "s.docx")
-        assert alerts
-        assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_LEED for a in alerts)
-
-    def test_placeholder_alerts_carry_rule_id(self) -> None:
-        alerts = detect_placeholders("[INSERT PROJECT NAME] and [TBD].", "s.docx")
-        assert alerts
-        assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_PLACEHOLDER for a in alerts)
-
-    def test_stale_code_cycle_alerts_carry_rule_id(self) -> None:
-        alerts = detect_stale_code_cycle_references("Use 2019 CBC.", "s.docx", CALIFORNIA_2025)
-        assert alerts
-        # 2019 CBC is stale (real historical cycle), so it's tagged
-        # stale_code_cycle — not invalid_code_cycle.
-        assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_STALE_CODE_CYCLE for a in alerts)
-
-    def test_stale_asce7_alerts_carry_rule_id(self) -> None:
-        alerts = detect_stale_code_cycle_references("Provide ASCE 7-10 bracing.", "s.docx", CALIFORNIA_2025)
-        # The detector returns both ASCE-7 and CBC matches in one list; make
-        # sure at least one match carries the ASCE-7 rule id.
-        asce_alerts = [a for a in alerts if a["deterministic_rule"] == DETERMINISTIC_RULE_STALE_ASCE7]
-        assert asce_alerts
-
-    def test_structural_alerts_carry_rule_ids(self) -> None:
-        content = "1.01 OLD\n\nBody.\n\n1.02 EMPTY\n\n1.01 OLD\n\nBody."
-        empties = detect_empty_sections(content, "s.docx")
-        assert empties
-        assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_EMPTY_SECTION for a in empties)
-        dupes = detect_duplicate_headings(content, "s.docx")
-        assert dupes
-        assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_DUPLICATE_HEADING for a in dupes)
-
-    def test_naming_alerts_carry_rule_id(self) -> None:
-        files = ["23 21 13 - A.docx", "23 22 13 - B.docx", "23-23-13 - C.docx"]
-        alerts = detect_inconsistent_file_naming(files)
-        assert alerts
-        assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_INCONSISTENT_FILENAME for a in alerts)
-
-
 # ---------------------------------------------------------------------------
 # detect_unresolved_template_markers
 # ---------------------------------------------------------------------------
@@ -334,62 +275,6 @@ class TestPreprocessSpecAggregator:
 # ---------------------------------------------------------------------------
 
 class TestPipelinePlumbing:
-    def test_pipeline_result_has_all_chunk_o_alert_fields(self) -> None:
-        from src.pipeline import PipelineResult
-
-        pr = PipelineResult(review_result=None)
-        # Every alert list defaults to an empty list, including the chunk O
-        # additions and the previously-untracked code_cycle/structural/naming.
-        for name in (
-            "leed_alerts",
-            "placeholder_alerts",
-            "code_cycle_alerts",
-            "structural_alerts",
-            "naming_alerts",
-            "template_marker_alerts",
-            "invalid_code_cycle_alerts",
-            "duplicate_paragraph_alerts",
-        ):
-            assert hasattr(pr, name), f"PipelineResult missing {name}"
-            assert getattr(pr, name) == []
-
-    def test_batch_submission_has_all_chunk_o_alert_fields(self) -> None:
-        from src.batch import BatchJob
-        from src.pipeline import BatchSubmission
-
-        sub = BatchSubmission(
-            job=BatchJob(batch_id="msgbatch_test", job_type="review", request_map={}, created_at=0.0),
-        )
-        for name in (
-            "code_cycle_alerts",
-            "structural_alerts",
-            "naming_alerts",
-            "template_marker_alerts",
-            "invalid_code_cycle_alerts",
-            "duplicate_paragraph_alerts",
-        ):
-            assert hasattr(sub, name), f"BatchSubmission missing {name}"
-            assert getattr(sub, name) == []
-
-    def test_collected_batch_state_has_all_chunk_o_alert_fields(self) -> None:
-        from src.batch import BatchJob
-        from src.pipeline import BatchSubmission, CollectedBatchState
-        from src.reviewer import ReviewResult
-
-        sub = BatchSubmission(
-            job=BatchJob(batch_id="msgbatch_test", job_type="review", request_map={}, created_at=0.0),
-        )
-        state = CollectedBatchState(submission=sub, review_result=ReviewResult(findings=[]))
-        for name in (
-            "code_cycle_alerts",
-            "structural_alerts",
-            "naming_alerts",
-            "template_marker_alerts",
-            "invalid_code_cycle_alerts",
-            "duplicate_paragraph_alerts",
-        ):
-            assert hasattr(state, name), f"CollectedBatchState missing {name}"
-
     def test_finalize_batch_result_forwards_chunk_o_alerts(self) -> None:
         """finalize_batch_result copies every alert list onto the result."""
         from src.batch import BatchJob

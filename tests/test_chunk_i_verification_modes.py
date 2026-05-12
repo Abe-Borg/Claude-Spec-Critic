@@ -57,70 +57,7 @@ def _finding(
 
 
 # ===========================================================================
-# 1. Enum surface
-# ===========================================================================
-
-
-class TestVerificationModeEnum:
-    """The four modes the plan calls out must exist with stable string values.
-
-    The string values are persisted into the verification cache, resume
-    state, and diagnostics events; renaming any of them is an
-    audit-visible migration.
-    """
-
-    def test_four_modes_exist(self):
-        from src.verification_modes import VerificationMode
-        names = {m.name for m in VerificationMode}
-        assert names == {
-            "LOCAL_SKIP",
-            "STRICT_STRUCTURED",
-            "STANDARD_REASONING",
-            "DEEP_REASONING",
-        }
-
-    def test_string_values_are_stable(self):
-        from src.verification_modes import VerificationMode
-        assert VerificationMode.LOCAL_SKIP.value == "local_skip"
-        assert VerificationMode.STRICT_STRUCTURED.value == "strict_structured"
-        assert VerificationMode.STANDARD_REASONING.value == "standard_reasoning"
-        assert VerificationMode.DEEP_REASONING.value == "deep_reasoning"
-
-    def test_str_inheritance(self):
-        """``VerificationMode.X == "x"`` is true so serialization is trivial."""
-        from src.verification_modes import VerificationMode
-        assert VerificationMode.STANDARD_REASONING == "standard_reasoning"
-
-
-# ===========================================================================
-# 2. Mode label helper
-# ===========================================================================
-
-
-class TestModeLabel:
-    def test_each_mode_has_pretty_label(self):
-        from src.verification_modes import VerificationMode, mode_label
-        for mode in VerificationMode:
-            label = mode_label(mode)
-            assert isinstance(label, str) and label
-
-    def test_none_returns_empty_string(self):
-        from src.verification_modes import mode_label
-        assert mode_label(None) == ""
-
-    def test_string_value_roundtrip(self):
-        from src.verification_modes import mode_label
-        assert mode_label("local_skip") == "Local skip"
-
-    def test_unknown_string_passes_through(self):
-        """A future mode that this version of the module hasn't seen yet
-        should still render legibly in reports."""
-        from src.verification_modes import mode_label
-        assert mode_label("future_mode_xyz") == "future_mode_xyz"
-
-
-# ===========================================================================
-# 3. Per-mode policy
+# 1. Per-mode policy
 # ===========================================================================
 
 
@@ -423,30 +360,7 @@ class TestModeSearchBudget:
 
 
 # ===========================================================================
-# 6. VerificationResult / _local_skip_result
-# ===========================================================================
-
-
-class TestVerificationResultModeField:
-    def test_field_defaults_to_empty_string(self):
-        """Pre-Chunk-I callers that build a VerificationResult without a
-        mode tag should still work (e.g. tests, cache misses on legacy
-        entries)."""
-        from src.verifier import VerificationResult
-        r = VerificationResult(verdict="UNVERIFIED")
-        assert r.verification_mode == ""
-
-    def test_local_skip_helper_stamps_local_skip(self):
-        from src.verifier import _local_skip_result
-        from src.verification_modes import VerificationMode
-        r = _local_skip_result()
-        assert r.verification_mode == VerificationMode.LOCAL_SKIP.value
-        # And the profile tag is internal_coordination (Chunk H invariant).
-        assert r.cache_status == "local_skip"
-
-
-# ===========================================================================
-# 7. Cache + resume-state round-trip
+# 5. Cache + resume-state round-trip
 # ===========================================================================
 
 

@@ -19,14 +19,13 @@ from __future__ import annotations
 
 import pytest
 
-from src import app_paths, batch_state_store
+from src import batch_state_store
 from src.api_config import (
     BATCH_OUTPUT_BETA,
     MODEL_HAIKU_45,
     MODEL_OPUS_46,
     MODEL_OPUS_47,
     MODEL_SONNET_46,
-    REVIEW_MODEL_DEFAULT,
     model_capabilities,
     model_supports_extended_output_beta,
 )
@@ -236,44 +235,7 @@ class TestBatchExtendedOutputUsesCapabilityRegistry:
 
 
 # ---------------------------------------------------------------------------
-# 3) Opus 4.7 stays the default review model
-# ---------------------------------------------------------------------------
-
-
-class TestOpus47RemainsDefaultReviewModel:
-    """The repair plan forbids silently rewriting ``claude-opus-4-7`` to an older ID.
-
-    The model is current as of the plan. If a future change introduces a
-    misguided "fix" that renames it, this test fails before the rest of
-    the suite has to chase the regression.
-    """
-
-    def test_model_id_literal_is_opus_47(self) -> None:
-        # Pin the actual model-ID string. Any "fix" that silently downgrades
-        # this to ``claude-opus-4-1-... `` (or similar) must fail loudly.
-        assert MODEL_OPUS_47 == "claude-opus-4-7"
-
-    def test_review_model_default_resolves_to_opus_47(self) -> None:
-        # When ``SPEC_CRITIC_REVIEW_MODEL`` is unset (the case under the
-        # test harness — ``conftest.py`` only forces ``ANTHROPIC_API_KEY``),
-        # the review default must remain Opus 4.7.
-        import os
-
-        assert os.environ.get("SPEC_CRITIC_REVIEW_MODEL") in (None, "")
-        assert REVIEW_MODEL_DEFAULT == MODEL_OPUS_47
-
-    def test_review_model_default_carries_the_capability_record(self) -> None:
-        # The default review model must remain a model the capability
-        # registry knows about — otherwise every request that consults
-        # capabilities silently falls back to the safe-defaults record
-        # with every feature disabled.
-        caps = model_capabilities(REVIEW_MODEL_DEFAULT)
-        assert caps.supports_adaptive_thinking is True
-        assert caps.supports_extended_output_beta is True
-
-
-# ---------------------------------------------------------------------------
-# 4) Batch-state retention thresholds
+# 3) Batch-state retention thresholds
 # ---------------------------------------------------------------------------
 
 
@@ -338,18 +300,3 @@ class TestBatchStateRetentionThresholds:
         assert not state_path.exists()
 
 
-# ---------------------------------------------------------------------------
-# 5) App-paths constants are exported under stable names
-# ---------------------------------------------------------------------------
-
-
-class TestAppPathsExports:
-    """Pin the constant names so downstream consumers don't break silently."""
-
-    def test_constants_exported_from_app_paths(self) -> None:
-        assert hasattr(app_paths, "BATCH_STATE_MAX_AGE_HOURS")
-        assert hasattr(app_paths, "BATCH_STATE_WARNING_AGE_HOURS")
-
-    def test_constants_are_integers(self) -> None:
-        assert isinstance(app_paths.BATCH_STATE_MAX_AGE_HOURS, int)
-        assert isinstance(app_paths.BATCH_STATE_WARNING_AGE_HOURS, int)

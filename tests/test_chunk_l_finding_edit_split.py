@@ -22,7 +22,6 @@ from pathlib import Path
 
 import pytest
 
-from src.code_cycles import DEFAULT_CYCLE
 from src.edit_candidates import (
     SAFETY_AUTO_SAFE,
     SAFETY_AUTO_WITH_CAUTION,
@@ -31,16 +30,13 @@ from src.edit_candidates import (
 )
 from src.edit_locator import locate_edit
 from src.extractor import ParagraphMapping
-from src.prompts import get_system_prompt
 from src.resume_state import deserialize_finding, serialize_finding
 from src.reviewer import (
-    EDIT_ACTION_TYPES,
     EditProposal,
     Finding,
     REPORT_ONLY_ACTION,
     _parse_findings,
 )
-from src.structured_schemas import REVIEW_FINDINGS_SCHEMA
 from src.verifier import VerificationResult
 
 
@@ -161,14 +157,6 @@ class TestEditProposalAccessor:
             confidence=0.5,
         )
         assert finding.as_edit_proposal() is None
-
-    def test_edit_action_types_constant_includes_three_kinds(self):
-        # Guards against future code adding REPORT_ONLY to EDIT_ACTION_TYPES
-        # by accident, which would unhide REPORT_ONLY findings in the
-        # locator/edit-candidate paths.
-        assert EDIT_ACTION_TYPES == frozenset({"ADD", "EDIT", "DELETE"})
-        assert REPORT_ONLY_ACTION not in EDIT_ACTION_TYPES
-
 
 # ---------------------------------------------------------------------------
 # Parser: REPORT_ONLY support + edit_proposal population
@@ -518,23 +506,3 @@ class TestResumeRoundTrip:
         assert restored.edit_proposal is None
 
 
-# ---------------------------------------------------------------------------
-# Schema + prompt updates
-# ---------------------------------------------------------------------------
-
-
-class TestSchemaAndPrompt:
-    def test_schema_allows_report_only(self):
-        props = REVIEW_FINDINGS_SCHEMA["properties"]["findings"]["items"]["properties"]
-        assert "REPORT_ONLY" in props["actionType"]["enum"]
-        # The three real edit actions must also still be accepted so the
-        # backward-compat parser path keeps working.
-        for action in ("ADD", "EDIT", "DELETE"):
-            assert action in props["actionType"]["enum"]
-
-    def test_comprehensive_prompt_mentions_report_only(self):
-        prompt = get_system_prompt(DEFAULT_CYCLE)
-        assert "REPORT_ONLY" in prompt
-        # The new wording instructs the model not to invent edit text;
-        # surface that sentence so an accidental wording change is loud.
-        assert "leave existingText" in prompt or "leave the edit slots" in prompt

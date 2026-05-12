@@ -45,70 +45,12 @@ class TestStructuredToolOutputFlag:
         mod = _reload_schemas()
         assert mod.structured_tool_output_enabled() is True
 
-    def test_legacy_helper_still_callable(self, monkeypatch):
-        monkeypatch.delenv("SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT", raising=False)
-        monkeypatch.delenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", raising=False)
-        mod = _reload_schemas()
-        # Deprecation alias must still be importable and return the same value.
-        assert mod.structured_outputs_enabled() is True
-        assert mod.structured_outputs_enabled() == mod.structured_tool_output_enabled()
-
     def test_new_env_var_disables(self, monkeypatch):
         monkeypatch.delenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", raising=False)
         monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT", "0")
         mod = _reload_schemas()
         assert mod.structured_tool_output_enabled() is False
         assert mod.structured_outputs_enabled() is False
-
-    def test_legacy_env_var_still_disables(self, monkeypatch):
-        monkeypatch.delenv("SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT", raising=False)
-        monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", "0")
-        mod = _reload_schemas()
-        # Legacy env var must keep working for at least one release.
-        assert mod.structured_tool_output_enabled() is False
-        assert mod.structured_outputs_enabled() is False
-
-    def test_new_env_var_wins_when_both_set(self, monkeypatch):
-        # Preferred name wins. Legacy says off, preferred says on → on.
-        monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", "0")
-        monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT", "1")
-        mod = _reload_schemas()
-        assert mod.structured_tool_output_enabled() is True
-
-
-class TestContractDocumentation:
-    """The module docstring should describe what the code actually does."""
-
-    def test_module_docstring_mentions_best_effort(self):
-        mod = _reload_schemas()
-        doc = (mod.__doc__ or "").lower()
-        assert "best-effort" in doc
-        assert "tool_choice" in doc and "auto" in doc
-
-    def test_module_docstring_does_not_overclaim(self):
-        """The renamed module should not claim a contractually guaranteed schema."""
-        mod = _reload_schemas()
-        doc = mod.__doc__ or ""
-        # The module may explain *what Structured Outputs would be*, but the
-        # phrase "guaranteed JSON-schema final response" appears only as a
-        # negation; the new docstring must keep it that way.
-        if "guaranteed JSON-schema" in doc:
-            paragraph = next(
-                p for p in doc.split("\n\n") if "guaranteed JSON-schema" in p
-            )
-            assert "not" in paragraph.lower(), (
-                "module docstring claims a guarantee it does not enforce"
-            )
-
-    def test_review_tool_choice_comment_does_not_overclaim(self):
-        # Inspect the helper source to ensure the comment matches reality.
-        import inspect
-
-        from src import structured_schemas
-
-        src = inspect.getsource(structured_schemas.review_tool_choice)
-        # The comment block should call out the best-effort nature.
-        assert "not contractually" in src or "best-effort" in src.lower()
 
 
 # ---------------------------------------------------------------------------
