@@ -97,9 +97,22 @@ def classify_edit_candidates(
         # whose legacy actionType is outside the EDIT_ACTION_TYPES set
         # produce ``proposal is None`` and fall straight into the
         # "report-only" bucket with a clear, user-readable reason.
+        #
+        # Chunk 7: when the parser demoted an EDIT/DELETE/ADD because a
+        # required field was missing, the finding now carries the specific
+        # reason on ``demotion_reason``. Surface it so the UI explains
+        # *why* the proposal was rejected (e.g., "EDIT action missing
+        # required existingText") rather than reporting a generic
+        # REPORT_ONLY or — worse — falling through to the legacy "no
+        # anchor text" branch and inventing a misleading explanation.
         if proposal is None:
             eligible = False
-            if (finding.actionType or "").strip().upper() == REPORT_ONLY_ACTION:
+            demotion = (finding.demotion_reason or "").strip()
+            if demotion:
+                ineligible_reason = (
+                    f"Demoted to REPORT_ONLY at parse time: {demotion}"
+                )
+            elif (finding.actionType or "").strip().upper() == REPORT_ONLY_ACTION:
                 ineligible_reason = (
                     "Finding is REPORT_ONLY — surfaced in the report but has "
                     "no edit proposal to apply."

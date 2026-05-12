@@ -202,10 +202,15 @@ class TestEditActionClassification:
         assert classify_edit_action(f) is EditActionLabel.AUTO_EDIT_CANDIDATE
 
     def test_locally_classified_can_become_auto_edit(self):
+        # Chunk 7: EDIT requires non-empty replacement_text; an empty
+        # string is rejected by ``as_edit_proposal``'s defensive
+        # validation and the finding falls into REPORT_ONLY. Use a
+        # non-empty replacement so this test exercises the original
+        # intent (LOCALLY_CLASSIFIED + high confidence → auto-edit).
         proposal = EditProposal(
             action_type="EDIT",
             existing_text="LEED Gold",
-            replacement_text="",
+            replacement_text="LEED Silver",
             edit_confidence=0.95,
         )
         v = _verification("UNVERIFIED", grounded=False, cache_status="local_skip")
