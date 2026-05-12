@@ -1475,11 +1475,12 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
     cross = None
     cache = _make_verification_cache(log=log)
     verify_progress = _phase_tagged_progress(progress, "verification")
+    verify_log = _phase_tagged_log(log, "verification")
     if verify and findings:
         try:
             verify_findings(findings, progress=lambda c, t, fn: verify_progress(50.0 + (c / max(t, 1)) * 25.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
         except Exception as e:
-            log(f"Verification failed: {e}. Returning results without verification.", level="error", phase="verification")
+            verify_log(f"Verification failed: {e}. Returning results without verification.", level="error")
             for f in findings:
                 if f.verification is None:
                     f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
@@ -1492,7 +1493,7 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
             try:
                 verify_findings(cross.findings, progress=lambda c, t, fn: verify_progress(90.0 + (c / max(t, 1)) * 5.0, f"Verifying cross-check {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
             except Exception as e:
-                log(f"Cross-check verification failed: {e}.", level="error", phase="verification")
+                verify_log(f"Cross-check verification failed: {e}.", level="error")
                 for f in cross.findings:
                     if f.verification is None:
                         f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")

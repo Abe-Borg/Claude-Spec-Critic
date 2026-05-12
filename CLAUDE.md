@@ -298,6 +298,18 @@ Chunk M — dependency tracking: `_build_cross_check_input` renders every `<prio
 
 Phase 10 — disk persistence: `VerificationCache.load_from_disk(path)` and `save_to_disk(path)` round-trip the cache to JSON at `~/.spec_critic/verification_cache.json` (override via `SPEC_CRITIC_CACHE_PATH`). Atomic write via temp-file + rename. Each entry stores `created_ts` and `model_used` for future age/model-based pruning, but changing `SPEC_CRITIC_VERIFICATION_MODEL` or `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` does not invalidate existing entries because model identity is not part of the key. To force fresh re-verification after changing model policy, delete the cache file, set `SPEC_CRITIC_CACHE_PATH` to a new file, or disable persistence with `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST=0` for that run. Default behavior is database mode (no automatic expiration); set `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` to a positive integer for opt-in TTL pruning. Cycle label remains in the key, so switching code cycles naturally invalidates entries from the prior cycle.
 
+Chunk 13 — digest width: `_CLAIM_DIGEST_LEN = 24` hex chars (96 bits, up from 16 hex chars / 64 bits). The previous 64-bit digest was thin under birthday-bound math (50%+ collision risk at ~5B keys, observable collisions at ~1M). The on-disk JSON format is unchanged — old entries whose keys were built with the 16-char digest stay readable; lookups for the new 24-char form simply miss against them, which re-grounds the claim and writes a fresh 24-char entry. The legacy length stays exported as `_LEGACY_CLAIM_DIGEST_LEN` so a future migration tool can detect and prune legacy-form keys explicitly.
+
+### api_key_store.py — API key loading and persistence
+
+`load_api_key_from_file()` resolves the Anthropic API key in priority order: OS keyring (if the optional `keyring` package is installed and a working backend is available) → platform config directory (`~/.config/SpecCritic/spec_critic_api_key.txt` on Linux, equivalent paths on macOS/Windows) → executable/source-parent fallback. Returns `""` when nothing is available so the caller can surface that to the user.
+
+Chunk 13 hardening:
+- Optional OS keyring support via the `keyring` package. The import is wrapped in `try/except` so the helper degrades gracefully on headless CI / minimal installs that don't ship a keyring backend. `keyring_available()` exposes the runtime capability.
+- `save_api_key_to_file(value)` writes the primary fallback file with `0o600` permissions on POSIX (owner read/write only) so a freshly-saved key never lands world-readable.
+- `load_api_key_from_file()` lazily tightens permissions of any pre-existing fallback file it successfully reads — an in-place upgrade improves an existing `0o644` key file's posture without requiring re-entry.
+- `save_api_key_to_keyring(value)` returns `False` (not raises) when the keyring backend is unavailable, so callers can fall back cleanly to the file path.
+
 ### triage.py — Haiku verification triage
 
 Optional pre-pass that runs after the keyword classifier and cache lookup but before web verification. Classifies eligible findings as `web_required` or `local_skip` so internally-verifiable findings (e.g. internal contradictions where both sides are quoted, equipment-tag mismatches, formatting issues) skip the expensive Sonnet+web_search call.
@@ -347,8 +359,10 @@ Helpers:
 
 - `extract_text(filepath) -> ExtractedSpec` / `extract_text_from_docx(filepath)`
 - `extract_multiple_specs(filepaths)` — bounded ThreadPoolExecutor (max 8 workers); deterministic order
-- `extract_multiple_specs_cached(filepaths)` — uses the LRU cache keyed on `(absolute_path, size, mtime_ns)`; falls back to parallel extraction for misses
+- `extract_multiple_specs_cached(filepaths)` — uses the LRU cache keyed on `(absolute_path, size, mtime_ns, content_fingerprint)`; falls back to parallel extraction for misses
 - `token_count_cache_key(model, system_prompt, user_message, project_context, cycle_label, mode)` — SHA-256 of inputs; LRU bounded to 256 entries
+
+Chunk 13 — extraction-cache fingerprint: the LRU key now includes a SHA-256 of the file's first + last `_FINGERPRINT_SAMPLE_BYTES` (default 64 KiB) plus the size, so a same-size in-place rewrite that preserves `mtime_ns` (e.g. `touch -d` after a cosmetic edit) is detected and the cached extraction is invalidated. The previous stat-only key returned stale data in that scenario. Reading at most ~128 KiB per file keeps the overhead well under a single DOCX parse; transient I/O errors return `""` and the caller treats that as "cannot fingerprint" — the cache falls back to the stat-only behavior so a quirky filesystem can't kill the run.
 
 ### tokenizer.py — Token accounting
 

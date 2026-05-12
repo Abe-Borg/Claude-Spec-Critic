@@ -510,10 +510,22 @@ def _precondition_holds_for_anchor(anchor_paragraph: Paragraph, expected_text: s
 
 
 def _action_confidence(action: EditAction) -> float:
+    """Locator match confidence in [0.0, 1.0].
+
+    Populated by :mod:`edit_locator` when an edit's ``existingText`` was
+    resolved against the source document. 1.0 = exact byte-for-byte match
+    of the model's ``existingText`` against a single paragraph;
+    intermediate values reflect normalized / fuzzy / section-anchored
+    matches (and those non-exact methods are already gated to manual
+    review elsewhere). Used here only to break ties between two edits
+    whose spans are identical — *not* to legitimize picking one edit
+    over another when their intents partially overlap.
+    """
     return action.location.match_confidence
 
 
 def _severity_rank(action: EditAction) -> int:
+    """Lower is more important; missing/unknown severities sort last (99)."""
     severity = (action.locator_result.finding.severity or "").upper()
     return {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}.get(severity, 99)
 
@@ -521,24 +533,32 @@ def _severity_rank(action: EditAction) -> int:
 def _resolve_overlap_winner(action_a: EditAction, action_b: EditAction) -> EditAction | None:
     """Pick a clear winner for two overlapping edits, or return None if ambiguous.
 
-    Chunk D3.1: We previously fell through to severity / confidence / span
-    heuristics when neither edit strictly contained the other. That silently
-    picked a winner for genuinely ambiguous partial overlaps and discarded
-    the loser's intent. Per the delta plan, ambiguous overlapping edits
-    should be flagged for manual review rather than misapplied.
-
     Resolution rules:
 
     * Strict containment (one edit's span is fully inside the other and they
       are not identical): the broader edit wins. The narrower edit's intent
       is included in the broader edit's replacement span, so applying the
       broader edit is not a misapplication.
-    * Identical span: fall back to severity / confidence / span tie-breakers
-      so duplicate findings collapse to a single applied edit rather than
-      both being thrown away.
+    * Identical span: fall back to severity → confidence → first-arg tie-
+      breakers (in that order) so duplicate findings collapse to a single
+      applied edit rather than both being thrown away.
+      - Severity: CRITICAL < HIGH < MEDIUM < GRIPES (lower rank wins). The
+        more important finding's edit is preferred when two identical-span
+        edits disagree on what to write.
+      - Confidence: only used when severities tie. Higher locator-match
+        confidence wins because higher confidence is more likely to mean
+        the model's ``existingText`` lines up with the source exactly.
+      - Final fallback: return ``action_a``. Deterministic ordering so the
+        same input always produces the same applied edit; the actual
+        choice is harmless when both edits have identical span, severity,
+        and confidence.
     * Partial overlap (neither strictly contains the other): return ``None``.
       The caller skips both edits with a manual-review detail; auto-applying
-      either one would discard the other's distinct intent.
+      either one would discard the other's distinct intent. Severity and
+      confidence are intentionally *not* consulted here — they were only
+      ever a tie-break for identical-span duplicates, and treating them as
+      a precedence rule across partial overlaps silently discarded the
+      losing edit's content.
     """
     a_range = (action_a.location.match_start, action_a.location.match_end)
     b_range = (action_b.location.match_start, action_b.location.match_end)
@@ -607,12 +627,12 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
                 )
             continue
 
-        # Chunk D3.1: process the group in descending-start order so the
-        # higher-offset edit is checked first. Track tainted ranges from
-        # ambiguous-overlap resolutions so a third edit overlapping with
-        # either side of an already-discarded ambiguous pair is also
-        # skipped (rather than slipping through because the original
-        # conflicting actions were removed from ``accepted``).
+        # Process the group in descending-start order so the higher-offset
+        # edit is checked first. Track tainted ranges from ambiguous-overlap
+        # resolutions so a third edit overlapping with either side of an
+        # already-discarded ambiguous pair is also skipped (rather than
+        # slipping through because the original conflicting actions were
+        # removed from ``accepted``).
         sorted_group = sorted(group, key=lambda item: item.location.match_start, reverse=True)
         accepted: list[EditAction] = []
         ambiguous_ranges: list[tuple[int, int]] = []
@@ -668,7 +688,7 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
 
             winner = _resolve_overlap_winner(action, overlap)
             if winner is None:
-                # Chunk D3.1: ambiguous partial overlap — skip both edits and
+                # Ambiguous partial overlap — skip both edits and
                 # taint the union range so any further action overlapping
                 # this region is also routed to manual review.
                 accepted.remove(overlap)

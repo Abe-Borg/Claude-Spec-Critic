@@ -791,26 +791,54 @@ def token_count_preflight_enabled() -> bool:
 # Web-search tool configuration
 # ---------------------------------------------------------------------------
 
-# Source-quality blocklist for web_search_20260209. Audit notes (section 6.8)
-# call out that mixing allowed_domains and blocked_domains is not supported,
-# so we keep blocked-only here. California priority sources are documented in
-# the verifier system prompt rather than encoded as an allow-list.
+# Source-quality blocklist for ``web_search_20260209``. Mixing
+# ``allowed_domains`` and ``blocked_domains`` is not supported by the tool,
+# so this is blocked-only; California priority sources are documented in the
+# verifier system prompt as guidance rather than encoded as an allow-list.
+#
+# Domains are listed bare (no scheme/path) and the tool treats each entry as
+# "this apex and every subdomain", so adding ``simple.wikipedia.org`` when
+# ``wikipedia.org`` is already on the list adds nothing.
+#
+# Categories (kept as inline comment groups so the intent of each line is
+# obvious; do *not* hand-sort across categories without checking that no
+# entry's category interpretation changes):
+#   - Aggregators / Q&A: forums where contractor-grade evidence is rare.
+#   - LLM-assistant outputs: another model's answer is not a citable source.
+#   - Trade forums: useful peer chatter, not authoritative for code.
+#   - DIY / home-improvement content farms.
+#   - Social: unsuitable for a defensible engineering review.
+#   - General encyclopedias: tertiary sources.
+#
+# TODO: explore a category-based blocking helper so each entry is annotated
+# with its category and the report can explain *why* a citation was rejected
+# (Chunk 13 deferred this; the immediate fix here is just deduplicating the
+# obvious subdomain overlap). Any change to this list should be exercised
+# against the verifier's grounding tests in
+# ``tests/test_chunk_h_source_grounding.py``.
 _WEB_SEARCH_BLOCKED_DOMAINS = [
+    # Aggregators / Q&A
     "reddit.com", "quora.com", "medium.com",
+    "stackexchange.com", "stackoverflow.com",
+    "answers.yahoo.com", "fixya.com",
+    # LLM-assistant outputs
     "chatgpt.com", "perplexity.ai", "openai.com", "gemini.google.com",
     "claude.ai", "you.com", "phind.com", "copilot.microsoft.com",
     "poe.com", "character.ai", "jasper.ai", "writesonic.com",
-    "stackexchange.com", "stackoverflow.com",
-    "answers.yahoo.com", "fixya.com",
+    # Trade forums (peer chatter, not authoritative for code compliance)
     "diychatroom.com", "forums.jlconline.com", "hvac-talk.com",
     "inspectionnews.net", "inspectorsforum.com", "contractortalk.com",
+    # DIY / home-improvement / lead-gen content farms
     "doityourself.com", "homeadvisor.com", "thumbtack.com", "angi.com",
     "ehow.com", "wikihow.com", "about.com", "thespruce.com", "bobvila.com",
     "familyhandyman.com", "hunker.com", "sapling.com", "reference.com",
     "leaf.tv", "sciencing.com", "bizfluent.com", "pocketsense.com",
+    # Social
     "facebook.com", "twitter.com", "x.com", "instagram.com", "tiktok.com",
     "linkedin.com", "pinterest.com", "youtube.com", "threads.net",
-    "wikipedia.org", "britannica.com", "simple.wikipedia.org",
+    # General encyclopedias (tertiary). ``wikipedia.org`` already covers
+    # every subdomain (``simple.wikipedia.org``, ``en.wikipedia.org``, ...).
+    "wikipedia.org", "britannica.com",
 ]
 
 # Default web-search budget when severity tiering is disabled or the severity

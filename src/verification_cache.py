@@ -50,14 +50,28 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # shape changes incompatibly so older readers can refuse to load instead of
 # silently mis-deserializing.
 #
-# Chunk 5 — bumped to 2 to invalidate pre-Chunk-5 entries that may have
-# stored a CONFIRMED/CORRECTED verdict without an accepted external
-# citation. The strengthened
+# v2 — invalidates pre-v2 entries that may have stored a CONFIRMED/CORRECTED
+# verdict without an accepted external citation. The strengthened
 # :func:`src.verifier._enforce_grounding_invariant` would now downgrade
 # those verdicts, so silently reusing them would let the old behavior
 # leak through. Bumping the version drops every v1 cache file on first
 # load; users get fresh verifications under the new invariant.
 _CACHE_SCHEMA_VERSION = 2
+
+# Cache-key claim digest length (hex chars). 24 hex chars = 96 bits of entropy,
+# enough that two distinct claims colliding is astronomically unlikely even
+# across a corpus of millions of findings; the previous 16 hex chars / 64-bit
+# digest was thin under birthday-bound math (50%+ collision risk at ~5B keys
+# and observable collision risk at ~1M). Lookups that present an old 16-char
+# digest will simply miss in the new cache, which is the safe failure mode —
+# the next verification call re-grounds the claim and writes a 24-char entry.
+# Going higher (32+) would add latency and disk-write bytes for diminishing
+# safety; 24 hex chars is the deliberate sweet spot.
+_CLAIM_DIGEST_LEN = 24
+# Legacy length retained as a name so the migration story is self-documenting
+# (and so callers can detect a legacy-format hit if we ever want to add a
+# graceful-rekey path).
+_LEGACY_CLAIM_DIGEST_LEN = 16
 
 
 def _normalize(text: str | None) -> str:
@@ -69,7 +83,7 @@ def _normalize(text: str | None) -> str:
 def _digest(value: str) -> str:
     if not value:
         return ""
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:_CLAIM_DIGEST_LEN]
 
 
 def _claim_summary(finding) -> str:
@@ -171,8 +185,8 @@ class VerificationCache:
         # want to share *grounded* verdicts across findings.
         if not getattr(result, "grounded", False):
             return
-        # Chunk 5: also refuse to cache a CONFIRMED/CORRECTED that lacks
-        # any accepted external citation. The verifier's
+        # Refuse to cache a CONFIRMED/CORRECTED that lacks any accepted
+        # external citation. The verifier's
         # ``_enforce_grounding_invariant`` would have downgraded such a
         # result to UNVERIFIED before reaching here; this is defense in
         # depth against a test or future call site that puts directly.
@@ -274,9 +288,9 @@ class VerificationCache:
                             result_payload.get("successful_source_count", 0) or 0
                         ),
                         search_error_count=int(result_payload.get("search_error_count", 0) or 0),
-                        # Chunk H source-grounding evidence. Pre-Chunk-H
-                        # entries lack these keys; the defaults below
-                        # preserve the cached verdict exactly.
+                        # Source-grounding evidence. Legacy entries lack
+                        # these keys; the defaults below preserve the
+                        # cached verdict exactly.
                         searched_sources=[
                             str(s) for s in (result_payload.get("searched_sources") or []) if s
                         ],
@@ -290,10 +304,10 @@ class VerificationCache:
                         verification_profile=str(
                             result_payload.get("verification_profile") or ""
                         ),
-                        # Chunk I: stored verification mode. Missing on
-                        # pre-Chunk-I entries — defaults to "" so the
-                        # routing logic falls back to current behavior
-                        # the next time the entry is used.
+                        # Stored verification mode. Missing on legacy
+                        # entries — defaults to "" so the routing logic
+                        # falls back to STANDARD_REASONING the next time
+                        # the entry is used.
                         verification_mode=str(
                             result_payload.get("verification_mode") or ""
                         ),
@@ -304,12 +318,10 @@ class VerificationCache:
                     # Defensive: only grounded entries should ever be on
                     # disk, but reject any that slipped in.
                     continue
-                # Chunk 5: belt-and-suspenders. The schema bump drops
-                # every v1 entry, but a v2 entry that somehow shipped
-                # without an accepted citation should still be rejected
-                # here — otherwise it would silently power a
-                # source-less CONFIRMED on a cache hit. Mirrors the
-                # invariant in
+                # Belt-and-suspenders against a v2 entry that somehow
+                # shipped without an accepted citation — silently
+                # reusing it would power a source-less CONFIRMED on a
+                # cache hit. Mirrors the invariant in
                 # :func:`src.verifier._enforce_grounding_invariant`.
                 verdict_upper = (entry_result.verdict or "").strip().upper()
                 if verdict_upper in ("CONFIRMED", "CORRECTED") and not (
@@ -378,18 +390,18 @@ def _result_to_dict(result: "VerificationResult") -> dict:
         "web_search_requests": int(result.web_search_requests),
         "successful_source_count": int(result.successful_source_count),
         "search_error_count": int(result.search_error_count),
-        # Chunk H: persist the source-grounding partition + profile so a
-        # restored cache hit still shows reports the same accepted /
-        # rejected sources the original run produced.
+        # Persist the source-grounding partition + profile so a restored
+        # cache hit shows reports the same accepted / rejected sources the
+        # original run produced.
         "searched_sources": list(result.searched_sources),
         "cited_sources": list(result.cited_sources),
         "accepted_sources": list(result.accepted_sources),
         "rejected_sources": [dict(r) for r in result.rejected_sources],
         "verification_profile": result.verification_profile,
-        # Chunk I: persist the verification mode so a restored cache hit
-        # carries the original routing decision into reports and
-        # diagnostics. Pre-Chunk-I entries (without this field) load as
-        # empty string; the routing logic treats that as STANDARD_REASONING.
+        # Persist the verification mode so a restored cache hit carries the
+        # original routing decision into reports and diagnostics. Legacy
+        # entries (without this field) load as empty string; the routing
+        # logic treats that as STANDARD_REASONING for backward compatibility.
         "verification_mode": result.verification_mode,
     }
 
