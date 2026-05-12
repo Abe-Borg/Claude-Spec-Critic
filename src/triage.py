@@ -162,12 +162,15 @@ def _classify_batch(
     findings_batch: list[tuple[int, Finding]],
     *,
     model: str,
+    log: "LogFn" = lambda *_a, **_k: None,
 ) -> dict[int, str]:
     """Run a single Haiku classification call over a chunk of findings.
 
     Returns a dict mapping finding index → classification string. On any
     failure path, returns an empty dict and the caller falls back to
-    ``web_required`` for the affected findings.
+    ``web_required`` for the affected findings. Failures are logged at
+    ``warning`` level so a silently broken triage path is visible — the
+    fallback is safe but the silent failure mode previously hid bugs.
     """
     if not findings_batch:
         return {}
@@ -178,28 +181,48 @@ def _classify_batch(
     request_kwargs: dict = {
         "model": model,
         "max_tokens": triage_max_tokens(model=model),
-        # Chunk J: phase-aware cache policy. Triage prompts run ~375 tokens,
-        # well under the Anthropic 2048-token cache minimum for Haiku, so a
-        # cache write would be paid for nothing. The phase policy disables
-        # caching here; the helper still no-ops cleanly when caching is on.
+        # Triage prompts run ~375 tokens, well under Haiku's cache minimum,
+        # so a cache write would be paid for nothing. The phase policy
+        # disables caching here; the helper still no-ops cleanly when on.
         "system": system_prompt_with_cache(_TRIAGE_SYSTEM_PROMPT, phase=PHASE_TRIAGE),
         "tools": tools_with_cache([triage_classifications_tool()], phase=PHASE_TRIAGE),
         "tool_choice": triage_tool_choice(),
         "messages": [{"role": "user", "content": user_prompt}],
     }
+    batch_size = len(findings_batch)
     try:
         # Non-streaming is fine — no server-side tools to require streaming,
         # and the response is small.
         response = client.messages.create(**request_kwargs)
-    except (RateLimitError, APIConnectionError, InternalServerError, APIStatusError, APIError):
+    except (RateLimitError, APIConnectionError, InternalServerError, APIStatusError, APIError) as e:
+        log(
+            f"Haiku triage: API error on chunk of {batch_size} finding(s); "
+            f"falling back to web_required. ({type(e).__name__}: {e})",
+            level="warning",
+        )
         return {}
-    except Exception:
+    except Exception as e:
+        log(
+            f"Haiku triage: unexpected error on chunk of {batch_size} finding(s); "
+            f"falling back to web_required. ({type(e).__name__}: {e})",
+            level="warning",
+        )
         return {}
     payload = extract_tool_use_block(response, TRIAGE_TOOL_NAME)
     if not isinstance(payload, dict):
+        log(
+            f"Haiku triage: no usable tool payload on chunk of {batch_size} "
+            f"finding(s); falling back to web_required.",
+            level="warning",
+        )
         return {}
     classifications = payload.get("classifications") or []
     if not isinstance(classifications, list):
+        log(
+            f"Haiku triage: malformed classifications array on chunk of {batch_size} "
+            f"finding(s); falling back to web_required.",
+            level="warning",
+        )
         return {}
     out: dict[int, str] = {}
     for item in classifications:
@@ -251,7 +274,7 @@ def classify_findings_with_haiku(
     for chunk_start in range(0, len(eligible), batch_size):
         chunk = eligible[chunk_start:chunk_start + batch_size]
         chunk_indices = {idx for idx, _ in chunk}
-        chunk_results = _classify_batch(chunk, model=selected_model)
+        chunk_results = _classify_batch(chunk, model=selected_model, log=log)
         # Only accept results for indices we actually sent — defends against
         # a hallucinated index in the tool payload.
         for idx, cls in chunk_results.items():

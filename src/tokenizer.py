@@ -24,6 +24,7 @@ because the cross-checker sends ALL spec content in a single call.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -133,7 +134,7 @@ def safe_local_estimate(local_tokens: int, *, model: str | None) -> int:
     """Return ``local_tokens`` padded by the model-specific safety factor."""
     factor = local_estimate_safety_factor(model)
     # Round up — the factor is a safety margin, not a midpoint estimate.
-    return int(round(local_tokens * factor + 0.5))
+    return math.ceil(local_tokens * factor)
 
 
 def exceeds_per_call_limit_for_model(
