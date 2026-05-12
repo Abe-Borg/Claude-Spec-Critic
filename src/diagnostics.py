@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 # Phase 7.3 (audit Section 11.3): cap retained events so a long-running batch
@@ -22,6 +23,156 @@ _DEFAULT_MAX_EVENTS = 5000
 # byte-capped so a large findings array on a 50-spec batch run cannot blow
 # up diagnostics memory or report size.
 _STRUCTURED_PAYLOAD_MAX_BYTES = 4096
+
+# Chunk 10 — bounded diagnostics. The event-count cap (above) keeps the list
+# length finite, but a single event can still carry a multi-megabyte field
+# (long raw_response, sprawling source list, etc.). These caps put a hard
+# byte ceiling on per-event data and on the cumulative data footprint so a
+# pathological prompt cannot bloat memory or blow up JSON exports.
+_DEFAULT_MAX_EVENT_DATA_BYTES = 16 * 1024     # 16 KiB per event
+_DEFAULT_MAX_TOTAL_DATA_BYTES = 8 * 1024 * 1024  # 8 MiB total across all events
+_MAX_STRING_FIELD_BYTES = 4 * 1024            # 4 KiB per individual string field
+_TRUNCATION_MARKER = "...(truncated)"
+
+# Chunk 10 — secrets scrub. Diagnostics never need to retain credentials, so
+# any data field whose key looks secret-shaped or whose value matches a
+# well-known secret prefix is replaced with ``"<redacted>"``. The patterns
+# below are deliberately conservative — false positives only obscure data;
+# false negatives leak credentials.
+_SECRET_KEY_PATTERN = re.compile(
+    r"(api[_-]?key|secret|password|passwd|auth|bearer|access[_-]?token|"
+    r"private[_-]?key|credentials?|client[_-]?secret|x[_-]?api[_-]?key)",
+    re.IGNORECASE,
+)
+# Anthropic API keys begin with ``sk-ant-``; OpenAI / cloud keys often begin
+# with ``sk-`` or ``AKIA``. Pattern matches a prefix followed by a long
+# token-shaped run of safe characters.
+_SECRET_VALUE_PATTERNS = (
+    re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.=]{12,}", re.IGNORECASE),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+)
+_REDACTED = "<redacted>"
+
+
+def _truncate_string(value: str, *, max_bytes: int = _MAX_STRING_FIELD_BYTES) -> str:
+    """Cap ``value`` to ``max_bytes`` of UTF-8 with a visible marker.
+
+    Splits cleanly on a UTF-8 boundary so the result stays decodable.
+    """
+    encoded = value.encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return value
+    cut = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return cut + _TRUNCATION_MARKER
+
+
+def _scrub_value(value: Any) -> Any:
+    """Replace ``value`` with ``"<redacted>"`` when it looks like a secret."""
+    if not isinstance(value, str):
+        return value
+    for pattern in _SECRET_VALUE_PATTERNS:
+        if pattern.search(value):
+            return _REDACTED
+    return value
+
+
+def _scrub_and_bound(data: Any, *, _depth: int = 0) -> Any:
+    """Recursively scrub secrets and cap long string fields.
+
+    ``_depth`` is bounded so a cyclic dict cannot loop forever (the
+    JSON serializer would also catch this, but the early exit avoids
+    paying for it). The recursion is bounded at six levels — deeper
+    nesting is replaced with its ``repr()`` so the field is still
+    visible without escaping the bound.
+    """
+    if _depth > 6:
+        return _truncate_string(repr(data))
+    if isinstance(data, dict):
+        out: dict = {}
+        for key, value in data.items():
+            if isinstance(key, str) and _SECRET_KEY_PATTERN.search(key):
+                out[key] = _REDACTED
+                continue
+            out[key] = _scrub_and_bound(value, _depth=_depth + 1)
+        return out
+    if isinstance(data, (list, tuple)):
+        scrubbed = [_scrub_and_bound(v, _depth=_depth + 1) for v in data]
+        return scrubbed if isinstance(data, list) else tuple(scrubbed)
+    if isinstance(data, str):
+        return _truncate_string(_scrub_value(data))
+    return data
+
+
+def _event_data_byte_size(data: Optional[dict]) -> int:
+    """Approximate JSON byte size of an event's data dict (for cap tracking)."""
+    if not data:
+        return 0
+    try:
+        return len(json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"))
+    except (TypeError, ValueError):
+        return len(repr(data).encode("utf-8"))
+
+
+def _bound_event_data(
+    data: Optional[dict], *, max_bytes: int = _DEFAULT_MAX_EVENT_DATA_BYTES
+) -> tuple[Optional[dict], bool, int]:
+    """Scrub secrets and cap a single event's data payload by byte size.
+
+    Returns ``(scrubbed_dict, truncated, redaction_count)``:
+
+    - ``scrubbed_dict`` — the bounded, JSON-serializable payload.
+    - ``truncated`` — ``True`` when any field was reduced (string
+      truncation, secret redaction, or whole-field eviction).
+    - ``redaction_count`` — number of fields whose value was replaced
+      with ``<redacted>`` during scrubbing. Captured *before* byte-cap
+      eviction so a small per-event cap cannot mask the fact that
+      secret values were observed.
+    """
+    if not data:
+        return data, False, 0
+    scrubbed = _scrub_and_bound(data)
+    truncated = scrubbed != data
+    redaction_count = 0
+    if scrubbed is not None:
+        try:
+            redaction_count = json.dumps(
+                scrubbed, ensure_ascii=False, default=str
+            ).count(_REDACTED)
+        except (TypeError, ValueError):
+            redaction_count = 0
+    size = _event_data_byte_size(scrubbed)
+    if size <= max_bytes:
+        return scrubbed, truncated, redaction_count
+
+    # Whole-event still over cap. Drop the largest *string-shaped* fields
+    # first; never touch numeric telemetry (input_tokens, output_tokens,
+    # etc.) because the summary rollup parses those with ``int(...)`` and
+    # a marker string would crash it. Numbers are tiny by definition, so
+    # excluding them from eviction does not weaken the cap.
+    safe: dict = {}
+    if isinstance(scrubbed, dict):
+        safe.update(scrubbed)
+        # Only evict containers / strings. Booleans / ints / floats /
+        # ``None`` are left alone — they're typically <8 bytes each so
+        # they cannot be the source of the overrun.
+        evictable_keys = [
+            k for k, v in safe.items()
+            if isinstance(v, (str, list, tuple, dict))
+            and k not in ("api_call", "model", "call_mode", "retry_status")
+        ]
+        sized = sorted(
+            evictable_keys,
+            key=lambda k: _event_data_byte_size({k: safe[k]}),
+            reverse=True,
+        )
+        for k in sized:
+            if _event_data_byte_size(safe) <= max_bytes:
+                break
+            safe[k] = _TRUNCATION_MARKER
+        safe.setdefault("_event_truncated", True)
+        return safe, True, redaction_count
+    return scrubbed, True, redaction_count
 
 
 def bound_structured_payload(
@@ -99,22 +250,80 @@ class DiagnosticsReport:
     locator_methods: dict[str, int] = field(default_factory=dict)
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
+    # Chunk 10 — diagnostic byte caps. Prevent a single event from blowing up
+    # in-memory size and prevent the cumulative event payload from growing
+    # unbounded. Both caps default to conservative ceilings; operators that
+    # need every byte of detail can bump them per-instance.
+    max_event_data_bytes: int = _DEFAULT_MAX_EVENT_DATA_BYTES
+    max_total_data_bytes: int = _DEFAULT_MAX_TOTAL_DATA_BYTES
+    total_data_bytes: int = 0
+    events_truncated_by_size: int = 0
+    secrets_redacted: int = 0
+    bytes_dropped: int = 0
+
+    def _accept_event_data(self, data: Optional[dict]) -> tuple[Optional[dict], int]:
+        """Apply per-event byte caps + secret scrubbing.
+
+        Returns the bounded ``(data, byte_size)`` tuple. Tracks the global
+        ``secrets_redacted`` counter so the summary can flag that scrubbing
+        actually fired during the run.
+        """
+        if not data:
+            return data, 0
+        bounded, was_truncated, redactions = _bound_event_data(
+            data, max_bytes=self.max_event_data_bytes
+        )
+        # ``was_truncated`` covers any kind of reduction (scrub, string
+        # truncation, whole-field eviction). Only the whole-event byte
+        # eviction is what users care about as "size truncation" — we
+        # increment that counter only when the per-event cap was hit.
+        if bounded is not None and _event_data_byte_size(data) > self.max_event_data_bytes:
+            self.events_truncated_by_size += 1
+        elif was_truncated and isinstance(bounded, dict) and bounded.get("_event_truncated"):
+            self.events_truncated_by_size += 1
+        if redactions:
+            self.secrets_redacted += redactions
+        size = _event_data_byte_size(bounded)
+        return bounded, size
+
+    def _enforce_total_byte_cap(self) -> None:
+        """Drop oldest events until cumulative byte usage fits the cap.
+
+        Runs after every append so the running ``total_data_bytes`` counter
+        is the same as ``sum(_event_data_byte_size(e.data) for e in events)``
+        modulo the events that have already been evicted.
+        """
+        cap = self.max_total_data_bytes
+        if cap <= 0:
+            return
+        while self.events and self.total_data_bytes > cap:
+            oldest = self.events.pop(0)
+            evicted_size = _event_data_byte_size(oldest.data)
+            self.total_data_bytes = max(0, self.total_data_bytes - evicted_size)
+            self.events_dropped += 1
+            self.bytes_dropped += evicted_size
 
     def log(self, phase: str, level: str, message: str, data: Optional[dict] = None) -> None:
         # Cap the event list to bound memory on long-running batch polls.
         # When the cap is exceeded, drop the oldest event and remember that
         # truncation happened so the summary can flag it.
         if self.max_events > 0 and len(self.events) >= self.max_events:
-            self.events.pop(0)
+            oldest = self.events.pop(0)
             self.events_dropped += 1
+            self.total_data_bytes = max(
+                0, self.total_data_bytes - _event_data_byte_size(oldest.data)
+            )
+        bounded_data, byte_size = self._accept_event_data(data)
         self.events.append(DiagnosticEvent(
             timestamp=time.time(),
             elapsed=time.time() - self.started_at,
             phase=phase,
             level=level,
             message=message,
-            data=data,
+            data=bounded_data,
         ))
+        self.total_data_bytes += byte_size
+        self._enforce_total_byte_cap()
 
     def record_failed_spec(self, filename: str) -> None:
         if filename and filename not in self.failed_specs:
@@ -564,6 +773,16 @@ class DiagnosticsReport:
             "phases": dict(phase_telemetry),
         }
 
+        # Chunk 10 — estimated USD cost. Walk the events through the
+        # central pricing table so the report and GUI can show "what
+        # did this run actually cost?" alongside the token telemetry.
+        # Falls back to ``available=False`` when no priced calls ran
+        # (zero API activity, or every call used an unknown model);
+        # the renderers print "cost unavailable" instead of $0.00 so
+        # the reader isn't misled.
+        from .cost_estimator import estimate_run_cost
+        estimated_cost = estimate_run_cost(self.events)
+
         return {
             "run_id": self.run_id,
             "mode": self.mode,
@@ -624,6 +843,11 @@ class DiagnosticsReport:
             # to recompute them.
             "phase_telemetry": dict(phase_telemetry),
             "cost_summary": cost_summary,
+            # Chunk 10 — central cost estimator output. ``available=False``
+            # means no priced calls were observed (or every call used an
+            # unknown model); the renderers must say "cost unavailable"
+            # rather than pretending $0.00 was the real spend.
+            "estimated_cost": estimated_cost,
             # Phase 7.3 actionable fields.
             "failed_specs": list(self.failed_specs),
             "skipped_specs": list(self.skipped_specs),
@@ -635,6 +859,13 @@ class DiagnosticsReport:
             # Chunk K5: locator method telemetry. Empty dict on legacy runs.
             "locator_methods": dict(self.locator_methods),
             "events_dropped": self.events_dropped,
+            # Chunk 10 — diagnostics-cap visibility. Operators can see at a
+            # glance whether the run hit the per-event byte cap or had any
+            # secret-shaped values scrubbed.
+            "events_truncated_by_size": self.events_truncated_by_size,
+            "secrets_redacted": self.secrets_redacted,
+            "bytes_dropped": self.bytes_dropped,
+            "total_data_bytes": self.total_data_bytes,
         }
 
     # ------------------------------------------------------------------
@@ -891,6 +1122,66 @@ class DiagnosticsReport:
                 f"  Events Dropped:  {s['events_dropped']} "
                 f"(cap={self.max_events:,}; older events truncated)"
             )
+        if s.get("events_truncated_by_size"):
+            lines.append(
+                f"  Events Truncated: {s['events_truncated_by_size']} "
+                f"(per-event cap={self.max_event_data_bytes:,} bytes)"
+            )
+        if s.get("secrets_redacted"):
+            lines.append(
+                f"  Secrets Redacted: {s['secrets_redacted']} field(s) replaced with <redacted>"
+            )
+
+        # Chunk 10 — estimated cost block. Renders only when at least one
+        # priced call was observed (so legacy / API-failure runs do not
+        # show a misleading $0.00 line). Kept conservative: per the plan
+        # this is "Estimated API cost", not exact billing.
+        ec = s.get("estimated_cost") or {}
+        lines.append("")
+        lines.append("ESTIMATED API COST")
+        lines.append("-" * 40)
+        if not ec.get("available"):
+            lines.append("  Cost unavailable — pricing not recorded for this run.")
+            missing = ec.get("missing_pricing_models") or []
+            if missing:
+                lines.append(f"  Models without pricing: {', '.join(missing)}")
+        else:
+            from .cost_estimator import format_usd
+            lines.append(f"  Total Estimate:  {format_usd(ec['total_usd'])}")
+            lines.append(f"  Currency:        {ec.get('currency', 'USD')}")
+            lines.append(f"  Pricing As Of:   {ec.get('pricing_as_of', '')}")
+            if ec.get("by_phase"):
+                lines.append("  By Phase:")
+                for phase_name, bucket in ec["by_phase"].items():
+                    bits = [f"total={format_usd(bucket['total_usd'])}"]
+                    bits.append(f"in={format_usd(bucket['input_usd'])}")
+                    bits.append(f"out={format_usd(bucket['output_usd'])}")
+                    if bucket.get("cache_write_usd") or bucket.get("cache_read_usd"):
+                        bits.append(
+                            f"cache_w={format_usd(bucket['cache_write_usd'])}/"
+                            f"r={format_usd(bucket['cache_read_usd'])}"
+                        )
+                    if bucket.get("web_search_usd"):
+                        bits.append(f"search={format_usd(bucket['web_search_usd'])}")
+                    if bucket.get("missing_pricing_calls"):
+                        bits.append(f"missing={bucket['missing_pricing_calls']}")
+                    lines.append(f"    {phase_name:20s} {', '.join(bits)}")
+            if ec.get("by_model"):
+                lines.append("  By Model:")
+                for model_name, mb in ec["by_model"].items():
+                    lines.append(
+                        f"    {model_name:24s} "
+                        f"{format_usd(mb['total_usd'])} "
+                        f"({mb['calls']} call{'s' if mb['calls'] != 1 else ''})"
+                    )
+            if ec.get("missing_pricing_calls"):
+                lines.append(
+                    f"  Missing Pricing: {ec['missing_pricing_calls']} call(s) "
+                    f"on unknown model(s) "
+                    f"({', '.join(ec.get('missing_pricing_models') or [])})"
+                )
+            for note in ec.get("notes") or []:
+                lines.append(f"  Note: {note}")
         lines.append("")
 
         # Timeline
