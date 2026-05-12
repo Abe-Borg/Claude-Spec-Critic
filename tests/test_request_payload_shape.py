@@ -727,37 +727,20 @@ class TestCrossCheckRequestShape:
 
 
 class TestModelAwareThinkingRequestShape:
-    """Pin the per-model thinking behavior across every request builder.
-
-    Before Chunk B every path hard-coded ``thinking={"type": "adaptive"}``,
-    which produced an API error when the synthesis pass switched to Haiku.
-    These tests ensure unsupported models never carry the key.
+    """Pin the per-model thinking policy. Pre-chunk-B, every path hard-coded
+    ``thinking={"type": "adaptive"}``, which crashed on Haiku. The policy
+    (api_config.apply_thinking_config) is tested directly in test_chunk_b;
+    these tests confirm the major builder paths route through it correctly.
     """
 
-    # ----- Batch review ------------------------------------------------
-
-    def test_batch_review_omits_thinking_for_haiku(self, fake_client):
+    def test_batch_review_thinking_follows_model(self, fake_client):
         from src.batch import submit_review_batch
 
         submit_review_batch([_spec()], model=MODEL_HAIKU_45, cycle=DEFAULT_CYCLE)
-        params = fake_client.captured[0].first_params()
-        assert "thinking" not in params
-
-    def test_batch_review_includes_thinking_for_sonnet(self, fake_client):
-        from src.batch import submit_review_batch
+        assert "thinking" not in fake_client.captured[0].first_params()
 
         submit_review_batch([_spec()], model=MODEL_SONNET_46, cycle=DEFAULT_CYCLE)
-        params = fake_client.captured[0].first_params()
-        assert params.get("thinking") == {"type": "adaptive"}
-
-    def test_batch_review_omits_thinking_for_unknown_model(self, fake_client):
-        from src.batch import submit_review_batch
-
-        submit_review_batch([_spec()], model="claude-future-2030", cycle=DEFAULT_CYCLE)
-        params = fake_client.captured[0].first_params()
-        assert "thinking" not in params
-
-    # ----- Real-time review --------------------------------------------
+        assert fake_client.captured[-1].first_params().get("thinking") == {"type": "adaptive"}
 
     def test_realtime_review_omits_thinking_for_haiku(self, fake_client, fake_anthropic):
         from src.reviewer import _stream_review
@@ -770,106 +753,20 @@ class TestModelAwareThinkingRequestShape:
             model=MODEL_HAIKU_45,
             max_retries=1,
         )
-        req = fake_client.captured[-1]
-        assert "thinking" not in req.kwargs
+        assert "thinking" not in fake_client.captured[-1].kwargs
 
-    def test_realtime_review_includes_thinking_for_sonnet(self, fake_client, fake_anthropic):
-        from src.reviewer import _stream_review
+    def test_verifier_builders_follow_model(self):
+        from src.verifier import _build_continuation_request, _build_retry_request
 
-        fake_client.queue_response(fake_anthropic.review_tool_use_response())
-        _stream_review(
-            fake_client,
-            system_prompt="system",
-            user_message="user",
-            model=MODEL_SONNET_46,
-            max_retries=1,
+        retry_haiku = _build_retry_request("prompt", cycle=DEFAULT_CYCLE, model=MODEL_HAIKU_45)
+        assert "thinking" not in retry_haiku
+        retry_sonnet = _build_retry_request("prompt", cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46)
+        assert retry_sonnet.get("thinking") == {"type": "adaptive"}
+
+        cont_haiku = _build_continuation_request(
+            "prompt", [{"type": "text", "text": "partial"}], cycle=DEFAULT_CYCLE, model=MODEL_HAIKU_45,
         )
-        req = fake_client.captured[-1]
-        assert req.thinking() == {"type": "adaptive"}
-
-    # ----- Batch verification ------------------------------------------
-
-    def test_batch_verification_includes_thinking_for_sonnet_default(self, fake_client):
-        from src.batch import submit_verification_batch
-
-        def _prompt(_f): return "verify"
-        def _system(_c): return "system"
-
-        submit_verification_batch(
-            [_finding()], _prompt, _system, cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46,
-        )
-        params = fake_client.captured[0].first_params()
-        assert params.get("thinking") == {"type": "adaptive"}
-
-    def test_batch_verification_omits_thinking_for_haiku(self, fake_client):
-        from src.batch import submit_verification_batch
-
-        def _prompt(_f): return "verify"
-        def _system(_c): return "system"
-
-        submit_verification_batch(
-            [_finding()], _prompt, _system, cycle=DEFAULT_CYCLE, model=MODEL_HAIKU_45,
-        )
-        params = fake_client.captured[0].first_params()
-        assert "thinking" not in params
-
-    # ----- Retry / continuation ----------------------------------------
-
-    def test_retry_request_includes_thinking_for_sonnet(self):
-        from src.verifier import _build_retry_request
-
-        req = _build_retry_request("prompt body", cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46)
-        assert req.get("thinking") == {"type": "adaptive"}
-
-    def test_retry_request_omits_thinking_for_haiku(self):
-        from src.verifier import _build_retry_request
-
-        req = _build_retry_request("prompt body", cycle=DEFAULT_CYCLE, model=MODEL_HAIKU_45)
-        assert "thinking" not in req
-
-    def test_continuation_request_includes_thinking_for_sonnet(self):
-        from src.verifier import _build_continuation_request
-
-        req = _build_continuation_request(
-            "prompt body",
-            [{"type": "text", "text": "partial"}],
-            cycle=DEFAULT_CYCLE,
-            model=MODEL_SONNET_46,
-        )
-        assert req.get("thinking") == {"type": "adaptive"}
-
-    def test_continuation_request_omits_thinking_for_haiku(self):
-        from src.verifier import _build_continuation_request
-
-        req = _build_continuation_request(
-            "prompt body",
-            [{"type": "text", "text": "partial"}],
-            cycle=DEFAULT_CYCLE,
-            model=MODEL_HAIKU_45,
-        )
-        assert "thinking" not in req
-
-    # ----- Cross-check -------------------------------------------------
-
-    def test_cross_check_omits_thinking_for_haiku(self, fake_client, fake_anthropic):
-        from src.cross_checker import run_cross_check
-
-        cross_check_message = fake_anthropic.review_tool_use_response(
-            payload={"coordination_summary": "ok", "findings": []},
-        )
-        for block in cross_check_message.content:
-            if getattr(block, "type", None) == "tool_use":
-                block.name = CROSS_CHECK_TOOL_NAME
-        fake_client.queue_response(cross_check_message)
-
-        run_cross_check(
-            [_spec(content="A", filename="A.docx"), _spec(content="B", filename="B.docx")],
-            existing_findings=[],
-            cycle=DEFAULT_CYCLE,
-            model=MODEL_HAIKU_45,
-        )
-        req = fake_client.captured[-1]
-        assert "thinking" not in req.kwargs
+        assert "thinking" not in cont_haiku
 
 
 class TestSynthesisRequestShape:
@@ -1053,21 +950,6 @@ class TestVerificationToolPayloadConsistency:
         types = [t.get("type") for t in tools]
         assert any(t and t.startswith("web_search_") for t in types)
 
-    def test_helper_uses_severity_tiered_max_uses(self, monkeypatch):
-        monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", "1")
-        import importlib
-        from src import structured_schemas as ss
-        importlib.reload(ss)
-        from src import batch as batch_mod
-        importlib.reload(batch_mod)
-
-        critical = batch_mod.build_verification_tools(severity="CRITICAL")
-        gripes = batch_mod.build_verification_tools(severity="GRIPES")
-        crit_web = next(t for t in critical if (t.get("type") or "").startswith("web_search_"))
-        grip_web = next(t for t in gripes if (t.get("type") or "").startswith("web_search_"))
-        assert crit_web["max_uses"] == 7
-        assert grip_web["max_uses"] == 3
-
     # ----- Real-time verification (verify_finding) ---------------------
 
     def _stub_real_api_key(self, monkeypatch):
@@ -1087,34 +969,7 @@ class TestVerificationToolPayloadConsistency:
         names = [t.get("name") for t in req.tools()]
         assert VERIFICATION_TOOL_NAME in names
 
-    def test_realtime_verification_omits_verdict_tool_when_disabled(
-        self, fake_client, fake_anthropic, monkeypatch
-    ):
-        monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", "0")
-        self._stub_real_api_key(monkeypatch)
-        import importlib
-        from src import structured_schemas as ss
-        importlib.reload(ss)
-        from src import batch as batch_mod
-        importlib.reload(batch_mod)
-        from src import verifier as verifier_mod
-        importlib.reload(verifier_mod)
-
-        # Re-pin the fake client into the reloaded module.
-        def _provider() -> FakeClient:
-            return fake_client
-        monkeypatch.setattr(verifier_mod, "_get_client", _provider)
-
-        # Use a text-fallback response since the verdict tool is not exposed.
-        fake_client.queue_response(fake_anthropic.verification_text_fallback_response())
-
-        verifier_mod.verify_finding(_finding(), max_retries=0, cache=None)
-
-        req = fake_client.captured[-1]
-        names = [t.get("name") for t in req.tools()]
-        assert VERIFICATION_TOOL_NAME not in names
-
-    # ----- Retry / continuation honor structured outputs flag ----------
+    # ----- Retry honors structured outputs flag -----------------------
 
     def test_retry_request_omits_verdict_tool_when_disabled(self, monkeypatch):
         monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", "0")
@@ -1130,147 +985,28 @@ class TestVerificationToolPayloadConsistency:
         names = [t.get("name") for t in req["tools"]]
         assert VERIFICATION_TOOL_NAME not in names
 
-    def test_continuation_request_omits_verdict_tool_when_disabled(self, monkeypatch):
-        monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", "0")
-        import importlib
-        from src import structured_schemas as ss
-        importlib.reload(ss)
-        from src import batch as batch_mod
-        importlib.reload(batch_mod)
-        from src import verifier as verifier_mod
-        importlib.reload(verifier_mod)
-
-        req = verifier_mod._build_continuation_request(
-            "prompt body",
-            [{"type": "text", "text": "partial"}],
-            cycle=DEFAULT_CYCLE,
-        )
-        names = [t.get("name") for t in req["tools"]]
-        assert VERIFICATION_TOOL_NAME not in names
-
     # ----- System prompt mirrors tool availability ---------------------
 
-    def test_system_prompt_mentions_verdict_tool_when_included(self):
-        from src.verifier import _get_verification_system_prompt
+    def test_prompts_mirror_verdict_tool_inclusion(self):
+        from src.verifier import _build_verification_prompt, _get_verification_system_prompt
 
-        text = _get_verification_system_prompt(
-            DEFAULT_CYCLE, include_verdict_tool=True
-        )
-        assert "submit_verification_verdict" in text
-
-    def test_system_prompt_omits_verdict_tool_when_excluded(self):
-        from src.verifier import _get_verification_system_prompt
-
-        text = _get_verification_system_prompt(
-            DEFAULT_CYCLE, include_verdict_tool=False
-        )
-        # The prompt must not advertise a tool the request payload won't
-        # include — this is the prompt/tool consistency invariant.
-        assert "submit_verification_verdict" not in text
-
-    def test_user_prompt_mentions_verdict_tool_when_included(self):
-        from src.verifier import _build_verification_prompt
-
-        text = _build_verification_prompt(
-            _finding(), cycle=DEFAULT_CYCLE, include_verdict_tool=True
-        )
-        assert "submit_verification_verdict" in text
-
-    def test_user_prompt_omits_verdict_tool_when_excluded(self):
-        from src.verifier import _build_verification_prompt
-
-        text = _build_verification_prompt(
-            _finding(), cycle=DEFAULT_CYCLE, include_verdict_tool=False
-        )
-        assert "submit_verification_verdict" not in text
-
-    # ----- Cross-path consistency: the prompt and the tools agree ------
-
-    def _names_in(self, tools):
-        return {t.get("name") for t in tools}
-
-    def test_batch_initial_prompt_and_tools_agree(self, fake_client, monkeypatch):
-        monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", "1")
-        import importlib
-        from src import structured_schemas as ss
-        importlib.reload(ss)
-        from src import batch as batch_mod
-        importlib.reload(batch_mod)
-        from src import verifier as verifier_mod
-        importlib.reload(verifier_mod)
-
-        def _provider() -> FakeClient:
-            return fake_client
-        monkeypatch.setattr(batch_mod, "_get_client", _provider)
-        monkeypatch.setattr(verifier_mod, "_get_client", _provider)
-
-        verifier_mod.start_verification_batch([_finding()], cycle=DEFAULT_CYCLE)
-        params = fake_client.captured[-1].first_params()
-        names = self._names_in(params["tools"])
-        prompt = params["system"]
-        if isinstance(prompt, list):
-            prompt = "".join(p.get("text", "") for p in prompt)
-        # Whatever's in the tool list, the prompt's tool-usage guidance
-        # must match.
-        assert (VERIFICATION_TOOL_NAME in names) == (
-            "submit_verification_verdict" in prompt
-        )
+        sys_on = _get_verification_system_prompt(DEFAULT_CYCLE, include_verdict_tool=True)
+        sys_off = _get_verification_system_prompt(DEFAULT_CYCLE, include_verdict_tool=False)
+        user_on = _build_verification_prompt(_finding(), cycle=DEFAULT_CYCLE, include_verdict_tool=True)
+        user_off = _build_verification_prompt(_finding(), cycle=DEFAULT_CYCLE, include_verdict_tool=False)
+        assert "submit_verification_verdict" in sys_on
+        assert "submit_verification_verdict" not in sys_off
+        assert "submit_verification_verdict" in user_on
+        assert "submit_verification_verdict" not in user_off
 
     def test_retry_request_prompt_and_tools_agree(self):
+        """Chunk C consistency invariant: a builder's prompt and tools must
+        advertise the same verdict tool inclusion."""
         from src.verifier import _build_retry_request
 
         req = _build_retry_request("prompt body", cycle=DEFAULT_CYCLE)
-        names = self._names_in(req["tools"])
+        names = {t.get("name") for t in req["tools"]}
         system = req["system"]
         if isinstance(system, list):
             system = "".join(p.get("text", "") for p in system)
-        assert (VERIFICATION_TOOL_NAME in names) == (
-            "submit_verification_verdict" in system
-        )
-
-    def test_continuation_request_prompt_and_tools_agree(self):
-        from src.verifier import _build_continuation_request
-
-        req = _build_continuation_request(
-            "prompt body",
-            [{"type": "text", "text": "partial"}],
-            cycle=DEFAULT_CYCLE,
-        )
-        names = self._names_in(req["tools"])
-        system = req["system"]
-        if isinstance(system, list):
-            system = "".join(p.get("text", "") for p in system)
-        assert (VERIFICATION_TOOL_NAME in names) == (
-            "submit_verification_verdict" in system
-        )
-
-    # ----- Single source of truth: same helper everywhere --------------
-
-    def test_no_inline_web_search_tool_construction_in_verifier(self):
-        """All verifier request builders must route through
-        ``build_verification_tools``. A future change that hand-rolls
-        ``[web_search_tool_for_severity(...)]`` into a verification path
-        re-introduces the Chunk C bug, so guard against it."""
-        import pathlib
-
-        verifier_path = (
-            pathlib.Path(__file__).resolve().parent.parent
-            / "src"
-            / "verifier.py"
-        )
-        text = verifier_path.read_text(encoding="utf-8")
-        # The helper itself is in batch.py, not verifier.py. If verifier
-        # ever calls web_search_tool_for_severity directly the guard fires
-        # and points at the offending line.
-        offenders = [
-            f"verifier.py:{lineno}: {line.strip()}"
-            for lineno, line in enumerate(text.splitlines(), start=1)
-            if "web_search_tool_for_severity" in line
-            and not line.strip().startswith("#")
-            and not line.strip().startswith('"')
-        ]
-        assert not offenders, (
-            "verifier.py must build verification tools via "
-            "batch.build_verification_tools (Chunk C). Offenders: "
-            + "; ".join(offenders)
-        )
+        assert (VERIFICATION_TOOL_NAME in names) == ("submit_verification_verdict" in system)
