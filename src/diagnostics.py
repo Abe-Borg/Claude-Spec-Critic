@@ -8,7 +8,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 
@@ -884,23 +883,6 @@ class DiagnosticsReport:
             d["data"] = e.data
         return d
 
-    def to_dict(self) -> dict:
-        return {
-            "run_id": self.run_id,
-            "started_at": self.started_at,
-            "started_at_iso": datetime.fromtimestamp(self.started_at, tz=timezone.utc).isoformat(),
-            "ended_at": self.ended_at,
-            "ended_at_iso": datetime.fromtimestamp(self.ended_at, tz=timezone.utc).isoformat() if self.ended_at else None,
-            "mode": self.mode,
-            "model": self.model,
-            "cycle_label": self.cycle_label,
-            "files_selected": self.files_selected,
-            "project_context_tokens": self.project_context_tokens,
-            "cross_check_enabled": self.cross_check_enabled,
-            "summary": self.summary(),
-            "events": [self._event_to_dict(e) for e in self.events],
-        }
-
     def to_text(self) -> str:
         lines: list[str] = []
         lines.append("=" * 72)
@@ -1207,8 +1189,3 @@ class DiagnosticsReport:
         lines.append("=" * 72)
         return "\n".join(lines)
 
-    def save_json(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-
-    def save_text(self, path: str | Path) -> None:
-        Path(path).write_text(self.to_text(), encoding="utf-8")

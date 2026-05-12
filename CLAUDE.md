@@ -6,7 +6,7 @@ Engineering reference for the Spec Critic codebase. Focuses on non-obvious invar
 
 ## 1) What it is
 
-Python desktop app (CustomTkinter) for reviewing California K-12 DSA mechanical/plumbing `.docx` specs. Extracts text, runs deterministic local pre-screens, sends per-spec reviews (real-time or batch) through Claude, optionally runs cross-spec coordination, verifies findings against web search, exports a Word report, and optionally writes edits or annotations back to a copy of each spec.
+Python desktop app (CustomTkinter) for reviewing California K-12 DSA mechanical/plumbing `.docx` specs. Extracts text, runs deterministic local pre-screens, sends per-spec reviews (real-time or batch) through Claude, optionally runs cross-spec coordination, verifies findings against web search, exports a Word report, and optionally writes surgical edits back to a copy of each spec.
 
 Real-time and batch share identical prompts, models, tool schemas, output caps, and parsing logic. The 300k extended-output path is the only intentional asymmetry — batch-only by API design (`output-300k-2026-03-24` beta header is not honored on streaming) and only used for inputs ≥200k tokens.
 
@@ -44,8 +44,8 @@ src/
 ├── tokenizer.py            # Local + Anthropic token counting
 ├── edit_locator.py         # Exact / normalized / fuzzy / section-anchored matching
 ├── edit_candidates.py      # Edit safety categories
-├── spec_editor.py          # Surgical edits + annotation mode
-├── apply_edits.py          # locate → action build → apply / annotate
+├── spec_editor.py          # Surgical edits
+├── apply_edits.py          # locate → action build → apply
 ├── report_exporter.py      # Word (.docx) report generation
 ├── report_status.py        # ReportStatus / EditActionLabel + classifiers
 ├── resume_state.py         # Durable resume state (with file-hash validation)
@@ -266,9 +266,7 @@ Read from environment variables; listed default applies when unset.
 | `SPEC_CRITIC_PARALLEL_CROSS_CHECK` | `1` | `0` runs cross-check after verification |
 | `SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD` | `5` | Real-time fallback when retry tail ≤ N |
 | `SPEC_CRITIC_VERIFICATION_MAX_USES` | `5` | Default web_search `max_uses` |
-| `SPEC_CRITIC_HAIKU_TRIAGE` | `0` | `1` enables Haiku verification triage |
 | `SPEC_CRITIC_REVIEW_MODEL` | Opus 4.7 | Override review model |
-| `SPEC_CRITIC_CROSS_CHECK_MODEL` | Opus 4.7 | Override cross-check model |
 | `SPEC_CRITIC_SYNTHESIS_MODEL` | Haiku 4.5 | Override synthesis model |
 | `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Override triage model |
 | `SPEC_CRITIC_VERIFICATION_MODEL` | (auto) | Override verifier model |

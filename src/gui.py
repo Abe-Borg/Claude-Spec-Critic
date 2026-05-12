@@ -182,7 +182,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self._selected_files_for_review: list[Path] = []
         self._project_context_for_review: str = ""
         self._cross_check_for_review: bool = False
-        self._verbose_for_review: bool = True
         self._last_result = None
         self._diagnostics_report: Optional[DiagnosticsReport] = None
         self._diagnostics_window: Optional[DiagnosticsWindow] = None
@@ -357,17 +356,8 @@ class SpecReviewApp(_CTkDnDRoot):
             checkbox_width=20, checkbox_height=20,
         )
         self._cross_check_cb.pack(side="left")
-        self._verbose_var = ctk.BooleanVar(value=True)
-        self._verbose_cb = ctk.CTkCheckBox(
-            options_frame, text="Verbose report", variable=self._verbose_var,
-            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
-            checkmark_color=COLORS["text_primary"], text_color=COLORS["text_secondary"],
-            checkbox_width=20, checkbox_height=20,
-        )
-        self._verbose_cb.pack(side="left", padx=(12, 0))
         self._cross_check_hint = ctk.CTkLabel(options_frame,
-            text="Opus 4.7 \u2022 full content \u2022 finds inter-spec conflicts",
+            text="Sonnet 4.6 \u2022 full content \u2022 finds inter-spec conflicts",
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 

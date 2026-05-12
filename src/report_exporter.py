@@ -779,7 +779,7 @@ def _write_alerts(
 # Single finding entry (collapsible via Heading 3)
 # ---------------------------------------------------------------------------
 
-def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = True) -> None:
+def _write_finding_entry(doc: Document, finding, index: int) -> None:
     """Write a single finding as a collapsible block.
 
     The finding header is rendered as a Heading 3 paragraph, which enables
@@ -886,11 +886,10 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
     status_para.paragraph_format.space_after = Pt(3)
 
     # --- Issue ---
-    if verbose:
-        para = doc.add_paragraph()
-        para.add_run("Issue: ").bold = True
-        para.add_run(finding.issue or "")
-        para.paragraph_format.space_after = Pt(3)
+    para = doc.add_paragraph()
+    para.add_run("Issue: ").bold = True
+    para.add_run(finding.issue or "")
+    para.paragraph_format.space_after = Pt(3)
 
     # --- Action / edit-proposal block ---
     # Chunk L / plan section "Separate Findings From Edit Proposals":
@@ -959,7 +958,7 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
             para.paragraph_format.space_after = Pt(3)
 
     # --- Code reference (blue) ---
-    if verbose and finding.codeReference:
+    if finding.codeReference:
         para = doc.add_paragraph()
         para.add_run("Reference: ").bold = True
         run = para.add_run(finding.codeReference)
@@ -981,7 +980,7 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         # Chunk N Directive 3: the explanation is "Verification rationale"
         # — distinct from "Spec evidence" (the quoted text) and from the
         # accepted/rejected source URLs that follow under "Sources".
-        if verbose and vr.explanation:
+        if vr.explanation:
             para = doc.add_paragraph()
             label_run = para.add_run("Verification rationale: ")
             label_run.bold = True
@@ -1020,7 +1019,7 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         # so the four evidence concepts in Directive 3 read naturally.
         accepted = list(vr.sources or [])
         rejected = list(getattr(vr, "rejected_sources", []) or [])
-        if verbose and (accepted or rejected):
+        if accepted or rejected:
             sources_heading = doc.add_heading("Sources", level=4)
             _set_paragraph_collapsed(sources_heading)
 
@@ -1074,7 +1073,7 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
 # Findings section
 # ---------------------------------------------------------------------------
 
-def _write_findings_section(doc: Document, review, verbose: bool = True) -> None:
+def _write_findings_section(doc: Document, review) -> None:
     """Write per-spec findings grouped by severity, sorted by confidence.
 
     Uses heading hierarchy for Word-native collapse support:
@@ -1115,7 +1114,7 @@ def _write_findings_section(doc: Document, review, verbose: bool = True) -> None
 
         for finding in severity_findings:
             finding_number += 1
-            _write_finding_entry(doc, finding, finding_number, verbose=verbose)
+            _write_finding_entry(doc, finding, finding_number)
 
 
 # ---------------------------------------------------------------------------
@@ -1200,7 +1199,7 @@ def _write_suppression_reason(doc: Document, finding) -> None:
     para.paragraph_format.space_after = Pt(3)
 
 
-def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool = True, review_result=None) -> None:
+def _write_cross_check_section(doc: Document, cross_check_result, review_result=None) -> None:
     """Write cross-spec coordination section and explicit status.
 
     Cross-check findings are rendered with the same collapsible structure
@@ -1238,7 +1237,7 @@ def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool 
                 f" ({len(suppressed)} suppressed by upstream-disputed filter)"
             )
         run = subtitle.add_run(
-            f"Opus 4.6 coordination analysis — "
+            f"Sonnet 4.6 coordination analysis — "
             f"{count} issue{'s' if count != 1 else ''} found{suppressed_note}."
         )
     run.font.size = Pt(11)
@@ -1267,7 +1266,7 @@ def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool 
     )
 
     for idx, finding in enumerate(sorted_findings, 1):
-        _write_finding_entry(doc, finding, idx, verbose=verbose)
+        _write_finding_entry(doc, finding, idx)
         _write_dependency_note(doc, finding, upstream_lookup)
 
     # Coordination summary narrative
@@ -1298,7 +1297,7 @@ def _write_cross_check_section(doc: Document, cross_check_result, verbose: bool 
             key=lambda f: (severity_rank.get(f.severity, 99), -f.confidence),
         )
         for idx, finding in enumerate(sorted_suppressed, 1):
-            _write_finding_entry(doc, finding, idx, verbose=verbose)
+            _write_finding_entry(doc, finding, idx)
             _write_suppression_reason(doc, finding)
 
 
@@ -1338,7 +1337,6 @@ def export_report(
     pipeline_result,
     output_path: Path,
     *,
-    verbose: bool = True,
     estimated_cost: dict | None = None,
 ) -> Path:
     """Export a complete review report to a Word document.
@@ -1352,7 +1350,6 @@ def export_report(
     Args:
         pipeline_result: PipelineResult from the review pipeline
         output_path: Path where the .docx file should be saved
-        verbose: If True, render per-finding details (default).
         estimated_cost: Chunk 10 — when supplied, render the
             "Estimated API Cost" section after the summary table.
             Pass the ``estimated_cost`` value from
@@ -1470,8 +1467,8 @@ def export_report(
         invalid_code_cycle_alerts=getattr(pipeline_result, "invalid_code_cycle_alerts", None),
         duplicate_paragraph_alerts=getattr(pipeline_result, "duplicate_paragraph_alerts", None),
     )
-    _write_findings_section(doc, review, verbose=verbose)
-    _write_cross_check_section(doc, cross_check, verbose=verbose, review_result=review)
+    _write_findings_section(doc, review)
+    _write_cross_check_section(doc, cross_check, review_result=review)
 
 
     # Save

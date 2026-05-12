@@ -42,7 +42,6 @@ def export_report_to_file(app, result) -> str:
         export_report(
             result,
             output_path,
-            verbose=getattr(app, "_verbose_for_review", True),
             estimated_cost=estimated_cost,
         )
         app.log.log_success(f"Report saved: {output_path}")

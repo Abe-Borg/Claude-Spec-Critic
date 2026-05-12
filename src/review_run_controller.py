@@ -188,7 +188,6 @@ def start_review(app) -> None:
     app._selected_files_for_review = selected_files
     app._project_context_for_review = app._get_project_context()
     app._cross_check_for_review = app._cross_check_var.get()
-    app._verbose_for_review = app._verbose_var.get()
     app._selected_cycle_label = DEFAULT_CYCLE.label
     app.is_processing = True
     app.log.log("─" * 40, level="muted", timestamp=False, paced=False)

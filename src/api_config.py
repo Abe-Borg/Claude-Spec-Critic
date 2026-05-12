@@ -54,7 +54,7 @@ MODEL_HAIKU_45 = "claude-haiku-4-5"
 # Opus for escalation on CRITICAL/HIGH UNVERIFIED findings. Set
 # SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT=0 to revert to Opus-everywhere.
 REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_47)
-CROSS_CHECK_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_CROSS_CHECK_MODEL", MODEL_OPUS_47)
+CROSS_CHECK_MODEL_DEFAULT = MODEL_SONNET_46
 
 
 def verification_sonnet_default_enabled() -> bool:
