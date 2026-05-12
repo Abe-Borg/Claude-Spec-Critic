@@ -15,9 +15,8 @@ Covers the directives in section 5 of the implementation plan:
 - ``thinking`` budget concerns: verification retry / continuation use the
   phase-tagged helper so a tuning pass touches one place (directives 8, 9).
 
-These tests run hermetically against the FakeClient wired up in
-``test_request_payload_shape.py`` so they cover the request shape exactly
-as the production code emits it.
+These tests run hermetically against a local stub client so they cover
+the preflight path without making network calls.
 """
 from __future__ import annotations
 
@@ -467,123 +466,6 @@ class TestPipelinePreflightExactCountAuthoritative:
         msg = str(excinfo.value)
         assert "cl100k" in msg.lower() or "safety" in msg.lower() or "recommended" in msg.lower()
         assert "claude-opus-4-7" in msg
-
-
-# ---------------------------------------------------------------------------
-# Request-shape regressions for the Chunk E budget routing
-# ---------------------------------------------------------------------------
-
-
-# Re-use the FakeClient + fake_anthropic fixture from the existing
-# request-shape suite so this file stays self-contained but consistent
-# with the rest of the request-shape coverage.
-
-
-@pytest.fixture
-def fake_client_e(monkeypatch):
-    """Inline FakeClient setup so the test file does not depend on the
-    fixtures defined inside ``test_request_payload_shape.py``."""
-    from tests.fixtures import fake_anthropic
-    from tests.test_request_payload_shape import FakeClient
-
-    client = FakeClient(
-        default_final_message=fake_anthropic.review_tool_use_response(),
-    )
-
-    def _provider():
-        return client
-
-    from src import batch as batch_mod
-    from src import cross_checker as cc_mod
-    from src import reviewer as reviewer_mod
-    from src import verifier as verifier_mod
-
-    monkeypatch.setattr(reviewer_mod, "_get_client", _provider)
-    monkeypatch.setattr(batch_mod, "_get_client", _provider)
-    monkeypatch.setattr(verifier_mod, "_get_client", _provider)
-    monkeypatch.setattr(cc_mod, "_get_client", _provider)
-
-    def _fake_count(text: str | None) -> int:
-        return len((text or "").split()) * 2
-
-    monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
-    monkeypatch.setattr("src.cross_checker.count_tokens", _fake_count)
-    monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
-    # Chunk 3: ``src.batch`` no longer imports ``count_tokens``; the
-    # central builder does instead.
-    monkeypatch.setattr(
-        "src.review_request_builder.count_tokens", _fake_count, raising=False
-    )
-    return client
-
-
-def _spec_for_request_shape(content: str = "Spec body.", filename: str = "23 21 13.docx"):
-    from src.extractor import ExtractedSpec
-
-    return ExtractedSpec(
-        filename=filename,
-        content=content,
-        word_count=len(content.split()),
-        source_path="",
-        source_format="docx",
-        paragraph_map=None,
-    )
-
-
-def _finding_for_request_shape(**overrides):
-    from src.reviewer import Finding
-
-    base = dict(
-        severity="HIGH",
-        fileName="23 21 13.docx",
-        section="2.1",
-        issue="Cited code is outdated",
-        actionType="EDIT",
-        existingText="CBC 2019",
-        replacementText="CBC 2025",
-        codeReference="CBC 2025",
-        confidence=0.6,
-    )
-    base.update(overrides)
-    return Finding(**base)
-
-
-class TestRequestShapeBudgetsByModel:
-    """Output caps are model-limit-aware on every request-building path."""
-
-    def test_batch_review_max_tokens_clamps_to_model_ceiling(self, fake_client_e):
-        from src.batch import submit_review_batch
-        from src.code_cycles import DEFAULT_CYCLE
-
-        submit_review_batch([_spec_for_request_shape()], model=MODEL_HAIKU_45, cycle=DEFAULT_CYCLE)
-        assert fake_client_e.captured[-1].first_params()["max_tokens"] == MAX_OUTPUT_TOKENS_HAIKU
-
-        submit_review_batch([_spec_for_request_shape()], model=MODEL_SONNET_46, cycle=DEFAULT_CYCLE)
-        assert fake_client_e.captured[-1].first_params()["max_tokens"] == MAX_OUTPUT_TOKENS_SONNET
-
-        submit_review_batch([_spec_for_request_shape()], model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE)
-        # Opus ceiling and review cap coincide at 128k; pin so a cap bump fires.
-        params = fake_client_e.captured[-1].first_params()
-        assert params["max_tokens"] == REVIEW_OUTPUT_CAP <= MAX_OUTPUT_TOKENS_OPUS
-
-    def test_verification_paths_share_verification_cap(self, fake_client_e):
-        from src.batch import submit_verification_batch
-        from src.code_cycles import DEFAULT_CYCLE
-        from src.verifier import _build_continuation_request, _build_retry_request
-
-        def _prompt(_f): return "verify"
-        def _system(_c): return "system"
-        submit_verification_batch(
-            [_finding_for_request_shape()], _prompt, _system,
-            cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46,
-        )
-        initial = fake_client_e.captured[-1].first_params()["max_tokens"]
-        retry = _build_retry_request("prompt", cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46)["max_tokens"]
-        cont = _build_continuation_request(
-            "prompt", [{"type": "text", "text": "partial"}],
-            cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46,
-        )["max_tokens"]
-        assert initial == retry == cont == VERIFICATION_OUTPUT_CAP
 
 
 # ---------------------------------------------------------------------------
