@@ -1332,6 +1332,14 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
         f for f in state.review_result.findings
         if not (f.verification and f.verification.verdict == "DISPUTED")
     ]
+    disputed_excluded = len(state.review_result.findings) - len(dedup_findings)
+    if disputed_excluded:
+        log(
+            f"Cross-check input: excluding {disputed_excluded} DISPUTED "
+            "review finding(s) from the 'already identified' context. "
+            "They remain on the final result; only the cross-check input is filtered.",
+            level="info",
+        )
     # Phase 8 / plan section 12.3: chunk by CSI division when the combined
     # input would otherwise exceed the cross-check token budget. This used
     # to surface as a ``skipped`` status — large projects therefore got no
@@ -1486,6 +1494,14 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
                     f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
     if cross_check:
         dedup_for_cross = [f for f in findings if not (f.verification and f.verification.verdict == "DISPUTED")]
+        disputed_excluded = len(findings) - len(dedup_for_cross)
+        if disputed_excluded:
+            _phase_tagged_log(log, "cross_check")(
+                f"Cross-check input: excluding {disputed_excluded} DISPUTED "
+                "review finding(s) from the 'already identified' context. "
+                "They remain on the final result; only the cross-check input is filtered.",
+                level="info",
+            )
         progress(75.0, "Running cross-check with dedup context...", phase="cross_check")
         cross = run_chunked_cross_check(specs, dedup_for_cross, project_context=project_context, verbose=verbose, cycle=cycle, log=_phase_tagged_log(log, "cross_check"))
         _log_cross_check_status(log, cross)
