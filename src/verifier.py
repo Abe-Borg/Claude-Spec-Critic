@@ -584,13 +584,14 @@ def _collect_search_evidence_detailed(
     detailed: list[SearchedSource] = []
     success_count = 0
     error_count = 0
-    for block in getattr(message, "content", []) or []:
-        block_type = getattr(block, "type", None)
+    content_iter = _maybe_attr(message, "content") or []
+    for block in content_iter:
+        block_type = _maybe_attr(block, "type")
         if block_type == "web_search_tool_result":
-            block_content = getattr(block, "content", None)
+            block_content = _maybe_attr(block, "content")
             if block_content is None:
                 # Backward-compatible fallback for legacy/mocked objects.
-                block_content = getattr(block, "results", None)
+                block_content = _maybe_attr(block, "results")
             if isinstance(block_content, list):
                 # Only count this block as a successful search if it contains
                 # at least one usable web_search_result item. Error-only lists
@@ -611,7 +612,7 @@ def _collect_search_evidence_detailed(
                         detailed.append(SearchedSource(url=str(url), title=str(title)))
                 if block_had_valid_result:
                     success_count += 1
-            elif getattr(block_content, "type", None) == "web_search_tool_result_error":
+            elif _maybe_attr(block_content, "type") == "web_search_tool_result_error":
                 # Anthropic SDK models this as a union:
                 # WebSearchToolResultBlock.content can be a WebSearchToolResultError object.
                 error_count += 1
@@ -1277,13 +1278,17 @@ def _run_verification_call(
             # and the verdict is downgraded when every citation missed.
             parsed = _apply_source_grounding(parsed, searched=deduped_searched)
             return _enforce_grounding_invariant(parsed)
-        except BaseException as e:  # noqa: BLE001 — routed through classify_exception
-            # Chunk 6: route the exception through the centralized
-            # classifier so RATE_LIMIT / SERVER_ERROR / CONNECTION get
-            # the same backoff schedule the review and cross-check
-            # paths use. INVALID_REQUEST and UNKNOWN are non-retryable
-            # and surface the original error message visibly so the
-            # operator sees what went wrong.
+        except (KeyboardInterrupt, SystemExit):
+            # Control-flow exceptions must escape so Ctrl-C / interpreter
+            # shutdown work as the user expects.
+            raise
+        except Exception as e:
+            # Route the exception through the centralized classifier so
+            # RATE_LIMIT / SERVER_ERROR / CONNECTION get the same backoff
+            # schedule the review and cross-check paths use.
+            # INVALID_REQUEST and UNKNOWN are non-retryable and surface the
+            # original error message visibly so the operator sees what
+            # went wrong.
             failure_class = classify_exception(e)
             if not is_retryable_failure_class(failure_class):
                 if failure_class is FailureClass.INVALID_REQUEST:

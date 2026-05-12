@@ -305,6 +305,8 @@ def _trace_for(
     cached_mode: VerificationMode | str | None,
     escalated: bool,
     mode: VerificationMode,
+    severity: str,
+    profile: VerificationProfile,
 ) -> str:
     """Pick the short trace tag that explains *why* this mode was chosen."""
     if local_skip:
@@ -316,11 +318,12 @@ def _trace_for(
     if mode is VerificationMode.DEEP_REASONING:
         return TRACE_CRITICAL_CALIFORNIA
     if mode is VerificationMode.STRICT_STRUCTURED:
-        # The router only routes to STRICT_STRUCTURED via two branches:
-        # GRIPES (any non-internal-coord profile), or non-GRIPES
-        # internal-coord. The distinction matters for diagnostics
-        # because the two have different policy implications, so the
-        # trace splits them.
+        # STRICT_STRUCTURED has two routing branches with different policy
+        # implications: GRIPES (any non-internal-coord profile), and
+        # non-GRIPES internal-coord. Split the trace so diagnostics can
+        # bucket them separately.
+        if severity != "GRIPES" and profile is VerificationProfile.INTERNAL_COORDINATION:
+            return TRACE_INTERNAL_COORD_STRICT
         return TRACE_GRIPES_STRICT
     return TRACE_DEFAULT_STANDARD
 
@@ -458,6 +461,8 @@ def select_routing(
         cached_mode=cached_mode,
         escalated=escalated,
         mode=mode,
+        severity=severity,
+        profile=profile,
     )
 
     # Chunk 6: derive the per-mode continuation cap from the centralized

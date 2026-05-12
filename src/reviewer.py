@@ -306,7 +306,7 @@ class ReviewResult:
     findings: list[Finding] = field(default_factory=list)
     raw_response: str = ""
     thinking: str = ""
-    model: str = MODEL_OPUS_47
+    model: str = REVIEW_MODEL_DEFAULT
     input_tokens: int = 0
     output_tokens: int = 0
     # Phase 2 prompt-caching telemetry. Populated when the API returns
@@ -575,7 +575,7 @@ def _parse_findings(data: list) -> list[Finding]:
     return findings
 
 
-def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = MODEL_OPUS_47, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
+def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = REVIEW_MODEL_DEFAULT, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
     start_time = time.time()
     result = ReviewResult(model=model)
     # Chunk 3: request kwargs come from the central review request builder
@@ -645,13 +645,16 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             result.parse_status = "ok"
             result.elapsed_seconds = time.time() - start_time
             return result
-        except BaseException as e:  # noqa: BLE001 — routed through classify_exception
-            # Chunk 6: route every exception through the central
-            # classifier so the loop behaves the same way as the
-            # cross-check and verification loops for identical SDK
-            # exception classes. The classifier returns INVALID_REQUEST
-            # for non-status APIError so we surface that error visibly
-            # rather than blindly retrying.
+        except (KeyboardInterrupt, SystemExit):
+            # Control-flow exceptions must escape the retry loop so Ctrl-C
+            # / interpreter shutdown work as the user expects.
+            raise
+        except Exception as e:
+            # Route every other exception through the central classifier
+            # so the loop behaves the same way as the cross-check and
+            # verification loops for identical SDK exception classes. The
+            # classifier returns INVALID_REQUEST for non-status APIError so
+            # we surface that error visibly rather than blindly retrying.
             failure_class = classify_exception(e)
             last_failure_class = failure_class
             if not is_retryable_failure_class(failure_class):
