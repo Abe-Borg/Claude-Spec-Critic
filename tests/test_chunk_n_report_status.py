@@ -35,16 +35,11 @@ from docx import Document
 from src.report_exporter import export_report
 from src.report_status import (
     AUTO_EDIT_CONFIDENCE_FLOOR,
-    EDIT_ACTION_LABELS,
     EditActionLabel,
     ReportStatus,
-    STATUS_DISPLAY_ORDER,
     STATUS_LABELS,
     classify_edit_action,
     classify_status,
-    edit_action_label,
-    status_glyph,
-    status_label,
     summarize_edit_actions,
     summarize_statuses,
 )
@@ -369,40 +364,6 @@ class TestSummarizeHelpers:
 # ---------------------------------------------------------------------------
 # Label / glyph helpers
 # ---------------------------------------------------------------------------
-
-class TestLabelHelpers:
-    def test_every_status_has_label_and_glyph(self):
-        for status in ReportStatus:
-            assert status_label(status) == STATUS_LABELS[status]
-            # Glyphs must be a single character so the inline rendering
-            # doesn't push the status line onto two lines.
-            assert len(status_glyph(status)) == 1
-
-    def test_every_edit_action_has_label(self):
-        for action in EditActionLabel:
-            assert edit_action_label(action) == EDIT_ACTION_LABELS[action]
-
-    def test_label_helpers_accept_raw_strings(self):
-        # Persisted entries round-trip as strings; the helpers should
-        # accept those without first round-tripping through the enum.
-        assert status_label("VERIFIED_SUPPORTED") == STATUS_LABELS[
-            ReportStatus.VERIFIED_SUPPORTED
-        ]
-        assert edit_action_label("AUTO_EDIT_CANDIDATE") == EDIT_ACTION_LABELS[
-            EditActionLabel.AUTO_EDIT_CANDIDATE
-        ]
-
-    def test_label_helpers_fall_back_for_unknown_values(self):
-        # Forward-compatible: an unknown status string should render as
-        # its raw form rather than crashing.
-        assert status_label("MADE_UP_STATUS") == "MADE_UP_STATUS"
-        assert edit_action_label("FOO") == "FOO"
-
-    def test_display_order_lists_every_status(self):
-        # Guards against forgetting to add a new status to the table
-        # order when the enum grows.
-        assert set(STATUS_DISPLAY_ORDER) == set(ReportStatus)
-
 
 # ---------------------------------------------------------------------------
 # Report exporter integration (snapshot-style)

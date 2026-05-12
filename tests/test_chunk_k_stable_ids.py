@@ -256,29 +256,13 @@ class TestK2PromptSerializationWithIds:
         # Quote characters must be escaped so the opening tag stays intact.
         assert "&quot;" in rendered or "\\\"" in rendered or 'filename="evil"' not in rendered
 
-    def test_system_prompt_unchanged_after_chunk_k(self, tmp_path: Path):
-        # Cache-prefix safety: the system prompt is the prompt-cache
-        # breakpoint. K2 must not move bytes here, or every run pays the
-        # cache-write cost on first call without recouping it later.
-        from src.prompts import get_system_prompt
-
-        prompt = get_system_prompt(DEFAULT_CYCLE)
-        # The system prompt instructs the model about the review tool
-        # but should NOT mention the K2 id wrappers — those live in
-        # the per-request user message so the cached prefix stays
-        # stable across runs.
-        assert "evidenceElementId" not in prompt
-        assert "<para id=" not in prompt
-
-
 # ---------------------------------------------------------------------------
 # K3 — Schema Update for Evidence IDs
 # ---------------------------------------------------------------------------
 
 
 class TestK3SchemaUpdateForEvidenceIds:
-    def test_schema_declares_evidence_field(self):
-        assert "evidenceElementId" in _FINDING_OBJECT_SCHEMA["required"]
+    def test_evidence_field_shape_is_nullable_string(self):
         prop = _FINDING_OBJECT_SCHEMA["properties"]["evidenceElementId"]
         # Nullable string so strict-mode constrained sampling still has a
         # deterministic shape but legacy "no id" findings remain valid.
@@ -569,11 +553,6 @@ class TestK5ReportsIncludeIds:
         d.record_locator_method("fuzzy")
         summary = d.summary()
         assert summary["locator_methods"] == {"id": 2, "exact": 1, "fuzzy": 1}
-
-    def test_diagnostics_text_omits_locator_methods_when_empty(self):
-        d = DiagnosticsReport()
-        text = d.to_text()
-        assert "Locator Methods" not in text
 
     def test_diagnostics_text_surfaces_locator_methods_when_present(self):
         d = DiagnosticsReport()

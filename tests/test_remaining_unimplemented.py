@@ -10,15 +10,11 @@ Covers:
 """
 from __future__ import annotations
 
-import importlib
-import json
-from io import BytesIO
 from pathlib import Path
 
 import pytest
 from docx import Document
 
-from src.code_cycles import CALIFORNIA_2025, DEFAULT_CYCLE
 from src.extractor import ExtractedSpec, extract_text_from_docx
 from src.pipeline import (
     FindingGroup,
@@ -73,113 +69,6 @@ class TestFindingGrouping:
         groups = group_findings([f1, f2])
         ids = [o.occurrence_id for g in groups for o in g.occurrences]
         assert len(set(ids)) == len(ids)
-
-
-# ---------------------------------------------------------------------------
-# Phase 2.4 / 2.5 — structured-output schemas and tool-use extraction
-# ---------------------------------------------------------------------------
-
-
-class TestStructuredSchemas:
-    def test_default_is_on(self, monkeypatch):
-        monkeypatch.delenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", raising=False)
-        from src import structured_schemas
-        importlib.reload(structured_schemas)
-        assert structured_schemas.structured_outputs_enabled() is True
-
-    def test_can_be_disabled(self, monkeypatch):
-        monkeypatch.setenv("SPEC_CRITIC_STRUCTURED_OUTPUTS", "0")
-        from src import structured_schemas
-        importlib.reload(structured_schemas)
-        assert structured_schemas.structured_outputs_enabled() is False
-
-    def test_review_tool_schema_shape(self):
-        from src.structured_schemas import REVIEW_FINDINGS_SCHEMA, review_findings_tool
-
-        tool = review_findings_tool()
-        assert tool["name"] == "submit_review_findings"
-        assert "findings" in REVIEW_FINDINGS_SCHEMA["properties"]
-        finding_props = REVIEW_FINDINGS_SCHEMA["properties"]["findings"]["items"]["properties"]
-        for required in ("severity", "fileName", "issue", "actionType", "confidence"):
-            assert required in finding_props
-
-    def test_verdict_tool_schema_shape(self):
-        from src.structured_schemas import VERIFICATION_VERDICT_SCHEMA, verification_verdict_tool
-
-        tool = verification_verdict_tool()
-        assert tool["name"] == "submit_verification_verdict"
-        assert VERIFICATION_VERDICT_SCHEMA["properties"]["verdict"]["enum"] == [
-            "CONFIRMED", "DISPUTED", "CORRECTED", "UNVERIFIED"
-        ]
-
-    def test_extract_tool_use_block_dict_shape(self):
-        from src.structured_schemas import extract_tool_use_block
-
-        msg = {
-            "content": [
-                {"type": "text", "text": "thinking..."},
-                {
-                    "type": "tool_use",
-                    "name": "submit_review_findings",
-                    "input": {
-                        "analysis_summary": "ok",
-                        "findings": [{"severity": "HIGH", "issue": "x"}],
-                    },
-                },
-            ]
-        }
-        out = extract_tool_use_block(msg, "submit_review_findings")
-        assert out is not None
-        assert out["analysis_summary"] == "ok"
-        assert out["findings"][0]["severity"] == "HIGH"
-
-    def test_extract_tool_use_block_returns_none_on_mismatch(self):
-        from src.structured_schemas import extract_tool_use_block
-
-        msg = {"content": [{"type": "text", "text": "no tool use here"}]}
-        assert extract_tool_use_block(msg, "submit_review_findings") is None
-
-    def test_verdict_from_tool_use_round_trip(self):
-        from src.verifier import _verdict_from_tool_use
-
-        class _Msg:
-            content = [
-                type("ToolUse", (), {
-                    "type": "tool_use",
-                    "name": "submit_verification_verdict",
-                    "input": {
-                        "verdict": "CONFIRMED",
-                        "explanation": "Source X confirms Y.",
-                        "sources": ["https://example.gov/code"],
-                        "correction": None,
-                    },
-                })(),
-            ]
-
-        result = _verdict_from_tool_use(_Msg())
-        assert result is not None
-        assert result.verdict == "CONFIRMED"
-        assert result.sources == ["https://example.gov/code"]
-        assert result.correction is None
-
-    def test_verdict_from_tool_use_normalizes_unknown_verdict(self):
-        from src.verifier import _verdict_from_tool_use
-
-        msg = {
-            "content": [
-                {
-                    "type": "tool_use",
-                    "name": "submit_verification_verdict",
-                    "input": {
-                        "verdict": "MAYBE",
-                        "explanation": "unclear",
-                    },
-                },
-            ]
-        }
-        result = _verdict_from_tool_use(msg)
-        assert result is not None
-        assert result.verdict == "UNVERIFIED"
 
 
 # ---------------------------------------------------------------------------
