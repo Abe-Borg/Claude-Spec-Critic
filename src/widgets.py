@@ -1034,6 +1034,96 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                 font=ctk.CTkFont(family="Consolas", size=12),
                 text_color=COLORS["warning"],
             ).pack(anchor="w", pady=(4, 0))
+        truncated = summary.get("events_truncated_by_size", 0)
+        if truncated:
+            ctk.CTkLabel(
+                parent,
+                text=f"⚠ {truncated:,} events truncated (per-event byte cap)",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["warning"],
+            ).pack(anchor="w", pady=(2, 0))
+        secrets_red = summary.get("secrets_redacted", 0)
+        if secrets_red:
+            ctk.CTkLabel(
+                parent,
+                text=f"🔒 {secrets_red:,} secret-shaped values redacted",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_secondary"],
+            ).pack(anchor="w", pady=(2, 0))
+
+        # Chunk 10 — estimated cost card. Renders only when the cost
+        # estimator was able to price at least one call. The wording is
+        # intentionally conservative ("Estimated API cost") so users do
+        # not treat it as exact billing.
+        self._render_estimated_cost_section(parent, summary)
+
+    def _render_estimated_cost_section(self, parent, summary: dict):
+        """Render the Chunk 10 estimated-cost block in the summary card."""
+        ec = summary.get("estimated_cost") or {}
+        if not ec:
+            return
+
+        # Lazy import to keep widgets.py self-contained for legacy tests.
+        from .cost_estimator import format_usd
+
+        cost_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        cost_frame.pack(fill="x", pady=(10, 0))
+
+        header = ctk.CTkLabel(
+            cost_frame, text="Estimated API Cost:",
+            font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
+            text_color=COLORS["text_secondary"],
+        )
+        header.pack(anchor="w")
+
+        if not ec.get("available"):
+            ctk.CTkLabel(
+                cost_frame,
+                text="  cost unavailable — pricing not recorded for this run",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_muted"],
+            ).pack(anchor="w")
+            missing = ec.get("missing_pricing_models") or []
+            if missing:
+                ctk.CTkLabel(
+                    cost_frame,
+                    text=f"  models without pricing: {', '.join(missing)}",
+                    font=ctk.CTkFont(family="Consolas", size=12),
+                    text_color=COLORS["text_muted"],
+                ).pack(anchor="w")
+            return
+
+        ctk.CTkLabel(
+            cost_frame,
+            text=f"  total ≈ {format_usd(ec.get('total_usd', 0.0))} "
+                 f"(as-of {ec.get('pricing_as_of', '')})",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w")
+        by_phase = ec.get("by_phase") or {}
+        for phase_name, bucket in by_phase.items():
+            ctk.CTkLabel(
+                cost_frame,
+                text=f"    {phase_name:18s} {format_usd(bucket.get('total_usd', 0.0))}",
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["text_muted"],
+            ).pack(anchor="w")
+        if ec.get("missing_pricing_calls"):
+            ctk.CTkLabel(
+                cost_frame,
+                text=(
+                    f"  ⚠ {ec['missing_pricing_calls']} call(s) on unknown "
+                    f"model(s) excluded from total"
+                ),
+                font=ctk.CTkFont(family="Consolas", size=12),
+                text_color=COLORS["warning"],
+            ).pack(anchor="w")
+        ctk.CTkLabel(
+            cost_frame,
+            text="  Estimate only — Anthropic's invoiced amount may differ.",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            text_color=COLORS["text_muted"],
+        ).pack(anchor="w", pady=(2, 0))
 
     def _render_timeline_section(self, parent):
         card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
