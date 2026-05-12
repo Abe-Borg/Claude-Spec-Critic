@@ -79,6 +79,58 @@ def _is_retryable_connection_error(exc: Exception) -> bool:
 REPORT_ONLY_ACTION: str = "REPORT_ONLY"
 EDIT_ACTION_TYPES: frozenset[str] = frozenset({"ADD", "EDIT", "DELETE"})
 
+_INSERT_POSITIONS: frozenset[str] = frozenset({"before", "after"})
+
+
+def validate_edit_shape(
+    action: str,
+    *,
+    existing_text: str | None,
+    replacement_text: str | None,
+    anchor_text: str | None = None,
+    insert_position: str | None = None,
+) -> str | None:
+    """Return a demotion reason if action-specific fields are missing, else None.
+
+    Chunk 7 / plan section "Validate edit proposals at parse time": every
+    executable edit must satisfy action-specific field requirements before
+    it leaves the parser. The four rules are:
+
+    * ``EDIT``   — non-empty ``existing_text`` and ``replacement_text``.
+    * ``DELETE`` — non-empty ``existing_text``.
+    * ``ADD``    — non-empty ``anchor_text`` and ``replacement_text``, plus
+      ``insert_position`` in ``{"before", "after"}``.
+    * ``REPORT_ONLY`` and any unknown action — None (REPORT_ONLY cleanup is
+      the parser's job; unknown actions are coerced to REPORT_ONLY before
+      this helper sees them).
+
+    The return value is the short human-readable reason that the parser
+    stamps on ``Finding.demotion_reason`` so diagnostics, the report, and
+    the edit-candidate UI can all explain *why* a finding lost its edit
+    slot rather than treating it as a generic REPORT_ONLY.
+    """
+    norm = (action or "").strip().upper()
+    if norm == "EDIT":
+        if not (existing_text and existing_text.strip()):
+            return "EDIT action missing required existingText"
+        if not (replacement_text and replacement_text.strip()):
+            return "EDIT action missing required replacementText"
+        return None
+    if norm == "DELETE":
+        if not (existing_text and existing_text.strip()):
+            return "DELETE action missing required existingText"
+        return None
+    if norm == "ADD":
+        if not (anchor_text and anchor_text.strip()):
+            return "ADD action missing required anchorText"
+        normalized_position = (insert_position or "").strip().lower()
+        if normalized_position not in _INSERT_POSITIONS:
+            return "ADD action missing required insertPosition (before|after)"
+        if not (replacement_text and replacement_text.strip()):
+            return "ADD action missing required replacementText"
+        return None
+    return None
+
 
 @dataclass
 class EditProposal:
@@ -172,6 +224,16 @@ class Finding:
     # default "not suppressed" state; non-None implies the finding lives
     # on ``ReviewResult.suppressed_findings`` rather than the main list.
     suppression_reason: str | None = None
+    # Chunk 7 / plan section "Validate edit proposals at parse time":
+    # when the parser demotes an EDIT / DELETE / ADD action to REPORT_ONLY
+    # because action-specific fields were missing, it stamps the short
+    # reason here so diagnostics, the report's demoted-edits section, and
+    # the edit-candidate UI can explain *why* the proposal was rejected
+    # instead of treating the finding as a generic REPORT_ONLY. ``None`` is
+    # the default — the finding was either a real edit, a native
+    # REPORT_ONLY emission, or an unknown action coerced to REPORT_ONLY
+    # without a per-action shape requirement to cite.
+    demotion_reason: str | None = None
 
     def as_edit_proposal(self) -> EditProposal | None:
         """Return the structured edit proposal for this finding, if any.
@@ -184,21 +246,42 @@ class Finding:
         ``REPORT_ONLY`` sentinel and the empty/legacy "no opinion" case —
         returns ``None`` so consumers can branch cleanly on
         "does this finding have a proposal?".
+
+        Chunk 7 extension: validate action-specific shape requirements
+        before returning a proposal. A Finding constructed with an
+        EDIT/ADD/DELETE action but missing required fields (e.g.,
+        ``actionType="EDIT"`` with ``existingText=None``) returns None
+        instead of leaking an unusable proposal into the locator / edit
+        pipeline. Parser callers should never hit this path because
+        ``_parse_findings`` demotes invalid shapes at parse time; the
+        defensive check guards legacy resume payloads and directly-
+        constructed test Findings that bypass the parser.
         """
         if self.edit_proposal is not None:
-            return self.edit_proposal
-        action = (self.actionType or "").strip().upper()
-        if action not in EDIT_ACTION_TYPES:
-            return None
-        return EditProposal(
-            action_type=action,
-            existing_text=self.existingText,
-            replacement_text=self.replacementText,
-            anchor_text=self.anchorText,
-            insert_position=self.insertPosition,
-            target_element_id=self.evidenceElementId,
-            edit_confidence=self.confidence,
+            proposal = self.edit_proposal
+        else:
+            action = (self.actionType or "").strip().upper()
+            if action not in EDIT_ACTION_TYPES:
+                return None
+            proposal = EditProposal(
+                action_type=action,
+                existing_text=self.existingText,
+                replacement_text=self.replacementText,
+                anchor_text=self.anchorText,
+                insert_position=self.insertPosition,
+                target_element_id=self.evidenceElementId,
+                edit_confidence=self.confidence,
+            )
+        invalid = validate_edit_shape(
+            proposal.action_type,
+            existing_text=proposal.existing_text,
+            replacement_text=proposal.replacement_text,
+            anchor_text=proposal.anchor_text,
+            insert_position=proposal.insert_position,
         )
+        if invalid is not None:
+            return None
+        return proposal
 
     def has_edit_proposal(self) -> bool:
         """Convenience predicate — True iff :meth:`as_edit_proposal` is non-None."""
@@ -419,7 +502,28 @@ def _parse_findings(data: list) -> list[Finding]:
         # we zero out the edit-shaped legacy fields so a stale quote from a
         # model that filled them in anyway cannot accidentally produce an
         # edit candidate downstream.
+        #
+        # Chunk 7 / plan section "Validate edit proposals at parse time":
+        # if the model claims EDIT/DELETE/ADD but omits an action-specific
+        # required field, demote the finding to REPORT_ONLY *here*, stamp
+        # a clear ``demotion_reason``, and clear every executable edit
+        # field. Downstream code (locator, edit-candidates, spec_editor)
+        # then sees a clean REPORT_ONLY and the finding's underlying
+        # issue is preserved for the report. The previous behavior
+        # silently built an EditProposal with missing fields and pushed
+        # the error detection into the locator, which had to invent
+        # warnings like "Finding has no anchor text" instead of citing
+        # the specific schema field that was missing.
+        demotion_reason: str | None = None
         if action in EDIT_ACTION_TYPES:
+            demotion_reason = validate_edit_shape(
+                action,
+                existing_text=existing_text,
+                replacement_text=replacement_text,
+                anchor_text=anchor_text,
+                insert_position=position,
+            )
+        if action in EDIT_ACTION_TYPES and demotion_reason is None:
             proposal: EditProposal | None = EditProposal(
                 action_type=action,
                 existing_text=existing_text,
@@ -430,6 +534,8 @@ def _parse_findings(data: list) -> list[Finding]:
                 edit_confidence=confidence,
             )
         else:
+            if demotion_reason is not None:
+                action = REPORT_ONLY_ACTION
             proposal = None
             existing_text = None
             replacement_text = None
@@ -451,6 +557,7 @@ def _parse_findings(data: list) -> list[Finding]:
             edit_proposal=proposal,
             upstream_finding_ids=upstream_ids,
             independent_evidence_ids=independent_ids,
+            demotion_reason=demotion_reason,
         ))
     return findings
 

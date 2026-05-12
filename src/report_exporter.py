@@ -823,11 +823,27 @@ def _write_finding_entry(doc: Document, finding, index: int, verbose: bool = Tru
         run.bold = True
         para.paragraph_format.space_after = Pt(3)
 
+        # Chunk 7 / plan section "Validate edit proposals at parse time":
+        # when the parser demoted an EDIT/DELETE/ADD because a required
+        # field was missing, surface the specific reason inline so a
+        # reader sees "the model claimed EDIT but no existingText was
+        # provided" instead of the generic coordination/interpretation
+        # explanation. Native REPORT_ONLY emissions keep the original
+        # note text.
+        demotion = (getattr(finding, "demotion_reason", None) or "").strip()
+        if demotion:
+            note_text = (
+                "Edit proposal demoted to REPORT_ONLY at parse time: "
+                f"{demotion}. The underlying finding is preserved; manual "
+                "review required to determine a clean textual fix."
+            )
+        else:
+            note_text = (
+                "No edit proposal — surfaced for review only (coordination, "
+                "interpretation, or multi-paragraph rewrite required)."
+            )
         note_para = doc.add_paragraph()
-        note_run = note_para.add_run(
-            "No edit proposal — surfaced for review only (coordination, "
-            "interpretation, or multi-paragraph rewrite required)."
-        )
+        note_run = note_para.add_run(note_text)
         note_run.font.italic = True
         note_run.font.size = Pt(10)
         note_run.font.color.rgb = RGBColor(100, 100, 100)

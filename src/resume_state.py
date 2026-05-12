@@ -277,6 +277,13 @@ def serialize_finding(finding: Finding) -> dict[str, Any]:
         "upstream_finding_ids": list(finding.upstream_finding_ids),
         "independent_evidence_ids": list(finding.independent_evidence_ids),
         "suppression_reason": finding.suppression_reason,
+        # Chunk 7: round-trip the parse-time demotion reason so a resumed
+        # session can still explain why a finding lost its edit slot
+        # (e.g., "EDIT action missing required existingText"). Pre-Chunk-7
+        # payloads load with this missing and the deserializer treats it
+        # as None — the legacy locator/edit-candidate fallback paths
+        # already handle the no-proposal case without it.
+        "demotion_reason": finding.demotion_reason,
     }
 
 
@@ -326,6 +333,8 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
     independent_ids = [str(eid).strip() for eid in independent_ids_raw if str(eid).strip()]
     suppression_raw = payload.get("suppression_reason")
     suppression_reason = str(suppression_raw) if suppression_raw is not None else None
+    demotion_raw = payload.get("demotion_reason")
+    demotion_reason = str(demotion_raw) if demotion_raw is not None else None
     return Finding(
         severity=str(payload.get("severity", "MEDIUM")),
         fileName=str(payload.get("fileName", "")),
@@ -346,6 +355,7 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
         upstream_finding_ids=upstream_ids,
         independent_evidence_ids=independent_ids,
         suppression_reason=suppression_reason,
+        demotion_reason=demotion_reason,
     )
 
 

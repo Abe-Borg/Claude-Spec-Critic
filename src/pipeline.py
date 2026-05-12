@@ -363,6 +363,12 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             evidenceElementId=rep.evidenceElementId,
             edit_proposal=merged_proposal,
             finding_id=merged_id,
+            # Chunk 7: carry the representative's parse-time demotion
+            # reason onto the merged finding so dedup cannot rehydrate a
+            # demoted edit. If the rep was demoted (proposal cleared,
+            # reason stamped), the merged finding inherits both halves of
+            # that decision; if the rep was a clean edit, this stays None.
+            demotion_reason=rep.demotion_reason,
         ))
     return out
 
