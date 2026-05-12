@@ -197,10 +197,38 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
 
 @dataclass
 class FindingOccurrence:
-    """One executable edit candidate: a finding bound to a single file."""
+    """One executable edit candidate: a finding bound to a single file.
+
+    ``finding`` is the display-level (representative) finding. ``original_finding``
+    is the per-file pre-merge member finding (Chunk 8) when available — that is
+    the source of truth for executable edit fields (``existingText``,
+    ``replacementText``, ``anchorText``, ``evidenceElementId``,
+    ``edit_proposal``). ``original_finding`` is ``None`` when the merged
+    representative did not record a per-file original for this file (legacy
+    resume payload, or singleton finding where the representative *is* the
+    only original); callers that need executable edit fields should resolve
+    the executable finding via :meth:`executable_finding`.
+    """
     occurrence_id: str
     file_name: str
     finding: Finding
+    original_finding: Finding | None = None
+
+    def executable_finding(self) -> Finding:
+        """Return the per-file original when available, else the representative.
+
+        Chunk 8: edit execution should prefer the original member finding for
+        each affected file so a representative's edit text is never applied
+        to a file whose original text differed. Falls back to the
+        representative when no per-file original was recorded — callers that
+        treat that fallback as unsafe (apply_edits.execute_edit_plan) should
+        check :meth:`has_original` first.
+        """
+        return self.original_finding if self.original_finding is not None else self.finding
+
+    def has_original(self) -> bool:
+        """True iff a per-file pre-merge original was recorded for this file."""
+        return self.original_finding is not None
 
 
 @dataclass
@@ -225,6 +253,21 @@ def _occurrence_id(group_id: str, file_name: str, idx: int) -> str:
     return f"{group_id}::{idx:03d}::{file_name}"
 
 
+def _originals_by_filename(finding: Finding) -> dict[str, Finding]:
+    """Build a per-file lookup of ``Finding.occurrence_originals``.
+
+    Chunk 8 helper. The first original per ``fileName`` wins (originals with
+    the same fileName share a dedup key by construction, so they have
+    equivalent edit text). Empty-fileName originals are skipped — there is
+    no executable file to bind them to.
+    """
+    by_name: dict[str, Finding] = {}
+    for orig in finding.occurrence_originals:
+        if orig.fileName:
+            by_name.setdefault(orig.fileName, orig)
+    return by_name
+
+
 def group_findings(findings: list[Finding]) -> list[FindingGroup]:
     """Convert a deduplicated finding list into formal ``FindingGroup`` rows.
 
@@ -233,6 +276,13 @@ def group_findings(findings: list[Finding]) -> list[FindingGroup]:
     with no ``affected_files`` and no ``fileName`` produce a single
     placeholder occurrence with an empty file name; downstream code should
     check for that and skip.
+
+    Chunk 8: each ``FindingOccurrence`` is also bound to the per-file
+    pre-merge original via ``occurrence_originals`` so edit execution can
+    use the per-file ``existingText`` instead of the representative's. When
+    the merged finding is a singleton (its ``fileName`` matches the lone
+    affected file), the occurrence binds the representative itself as its
+    own original — the representative *is* the original in that case.
     """
     groups: list[FindingGroup] = []
     for idx, f in enumerate(findings):
@@ -240,14 +290,24 @@ def group_findings(findings: list[Finding]) -> list[FindingGroup]:
             [f.fileName] if f.fileName else [""]
         )
         group_id = f"grp-{idx:04d}"
-        occurrences = [
-            FindingOccurrence(
-                occurrence_id=_occurrence_id(group_id, name, i),
-                file_name=name,
-                finding=f,
+        originals_by_file = _originals_by_filename(f)
+        occurrences: list[FindingOccurrence] = []
+        for i, name in enumerate(files):
+            original = originals_by_file.get(name)
+            if original is None and name and not f.occurrence_originals and name == f.fileName:
+                # Singleton / legacy path: the merged finding has no recorded
+                # originals AND this occurrence is for the representative's
+                # own file. The representative *is* the original — bind it
+                # as such so executable_finding() returns the right thing.
+                original = f
+            occurrences.append(
+                FindingOccurrence(
+                    occurrence_id=_occurrence_id(group_id, name, i),
+                    file_name=name,
+                    finding=f,
+                    original_finding=original,
+                )
             )
-            for i, name in enumerate(files)
-        ]
         groups.append(FindingGroup(group_id=group_id, representative=f, occurrences=occurrences))
     return groups
 
@@ -347,6 +407,16 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
         # whole group to one identity, so every member would hash to the
         # same id; using rep is the cheaper of the two equivalent paths.
         merged_id = rep.finding_id or compute_finding_id(rep)
+        # Chunk 8: retain the per-file pre-merge member findings on the
+        # merged representative so edit execution can use each file's own
+        # ``existingText`` / ``replacementText`` / ``anchorText`` /
+        # ``evidenceElementId`` / ``edit_proposal`` instead of fanning the
+        # representative's text across files that may have differed.
+        # The representative itself is included because it IS the original
+        # for its own file. Members keep their own ``occurrence_originals``
+        # empty (they are themselves singletons), so this terminates after
+        # one level — no recursive nesting.
+        member_originals = list(group)
         out.append(Finding(
             severity=rep.severity,
             fileName=files[0] if files else rep.fileName,
@@ -369,6 +439,7 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             # reason stamped), the merged finding inherits both halves of
             # that decision; if the rep was a clean edit, this stays None.
             demotion_reason=rep.demotion_reason,
+            occurrence_originals=member_originals,
         ))
     return out
 
