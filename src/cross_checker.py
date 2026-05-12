@@ -312,7 +312,11 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             result.cross_check_status = "completed"
             result.elapsed_seconds = time.time() - start
             return result
-        except BaseException as e:  # noqa: BLE001 — routed through classify_exception
+        except (KeyboardInterrupt, SystemExit):
+            # Control-flow exceptions must escape so Ctrl-C / interpreter
+            # shutdown work as the user expects.
+            raise
+        except Exception as e:
             failure_class = classify_exception(e)
             last_failure_class = failure_class
             if not is_retryable_failure_class(failure_class):

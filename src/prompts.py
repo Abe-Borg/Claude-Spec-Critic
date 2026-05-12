@@ -257,8 +257,9 @@ Notes that are not enforced by schema:
   the spec (anchorText / insertPosition do not apply).
 - For actionType "ADD", existingText is null; populate anchorText with a
   verbatim nearby paragraph and insertPosition with "before" or "after".
-  When no reliable anchor exists, leave anchorText null — the edit will
-  be flagged for manual review.
+  If no reliable anchor exists, use REPORT_ONLY instead — an ADD without
+  a verbatim anchorText and a valid insertPosition is demoted to
+  REPORT_ONLY by the parser, so emitting it that way wastes output.
 - For actionType "REPORT_ONLY", leave existingText, replacementText,
   anchorText, and insertPosition all null. Use this when the finding is
   real but cannot be expressed as a clean text edit (coordination,

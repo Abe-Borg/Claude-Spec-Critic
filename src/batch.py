@@ -15,6 +15,7 @@ from .review_request_builder import ReviewRequestSpec, build_review_request
 from .api_config import (
     BATCH_OUTPUT_BETA,
     PHASE_VERIFICATION,
+    REVIEW_MODEL_DEFAULT,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     WEB_SEARCH_TOOL,
     apply_effort_config,
@@ -74,7 +75,7 @@ def submit_review_batch(
     specs: list,
     *,
     project_context: str = "",
-    model: str = MODEL_OPUS_47,
+    model: str = REVIEW_MODEL_DEFAULT,
     cycle: CodeCycle = DEFAULT_CYCLE,
     retry_instruction: str | None = None,
     mode: ReviewMode = DEFAULT_REVIEW_MODE,
