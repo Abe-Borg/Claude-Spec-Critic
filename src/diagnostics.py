@@ -396,6 +396,18 @@ class DiagnosticsReport:
         # Chunk I: per-profile counter so reports can tell at a glance
         # which kinds of claims dominated a run.
         verification_profiles: dict[str, int] = {}
+        # Chunk 6: retry / continuation telemetry. Aggregates the
+        # ``retry_telemetry`` block the verifier stamps onto findings
+        # that hit retries, the continuation cap, or terminal-unverified
+        # via the wave failure tracker. Empty on runs where no finding
+        # consumed a retry.
+        retry_stats = {
+            "findings_with_retries": 0,
+            "total_retry_attempts": 0,
+            "total_continuations": 0,
+            "by_failure_class": {},   # type: dict[str, int]
+            "by_terminal_reason": {}, # type: dict[str, int]
+        }
         for e in self.events:
             if e.data and "verdict" in e.data:
                 v = e.data["verdict"]
@@ -446,6 +458,30 @@ class DiagnosticsReport:
                     escalation_stats["by_severity"][sev_key] = (
                         escalation_stats["by_severity"].get(sev_key, 0) + 1
                     )
+                # Chunk 6: aggregate retry_telemetry. ``None`` is the
+                # default (success path with no retries); only events
+                # carrying a non-empty dict count toward the rollup so
+                # the "no retries observed" run still shows zeros.
+                rt = e.data.get("retry_telemetry") or None
+                if isinstance(rt, dict) and rt:
+                    attempts_count = int(rt.get("attempts", 0) or 0)
+                    cont_count = int(rt.get("continuation_count", 0) or 0)
+                    if attempts_count or cont_count:
+                        retry_stats["findings_with_retries"] += 1
+                        retry_stats["total_retry_attempts"] += attempts_count
+                        retry_stats["total_continuations"] += cont_count
+                        fc = rt.get("failure_class")
+                        if fc:
+                            fc_key = str(fc)
+                            retry_stats["by_failure_class"][fc_key] = (
+                                retry_stats["by_failure_class"].get(fc_key, 0) + 1
+                            )
+                        tr = rt.get("terminal_reason")
+                        if tr:
+                            tr_key = str(tr)
+                            retry_stats["by_terminal_reason"][tr_key] = (
+                                retry_stats["by_terminal_reason"].get(tr_key, 0) + 1
+                            )
 
         # Phase 9 plan 13.4: search-budget telemetry. We aggregate per-finding
         # search-request counts so a future tuning pass can see whether the
@@ -571,6 +607,13 @@ class DiagnosticsReport:
                     else 0.0
                 ),
             },
+            # Chunk 6: retry / continuation telemetry rollup. The
+            # individual fields are populated from per-finding
+            # ``retry_telemetry`` blocks the verifier stamps on
+            # outcomes that hit the wave tracker, the continuation
+            # cap, or the unresolved-tail branch. Empty by-class /
+            # by-reason dicts on runs where no retry occurred.
+            "retry_stats": retry_stats,
             "search_budget": search_budget,
             "output_telemetry": output_telemetry,
             "severity_counts": severities,
@@ -714,6 +757,25 @@ class DiagnosticsReport:
                 lines.append(f"    by_reason:     {esc_stats['by_reason']}")
             if esc_stats.get("by_severity"):
                 lines.append(f"    by_severity:   {esc_stats['by_severity']}")
+        # Chunk 6: render the retry rollup only when at least one
+        # finding consumed a retry or continuation. Keeps the summary
+        # tight on runs where everything went through cleanly.
+        retry_stats = s.get("retry_stats") or {}
+        if retry_stats.get("findings_with_retries"):
+            lines.append(
+                "  Retry/Continue:  "
+                f"findings={retry_stats['findings_with_retries']}, "
+                f"attempts={retry_stats['total_retry_attempts']}, "
+                f"continuations={retry_stats['total_continuations']}"
+            )
+            if retry_stats.get("by_failure_class"):
+                lines.append(
+                    f"    by_class:      {retry_stats['by_failure_class']}"
+                )
+            if retry_stats.get("by_terminal_reason"):
+                lines.append(
+                    f"    by_terminal:   {retry_stats['by_terminal_reason']}"
+                )
         if s["phase_durations"]:
             lines.append("  Phase Durations:")
             for phase, dur in s["phase_durations"].items():

@@ -319,6 +319,11 @@ def collect_batch_results(app) -> None:
                                 "call_mode": "batch",
                                 "model": f.verification.model_used,
                                 "web_search_requests": f.verification.web_search_requests,
+                                # Chunk 6: surface retry telemetry so the
+                                # per-phase diagnostics rollup can answer
+                                # "which findings burned retries / hit
+                                # the continuation cap?".
+                                "retry_telemetry": f.verification.retry_telemetry,
                             }
                             bounded_payload = bound_structured_payload(f.verification.structured_payload)
                             if bounded_payload is not None:

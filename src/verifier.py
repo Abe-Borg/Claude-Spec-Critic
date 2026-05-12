@@ -33,6 +33,17 @@ from .api_config import (
     model_supports_adaptive_thinking,
     verification_max_tokens,
 )
+from .retry_policy import (
+    BatchWaveFailureTracker,
+    DEFAULT_VERIFICATION_RETRY_POLICY,
+    FailureClass,
+    classify_batch_failure,
+    classify_exception,
+    compute_backoff_seconds,
+    is_retryable_failure_class,
+    retry_diagnostics_payload,
+    should_retry_batch_failure,
+)
 from .prompt_serialization import (
     TAG_FINDING,
     wrap_data_block,
@@ -167,6 +178,19 @@ class VerificationResult:
     # persisted by ``verification_cache`` — only the derived semantic
     # fields are cached.
     structured_payload: dict | None = None
+    # ----- Chunk 6 retry / continuation telemetry -------------------------
+    # Small JSON-safe dict describing why this finding's verification
+    # took the path it did. Keys: ``attempts`` (total wave attempts),
+    # ``failure_class`` (last :class:`FailureClass` value, if any),
+    # ``terminal_reason`` (short tag explaining why the verifier
+    # gave up), ``continuation_count`` (pause-turn rounds spent).
+    # Populated by the batch wave loop and the real-time call when a
+    # finding goes terminal-unverified, succeeded after retries, or
+    # consumed continuations; ``None`` for the default success path.
+    # Like other runtime telemetry (``escalation_*``), this is NOT
+    # persisted by the verification cache or resume state — it
+    # describes runtime behavior, not durable verdict semantics.
+    retry_telemetry: dict | None = None
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -870,6 +894,12 @@ class VerificationItemOutcome:
     parsed_verification: VerificationResult | None = None
     assistant_content_blocks: list | None = None
     unverified_reason: str | None = None
+    # Chunk 6: failure class for the per-finding wave tracker. Set on
+    # ``retry`` and ``terminal_unverified`` outcomes so the wave loop
+    # can apply the "two of the same class → terminal" rule and the
+    # "invalid_request → never retry" rule without re-parsing the
+    # error message. ``None`` on success / continue outcomes.
+    failure_class: FailureClass | None = None
 
 
 def verify_finding(
@@ -1093,20 +1123,39 @@ def _run_verification_call(
     # ``messages.append(...)`` continuation loop below.
     messages = stream_kwargs.pop("messages")
 
-    for attempt in range(max_retries + 1):
+    # Chunk 6: route through the centralized retry policy so this loop,
+    # the cross-check loop, and the review streaming loop all use the
+    # same backoff schedule for the same SDK exception classes. The
+    # caller's ``max_retries`` still wins so existing tests inject a
+    # different cap. The continuation cap is now drawn from the routing
+    # decision and capped further by :data:`retry_policy.DEFAULT_MAX_CONTINUATIONS`
+    # (or the deep-mode override) so a runaway ``pause_turn`` loop cannot
+    # quietly run five rounds by default.
+    policy = DEFAULT_VERIFICATION_RETRY_POLICY
+    attempts_planned = max(1, int(max_retries) + 1)
+    # Per-call continuation accounting (audit Chunk 6, Task 5): the cap
+    # comes from the routing decision; we additionally track total
+    # web-search uses across continuations so a model that keeps
+    # pausing without making progress goes terminal-unverified.
+    continuation_total = 0
+    for attempt in range(attempts_planned):
+        is_last_attempt = attempt == attempts_planned - 1
         try:
             all_responses = []
             # Reset messages each attempt — the builder produces a fresh
             # ``[{"role": "user", "content": prompt}]`` list and the
             # continuation loop appends assistant turns as pauses occur.
             messages = [{"role": "user", "content": prompt}]
-            # Each pause/continue cycle re-sends prompt + tools (cached, so
-            # cheap on the prefix) but adds the prior assistant content to
-            # the context (uncached). Default 5 continuations covers normal
-            # web-search-heavy turns without unbounded growth on edge cases;
-            # the routing decision carries the cap so a future tuning pass
-            # can shrink it per mode.
+            # The default per-mode cap is 2 (drops from the legacy 5);
+            # DEEP_REASONING gets 4. The routing decision carries the
+            # final value so a future tuning pass touches one map.
             max_continuations = decision.max_continuations
+            # Hard cap on the web_search budget across the whole call.
+            # The mode-scaled per-call ceiling is the budget the model
+            # was supposed to spend; if it asks for more we treat that
+            # as a continuation that did not converge.
+            search_budget_ceiling = max(1, int(decision.web_search_max_uses) * 2)
+            continuation_count = 0
             for _ in range(max_continuations + 1):
                 # --- Streaming API required for web search server tool ---
                 with client.messages.stream(
@@ -1125,6 +1174,20 @@ def _run_verification_call(
                 if stop_class == STOP_CLASS_COMPLETE:
                     break
                 if stop_class == STOP_CLASS_PAUSE:
+                    # Chunk 6: count this pause/continue. Hard caps fire
+                    # when the total continuations or the total
+                    # web-search uses would exceed the configured budget.
+                    continuation_count += 1
+                    continuation_total += 1
+                    total_search_so_far = sum(
+                        _web_search_count(r) for r in all_responses
+                    )
+                    if total_search_so_far > search_budget_ceiling:
+                        return _make_unverified(
+                            "Verification exceeded the per-call web_search budget "
+                            f"({total_search_so_far} > {search_budget_ceiling}) "
+                            "without producing a verdict."
+                        )
                     # Chunk D1.1: server-tool ``pause_turn`` is resumed by
                     # re-sending the assistant response as-is. Appending a
                     # synthetic ``"continue"`` user turn (the prior behavior)
@@ -1139,7 +1202,10 @@ def _run_verification_call(
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
             final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
             if classify_verification_stop_reason(final_stop) != STOP_CLASS_COMPLETE:
-                return _make_unverified("Verification did not complete after maximum continuation attempts.")
+                return _make_unverified(
+                    "Verification did not complete after maximum continuation attempts "
+                    f"(max_continuations={max_continuations})."
+                )
 
             all_searched: list[SearchedSource] = []
             success_blocks = 0
@@ -1211,33 +1277,29 @@ def _run_verification_call(
             # and the verdict is downgraded when every citation missed.
             parsed = _apply_source_grounding(parsed, searched=deduped_searched)
             return _enforce_grounding_invariant(parsed)
-        except RateLimitError:
-            if attempt < max_retries:
-                time.sleep(10 * (attempt + 1))
-                continue
-            return _make_unverified("Rate limited during verification.")
-        except InternalServerError as e:
-            if attempt < max_retries:
-                time.sleep(15 * (attempt + 1))
-                continue
-            return _make_unverified(f"Server overloaded during verification: {e}")
-        except APIStatusError as e:
-            if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
-                if attempt < max_retries:
-                    time.sleep(15 * (attempt + 1))
-                    continue
-                return _make_unverified(f"Server overloaded during verification: {e}")
-            if attempt < max_retries:
-                time.sleep(5 * (attempt + 1))
-                continue
-            return _make_unverified(f"API error during verification: {e}")
-        except (APIConnectionError, APIError) as e:
-            if attempt < max_retries:
-                time.sleep(5 * (attempt + 1))
-                continue
-            return _make_unverified(f"API error during verification: {e}")
-        except Exception as e:
-            return _make_unverified(f"Unexpected error during verification: {e}")
+        except BaseException as e:  # noqa: BLE001 — routed through classify_exception
+            # Chunk 6: route the exception through the centralized
+            # classifier so RATE_LIMIT / SERVER_ERROR / CONNECTION get
+            # the same backoff schedule the review and cross-check
+            # paths use. INVALID_REQUEST and UNKNOWN are non-retryable
+            # and surface the original error message visibly so the
+            # operator sees what went wrong.
+            failure_class = classify_exception(e)
+            if not is_retryable_failure_class(failure_class):
+                if failure_class is FailureClass.INVALID_REQUEST:
+                    return _make_unverified(f"API error during verification: {e}")
+                return _make_unverified(f"Unexpected error during verification: {e}")
+            if is_last_attempt:
+                if failure_class is FailureClass.RATE_LIMIT:
+                    return _make_unverified("Rate limited during verification.")
+                if failure_class is FailureClass.SERVER_ERROR:
+                    return _make_unverified(f"Server overloaded during verification: {e}")
+                return _make_unverified(f"API error during verification: {e}")
+            time.sleep(
+                compute_backoff_seconds(
+                    policy, attempt=attempt, failure_class=failure_class
+                )
+            )
 
 
 def prepare_findings_for_verification(
@@ -1564,6 +1626,10 @@ def _decision_from_legacy_params(
 
     include_verdict_tool = verification_request_includes_verdict_tool()
 
+    # Chunk 6: the legacy path also gets the per-mode continuation cap
+    # from the centralized policy. Default modes get 2; DEEP_REASONING
+    # gets 4.
+    from .retry_policy import max_continuations_for_mode as _max_cont
     return VerificationRoutingDecision(
         finding_id="",
         severity=sev,
@@ -1575,7 +1641,7 @@ def _decision_from_legacy_params(
         web_search_max_uses=max_uses,
         include_verdict_tool=include_verdict_tool,
         cache_phase=cache_phase,
-        max_continuations=5,
+        max_continuations=_max_cont(mode.value),
         escalation_eligible=policy.allows_escalation,
         local_skip=False,
         escalated=escalated,
@@ -1601,7 +1667,19 @@ def _classify_wave_results(
         escalated = bool(context.get("escalated", False))
         result = detailed.get(custom_id)
         if result is None:
-            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="retry", unverified_reason="Missing batch result"))
+            # Chunk 6: a missing batch result is a SERVER_ERROR-equivalent
+            # transient failure (the wave path detected something but the
+            # entry didn't land). The tracker decides whether the same
+            # class repeats across waves.
+            outcomes.append(
+                VerificationItemOutcome(
+                    finding_idx=finding_idx,
+                    original_custom_id=custom_id,
+                    classification="retry",
+                    unverified_reason="Missing batch result",
+                    failure_class=FailureClass.SERVER_ERROR,
+                )
+            )
             continue
         if result.result.type != "succeeded":
             error_detail = _extract_api_error_message(
@@ -1610,7 +1688,42 @@ def _classify_wave_results(
             unverified_msg = f"Batch request {result.result.type}"
             if error_detail:
                 unverified_msg += f": {error_detail}"
-            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="retry", unverified_reason=unverified_msg))
+            # Chunk 6: classify the batch failure with the centralized
+            # classifier. The wave loop applies the "never retry
+            # INVALID_REQUEST" rule, so structured-error-type
+            # ``invalid_request_error`` becomes terminal immediately.
+            error_obj = getattr(result.result, "error", None)
+            error_type = getattr(error_obj, "type", None) if error_obj is not None else None
+            failure_class = classify_batch_failure(
+                result_type=result.result.type,
+                error_message=error_detail,
+                error_type=error_type,
+            )
+            if should_retry_batch_failure(failure_class):
+                outcomes.append(
+                    VerificationItemOutcome(
+                        finding_idx=finding_idx,
+                        original_custom_id=custom_id,
+                        classification="retry",
+                        unverified_reason=unverified_msg,
+                        failure_class=failure_class,
+                    )
+                )
+            else:
+                # INVALID_REQUEST / BATCH_CANCELED: terminal at parse
+                # time. The request shape is bad — resubmitting will
+                # produce the same error.
+                outcomes.append(
+                    VerificationItemOutcome(
+                        finding_idx=finding_idx,
+                        original_custom_id=custom_id,
+                        classification="terminal_unverified",
+                        unverified_reason=(
+                            f"{unverified_msg} (non-retryable: {failure_class.value})"
+                        ),
+                        failure_class=failure_class,
+                    )
+                )
             continue
         message = result.result.message
         stop_reason = getattr(message, "stop_reason", None)
@@ -1628,6 +1741,7 @@ def _classify_wave_results(
                     # accepts these the same way it accepts model objects.
                     assistant_content_blocks=plain_blocks,
                     unverified_reason="pause_turn",
+                    failure_class=FailureClass.PAUSE_TURN,
                 )
             )
             continue
@@ -1637,11 +1751,27 @@ def _classify_wave_results(
         # collapses ``tool_use`` and ``end_turn`` into ``complete`` so the
         # batch wave path and the real-time path agree.
         if stop_class != STOP_CLASS_COMPLETE:
-            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=f"Verification response incomplete (stop_reason: {stop_reason})."))
+            outcomes.append(
+                VerificationItemOutcome(
+                    finding_idx=finding_idx,
+                    original_custom_id=custom_id,
+                    classification="terminal_unverified",
+                    unverified_reason=f"Verification response incomplete (stop_reason: {stop_reason}).",
+                    failure_class=FailureClass.PARSE_ERROR,
+                )
+            )
             continue
         gate_failure = _search_gate_failure(message)
         if gate_failure:
-            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=gate_failure))
+            outcomes.append(
+                VerificationItemOutcome(
+                    finding_idx=finding_idx,
+                    original_custom_id=custom_id,
+                    classification="terminal_unverified",
+                    unverified_reason=gate_failure,
+                    failure_class=FailureClass.PARSE_ERROR,
+                )
+            )
             continue
         # Chunk D: canonical parser. Structured tool input first, then JSON
         # text fallback, then conservative classification. A text-fallback
@@ -1651,10 +1781,26 @@ def _classify_wave_results(
         # verdict.
         outcome = parse_verification_response(message)
         if outcome.parse_status == PARSE_STATUS_NO_CONTENT:
-            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason="Verification produced no text response."))
+            outcomes.append(
+                VerificationItemOutcome(
+                    finding_idx=finding_idx,
+                    original_custom_id=custom_id,
+                    classification="terminal_unverified",
+                    unverified_reason="Verification produced no text response.",
+                    failure_class=FailureClass.PARSE_ERROR,
+                )
+            )
             continue
         if outcome.parse_status == PARSE_STATUS_TEXT_PARSE_ERROR:
-            outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="terminal_unverified", unverified_reason=outcome.verdict.explanation))
+            outcomes.append(
+                VerificationItemOutcome(
+                    finding_idx=finding_idx,
+                    original_custom_id=custom_id,
+                    classification="terminal_unverified",
+                    unverified_reason=outcome.verdict.explanation,
+                    failure_class=FailureClass.PARSE_ERROR,
+                )
+            )
             continue
         parsed = outcome.verdict
         searched_detailed, success_blocks, error_count = _collect_search_evidence_detailed(message)
@@ -1742,10 +1888,27 @@ def collect_verification_batch_results(
             "original_prompt": _build_verification_prompt(findings[meta["finding_idx"]], cycle=cycle),
             "model": meta.get("model") or initial_verification_model(),
             "escalated": False,
+            # Chunk 6: stamp the *original* custom_id on the context so
+            # the wave-failure tracker keys by the stable id across
+            # wave re-stamps (``verify_retry_<wave>__<original>``).
+            "original_custom_id": custom_id,
             **({"routing": meta["routing"]} if meta.get("routing") else {}),
         }
         for custom_id, meta in job.request_map.items()
     }
+    # Chunk 6: per-finding wave failure tracker. The tracker is keyed by
+    # the original custom_id (the first-wave id) so a finding's failure
+    # history follows it through wave re-stamps. Repeated same-class
+    # failures and INVALID_REQUEST become terminal-unverified earlier
+    # than the global wave cap.
+    failure_tracker = BatchWaveFailureTracker()
+    # Per-finding continuation counter. The wave loop has its own
+    # ``MAX_VERIFICATION_WAVES`` cap, but the real-time path's
+    # continuation cap (2 by default) is the more direct budget signal —
+    # a finding that pause_turns its way through three waves has spent
+    # the same number of pause/resume rounds the real-time path would
+    # have allowed in one call, and the next wave is unlikely to help.
+    continuation_counts: dict[str, int] = {}
     current_job = job
     for wave_index in range(max_waves):
         wave_label = f"wave {wave_index + 1}/{max_waves}"
@@ -1764,10 +1927,22 @@ def collect_verification_batch_results(
         outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts)
         needs_retry: list[VerificationItemOutcome] = []
         needs_continue: list[VerificationItemOutcome] = []
+        # Chunk 6: findings the tracker has decided should stop burning
+        # batch waves. They are NOT resubmitted via
+        # ``submit_verification_followup_wave``, but they stay eligible
+        # for the real-time fallback path on the last wave (a different
+        # code path that may succeed where batch did not). Findings
+        # whose class is in the never-retry set (e.g. INVALID_REQUEST)
+        # are written to terminal-UNVERIFIED immediately and not
+        # included here, because the request shape is the problem and
+        # real-time would hit the same wall.
+        tracker_terminated: list[VerificationItemOutcome] = []
         terminal_unverified = 0
         succeeded = 0
         for outcome in outcomes:
             finding = findings[outcome.finding_idx]
+            ctx = request_contexts.get(outcome.original_custom_id, {})
+            stable_key = ctx.get("original_custom_id") or outcome.original_custom_id
             if outcome.classification == "success" and outcome.parsed_verification:
                 finding.verification = outcome.parsed_verification
                 if cache is not None:
@@ -1775,22 +1950,126 @@ def collect_verification_batch_results(
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 succeeded += 1
             elif outcome.classification == "retry":
-                needs_retry.append(outcome)
+                # Chunk 6: apply the per-finding wave tracker.
+                #
+                # * Never-retry classes (INVALID_REQUEST, BATCH_CANCELED)
+                #   → terminal-unverified immediately. The request shape
+                #   is the problem, so resubmitting (batch or real-time)
+                #   would produce the same error.
+                # * Repeated same-class failures → "tracker_terminated":
+                #   no more batch waves, but real-time fallback is still
+                #   eligible because a different transport may succeed.
+                fc = outcome.failure_class or FailureClass.UNKNOWN
+                if not should_retry_batch_failure(fc):
+                    failure_tracker.record(stable_key, fc)
+                    terminal_reason_str = (
+                        f"non-retryable failure class: {fc.value}"
+                    )
+                    finding.verification = VerificationResult(
+                        verdict="UNVERIFIED",
+                        explanation=(
+                            f"{outcome.unverified_reason or 'Verification failed.'} "
+                            f"(non-retryable: {fc.value})"
+                        ),
+                        retry_telemetry=retry_diagnostics_payload(
+                            attempts=failure_tracker.total_failures(stable_key),
+                            failure_class=fc,
+                            terminal_reason=terminal_reason_str,
+                            continuation_count=continuation_counts.get(stable_key, 0),
+                        ),
+                    )
+                    request_contexts[outcome.original_custom_id]["resolved"] = True
+                    terminal_unverified += 1
+                elif failure_tracker.is_terminal(stable_key, current=fc):
+                    # Repeated same class: stop submitting batch waves
+                    # but keep the finding eligible for the real-time
+                    # fallback on the last wave.
+                    failure_tracker.record(stable_key, fc)
+                    # Stamp a placeholder reason so the unresolved-tail
+                    # branch can attribute the failure if fallback
+                    # is disabled or the threshold is exceeded.
+                    outcome.unverified_reason = (
+                        f"{outcome.unverified_reason or 'Verification failed.'} "
+                        f"({failure_tracker.terminal_reason(stable_key, current=fc)})"
+                    )
+                    tracker_terminated.append(outcome)
+                else:
+                    failure_tracker.record(stable_key, fc)
+                    needs_retry.append(outcome)
             elif outcome.classification == "continue":
-                needs_continue.append(outcome)
+                # Continuations consume the per-finding pause-turn
+                # budget. The wave loop bounds them through the same
+                # cap the real-time path uses (2 default / 4 deep) so a
+                # pause-turn-only finding cannot eat all three waves.
+                continuation_counts[stable_key] = (
+                    continuation_counts.get(stable_key, 0) + 1
+                )
+                # Read the cap from the stored decision if available,
+                # otherwise fall back to the centralized default.
+                stored_routing = ctx.get("routing")
+                if isinstance(stored_routing, dict):
+                    cap = int(stored_routing.get("max_continuations") or 0)
+                else:
+                    cap = 0
+                if cap <= 0:
+                    from .retry_policy import DEFAULT_MAX_CONTINUATIONS as _dmc
+                    cap = _dmc
+                if continuation_counts[stable_key] > cap:
+                    finding.verification = VerificationResult(
+                        verdict="UNVERIFIED",
+                        explanation=(
+                            "Verification did not complete after maximum "
+                            f"continuation attempts (cap={cap}, "
+                            f"observed={continuation_counts[stable_key]})."
+                        ),
+                        retry_telemetry=retry_diagnostics_payload(
+                            attempts=failure_tracker.total_failures(stable_key),
+                            failure_class=FailureClass.PAUSE_TURN,
+                            terminal_reason=(
+                                f"continuation cap exceeded ({cap})"
+                            ),
+                            continuation_count=continuation_counts[stable_key],
+                        ),
+                    )
+                    request_contexts[outcome.original_custom_id]["resolved"] = True
+                    terminal_unverified += 1
+                else:
+                    needs_continue.append(outcome)
             else:
-                finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=outcome.unverified_reason or "Verification failed.")
+                if outcome.failure_class is not None:
+                    failure_tracker.record(stable_key, outcome.failure_class)
+                finding.verification = VerificationResult(
+                    verdict="UNVERIFIED",
+                    explanation=outcome.unverified_reason or "Verification failed.",
+                    retry_telemetry=retry_diagnostics_payload(
+                        attempts=failure_tracker.total_failures(stable_key),
+                        failure_class=outcome.failure_class,
+                        terminal_reason=outcome.classification,
+                        continuation_count=continuation_counts.get(stable_key, 0),
+                    ),
+                )
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 terminal_unverified += 1
-        wave_summary_level = "warning" if (len(needs_retry) or len(needs_continue) or terminal_unverified) else "info"
+        wave_summary_level = "warning" if (len(needs_retry) or len(needs_continue) or terminal_unverified or tracker_terminated) else "info"
+        tracker_msg = (
+            f", {len(tracker_terminated)} batch-terminated (fallback eligible)"
+            if tracker_terminated else ""
+        )
         log(
-            f"Verification {wave_label} results: {succeeded} succeeded, {len(needs_continue)} need continuation, {len(needs_retry)} need retry, {terminal_unverified} terminal UNVERIFIED",
+            f"Verification {wave_label} results: {succeeded} succeeded, "
+            f"{len(needs_continue)} need continuation, "
+            f"{len(needs_retry)} need retry, "
+            f"{terminal_unverified} terminal UNVERIFIED{tracker_msg}",
             level=wave_summary_level,
         )
-        if not needs_retry and not needs_continue:
+        if not needs_retry and not needs_continue and not tracker_terminated:
             break
         if wave_index == max_waves - 1:
-            unresolved = needs_retry + needs_continue
+            # Chunk 6: include tracker_terminated findings in the
+            # unresolved set. They cannot ride more batch waves, but
+            # the real-time fallback is a different code path that
+            # may succeed (or fail with a clearer error).
+            unresolved = needs_retry + needs_continue + tracker_terminated
             # Phase 3 (plan 7.4): if only a small tail remains, fall back to
             # real-time verification rather than waiting for another batch.
             if (
@@ -1825,7 +2104,27 @@ def collect_verification_batch_results(
                 break
             for outcome in unresolved:
                 finding = findings[outcome.finding_idx]
-                finding.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unresolved after {max_waves} batch waves: {outcome.unverified_reason or outcome.classification}.")
+                # Chunk 6: include the wave history in the
+                # retry_telemetry so reports / diagnostics can attribute
+                # why the finding never resolved.
+                stable_key = (
+                    request_contexts.get(outcome.original_custom_id, {})
+                    .get("original_custom_id")
+                    or outcome.original_custom_id
+                )
+                finding.verification = VerificationResult(
+                    verdict="UNVERIFIED",
+                    explanation=(
+                        f"Verification unresolved after {max_waves} batch waves: "
+                        f"{outcome.unverified_reason or outcome.classification}."
+                    ),
+                    retry_telemetry=retry_diagnostics_payload(
+                        attempts=failure_tracker.total_failures(stable_key),
+                        failure_class=outcome.failure_class,
+                        terminal_reason=f"unresolved after {max_waves} waves",
+                        continuation_count=continuation_counts.get(stable_key, 0),
+                    ),
+                )
             break
         next_requests = []
         next_request_map = {}
@@ -1884,6 +2183,10 @@ def collect_verification_batch_results(
                 "severity": wave_severity,
                 "profile": wave_profile,
                 "routing": retry_decision.to_dict(),
+                # Chunk 6: preserve the stable original custom_id so
+                # the failure tracker can follow the finding across
+                # wave re-stamps.
+                "original_custom_id": original.get("original_custom_id") or item.original_custom_id,
             }
         for item in needs_continue:
             original = request_contexts[item.original_custom_id]
@@ -1931,8 +2234,35 @@ def collect_verification_batch_results(
                 "severity": wave_severity,
                 "profile": wave_profile,
                 "routing": cont_decision.to_dict(),
+                # Chunk 6: preserve the stable original custom_id so
+                # the failure tracker can follow the finding across
+                # wave re-stamps.
+                "original_custom_id": original.get("original_custom_id") or item.original_custom_id,
             }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
+        # Chunk 6: if the only unresolved items this wave are
+        # tracker_terminated (no retries / continuations), there is no
+        # follow-up wave to submit. Mark those findings now and break —
+        # the wave loop is done.
+        if not next_requests:
+            for outcome in tracker_terminated:
+                finding = findings[outcome.finding_idx]
+                stable_key = (
+                    request_contexts.get(outcome.original_custom_id, {})
+                    .get("original_custom_id")
+                    or outcome.original_custom_id
+                )
+                finding.verification = VerificationResult(
+                    verdict="UNVERIFIED",
+                    explanation=outcome.unverified_reason or "Verification failed.",
+                    retry_telemetry=retry_diagnostics_payload(
+                        attempts=failure_tracker.total_failures(stable_key),
+                        failure_class=outcome.failure_class,
+                        terminal_reason="batch-terminated by wave tracker",
+                        continuation_count=continuation_counts.get(stable_key, 0),
+                    ),
+                )
+            break
         current_job = submit_verification_followup_wave(next_requests, next_request_map)
         request_contexts = next_contexts
     counts = {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0}

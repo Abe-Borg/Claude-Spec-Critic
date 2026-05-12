@@ -344,6 +344,10 @@ def run_review_thread(app, run_epoch: int) -> None:
                         "api_call": v.cache_status not in ("hit", "local_skip"),
                         "call_mode": "realtime",
                         "model": v.model_used,
+                        # Chunk 6: surface retry telemetry so the
+                        # per-phase rollup can attribute findings by
+                        # failure class / terminal reason.
+                        "retry_telemetry": v.retry_telemetry,
                     }
                     if v.sources:
                         event_data["sources"] = v.sources[:3]
