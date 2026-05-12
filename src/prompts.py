@@ -120,6 +120,74 @@ def _categories_block(cycle: CodeCycle, mode: ReviewMode) -> str:
     )
 
 
+# Chunk 11 — cache-aware prompt tightening.
+#
+# Stable, cacheable material lives in the system prompt: role, project /
+# domain assumptions, severity rubric, action-type definitions, and 3-5
+# compact few-shot examples. The examples mirror the JSON shape the
+# ``submit_review_findings`` tool accepts (one finding object per example)
+# so the model has a concrete reference for each actionType plus a
+# negative "do not report" example.
+#
+# Important caching constraints:
+# - The examples must not vary with per-spec content. They are part of the
+#   cached system-prompt prefix (keyed by cycle + mode).
+# - The examples must NOT mention ``evidenceElementId`` or ``<para id="…">``
+#   — those are per-request concepts (Chunk K2). The Chunk K test
+#   ``test_system_prompt_unchanged_after_chunk_k`` pins that rule.
+_REVIEW_EXAMPLES = """\
+Example 1 — valid EDIT (stale code-cycle reference):
+{
+  "severity": "MEDIUM",
+  "fileName": "23 05 00 Common HVAC.docx",
+  "section": "1.03",
+  "issue": "Spec cites a superseded California Building Code edition for the current project cycle.",
+  "actionType": "EDIT",
+  "existingText": "Comply with 2019 CBC Chapter 6.",
+  "replacementText": "Comply with the current CBC edition for this project cycle.",
+  "codeReference": "CBC (current cycle)",
+  "confidence": 0.9
+}
+
+Example 2 — valid ADD (insert missing requirement using a verbatim anchor):
+{
+  "severity": "HIGH",
+  "fileName": "23 09 23 Controls.docx",
+  "section": "1.01",
+  "issue": "PART 1 omits the general code-compliance statement expected by DSA review.",
+  "actionType": "ADD",
+  "existingText": null,
+  "replacementText": "A. All work shall comply with the current California Building, Mechanical, Plumbing, Energy, and CALGreen Codes for this project cycle.",
+  "anchorText": "PART 1 - GENERAL",
+  "insertPosition": "after",
+  "codeReference": null,
+  "confidence": 0.8
+}
+
+Example 3 — REPORT_ONLY (cross-section coordination, no clean text edit):
+{
+  "severity": "HIGH",
+  "fileName": "23 09 23 Controls.docx",
+  "section": "3.04",
+  "issue": "Sequence of operations references damper types not listed in the 23 33 00 damper schedule. Resolve in a controls / HVAC coordination meeting and update the affected sections together.",
+  "actionType": "REPORT_ONLY",
+  "existingText": null,
+  "replacementText": null,
+  "anchorText": null,
+  "insertPosition": null,
+  "codeReference": null,
+  "confidence": 0.7
+}
+
+Example 4 — DO NOT REPORT (generic boilerplate is not a finding):
+The phrase "Coordinate with related work specified in other Sections" is
+standard Division 23 boilerplate. It is not a contradiction, not a code-cycle
+issue, and not an invalid reference. Do not emit a finding for boilerplate
+coordination language unless there is concrete evidence that the
+coordination requirement actually conflicts with another section.\
+"""
+
+
 def _editability_clause(mode: ReviewMode) -> str:
     if mode is ReviewMode.SAFE_EDIT:
         return (
@@ -159,6 +227,7 @@ def get_system_prompt(cycle: CodeCycle, mode: ReviewMode | str | None = None) ->
     task_text = _MODE_TASK_TEXT[selected]
     categories = _categories_block(cycle, selected)
     editability = _editability_clause(selected)
+    examples = _REVIEW_EXAMPLES
     return f"""You are a specification reviewer for mechanical and plumbing disciplines. The project context is California K-12 education facilities under DSA jurisdiction.
 
 <review_mode>
@@ -204,6 +273,16 @@ of finding objects (without the analysis_summary wrapper). Prefer the
 tool — the fallback is only for cases where the tool call would otherwise
 be skipped entirely.
 </output>
+
+<examples>
+The following examples illustrate the shape of valid findings for each
+actionType plus a negative example for boilerplate that should not be
+reported. They are reference shapes only — do not copy their content
+into your output. Each real finding must be grounded in concrete
+evidence quoted from the spec under review.
+
+{examples}
+</examples>
 {editability}
 <review_scope>
 These are the categories of issues you are qualified to identify. Only report a finding if you have concrete evidence from the spec text that a genuine problem exists. If a category has no issues, that is a normal and expected outcome — do not force findings into any category.
@@ -249,6 +328,17 @@ def get_single_spec_user_message(
     breakpoint invariant tested by ``TestPromptCacheBreakpointSafety``
     still holds. Passing ``None`` or an empty sequence is byte-stable
     with the legacy message.
+
+    Chunk 11: a short ``<final_task>`` block is appended after the spec
+    body (and after the ``<pre_detected>`` block, when present). It
+    reminds the model to review only the document above, submit findings
+    once, drop findings without concrete evidence, keep edit fields
+    consistent with ``actionType``, and avoid restating pre-detected
+    alerts. The "cite evidence element ids" line is only added when the
+    id rendering path is active (Chunk K2) so the message stays
+    byte-stable for the legacy / element-ids-disabled path and so the
+    word ``evidenceElementId`` never leaks into the message when ids
+    are off (see Chunk K's user-message tests).
     """
     selected = coerce_review_mode(mode) if not isinstance(mode, ReviewMode) else mode
     if selected is None:
@@ -300,6 +390,8 @@ def get_single_spec_user_message(
         if rendered:
             pre_detected_block = "\n\n" + rendered
 
+    final_task_block = _render_final_task_block(use_ids=use_ids)
+
     return (
         "Review the following specification document for a California K-12 project under DSA jurisdiction.\n\n"
         f"Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, "
@@ -312,5 +404,45 @@ def get_single_spec_user_message(
         f"{id_hint}\n"
         f"{context_block}"
         f"{spec_block}"
-        f"{pre_detected_block}\n"
+        f"{pre_detected_block}\n\n"
+        f"{final_task_block}\n"
     )
+
+
+# Chunk 11 — final task block.
+#
+# The block sits *after* the spec body (and after ``<pre_detected>`` when
+# alerts fire) so the stable instruction prefix in front of ``<spec …>``
+# stays byte-identical regardless of payload. It is intentionally short:
+# the cacheable, instructional bulk lives in the system prompt; this
+# block is the per-request "what to do with the document above" reminder.
+#
+# The ``cite evidenceElementId`` line is only emitted when the id
+# rendering path is active. The Chunk K user-message tests pin that
+# ``evidenceElementId`` must not appear when ``paragraph_map`` is absent
+# or ``SPEC_CRITIC_ELEMENT_IDS=0``.
+_FINAL_TASK_BASE_LINES = (
+    "- Review only the document above. Do not invent findings about other specs.",
+    "- Submit findings once via the submit_review_findings tool. Do not call it twice.",
+    "- Drop any finding that lacks concrete evidence quoted from the document above.",
+    "- Ensure every edit field matches its actionType (see the output rules in the system prompt).",
+    # Avoid the literal ``<pre_detected>`` substring here — Chunk D4.1's
+    # env-toggle test asserts that opening tag is absent when alerts are
+    # off, and a bullet that references the tag verbatim would defeat
+    # that substring check.
+    "- Do not duplicate items already flagged as pre-detected alerts above.",
+)
+_FINAL_TASK_ID_LINE = (
+    "- When you can identify the exact element a finding cites, include its id in "
+    "evidenceElementId."
+)
+
+
+def _render_final_task_block(*, use_ids: bool) -> str:
+    lines = list(_FINAL_TASK_BASE_LINES)
+    if use_ids:
+        # Slot the id line in next to the related "drop unsupported findings"
+        # bullet so the two evidence-related reminders sit together.
+        lines.insert(3, _FINAL_TASK_ID_LINE)
+    body = "\n".join(lines)
+    return f"<final_task>\n{body}\n</final_task>"
