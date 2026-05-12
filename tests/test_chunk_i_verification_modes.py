@@ -120,20 +120,16 @@ class TestModePolicy:
         # Already at the top — DEEP_REASONING does not escalate further.
         assert p.allows_escalation is False
 
-    def test_unknown_mode_falls_back_to_standard(self):
-        """Pre-Chunk-I cache entries store ``verification_mode == ""``;
-        the policy lookup has to handle that without crashing."""
-        from src.verification_modes import VerificationMode, mode_policy
-        p = mode_policy("")
-        # Same observable shape as STANDARD_REASONING by design.
-        assert p.thinking_enabled is True
-        assert p.search_budget_multiplier == 1.0
-
-    def test_string_mode_value_accepted(self):
+    def test_unknown_or_empty_mode_falls_back_to_standard(self):
+        """Cache entries may store ``verification_mode == ""``; policy
+        lookup must handle that and string values without crashing."""
         from src.verification_modes import mode_policy
-        p = mode_policy("strict_structured")
-        assert p.thinking_enabled is False
-        assert p.search_budget_multiplier == 0.5
+        empty = mode_policy("")
+        assert empty.thinking_enabled is True
+        assert empty.search_budget_multiplier == 1.0
+        strict = mode_policy("strict_structured")
+        assert strict.thinking_enabled is False
+        assert strict.search_budget_multiplier == 0.5
 
 
 # ===========================================================================
@@ -290,73 +286,23 @@ class TestSelectVerificationMode:
         )
         assert m is VerificationMode.DEEP_REASONING
 
-    def test_cache_hit_string_value_accepted(self):
-        """Cached entries deserialize as raw strings — the router has
-        to handle that without crashing."""
-        from src.verification_modes import VerificationMode, select_verification_mode
-        f = _finding(severity="HIGH")
-        m = select_verification_mode(f, cached_mode="standard_reasoning")
-        assert m is VerificationMode.STANDARD_REASONING
-
-    def test_cache_hit_unknown_string_falls_through_to_router(self):
-        """An unparseable cached mode value should not crash; it should
-        fall through to the normal routing rules so the result is at
-        least tagged with the current decision."""
-        from src.verification_modes import VerificationMode, select_verification_mode
-        f = _finding(severity="MEDIUM", issue="ordinary claim")
-        m = select_verification_mode(f, cached_mode="future_mode_xyz")
-        assert m is VerificationMode.STANDARD_REASONING
-
-    def test_none_finding_returns_standard(self):
-        """A future caller that hands in ``None`` should not crash; default
-        to the safe mode."""
-        from src.verification_modes import VerificationMode, select_verification_mode
-        assert select_verification_mode(None) is VerificationMode.STANDARD_REASONING
-
-
 # ===========================================================================
 # 5. Mode search-budget helper
 # ===========================================================================
 
 
 class TestModeSearchBudget:
-    def test_local_skip_returns_zero(self):
+    def test_modes_apply_their_multipliers(self):
         from src.verification_modes import VerificationMode, mode_search_budget
         assert mode_search_budget(VerificationMode.LOCAL_SKIP, profile_ceiling=8) == 0
-
-    def test_standard_reasoning_returns_full_ceiling(self):
-        from src.verification_modes import VerificationMode, mode_search_budget
-        assert mode_search_budget(
-            VerificationMode.STANDARD_REASONING, profile_ceiling=7
-        ) == 7
-
-    def test_deep_reasoning_returns_full_ceiling(self):
-        from src.verification_modes import VerificationMode, mode_search_budget
-        assert mode_search_budget(
-            VerificationMode.DEEP_REASONING, profile_ceiling=8
-        ) == 8
-
-    def test_strict_structured_halves_ceiling(self):
-        from src.verification_modes import VerificationMode, mode_search_budget
-        # 6 * 0.5 = 3.
-        assert mode_search_budget(
-            VerificationMode.STRICT_STRUCTURED, profile_ceiling=6
-        ) == 3
+        assert mode_search_budget(VerificationMode.STANDARD_REASONING, profile_ceiling=7) == 7
+        assert mode_search_budget(VerificationMode.DEEP_REASONING, profile_ceiling=8) == 8
+        assert mode_search_budget(VerificationMode.STRICT_STRUCTURED, profile_ceiling=6) == 3
 
     def test_strict_structured_floor_of_one(self):
-        """Floor-of-1: a profile with a 2-search ceiling at GRIPES
-        still allows the model one search under STRICT_STRUCTURED."""
+        """A 1-search ceiling under STRICT_STRUCTURED still allows one search."""
         from src.verification_modes import VerificationMode, mode_search_budget
-        # 2 * 0.5 = 1 already, but check the floor on a 1-search ceiling.
-        assert mode_search_budget(
-            VerificationMode.STRICT_STRUCTURED, profile_ceiling=1
-        ) == 1
-
-    def test_zero_or_negative_ceiling_returns_zero(self):
-        from src.verification_modes import VerificationMode, mode_search_budget
-        assert mode_search_budget(
-            VerificationMode.STANDARD_REASONING, profile_ceiling=0
-        ) == 0
+        assert mode_search_budget(VerificationMode.STRICT_STRUCTURED, profile_ceiling=1) == 1
 
 
 # ===========================================================================

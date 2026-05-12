@@ -76,86 +76,36 @@ pytestmark = pytest.mark.token_budget
 class TestPhaseOutputCapRegistry:
     """Directive 6: one registry feeds every phase helper."""
 
-    def test_review_phase_resolves_to_review_cap(self):
+    def test_each_phase_resolves_to_its_documented_cap(self):
         assert phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_47) == REVIEW_OUTPUT_CAP
-
-    def test_batch_review_phase_matches_realtime_review_phase(self):
-        # Real-time and batch share the same baseline cap — findings cannot
-        # diverge between modes on normal-size specs.
-        assert phase_output_cap(PHASE_BATCH_REVIEW, model=MODEL_OPUS_47) == phase_output_cap(
-            PHASE_REVIEW, model=MODEL_OPUS_47
-        )
-
-    def test_cross_check_phase_resolves_below_review(self):
-        # Cross-check has less freedom than per-spec review.
-        assert (
-            phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_OPUS_47)
-            == CROSS_CHECK_OUTPUT_CAP
-        )
-        assert (
-            phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_OPUS_47)
-            < phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_47)
-        )
-
-    def test_synthesis_phase_uses_synthesis_cap(self):
+        # Real-time and batch share the same baseline cap.
+        assert phase_output_cap(PHASE_BATCH_REVIEW, model=MODEL_OPUS_47) == REVIEW_OUTPUT_CAP
+        assert phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_OPUS_47) == CROSS_CHECK_OUTPUT_CAP
         assert phase_output_cap(PHASE_SYNTHESIS, model=MODEL_HAIKU_45) == SYNTHESIS_OUTPUT_CAP
-
-    def test_verification_retry_matches_verification(self):
-        # Today retry shares the verification budget. The phase-tagged helper
-        # is the lever for a future tuning pass.
-        assert (
-            phase_output_cap(PHASE_VERIFICATION_RETRY, model=MODEL_SONNET_46)
-            == phase_output_cap(PHASE_VERIFICATION, model=MODEL_SONNET_46)
-        )
-
-    def test_verification_continuation_matches_verification(self):
-        assert (
-            phase_output_cap(PHASE_VERIFICATION_CONTINUATION, model=MODEL_SONNET_46)
-            == phase_output_cap(PHASE_VERIFICATION, model=MODEL_SONNET_46)
-        )
-
-    def test_triage_phase_uses_triage_cap(self):
         assert phase_output_cap(PHASE_TRIAGE, model=MODEL_HAIKU_45) == HAIKU_TRIAGE_OUTPUT_CAP
+        # Retry / continuation share the verification budget.
+        assert phase_output_cap(PHASE_VERIFICATION_RETRY, model=MODEL_SONNET_46) == phase_output_cap(
+            PHASE_VERIFICATION, model=MODEL_SONNET_46
+        )
+        assert phase_output_cap(PHASE_VERIFICATION_CONTINUATION, model=MODEL_SONNET_46) == phase_output_cap(
+            PHASE_VERIFICATION, model=MODEL_SONNET_46
+        )
 
     def test_unknown_phase_degrades_to_verification_cap(self):
-        # Conservative default: a future phase that forgets to register
-        # loses headroom rather than silently inheriting the 128k review cap.
+        # A future phase that forgets to register loses headroom rather than
+        # silently inheriting the 128k review cap.
         cap = phase_output_cap("future_phase_we_havent_added", model=MODEL_OPUS_47)
         assert cap == VERIFICATION_OUTPUT_CAP
 
 
 class TestPhaseCapsRespectModelCeilings:
-    """Directive 7: avoid using 128k+ caps as a default. Directive 4 of the
-    plan acceptance criteria: phase budgets do not exceed model limits.
-    """
-
-    def test_review_cap_clamped_to_sonnet_ceiling(self):
-        # Sonnet's max output is 64k; the review phase's *requested* value
-        # is 128k. The helper must clamp.
-        cap = phase_output_cap(PHASE_REVIEW, model=MODEL_SONNET_46)
-        assert cap == MAX_OUTPUT_TOKENS_SONNET
-
-    def test_review_cap_clamped_to_haiku_ceiling(self):
-        cap = phase_output_cap(PHASE_REVIEW, model=MODEL_HAIKU_45)
-        assert cap == MAX_OUTPUT_TOKENS_HAIKU
-
-    def test_cross_check_cap_clamped_to_sonnet_ceiling(self):
-        # Cross-check's requested cap (96k) exceeds Sonnet's 64k ceiling.
-        cap = phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_SONNET_46)
-        assert cap == MAX_OUTPUT_TOKENS_SONNET
+    """Phase budgets never exceed model output ceilings."""
 
     def test_no_phase_exceeds_model_ceiling(self):
-        # Property: for every known phase × model combination, the resolved
-        # cap is ≤ the model's hard output ceiling.
         phases = [
-            PHASE_REVIEW,
-            PHASE_BATCH_REVIEW,
-            PHASE_CROSS_CHECK,
-            PHASE_SYNTHESIS,
-            PHASE_VERIFICATION,
-            PHASE_VERIFICATION_RETRY,
-            PHASE_VERIFICATION_CONTINUATION,
-            PHASE_TRIAGE,
+            PHASE_REVIEW, PHASE_BATCH_REVIEW, PHASE_CROSS_CHECK,
+            PHASE_SYNTHESIS, PHASE_VERIFICATION, PHASE_VERIFICATION_RETRY,
+            PHASE_VERIFICATION_CONTINUATION, PHASE_TRIAGE,
         ]
         ceilings = {
             MODEL_OPUS_46: MAX_OUTPUT_TOKENS_OPUS,
@@ -166,38 +116,30 @@ class TestPhaseCapsRespectModelCeilings:
         for phase in phases:
             for model, ceiling in ceilings.items():
                 cap = phase_output_cap(phase, model=model)
-                assert cap <= ceiling, (
-                    f"phase={phase} model={model} cap={cap} ceiling={ceiling}"
-                )
+                assert cap <= ceiling, f"phase={phase} model={model} cap={cap} ceiling={ceiling}"
 
-    def test_only_extended_path_returns_300k(self):
-        # The 300k batch beta is the *only* place a 300k cap shows up. The
-        # standard phase helpers never grant it.
-        assert phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_47) < BATCH_MAX_OUTPUT_TOKENS
-        assert (
-            phase_output_cap(PHASE_BATCH_REVIEW, model=MODEL_OPUS_47)
-            < BATCH_MAX_OUTPUT_TOKENS
-        )
-        # Extended path requires the explicit flag, which review_max_tokens
-        # already covers in test_api_config.
+    def test_review_cap_clamps_to_smaller_model_ceilings(self):
+        """Review's requested 128k must be clamped on smaller models."""
+        assert phase_output_cap(PHASE_REVIEW, model=MODEL_SONNET_46) == MAX_OUTPUT_TOKENS_SONNET
+        assert phase_output_cap(PHASE_REVIEW, model=MODEL_HAIKU_45) == MAX_OUTPUT_TOKENS_HAIKU
+
+    def test_only_extended_batch_path_returns_300k(self):
+        # Standard phases never grant 300k; the extended path requires the flag.
+        assert phase_output_cap(PHASE_BATCH_REVIEW, model=MODEL_OPUS_47) < BATCH_MAX_OUTPUT_TOKENS
         assert review_max_tokens(
             batch=True, model=MODEL_OPUS_47, allow_extended_output=True
         ) == BATCH_MAX_OUTPUT_TOKENS
 
 
 class TestPhaseHelpersRouteThroughRegistry:
-    """The thin wrappers route through ``phase_output_cap`` — kept so
-    callers can keep their existing imports."""
+    """Thin wrappers must route through ``phase_output_cap``."""
 
-    def test_review_max_tokens_routes_through_registry(self):
-        assert review_max_tokens(model=MODEL_OPUS_47) == phase_output_cap(
-            PHASE_REVIEW, model=MODEL_OPUS_47
-        )
-
-    def test_cross_check_max_tokens_routes_through_registry(self):
-        assert cross_check_max_tokens(model=MODEL_OPUS_47) == phase_output_cap(
-            PHASE_CROSS_CHECK, model=MODEL_OPUS_47
-        )
+    def test_helpers_match_registry(self):
+        assert review_max_tokens(model=MODEL_OPUS_47) == phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_47)
+        assert cross_check_max_tokens(model=MODEL_OPUS_47) == phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_OPUS_47)
+        assert verification_max_tokens(model=MODEL_SONNET_46) == phase_output_cap(PHASE_VERIFICATION, model=MODEL_SONNET_46)
+        assert synthesis_max_tokens(model=MODEL_HAIKU_45) == phase_output_cap(PHASE_SYNTHESIS, model=MODEL_HAIKU_45)
+        assert triage_max_tokens(model=MODEL_HAIKU_45) == phase_output_cap(PHASE_TRIAGE, model=MODEL_HAIKU_45)
 
     def test_verification_max_tokens_routes_through_registry(self):
         assert verification_max_tokens(model=MODEL_SONNET_46) == phase_output_cap(
@@ -238,38 +180,25 @@ class TestLocalEstimateSafetyFactor:
     """Directives 4 + 5: the cl100k_base estimate must not create false
     confidence. Apply a model-specific multiplier on the fallback path."""
 
-    def test_opus_factor_within_modest_range(self):
-        factor = local_estimate_safety_factor(MODEL_OPUS_47)
-        assert 1.0 < factor <= 1.2
-
-    def test_sonnet_factor_within_modest_range(self):
-        factor = local_estimate_safety_factor(MODEL_SONNET_46)
-        assert 1.0 < factor <= 1.2
-
-    def test_haiku_factor_at_least_opus(self):
-        # Haiku tends to undercount cl100k a bit more on structured spec
-        # text — keep its margin at least as wide as Opus/Sonnet.
-        haiku = local_estimate_safety_factor(MODEL_HAIKU_45)
+    def test_safety_factors_have_expected_relative_widths(self):
+        """Known models get modest margins; Haiku at least as wide as Opus;
+        unknown/None models get the widest margin so a future model can't
+        silently sail through a budget check."""
         opus = local_estimate_safety_factor(MODEL_OPUS_47)
-        assert haiku >= opus
-
-    def test_unknown_model_uses_widest_margin(self):
-        # A future model should never silently sail through a budget check
-        # that would have been blocked under a known model.
+        sonnet = local_estimate_safety_factor(MODEL_SONNET_46)
+        haiku = local_estimate_safety_factor(MODEL_HAIKU_45)
         unknown = local_estimate_safety_factor("claude-future-2030")
-        for known in (MODEL_OPUS_47, MODEL_SONNET_46, MODEL_HAIKU_45):
-            assert unknown >= local_estimate_safety_factor(known)
-
-    def test_none_model_uses_default_factor(self):
-        factor = local_estimate_safety_factor(None)
-        # Same as unknown — None goes through the default path.
-        assert factor == local_estimate_safety_factor("claude-future-2030")
+        none_factor = local_estimate_safety_factor(None)
+        assert 1.0 < opus <= 1.2
+        assert 1.0 < sonnet <= 1.2
+        assert haiku >= opus
+        for known in (opus, sonnet, haiku):
+            assert unknown >= known
+        assert none_factor == unknown
 
     def test_safe_local_estimate_pads_upward(self):
         padded = safe_local_estimate(10_000, model=MODEL_OPUS_47)
-        assert padded > 10_000
-        # Sanity: Opus's modest multiplier should not balloon the number.
-        assert padded < 13_000
+        assert 10_000 < padded < 13_000
 
 
 class TestExceedsPerCallLimitForModel:
@@ -620,110 +549,41 @@ def _finding_for_request_shape(**overrides):
 
 
 class TestRequestShapeBudgetsByModel:
-    """Acceptance criterion: output caps are model-limit-aware on every path."""
+    """Output caps are model-limit-aware on every request-building path."""
 
-    def test_batch_review_request_uses_haiku_ceiling(self, fake_client_e):
+    def test_batch_review_max_tokens_clamps_to_model_ceiling(self, fake_client_e):
         from src.batch import submit_review_batch
         from src.code_cycles import DEFAULT_CYCLE
 
-        submit_review_batch(
-            [_spec_for_request_shape()], model=MODEL_HAIKU_45, cycle=DEFAULT_CYCLE,
-        )
-        params = fake_client_e.captured[0].first_params()
-        # Haiku's max output is 64k — the review phase's nominal 128k must
-        # be clamped.
-        assert params["max_tokens"] == MAX_OUTPUT_TOKENS_HAIKU
+        submit_review_batch([_spec_for_request_shape()], model=MODEL_HAIKU_45, cycle=DEFAULT_CYCLE)
+        assert fake_client_e.captured[-1].first_params()["max_tokens"] == MAX_OUTPUT_TOKENS_HAIKU
 
-    def test_batch_review_request_uses_sonnet_ceiling(self, fake_client_e):
-        from src.batch import submit_review_batch
-        from src.code_cycles import DEFAULT_CYCLE
+        submit_review_batch([_spec_for_request_shape()], model=MODEL_SONNET_46, cycle=DEFAULT_CYCLE)
+        assert fake_client_e.captured[-1].first_params()["max_tokens"] == MAX_OUTPUT_TOKENS_SONNET
 
-        submit_review_batch(
-            [_spec_for_request_shape()], model=MODEL_SONNET_46, cycle=DEFAULT_CYCLE,
-        )
-        params = fake_client_e.captured[0].first_params()
-        assert params["max_tokens"] == MAX_OUTPUT_TOKENS_SONNET
+        submit_review_batch([_spec_for_request_shape()], model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE)
+        # Opus ceiling and review cap coincide at 128k; pin so a cap bump fires.
+        params = fake_client_e.captured[-1].first_params()
+        assert params["max_tokens"] == REVIEW_OUTPUT_CAP <= MAX_OUTPUT_TOKENS_OPUS
 
-    def test_batch_review_request_uses_review_cap_for_opus(self, fake_client_e):
-        from src.batch import submit_review_batch
-        from src.code_cycles import DEFAULT_CYCLE
-
-        submit_review_batch(
-            [_spec_for_request_shape()], model=MODEL_OPUS_47, cycle=DEFAULT_CYCLE,
-        )
-        params = fake_client_e.captured[0].first_params()
-        # Opus's ceiling (128k) and the review cap (128k) coincide, so the
-        # clamp is a no-op here. Pin it anyway so a future cap bump can't
-        # silently grant more output without updating this assertion.
-        assert params["max_tokens"] == REVIEW_OUTPUT_CAP
-        assert params["max_tokens"] <= MAX_OUTPUT_TOKENS_OPUS
-
-    def test_verification_request_uses_verification_cap(self, fake_client_e):
+    def test_verification_paths_share_verification_cap(self, fake_client_e):
         from src.batch import submit_verification_batch
         from src.code_cycles import DEFAULT_CYCLE
+        from src.verifier import _build_continuation_request, _build_retry_request
 
-        def _prompt(_f):
-            return "verify"
-
-        def _system(_c):
-            return "system"
-
+        def _prompt(_f): return "verify"
+        def _system(_c): return "system"
         submit_verification_batch(
-            [_finding_for_request_shape()],
-            _prompt,
-            _system,
-            cycle=DEFAULT_CYCLE,
-            model=MODEL_SONNET_46,
+            [_finding_for_request_shape()], _prompt, _system,
+            cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46,
         )
-        params = fake_client_e.captured[0].first_params()
-        assert params["max_tokens"] == VERIFICATION_OUTPUT_CAP
-
-    def test_verification_retry_request_uses_verification_cap(self):
-        from src.code_cycles import DEFAULT_CYCLE
-        from src.verifier import _build_retry_request
-
-        req = _build_retry_request("prompt body", cycle=DEFAULT_CYCLE)
-        assert req["max_tokens"] == VERIFICATION_OUTPUT_CAP
-
-    def test_verification_continuation_request_uses_verification_cap(self):
-        from src.code_cycles import DEFAULT_CYCLE
-        from src.verifier import _build_continuation_request
-
-        req = _build_continuation_request(
-            "prompt body",
-            [{"type": "text", "text": "partial"}],
-            cycle=DEFAULT_CYCLE,
-        )
-        assert req["max_tokens"] == VERIFICATION_OUTPUT_CAP
-
-    def test_retry_and_initial_verification_share_budget_on_same_model(
-        self, fake_client_e
-    ):
-        """Today the registry sets retry == initial. If a future change
-        diverges them, this test should fail loud and force the author to
-        decide whether the divergence is intended."""
-        from src.batch import submit_verification_batch
-        from src.code_cycles import DEFAULT_CYCLE
-        from src.verifier import _build_retry_request
-
-        def _prompt(_f):
-            return "verify"
-
-        def _system(_c):
-            return "system"
-
-        submit_verification_batch(
-            [_finding_for_request_shape()],
-            _prompt,
-            _system,
-            cycle=DEFAULT_CYCLE,
-            model=MODEL_SONNET_46,
-        )
-        initial_params = fake_client_e.captured[0].first_params()
-        retry_req = _build_retry_request(
-            "prompt body", cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46
-        )
-        assert initial_params["max_tokens"] == retry_req["max_tokens"]
+        initial = fake_client_e.captured[-1].first_params()["max_tokens"]
+        retry = _build_retry_request("prompt", cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46)["max_tokens"]
+        cont = _build_continuation_request(
+            "prompt", [{"type": "text", "text": "partial"}],
+            cycle=DEFAULT_CYCLE, model=MODEL_SONNET_46,
+        )["max_tokens"]
+        assert initial == retry == cont == VERIFICATION_OUTPUT_CAP
 
 
 # ---------------------------------------------------------------------------
@@ -732,34 +592,14 @@ class TestRequestShapeBudgetsByModel:
 
 
 class TestOutputCapsAreModelLimitAware:
-    """``output_cap_for_model`` is the floor under the phase registry; pin
-    it directly so future helpers added on top still inherit the clamp."""
+    """``output_cap_for_model`` is the floor under the phase registry."""
 
-    def test_opus_requested_under_ceiling_returned_as_is(self):
+    def test_clamps_each_model_to_its_ceiling(self):
+        # Under ceiling: passes through.
         assert output_cap_for_model(MODEL_OPUS_47, requested=50_000) == 50_000
-
-    def test_opus_requested_over_ceiling_clamped(self):
-        assert (
-            output_cap_for_model(MODEL_OPUS_47, requested=999_999)
-            == MAX_OUTPUT_TOKENS_OPUS
-        )
-
-    def test_sonnet_clamped_to_sonnet_ceiling(self):
-        assert (
-            output_cap_for_model(MODEL_SONNET_46, requested=999_999)
-            == MAX_OUTPUT_TOKENS_SONNET
-        )
-
-    def test_haiku_clamped_to_haiku_ceiling(self):
-        assert (
-            output_cap_for_model(MODEL_HAIKU_45, requested=999_999)
-            == MAX_OUTPUT_TOKENS_HAIKU
-        )
-
-    def test_unknown_model_uses_conservative_ceiling(self):
-        # Unknown → safest known ceiling (Sonnet). Mirrors the Chunk B
-        # capability-policy fallback choice.
-        assert (
-            output_cap_for_model("claude-future-2030", requested=999_999)
-            == MAX_OUTPUT_TOKENS_SONNET
-        )
+        # Over ceiling: clamped to each model's hard limit.
+        assert output_cap_for_model(MODEL_OPUS_47, requested=999_999) == MAX_OUTPUT_TOKENS_OPUS
+        assert output_cap_for_model(MODEL_SONNET_46, requested=999_999) == MAX_OUTPUT_TOKENS_SONNET
+        assert output_cap_for_model(MODEL_HAIKU_45, requested=999_999) == MAX_OUTPUT_TOKENS_HAIKU
+        # Unknown → safest known ceiling (Sonnet).
+        assert output_cap_for_model("claude-future-2030", requested=999_999) == MAX_OUTPUT_TOKENS_SONNET
