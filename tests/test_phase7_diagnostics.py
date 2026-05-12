@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from src.diagnostics import DiagnosticsReport
 from src.pipeline import (
-    _drop_cross_check_findings_with_disputed_upstream,
     _log_cross_check_status,
+    classify_cross_check_dependencies,
 )
 from src.reviewer import Finding, ReviewResult
 from src.verifier import VerificationResult
@@ -60,7 +60,7 @@ def test_drop_cross_check_findings_uses_warning_level():
     def log(msg: str, *, level: str = "info") -> None:
         captured.append((level, msg))
 
-    kept = _drop_cross_check_findings_with_disputed_upstream(cross, review, log=log)
+    kept, _suppressed = classify_cross_check_dependencies(cross, review, log=log)
     assert kept == []
     assert any(lvl == "warning" for lvl, _msg in captured)
 

@@ -20,9 +20,6 @@ classification cannot bypass them):
 - ``CRITICAL`` and ``HIGH`` severity findings are never eligible.
 - On API error, parse failure, or any unexpected exception, the affected
   findings default to ``web_required`` (fail-safe).
-
-The module is a no-op unless ``SPEC_CRITIC_HAIKU_TRIAGE=1``; it ships off
-so operators can validate quality on a real run before flipping it on.
 """
 from __future__ import annotations
 
@@ -59,11 +56,6 @@ LogFn = Callable[..., None]
 _TRIAGE_BATCH_SIZE = 20
 
 _NON_ELIGIBLE_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
-
-
-def haiku_triage_enabled() -> bool:
-    """Off by default — flip on after validating quality on a real run."""
-    return os.environ.get("SPEC_CRITIC_HAIKU_TRIAGE", "0") == "1"
 
 
 def is_eligible_for_haiku_triage(finding: Finding) -> bool:
@@ -257,8 +249,6 @@ def classify_findings_with_haiku(
     eligible (CRITICAL/HIGH severity or non-empty codeReference) never
     appear in the returned dict regardless of Haiku's verdict.
     """
-    if not haiku_triage_enabled():
-        return {}
     if not findings:
         return {}
 

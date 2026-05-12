@@ -39,7 +39,6 @@ from src.reviewer import Finding
 from src.verification_cache import (
     VerificationCache,
     _CLAIM_DIGEST_LEN,
-    _LEGACY_CLAIM_DIGEST_LEN,
     _digest,
     make_cache_key,
 )
@@ -86,12 +85,6 @@ class TestVerificationCacheDigestLength:
         # All hex (no truncation surprises).
         int(out, 16)
 
-    def test_legacy_constant_remains_16(self):
-        # The legacy length is preserved as a named constant so a future
-        # migration tool can detect "this entry's key was built with the
-        # old digest length and is therefore safe to evict".
-        assert _LEGACY_CLAIM_DIGEST_LEN == 16
-
     def test_empty_claim_still_produces_empty_string(self):
         # Backward-compatible: an empty/missing claim has always produced
         # ``""`` rather than a hash of the empty string. Existing keys
@@ -129,9 +122,7 @@ class TestVerificationCacheDigestLength:
         finding = _finding()
         new_key = make_cache_key(finding, cycle=DEFAULT_CYCLE)
         prefix = new_key.rsplit("|", 1)[0]
-        legacy_digest = hashlib.sha256(b"legacy claim").hexdigest()[
-            :_LEGACY_CLAIM_DIGEST_LEN
-        ]
+        legacy_digest = hashlib.sha256(b"legacy claim").hexdigest()[:16]
         legacy_key = f"{prefix}|{legacy_digest}"
         payload = {
             "version": verification_cache._CACHE_SCHEMA_VERSION,

@@ -66,7 +66,6 @@ from .verification_profiles import (
 )
 from .verification_router import (
     classify_finding_for_verification,
-    escalation_verification_model,
     initial_verification_model,
     local_skip_enabled,
     should_escalate_verification,
@@ -938,12 +937,10 @@ def verify_finding(
 
     # Chunk 4: route the initial-model selection through the central
     # decision selector so ``verify_finding`` and ``_run_verification_call``
-    # agree on which model the request will run on (the alternative —
-    # asking ``mode_policy`` directly here — risks diverging if the
-    # routing rules grow a new branch). The decision is recomputed
-    # inside ``_run_verification_call`` so the request build cannot
-    # accept a stale model; consulting it here is purely so the caller
-    # can pass ``selected_model`` into the call and let the
+    # agree on which model the request will run on. The decision is
+    # recomputed inside ``_run_verification_call`` so the request build
+    # cannot accept a stale model; consulting it here is purely so the
+    # caller can pass ``selected_model`` into the call and let the
     # ``model_override=`` keyword wire it through.
     if model is not None:
         selected_model = model
@@ -961,8 +958,11 @@ def verify_finding(
     )
 
     # Escalation: re-run on Opus when Sonnet failed to ground a high-stakes
-    # finding. Skip when caller already passed escalated=True (avoid loops)
-    # or the routing config has nowhere to escalate to.
+    # finding. Skip when caller already passed escalated=True (avoid loops).
+    # ``should_escalate_verification`` is the policy gate (severity + Sonnet-
+    # is-initial); ``select_routing(escalated=True)`` is the single source
+    # of truth for which model and request shape the escalation runs on, so
+    # the real-time and batch escalation paths cannot drift.
     if not escalated and should_escalate_verification(
         finding,
         verdict=result.verdict,
@@ -970,11 +970,11 @@ def verify_finding(
         successful_source_count=result.successful_source_count,
         search_error_count=result.search_error_count,
     ):
-        escalated_model = escalation_verification_model()
+        escalation_decision = select_routing(
+            finding, escalated=True, local_skip=False,
+        )
+        escalated_model = escalation_decision.model
         if escalated_model and escalated_model != selected_model:
-            # Chunk D1.3: snapshot the initial state before the escalation
-            # call so the telemetry below can report before-and-after even
-            # when the escalated result is the one we keep.
             initial_verdict_snapshot = result.verdict
             initial_model_snapshot = result.model_used or selected_model
             escalation_reason = _classify_escalation_reason(result)
@@ -994,11 +994,6 @@ def verify_finding(
             ):
                 result = esc_result
 
-            # Stamp escalation telemetry on whichever result we kept.
-            # ``escalation_attempted`` records that the second pass ran
-            # (regardless of which result became final); the comparison
-            # below uses the original initial verdict so the answer to
-            # "did escalation change the verdict?" is well-defined.
             result.escalation_attempted = True
             result.initial_model = initial_model_snapshot
             result.initial_verdict = initial_verdict_snapshot
@@ -1324,10 +1319,10 @@ def prepare_findings_for_verification(
     Order of operations:
       1. Keyword classifier (free, instant) — drops obvious editorial gripes.
       2. Cache lookup — reuses prior grounded verdicts for identical claims.
-      3. Haiku triage (when ``SPEC_CRITIC_HAIKU_TRIAGE=1``) — flexible
-         classifier over what the keyword path could not resolve. Eligibility
-         is enforced in :mod:`triage`: CRITICAL/HIGH severity and findings
-         with a non-empty ``codeReference`` are never skipped.
+      3. Haiku triage — flexible classifier over what the keyword path could
+         not resolve. Eligibility is enforced in :mod:`triage`: CRITICAL/HIGH
+         severity and findings with a non-empty ``codeReference`` are never
+         skipped.
     """
     remaining: list[Finding] = []
     skipped_local = 0
@@ -1346,13 +1341,9 @@ def prepare_findings_for_verification(
         remaining.append(f)
 
     haiku_skipped = 0
-    # Haiku triage runs after the keyword classifier and cache lookup so it
-    # only sees findings the cheaper paths could not resolve. The Haiku
-    # module is responsible for its own no-op short-circuit when the
-    # feature flag is off.
-    from .triage import classify_findings_with_haiku, filter_local_skips, haiku_triage_enabled
+    from .triage import classify_findings_with_haiku, filter_local_skips
 
-    if haiku_triage_enabled() and remaining:
+    if remaining:
         classifications = classify_findings_with_haiku(remaining, log=log)
         if classifications:
             still_remaining: list[Finding] = []

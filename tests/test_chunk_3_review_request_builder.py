@@ -23,7 +23,6 @@ import pytest
 from src.api_config import MODEL_OPUS_47
 from src.code_cycles import DEFAULT_CYCLE
 from src.extractor import ExtractedSpec
-from src.review_modes import DEFAULT_REVIEW_MODE
 from src.review_request_builder import (
     ReviewRequestSpec,
     build_review_request,
@@ -90,7 +89,6 @@ def _request(spec: ExtractedSpec, **overrides) -> ReviewRequestSpec:
         filename=spec.filename,
         model=MODEL_OPUS_47,
         cycle=DEFAULT_CYCLE,
-        mode=DEFAULT_REVIEW_MODE,
         paragraph_map=spec.paragraph_map,
     )
     base.update(overrides)

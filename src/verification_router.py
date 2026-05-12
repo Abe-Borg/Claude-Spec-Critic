@@ -122,24 +122,6 @@ def initial_verification_model() -> str:
     return VERIFICATION_MODEL_DEFAULT
 
 
-def escalation_verification_model() -> str:
-    """Model used when escalating a low-confidence verdict."""
-    return VERIFICATION_ESCALATION_MODEL
-
-
-def is_eligible_for_haiku_triage(finding: Finding) -> bool:
-    """Re-export of the Haiku triage eligibility filter.
-
-    The actual implementation lives in :mod:`triage` so the safety contract
-    (CRITICAL/HIGH and code-citing findings can never be locally skipped)
-    is co-located with the classifier itself. This shim exists so callers
-    that already import routing helpers from this module get a single
-    public surface for verification routing decisions.
-    """
-    from .triage import is_eligible_for_haiku_triage as _impl
-    return _impl(finding)
-
-
 def should_escalate_verification(
     finding: Finding,
     *,
@@ -155,7 +137,7 @@ def should_escalate_verification(
     """
     if not verification_sonnet_default_enabled():
         return False
-    if initial_verification_model() == escalation_verification_model():
+    if VERIFICATION_MODEL_DEFAULT == VERIFICATION_ESCALATION_MODEL:
         return False
 
     severity = (finding.severity or "").strip().upper()

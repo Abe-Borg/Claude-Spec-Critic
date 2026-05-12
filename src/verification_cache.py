@@ -68,10 +68,6 @@ _CACHE_SCHEMA_VERSION = 2
 # Going higher (32+) would add latency and disk-write bytes for diminishing
 # safety; 24 hex chars is the deliberate sweet spot.
 _CLAIM_DIGEST_LEN = 24
-# Legacy length retained as a name so the migration story is self-documenting
-# (and so callers can detect a legacy-format hit if we ever want to add a
-# graceful-rekey path).
-_LEGACY_CLAIM_DIGEST_LEN = 16
 
 
 def _normalize(text: str | None) -> str:

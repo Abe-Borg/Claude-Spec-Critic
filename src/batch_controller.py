@@ -69,7 +69,6 @@ from .resume_state import (
     SUPPORTED_PHASES,
     build_resume_state,
 )
-from .review_modes import DEFAULT_REVIEW_MODE, REVIEW_MODE_PROFILES, coerce_review_mode
 from .reviewer import MODEL_OPUS_47
 from .widgets import COLORS
 
@@ -90,7 +89,6 @@ def submit_batch_thread(app, run_epoch: int) -> None:
             model=MODEL_OPUS_47,
             cycle=AVAILABLE_CYCLES.get(app._selected_cycle_label, DEFAULT_CYCLE),
             cross_check_enabled=app._cross_check_for_review,
-            mode=app._review_mode_for_review,
             log=app._make_diag_log("batch_submit", run_epoch),
             progress=app._make_diag_progress("batch_submit", run_epoch),
         )
@@ -570,16 +568,6 @@ def resume_batch(app, loaded_state: dict) -> None:
     verbose_var = getattr(app, "_verbose_var", None)
     app._verbose_for_review = verbose_var.get() if verbose_var is not None else bool(getattr(app, "_verbose_for_review", True))
     app._cross_check_var.set(bool(getattr(submission, "cross_check_enabled", False)))
-    # Restore the review mode that produced the saved batch so any
-    # retry/repair calls keep using the same prompt path.
-    restored_mode = coerce_review_mode(getattr(submission, "review_mode", DEFAULT_REVIEW_MODE.value))
-    app._review_mode = restored_mode
-    app._review_mode_for_review = restored_mode
-    try:
-        app.review_mode_selector.set(REVIEW_MODE_PROFILES[restored_mode].label)
-        app._review_mode_hint.configure(text=REVIEW_MODE_PROFILES[restored_mode].short_description)
-    except Exception:
-        pass
     app.is_processing = True
 
     app.log.log("─" * 40, level="muted", timestamp=False, paced=False)

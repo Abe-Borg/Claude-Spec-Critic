@@ -36,7 +36,6 @@ from src.pipeline import (
     FindingGroup,
     FindingOccurrence,
     _deduplicate_findings,
-    expand_to_occurrences,
     group_findings,
 )
 from src.resume_state import deserialize_finding, serialize_finding
@@ -180,17 +179,6 @@ class TestGroupFindingsPerFileOriginal:
         assert occs_by_file["a.docx"].original_finding is f
         assert not occs_by_file["b.docx"].has_original()
         assert occs_by_file["b.docx"].executable_finding() is f  # fallback only
-
-    def test_expand_to_occurrences_carries_originals(self):
-        a = _make_finding(file_name="a.docx")
-        b = _make_finding(file_name="b.docx")
-        merged = _deduplicate_findings([a, b])[0]
-        occs = expand_to_occurrences([merged])
-        assert {o.file_name for o in occs} == {"a.docx", "b.docx"}
-        for o in occs:
-            assert o.has_original()
-            assert o.executable_finding().fileName == o.file_name
-
 
 # ---------------------------------------------------------------------------
 # apply_edits.execute_edit_plan — uses per-file originals

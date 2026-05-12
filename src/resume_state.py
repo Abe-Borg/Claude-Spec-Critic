@@ -441,10 +441,6 @@ def serialize_submission(submission: BatchSubmission) -> dict[str, Any]:
         "project_context": submission.project_context,
         "code_cycle": submission.cycle_label,
         "cross_check_enabled": submission.cross_check_enabled,
-        # Phase 8 / plan section 12.1: persist the review mode so resume
-        # restores the exact prompt path. Older payloads without this key
-        # fall back to the default.
-        "review_mode": submission.review_mode,
         "prepared_specs": [serialize_extracted_spec(s) for s in (submission.prepared_specs or [])],
         # Chunk O — persist the remaining deterministic preflight alerts so a
         # resume picks them up on the final PipelineResult without re-running
@@ -459,8 +455,6 @@ def serialize_submission(submission: BatchSubmission) -> dict[str, Any]:
 
 
 def deserialize_submission(payload: dict[str, Any]) -> BatchSubmission:
-    from .review_modes import DEFAULT_REVIEW_MODE, coerce_review_mode
-
     specs_payload = payload.get("prepared_specs") or []
     prepared_specs = [deserialize_extracted_spec(s) for s in specs_payload] if specs_payload else None
     return BatchSubmission(
@@ -473,7 +467,6 @@ def deserialize_submission(payload: dict[str, Any]) -> BatchSubmission:
         project_context=str(payload.get("project_context", "")),
         cycle_label=str(payload.get("code_cycle", DEFAULT_CYCLE.label)),
         cross_check_enabled=bool(payload.get("cross_check_enabled", False)),
-        review_mode=coerce_review_mode(payload.get("review_mode", DEFAULT_REVIEW_MODE.value)).value,
         prepared_specs=prepared_specs,
         code_cycle_alerts=list(payload.get("code_cycle_alerts", [])),
         structural_alerts=list(payload.get("structural_alerts", [])),

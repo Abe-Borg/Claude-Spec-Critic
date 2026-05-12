@@ -48,7 +48,6 @@ from .verifier import (
 from .verification_cache import VerificationCache, cache_persist_enabled
 from .cross_checker import run_cross_check, run_chunked_cross_check
 from .code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
-from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode, coerce_review_mode
 
 # Phase 7.1 (audit Section 11.1): log/progress callbacks accept explicit
 # ``level`` and ``phase`` keywords so pipeline code can categorize messages
@@ -312,11 +311,6 @@ def group_findings(findings: list[Finding]) -> list[FindingGroup]:
     return groups
 
 
-def expand_to_occurrences(findings: list[Finding]) -> list[FindingOccurrence]:
-    """Flatten findings to per-file occurrences for edit execution."""
-    return [occ for grp in group_findings(findings) for occ in grp.occurrences if occ.file_name]
-
-
 def _normalize_issue_text(text: str) -> str:
     normalized = re.sub(r"\d{2}\s?\d{2}\s?\d{2}[^.]*\.docx", "", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", normalized).strip().lower()
@@ -564,7 +558,7 @@ def _run_exact_token_preflight(
             )
 
 
-def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode = DEFAULT_REVIEW_MODE, model: str = REVIEW_MODEL_DEFAULT) -> _PreparedSpecs:
+def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT) -> _PreparedSpecs:
     spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
     if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
@@ -678,7 +672,6 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             filename=spec.filename,
             model=model,
             cycle=cycle,
-            mode=mode,
             project_context=project_context,
             paragraph_map=spec.paragraph_map,
             pre_detected_alerts=pre_detected_by_filename.get(spec.filename),
@@ -762,10 +755,6 @@ class BatchSubmission:
     prepared_specs: list[ExtractedSpec] | None = None
     cycle_label: str = DEFAULT_CYCLE.label
     cross_check_enabled: bool = False
-    # Phase 8 / plan section 12.1: review mode that produced this batch.
-    # Stored as the enum string value so resume-state JSON serialization is
-    # trivial. ``coerce_review_mode`` handles None / unknown labels.
-    review_mode: str = DEFAULT_REVIEW_MODE.value
     # Chunk O — carry the remaining deterministic alert lists so the
     # collect / finalize path can hand them off to the final PipelineResult.
     # All default to empty lists so legacy callers that build BatchSubmission
@@ -778,15 +767,13 @@ class BatchSubmission:
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
 
 
-def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False, mode: ReviewMode | str | None = None) -> BatchSubmission:
-    review_mode = coerce_review_mode(mode)
-    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode, model=model)
+def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False) -> BatchSubmission:
+    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, model=model)
     job = submit_review_batch(
         prepared.specs,
         project_context=project_context,
         model=model,
         cycle=cycle,
-        mode=review_mode,
         # Chunk D4.1: feed each spec's deterministic alerts to the prompt
         # builder so the model is told what local rules already detected
         # and skips duplicating those items as new findings.
@@ -804,7 +791,6 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         prepared_specs=prepared.specs,
         cycle_label=cycle.label,
         cross_check_enabled=cross_check_enabled,
-        review_mode=review_mode.value,
         code_cycle_alerts=prepared.code_cycle_alerts,
         structural_alerts=prepared.structural_alerts,
         naming_alerts=prepared.naming_alerts,
@@ -882,7 +868,6 @@ def _recover_retryable_review_batch_results(
             "submit_review_findings tool with analysis_summary set to an empty string. "
             "Spend the entire output budget on the findings array."
         ),
-        mode=coerce_review_mode(submission.review_mode),
         pre_detected_alerts=repair_pre_detected,
     )
     outcome = poll_batch_bounded(
@@ -1064,25 +1049,6 @@ def classify_cross_check_dependencies(
             level="warning",
         )
     return kept, suppressed
-
-
-def _drop_cross_check_findings_with_disputed_upstream(
-    cross_findings: list[Finding],
-    review_findings: list[Finding],
-    *,
-    log: LogFn = _noop_log,
-) -> list[Finding]:
-    """Backward-compatible wrapper around :func:`classify_cross_check_dependencies`.
-
-    Returns only the kept findings so older callers (and the Phase 5 / 7
-    tests) keep their existing list-of-Finding signature. New pipeline code
-    should call :func:`classify_cross_check_dependencies` directly so it
-    can stash suppressed findings on the cross-check result for reporting.
-    """
-    kept, _suppressed = classify_cross_check_dependencies(
-        cross_findings, review_findings, log=log,
-    )
-    return kept
 
 
 def _parallel_cross_check_enabled() -> bool:
@@ -1424,10 +1390,9 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
     )
 
 
-def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, verify: bool = True, cross_check: bool = False, dry_run: bool = False, verbose: bool = False, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE, mode: ReviewMode | str | None = None) -> PipelineResult:
+def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, verify: bool = True, cross_check: bool = False, dry_run: bool = False, verbose: bool = False, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE) -> PipelineResult:
     start = time.time()
-    review_mode = coerce_review_mode(mode)
-    prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, mode=review_mode, model=model)
+    prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, model=model)
     specs = prepared.specs
     if dry_run:
         return PipelineResult(
@@ -1459,7 +1424,6 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
             verbose=verbose,
             stream_callback=stream_callback,
             cycle=cycle,
-            mode=review_mode,
             # Chunk K2: forward the paragraph map so the prompt builder
             # can render id-tagged elements and the model can cite ids.
             paragraph_map=spec.paragraph_map,

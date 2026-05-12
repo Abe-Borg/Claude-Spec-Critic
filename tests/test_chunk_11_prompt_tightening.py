@@ -30,7 +30,6 @@ import pytest
 from src.code_cycles import CALIFORNIA_2025
 from src.extractor import ParagraphMapping
 from src.prompts import get_single_spec_user_message, get_system_prompt
-from src.review_modes import ReviewMode
 
 
 # ---------------------------------------------------------------------------
@@ -71,24 +70,11 @@ def _paragraph_map() -> list[ParagraphMapping]:
 
 class TestSystemPromptExamples:
     def test_examples_block_is_present(self) -> None:
-        prompt = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
+        prompt = get_system_prompt(CALIFORNIA_2025)
         # The block sits in the system prompt so it is cached, not paid
         # for per spec.
         assert "<examples>" in prompt
         assert "</examples>" in prompt
-
-    def test_examples_block_appears_in_every_review_mode(self) -> None:
-        # Every mode reuses the same example shapes — the examples are
-        # about the *schema*, not the scope. If a future mode skips them
-        # we lose a cacheable consistency point.
-        for mode in (
-            ReviewMode.STRICT,
-            ReviewMode.COMPREHENSIVE,
-            ReviewMode.SAFE_EDIT,
-        ):
-            prompt = get_system_prompt(CALIFORNIA_2025, mode=mode)
-            assert "<examples>" in prompt, mode
-            assert "</examples>" in prompt, mode
 
     def test_examples_appear_between_output_and_review_scope(self) -> None:
         # Ordering matters for cache stability: ``<output>`` documents the
@@ -96,7 +82,7 @@ class TestSystemPromptExamples:
         # ``<review_scope>`` constrains what the model is allowed to
         # report. Reshuffling the blocks would re-cost the whole cache
         # entry on first call.
-        prompt = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
+        prompt = get_system_prompt(CALIFORNIA_2025)
         out_close = prompt.index("</output>")
         ex_open = prompt.index("<examples>")
         ex_close = prompt.index("</examples>")
@@ -107,7 +93,7 @@ class TestSystemPromptExamples:
         # The plan lists EDIT / ADD / REPORT_ONLY / "do not report" plus
         # an optional stale-code-cycle example. We satisfy stale-cycle by
         # folding it into the EDIT example so the prompt stays compact.
-        prompt = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
+        prompt = get_system_prompt(CALIFORNIA_2025)
         # actionType labels for the three executable forms.
         assert '"actionType": "EDIT"' in prompt
         assert '"actionType": "ADD"' in prompt
@@ -119,7 +105,7 @@ class TestSystemPromptExamples:
         assert "superseded California Building Code" in prompt
 
     def test_add_example_shows_anchor_and_insert_position(self) -> None:
-        prompt = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
+        prompt = get_system_prompt(CALIFORNIA_2025)
         # The ADD example must demonstrate both the anchor text and the
         # before/after insert position — that's the whole point of
         # showing it.
@@ -130,7 +116,7 @@ class TestSystemPromptExamples:
         # REPORT_ONLY findings carry no executable text. The example
         # demonstrates the contract so the model does not stuff edit
         # fields with apology text.
-        prompt = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
+        prompt = get_system_prompt(CALIFORNIA_2025)
         idx = prompt.index('"actionType": "REPORT_ONLY"')
         report_only_block = prompt[idx : idx + 400]
         assert '"existingText": null' in report_only_block
@@ -143,17 +129,17 @@ class TestSystemPromptExamples:
         # ``evidenceElementId`` or the ``<para id="…">`` wrapper because
         # those are per-spec concepts and would break the cache prefix
         # for any spec that lacks the K1 paragraph map.
-        prompt = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
+        prompt = get_system_prompt(CALIFORNIA_2025)
         assert "evidenceElementId" not in prompt
         assert "<para id=" not in prompt
         assert "<row id=" not in prompt
         assert "<heading id=" not in prompt
 
     def test_system_prompt_is_deterministic_for_same_inputs(self) -> None:
-        # The cache prefix is exact-match. Two calls with identical
-        # (cycle, mode) must return byte-identical prompts.
-        a = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
-        b = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
+        # The cache prefix is exact-match. Two calls with the same cycle
+        # must return byte-identical prompts.
+        a = get_system_prompt(CALIFORNIA_2025)
+        b = get_system_prompt(CALIFORNIA_2025)
         assert a == b
 
 
@@ -287,13 +273,10 @@ class TestCachePrefixInvariants:
 
     def test_user_message_prefix_invariant_across_payloads(self) -> None:
         a = get_single_spec_user_message(
-            "alpha", "f.docx",
-            cycle=CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE,
+            "alpha", "f.docx", cycle=CALIFORNIA_2025,
         )
         b = get_single_spec_user_message(
-            "very different beta payload",
-            "f.docx",
-            cycle=CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE,
+            "very different beta payload", "f.docx", cycle=CALIFORNIA_2025,
         )
         # Everything before ``<spec `` must match. The final-task block
         # comes after the spec body so it does not move the prefix.
@@ -319,18 +302,6 @@ class TestCachePrefixInvariants:
             pre_detected_alerts=alerts,
         )
         assert without.split("<spec ")[0] == with_alerts.split("<spec ")[0]
-
-    def test_system_prompt_prefix_invariant_across_modes(self) -> None:
-        # Modes share the same opening preamble through ``<task>``;
-        # mode-specific text starts inside ``<task>`` and downstream
-        # blocks. The examples block is mode-independent so it does not
-        # shift bytes between modes.
-        strict = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.STRICT)
-        comp = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
-        # The header banner up to ``<review_mode>`` is mode-independent.
-        prefix_marker = "<review_mode>"
-        assert strict.split(prefix_marker)[0] == comp.split(prefix_marker)[0]
-
 
 # ---------------------------------------------------------------------------
 # 4. Request builder integration — the prompt changes flow through the
@@ -378,7 +349,6 @@ class TestRequestBuilderCarriesPromptChanges:
             filename="a.docx",
             project_context="",
             cycle=CALIFORNIA_2025,
-            mode=ReviewMode.COMPREHENSIVE,
             paragraph_map=None,
             pre_detected_alerts=None,
             model=MODEL_OPUS_47,
@@ -409,7 +379,6 @@ class TestRequestBuilderCarriesPromptChanges:
             filename="a.docx",
             project_context="",
             cycle=CALIFORNIA_2025,
-            mode=ReviewMode.COMPREHENSIVE,
             paragraph_map=None,
             pre_detected_alerts=None,
             model=MODEL_OPUS_47,

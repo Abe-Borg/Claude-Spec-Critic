@@ -61,7 +61,6 @@ from .api_config import (
 )
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .prompts import get_single_spec_user_message, get_system_prompt
-from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
 from .structured_schemas import (
     review_findings_tool,
     review_tool_choice,
@@ -92,7 +91,6 @@ class ReviewRequestSpec:
     filename: str
     model: str
     cycle: CodeCycle = DEFAULT_CYCLE
-    mode: ReviewMode = DEFAULT_REVIEW_MODE
     project_context: str = ""
     paragraph_map: "Optional[Sequence[ParagraphMapping]]" = None
     pre_detected_alerts: "Optional[Sequence[Mapping[str, object]]]" = None
@@ -137,7 +135,6 @@ def build_user_message(spec: ReviewRequestSpec) -> str:
         spec.filename,
         project_context=spec.project_context,
         cycle=spec.cycle,
-        mode=spec.mode,
         paragraph_map=spec.paragraph_map,
         pre_detected_alerts=spec.pre_detected_alerts,
     )
@@ -236,7 +233,7 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
     sampling param), this is the one place it lands so token preflight
     and submission cannot drift.
     """
-    system_prompt = get_system_prompt(spec.cycle, mode=spec.mode)
+    system_prompt = get_system_prompt(spec.cycle)
     user_message = build_user_message(spec)
     allow_extended = _resolve_extended_output(
         spec, system_prompt=system_prompt, user_message=user_message
@@ -328,13 +325,13 @@ def review_request_cache_key(spec: ReviewRequestSpec) -> str:
     Routes through :func:`src.extraction_cache.token_count_cache_key`
     so the on-disk cache layout stays compatible. Includes
     ``pre_detected_alerts`` (via the rendered user message), the
-    paragraph map (same), the tool schema, the cycle label, the review
-    mode, and whether this is a batch request — every input that can
-    move the count.
+    paragraph map (same), the tool schema, the cycle label, and
+    whether this is a batch request — every input that can move the
+    count.
     """
     from .extraction_cache import token_count_cache_key
 
-    system_prompt = get_system_prompt(spec.cycle, mode=spec.mode)
+    system_prompt = get_system_prompt(spec.cycle)
     user_message = build_user_message(spec)
     tools = [review_findings_tool()] if structured_tool_output_enabled() else None
     extra = {
@@ -346,7 +343,6 @@ def review_request_cache_key(spec: ReviewRequestSpec) -> str:
         user_message=user_message,
         project_context=spec.project_context,
         cycle_label=spec.cycle.label,
-        mode=spec.mode.value,
         tools=tools,
         extra=extra,
     )
@@ -364,6 +360,6 @@ def estimate_local_request_tokens(spec: ReviewRequestSpec) -> int:
     smaller raw spec to bypass exact-count checks when its wrapper /
     alerts make it larger").
     """
-    system_prompt = get_system_prompt(spec.cycle, mode=spec.mode)
+    system_prompt = get_system_prompt(spec.cycle)
     user_message = build_user_message(spec)
     return count_tokens(system_prompt) + count_tokens(user_message)

@@ -368,25 +368,6 @@ def test_triage_filter_local_skips_re_applies_eligibility():
     assert skipped == [1]
 
 
-def test_triage_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("SPEC_CRITIC_HAIKU_TRIAGE", raising=False)
-    import src.triage as triage_mod
-    importlib.reload(triage_mod)
-
-    assert triage_mod.haiku_triage_enabled() is False
-    # When disabled, classify_findings_with_haiku is a no-op (returns {}).
-    findings = [_make_finding(severity="GRIPES", code_ref=None)]
-    assert triage_mod.classify_findings_with_haiku(findings) == {}
-
-
-def test_triage_enabled_via_env(monkeypatch):
-    monkeypatch.setenv("SPEC_CRITIC_HAIKU_TRIAGE", "1")
-    import src.triage as triage_mod
-    importlib.reload(triage_mod)
-
-    assert triage_mod.haiku_triage_enabled() is True
-
-
 # ---------------------------------------------------------------------------
 # Source trimming
 # ---------------------------------------------------------------------------

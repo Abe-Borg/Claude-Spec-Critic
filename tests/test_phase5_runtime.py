@@ -33,7 +33,7 @@ from src.extractor import (
 from src.pipeline import (
     BatchSubmission,
     CollectedBatchState,
-    _drop_cross_check_findings_with_disputed_upstream,
+    classify_cross_check_dependencies,
 )
 from src.resume_state import (
     PHASE_REVIEW_POLL,
@@ -291,7 +291,7 @@ def test_drop_cross_check_findings_with_disputed_upstream_drops_match():
     ]
     review = [_review_finding_disputed(file="A.docx", section="2.1")]
     log_messages: list[str] = []
-    kept = _drop_cross_check_findings_with_disputed_upstream(
+    kept, _suppressed = classify_cross_check_dependencies(
         cross, review, log=lambda m, **_k: log_messages.append(m)
     )
     assert [f.fileName for f in kept] == ["B.docx"]
@@ -308,7 +308,7 @@ def test_drop_cross_check_findings_passthrough_without_disputed():
             verification=VerificationResult(verdict="CONFIRMED"),
         )
     ]
-    kept = _drop_cross_check_findings_with_disputed_upstream(cross, review)
+    kept, _suppressed = classify_cross_check_dependencies(cross, review)
     assert kept == cross
 
 
@@ -316,7 +316,7 @@ def test_drop_cross_check_findings_uses_affected_files():
     cross = [_cross_finding(file="A.docx", section="2.1")]
     cross[0].affected_files = ["A.docx", "C.docx"]
     review = [_review_finding_disputed(file="C.docx", section="2.1")]
-    kept = _drop_cross_check_findings_with_disputed_upstream(cross, review)
+    kept, _suppressed = classify_cross_check_dependencies(cross, review)
     # Cross finding lists C.docx in affected_files, which matches a DISPUTED
     # review finding -> drop.
     assert kept == []
