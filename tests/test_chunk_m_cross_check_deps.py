@@ -43,7 +43,6 @@ from src.code_cycles import DEFAULT_CYCLE
 from src.extractor import ExtractedSpec
 from src.pipeline import (
     _deduplicate_findings,
-    _drop_cross_check_findings_with_disputed_upstream,
     classify_cross_check_dependencies,
     compute_finding_id,
 )
@@ -489,22 +488,6 @@ class TestSuppressionFilter:
         )
         assert kept == [cross]
         assert suppressed == []
-
-    def test_backward_compat_wrapper_returns_kept_only(self):
-        """The Phase 5 / 7 tests use ``_drop_cross_check_findings_with_disputed_upstream``
-        (returns ``list[Finding]``). The wrapper must still return only the
-        kept findings so legacy callers keep working."""
-        upstream = _review_finding(verdict="DISPUTED")
-        upstream.finding_id = "rf-disputed"
-        cross_dropped = _cross_finding(upstream_ids=["rf-disputed"])
-        cross_kept = _cross_finding(
-            upstream_ids=["rf-disputed"],
-            independent_ids=["p1"],
-        )
-        kept = _drop_cross_check_findings_with_disputed_upstream(
-            [cross_dropped, cross_kept], [upstream],
-        )
-        assert kept == [cross_kept]
 
     def test_classifier_logs_id_and_fallback_paths_separately(self):
         """Operators want to see which suppression path made each

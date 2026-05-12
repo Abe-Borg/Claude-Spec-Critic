@@ -673,14 +673,11 @@ class TestEscalationTelemetryStampsLiveResult:
             return queue.pop(0)
 
         monkeypatch.setattr(verifier_mod, "_run_verification_call", _fake_run)
-        # Pin both routing endpoints so this test is robust to other
+        # Pin the initial-model resolver so this test is robust to other
         # tests that ``importlib.reload`` api_config / verification_modes
         # (which leaves the verifier module's bound names stale).
         monkeypatch.setattr(
             verifier_mod, "initial_verification_model", lambda: "claude-sonnet-4-6"
-        )
-        monkeypatch.setattr(
-            verifier_mod, "escalation_verification_model", lambda: "claude-opus-4-7"
         )
 
     def test_escalation_changed_verdict_records_before_and_after(self, monkeypatch):

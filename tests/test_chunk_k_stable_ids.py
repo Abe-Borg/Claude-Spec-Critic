@@ -261,16 +261,14 @@ class TestK2PromptSerializationWithIds:
         # breakpoint. K2 must not move bytes here, or every run pays the
         # cache-write cost on first call without recouping it later.
         from src.prompts import get_system_prompt
-        from src.review_modes import ReviewMode
 
-        for mode in (ReviewMode.STRICT, ReviewMode.COMPREHENSIVE, ReviewMode.SAFE_EDIT):
-            prompt = get_system_prompt(DEFAULT_CYCLE, mode=mode)
-            # The system prompt instructs the model about the review tool
-            # but should NOT mention the K2 id wrappers — those live in
-            # the per-request user message so the cached prefix stays
-            # stable across runs.
-            assert "evidenceElementId" not in prompt
-            assert "<para id=" not in prompt
+        prompt = get_system_prompt(DEFAULT_CYCLE)
+        # The system prompt instructs the model about the review tool
+        # but should NOT mention the K2 id wrappers — those live in
+        # the per-request user message so the cached prefix stays
+        # stable across runs.
+        assert "evidenceElementId" not in prompt
+        assert "<para id=" not in prompt
 
 
 # ---------------------------------------------------------------------------

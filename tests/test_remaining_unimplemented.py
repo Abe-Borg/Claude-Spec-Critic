@@ -23,7 +23,6 @@ from src.extractor import ExtractedSpec, extract_text_from_docx
 from src.pipeline import (
     FindingGroup,
     FindingOccurrence,
-    expand_to_occurrences,
     group_findings,
 )
 from src.reviewer import Finding
@@ -66,21 +65,6 @@ class TestFindingGrouping:
         groups = group_findings([f])
         assert len(groups) == 1
         assert groups[0].file_names == ["A.docx", "B.docx", "C.docx"]
-
-    def test_expand_to_occurrences_skips_empty_file_names(self):
-        f = _make_finding(file_name="")
-        f.affected_files = []
-        # Empty file_name produces a placeholder occurrence that
-        # ``expand_to_occurrences`` filters out (edit execution needs a file).
-        assert expand_to_occurrences([f]) == []
-
-    def test_expand_to_occurrences_preserves_grouping(self):
-        f1 = _make_finding(file_name="A.docx")
-        f1.affected_files = ["A.docx", "B.docx"]
-        f2 = _make_finding(file_name="C.docx", issue="other issue")
-        occs = expand_to_occurrences([f1, f2])
-        names = [o.file_name for o in occs]
-        assert names == ["A.docx", "B.docx", "C.docx"]
 
     def test_occurrence_ids_are_unique(self):
         f1 = _make_finding(file_name="A.docx")

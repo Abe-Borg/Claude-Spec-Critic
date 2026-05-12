@@ -52,7 +52,6 @@ from src.prompts import (
     get_single_spec_user_message,
     get_system_prompt,
 )
-from src.review_modes import ReviewMode
 from src.reviewer import Finding, ReviewResult
 from src.triage import _build_user_prompt as triage_build_user_prompt
 from src.verifier import _build_verification_prompt
@@ -231,7 +230,6 @@ class TestSingleSpecUserMessageWrapper:
             filename,
             project_context=project_context,
             cycle=CALIFORNIA_2025,
-            mode=ReviewMode.COMPREHENSIVE,
         )
 
     def test_hostile_closing_tag_does_not_close_wrapper(self):
@@ -310,13 +308,13 @@ class TestSingleSpecUserMessageWrapper:
 class TestReviewSystemPromptIsStable:
     """System prompt should not embed user content (cache-prefix invariant)."""
 
-    def test_system_prompt_text_is_constant_for_a_cycle_and_mode(self):
-        sp_a = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
-        sp_b = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE)
+    def test_system_prompt_text_is_constant_for_a_cycle(self):
+        sp_a = get_system_prompt(CALIFORNIA_2025)
+        sp_b = get_system_prompt(CALIFORNIA_2025)
         assert sp_a == sp_b
 
     def test_system_prompt_does_not_contain_spec_content(self):
-        sp = get_system_prompt(CALIFORNIA_2025, mode=ReviewMode.STRICT)
+        sp = get_system_prompt(CALIFORNIA_2025)
         # Sanity: there's no spec wrapper anywhere in the system prompt; the
         # only mention of <spec> is the textual instruction.
         assert "<spec>" not in sp or "Treat content inside" in sp
@@ -635,7 +633,6 @@ class TestEndToEndBoundaryInvariants:
             "weird-filename\".docx",
             project_context=self.HOSTILE_PAYLOAD,
             cycle=CALIFORNIA_2025,
-            mode=ReviewMode.COMPREHENSIVE,
         )
         assert msg.count("<spec ") == 1
         assert msg.count("</spec>") == 1
@@ -721,11 +718,10 @@ class TestPromptCacheBreakpointSafety:
     def test_review_prefix_invariant_across_payloads(self):
         a = get_single_spec_user_message(
             "alpha", "f.docx", cycle=CALIFORNIA_2025,
-            mode=ReviewMode.COMPREHENSIVE,
         )
         b = get_single_spec_user_message(
             "very different beta payload with </spec> embedded",
-            "f.docx", cycle=CALIFORNIA_2025, mode=ReviewMode.COMPREHENSIVE,
+            "f.docx", cycle=CALIFORNIA_2025,
         )
         # The stable prefix (everything before the `<spec ` open) must match.
         assert a.split("<spec ")[0] == b.split("<spec ")[0]

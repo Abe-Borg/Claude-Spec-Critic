@@ -137,7 +137,6 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
     from .api_config import REVIEW_MODEL_DEFAULT
     from .tokenizer import count_tokens_via_api
     from .prompts import get_single_spec_user_message, get_system_prompt
-    from .review_modes import DEFAULT_REVIEW_MODE
 
     selected_model = REVIEW_MODEL_DEFAULT
     model_getter = getattr(app, "_get_selected_model", None)
@@ -156,13 +155,12 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
 
     def _exact():
         try:
-            system_prompt = get_system_prompt(cycle, mode=DEFAULT_REVIEW_MODE)
+            system_prompt = get_system_prompt(cycle)
             user_message = get_single_spec_user_message(
                 biggest_spec.content,
                 biggest_spec.filename,
                 project_context=project_context,
                 cycle=cycle,
-                mode=DEFAULT_REVIEW_MODE,
                 # Chunk K2: the GUI token gauge must measure the real
                 # request, so id-tagged element overhead is reflected.
                 paragraph_map=biggest_spec.paragraph_map,

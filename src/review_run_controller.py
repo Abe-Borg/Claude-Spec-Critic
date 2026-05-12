@@ -190,9 +190,6 @@ def start_review(app) -> None:
     app._cross_check_for_review = app._cross_check_var.get()
     app._verbose_for_review = app._verbose_var.get()
     app._selected_cycle_label = DEFAULT_CYCLE.label
-    # Capture the segmented control's current value on the UI thread
-    # before kicking off the background submission.
-    app._review_mode_for_review = app._get_selected_review_mode()
     app.is_processing = True
     app.log.log("─" * 40, level="muted", timestamp=False, paced=False)
     app.run_button.set_processing()
@@ -249,7 +246,6 @@ def run_review_thread(app, run_epoch: int) -> None:
             cross_check=app._cross_check_for_review,
             dry_run=False, verbose=False,
             cycle=AVAILABLE_CYCLES.get(app._selected_cycle_label, DEFAULT_CYCLE),
-            mode=app._review_mode_for_review,
             log=review_log,
             progress=review_progress,
         )

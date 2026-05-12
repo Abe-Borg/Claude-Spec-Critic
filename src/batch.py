@@ -10,7 +10,6 @@ from typing import Any
 
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
-from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
 from .review_request_builder import ReviewRequestSpec, build_review_request
 from .api_config import (
     BATCH_OUTPUT_BETA,
@@ -78,7 +77,6 @@ def submit_review_batch(
     model: str = REVIEW_MODEL_DEFAULT,
     cycle: CodeCycle = DEFAULT_CYCLE,
     retry_instruction: str | None = None,
-    mode: ReviewMode = DEFAULT_REVIEW_MODE,
     pre_detected_alerts: dict[str, list[dict]] | None = None,
 ) -> BatchJob:
     if not specs:
@@ -104,7 +102,6 @@ def submit_review_batch(
                 filename=spec.filename,
                 model=model,
                 cycle=cycle,
-                mode=mode if isinstance(mode, ReviewMode) else DEFAULT_REVIEW_MODE,
                 project_context=project_context,
                 paragraph_map=spec.paragraph_map,
                 pre_detected_alerts=spec_pre_detected,

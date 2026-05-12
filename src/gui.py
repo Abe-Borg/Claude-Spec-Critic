@@ -42,11 +42,6 @@ from src.batch import BatchStatus
 from src.diagnostics import DiagnosticsReport
 from src.extractor import ExtractedSpec
 from src.pipeline import BatchSubmission
-from src.review_modes import (
-    DEFAULT_REVIEW_MODE,
-    REVIEW_MODE_PROFILES,
-    ReviewMode,
-)
 from src.reviewer import Finding
 from src.spec_editor import EditReport
 
@@ -198,10 +193,6 @@ class SpecReviewApp(_CTkDnDRoot):
         # instead of stacking up multiple outbound API calls.
         self._exact_token_refresh_timer_id: str | None = None
         self._selected_cycle_label: str = DEFAULT_CYCLE.label
-        # Phase 8 / plan section 12.1: GUI tracks the active review mode so
-        # both the real-time and batch paths submit with the user's choice.
-        self._review_mode: ReviewMode = DEFAULT_REVIEW_MODE
-        self._review_mode_for_review: ReviewMode = DEFAULT_REVIEW_MODE
         self._font_scale_label: str = "Default (100%)"
         self._create_ui()
         self.after(500, self._check_pending_batch)
@@ -380,55 +371,9 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 5: Review Mode (Phase 8 / plan section 12.1) ---
-        ctk.CTkLabel(self.inputs_content, text="Review Mode", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
-        mode_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        mode_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
-        self._mode_label_to_enum: dict[str, ReviewMode] = {
-            REVIEW_MODE_PROFILES[m].label: m for m in (
-                ReviewMode.STRICT, ReviewMode.COMPREHENSIVE, ReviewMode.SAFE_EDIT,
-            )
-        }
-        mode_values = list(self._mode_label_to_enum.keys())
-        self.review_mode_selector = ctk.CTkSegmentedButton(
-            mode_frame, values=mode_values,
-            command=self._on_review_mode_change,
-            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-            selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
-            unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
-            fg_color=COLORS["bg_input"], text_color=COLORS["text_primary"],
-            height=32,
-        )
-        self.review_mode_selector.set(REVIEW_MODE_PROFILES[DEFAULT_REVIEW_MODE].label)
-        self.review_mode_selector.pack(side="left")
-        self._review_mode_hint = ctk.CTkLabel(
-            mode_frame,
-            text=REVIEW_MODE_PROFILES[DEFAULT_REVIEW_MODE].short_description,
-            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-            text_color=COLORS["text_muted"],
-        )
-        self._review_mode_hint.pack(side="left", padx=(12, 0))
-
         # (Accessibility row is now in the header area, not inside the inputs card)
 
         self.inputs_content.columnconfigure(1, weight=1)
-
-    def _on_review_mode_change(self, value: str):
-        mode = self._mode_label_to_enum.get(value, DEFAULT_REVIEW_MODE)
-        self._review_mode = mode
-        profile = REVIEW_MODE_PROFILES[mode]
-        self._review_mode_hint.configure(text=profile.short_description)
-
-    def _get_selected_review_mode(self) -> ReviewMode:
-        # Reading the segmented control directly avoids stale state if a
-        # background thread captured ``self._review_mode`` before the user
-        # changed it. ``coerce_review_mode`` falls back to default for
-        # unknown labels.
-        try:
-            label = self.review_mode_selector.get()
-        except Exception:
-            return self._review_mode
-        return self._mode_label_to_enum.get(label, self._review_mode)
 
     def _on_font_scale_change(self, value: str):
         scale = _FONT_SCALE_OPTIONS.get(value, 1.0)

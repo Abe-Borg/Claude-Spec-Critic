@@ -40,7 +40,6 @@ from src.reviewer import (
     REPORT_ONLY_ACTION,
     _parse_findings,
 )
-from src.review_modes import ReviewMode
 from src.structured_schemas import REVIEW_FINDINGS_SCHEMA
 from src.verifier import VerificationResult
 
@@ -534,19 +533,8 @@ class TestSchemaAndPrompt:
             assert action in props["actionType"]["enum"]
 
     def test_comprehensive_prompt_mentions_report_only(self):
-        prompt = get_system_prompt(DEFAULT_CYCLE, mode=ReviewMode.COMPREHENSIVE)
+        prompt = get_system_prompt(DEFAULT_CYCLE)
         assert "REPORT_ONLY" in prompt
         # The new wording instructs the model not to invent edit text;
         # surface that sentence so an accidental wording change is loud.
         assert "leave existingText" in prompt or "leave the edit slots" in prompt
-
-    def test_safe_edit_prompt_does_not_introduce_report_only(self):
-        # Safe-edit mode is explicitly "only emit findings whose fix is a
-        # precise edit", so the REPORT_ONLY escape hatch should not appear
-        # in that prompt — the editability clause for safe-edit is
-        # intentionally unchanged by chunk L.
-        prompt = get_system_prompt(DEFAULT_CYCLE, mode=ReviewMode.SAFE_EDIT)
-        # The system prompt's <output> block does mention REPORT_ONLY
-        # globally (it documents the schema), so we only check that the
-        # safe-edit editability clause is unchanged.
-        assert "MUST be copied verbatim" in prompt

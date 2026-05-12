@@ -200,7 +200,6 @@ def test_token_count_cache_round_trip():
         system_prompt="sys",
         user_message="msg",
         cycle_label="2025",
-        mode="strict",
     )
     assert get_cached_token_count(key) is None
     cache_token_count(key, 12345)
@@ -209,20 +208,10 @@ def test_token_count_cache_round_trip():
 
 def test_token_count_cache_key_changes_with_cycle():
     a = token_count_cache_key(
-        model="m", system_prompt="s", user_message="u", cycle_label="2025", mode="strict",
+        model="m", system_prompt="s", user_message="u", cycle_label="2025",
     )
     b = token_count_cache_key(
-        model="m", system_prompt="s", user_message="u", cycle_label="2028", mode="strict",
-    )
-    assert a != b
-
-
-def test_token_count_cache_key_changes_with_mode():
-    a = token_count_cache_key(
-        model="m", system_prompt="s", user_message="u", cycle_label="2025", mode="strict",
-    )
-    b = token_count_cache_key(
-        model="m", system_prompt="s", user_message="u", cycle_label="2025", mode="comprehensive",
+        model="m", system_prompt="s", user_message="u", cycle_label="2028",
     )
     assert a != b
 

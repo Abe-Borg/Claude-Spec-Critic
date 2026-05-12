@@ -4,9 +4,7 @@ Phase 2 (API modernization): single place for model identifiers, per-phase
 output-token caps, batch beta headers, web-search tool configuration, and
 feature flags for prompt caching and Anthropic token-counting preflight.
 
-All knobs are read from environment variables with sane defaults. Existing
-constants in `verification_config.py` and `tokenizer.py` are re-exported here
-so future model migration touches one file.
+All knobs are read from environment variables with sane defaults.
 
 Feature flags (default-on unless noted):
     SPEC_CRITIC_PROMPT_CACHE                     — "0" disables prompt caching.
@@ -28,11 +26,6 @@ Feature flags (default-on unless noted):
     SPEC_CRITIC_TRIAGE_MODEL                     — model id override for
                                                    verification triage
                                                    (default Haiku 4.5).
-    SPEC_CRITIC_HAIKU_TRIAGE                     — "1" enables Haiku-based
-                                                   verification triage as an
-                                                   augmentation of the
-                                                   keyword classifier
-                                                   (default off).
     SPEC_CRITIC_VERIFICATION_CACHE_PERSIST       — "0" disables on-disk
                                                    verification cache
                                                    (default on; database mode).

@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 from anthropic import Anthropic, APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
-from .review_modes import DEFAULT_REVIEW_MODE, ReviewMode
 from .api_config import (
     MODEL_OPUS_46,
     MODEL_OPUS_47,
@@ -706,7 +705,6 @@ def review_single_spec(
     verbose: bool = False,
     stream_callback: Optional[StreamCallback] = None,
     cycle: CodeCycle = DEFAULT_CYCLE,
-    mode: ReviewMode = DEFAULT_REVIEW_MODE,
     paragraph_map=None,
     pre_detected_alerts=None,
 ) -> ReviewResult:
@@ -737,7 +735,6 @@ def review_single_spec(
         filename=filename,
         model=model,
         cycle=cycle,
-        mode=mode if isinstance(mode, ReviewMode) else DEFAULT_REVIEW_MODE,
         project_context=project_context,
         paragraph_map=paragraph_map,
         pre_detected_alerts=pre_detected_alerts,
