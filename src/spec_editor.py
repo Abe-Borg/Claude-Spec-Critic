@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
@@ -132,6 +133,14 @@ class EditOutcome:
     detail: str
     original_text: str
     new_text: str | None
+    # Chunk 9 — tag outcomes that were refused because the target paragraph or
+    # table cell carried unsafe Word markup (hyperlinks, field codes,
+    # drawings, comments, tracked changes, bookmarks, etc.). The status is
+    # still ``"skipped"`` so the existing applied/skipped/failed accounting
+    # is unaffected, but the flag lets the report layer surface "auto-edit
+    # refused due to unsafe Word markup" rather than burying it in a generic
+    # skip reason. Defaults to False so legacy outcomes are unchanged.
+    refused_unsafe_markup: bool = False
 
 
 @dataclass
@@ -144,6 +153,11 @@ class EditReport:
     edits_failed: int
     outcomes: list[EditOutcome]
     warnings: list[str]
+    # Chunk 9 — Boolean signal that the edit pass was aborted before any
+    # output was written because at least one auto-edit failed under the
+    # configured all-or-none transactional policy. Default False keeps
+    # legacy reports unchanged.
+    aborted_transactional: bool = False
 
 
 def _build_run_offset_map(paragraph: Paragraph) -> list[tuple[int, int, int]]:
@@ -226,6 +240,173 @@ def _is_whole_paragraph_delete(action: EditAction) -> bool:
         and location.mapping.element_type == "paragraph"
         and location.match_start == 0
         and location.match_end == len(location.mapping.text)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chunk 9 — unsafe WordprocessingML markup detection.
+#
+# Run-level surgery on paragraphs that carry hyperlinks, field codes,
+# drawings/images, comments, tracked changes, bookmarks, or content controls
+# can silently corrupt the underlying XML: removing or rewriting a run can
+# leave dangling field characters, orphaned bookmark/comment ranges, broken
+# hyperlink relationships, or inline drawings with no anchor. Per the plan,
+# the safe behavior is to refuse the auto-edit and route the finding to
+# manual review or annotation mode rather than risk corruption.
+#
+# The detector returns a structured :class:`UnsafeMarkupResult` so the
+# caller can attach a refusal reason to the EditOutcome. Detection works on
+# raw lxml elements and is intentionally cheap — it scans the paragraph's
+# subtree for known unsafe tags via :func:`qn` lookups; no heuristics, no
+# regex over rendered text.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UnsafeMarkupResult:
+    """Outcome of scanning a paragraph/cell for edit-unsafe Word markup."""
+
+    unsafe: bool
+    reasons: tuple[str, ...]
+
+    @property
+    def detail(self) -> str:
+        if not self.unsafe:
+            return ""
+        joined = ", ".join(self.reasons)
+        return (
+            "Auto-edit refused: paragraph contains unsafe Word markup "
+            f"({joined}); routed to manual review to avoid document corruption."
+        )
+
+
+# Mapping from a WordprocessingML local tag name to a human-readable reason.
+# Order matters only for the reasons list — we report every distinct hit so
+# the EditOutcome detail is useful for an operator triaging the report.
+_UNSAFE_TAGS: tuple[tuple[str, str], ...] = (
+    ("w:hyperlink", "hyperlink"),
+    ("w:fldChar", "field character"),
+    ("w:instrText", "field instruction text"),
+    ("w:fldSimple", "simple field"),
+    ("w:drawing", "drawing/image"),
+    ("w:pict", "embedded picture/object"),
+    ("w:object", "OLE object"),
+    ("w:commentRangeStart", "comment range"),
+    ("w:commentRangeEnd", "comment range"),
+    ("w:commentReference", "comment reference"),
+    ("w:ins", "tracked insertion"),
+    ("w:del", "tracked deletion"),
+    ("w:moveFrom", "tracked move-from"),
+    ("w:moveTo", "tracked move-to"),
+    ("w:moveFromRangeStart", "tracked move range"),
+    ("w:moveToRangeStart", "tracked move range"),
+    ("w:bookmarkStart", "bookmark range"),
+    ("w:bookmarkEnd", "bookmark range"),
+    ("w:sdt", "content control / smart tag"),
+    ("w:footnoteReference", "footnote reference"),
+    ("w:endnoteReference", "endnote reference"),
+    ("w:smartTag", "smart tag"),
+    ("w:customXml", "custom XML element"),
+)
+
+
+def detect_unsafe_markup(element) -> UnsafeMarkupResult:
+    """Return :class:`UnsafeMarkupResult` for the given paragraph/cell element.
+
+    The detector walks the element's subtree once and records every distinct
+    unsafe-tag class it sees. Returning the full set (instead of stopping at
+    the first hit) lets the resulting EditOutcome explain exactly why the
+    edit was refused — useful when the same paragraph carries, say, both a
+    hyperlink and a tracked change.
+
+    ``element`` may be the lxml element directly or any object that exposes
+    one via ``_element`` (Paragraph / _Cell from python-docx both do).
+    """
+    if element is None:
+        return UnsafeMarkupResult(False, ())
+    raw = element if hasattr(element, "iter") else getattr(element, "_element", None)
+    if raw is None:
+        return UnsafeMarkupResult(False, ())
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for tag, reason in _UNSAFE_TAGS:
+        qname = qn(tag)
+        # ``iter(tag)`` short-circuits as soon as a match is found if we
+        # break, but we want to know whether *any* descendant matches; the
+        # presence check is enough.
+        if next(raw.iter(qname), None) is not None:
+            if reason not in seen:
+                found.append(reason)
+                seen.add(reason)
+    if not found:
+        return UnsafeMarkupResult(False, ())
+    return UnsafeMarkupResult(True, tuple(found))
+
+
+def _is_table_cell_mapping(mapping) -> bool:
+    return getattr(mapping, "element_type", None) == "table_cell"
+
+
+def _table_cell_auto_edit_enabled() -> bool:
+    """Operator switch for refusing every table-cell auto-edit (Chunk 9).
+
+    Default ``1`` (enabled) preserves backward compatibility with existing
+    AUTO_WITH_CAUTION table-cell edits. When set to ``0``, every table-cell
+    edit is refused with a ``refused_unsafe_markup`` outcome so the finding
+    flows to the manual review/annotation track instead. This is the safe
+    knob to flip when a project has table-cell text that is mostly read out
+    of richly formatted runs (manufacturer schedules, equipment tables) and
+    naive replacement would degrade readability.
+    """
+    raw = os.environ.get("SPEC_CRITIC_TABLE_CELL_AUTO_EDIT")
+    if raw is None:
+        return True
+    return raw.strip() not in {"0", "false", "False", ""}
+
+
+def _edit_transactional_enabled() -> bool:
+    """Whether edit application enforces all-or-none output writes (Chunk 9).
+
+    Default ``1``: if any auto-edit produced a ``failed`` outcome, the
+    serialized output is suppressed so the user does not silently receive a
+    partially mutated file. Set ``SPEC_CRITIC_EDIT_TRANSACTIONAL=0`` to fall
+    back to best-effort writes (the legacy behavior).
+
+    Skipped outcomes — including the new Chunk 9 unsafe-markup refusals —
+    are deliberate refusals, not failures, and do not abort the
+    transactional write. The visible signal stays in
+    ``EditOutcome.refused_unsafe_markup`` and the corresponding
+    ``EditReport.warnings`` entry.
+    """
+    raw = os.environ.get("SPEC_CRITIC_EDIT_TRANSACTIONAL")
+    if raw is None:
+        return True
+    return raw.strip() not in {"0", "false", "False", ""}
+
+
+def _refuse_unsafe_outcome(
+    action: "EditAction",
+    *,
+    element,
+    original_text: str,
+) -> "EditOutcome | None":
+    """Return an unsafe-markup refusal outcome, or ``None`` if the element is safe.
+
+    Encapsulates the per-mutation safety gate so the four mutation sites in
+    :func:`apply_edits_to_spec` (paragraph in-place, table cell, ADD anchor,
+    whole-paragraph DELETE) share one decision point.
+    """
+    result = detect_unsafe_markup(element)
+    if not result.unsafe:
+        return None
+    return EditOutcome(
+        action=action,
+        status="skipped",
+        detail=result.detail,
+        original_text=original_text,
+        new_text=None,
+        refused_unsafe_markup=True,
     )
 
 
@@ -701,6 +882,23 @@ def _apply_add_action(
 
     anchor_paragraph = Paragraph(anchor_element, doc)
 
+    # Chunk 9: refuse anchors that carry unsafe Word markup. ADD inserts a
+    # sibling paragraph adjacent to the anchor, which is structurally
+    # simpler than mutating the anchor itself, but inserting beside a
+    # paragraph whose XML carries field characters or bookmark ranges can
+    # still break those structures if the surrounding context relies on
+    # contiguous run order. Conservative refusal keeps the document safe.
+    unsafe = detect_unsafe_markup(anchor_element)
+    if unsafe.unsafe:
+        return EditOutcome(
+            action=action,
+            status="skipped",
+            detail=unsafe.detail,
+            original_text=anchor_paragraph.text,
+            new_text=None,
+            refused_unsafe_markup=True,
+        )
+
     # Phase 4 (audit Section 8.3): revalidate anchor before mutating. If a
     # prior edit changed the anchor paragraph text in a way that no longer
     # matches the recorded anchor, do not insert beside it.
@@ -868,6 +1066,22 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             paragraph = Paragraph(element, doc)
             paragraph_before = paragraph.text
 
+            # Chunk 9: refuse paragraphs that carry unsafe Word markup
+            # (hyperlinks, field codes, drawings, comments, tracked changes,
+            # bookmarks, content controls, footnote/endnote refs). Run-level
+            # surgery on those structures can silently break the underlying
+            # XML — better to skip the auto-edit and route the finding to
+            # manual review than to risk a corrupted spec document.
+            refusal = _refuse_unsafe_outcome(
+                action,
+                element=element,
+                original_text=paragraph_before,
+            )
+            if refusal is not None:
+                outcomes.append(refusal)
+                warnings.append(refusal.detail)
+                continue
+
             # Phase 4 (audit Section 8.3) + Chunk F: revalidate immediately
             # before mutating. If a previous edit in this pass changed the
             # paragraph such that the recorded slice no longer matches, the
@@ -922,6 +1136,29 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                     )
                 )
                 continue
+
+            # Chunk 9 operator switch: refuse every table-cell auto-edit when
+            # ``SPEC_CRITIC_TABLE_CELL_AUTO_EDIT=0``. The finding still flows
+            # through the report and annotation path; only the silent
+            # in-place mutation is suppressed.
+            if not _table_cell_auto_edit_enabled():
+                detail = (
+                    "Auto-edit refused: table-cell auto-edit is disabled "
+                    "(SPEC_CRITIC_TABLE_CELL_AUTO_EDIT=0); routed to manual review."
+                )
+                outcomes.append(
+                    EditOutcome(
+                        action=action,
+                        status="skipped",
+                        detail=detail,
+                        original_text=original_text,
+                        new_text=None,
+                        refused_unsafe_markup=True,
+                    )
+                )
+                warnings.append(detail)
+                continue
+
             table = DocxTable(element, doc)
             row_index = mapping.row_index
             if row_index is None or row_index < 0 or row_index >= len(table.rows):
@@ -948,6 +1185,22 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                         new_text=None,
                     )
                 )
+                continue
+
+            # Chunk 9: refuse table cells whose target paragraph (or any
+            # ancestor cell content) carries unsafe markup. Cell-scoped
+            # check is conservative on purpose: hyperlinks/fields/etc.
+            # anywhere in the same cell tend to share runs/relationships
+            # with the target paragraph.
+            cell_element = target_paragraph._element.getparent()
+            unsafe_target = _refuse_unsafe_outcome(
+                action,
+                element=cell_element if cell_element is not None else target_paragraph._element,
+                original_text=target_paragraph.text,
+            )
+            if unsafe_target is not None:
+                outcomes.append(unsafe_target)
+                warnings.append(unsafe_target.detail)
                 continue
 
             paragraph_before = target_paragraph.text
@@ -1062,6 +1315,20 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         paragraph = Paragraph(element, doc)
         paragraph_before = paragraph.text
 
+        # Chunk 9: refuse to delete a paragraph that owns unsafe markup. A
+        # whole-paragraph delete that strips a hyperlink or field can leave
+        # orphan relationships/bookmarks in document.xml.rels and other
+        # ancillary parts; safer to route to manual review.
+        refusal = _refuse_unsafe_outcome(
+            action,
+            element=element,
+            original_text=paragraph_before,
+        )
+        if refusal is not None:
+            outcomes.append(refusal)
+            warnings.append(refusal.detail)
+            continue
+
         precondition = _precondition_holds_for_paragraph(
             paragraph,
             action.location.match_start,
@@ -1091,8 +1358,17 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             )
         )
 
+    # Chunk 9 — transactional all-or-none output. Serialize to a buffer
+    # first; if *any* individual edit ended in ``failed``, suppress the
+    # output write entirely so the user does not silently receive a
+    # partially mutated file. Skipped outcomes (precondition revalidation,
+    # unsafe-markup refusal, ambiguous overlap) are deliberate refusals,
+    # not failures, and do NOT abort the write. Operators can opt out via
+    # ``SPEC_CRITIC_EDIT_TRANSACTIONAL=0`` if they need the legacy
+    # best-effort behavior.
+    buf = BytesIO()
     try:
-        doc.save(BytesIO())
+        doc.save(buf)
     except Exception as exc:
         failed_outcomes = [
             EditOutcome(
@@ -1101,6 +1377,7 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 detail=f"Document serialization failed after edits: {exc}",
                 original_text=outcome.original_text,
                 new_text=None,
+                refused_unsafe_markup=outcome.refused_unsafe_markup,
             )
             for outcome in outcomes
         ]
@@ -1113,9 +1390,97 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             edits_failed=len(failed_outcomes),
             outcomes=failed_outcomes,
             warnings=warnings + [f"Serialization check failed: {exc}"],
+            aborted_transactional=True,
         )
 
-    doc.save(output_path)
+    # Validate the buffer reopens cleanly so we never write a file Word
+    # cannot parse. The serialize-then-reopen step is feasible even for
+    # large specs because python-docx parses lxml lazily on read.
+    buf.seek(0)
+    try:
+        Document(buf)
+    except Exception as exc:
+        warnings.append(
+            f"Aborted output write: serialized document failed reopen validation: {exc}"
+        )
+        return EditReport(
+            source_path=source_path,
+            output_path=output_path,
+            total_edits_attempted=len(edit_actions),
+            edits_applied=0,
+            edits_skipped=sum(1 for o in outcomes if o.status == "skipped"),
+            edits_failed=sum(1 for o in outcomes if o.status == "failed") + sum(
+                1 for o in outcomes if o.status == "applied"
+            ),
+            outcomes=[
+                EditOutcome(
+                    action=o.action,
+                    status="failed",
+                    detail=(
+                        f"Output suppressed: serialized document failed reopen "
+                        f"validation ({exc}). Original outcome was: {o.detail}"
+                    )
+                    if o.status == "applied"
+                    else o.detail,
+                    original_text=o.original_text,
+                    new_text=None,
+                    refused_unsafe_markup=o.refused_unsafe_markup,
+                )
+                for o in outcomes
+            ],
+            warnings=warnings,
+            aborted_transactional=True,
+        )
+
+    failed_count = sum(1 for outcome in outcomes if outcome.status == "failed")
+
+    if failed_count > 0 and _edit_transactional_enabled():
+        # Demote every ``applied`` outcome to skipped-due-to-abort so the
+        # report makes clear nothing was written. The originally-failed
+        # outcomes keep their ``failed`` status.
+        rewritten: list[EditOutcome] = []
+        for outcome in outcomes:
+            if outcome.status == "applied":
+                rewritten.append(
+                    EditOutcome(
+                        action=outcome.action,
+                        status="skipped",
+                        detail=(
+                            "Output suppressed under all-or-none policy: "
+                            f"{failed_count} edit(s) in this file failed. "
+                            f"Original outcome was: {outcome.detail}"
+                        ),
+                        original_text=outcome.original_text,
+                        new_text=None,
+                        refused_unsafe_markup=outcome.refused_unsafe_markup,
+                    )
+                )
+            else:
+                rewritten.append(outcome)
+        warnings.append(
+            "Edit output suppressed: all-or-none policy aborted the write because "
+            f"{failed_count} edit(s) failed. Set SPEC_CRITIC_EDIT_TRANSACTIONAL=0 "
+            "to fall back to best-effort writes."
+        )
+        applied = 0
+        skipped_count = sum(1 for o in rewritten if o.status == "skipped")
+        failed = sum(1 for o in rewritten if o.status == "failed")
+        return EditReport(
+            source_path=source_path,
+            output_path=output_path,
+            total_edits_attempted=len(edit_actions),
+            edits_applied=applied,
+            edits_skipped=skipped_count,
+            edits_failed=failed,
+            outcomes=rewritten,
+            warnings=warnings,
+            aborted_transactional=True,
+        )
+
+    # Either the all-or-none policy passed (no failures) or the operator
+    # opted into best-effort writes. Stream the validated buffer to disk.
+    buf.seek(0)
+    output_path.write_bytes(buf.read())
 
     applied = sum(1 for outcome in outcomes if outcome.status == "applied")
     skipped_count = sum(1 for outcome in outcomes if outcome.status == "skipped")
@@ -1130,6 +1495,7 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         edits_failed=failed,
         outcomes=outcomes,
         warnings=warnings,
+        aborted_transactional=False,
     )
 
 

@@ -190,7 +190,15 @@ def on_edits_applied(app, reports: list[EditReport]) -> None:
             for outcome in getattr(report, "outcomes", []) or []:
                 if outcome.status in ("skipped", "failed"):
                     reason = (outcome.detail or outcome.status).strip().lower()
-                    if "ambiguous" in reason:
+                    # Chunk 9 — unsafe-markup refusals get their own bucket
+                    # so the diagnostics summary can show how many edits
+                    # were refused because of Word structure (hyperlinks,
+                    # field codes, drawings, comments, tracked changes,
+                    # etc.). Checked first so it wins over the generic
+                    # "manual review" suffix in the same detail string.
+                    if getattr(outcome, "refused_unsafe_markup", False):
+                        bucket = "unsafe_markup"
+                    elif "ambiguous" in reason:
                         bucket = "ambiguous"
                     elif "not found" in reason or "not_found" in reason:
                         bucket = "not_found"

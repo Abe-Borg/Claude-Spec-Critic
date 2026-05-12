@@ -250,6 +250,18 @@ def execute_edit_plan(
             else:
                 report = apply_edits_to_spec(source_path, output_path, actions)
             reports.append(report)
+            # Chunk 9: surface unsafe-markup refusals in the run log so users
+            # know an auto-edit was deliberately not applied because of Word
+            # markup (hyperlinks, field codes, drawings, etc.) rather than a
+            # silent skip. Same for the all-or-none transactional abort.
+            for outcome in getattr(report, "outcomes", []) or []:
+                if getattr(outcome, "refused_unsafe_markup", False):
+                    log(f"[{filename}] {outcome.detail}")
+            if getattr(report, "aborted_transactional", False):
+                log(
+                    f"[{filename}] Edit output suppressed under all-or-none "
+                    f"policy; see EditReport.warnings for details."
+                )
         except Exception as exc:
             warning = f"Failed to apply edits: {exc}"
             log(f"[{filename}] {warning}")
