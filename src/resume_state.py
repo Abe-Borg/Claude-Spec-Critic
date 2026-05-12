@@ -244,8 +244,8 @@ def deserialize_edit_proposal(payload: dict[str, Any] | None) -> EditProposal | 
     )
 
 
-def serialize_finding(finding: Finding) -> dict[str, Any]:
-    return {
+def serialize_finding(finding: Finding, *, _include_originals: bool = True) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "severity": finding.severity,
         "fileName": finding.fileName,
         "section": finding.section,
@@ -285,9 +285,23 @@ def serialize_finding(finding: Finding) -> dict[str, Any]:
         # already handle the no-proposal case without it.
         "demotion_reason": finding.demotion_reason,
     }
+    # Chunk 8: persist per-file pre-merge originals so resume restores the
+    # same per-file edit identity the dedup pass produced. The originals
+    # are themselves singleton findings (their own ``occurrence_originals``
+    # is empty), so the recursion is bounded at one level — but the
+    # ``_include_originals=False`` guard makes that explicit and prevents
+    # infinite nesting if a future code path nests merged findings.
+    if _include_originals:
+        payload["occurrence_originals"] = [
+            serialize_finding(orig, _include_originals=False)
+            for orig in finding.occurrence_originals
+        ]
+    else:
+        payload["occurrence_originals"] = []
+    return payload
 
 
-def deserialize_finding(payload: dict[str, Any]) -> Finding:
+def deserialize_finding(payload: dict[str, Any], *, _include_originals: bool = True) -> Finding:
     insert_pos = payload.get("insertPosition")
     if insert_pos is not None:
         normalized_pos = str(insert_pos).strip().lower()
@@ -335,6 +349,19 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
     suppression_reason = str(suppression_raw) if suppression_raw is not None else None
     demotion_raw = payload.get("demotion_reason")
     demotion_reason = str(demotion_raw) if demotion_raw is not None else None
+    # Chunk 8: load per-file originals when present. Pre-Chunk-8 payloads
+    # lack this field and load with an empty list, which keeps the legacy
+    # behavior (apply_edits routes non-representative affected files to
+    # manual review since there is no per-file edit text to use).
+    if _include_originals:
+        originals_raw = payload.get("occurrence_originals", []) or []
+        occurrence_originals = [
+            deserialize_finding(o, _include_originals=False)
+            for o in originals_raw
+            if isinstance(o, dict)
+        ]
+    else:
+        occurrence_originals = []
     return Finding(
         severity=str(payload.get("severity", "MEDIUM")),
         fileName=str(payload.get("fileName", "")),
@@ -356,6 +383,7 @@ def deserialize_finding(payload: dict[str, Any]) -> Finding:
         independent_evidence_ids=independent_ids,
         suppression_reason=suppression_reason,
         demotion_reason=demotion_reason,
+        occurrence_originals=occurrence_originals,
     )
 
 

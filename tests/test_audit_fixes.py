@@ -196,6 +196,23 @@ def test_execute_edit_plan_applies_to_every_affected_file(tmp_path: Path):
         replacement="ASCE 7-22",
     )
     grouped.affected_files = ["a.docx", "b.docx"]
+    # Chunk 8: a real merged finding produced by ``_deduplicate_findings``
+    # carries per-file originals on ``occurrence_originals``. The audit-fix
+    # contract (multi-file fan-out) is unchanged — but the executor now
+    # uses the per-file original for each file's edit text, so the test
+    # must populate originals to mirror the real dedup output. Without
+    # them the executor routes non-representative files to manual review.
+    orig_a = _make_finding(
+        file_name="a.docx",
+        existing="ASCE 7-16",
+        replacement="ASCE 7-22",
+    )
+    orig_b = _make_finding(
+        file_name="b.docx",
+        existing="ASCE 7-16",
+        replacement="ASCE 7-22",
+    )
+    grouped.occurrence_originals = [orig_a, orig_b]
     from src.verifier import VerificationResult as _VR
     grouped.verification = _VR(verdict="CONFIRMED", explanation="", sources=[])
 

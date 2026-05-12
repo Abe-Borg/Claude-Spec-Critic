@@ -234,6 +234,19 @@ class Finding:
     # REPORT_ONLY emission, or an unknown action coerced to REPORT_ONLY
     # without a per-action shape requirement to cite.
     demotion_reason: str | None = None
+    # Chunk 8 / plan section "Separate report deduplication from
+    # executable edit identity": when ``_deduplicate_findings`` collapses
+    # findings from multiple files into one representative, the original
+    # per-file member findings are retained here. Edit execution looks up
+    # the matching original by ``fileName`` so the representative's
+    # ``existingText`` / ``replacementText`` / ``anchorText`` /
+    # ``evidenceElementId`` / ``edit_proposal`` are never fanned out
+    # across files that may have different exact text. Singletons leave
+    # this empty (the finding *is* its own original); legacy resume
+    # payloads (pre-Chunk-8) also load empty and the executor falls back
+    # to "auto-edit only the representative's own file, route others to
+    # manual review" rather than guessing.
+    occurrence_originals: list["Finding"] = field(default_factory=list)
 
     def as_edit_proposal(self) -> EditProposal | None:
         """Return the structured edit proposal for this finding, if any.
