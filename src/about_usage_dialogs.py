@@ -93,7 +93,7 @@ def show_about_dialog(parent) -> None:
             "preserved internally so multi-file edits can target every affected spec."
         )),
         ("5.  Cross-Spec Coordination  (optional)", (
-            "If enabled, a separate Opus 4.7 call analyzes the full text of all your "
+            "If enabled, a separate Sonnet 4.6 call analyzes the full text of all your "
             "specs together using the 1M token context window. It catches contradictions "
             "between specs, missing cross-references, scope gaps and overlaps, "
             "inconsistent equipment data, and division-of-work conflicts. Large projects "
@@ -121,9 +121,8 @@ def show_about_dialog(parent) -> None:
         ("8.  Output", (
             "Results can be viewed in-app, exported as a Word report, or used to produce "
             "an edited copy of each spec. Auto-edit mode applies surgical changes in a "
-            "safe order with revalidation immediately before each mutation. Annotation "
-            "mode writes a copy with yellow-highlighted suggestion paragraphs without "
-            "changing the original text. The source files are never overwritten."
+            "safe order with revalidation immediately before each mutation. The source "
+            "files are never overwritten."
         )),
     ]
 
@@ -138,7 +137,7 @@ def show_about_dialog(parent) -> None:
         scroll,
         text=(
             "Spec Critic is a review assistant — it never modifies your source "
-            "documents. Auto-edit and annotation modes always write to a copy. "
+            "documents. Auto-edit always writes to a copy. "
             "It’s advisory only and not a substitute for AHJ review. Code "
             "citations should still be spot-checked by the engineer of record."
         ),
@@ -226,11 +225,9 @@ def show_usage_dialog(parent) -> None:
         ("7.  Save the Report", (
             "When the review completes, you'll be prompted to save a formatted "
             ".docx report. After saving, you can choose to apply edits: "
-            "'Auto-Edit' writes an edited copy of each spec — only Auto-safe "
+            "auto-edit writes an edited copy of each spec — only Auto-safe "
             "findings are applied; ambiguous, table, header/footer, and "
             "richly formatted edits are downgraded to manual review. "
-            "'Annotate' writes a copy with yellow-highlighted suggestion "
-            "paragraphs after each anchor without changing the original text. "
             "Source files are never overwritten."
         )),
         ("8.  Run the Review", (

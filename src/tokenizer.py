@@ -67,10 +67,10 @@ PROJECT_CONTEXT_MAX_TOKENS = 100_000
 # Cross-check limits (v2.2.0)
 # ---------------------------------------------------------------------------
 
-# Cross-check uses Opus 4.7 with full spec content and adaptive thinking.
+# Cross-check uses Sonnet 4.6 with full spec content and adaptive thinking.
 # With thinking enabled, thinking tokens + text output share the max_tokens budget.
-# Opus 4.7 supports up to 128K output tokens. Cross-check reserves the
-# full output budget so adaptive thinking + text output can use it.
+# We keep a 128K output reserve (matches the api_config cross-check cap before
+# the per-model clamp) so the input budget stays stable across model changes.
 # Budget: 1M context - 128K output reserve - 50K overhead = 822K
 CROSS_CHECK_OVERHEAD = 50_000
 CROSS_CHECK_OUTPUT_BUDGET = 128_000

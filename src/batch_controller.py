@@ -565,8 +565,6 @@ def resume_batch(app, loaded_state: dict) -> None:
         cross_check_skipped = True
     app._project_context_for_review = getattr(submission, "project_context", "")
     app._selected_cycle_label = getattr(submission, "cycle_label", DEFAULT_CYCLE.label)
-    verbose_var = getattr(app, "_verbose_var", None)
-    app._verbose_for_review = verbose_var.get() if verbose_var is not None else bool(getattr(app, "_verbose_for_review", True))
     app._cross_check_var.set(bool(getattr(submission, "cross_check_enabled", False)))
     app.is_processing = True
 

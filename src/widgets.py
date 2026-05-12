@@ -12,7 +12,6 @@ from typing import Callable, Optional
 from collections import deque
 
 import customtkinter as ctk
-from tkinter import filedialog
 
 from .edit_candidates import EditCandidate
 from .spec_editor import EditReport
@@ -782,9 +781,7 @@ class DiagnosticsWindow(ctk.CTkToplevel):
             "border_width": 1, "border_color": COLORS["border"],
             "text_color": COLORS["text_secondary"],
         }
-        ctk.CTkButton(tb_inner, text="Copy to Clipboard", width=130, command=self._copy_text, **btn_kw).pack(side="right", padx=(8, 0))
-        ctk.CTkButton(tb_inner, text="Save as Text", width=100, command=self._save_text, **btn_kw).pack(side="right", padx=(8, 0))
-        ctk.CTkButton(tb_inner, text="Save as JSON", width=110, command=self._save_json, **btn_kw).pack(side="right")
+        ctk.CTkButton(tb_inner, text="Copy to Clipboard", width=130, command=self._copy_text, **btn_kw).pack(side="right")
 
         # Body
         body = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
@@ -1190,34 +1187,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
     # ------------------------------------------------------------------
     # Export actions
     # ------------------------------------------------------------------
-
-    def _save_json(self):
-        path = filedialog.asksaveasfilename(
-            parent=self, title="Save Diagnostics JSON",
-            defaultextension=".json",
-            filetypes=[("JSON Files", "*.json")],
-            initialfile=f"spec-critic-diagnostics-{datetime.now().strftime('%Y-%m-%d')}.json",
-        )
-        if path:
-            try:
-                self._report.save_json(path)
-            except Exception as e:
-                from tkinter import messagebox
-                messagebox.showerror("Export Error", f"Could not save JSON file:\n{e}", parent=self)
-
-    def _save_text(self):
-        path = filedialog.asksaveasfilename(
-            parent=self, title="Save Diagnostics Log",
-            defaultextension=".txt",
-            filetypes=[("Text Files", "*.txt")],
-            initialfile=f"spec-critic-diagnostics-{datetime.now().strftime('%Y-%m-%d')}.txt",
-        )
-        if path:
-            try:
-                self._report.save_text(path)
-            except Exception as e:
-                from tkinter import messagebox
-                messagebox.showerror("Export Error", f"Could not save text file:\n{e}", parent=self)
 
     def _copy_text(self):
         text = self._report.to_text()
