@@ -93,6 +93,10 @@ from .api_config import (
     tools_with_cache,
     verification_max_tokens,
 )
+from .retry_policy import (
+    DEFAULT_MAX_CONTINUATIONS,
+    max_continuations_for_mode,
+)
 from .reviewer import Finding
 from .verification_modes import (
     ModePolicy,
@@ -113,12 +117,15 @@ from .verification_router import (
 )
 
 
-# Default max continuation count for the real-time path. The batch wave
-# loop bounds continuations through ``MAX_VERIFICATION_WAVES`` instead so
-# the field on the decision is only consulted by the real-time loop. A
-# future tuning pass that wants per-mode continuation caps lands in
-# :func:`select_routing`.
-_DEFAULT_MAX_CONTINUATIONS = 5
+# Chunk 6: default max continuation count for the real-time path drops
+# from the legacy 5 to 2. The deep-reasoning override (4) lives in
+# :mod:`retry_policy.max_continuations_for_mode` and is applied by
+# :func:`select_routing` after the mode is selected, so a single map
+# governs the per-mode cap and a future tuning pass touches one
+# constant. The batch wave loop bounds continuations through
+# ``MAX_VERIFICATION_WAVES`` instead, so this field is only consulted
+# on the real-time path.
+_DEFAULT_MAX_CONTINUATIONS = DEFAULT_MAX_CONTINUATIONS
 
 # Routing trace tags. Kept short so a diagnostics dump can bucket by tag
 # without parsing free text. Stable on purpose — adding a new tag is fine
@@ -325,7 +332,7 @@ def select_routing(
     cached_mode: VerificationMode | str | None = None,
     model_override: str | None = None,
     cache_phase: str = PHASE_VERIFICATION,
-    max_continuations: int = _DEFAULT_MAX_CONTINUATIONS,
+    max_continuations: int | None = None,
     local_skip: bool | None = None,
     include_verdict_tool: bool | None = None,
 ) -> VerificationRoutingDecision:
@@ -358,8 +365,11 @@ def select_routing(
         the request builder reaches for the matching phase policy
         without the caller having to thread it through separately.
     max_continuations:
-        Cap on the real-time pause-turn loop. Default 5; routing rules
-        may shrink it in the future.
+        Cap on the real-time pause-turn loop. ``None`` (the default)
+        lets the selector pick the cap from
+        :func:`retry_policy.max_continuations_for_mode` based on the
+        routed mode — 2 for everything except DEEP_REASONING, which
+        gets 4. Explicit overrides (e.g. tests) still win.
     local_skip:
         When ``True``, the caller has *already* determined the finding
         is a local-skip and is materializing the decision purely for
@@ -449,6 +459,13 @@ def select_routing(
         escalated=escalated,
         mode=mode,
     )
+
+    # Chunk 6: derive the per-mode continuation cap from the centralized
+    # policy when the caller did not override it. Default modes get 2
+    # (drops from the legacy 5); DEEP_REASONING gets 4 so a legitimate
+    # CRITICAL CALIFORNIA_AHJ finding still has room to converge.
+    if max_continuations is None:
+        max_continuations = max_continuations_for_mode(mode.value)
 
     return VerificationRoutingDecision(
         finding_id=finding_id,

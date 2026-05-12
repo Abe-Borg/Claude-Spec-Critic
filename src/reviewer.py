@@ -21,6 +21,13 @@ from .api_config import (
     REVIEW_MODEL_DEFAULT,
     extract_cache_usage,
 )
+from .retry_policy import (
+    DEFAULT_REALTIME_RETRY_POLICY,
+    FailureClass,
+    classify_exception,
+    compute_backoff_seconds,
+    is_retryable_failure_class,
+)
 from .review_request_builder import (
     ReviewRequestSpec,
     build_realtime_review_kwargs,
@@ -36,31 +43,28 @@ REVIEW_MODELS = {"Opus 4.7": MODEL_OPUS_47}
 StreamCallback = Callable[[str], None]
 
 # ---------------------------------------------------------------------------
-# Retryable connection-failure heuristic
+# Retryable-connection-failure helper (Chunk 6)
 # ---------------------------------------------------------------------------
-# These patterns catch httpx / urllib3 / aiohttp transport-level failures
-# that surface as generic Exception (not wrapped in anthropic APIError).
-# They are transient and safe to retry.
-_RETRYABLE_EXCEPTION_PATTERNS = (
-    "peer closed connection",
-    "incomplete chunked read",
-    "connection reset",
-    "connection closed",
-    "timed out",
-    "timeout",
-    "broken pipe",
-    "remotedisconnected",
-    "connectionreset",
-    "server disconnected",
-    "eof occurred",
-    "incomplete read",
-)
+# The legacy ``_is_retryable_connection_error`` helper used a string-match
+# heuristic against the exception message body. Chunk 6 replaces it with
+# :func:`retry_policy.classify_exception`, which checks the typed SDK
+# exceptions first (``APIConnectionError`` / ``RateLimitError`` /
+# ``InternalServerError`` / ``APIStatusError``) and falls back to the
+# substring scan only for generic ``Exception`` instances that escaped
+# the SDK's translation layer (audit Issue 9). The wrapper below is
+# preserved for backward compatibility with external callers / tests
+# that imported the legacy name; it now delegates to the centralized
+# classifier.
 
 
 def _is_retryable_connection_error(exc: Exception) -> bool:
-    """Return True if a generic exception looks like a transient connection failure."""
-    msg = str(exc).lower()
-    return any(pattern in msg for pattern in _RETRYABLE_EXCEPTION_PATTERNS)
+    """Return True if ``exc`` looks like a retryable transport failure.
+
+    Deprecated in Chunk 6 — prefer
+    :func:`src.retry_policy.classify_exception` directly. Kept as a
+    thin wrapper so external callers don't have to flip in lockstep.
+    """
+    return classify_exception(exc) is FailureClass.CONNECTION
 
 
 # Chunk L / plan section "Separate Findings From Edit Proposals":
@@ -468,12 +472,21 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
         model=model,
     )
     use_structured_tool = "tools" in request_kwargs
+    # Chunk 6: route through the centralized retry policy. The policy
+    # encodes max_attempts and per-failure-class backoff; the loop
+    # routes the typed SDK exception through :func:`classify_exception`
+    # so the string-matching heuristic is only consulted as a last
+    # resort. The caller's ``max_retries`` still wins so existing tests
+    # that inject a different attempt count keep their expectations.
+    policy = DEFAULT_REALTIME_RETRY_POLICY
+    attempts_planned = max(1, max_retries)
     last_exception: Exception | None = None
-    for attempt in range(max_retries):
-        is_last_attempt = attempt == max_retries - 1
+    last_failure_class: FailureClass | None = None
+    for attempt in range(attempts_planned):
+        is_last_attempt = attempt == attempts_planned - 1
         try:
             if verbose:
-                print(f"Calling Claude {model} (attempt {attempt + 1}/{max_retries})...")
+                print(f"Calling Claude {model} (attempt {attempt + 1}/{attempts_planned})...")
             with client.messages.stream(**request_kwargs) as stream:
                 chunks: list[str] = []
                 for text in stream.text_stream:
@@ -512,52 +525,50 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             result.parse_status = "ok"
             result.elapsed_seconds = time.time() - start_time
             return result
-        except (RateLimitError, APIConnectionError) as e:
+        except BaseException as e:  # noqa: BLE001 — routed through classify_exception
+            # Chunk 6: route every exception through the central
+            # classifier so the loop behaves the same way as the
+            # cross-check and verification loops for identical SDK
+            # exception classes. The classifier returns INVALID_REQUEST
+            # for non-status APIError so we surface that error visibly
+            # rather than blindly retrying.
+            failure_class = classify_exception(e)
+            last_failure_class = failure_class
+            if not is_retryable_failure_class(failure_class):
+                # Non-retryable: surface the original error message in
+                # the result so the operator can see what the SDK said.
+                if failure_class is FailureClass.INVALID_REQUEST:
+                    result.error = f"API error: {e}"
+                else:
+                    result.error = f"Error: {e}"
+                    result.parse_status = "parse_error"
+                result.elapsed_seconds = time.time() - start_time
+                return result
             last_exception = e
             if is_last_attempt:
                 break
-            time.sleep(2 ** attempt * 5)
-        except InternalServerError as e:
-            last_exception = e
-            if is_last_attempt:
-                break
-            time.sleep(2 ** attempt * 10)
-        except APIStatusError as e:
-            if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
-                last_exception = e
-                if is_last_attempt:
-                    break
-                time.sleep(2 ** attempt * 10)
-                continue
-            result.error = f"API error: {e}"
-            result.elapsed_seconds = time.time() - start_time
-            return result
-        except APIError as e:
-            result.error = f"API error: {e}"
-            result.elapsed_seconds = time.time() - start_time
-            return result
-        except Exception as e:
-            # Retry transient connection failures, but don't sleep after the
-            # final attempt — and surface the underlying exception detail
-            # rather than a generic "failed after N attempts" (audit Issue 9).
-            if _is_retryable_connection_error(e) and not is_last_attempt:
-                backoff = 2 ** attempt * 5
-                last_exception = e
-                if verbose:
-                    print(f"Retryable connection error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {backoff}s...")
-                time.sleep(backoff)
-                continue
-            result.error = f"Error: {e}"
-            result.parse_status = "parse_error"
-            result.elapsed_seconds = time.time() - start_time
-            return result
+            backoff = compute_backoff_seconds(
+                policy, attempt=attempt, failure_class=failure_class
+            )
+            if verbose:
+                print(
+                    f"Retryable {failure_class.value} error "
+                    f"(attempt {attempt + 1}/{attempts_planned}): {e}. "
+                    f"Retrying in {backoff:.0f}s..."
+                )
+            time.sleep(backoff)
     if last_exception is not None:
+        suffix = (
+            f" (class={last_failure_class.value})"
+            if last_failure_class is not None
+            else ""
+        )
         result.error = (
-            f"Failed after {max_retries} attempts: "
+            f"Failed after {attempts_planned} attempts{suffix}: "
             f"{type(last_exception).__name__}: {last_exception}"
         )
     else:
-        result.error = f"Failed after {max_retries} attempts."
+        result.error = f"Failed after {attempts_planned} attempts."
     result.elapsed_seconds = time.time() - start_time
     return result
 

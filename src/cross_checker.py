@@ -40,6 +40,13 @@ from .api_config import (
     system_prompt_with_cache,
     tools_with_cache,
 )
+from .retry_policy import (
+    DEFAULT_REALTIME_RETRY_POLICY,
+    FailureClass,
+    classify_exception,
+    compute_backoff_seconds,
+    is_retryable_failure_class,
+)
 from .structured_schemas import (
     CROSS_CHECK_TOOL_NAME,
     cross_check_findings_tool,
@@ -254,7 +261,14 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
         )
         request_kwargs["tool_choice"] = cross_check_tool_choice()
 
-    for attempt in range(max_retries):
+    # Chunk 6: route through the centralized retry policy so cross-check,
+    # review streaming, and verification streaming agree on which
+    # exception classes are retryable and how long to back off.
+    policy = DEFAULT_REALTIME_RETRY_POLICY
+    attempts_planned = max(1, max_retries)
+    last_failure_class: FailureClass | None = None
+    for attempt in range(attempts_planned):
+        is_last_attempt = attempt == attempts_planned - 1
         try:
             with client.messages.stream(**request_kwargs) as stream:
                 chunks: list[str] = []
@@ -298,31 +312,33 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             result.cross_check_status = "completed"
             result.elapsed_seconds = time.time() - start
             return result
-        except (RateLimitError, APIConnectionError):
-            time.sleep(2 ** attempt * 5)
-        except InternalServerError:
-            time.sleep(2 ** attempt * 10)
-        except APIStatusError as e:
-            if getattr(e, "status_code", None) == 529 or e.__class__.__name__ == "OverloadedError":
-                time.sleep(2 ** attempt * 10)
+        except BaseException as e:  # noqa: BLE001 — routed through classify_exception
+            failure_class = classify_exception(e)
+            last_failure_class = failure_class
+            if not is_retryable_failure_class(failure_class):
+                if failure_class is FailureClass.INVALID_REQUEST:
+                    result.error = f"API error: {e}"
+                else:
+                    result.error = f"Error: {e}"
+                    result.parse_status = "parse_error"
+                result.cross_check_status = "failed"
+                result.elapsed_seconds = time.time() - start
+                return result
+            if is_last_attempt:
+                # Fall through to the after-loop "failed after N" message.
                 continue
-            result.error = f"API error: {e}"
-            result.cross_check_status = "failed"
-            result.elapsed_seconds = time.time() - start
-            return result
-        except APIError as e:
-            result.error = f"API error: {e}"
-            result.cross_check_status = "failed"
-            result.elapsed_seconds = time.time() - start
-            return result
-        except Exception as e:
-            result.error = f"Error: {e}"
-            result.parse_status = "parse_error"
-            result.cross_check_status = "failed"
-            result.elapsed_seconds = time.time() - start
-            return result
+            time.sleep(
+                compute_backoff_seconds(
+                    policy, attempt=attempt, failure_class=failure_class
+                )
+            )
 
-    result.error = f"Failed after {max_retries} attempts."
+    suffix = (
+        f" (class={last_failure_class.value})"
+        if last_failure_class is not None
+        else ""
+    )
+    result.error = f"Failed after {attempts_planned} attempts{suffix}."
     result.cross_check_status = "failed"
     result.elapsed_seconds = time.time() - start
     return result
