@@ -32,13 +32,16 @@ src/
 ├── prompts.py              # System + user prompt builders (mode-aware)
 ├── prompt_serialization.py # Central escape / wrap helpers for prompt boundaries
 ├── reviewer.py             # Anthropic API client (streaming + tool-use parsing)
+├── review_request_builder.py # Central review request shape builder
 ├── cross_checker.py        # Cross-spec coordination (chunked by CSI division)
 ├── verifier.py             # Verification (Sonnet/Opus routing, real-time fallback)
 ├── verification_router.py  # Initial / escalation model + local-skip classification
 ├── verification_cache.py   # Persistent claim-keyed verdict cache (JSON on disk)
-├── verification_profiles.py # Verification profile classifier + per-profile search budgets (Chunk H)
-├── verification_modes.py   # Explicit verification modes + per-mode policy + routing (Chunk I)
-├── source_grounding.py     # URL normalization + cited-source validation (Chunk H)
+├── verification_profiles.py # Verification profile classifier + per-profile search budgets
+├── verification_modes.py   # Explicit verification modes + per-mode policy
+├── verification_routing.py # Unified routing decision + request builder
+├── source_grounding.py     # URL normalization + cited-source validation
+├── retry_policy.py         # Retry, continuation, and batch-failure taxonomy
 ├── triage.py               # Haiku-based verification triage (opt-in)
 ├── verification_config.py  # Backward-compat re-exports from api_config
 ├── batch.py                # Anthropic Message Batches API wrapper
@@ -52,10 +55,11 @@ src/
 ├── spec_editor.py          # Surgical edits + annotation/change-log mode
 ├── apply_edits.py          # locate → action build → apply / annotate
 ├── report_exporter.py      # Word (.docx) report generation
-├── report_status.py        # Chunk N: ReportStatus / EditActionLabel + classifiers
+├── report_status.py        # ReportStatus / EditActionLabel + classifiers
 ├── resume_state.py         # Durable resume state (with file-hash validation)
 ├── diagnostics.py          # In-memory diagnostics report
-├── cost_estimator.py       # Chunk 10: USD cost estimator (pricing table + phase aggregation)
+├── cost_estimator.py       # USD cost estimator (pricing table + phase aggregation)
+├── api_key_store.py        # API key loading and persistence
 └── code_cycles.py          # California code cycle definitions
 ```
 
@@ -76,8 +80,7 @@ User selects .docx files
          ├──── Real-time path ────┐         ├──── Batch path ───────────────┐
          ▼                        │         ▼                                │
     reviewer.review_single_spec() │      batch.submit_review_batch()         │
-       (forced tool_use:          │         (forced tool_use:                │
-        submit_review_findings)   │          submit_review_findings)         │
+       (tool: submit_review_findings; tagged-JSON fallback)                  │
          │                        │         │                                │
          ▼                        │         ▼                                │
     pipeline._deduplicate_findings (full-text SHA-256 keys)                  │
@@ -112,14 +115,14 @@ class ExtractedSpec:
     source_path: str = ""
     source_format: str = ""
     paragraph_map: list[ParagraphMapping] | None = None
-    document_id: str = ""                # Chunk K1: filename stem
+    document_id: str = ""                # filename stem
 ```
 
 ### ParagraphMapping (extractor.py)
-Per-element record used by the locator. Includes `body_index`, `element_type`, `section_index`, plus Phase 4 formatting fields (`run_count`, `distinct_formatting_runs`). Chunk K1 adds `element_id` (stable per-run id — `p<body_index>` for body paragraphs, `t<table>r<row>` for table cells, `s<section><h|f><i>` for header/footer paragraphs, `meta:hf` for the synthetic header/footer delimiter) and `section_id` (the most recent heading paragraph text seen during extraction; best-effort attribution via `_is_heading_paragraph`).
+Per-element record used by the locator. Includes `body_index`, `element_type`, `section_index`, formatting fields (`run_count`, `distinct_formatting_runs`), `element_id` (stable per-run id — `p<body_index>` for body paragraphs, `t<table>r<row>` for table cells, `s<section><h|f><i>` for header/footer paragraphs, `meta:hf` for the synthetic header/footer delimiter), and `section_id` (most recent heading paragraph text seen during extraction; best-effort attribution via `_is_heading_paragraph`).
 
 ### Finding (reviewer.py)
-Canonical issue object containing raw model content, token usage, elapsed time, stop reason, parse status, and optional error context. Schema:
+Canonical issue object. Schema:
 
 ```python
 @dataclass
@@ -128,7 +131,7 @@ class Finding:
     fileName: str
     section: str
     issue: str
-    actionType: str         # ADD / EDIT / DELETE
+    actionType: str         # ADD / EDIT / DELETE / REPORT_ONLY
     existingText: str | None
     replacementText: str | None
     codeReference: str | None
@@ -137,47 +140,47 @@ class Finding:
     affected_files: list[str] = field(default_factory=list)
     anchorText: str | None = None        # ADD only
     insertPosition: str | None = None    # "before" | "after" (ADD only)
-    evidenceElementId: str | None = None # Chunk K3: cite a ParagraphMapping.element_id
-    finding_id: str = ""                                                 # Chunk M
-    upstream_finding_ids: list[str] = field(default_factory=list)        # Chunk M
-    independent_evidence_ids: list[str] = field(default_factory=list)    # Chunk M
-    suppression_reason: str | None = None                                # Chunk M
-    demotion_reason: str | None = None                                   # Chunk 7
+    evidenceElementId: str | None = None # cite a ParagraphMapping.element_id
+    edit_proposal: EditProposal | None = None
+    finding_id: str = ""
+    upstream_finding_ids: list[str] = field(default_factory=list)
+    independent_evidence_ids: list[str] = field(default_factory=list)
+    suppression_reason: str | None = None
+    demotion_reason: str | None = None
+    occurrence_originals: list["Finding"] = field(default_factory=list)
 ```
 
-Chunk K3: `evidenceElementId` is the optional pointer to the paragraph / row / heading the finding quotes. The structured tool schema lists it as required-but-nullable so strict-mode constrained sampling still has a deterministic shape; the parser normalizes empty strings to `None` and the resume serializer round-trips it. Legacy payloads (pre-Chunk-K) load with `evidenceElementId=None` and continue to flow through the existing text-matching locator path.
+`evidenceElementId` points to the `ParagraphMapping.element_id` that owns the finding's quote; the structured tool schema lists it as required-but-nullable. The locator's `_id_anchored_match` prefers this id when set and revalidates the quote against the live element.
 
-Chunk 7 — parse-time edit proposal validation: `reviewer.validate_edit_shape(action, *, existing_text, replacement_text, anchor_text=None, insert_position=None)` returns a short demotion reason when an `EDIT` / `DELETE` / `ADD` action is missing an action-specific required field (EDIT needs both `existingText` and `replacementText`, DELETE needs `existingText`, ADD needs `anchorText` + `insertPosition` in {`before`, `after`} + `replacementText`), else `None`. `_parse_findings` runs the validator on every EDIT/DELETE/ADD payload; on a demotion it (a) sets `actionType = REPORT_ONLY`, (b) clears `existingText` / `replacementText` / `anchorText` / `insertPosition`, (c) leaves `edit_proposal = None`, and (d) stamps the reason on `Finding.demotion_reason`. The finding itself is preserved so the report still surfaces the issue. `Finding.as_edit_proposal()` defensively re-runs the validator before returning a proposal, so legacy resume payloads and directly-constructed test Findings with invalid shapes also fall to `None`. `pipeline._deduplicate_findings` carries `demotion_reason` onto merged findings so grouped findings cannot rehydrate the cleared edit fields. `resume_state.serialize_finding` / `deserialize_finding` round-trip the field (pre-Chunk-7 payloads load with `demotion_reason = None`). `edit_candidates.classify_edit_candidates` surfaces the reason in `ineligible_reason` as `"Demoted to REPORT_ONLY at parse time: <reason>"`; `report_exporter` renders an italic "Edit proposal demoted to REPORT_ONLY at parse time: …" note under the Action line for demoted findings, while native REPORT_ONLY emissions keep the original "coordination / interpretation" note.
+`validate_edit_shape(action, *, existing_text, replacement_text, anchor_text=None, insert_position=None)` returns a demotion reason when an EDIT/DELETE/ADD action lacks an action-specific required field (EDIT needs both `existingText` and `replacementText`; DELETE needs `existingText`; ADD needs `anchorText` + `insertPosition` in {`before`, `after`} + `replacementText`). `_parse_findings` runs the validator on every payload; on demotion the action becomes REPORT_ONLY, edit fields are cleared, and `demotion_reason` is stamped. `as_edit_proposal()` re-runs the validator defensively so legacy resume payloads and directly-constructed test Findings with invalid shapes return None.
 
-Chunk M — cross-check dependency tracking: every review finding is stamped with a stable `finding_id` by `pipeline._deduplicate_findings` (derived from `_dedup_key` via `compute_finding_id`, so two findings with the same dedup identity share the same id). Cross-check findings carry the dependency-tracking fields: `upstream_finding_ids` cites the review-finding ids the coordination claim depends on, and `independent_evidence_ids` cites `ParagraphMapping.element_id` values from raw spec text that independently support the claim. The post-verification suppression filter (`pipeline.classify_cross_check_dependencies`) drops a cross-check finding only when every cited upstream is DISPUTED *and* there is no independent spec evidence — otherwise the finding survives. Findings without cited ids fall back to the legacy `(filename, section)` heuristic, labeled as such in logs. Dropped findings land on `ReviewResult.suppressed_findings` with `suppression_reason` set so the report can explain the decision rather than silently making the finding disappear. Pre-Chunk-M resume payloads load with `finding_id=""` and empty lists; the suppression filter falls back to the heuristic until the next cross-check pass populates the new fields.
+Cross-check findings carry `upstream_finding_ids` (review-finding ids the coordination claim depends on) and `independent_evidence_ids` (raw-spec `element_id` values supporting the claim). `pipeline.classify_cross_check_dependencies` drops a cross-check finding only when every cited upstream is DISPUTED *and* no independent spec evidence exists; otherwise the finding survives. Findings without cited ids fall back to a `(filename, section)` heuristic, labeled as such in logs. Dropped findings land on `ReviewResult.suppressed_findings` with `suppression_reason` set.
 
 ### FindingGroup / FindingOccurrence (pipeline.py)
-Phase 1.3 formalization of the display-dedup vs. per-file edit-execution split. `group_findings(findings)` returns one `FindingGroup` per deduped finding, with one `FindingOccurrence` per file in `affected_files`. `expand_to_occurrences(findings)` flattens to per-file occurrences, skipping placeholders.
+Formal split between the display concept ("same issue appears in N files") and the executable-edit concept ("apply this change to file X at location Y"). `group_findings(findings)` returns one `FindingGroup` per deduped finding with one `FindingOccurrence` per file in `affected_files`. `expand_to_occurrences(findings)` flattens to per-file occurrences, skipping placeholders.
 
-Chunk 8 — separate report deduplication from executable edit identity: `Finding.occurrence_originals: list[Finding]` holds the per-file pre-merge member findings whenever `_deduplicate_findings` collapses findings across files. `FindingOccurrence` gains `original_finding: Finding | None` plus `executable_finding()` / `has_original()` helpers; `group_findings` binds each occurrence to the matching original by `fileName` (and falls back to the representative when the merged finding has no recorded originals AND the occurrence is for the representative's own file — the singleton/legacy path). `apply_edits.execute_edit_plan` looks up the per-file original for each affected file: present → auto-edit using the original's `existingText` / `replacementText` / `anchorText` / `evidenceElementId` / `edit_proposal`; absent on a non-representative file (legacy resume payload, or `affected_files` populated outside dedup such as cross-check) → routed to manual review with an explicit `EditReport` warning rather than guessing with the representative's text. `resume_state.serialize_finding` / `deserialize_finding` round-trip `occurrence_originals` (recursion bounded at one level via the `_include_originals` kwarg — members are themselves singletons with empty originals); pre-Chunk-8 payloads load with the field empty and the executor falls back to the legacy "auto-edit only the representative's own file" routing.
+`Finding.occurrence_originals: list[Finding]` holds the per-file pre-merge member findings whenever `_deduplicate_findings` collapses findings across files. `FindingOccurrence.original_finding: Finding | None` plus `executable_finding()` / `has_original()` helpers let `apply_edits.execute_edit_plan` use each file's own `existingText` / `replacementText` / `anchorText` / `evidenceElementId` / `edit_proposal` instead of fanning the representative's text across files that may differ. Absent on a non-representative file → routed to manual review with an explicit `EditReport` warning.
 
 ### ReviewResult (reviewer.py)
-Adds Phase 2 prompt-cache telemetry:
-```python
-cache_creation_input_tokens: int = 0
-cache_read_input_tokens: int = 0
-```
-
-Chunk 2 — structured tool payload preservation: `structured_payload: dict | None = None` holds the parsed `submit_review_findings` / `submit_cross_check_findings` tool input dict whenever the model invoked the custom tool. The text-block `raw_response` is empty for tool-use responses, so this is the only place the actual structured payload survives end-to-end. Populated by `_extract_structured_findings` (real-time) and `retrieve_review_results` (batch). Not persisted to `resume_state` — telemetry describes runtime behavior, not durable state.
+Findings list plus prompt-cache telemetry (`cache_creation_input_tokens`, `cache_read_input_tokens`), elapsed time, stop reason, parse status, optional error, and `structured_payload: dict | None` holding the parsed `submit_review_findings` / `submit_cross_check_findings` tool input. Suppressed cross-check findings live on `suppressed_findings`. `structured_payload` is in-memory only — not persisted by `resume_state`.
 
 ### VerificationResult (verifier.py)
-Phase 3 evidence model: `grounded`, `model_used`, `escalated`, `cache_status`, `web_search_requests`, `successful_source_count`, `search_error_count`. Verdicts cannot be `CONFIRMED` / `CORRECTED` unless `grounded` is True.
+Verdict + evidence record. Verdicts cannot be `CONFIRMED` / `CORRECTED` unless `grounded` is True and at least one accepted external citation is present.
 
-Chunk H source-grounding evidence: `searched_sources` (URLs the web_search tool actually fetched), `cited_sources` (URLs the model emitted in its verdict payload), `accepted_sources` (cited URLs that matched a searched URL after normalization), `rejected_sources` (`[{"url", "reason"}]` for cited URLs that did not match any searched URL), and `verification_profile` (one of `code_standard` / `california_ahj` / `manufacturer` / `constructability` / `internal_coordination`). The public `sources` list is replaced with `accepted_sources` so reports never echo model-invented URLs. When the model emits citations but every citation is ungrounded, `CONFIRMED` / `CORRECTED` is downgraded to `UNVERIFIED` inside `_apply_source_grounding`.
+Source-grounding fields:
+- `searched_sources` — URLs the web_search tool actually fetched.
+- `cited_sources` — URLs the model emitted in its verdict payload.
+- `accepted_sources` — cited URLs whose normalized form matched a searched URL (kept in sync as the public `sources` list).
+- `rejected_sources` — `[{"url", "reason"}]` for cited URLs that did not match any searched URL.
 
-Chunk I verification mode: `verification_mode` (one of `local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`) stamps the routing decision used for the verification call. `_local_skip_result()` stamps `local_skip`; `_run_verification_call` and `_classify_wave_results` stamp the mode returned by `verification_modes.select_verification_mode(...)`. The cache and resume state round-trip the field so a restored hit carries its original routing tag. Pre-Chunk-I records load with `verification_mode = ""`, which `mode_policy()` treats as STANDARD_REASONING for backward compatibility.
+Routing fields: `verification_profile` (one of `code_standard` / `california_ahj` / `manufacturer` / `constructability` / `internal_coordination`) and `verification_mode` (one of `local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`).
 
-Chunk 2 — structured tool payload preservation: `structured_payload: dict | None = None` holds the parsed `submit_verification_verdict` tool input dict whenever the model invoked the verdict tool. Populated by `_verdict_from_tool_use`. Not persisted by `verification_cache._result_to_dict` / `_clone_for_store` / `_clone_for_hit` — cache hits never carry a structured payload because the field describes the runtime call, not the verdict semantics that get reused across runs.
+Escalation telemetry: `escalation_attempted`, `initial_model`, `initial_verdict`, `escalation_changed_verdict`, `escalation_reason` (one of `initial_unverified` / `initial_ungrounded` / `initial_all_search_errors` / `router_decision`). Aggregated by diagnostics into an `escalation_stats` block. Not persisted by the verification cache.
 
-Chunk D1.3 escalation telemetry: `escalation_attempted: bool` (True iff the Sonnet → Opus second pass ran this run), `initial_model: str` / `initial_verdict: str` (first-pass snapshot), `escalation_changed_verdict: bool` (final verdict differs from initial), `escalation_reason: str` (one of `initial_unverified` / `initial_ungrounded` / `initial_all_search_errors` / `router_decision`). Stamped by `verify_finding` whenever `should_escalate_verification` fires — both when the escalated result wins AND when the first-pass result wins (the "wasted escalation" case). Not persisted by the verification cache (`_result_to_dict` / `_clone_for_store` / `_clone_for_hit`) so cache hits don't propagate prior-run escalation counts; the existing `escalated` field still records "this verdict came from Opus" as part of provenance. The fields flow through both `review_run_controller` and `batch_controller` into the diagnostics event payload so `summary()["escalation_stats"]` aggregates `attempts` / `changed_verdict` / `change_rate` / `by_reason` / `by_severity` / `by_initial_verdict` / `by_final_verdict`.
+Other fields: `escalated`, `cache_status` (`n/a` / `miss` / `hit` / `local_skip`), `web_search_requests`, `successful_source_count`, `search_error_count`, `structured_payload` (parsed verdict tool input; in-memory only), `retry_telemetry` (`attempts`, `failure_class`, `terminal_reason`, `continuation_count`).
 
 ### BatchSubmission / CollectedBatchState (pipeline.py)
-Carry `review_mode: str` so resume restores the exact prompt path.
+Carry `review_mode: str` so resume restores the exact prompt path, plus every deterministic alert list so the report can render them.
 
 ---
 
@@ -185,136 +188,164 @@ Carry `review_mode: str` so resume restores the exact prompt path.
 
 ### api_config.py — Centralized API configuration
 
-**Public API:**
-- Model identifiers: `MODEL_OPUS_46`, `MODEL_OPUS_47`, `MODEL_SONNET_46`, `MODEL_HAIKU_45`
-- Defaults: `REVIEW_MODEL_DEFAULT` (Opus 4.7), `CROSS_CHECK_MODEL_DEFAULT` (Opus 4.7), `VERIFICATION_MODEL_DEFAULT` (Sonnet 4.6 by default), `VERIFICATION_ESCALATION_MODEL` (Opus 4.7), `SYNTHESIS_MODEL_DEFAULT` (Haiku 4.5), `TRIAGE_MODEL_DEFAULT` (Haiku 4.5)
-- Output caps: `review_max_tokens()`, `cross_check_max_tokens()`, `verification_max_tokens(model, *, phase=PHASE_VERIFICATION)`, `synthesis_max_tokens()`, `triage_max_tokens()`, `output_cap_for_model()`, `phase_output_cap(phase, *, model)` (centralized phase→budget registry; every helper routes through it), `assert_extended_output_allowed()`
-- Model capability policy (Chunk B): `ModelCapabilities` frozen dataclass, `model_capabilities(model)`, `model_supports_adaptive_thinking(model)`, `thinking_config_for(*, model, phase)`, `apply_thinking_config(kwargs, *, model, phase)`. Whitelist registry covers Opus 4.6/4.7, Sonnet 4.6, Haiku 4.5; unknown models fall back to safe defaults that disable every capability flag. The `thinking` request key is added only when both the model supports adaptive thinking and the phase is not in the opt-out set. Phase identifiers: `PHASE_REVIEW`, `PHASE_BATCH_REVIEW`, `PHASE_CROSS_CHECK`, `PHASE_SYNTHESIS`, `PHASE_VERIFICATION`, `PHASE_VERIFICATION_RETRY`, `PHASE_VERIFICATION_CONTINUATION`, `PHASE_TRIAGE`.
-- Prompt caching (Chunk J): `prompt_caching_enabled()`, `CachePolicy` frozen dataclass, `cache_policy_for(phase)`, `system_prompt_with_cache(prompt, *, phase=None)`, `tools_with_cache(tools, *, phase=None)`, `extract_cache_usage()`. The per-phase registry encodes the directive-driven defaults: `PHASE_REVIEW` / `PHASE_BATCH_REVIEW` / `PHASE_CROSS_CHECK` / `PHASE_VERIFICATION` (+ retry / continuation) cache both system prompt and tools at the global TTL; `PHASE_SYNTHESIS` and `PHASE_TRIAGE` skip caching because the prompts are below the Anthropic 1024-token cache minimum (Sonnet/Opus) / 2048-token minimum (Haiku) and synthesis is one-off per run. Operators can disable individual phases via `SPEC_CRITIC_CACHE_DISABLE` (comma-separated phase names) without flipping the global `SPEC_CRITIC_PROMPT_CACHE` switch. Callers that omit the `phase=` keyword get the legacy "cache when enabled" behavior.
-- Token counting: `token_count_preflight_enabled()` (default on)
-- Sonnet routing: `verification_sonnet_default_enabled()` (default on)
-- Web-search tool: `WEB_SEARCH_TOOL` (web_search_20260209, blocked-only domain list, default `max_uses=5`); per-severity budget via `web_search_max_uses_for_severity(severity)` and `web_search_tool_for_severity(severity)`
+- Model identifiers: `MODEL_OPUS_46`, `MODEL_OPUS_47`, `MODEL_SONNET_46`, `MODEL_HAIKU_45`.
+- Defaults: `REVIEW_MODEL_DEFAULT` (Opus 4.7), `CROSS_CHECK_MODEL_DEFAULT` (Opus 4.7), `VERIFICATION_MODEL_DEFAULT` (Sonnet 4.6 by default), `VERIFICATION_ESCALATION_MODEL` (Opus 4.7), `SYNTHESIS_MODEL_DEFAULT` (Haiku 4.5), `TRIAGE_MODEL_DEFAULT` (Haiku 4.5).
+- Output caps: `review_max_tokens()`, `cross_check_max_tokens()`, `verification_max_tokens(model, *, phase=PHASE_VERIFICATION)`, `synthesis_max_tokens()`, `triage_max_tokens()`, `output_cap_for_model()`, `phase_output_cap(phase, *, model)` (centralized phase→budget registry; every helper routes through it), `assert_extended_output_allowed()`.
+- Model capability policy: `ModelCapabilities` frozen dataclass, `model_capabilities(model)`, `model_supports_adaptive_thinking(model)`, `model_supports_effort(model)`, `model_supports_extended_output_beta(model)`, `thinking_config_for(*, model, phase)`, `apply_thinking_config(kwargs, *, model, phase)`. Whitelist registry covers Opus 4.6/4.7, Sonnet 4.6, Haiku 4.5; unknown models fall back to safe defaults that disable every capability flag.
+- Phase identifiers: `PHASE_REVIEW`, `PHASE_BATCH_REVIEW`, `PHASE_CROSS_CHECK`, `PHASE_SYNTHESIS`, `PHASE_VERIFICATION`, `PHASE_VERIFICATION_RETRY`, `PHASE_VERIFICATION_CONTINUATION`, `PHASE_TRIAGE`.
+- Effort policy: `effort_config_for(*, model, phase)`, `apply_effort_config(kwargs, *, model, phase)`. Sonnet verification: medium. Opus verification (escalation): high. Opus/Sonnet review and cross-check: high. Synthesis/triage (Haiku): omitted. `SPEC_CRITIC_EFFORT_OVERRIDE` forces a level globally; invalid values raise at request-build time.
+- Prompt caching: `prompt_caching_enabled()`, `CachePolicy` frozen dataclass, `cache_policy_for(phase)`, `system_prompt_with_cache(prompt, *, phase=None)`, `tools_with_cache(tools, *, phase=None)`, `extract_cache_usage()`. Review / batch review / cross-check / verification (+ retry / continuation) cache both system prompt and tools at the global TTL; synthesis and triage skip caching because the prompts are below the cache minimum (1024 tokens for Sonnet/Opus, 2048 for Haiku). Operators can disable individual phases via `SPEC_CRITIC_CACHE_DISABLE` (comma-separated phase names).
+- Service tier: `batch_service_tier()` returns the `service_tier` to set on batch params (default `auto`).
+- Token counting preflight: `token_count_preflight_enabled()` (default on).
+- Sonnet routing: `verification_sonnet_default_enabled()` (default on).
+- Web-search tool: `WEB_SEARCH_TOOL` (`web_search_20260209`, blocked-only domain list, default `max_uses=5`); per-severity budget via `web_search_max_uses_for_severity(severity)` and `web_search_tool_for_severity(severity)`; `build_web_search_tool(max_uses=...)` is the underlying builder.
 
 ### structured_schemas.py — Tool-use schemas
 
-**Public API:**
-- `review_findings_tool()`, `review_tool_choice()`
-- `cross_check_findings_tool()`, `cross_check_tool_choice()`
-- `verification_verdict_tool()` (no forcing tool_choice; web_search runs first)
-- `extract_tool_use_block(response, tool_name)` — pulls the matching tool's `input` off a response (works on SDK objects and plain dicts)
-- `structured_tool_output_enabled()` — preferred env-toggle (default on). Reads `SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT`, with `SPEC_CRITIC_STRUCTURED_OUTPUTS` accepted as a fallback for backward compatibility. `structured_outputs_enabled()` is the deprecated alias from before Chunk 2 and still delegates here so external callers keep working.
+- `review_findings_tool()`, `review_tool_choice()`.
+- `cross_check_findings_tool()`, `cross_check_tool_choice()` — the cross-check schema extends the shared finding schema with two required arrays, `upstreamFindingIds` and `independentEvidenceIds` (both may be empty).
+- `verification_verdict_tool()` (no forcing tool_choice; web_search runs first).
+- `triage_classifications_tool()`, `triage_tool_choice()`.
+- `extract_tool_use_block(response, tool_name)` — pulls the matching tool's `input` off a response (tolerates SDK Pydantic objects, plain dicts, and Pydantic-model `input` payloads).
+- `structured_tool_output_enabled()` — env toggle (default on). Reads `SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT`, with `SPEC_CRITIC_STRUCTURED_OUTPUTS` accepted as a legacy alias. `structured_outputs_enabled()` is the deprecated alias that delegates here.
 
-Chunk 2 — best-effort tool-output contract: the renamed helper makes the actual API contract explicit. With `tool_choice={"type": "auto"}` (mandatory whenever adaptive thinking is enabled), the model is *instructed* but not *required* to call the custom tool. The tagged-JSON text fallback parsers remain reachable in `reviewer.py` / `cross_checker.py` / `verifier.py` and must stay so until/unless a strict-tool-output mode is introduced as the default. Calling this "structured outputs" overclaimed the schema guarantee; the renamed helper, the new env var name, and the updated module/`review_tool_choice` docstrings all match the actual behavior.
-
-Chunk M: the cross-check tool uses `_CROSS_CHECK_FINDING_OBJECT_SCHEMA` (a chunk-M extension of the shared `_FINDING_OBJECT_SCHEMA`) which adds two required arrays — `upstreamFindingIds` (review-finding ids the coordination claim depends on) and `independentEvidenceIds` (raw-spec element ids that independently support the claim). Both arrays may be empty. The review tool continues to use the shared schema unchanged so review findings stay clean.
+With `tool_choice={"type": "auto"}` (mandatory whenever adaptive thinking is enabled), the model is *instructed* but not *required* to call the custom tool. The tagged-JSON text fallback parsers remain reachable in `reviewer.py`, `cross_checker.py`, and `verifier.py` and must stay so until/unless a strict-tool-output mode is introduced as the default. `SPEC_CRITIC_STRICT_TOOLS=1` attaches `strict: true` to tool definitions for grammar-constrained sampling; off by default pending real-call verification under thinking.
 
 ### review_modes.py — Review mode profiles
 
-`ReviewMode` enum with STRICT / COMPREHENSIVE / SAFE_EDIT. `coerce_review_mode(value)` accepts strings (`"strict"`, `"comprehensive"`, `"safe_edit"`) for convenience. `DEFAULT_REVIEW_MODE = COMPREHENSIVE`.
+`ReviewMode` enum: STRICT / COMPREHENSIVE / SAFE_EDIT. `coerce_review_mode(value)` accepts strings (`"strict"`, `"comprehensive"`, `"safe_edit"`) for convenience. `DEFAULT_REVIEW_MODE = COMPREHENSIVE`.
 
 ### prompts.py — Prompt builders
 
-**Public API:**
-- `get_system_prompt(cycle, mode=...)`
-- `get_single_spec_user_message(spec_content, filename, project_context, *, cycle, mode=..., paragraph_map=None, pre_detected_alerts=None)`
+- `get_system_prompt(cycle, mode=...)` — injects the mode banner, mode-specific task text, severity rubric, four-example reference block, editability clause, and review-scope categories (17 categories in comprehensive mode).
+- `get_single_spec_user_message(spec_content, filename, project_context, *, cycle, mode=..., paragraph_map=None, pre_detected_alerts=None)` — emits per-spec task text with project context, mode reminder, optional id-tagged spec rendering, optional `<pre_detected>` alerts block, and a trailing `<final_task>` block listing per-call reminders.
 
-Both inject the active review mode banner, the mode-specific task text, and the editability clause. The system prompt instructs the model to call the structured tool (with a tagged-JSON fallback for compatibility).
+When `pre_detected_alerts` is supplied and `pre_detected_alerts_enabled()` is True, a compact `<pre_detected>` block is appended after the spec body. The block lists each `deterministic_rule` once with its match count and up to three example matches (each truncated to ~60 characters), instructing the model not to surface those items as new findings. Operator rollback: `SPEC_CRITIC_PRE_DETECTED_ALERTS=0`.
 
-Chunk D4.1 — preprocessor disposition policy (Option A): when `pre_detected_alerts` is supplied and `pre_detected_alerts_enabled()` is True, a compact `<pre_detected>` block is appended *after* the spec body. The block lists each `deterministic_rule` once with its match count and up to three example matches (each truncated to ~60 characters), and instructs the model not to surface those items as new findings. The block is appended at the tail of the user message so the stable instruction prefix tested by `TestPromptCacheBreakpointSafety` is unchanged and the system-prompt cache breakpoint stays pinned. Passing `None` (or an empty sequence) produces a message byte-identical to the legacy path. Operator rollback: `SPEC_CRITIC_PRE_DETECTED_ALERTS=0`.
+The `<final_task>` block sits after the spec body (and after `<pre_detected>` when alerts fire) so the stable instruction prefix in front of `<spec ` is unchanged for prompt-cache breakpoints. The "cite evidenceElementId" bullet is only emitted when the id-rendering path is active so `evidenceElementId` never leaks into the message when ids are off.
 
-Chunk D8.1 — prompt-tone calibration: the safe-edit editability clause keeps its `MUST be copied verbatim` directive verbatim (test-locked by `tests/test_chunk_l_finding_edit_split.py::test_safe_edit_prompt_does_not_introduce_report_only` and load-bearing for the locator), but the shouty-caps tokens in `verifier.py` (`Your sole job` / `You MUST use web search`) and `cross_checker.py` (`Do NOT repeat` / `Do NOT report` / `Do NOT duplicate`) were lowercased to plain `Do not …` / `Use web search …` / `Your job …`. Semantic intent is preserved: the verifier's web-search requirement is still backed by `_enforce_grounding_invariant`, the cross-check de-duplication directive is still adjacent to the `<already_identified>` block, and the synthesis "only span two or more divisions" rule still leads the paragraph. No eval-fixture corpus exists in this repo (`tests/fixtures/` only carries fake Anthropic responses and in-memory DOCX builders), so before/after finding-count evals were not run — the change is therefore confined to cosmetic shouting and is rollback-safe by reverting the commit.
+### prompt_serialization.py — Central prompt-boundary helpers
 
-Chunk 11 — cache-aware prompt tightening: targeted reliability improvements to the *review* prompt that preserve every prompt-cache breakpoint pinned by prior chunks. Two surfaces change. (a) `get_system_prompt` gains a static `<examples>` block between `<output>` and `<review_scope>` containing four compact reference findings — a valid `EDIT` (folded with the stale-code-cycle example), a valid `ADD` (with `anchorText` + `insertPosition`), a `REPORT_ONLY` (cross-section coordination, all executable fields null), and a `DO NOT REPORT` negative example (generic Division 23 boilerplate). The examples are stored on a module-level `_REVIEW_EXAMPLES` constant so they participate in the cached system-prompt prefix and are byte-stable across calls. They deliberately omit `evidenceElementId` and `<para id="…">` literals so the Chunk K2 `test_system_prompt_unchanged_after_chunk_k` invariant ("per-request concepts must not leak into the system prompt") still holds. (b) `get_single_spec_user_message` appends a short `<final_task>` block after the spec body (and after `<pre_detected>` when alerts fire) listing five bullets: review only the document above, submit findings once, drop findings without concrete evidence, ensure edit fields match `actionType`, and don't duplicate pre-detected alerts. A sixth "cite evidenceElementId when you can identify the element" bullet is only emitted when the Chunk K2 id-rendering path is active (`paragraph_map` supplied and `SPEC_CRITIC_ELEMENT_IDS != "0"`), so the legacy / element-ids-off path keeps `evidenceElementId` out of the message. The final-task bullet about pre-detected alerts intentionally avoids the literal `<pre_detected>` substring so the Chunk D4.1 env-toggle test (`assert "<pre_detected>" not in msg` when alerts are off) keeps working. The block sits AFTER the spec body so the stable prefix in front of `<spec ` is unchanged — the Chunk G `TestPromptCacheBreakpointSafety` and Chunk D4.1 `test_cache_prefix_invariant_holds_with_and_without_alerts` invariants are preserved. The chunk's snapshot tests in `tests/test_chunk_11_prompt_tightening.py` pin (i) the examples block is present in every review mode, (ii) the four required example kinds are all covered, (iii) the final-task block sits after `</spec>` and after `</pre_detected>`, (iv) the `evidenceElementId` bullet is gated on the id-rendering path, and (v) the prompt changes survive the round-trip through `review_request_builder.build_review_request` (so neither real-time nor batch can silently drop them). Chunk G's `test_hostile_closing_tag_does_not_close_wrapper` is updated to reflect the new "spec wrapper closes, then `<final_task>` opens" layout — the wrapper-close invariant is still tested (single `</spec>`, hostile content escaped, hostile content never appears past `</spec>`), it just no longer requires `</spec>` to be the literal last tag.
+Single source of truth for safely embedding untrusted content (spec bodies, project context, finding fields, filenames) in pseudo-XML wrappers.
 
-### prompt_serialization.py — Central prompt-boundary helpers (Chunk G)
-
-Single source of truth for safely embedding untrusted content (spec bodies, project context, finding fields, filenames) in pseudo-XML wrappers. The previous behavior had three separate `_xml_escape` helpers that escaped element content only, leaving attribute values vulnerable to quote injection and several wrappers (spec body, project context, triage findings) entirely unescaped.
-
-**Public API:**
 - `escape_text(value)` — escape `&`, `<`, `>` for element content.
-- `escape_attr(value)` — escape `&`, `<`, `>`, `"`, `'` for attribute values (the previous helpers only handled the three element-content reserved characters, so a filename like `weird".docx` silently truncated the opening tag).
+- `escape_attr(value)` — escape `&`, `<`, `>`, `"`, `'` for attribute values.
 - `wrap_data_block(tag, content, *, attrs=None)` — single-line `<tag k="v">body</tag>` with both halves escaped.
 - `wrap_document_block(tag, content, *, attrs=None)` — multi-line equivalent for spec / context bodies; wrapper tags land on their own lines so the body's newline layout is preserved.
 - `render_blocks(iterable)` — `\n`-join that drops empties.
-- Wrapper-tag string constants: `TAG_SPEC`, `TAG_PROJECT_CONTEXT`, `TAG_CORPUS`, `TAG_ALREADY_IDENTIFIED`, `TAG_PRIOR_FINDING`, `TAG_FINDING`, `TAG_FINDINGS`, `TAG_CHUNK_FINDINGS`, `TAG_CHUNK`, plus the Chunk K2 element tags `TAG_PARA`, `TAG_ROW`, `TAG_HEADING`.
+- `render_spec_with_ids(content, paragraph_map, *, filename)` — emits one id-tagged `<para>` / `<row>` / `<heading>` element per `ParagraphMapping` so the model can cite `evidenceElementId` alongside the exact quote. `element_ids_enabled()` is the env toggle (`SPEC_CRITIC_ELEMENT_IDS=0` reverts to the plain-body `<spec>` rendering).
+- `render_pre_detected_block(alerts, *, filename)` — compact `<pre_detected>` wrapper listing each rule's count and examples, filtered to the caller's filename. Examples truncated via `_PRE_DETECTED_MATCH_PREVIEW_CHARS` (default 60) and capped via `_PRE_DETECTED_EXAMPLES_PER_RULE` (default 3).
+- Wrapper-tag string constants: `TAG_SPEC`, `TAG_PROJECT_CONTEXT`, `TAG_CORPUS`, `TAG_ALREADY_IDENTIFIED`, `TAG_PRIOR_FINDING`, `TAG_FINDING`, `TAG_FINDINGS`, `TAG_CHUNK_FINDINGS`, `TAG_CHUNK`, `TAG_PARA`, `TAG_ROW`, `TAG_HEADING`, `TAG_PRE_DETECTED`.
 
-Chunk K2 — id-tagged document rendering: `render_spec_with_ids(content, paragraph_map, *, filename)` emits one `<para id="p7" section="1.01 SUMMARY">…</para>` (or `<row id="t0r0" …>` / `<heading id="p0">`) per `ParagraphMapping` so the model can cite `evidenceElementId` alongside the exact quote. `element_ids_enabled()` is the env toggle (`SPEC_CRITIC_ELEMENT_IDS=0` reverts to the legacy `<spec>`-only rendering). The id rendering only touches the *body* of the user message — the cached system-prompt prefix and the surrounding instruction text up to the new id hint line are unchanged byte-for-byte, so prompt-cache breakpoints continue to land where they did.
-
-Chunk D4.1 — pre-detected alerts block: `render_pre_detected_block(alerts, *, filename)` returns a compact `<pre_detected>` wrapper listing each rule's count and a small example list, filtered to the caller's filename. `pre_detected_alerts_enabled()` is the env toggle (`SPEC_CRITIC_PRE_DETECTED_ALERTS=0` disables the entire feature). `TAG_PRE_DETECTED` is the tag name. Examples are truncated via `_PRE_DETECTED_MATCH_PREVIEW_CHARS` (default 60) and capped via `_PRE_DETECTED_EXAMPLES_PER_RULE` (default 3) so a 50-placeholder spec never explodes the prompt. Hostile match bodies are routed through `escape_text` so they cannot close the wrapper.
-
-Used by `prompts.py`, `cross_checker.py`, `triage.py`, and `verifier.py`. The stable instruction prefix in each prompt builder is unchanged byte-for-byte, so prompt-caching breakpoints remain pinned (verified by `TestPromptCacheBreakpointSafety` in `tests/test_chunk_g_prompt_serialization.py`, the Chunk K2 cache-prefix test in `tests/test_chunk_k_stable_ids.py`, and the Chunk D4.1 `test_cache_prefix_invariant_holds_with_and_without_alerts` in `tests/test_chunk_d4_preprocessor_policy.py`).
+Used by `prompts.py`, `cross_checker.py`, `triage.py`, and `verifier.py`. Stable instruction prefixes are byte-identical across calls so prompt-caching breakpoints remain pinned.
 
 ### code_cycles.py — California code cycles
 
-**Public API:** `CodeCycle`, `CALIFORNIA_2025`, `AVAILABLE_CYCLES`, `DEFAULT_CYCLE` (= `CALIFORNIA_2025`).
+`CodeCycle`, `CALIFORNIA_2025`, `AVAILABLE_CYCLES`, `DEFAULT_CYCLE` (= `CALIFORNIA_2025`).
 
 ### resume_state.py — Durable resume state
 
-**Public API:**
-- Phase constants: `PHASE_REVIEW_POLL`, `PHASE_REVIEW_COLLECT`, `PHASE_VERIFICATION_POLL`, `PHASE_VERIFICATION_WAVE_POLL`, `PHASE_CROSS_CHECK`, `PHASE_CROSS_CHECK_VERIFICATION_POLL`, `PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL`, `PHASE_FINALIZE`
-- `SUPPORTED_PHASES`
-- `build_resume_state(...) -> dict`
-- `deserialize_resume_state(payload) -> dict`
-
-Phase 5.5: `serialize_extracted_spec` records SHA-256 digests of both the extracted content and the underlying source file. `deserialize_extracted_spec` warns when either differs from the saved digest at resume time.
+- Phase constants: `PHASE_REVIEW_POLL`, `PHASE_REVIEW_COLLECT`, `PHASE_VERIFICATION_POLL`, `PHASE_VERIFICATION_WAVE_POLL`, `PHASE_CROSS_CHECK`, `PHASE_CROSS_CHECK_VERIFICATION_POLL`, `PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL`, `PHASE_FINALIZE`.
+- `SUPPORTED_PHASES`.
+- `build_resume_state(...) -> dict`, `deserialize_resume_state(payload) -> dict`.
+- `serialize_extracted_spec` records SHA-256 digests of both the extracted content and the underlying source file; `deserialize_extracted_spec` warns when either differs at resume time.
 
 ### batch.py — Anthropic Message Batches wrapper
 
-- `submit_review_batch(specs, ..., mode)` — emits requests with the structured tool when enabled
-- `poll_batch(batch_id) -> BatchStatus`
-- `retrieve_review_results(job, *, model)` — extracts findings from the tool_use block (falls back to text)
-- `submit_verification_batch(...)`, `retrieve_verification_results_detailed(...)`, `cancel_batch(...)`. The legacy text-only `retrieve_verification_results` was removed in Chunk D — wave parsing now lives in `verifier._classify_wave_results`, which routes through the canonical parser.
+- `submit_review_batch(specs, ..., mode)` — emits requests with the structured tool when enabled.
+- `poll_batch(batch_id) -> BatchStatus`.
+- `retrieve_review_results(job, *, model)` — extracts findings from the tool_use block (falls back to text).
+- `submit_verification_batch(...)`, `submit_verification_followup_wave(...)`, `retrieve_verification_results_detailed(...)`, `cancel_batch(...)`.
+- `build_verification_tools(severity)` / `build_verification_tools_for_profile(profile, severity)` — single source of truth for verification tool payloads. The profile-aware variant uses `profile_max_uses(profile, severity)` so profile sets the ceiling and severity modulates within it.
+- `verification_request_includes_verdict_tool()` — mirrors `structured_tool_output_enabled()` so the prompt and the request always agree on tool inclusion.
+- `_extract_api_error_message(error_obj)` — clean human-readable error extraction.
 
 ### batch_runtime.py — Polling runtime
 
-Progressive poll backoff: base interval for ~5 minutes, then linearly ramps to 120 s, then holds. `PollPolicy` carries timeout / error-threshold / no-progress thresholds.
+Progressive poll backoff: base interval for ~5 minutes, then linearly ramps to 120 s, then holds. `PollPolicy` carries `poll_interval_seconds`, `max_elapsed_seconds`, `max_no_progress_seconds`, `max_consecutive_errors`, `backoff_after_seconds`, `max_poll_interval_seconds`. `poll_batch_bounded(batch_id, *, policy, log, progress_cb, cancel_event=None) -> PollOutcome`.
+
+### retry_policy.py — Centralized retry, continuation, and batch-failure policy
+
+- `FailureClass` enum: `RATE_LIMIT`, `SERVER_ERROR`, `CONNECTION`, `INVALID_REQUEST`, `BATCH_ERRORED`, `BATCH_EXPIRED`, `BATCH_CANCELED`, `PARSE_ERROR`, `PAUSE_TURN`, `UNKNOWN`.
+- `classify_exception(exc) -> FailureClass` — typed-SDK-first classifier (`isinstance` against `RateLimitError`, `InternalServerError`, `APIStatusError`, `APIConnectionError`, `APIError`); falls back to message-substring matching only for generic exceptions that escaped the SDK's translation layer.
+- `classify_batch_failure(*, result_type, error_message, error_type) -> FailureClass`.
+- `RetryPolicy` frozen dataclass with per-class backoff multipliers; `DEFAULT_REALTIME_RETRY_POLICY` (3 attempts, base 5s), `DEFAULT_VERIFICATION_RETRY_POLICY` (3 attempts, server-error 3x multiplier).
+- `compute_backoff_seconds(policy, *, attempt, failure_class)`.
+- `BatchWaveFailureTracker` — records `(custom_id → [FailureClass, ...])` across waves. Same class twice in a row → terminal. `INVALID_REQUEST` is terminal on first occurrence.
+- `max_continuations_for_mode(mode_value)` — default 2; `deep_reasoning` gets 4.
+- `retry_diagnostics_payload(...)` — JSON-safe dict for diagnostics stamping.
 
 ### cross_checker.py — Cross-spec coordination
 
-- `run_cross_check(specs, existing_findings, ...)` — single-pass
-- `run_chunked_cross_check(specs, existing_findings, ...)` — chunks by CSI division (Div 21 / 22 / 23 / Controls / 25 + 01) when the combined input exceeds the recommended cap; merges chunk results locally
-
-Chunk M — dependency tracking: `_build_cross_check_input` renders every `<prior>` block with the review finding's stable `finding_id` as an `id="..."` attribute, plus its section, so the cross-check model can cite review findings by id when emitting `upstreamFindingIds`. The system prompt has a `<dependency_tracking>` section that tells the model when to cite upstream ids and when to point at raw spec evidence via `independentEvidenceIds` (the `<para>`/`<row>`/`<heading>` element ids from Chunk K2). Pre-Chunk-M review findings without a `finding_id` still render in `<prior>` (without an `id` attribute) so the legacy / heuristic-fallback path keeps working.
+- `run_cross_check(specs, existing_findings, ...)` — single-pass.
+- `run_chunked_cross_check(specs, existing_findings, ...)` — chunks by CSI division (Div 21 / 22 / 23 / Controls / 25 + 01) when the combined input exceeds the recommended cap; merges chunk results locally.
+- `_build_cross_check_input` renders every `<prior>` block with the review finding's stable `finding_id` as an `id` attribute so the cross-check model can cite review findings by id when emitting `upstreamFindingIds`. The system prompt has a `<dependency_tracking>` section that tells the model when to cite upstream ids and when to point at raw spec evidence via `independentEvidenceIds`.
 
 ### verifier.py — Web-search verification
 
-- `verify_findings(findings, *, progress, cycle, cache)` — real-time path (Sonnet default, Opus escalation)
-- `verify_findings_batch(findings, *, log, progress, ...)` — multi-wave batch path
-- `verify_finding(finding, *, max_retries=2, cycle, model, cache, escalated)` — single finding
-- `prepare_findings_for_verification(findings, *, cycle, cache, log)` — Phase 3 pre-pass (resolves local-skip and cache hits in place)
-- `start_verification_batch(...)`, `collect_verification_batch_results(..., realtime_fallback_threshold=5)`
-- `_verdict_from_tool_use(message)` — unpack the strict `submit_verification_verdict` tool input (preferred over text parsing)
-- Canonical parser (Chunk D): `parse_verification_response(message_or_list) -> VerificationParseOutcome` returns a `(verdict, parse_status)` pair where `parse_status` is one of `PARSE_STATUS_STRUCTURED` / `PARSE_STATUS_TEXT` / `PARSE_STATUS_TEXT_PARSE_ERROR` / `PARSE_STATUS_NO_CONTENT`. Used by both `_run_verification_call` (real-time) and `_classify_wave_results` (batch). `classify_verification_stop_reason(stop_reason) -> STOP_CLASS_COMPLETE / STOP_CLASS_PAUSE / STOP_CLASS_INCOMPLETE` centralizes the stop-reason allowlist.
+- `verify_findings(findings, *, progress, cycle, cache)` — real-time path (Sonnet default, Opus escalation).
+- `verify_findings_batch(findings, *, log, progress, ...)` — multi-wave batch path.
+- `verify_finding(finding, *, max_retries=2, cycle, model, cache, escalated)` — single finding.
+- `prepare_findings_for_verification(findings, *, cycle, cache, log)` — pre-pass resolving local-skip and cache hits in place.
+- `start_verification_batch(...)`, `collect_verification_batch_results(..., realtime_fallback_threshold=5)`.
+- `_verdict_from_tool_use(message)` — unpack the strict `submit_verification_verdict` tool input.
+- `parse_verification_response(messages) -> VerificationParseOutcome` — canonical parser returning `(verdict, parse_status)` where status is one of `PARSE_STATUS_STRUCTURED` / `PARSE_STATUS_TEXT` / `PARSE_STATUS_TEXT_PARSE_ERROR` / `PARSE_STATUS_NO_CONTENT`. Used by both real-time (`_run_verification_call`) and batch (`_classify_wave_results`).
+- `classify_verification_stop_reason(stop_reason)` — returns `STOP_CLASS_COMPLETE` (tool_use / end_turn) / `STOP_CLASS_PAUSE` (pause_turn) / `STOP_CLASS_INCOMPLETE` (any other).
+- `_enforce_grounding_invariant(result)` — downgrades verified-but-ungrounded verdicts to UNVERIFIED, including the CONFIRMED/CORRECTED-without-accepted-citation case.
+- `_apply_source_grounding(result, *, searched)` — partitions sources into searched / cited / accepted / rejected and downgrades CONFIRMED/CORRECTED when every cited URL is ungrounded.
 
-### verification_router.py — Phase 3 routing
+### verification_router.py — Routing helpers
 
-- `initial_verification_model()` / `escalation_verification_model()`
-- `should_escalate_verification(finding, *, verdict, grounded, ...)` — fires for CRITICAL/HIGH UNVERIFIED when Sonnet was the initial verifier
-- `classify_finding_for_verification(finding) -> "web_required" | "local_skip"` — local-skip default-on; only GRIPES with no codeReference and a placeholder/LEED/typo/duplicate/internal-contradiction keyword
+- `initial_verification_model()` / `escalation_verification_model()`.
+- `should_escalate_verification(finding, *, verdict, grounded, ...)` — fires for CRITICAL/HIGH UNVERIFIED when Sonnet was the initial verifier.
+- `classify_finding_for_verification(finding) -> "web_required" | "local_skip"` — local-skip default-on; only GRIPES with no codeReference and a placeholder/LEED/typo/duplicate/internal-contradiction keyword.
+- `is_eligible_for_haiku_triage(finding)` — re-export of the triage eligibility filter.
+
+### verification_profiles.py — Profile classifier
+
+`VerificationProfile` enum (`CODE_STANDARD`, `CALIFORNIA_AHJ`, `MANUFACTURER`, `CONSTRUCTABILITY`, `INTERNAL_COORDINATION`). `classify_finding_profile(finding)` is a keyword classifier with priority order: internal-coordination → California/AHJ → manufacturer → code-standard (or non-empty `codeReference`) → constructability. `profile_max_uses(profile, severity)` returns the per-(profile, severity) `max_uses` ceiling. `profile_priority_domains(profile)` returns the authoritative-source guidance paragraph emitted into the verifier system prompt. `profile_web_search_required(profile)` returns False only for `INTERNAL_COORDINATION`.
+
+### verification_modes.py — Verification modes
+
+`VerificationMode` enum (`LOCAL_SKIP`, `STRICT_STRUCTURED`, `STANDARD_REASONING`, `DEEP_REASONING`). `ModePolicy` frozen dataclass holds `(mode, model, thinking_enabled, search_budget_multiplier, web_search_enabled, allows_escalation)`. `mode_policy(mode)` is the table lookup. `select_verification_mode(finding, *, local_skip, escalated, cached_mode)` picks a mode in priority order: cache-hit replay → local_skip → escalated → CRITICAL CALIFORNIA_AHJ initial pass → GRIPES → non-GRIPES INTERNAL_COORDINATION → default. `mode_search_budget(mode, *, profile_ceiling)` applies the per-mode multiplier with floor-of-1.
+
+### verification_routing.py — Unified routing decision
+
+`VerificationRoutingDecision` frozen dataclass holds the full policy bundle (`finding_id`, `severity`, `profile`, `mode`, `model`, `thinking_enabled`, `web_search_enabled`, `web_search_max_uses`, `include_verdict_tool`, `cache_phase`, `max_continuations`, `escalation_eligible`, `local_skip`, `escalated`, `trace_reason`). `to_dict()` / `from_dict(payload)` round-trip a JSON-safe form so the decision can be stashed in `request_map` / `request_contexts`.
+
+`select_routing(finding, *, escalated, cached_mode, model_override, cache_phase, max_continuations, local_skip, include_verdict_tool)` is the pure-function selector. `build_verification_request(decision, *, prompt, system_prompt, assistant_content=None, include_service_tier=False)` builds the kwargs dict every verification path uses (real-time, batch initial, batch retry, batch continuation). `apply_routing_to_result(decision, result)` stamps the routed mode / profile / escalation flag onto a `VerificationResult`.
+
+Trace tags: `TRACE_LOCAL_SKIP`, `TRACE_LOCAL_SKIP_BYPASSED`, `TRACE_CACHED_MODE`, `TRACE_ESCALATED`, `TRACE_CRITICAL_CALIFORNIA`, `TRACE_GRIPES_STRICT`, `TRACE_INTERNAL_COORD_STRICT`, `TRACE_DEFAULT_STANDARD`.
 
 ### verification_cache.py — Per-run cache (with disk persistence)
 
-`VerificationCache.make_cache_key(finding, cycle)` includes `cycle_label | actionType | codeReference | sha256(claim_summary)`. It intentionally omits the verifier model: cached entries represent grounded verdict semantics for the same finding claim under the same code cycle, while `VerificationResult.model_used` is stored as provenance inside the entry. Only `grounded=True` results are cached. Hits are tagged `cache_status="hit"`.
+`VerificationCache.make_cache_key(finding, cycle)` includes `cycle_label | actionType | codeReference | sha256(claim_summary)`. It intentionally omits the verifier model: cached entries represent grounded verdict semantics for the same finding claim under the same code cycle, while `VerificationResult.model_used` is stored as provenance inside the entry. Only `grounded=True` results are cached; CONFIRMED/CORRECTED entries require at least one accepted external citation. Hits are tagged `cache_status="hit"`.
 
-Phase 10 — disk persistence: `VerificationCache.load_from_disk(path)` and `save_to_disk(path)` round-trip the cache to JSON at `~/.spec_critic/verification_cache.json` (override via `SPEC_CRITIC_CACHE_PATH`). Atomic write via temp-file + rename. Each entry stores `created_ts` and `model_used` for future age/model-based pruning, but changing `SPEC_CRITIC_VERIFICATION_MODEL` or `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` does not invalidate existing entries because model identity is not part of the key. To force fresh re-verification after changing model policy, delete the cache file, set `SPEC_CRITIC_CACHE_PATH` to a new file, or disable persistence with `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST=0` for that run. Default behavior is database mode (no automatic expiration); set `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` to a positive integer for opt-in TTL pruning. Cycle label remains in the key, so switching code cycles naturally invalidates entries from the prior cycle.
+Persistence: `load_from_disk(path)` and `save_to_disk(path)` round-trip the cache to JSON at `~/.spec_critic/verification_cache.json` (override via `SPEC_CRITIC_CACHE_PATH`). Atomic write via temp-file + rename. Schema version 2; v1 entries are dropped silently on first load. Each entry stores `created_ts` and `model_used` for future age/model-based pruning, but changing the verifier model does not invalidate existing entries because model identity is not part of the key. Default behavior is database mode (no expiration); set `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` to a positive integer for opt-in TTL pruning. `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST=0` disables persistence. Cycle label remains in the key, so switching code cycles naturally invalidates entries from the prior cycle.
 
-Chunk 13 — digest width: `_CLAIM_DIGEST_LEN = 24` hex chars (96 bits, up from 16 hex chars / 64 bits). The previous 64-bit digest was thin under birthday-bound math (50%+ collision risk at ~5B keys, observable collisions at ~1M). The on-disk JSON format is unchanged — old entries whose keys were built with the 16-char digest stay readable; lookups for the new 24-char form simply miss against them, which re-grounds the claim and writes a fresh 24-char entry. The legacy length stays exported as `_LEGACY_CLAIM_DIGEST_LEN` so a future migration tool can detect and prune legacy-form keys explicitly.
+Claim digest is 24 hex chars (96 bits); the previous 16-char form is exported as `_LEGACY_CLAIM_DIGEST_LEN` so a future migration tool can detect and prune legacy-form keys explicitly. Lookups against legacy-length keys miss in the new cache, re-ground the claim, and write a fresh 24-char entry.
+
+### source_grounding.py — URL normalization and cited-source validation
+
+- `normalize_url(url)` — folds `http`/`https`, drops default ports / fragments / tracking params, sorts query params, trims trailing punctuation. Falsy / unparseable input returns `""`.
+- `validate_cited_sources(cited, searched) -> SourceGroundingOutcome` — partitions cited URLs into accepted (matched a searched URL after normalization) and rejected (with reason: `ungrounded` / `malformed` / `empty`).
+- `is_grounded_against_search_results(cited, searched) -> bool` — convenience wrapper.
+- `SearchedSource` dataclass (`url`, `title`, `normalized` property). `dedupe_searched_sources(sources)` collapses equivalent URLs by normalized form; accepts `SearchedSource`, dicts, or bare strings.
 
 ### api_key_store.py — API key loading and persistence
 
-`load_api_key_from_file()` resolves the Anthropic API key in priority order: OS keyring (if the optional `keyring` package is installed and a working backend is available) → platform config directory (`~/.config/SpecCritic/spec_critic_api_key.txt` on Linux, equivalent paths on macOS/Windows) → executable/source-parent fallback. Returns `""` when nothing is available so the caller can surface that to the user.
+`load_api_key_from_file()` resolves the Anthropic API key in priority order: OS keyring (if the optional `keyring` package is installed and a working backend is available) → platform config directory (`~/.config/SpecCritic/spec_critic_api_key.txt` on Linux, equivalent paths on macOS/Windows) → executable/source-parent fallback. Returns `""` when nothing is available.
 
-Chunk 13 hardening:
-- Optional OS keyring support via the `keyring` package. The import is wrapped in `try/except` so the helper degrades gracefully on headless CI / minimal installs that don't ship a keyring backend. `keyring_available()` exposes the runtime capability.
-- `save_api_key_to_file(value)` writes the primary fallback file with `0o600` permissions on POSIX (owner read/write only) so a freshly-saved key never lands world-readable.
-- `load_api_key_from_file()` lazily tightens permissions of any pre-existing fallback file it successfully reads — an in-place upgrade improves an existing `0o644` key file's posture without requiring re-entry.
-- `save_api_key_to_keyring(value)` returns `False` (not raises) when the keyring backend is unavailable, so callers can fall back cleanly to the file path.
+- `keyring_available()` exposes the runtime capability.
+- `save_api_key_to_file(value)` writes the primary fallback file with `0o600` permissions on POSIX.
+- `load_api_key_from_file()` lazily tightens permissions of any pre-existing fallback file it successfully reads.
+- `save_api_key_to_keyring(value)` returns `False` (not raises) when the keyring backend is unavailable.
 
 ### triage.py — Haiku verification triage
 
-Optional pre-pass that runs after the keyword classifier and cache lookup but before web verification. Classifies eligible findings as `web_required` or `local_skip` so internally-verifiable findings (e.g. internal contradictions where both sides are quoted, equipment-tag mismatches, formatting issues) skip the expensive Sonnet+web_search call.
+Optional pre-pass that runs after the keyword classifier and cache lookup but before web verification. Classifies eligible findings as `web_required` or `local_skip` so internally-verifiable findings (internal contradictions where both sides are quoted, equipment-tag mismatches, formatting issues) skip the expensive Sonnet+web_search call.
 
-Hard safety contract enforced in `is_eligible_for_haiku_triage`:
+Safety contract enforced in `is_eligible_for_haiku_triage`:
 - Findings with a non-empty `codeReference` are never eligible.
 - `CRITICAL` and `HIGH` severity findings are never eligible.
 - API failure or parse error → all affected findings default to `web_required`.
@@ -334,41 +365,45 @@ Phased batch APIs used by the GUI:
 Convenience wrapper: `collect_batch_results(submission, ...)`.
 
 Helpers:
-- `_phase_tagged_log(log, phase)` / `_phase_tagged_progress(progress, phase)` — let the verifier path tag its callbacks so the GUI doesn't keyword-sniff message text
-- `group_findings(findings)` / `expand_to_occurrences(findings)` — Phase 1.3 formal types
-- `_parallel_cross_check_enabled()` — default on; cross-check runs concurrently with verification poll, then `classify_cross_check_dependencies` (Chunk M) partitions cross-check findings into `(kept, suppressed)` using the model-emitted `upstream_finding_ids` / `independent_evidence_ids`; findings without cited ids fall back to the legacy `(filename, section)` heuristic, labeled as such in logs. Dropped findings are stashed on `cross_check_result.suppressed_findings` with `suppression_reason` set so the report can show the decision. `_drop_cross_check_findings_with_disputed_upstream` is preserved as a thin wrapper returning only the kept list for the Phase 5 / 7 tests.
-- `compute_finding_id(finding)` (Chunk M) returns a stable `rf-<12hex>` id derived from `_dedup_key`; `_deduplicate_findings` stamps it on every review finding (singleton and merged-group paths alike) so the cross-check pass can cite review findings by id.
-- `_recover_retryable_review_batch_results(...)` — small repair batch for parse_error / incomplete review specs
+- `_phase_tagged_log(log, phase)` / `_phase_tagged_progress(progress, phase)` — let the verifier path tag its callbacks so the GUI doesn't keyword-sniff message text.
+- `group_findings(findings)` / `expand_to_occurrences(findings)`.
+- `_parallel_cross_check_enabled()` — default on; cross-check runs concurrently with verification poll. `classify_cross_check_dependencies` partitions cross-check findings into `(kept, suppressed)` using the model-emitted `upstream_finding_ids` / `independent_evidence_ids`; findings without cited ids fall back to a `(filename, section)` heuristic. Dropped findings are stashed on `cross_check_result.suppressed_findings` with `suppression_reason` set. `_drop_cross_check_findings_with_disputed_upstream` is preserved as a thin wrapper returning only the kept list.
+- `compute_finding_id(finding)` returns a stable `rf-<12hex>` id derived from `_dedup_key`. `_deduplicate_findings` stamps it on every review finding (singleton and merged-group paths alike).
+- `_recover_retryable_review_batch_results(...)` — small repair batch for parse_error / incomplete review specs.
 
 ### preprocessor.py — Local preflight
 
-- `preprocess_spec(content, filename, *, cycle=None)` returns LEED alerts, placeholder alerts, code-cycle alerts, structural alerts, plus the Chunk O additions: `template_marker_alerts`, `invalid_code_cycle_alerts`, `duplicate_paragraph_alerts`.
-- `detect_stale_code_cycle_references`, `detect_empty_sections`, `detect_duplicate_headings`, `detect_inconsistent_file_naming`.
-- Chunk O — additional deterministic detectors that move simple, repetitive, high-confidence issues out of the LLM path:
-  - `detect_unresolved_template_markers(content, filename)` — flags `TODO:` / `FIXME` / `XXX` / `???` / lorem-ipsum left in the spec. Regexes are written conservatively so prose like "things to do" or model numbers like "XXX-12" do not trigger.
-  - `detect_invalid_code_cycle_strings(content, filename)` — flags California year/code citations whose year is not a real published cycle (e.g. `2018 CBC`, `2020 CMC`). Disjoint from the stale-cycle detector by construction: stale flags real historical cycles that aren't current; invalid flags fabricated years.
-  - `detect_duplicate_paragraphs(content, filename, *, min_length=80)` — flags substantial paragraphs that appear verbatim more than once in the same document (copy-paste mistakes). Whitespace-collapsed casefolded compare so trailing spaces / capitalization don't mask duplicates.
-- Every alert dict is stamped with a stable `deterministic_rule` id (`leed_reference`, `placeholder`, `stale_code_cycle`, `stale_asce7`, `empty_section`, `duplicate_heading`, `template_marker`, `invalid_code_cycle`, `duplicate_paragraph`, `inconsistent_filename`) — exposed as `DETERMINISTIC_RULE_*` constants and the `DETERMINISTIC_RULES` frozenset so downstream consumers can branch on the id without keyword-sniffing the human-readable `type` string (Chunk O Directive 2).
-- Pipeline plumbing (Chunk O Acceptance #2): `_PreparedSpecs`, `BatchSubmission`, `CollectedBatchState`, and `PipelineResult` now all carry every deterministic alert list. Previously only `leed_alerts` and `placeholder_alerts` made it past `_PreparedSpecs`; `code_cycle_alerts`, `structural_alerts`, and `naming_alerts` were collected and logged but silently dropped before the report saw them. `resume_state.serialize_submission` / `serialize_collected_batch_state` round-trip the new fields; legacy payloads load with empty lists.
-- Verification routing (Chunk O Acceptance #2 cont.): `verification_router._LOCAL_SKIP_KEYWORDS` is extended to recognize the new rule names (`todo`, `fixme`, `xxx`, `???`, `lorem ipsum`, `duplicate paragraph`, `empty section`, `invalid code cycle`, `template marker`, `inconsistent csi`, `inconsistent filename`) so a GRIPES finding whose `issue` text mentions one of these is locally skipped instead of paying for a Sonnet+web_search round-trip. CRITICAL/HIGH severity and any non-empty `codeReference` still override into `web_required` (consistent with the existing local-skip safety contract).
-- Report rendering (Chunk O Acceptance #1 + #2): `report_exporter._write_alerts` now renders every alert category under a dedicated heading with a `(deterministic check)` suffix (Directive 2 — clearly labeled as deterministic), via the shared `_write_alert_section` helper. The Alerts top heading carries a short banner explaining that the section is local rules / no LLM tokens. Sections render in this order: LEED, Placeholders, Template Markers, Stale Code Cycle, Invalid Code Cycle, Structural Issues, Duplicate Paragraphs, Inconsistent Filenames.
-- Chunk D4.2 — stale-cycle context suppression: `detect_stale_code_cycle_references` now calls `_should_suppress_stale_cycle(content, match_start, match_end)` before emitting an alert. The helper scans up to `_STALE_CYCLE_SUPPRESS_WINDOW` (80) chars on each side of the citation for whole-word negation / historical terms (`previously`, `formerly`, `superseded`, `withdrawn`, `obsolete`, `no longer`, `prior`, `historical`, plus auxiliary-verb negations like `shall not` / `does not` / `cannot`). The window is narrowed at the nearest sentence terminator (`.`, `;`, `\n\n`) so a negation in a previous sentence does not leak across; bare `not` is intentionally NOT a suppressor because phrases like "covered in 2019 CBC and not 2022 CBC" would otherwise hide an active stale reference. The same suppression runs against the ASCE-7 trail of the function for consistency. Active stale requirements ("Comply with 2019 CBC") are still flagged.
-- Chunk D4.1 — preprocessor disposition policy: `_prepare_specs` now also builds a `pre_detected_by_filename: dict[str, list[dict]]` per-spec view of every alert (LEED, placeholder, code-cycle, structural, template-marker, invalid-code-cycle, duplicate-paragraph, plus project-level naming alerts routed back to the file they describe). The map is carried on `_PreparedSpecs` and threaded to `submit_review_batch(..., pre_detected_alerts=...)` and `review_single_spec(..., pre_detected_alerts=...)`. Each call site forwards the matching list to `get_single_spec_user_message`, which appends a compact `<pre_detected>` block at the *end* of the user message instructing the model not to duplicate the deterministic items as new findings. The retry/repair batch path (`_recover_retryable_review_batch_results`) recomputes the per-spec map from `preprocess_spec(content, filename, cycle=cycle)` because alerts are deterministic given those inputs — no new resume-state plumbing required. Operator rollback: `SPEC_CRITIC_PRE_DETECTED_ALERTS=0`.
+`preprocess_spec(content, filename, *, cycle=None)` returns LEED alerts, placeholder alerts, code-cycle alerts, structural alerts, template-marker alerts, invalid-code-cycle alerts, and duplicate-paragraph alerts.
+
+Deterministic detectors:
+- `detect_stale_code_cycle_references` — flags references to superseded California cycles. `_should_suppress_stale_cycle(content, match_start, match_end)` scans up to `_STALE_CYCLE_SUPPRESS_WINDOW` (80) chars on each side for whole-word negation/historical terms (`previously`, `formerly`, `superseded`, `withdrawn`, `obsolete`, `no longer`, `prior`, `historical`, plus auxiliary-verb negations like `shall not` / `does not` / `cannot`). The window narrows at the nearest sentence terminator. Bare `not` is intentionally not a suppressor. Active stale requirements ("Comply with 2019 CBC") still flag. Same suppression runs against the ASCE-7 trail.
+- `detect_empty_sections`, `detect_duplicate_headings`, `detect_inconsistent_file_naming`.
+- `detect_unresolved_template_markers(content, filename)` — flags `TODO:` / `FIXME` / `XXX` / `???` / lorem-ipsum. Regexes are conservative so prose like "things to do" or model numbers like "XXX-12" do not trigger.
+- `detect_invalid_code_cycle_strings(content, filename)` — flags California year/code citations whose year is not a real published cycle (e.g. `2018 CBC`). Disjoint from stale-cycle: stale = real historical cycles that aren't current; invalid = fabricated years.
+- `detect_duplicate_paragraphs(content, filename, *, min_length=80)` — flags substantial paragraphs that appear verbatim more than once (whitespace-collapsed casefolded compare).
+
+Every alert dict is stamped with a stable `deterministic_rule` id (`leed_reference`, `placeholder`, `stale_code_cycle`, `stale_asce7`, `empty_section`, `duplicate_heading`, `template_marker`, `invalid_code_cycle`, `duplicate_paragraph`, `inconsistent_filename`) — exposed as `DETERMINISTIC_RULE_*` constants and the `DETERMINISTIC_RULES` frozenset.
+
+Pipeline plumbing: `_PreparedSpecs`, `BatchSubmission`, `CollectedBatchState`, and `PipelineResult` carry every alert list. `_prepare_specs` builds a `pre_detected_by_filename: dict[str, list[dict]]` per-spec view threaded through `submit_review_batch(..., pre_detected_alerts=...)` and `review_single_spec(..., pre_detected_alerts=...)`. The repair batch path recomputes the map from `preprocess_spec` because alerts are deterministic given the inputs.
+
+Verification routing: `verification_router._LOCAL_SKIP_KEYWORDS` recognizes the deterministic rule names (`todo`, `fixme`, `xxx`, `???`, `lorem ipsum`, `duplicate paragraph`, `empty section`, `invalid code cycle`, `template marker`, `inconsistent csi`, `inconsistent filename`) so a GRIPES finding whose `issue` text mentions one is locally skipped. CRITICAL/HIGH and any non-empty `codeReference` still override into `web_required`.
+
+Report rendering: `report_exporter._write_alerts` renders every alert category under a dedicated heading with a `(deterministic check)` suffix via the shared `_write_alert_section` helper. Section order: LEED, Placeholders, Template Markers, Stale Code Cycle, Invalid Code Cycle, Structural Issues, Duplicate Paragraphs, Inconsistent Filenames.
 
 ### extractor.py / extraction_cache.py
 
-- `extract_text(filepath) -> ExtractedSpec` / `extract_text_from_docx(filepath)`
-- `extract_multiple_specs(filepaths)` — bounded ThreadPoolExecutor (max 8 workers); deterministic order
-- `extract_multiple_specs_cached(filepaths)` — uses the LRU cache keyed on `(absolute_path, size, mtime_ns, content_fingerprint)`; falls back to parallel extraction for misses
-- `token_count_cache_key(model, system_prompt, user_message, project_context, cycle_label, mode)` — SHA-256 of inputs; LRU bounded to 256 entries
-
-Chunk 13 — extraction-cache fingerprint: the LRU key now includes a SHA-256 of the file's first + last `_FINGERPRINT_SAMPLE_BYTES` (default 64 KiB) plus the size, so a same-size in-place rewrite that preserves `mtime_ns` (e.g. `touch -d` after a cosmetic edit) is detected and the cached extraction is invalidated. The previous stat-only key returned stale data in that scenario. Reading at most ~128 KiB per file keeps the overhead well under a single DOCX parse; transient I/O errors return `""` and the caller treats that as "cannot fingerprint" — the cache falls back to the stat-only behavior so a quirky filesystem can't kill the run.
+- `extract_text(filepath) -> ExtractedSpec` / `extract_text_from_docx(filepath)`.
+- `extract_multiple_specs(filepaths)` — bounded `ThreadPoolExecutor` (max 8 workers); deterministic order.
+- `extract_multiple_specs_cached(filepaths)` — LRU cache keyed on `(absolute_path, size, mtime_ns, content_fingerprint)`; falls back to parallel extraction for misses. Fingerprint is a SHA-256 of the file's first + last `_FINGERPRINT_SAMPLE_BYTES` (default 64 KiB) plus the size so a same-size in-place rewrite that preserves `mtime_ns` is detected and the cached extraction is invalidated.
+- `token_count_cache_key(model, system_prompt, user_message, project_context, cycle_label, mode)` — SHA-256 of inputs; LRU bounded to 256 entries.
 
 ### tokenizer.py — Token accounting
 
-- `count_tokens(text)` — local cl100k_base
-- `count_tokens_via_api(model, system, messages, *, client=None)` — Anthropic exact (`None` on failure)
-- Chunk E — model-aware fallback gate: `local_estimate_safety_factor(model)` returns a model-specific multiplier (Opus/Sonnet 1.10×, Haiku 1.15×, unknown/None 1.20×) applied to cl100k counts when the exact API count is unavailable. `safe_local_estimate(local_tokens, *, model)` rounds the padded estimate up; `exceeds_per_call_limit_for_model(spec_tokens, overhead_tokens, *, model)` is the model-aware version of `exceeds_per_call_limit`. The exact Anthropic count remains authoritative when available — these helpers only run on the fallback path. The pipeline preflight (`_prepare_specs`) now (a) uses the selected model for `count_tokens_via_api` instead of hard-coding Opus, and (b) raises `ValueError` when the exact count exceeds `RECOMMENDED_MAX` (previously it only logged a warning while the cl100k count was the only hard gate).
+- `count_tokens(text)` — local cl100k_base.
+- `count_tokens_via_api(model, system, messages, *, client=None)` — exact Anthropic count (`None` on failure).
+- `local_estimate_safety_factor(model)` — model-specific multiplier (Opus/Sonnet 1.10×, Haiku 1.15×, unknown/None 1.20×) applied to cl100k counts when the API count is unavailable.
+- `safe_local_estimate(local_tokens, *, model)` rounds the padded estimate up.
+- `exceeds_per_call_limit_for_model(spec_tokens, overhead_tokens, *, model)` — model-aware version of `exceeds_per_call_limit`. The exact Anthropic count remains authoritative when available.
 
 Constants:
 - `MAX_CONTEXT_TOKENS = 1_000_000`
@@ -384,18 +419,28 @@ Output caps live in `api_config.py`:
 - `REVIEW_OUTPUT_CAP = 128_000` (unified baseline; real-time and batch use the same cap so findings cannot diverge between modes)
 - `REVIEW_OUTPUT_CAP_BATCH_EXTENDED = 300_000` (batch-only; requires the `output-300k-2026-03-24` beta header, which is not honored on streaming requests)
 - `CROSS_CHECK_OUTPUT_CAP = 96_000`
-- `VERIFICATION_OUTPUT_CAP = 16_000` (verdicts are 1–2 sentences; tightened from 32k)
-- `SYNTHESIS_OUTPUT_CAP = 32_000` (cross-discipline synthesis on Haiku)
-- `HAIKU_TRIAGE_OUTPUT_CAP = 8_000` (triage classifications)
+- `VERIFICATION_OUTPUT_CAP = 16_000`
+- `SYNTHESIS_OUTPUT_CAP = 32_000`
+- `HAIKU_TRIAGE_OUTPUT_CAP = 8_000`
+
+### review_request_builder.py — Centralized review request shape
+
+Single source of truth for review API request construction. Real-time review (`reviewer._stream_review`), batch review (`batch.submit_review_batch`), and the token preflight in `pipeline._prepare_specs` all build their request kwargs through this module so the shape they count is the shape they send.
+
+- `ReviewRequestSpec` (frozen) — input record describing one request fully.
+- `build_review_request(spec) -> BuiltReviewRequest` — returns the kwargs dict + the raw prompt / user message / tools / phase.
+- `build_realtime_review_kwargs(*, system_prompt, user_message, model)` — raw-prompt entry for the streaming path.
+- `build_token_count_request(spec)` — returns `(built, count_kwargs)` for `count_tokens_via_api`. Cache-control wrappers are stripped because they are pricing hints, not part of the input token count.
+- `review_request_cache_key(spec)` — SHA-256 of the inputs that materially affect the count (system prompt, user message, project context, cycle label, mode, tool schema, batch flag).
+- `estimate_local_request_tokens(spec)` — local cl100k_base count of system + user message, used by preflight to rank specs.
 
 ### edit_locator.py — Locator
 
-- `locate_edits(findings, paragraph_map)` — returns one `LocatorResult` per finding
-- `LocatorResult.safety_category` (Phase 4) — AUTO_SAFE / AUTO_WITH_CAUTION / MANUAL_REVIEW / REPORT_ONLY
-- `_fuzzy_match` (Phase 9.3) — length-ratio + `quick_ratio` prefilters before paying for `SequenceMatcher.ratio()`
-- `_section_anchored_match` — narrows by section header neighborhood
-- Chunk K4: `_id_anchored_match(finding, existing_text, paragraph_map)` is the new fast path. When `Finding.evidenceElementId` is set, the locator looks up the mapping by `element_id` and revalidates the recorded `existingText` quote (exact substring first, then normalized) against the live element. A successful id+quote match becomes a `LocatorResult` with `match_method="id"` and AUTO_SAFE safety for body paragraphs (table cells stay AUTO_WITH_CAUTION so the table-cell precondition revalidation in `spec_editor` still gates the mutation). When the id is set but unusable — id missing from the map, or quote no longer matches the cited element — the locator returns `status="not_found"` with `safety_category=SAFETY_MANUAL_REVIEW` and **does not** fall back to whole-document text matching. The fuzzy/text path is reached only when `evidenceElementId is None` (the legacy / pre-Chunk-K compatibility path).
-- Chunk D3.2 — fuzzy locator gating: `_section_anchored_match` now tracks which underlying matcher (exact / normalized / fuzzy) produced the hit and tags fuzzy-derived results with `match_method="section_anchored_fuzzy"`. `_classify_locator_safety` routes both `"fuzzy"` and `"section_anchored_fuzzy"` to `SAFETY_MANUAL_REVIEW`, so neither whole-document nor section-anchored fuzzy matches can become auto-apply candidates. Section-anchored exact/normalized matches keep their existing `"section_anchored"` label and `SAFETY_AUTO_WITH_CAUTION` classification — narrowing the search window is only useful for disambiguation, not for legitimizing paraphrase identifications.
+- `locate_edits(findings, paragraph_map)` — returns one `LocatorResult` per finding.
+- `LocatorResult.safety_category` — `AUTO_SAFE` / `AUTO_WITH_CAUTION` / `MANUAL_REVIEW` / `REPORT_ONLY`.
+- `_id_anchored_match(finding, existing_text, paragraph_map)` — fast path when `Finding.evidenceElementId` is set. Looks up the mapping by `element_id` and revalidates the recorded quote (exact substring first, then normalized). Success → `LocatorResult` with `match_method="id"` and AUTO_SAFE safety for body paragraphs (table cells stay AUTO_WITH_CAUTION so the table-cell precondition revalidation in `spec_editor` still gates the mutation). When the id is set but unusable (id missing from the map, or quote no longer matches the cited element) → `status="not_found"` with `SAFETY_MANUAL_REVIEW` — does NOT fall back to whole-document text matching. The fuzzy/text path is reached only when `evidenceElementId is None`.
+- `_fuzzy_match` — length-ratio + `quick_ratio` prefilters before paying for `SequenceMatcher.ratio()`.
+- `_section_anchored_match` — narrows by section header neighborhood. Tracks the underlying matcher type; fuzzy-derived results tag `match_method="section_anchored_fuzzy"` and route to `SAFETY_MANUAL_REVIEW`. Exact/normalized section-anchored matches stay `AUTO_WITH_CAUTION`.
 
 ### edit_candidates.py — Safety categories
 
@@ -403,75 +448,70 @@ Constants `SAFETY_AUTO_SAFE`, `SAFETY_AUTO_WITH_CAUTION`, `SAFETY_MANUAL_REVIEW`
 
 ### spec_editor.py — DOCX edits + annotation
 
-- `apply_edits_to_spec(source_path, output_path, edit_actions)` — surgical edits in safe order (in-place replacements → ADDs (descending body_index) → whole-paragraph DELETEs (descending)); revalidates preconditions immediately before mutation
-- `annotate_spec_with_suggestions(source_path, output_path, edit_actions)` — Phase 4.6: writes a copy with a yellow-highlighted suggestion paragraph after each anchor; the original text is never changed
-- `build_edit_actions(locator_results, *, allow_caution=True)` — gates auto-application by `safety_category`
-- Chunk D3.1 — multi-edit-per-paragraph safety: `_detect_and_resolve_conflicts` groups edits by `(body_index, element_type, row_index)` and processes each group in descending start-offset order so a downstream edit (higher offset) is applied before any upstream edit can shift its offsets. `_resolve_overlap_winner(a, b)` now returns `EditAction | None`: strict containment keeps the broader edit (the narrower's intent is subsumed), identical spans collapse via severity / confidence tie-breakers so duplicate findings still apply once, and partial overlap (no containment) returns `None` so the caller skips both edits with a "manual review" detail rather than silently picking a winner via severity/confidence heuristics. `_detect_and_resolve_conflicts` also tracks `ambiguous_ranges` so a third edit overlapping the union span of an already-discarded ambiguous pair is routed to manual review instead of slipping through because the original pair was removed from `accepted`. Whole-paragraph DELETE handling is unchanged (a DELETE wins over narrower edits in the same paragraph because the paragraph is going away).
-- Chunk 9 — DOCX edit-safety hardening and transactional output. `detect_unsafe_markup(element)` walks the paragraph / cell subtree for the WordprocessingML constructs that make run-level surgery risky (hyperlinks, field characters / field instructions / `w:fldSimple`, drawings / `w:pict` / `w:object`, comment ranges + references, tracked insertions / deletions / moves, bookmark ranges, `w:sdt` content controls, footnote / endnote references, smart tags, custom XML) and returns an `UnsafeMarkupResult` whose `detail` is the user-facing refusal reason. The four mutation sites in `apply_edits_to_spec` — paragraph in-place replacement, table-cell replacement / delete, ADD anchor, whole-paragraph DELETE — route through `_refuse_unsafe_outcome` *before* mutating, and a hit produces an `EditOutcome` with `status="skipped"`, `refused_unsafe_markup=True`, and the refusal detail mirrored into `EditReport.warnings`. Two operator switches gate the new behavior: `SPEC_CRITIC_TABLE_CELL_AUTO_EDIT=0` refuses every table-cell auto-edit regardless of markup (default on for backward compatibility), and `SPEC_CRITIC_EDIT_TRANSACTIONAL=0` falls back to the legacy best-effort writes. The default all-or-none policy saves the mutated document to an in-memory buffer, validates that the bytes reopen as a real `Document`, then suppresses the disk write entirely when any individual outcome ended in `failed`; previously-`applied` outcomes are demoted to `skipped` with an "Output suppressed under all-or-none policy" detail, and `EditReport.aborted_transactional` is set so the report layer can surface the abort. Skipped outcomes (including unsafe-markup refusals) are deliberate refusals and do not abort the transactional write. `apply_edits.execute_edit_plan` logs each refusal so the run trace shows why an auto-edit was not applied; `edit_workflow_controller` adds a dedicated `unsafe_markup` bucket to `diagnostics.edit_skip_reasons` so the diagnostics summary can answer "how many edits were refused because of Word structure?".
+- `apply_edits_to_spec(source_path, output_path, edit_actions)` — surgical edits in safe order (in-place replacements → ADDs (descending body_index) → whole-paragraph DELETEs (descending)); revalidates preconditions immediately before mutation.
+- `annotate_spec_with_suggestions(source_path, output_path, edit_actions)` — writes a copy with a yellow-highlighted suggestion paragraph after each anchor; the original text is never changed.
+- `build_edit_actions(locator_results, *, allow_caution=True)` — gates auto-application by `safety_category`.
+- `_detect_and_resolve_conflicts` — groups edits by `(body_index, element_type, row_index)` and processes each group in descending start-offset order so a downstream edit is applied before any upstream edit can shift its offsets. `_resolve_overlap_winner(a, b)` returns `EditAction | None`: strict containment keeps the broader edit, identical spans collapse via severity/confidence tie-breakers, partial overlap returns `None` so the caller skips both edits with a "manual review" detail. `ambiguous_ranges` tracking ensures a third edit overlapping a discarded pair's union span is routed to manual review.
+- `detect_unsafe_markup(element)` walks the paragraph / cell subtree for risky WordprocessingML constructs (hyperlinks, field characters, drawings, comments, tracked changes, bookmarks, `w:sdt` controls, footnotes, smart tags, custom XML) and returns an `UnsafeMarkupResult`. All four mutation sites route through `_refuse_unsafe_outcome` before mutating; a hit produces `EditOutcome.status="skipped"` with `refused_unsafe_markup=True`.
+- Transactional output (default on): the mutated document is saved to an in-memory buffer, validated by reopening as a `Document`, then the disk write is suppressed entirely when any individual outcome ended in `failed`. Previously-applied outcomes demote to `skipped` with an "Output suppressed under all-or-none policy" detail; `EditReport.aborted_transactional` is set. Skipped outcomes (including unsafe-markup refusals) do NOT abort the transactional write. Operator switches: `SPEC_CRITIC_TABLE_CELL_AUTO_EDIT=0` refuses every table-cell auto-edit; `SPEC_CRITIC_EDIT_TRANSACTIONAL=0` reverts to legacy best-effort writes.
 
 ### apply_edits.py — Orchestration
 
-`execute_edit_plan(selected_finding_indices, all_findings, cross_check_findings, extracted_specs, source_paths, output_dir, *, log, mode="edit"|"annotate")`. Fans out to every entry in `Finding.affected_files` so multi-file findings edit (or annotate) every affected spec.
+`execute_edit_plan(selected_finding_indices, all_findings, cross_check_findings, extracted_specs, source_paths, output_dir, *, log, mode="edit"|"annotate", diagnostics=None)`. Fans out to every entry in `Finding.affected_files`. Looks up the per-file `occurrence_originals` entry for each affected file: present → auto-edit using the original's edit fields; absent on a non-representative file → routed to manual review with an explicit `EditReport` warning rather than guessing with the representative's text.
 
 ### report_exporter.py — Word export
 
-`export_report(result, output_path, *, project_context, cross_check_enabled, cycle_label)`.
+`export_report(result, output_path, *, project_context, cross_check_enabled, cycle_label, estimated_cost=None)`. Every finding renders a `Status:` line (one of seven `ReportStatus` values) plus an `Edit:` action label. The "Trust Model Summary" section between the severity table and the alerts shows the per-status histogram and the edit-action breakdown. Finding bodies use explicit `Spec evidence:` / `Proposed replacement:` / `Verification rationale:` labels; the Sources sub-heading distinguishes `Web/code evidence` (accepted citations) from `Unsupported / rejected sources` (model-cited URLs the search tool never returned).
 
-Chunk N — trust-model labels in the report: every finding renders a `Status:` line right under its Heading 3 header (one of the seven `ReportStatus` values from `report_status.py`) plus an `Edit:` action label (one of `AUTO_EDIT_CANDIDATE` / `MANUAL_EDIT_CANDIDATE` / `REPORT_ONLY` / `SUPPRESSED`). A new "Trust Model Summary" section between the severity table and the alerts renders the per-status histogram (one cell per visible status) and a one-line edit-action breakdown so a reader sees "how many of these findings are actually trustworthy?" before scrolling to individual findings. The previous `Existing Text:` / `Replace With:` / unlabeled-explanation layout is replaced with explicit `Spec evidence:` / `Proposed replacement:` / `Verification rationale:` labels and the collapsible Sources sub-heading now distinguishes `Web/code evidence` (accepted citations) from `Unsupported / rejected sources` (the model cited URLs the search tool never returned), so the four evidence concepts in the Chunk N plan are rendered as distinct sections.
+### report_status.py — Trust-model statuses
 
-### report_status.py — Trust-model statuses (Chunk N)
+Closed `ReportStatus` set: `VERIFIED_SUPPORTED`, `VERIFIED_CONTRADICTED`, `DISPUTED`, `INSUFFICIENT_EVIDENCE`, `LOCALLY_CLASSIFIED`, `NOT_CHECKED`, `MANUAL_REVIEW_REQUIRED`. Closed `EditActionLabel` set: `AUTO_EDIT_CANDIDATE`, `MANUAL_EDIT_CANDIDATE`, `REPORT_ONLY`, `SUPPRESSED`. Both are derived from existing Finding fields (`verification`, `suppression_reason`, `edit_proposal`) — nothing on `Finding` changes and the verification cache doesn't need a new column.
 
-Single closed set of `ReportStatus` values every finding maps to for display (`VERIFIED_SUPPORTED`, `VERIFIED_CONTRADICTED`, `DISPUTED`, `INSUFFICIENT_EVIDENCE`, `LOCALLY_CLASSIFIED`, `NOT_CHECKED`, `MANUAL_REVIEW_REQUIRED`) plus the matching `EditActionLabel` set (`AUTO_EDIT_CANDIDATE`, `MANUAL_EDIT_CANDIDATE`, `REPORT_ONLY`, `SUPPRESSED`). Both are *derived* from already-stored Finding fields (`verification`, `suppression_reason`, `edit_proposal`) — nothing on `Finding` changes and the verification cache doesn't need a new column.
+`classify_status(finding)` applies rules in priority order: suppression beats no-verification beats local-skip beats verdict-based mapping. `classify_edit_action(finding)` short-circuits on `suppression_reason`, returns `REPORT_ONLY` for findings without an edit proposal, then splits remaining proposals into `AUTO_EDIT_CANDIDATE` (supportive status — `VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED` / `LOCALLY_CLASSIFIED` — *and* `edit_confidence >= AUTO_EDIT_CONFIDENCE_FLOOR` (0.7)) vs `MANUAL_EDIT_CANDIDATE` (anything else with a proposal). `LOCALLY_CLASSIFIED` qualifies as supportive because the router decided the finding is self-evident from the spec itself; the locator/spec_editor preconditions still gate the actual mutation.
 
-`classify_status(finding)` applies rules in priority order: suppression beats no-verification beats local-skip beats verdict-based mapping. `classify_edit_action(finding)` short-circuits on `suppression_reason`, returns `REPORT_ONLY` for findings without an edit proposal, then splits the remaining proposals into `AUTO_EDIT_CANDIDATE` (supportive status — `VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED` / `LOCALLY_CLASSIFIED` — *and* `edit_confidence >= AUTO_EDIT_CONFIDENCE_FLOOR` (0.7)) vs `MANUAL_EDIT_CANDIDATE` (anything else with a proposal). `LOCALLY_CLASSIFIED` qualifies as supportive because the router decided the finding is self-evident from the spec itself (placeholders, LEED references, internal duplicates); the locator/spec_editor preconditions still gate the actual mutation so a false-supportive router result cannot cause a wrong-text replacement.
-
-Public helpers: `status_label(status)`, `status_glyph(status)`, `edit_action_label(action)` (all accept enum or raw string and fall back to the raw value for unknown inputs so legacy data round-trips cleanly), `summarize_statuses(findings)` / `summarize_edit_actions(findings)` (zero-filled histograms used by `report_exporter._write_trust_model_summary`), and the `STATUS_DISPLAY_ORDER` / `EDIT_ACTION_DISPLAY_ORDER` tuples that pin the table ordering.
+Public helpers: `status_label(status)`, `status_glyph(status)`, `edit_action_label(action)`, `summarize_statuses(findings)`, `summarize_edit_actions(findings)`, `STATUS_DISPLAY_ORDER`, `EDIT_ACTION_DISPLAY_ORDER`.
 
 ### diagnostics.py — Diagnostics report
 
-`DiagnosticsReport.summary()` returns a dict with totals + `failed_specs`, `skipped_specs`, `edit_skip_reasons`, `ambiguous_locator_count`, `edits_applied_total/skipped_total/failed_total`, `verification_evidence` (grounded / ungrounded / escalated / cache_hits / local_skips / search_errors / search_requests), `output_telemetry` (max_observed / p50 / p95 / truncated_calls / max_cap_observed), `search_budget` (ceiling / saturated_calls / p50 / p95). The `DiagnosticsWindow` widget renders all of these inline; `to_text()` and `to_dict()` produce the export formats.
+`DiagnosticsReport.summary()` returns a dict with totals plus `failed_specs`, `skipped_specs`, `edit_skip_reasons` (includes an `unsafe_markup` bucket), `ambiguous_locator_count`, `edits_applied_total/skipped_total/failed_total`, `verification_evidence` (grounded / ungrounded / escalated / cache_hits / local_skips / search_errors / search_requests), `output_telemetry` (max_observed / p50 / p95 / truncated_calls / max_cap_observed), `search_budget` (ceiling / saturated_calls / p50 / p95), `verification_modes`, `verification_profiles`, `escalation_stats` (`attempts` / `changed_verdict` / `no_change` / `change_rate` / `by_reason` / `by_severity` / `by_initial_verdict` / `by_final_verdict`), `locator_methods`, `phase_telemetry` (per-phase rollup with `calls` / `input_tokens` / `output_tokens` / cache fields / `cache_hit_ratio` / `retries` / `continuations` / `truncated_calls` / `realtime_calls` / `batch_calls` / `models`), `cost_summary`, `estimated_cost`. The `DiagnosticsWindow` widget renders all of these inline; `to_text()` and `to_dict()` produce the export formats.
 
-Chunk J telemetry: `DiagnosticsReport.record_api_call(*, phase, model, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, web_search_requests, max_output_tokens, stop_reason, mode, retry_status, structured_payload=None, extra=...)` is the standardized helper for recording a single Anthropic call with a normalized event payload. `summary()` adds `phase_telemetry` (per-phase rollup with `calls` / `input_tokens` / `output_tokens` / `cache_creation_input_tokens` / `cache_read_input_tokens` / `web_search_requests` / `cache_hit_ratio` / `retries` / `continuations` / `truncated_calls` / `realtime_calls` / `batch_calls` / `models`) and `cost_summary` (cross-phase totals + global `cache_hit_ratio`). `to_text()` renders a `Phase Telemetry:` section with one compact line per phase plus a `Cache Hit Ratio:` line in the global summary so operators can spot whether caching is paying off.
+- `record_api_call(*, phase, model, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, web_search_requests, max_output_tokens, stop_reason, mode, retry_status, structured_payload=None, extra=...)` — standardized API-call recorder with normalized event payload.
+- `record_locator_method(method)` — increments per-method counters (`id` / `exact` / `normalized` / `section_anchored` / `fuzzy`).
+- `bound_structured_payload(payload, *, max_bytes=4096)` — JSON-serializes the dict and caps the byte size; the recorded form is `{"serialized": str, "bytes": int, "truncated": bool}`.
 
-Chunk 2 — structured tool payload preservation: `ReviewResult.structured_payload` / `VerificationResult.structured_payload` (both `dict | None`, default `None`) hold the parsed tool input dict whenever the model invoked `submit_review_findings` / `submit_cross_check_findings` / `submit_verification_verdict`. The text-block-only `raw_response` is empty for tool-use responses, so without this field there was no way for diagnostics to see what the model actually emitted under the schema. `diagnostics.bound_structured_payload(payload, *, max_bytes=4096)` JSON-serializes the dict and caps the byte size — the recorded form is `{"serialized": str, "bytes": int, "truncated": bool}` so a 50-spec batch run with large findings arrays cannot blow up the in-memory diagnostics footprint. `record_api_call(..., structured_payload=...)` and the per-finding verification events in `review_run_controller` / `batch_controller` both route through this helper so the byte cap is uniform. The fields are NOT persisted by `resume_state` or `verification_cache` — they describe runtime behavior, not durable state, so a resumed session does not carry stale payloads forward.
+Bounded payloads: `max_event_data_bytes` (default 16 KiB per event), `max_total_data_bytes` (default 8 MiB across all events). `_bound_event_data` scrubs secrets, truncates string fields at `_MAX_STRING_FIELD_BYTES` (4 KiB) with a visible `...(truncated)` marker, and evicts the largest string-shaped fields when the event size still exceeds the cap (numeric telemetry is never replaced). Cumulative byte tracking drops oldest events when the global cap is breached. Counters surfaced in `summary()`: `events_truncated_by_size`, `secrets_redacted`, `bytes_dropped`, `total_data_bytes`.
 
-Chunk K5 locator telemetry: `DiagnosticsReport.record_locator_method(method)` increments a per-method counter (`id` / `exact` / `normalized` / `section_anchored` / `fuzzy`) so the summary can answer "how often did the model actually cite an id?". `summary()` exposes `locator_methods` (empty dict on runs that did not invoke `apply_edits.execute_edit_plan`); `to_text()` renders a `Locator Methods:` line only when at least one method was recorded. The counter is wired in `apply_edits.execute_edit_plan` through an optional `diagnostics: DiagnosticsReport | None` parameter — id-anchored matches also emit a `located via id=…` log line so a future debugging pass can grep the per-spec log without parsing the JSON dump.
+Secret scrubbing: `_SECRET_KEY_PATTERN` matches secret-shaped key names (`api_key`, `password`, `bearer`, `client_secret`, etc.); `_SECRET_VALUE_PATTERNS` matches Anthropic API keys (`sk-ant-...`), AWS access keys (`AKIA...`), and `Bearer ...` tokens. Hits are replaced with `<redacted>` before byte-cap eviction.
 
-Chunk D1.3 escalation telemetry: `VerificationResult` carries `escalation_attempted` (True iff the Sonnet → Opus second pass actually ran this run), `initial_model` / `initial_verdict` (snapshot of the first-pass result), `escalation_changed_verdict` (final verdict differs from initial), and `escalation_reason` (one of `initial_unverified` / `initial_ungrounded` / `initial_all_search_errors` / `router_decision`). `verify_finding` stamps these on the kept result whenever `should_escalate_verification` fires — including the wasted-escalation case where the first-pass result wins. `_classify_escalation_reason(initial_result)` mirrors the router branches so a future tuning pass can bucket by reason without re-running the router. The fields are NOT persisted by `verification_cache._result_to_dict` / `_clone_for_store` / `_clone_for_hit` (per the delta plan's "telemetry describes runtime behavior" note — cache hits don't propagate prior-run escalation counts). Both `review_run_controller` and `batch_controller` thread the fields into the diagnostics verification-event payload so `DiagnosticsReport.summary()` produces an `escalation_stats` block with `attempts` / `changed_verdict` / `no_change` / `by_reason` / `by_severity` / `by_initial_verdict` / `by_final_verdict` and a derived `change_rate`; `to_text()` renders an `Escalation:` section only when at least one attempt was made.
-
-Chunk 10 — bounded diagnostics + cost visibility. Three new layers:
-
-1. **Byte caps.** `DiagnosticsReport` carries `max_event_data_bytes` (default 16 KiB per event) and `max_total_data_bytes` (default 8 MiB across all events). Every `log()` / `record_api_call()` payload routes through `_bound_event_data`, which scrubs secrets, truncates individual string fields at `_MAX_STRING_FIELD_BYTES` (4 KiB) with a visible `...(truncated)` marker, and evicts the largest *string-shaped* fields when the whole-event size still exceeds the cap (numeric telemetry like `input_tokens` is never replaced because the summary rollup re-parses it with `int(...)`). Cumulative byte tracking drops oldest events when the global cap is breached, with `bytes_dropped` counting evicted payload bytes. Counters surfaced in `summary()`: `events_truncated_by_size`, `secrets_redacted`, `bytes_dropped`, `total_data_bytes`.
-2. **Secret scrubbing.** `_SECRET_KEY_PATTERN` matches secret-shaped key names (`api_key`, `password`, `bearer`, `client_secret`, etc.); `_SECRET_VALUE_PATTERNS` matches Anthropic API keys (`sk-ant-...`), AWS access keys (`AKIA...`), and `Bearer ...` token values. Hits are replaced with `<redacted>` *before* byte-cap eviction so the redaction count is preserved even when the byte cap forces the field to be evicted afterward. Counter exposed as `summary()["secrets_redacted"]` and rendered in `to_text()` and the diagnostics window.
-3. **Cost estimator.** `src/cost_estimator.py` walks the events through a pricing table (Opus 4.x / Sonnet 4.6 / Haiku 4.5; rates as of `PRICING_AS_OF`) and returns `{available, total_usd, currency, pricing_as_of, by_phase, by_model, missing_pricing_models, missing_pricing_calls, priced_calls, web_search_requests, notes}`. `estimate_event_cost(event_data)` applies the batch-API 50% discount on input/output (cache writes/reads / web-search unaffected) and the documented Anthropic cache multipliers (1h cache write = 2x base input, cache read = 0.1x base input); the server-side web_search tool adds $10 per 1,000 requests. Unknown models return `None` and surface as `missing_pricing_calls` so the renderers say "cost unavailable" instead of guessing. `format_usd(value)` renders amounts with conservative precision (two decimals ≥ $1, three decimals ≥ $0.01, four decimals below; negatives clamp to zero). `DiagnosticsReport.summary()["estimated_cost"]` exposes the full breakdown; `to_text()` renders an `ESTIMATED API COST` section only when at least one priced call was observed.
-4. **Cost surfaces.** `report_exporter.export_report(..., estimated_cost=None)` renders a "Estimated API Cost" section between the severity table and the trust-model summary (heading + bold total + italic gray disclaimer + by-phase bullet list + warning line for missing-pricing calls). `report_controller.export_report_to_file` pulls `estimated_cost` off `app._diagnostics_report.summary()` so the Word report and the diagnostics view show the same number. `review_run_controller.on_review_complete` also logs a one-line "Estimated API cost: $X.YZ" message in the run log. `widgets.DiagnosticsWindow._render_estimated_cost_section` adds a per-phase cost card. All surfaces use the "Estimated API cost" wording (not "exact billing") and call out staleness when pricing data is missing.
+Cost estimator (`src/cost_estimator.py`): pricing table for Opus 4.x / Sonnet 4.6 / Haiku 4.5 (rates as of `PRICING_AS_OF`). Returns `{available, total_usd, currency, pricing_as_of, by_phase, by_model, missing_pricing_models, missing_pricing_calls, priced_calls, web_search_requests, notes}`. Applies the batch-API 50% discount on input/output (cache writes/reads / web-search unaffected) and the documented Anthropic cache multipliers (1h cache write = 2× base input, cache read = 0.1× base input); server-side web_search adds $10 per 1,000 requests. Unknown models return `None` and surface as `missing_pricing_calls`. `format_usd(value)` renders amounts with conservative precision. Surfaced in the Word report between the severity table and the trust-model summary, in `to_text()`, in `DiagnosticsWindow._render_estimated_cost_section`, and in `review_run_controller.on_review_complete`.
 
 ---
 
 ## 4) GUI Notes (gui.py / widgets.py)
 
-- Review-mode segmented control (Strict / Comprehensive / Safe edit)
-- Mode labels: `Real-time (FAST: Expensive!)` and `Batch (SLOW: Cheap!)`
-- Real-time cost confirmation dialog with batch-switch option
-- Token gauge labels approximate vs. exact (API) counts; runs the API count async after the live cl100k_base estimate
-- `_make_diag_log` / `_make_diag_progress` honor the explicit `phase=` kwarg from pipeline callers (no message keyword sniffing)
-- Resume state uses `resume_state.py` serializers/deserializers; legacy v1 migration path retained
-- File browser filter restricted to `.docx`
+- Review-mode segmented control (Strict / Comprehensive / Safe edit).
+- Mode labels: `Real-time (FAST: Expensive!)` and `Batch (SLOW: Cheap!)`.
+- Real-time cost confirmation dialog with batch-switch option.
+- Token gauge labels approximate vs. exact (API) counts; runs the API count async after the live cl100k_base estimate.
+- `_make_diag_log` / `_make_diag_progress` honor the explicit `phase=` kwarg from pipeline callers (no message keyword sniffing).
+- Resume state uses `resume_state.py` serializers/deserializers; legacy v1 migration path retained.
+- File browser filter restricted to `.docx`.
 
 ---
 
 ## 5) Prompting and Code-Cycle Behavior
 
 - Prompts are mode-aware (Strict / Comprehensive / Safe-edit) and target the California 2025 code cycle.
-- `get_system_prompt(cycle, mode=...)` injects the mode banner and editability clause; `get_single_spec_user_message(...)` emits the per-spec task text with project context.
-- The system prompt instructs the model to call the structured tool (`submit_review_findings`); a tagged-JSON fallback exists for compatibility with older paths.
+- `get_system_prompt(cycle, mode=...)` injects the mode banner, severity rubric, four-example reference block, editability clause, and review-scope categories.
+- `get_single_spec_user_message(...)` emits the per-spec task text with project context, mode reminder, optional id-tagged spec rendering, optional `<pre_detected>` block, and a trailing `<final_task>` block.
+- The system prompt instructs the model to call the structured tool (`submit_review_findings`); a tagged-JSON fallback exists for compatibility.
 - `DEFAULT_CYCLE = CALIFORNIA_2025`. Cycle labels are part of the verification cache key, so switching cycles naturally invalidates prior entries.
 
 ---
 
 ## 6) Verification Routing and Web Search
 
-### Verification profiles (Chunk H)
+### Profiles
 
 Every verification call classifies the finding into one of five `VerificationProfile` values before the request is built:
 
@@ -483,9 +523,9 @@ Every verification call classifies the finding into one of five `VerificationPro
 | `constructability` | default for substantive technical claims with no clear kind signal | 5 / 5 / 4 / 3 |
 | `internal_coordination` | finding mentions internal contradiction / placeholder / LEED / typo / duplicate paragraph | 2 / 2 / 1 / 1 |
 
-`classify_finding_profile(finding)` lives in `src/verification_profiles.py`. Profile sets the ceiling and severity modulates within it (Chunk H Directive 7: severity is *subordinate* to profile). `build_verification_tools_for_profile(profile, severity)` in `batch.py` is the profile-aware variant of `build_verification_tools(severity)`; both real-time, batch initial, and batch retry / continuation builders route through it and stamp the profile string into `VerificationResult.verification_profile`.
+Profile sets the ceiling; severity modulates within it. `classify_finding_profile(finding)` lives in `src/verification_profiles.py`. `build_verification_tools_for_profile(profile, severity)` in `batch.py` is the profile-aware variant of `build_verification_tools(severity)`; both real-time, batch initial, and batch retry / continuation builders route through it and stamp the profile string into `VerificationResult.verification_profile`.
 
-### Verification modes (Chunk I)
+### Modes
 
 `select_verification_mode(finding, *, local_skip, escalated, cached_mode)` in `src/verification_modes.py` picks one of four `VerificationMode` values:
 
@@ -496,20 +536,20 @@ Every verification call classifies the finding into one of five `VerificationPro
 | `standard_reasoning` | default for substantive technical claims | Sonnet (defers to `VERIFICATION_MODEL_DEFAULT`) | on | full profile ceiling | yes (via `should_escalate_verification`) |
 | `deep_reasoning` | `escalated=True`, OR initial pass for CRITICAL `california_ahj` (when Sonnet-default is on) | Opus (defers to `VERIFICATION_ESCALATION_MODEL`) | on | full profile ceiling | no (terminal) |
 
-Rules in priority order: cache-hit replay → local_skip → escalated → CRITICAL `california_ahj` initial pass → GRIPES → non-GRIPES `internal_coordination` → default. `mode_policy(mode)` returns the frozen `ModePolicy` bundle (`model`, `thinking_enabled`, `search_budget_multiplier`, `web_search_enabled`, `allows_escalation`); `mode_search_budget(mode, *, profile_ceiling)` composes the multiplier with `profile_max_uses(...)` (floor of 1). `_run_verification_call` stamps the routed mode on every result; `_classify_wave_results` re-derives the mode per wave finding so retry-wave entries are tagged `deep_reasoning`. Diagnostics' `summary()` exposes `verification_modes` and `verification_profiles` count dicts, rendered as `Modes:` / `Profiles:` lines in `to_text()`.
+Rules in priority order: cache-hit replay → local_skip → escalated → CRITICAL `california_ahj` initial pass → GRIPES → non-GRIPES `internal_coordination` → default. `mode_policy(mode)` returns the frozen `ModePolicy` bundle; `mode_search_budget(mode, *, profile_ceiling)` composes the multiplier with `profile_max_uses(...)` (floor of 1). Diagnostics' `summary()` exposes `verification_modes` and `verification_profiles` count dicts, rendered as `Modes:` / `Profiles:` lines in `to_text()`.
 
-### Source grounding (Chunk H)
+### Source grounding
 
-Once a verdict is parsed, `_apply_source_grounding` (verifier.py) partitions sources into four explicit concepts:
+Once a verdict is parsed, `_apply_source_grounding` (verifier.py) partitions sources into four concepts:
 
 - `searched_sources` — URLs the web_search server tool actually retrieved.
 - `cited_sources` — URLs the model emitted in its `submit_verification_verdict` payload.
 - `accepted_sources` — cited URLs whose normalized form matched a searched URL.
 - `rejected_sources` — `[{"url", "reason"}]` for cited URLs that did not match any searched URL.
 
-Normalization (`source_grounding.normalize_url`) folds `http`/`https`, drops default ports / fragments / tracking params, sorts query params, and trims trailing slashes / cosmetic punctuation so trivial differences never cause a real citation to be rejected. The public `VerificationResult.sources` list is replaced with `accepted_sources` so reports and the verification cache never persist model-invented URLs. If the model emitted citations but **every citation was ungrounded**, `CONFIRMED` / `CORRECTED` is downgraded to `UNVERIFIED` with an explanation suffix (`(downgraded: model cited sources that did not appear in web_search results)`). Verdicts with no citations are not affected by this helper — the Phase 3 `_enforce_grounding_invariant` continues to handle the "no citations AND no searched sources" case.
+Normalization (`source_grounding.normalize_url`) folds `http`/`https`, drops default ports / fragments / tracking params, sorts query params, and trims trailing slashes / cosmetic punctuation so trivial differences never cause a real citation to be rejected. The public `VerificationResult.sources` list is replaced with `accepted_sources` so reports and the verification cache never persist model-invented URLs. If the model emitted citations but every citation was ungrounded, `CONFIRMED` / `CORRECTED` is downgraded to `UNVERIFIED` with an explanation suffix.
 
-Chunk 5 — strengthened invariant: `_enforce_grounding_invariant` now also downgrades an externally-verified `CONFIRMED` / `CORRECTED` when `accepted_sources` (and the legacy `sources` fallback) are both empty, even if the search produced grounded blocks. The explanation gets a `(downgraded: no accepted external citation was provided)` suffix and `grounded` is reset to `False` so the report-status classifier doesn't promote it back to `VERIFIED_SUPPORTED`. The cache mirrors the invariant in three places: (a) `_CACHE_SCHEMA_VERSION` is bumped to `2` so v1 entries that may carry source-less CONFIRMED are dropped silently on first load; (b) `VerificationCache.put` refuses a CONFIRMED/CORRECTED without an accepted citation; (c) `load_from_disk` re-validates each entry against the invariant before reinstating it. Local-skip findings are exempt by construction — they are already `UNVERIFIED` with `cache_status="local_skip"` so the CONFIRMED/CORRECTED branch never matches. `report_status.classify_status` has a belt-and-suspenders accepted-citation check on the `VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED` branches so a future code path that bypasses the verifier wrapper cannot ship a source-less verified status to the report.
+`_enforce_grounding_invariant` additionally downgrades an externally-verified `CONFIRMED` / `CORRECTED` when `accepted_sources` (and the legacy `sources` fallback) are both empty, even if the search produced grounded blocks. The cache mirrors the invariant: `_CACHE_SCHEMA_VERSION` is bumped so v1 entries that may carry source-less CONFIRMED are dropped silently on first load; `VerificationCache.put` refuses a CONFIRMED/CORRECTED without an accepted citation; `load_from_disk` re-validates each entry before reinstating it. Local-skip findings are exempt by construction. `report_status.classify_status` has a belt-and-suspenders accepted-citation check on the `VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED` branches.
 
 ### Source-quality blocklist
 
@@ -523,9 +563,10 @@ A blocked-domain list filters social/AI-assistant/forum/general-encyclopedia sou
 |---|---|---|
 | `SPEC_CRITIC_PROMPT_CACHE` | `1` | `0` disables prompt caching globally |
 | `SPEC_CRITIC_PROMPT_CACHE_TTL` | `1h` | `5m` switches to ephemeral 5-minute cache (lower write cost, narrower payback window) |
-| `SPEC_CRITIC_CACHE_DISABLE` | (empty) | Comma-separated phase names to opt out of caching individually (e.g. `verification,cross_check`) — phase-aware override that leaves the other phases caching normally |
-| `SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT` | `1` | Chunk 2 — preferred name. `0` disables the custom-tool path so review / cross-check / verification fall back to tagged-JSON-in-text parsing. With the flag on, requests include the custom tool with `tool_choice={"type": "auto"}`; the model is *expected* but not *required* to call it (the API rejects forcing tool_choice when thinking is enabled). |
-| `SPEC_CRITIC_STRUCTURED_OUTPUTS` | `1` | Chunk 2 — legacy alias for `SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT`. Still honored for one release so existing operators do not need to flip the env var name immediately. If both are set, the preferred name wins. |
+| `SPEC_CRITIC_CACHE_DISABLE` | (empty) | Comma-separated phase names to opt out of caching individually (e.g. `verification,cross_check`) |
+| `SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT` | `1` | `0` disables the custom-tool path so review / cross-check / verification fall back to tagged-JSON-in-text parsing. With the flag on, requests include the custom tool with `tool_choice={"type": "auto"}`; the model is expected but not required to call it (the API rejects forcing tool_choice when thinking is enabled). |
+| `SPEC_CRITIC_STRUCTURED_OUTPUTS` | `1` | Legacy alias for `SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT`. If both are set, the preferred name wins. |
+| `SPEC_CRITIC_STRICT_TOOLS` | `0` | `1` attaches `strict: true` to tool definitions for grammar-constrained sampling. Off by default pending real-call verification under thinking. |
 | `SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT` | `1` | `0` skips Anthropic count_tokens |
 | `SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT` | `1` | `0` reverts to Opus-everywhere |
 | `SPEC_CRITIC_LOCAL_VERIFICATION_SKIP` | `1` | `0` web-verifies all findings |
@@ -543,12 +584,13 @@ A blocked-domain list filters social/AI-assistant/forum/general-encyclopedia sou
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `0` | Positive integer enables age-based cache pruning |
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override cache path |
 | `SPEC_CRITIC_EXTRACTION_CACHE` | `1` | `0` disables file-extraction cache |
-| `SPEC_CRITIC_ELEMENT_IDS` | `1` | Chunk K2 — `0` reverts spec rendering to the legacy plain-body `<spec>` wrapper (no id-tagged `<para>`/`<row>`/`<heading>` elements). Default on; flip to `0` to roll back the id-tagged path without redeploying. |
-| `SPEC_CRITIC_PRE_DETECTED_ALERTS` | `1` | Chunk D4.1 — `0` disables the `<pre_detected>` block that lists deterministic preprocessor alerts inside each spec's user message. With the block enabled, the model is instructed not to duplicate those items as new findings. Default on; flip to `0` to revert to the legacy "alerts in report only" path. |
-| `SPEC_CRITIC_EFFORT_POLICY` | `1` | Chunk D1.2 — `0` disables the `output_config.effort` policy globally so requests omit the field. Use as a quick rollback if a future model regresses. |
-| `SPEC_CRITIC_EFFORT_OVERRIDE` | (empty) | Chunk D1.2 — when set, forces every effort-capable request to use the given level (`low` / `medium` / `high` / `xhigh`). Invalid values raise at request-build time. |
-| `SPEC_CRITIC_TABLE_CELL_AUTO_EDIT` | `1` | Chunk 9 — `0` refuses every table-cell auto-edit regardless of markup, routing the finding to manual review / annotation. Default on preserves backward compatibility with AUTO_WITH_CAUTION table-cell edits. |
-| `SPEC_CRITIC_EDIT_TRANSACTIONAL` | `1` | Chunk 9 — `0` reverts to legacy best-effort writes. Default on enforces all-or-none for `apply_edits_to_spec`: if any individual auto-edit ended in `failed`, the output write is suppressed and previously-`applied` outcomes are demoted to `skipped` with an "Output suppressed under all-or-none policy" detail. Skipped outcomes — including unsafe-markup refusals — do NOT abort the transactional write. |
+| `SPEC_CRITIC_ELEMENT_IDS` | `1` | `0` reverts spec rendering to the legacy plain-body `<spec>` wrapper (no id-tagged `<para>`/`<row>`/`<heading>` elements) |
+| `SPEC_CRITIC_PRE_DETECTED_ALERTS` | `1` | `0` disables the `<pre_detected>` block that lists deterministic preprocessor alerts inside each spec's user message |
+| `SPEC_CRITIC_EFFORT_POLICY` | `1` | `0` disables the `output_config.effort` policy globally so requests omit the field |
+| `SPEC_CRITIC_EFFORT_OVERRIDE` | (empty) | When set, forces every effort-capable request to use the given level (`low` / `medium` / `high` / `xhigh`). Invalid values raise at request-build time |
+| `SPEC_CRITIC_TABLE_CELL_AUTO_EDIT` | `1` | `0` refuses every table-cell auto-edit regardless of markup |
+| `SPEC_CRITIC_EDIT_TRANSACTIONAL` | `1` | `0` reverts to legacy best-effort writes |
+| `SPEC_CRITIC_SERVICE_TIER` | `auto` | Service tier for batch request params. `standard_only` pins to standard; empty string omits the field |
 
 ---
 
