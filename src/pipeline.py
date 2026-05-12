@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1052,14 +1051,13 @@ def classify_cross_check_dependencies(
 
 
 def _parallel_cross_check_enabled() -> bool:
-    """Phase 5.3 (audit Section 9.3): parallel cross-check overlap.
+    """Whether cross-check overlaps with verification polling.
 
-    Cross-check runs concurrently with the review verification batch poll;
-    findings whose upstream review verdict became DISPUTED are dropped
-    after both join. Set SPEC_CRITIC_PARALLEL_CROSS_CHECK=0 to revert to
-    the prior sequential flow.
+    Always True. Cross-check runs concurrently with the review
+    verification batch poll; findings whose upstream review verdict
+    became DISPUTED are dropped after both join.
     """
-    return os.environ.get("SPEC_CRITIC_PARALLEL_CROSS_CHECK", "1").strip() not in {"0", "false", "no"}
+    return True
 
 
 def collect_batch_results(submission: BatchSubmission, *, verify: bool = True, cross_check: bool | None = None, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle | None = None) -> PipelineResult:

@@ -58,7 +58,6 @@ from .verification_cache import VerificationCache
 from .verification_modes import (
     VerificationMode,
     mode_policy,
-    mode_search_budget,
 )
 from .verification_profiles import (
     VerificationProfile,
@@ -85,13 +84,10 @@ VERIFICATION_MAX_TOKENS = verification_max_tokens()
 VerifyProgressFn = Callable[[int, int, str], None]
 MAX_VERIFICATION_WAVES = 3
 
-# Phase 3 (plan 7.4): when a batch run finishes with only a few unresolved
-# items, fall back to real-time verification for the remainder instead of
-# paying for another full batch wave. Default 5 keeps small retry tails
-# from forcing a fresh batch cycle; set to 0 to disable.
-_REALTIME_FALLBACK_THRESHOLD = int(
-    os.environ.get("SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD", "5")
-)
+# When a batch run finishes with only a few unresolved items, fall back to
+# real-time verification for the remainder instead of paying for another
+# full batch wave.
+_REALTIME_FALLBACK_THRESHOLD = 5
 
 
 def _noop_verify_progress(_: int, __: int, ___: str) -> None:
@@ -1571,8 +1567,8 @@ def _decision_from_legacy_params(
 
     Used by the retry / continuation builders when the caller did not
     supply a Finding. The decision is computed manually (mode_policy +
-    profile_max_uses + mode_search_budget) so the keyword classifier is
-    never consulted — passing the profile in explicitly is enough.
+    profile_max_uses) so the keyword classifier is never consulted —
+    passing the profile in explicitly is enough.
 
     Falls back to STANDARD_REASONING for callers that pass no severity
     and no profile (the most common legacy shape), matching the pre-
@@ -1617,8 +1613,7 @@ def _decision_from_legacy_params(
     thinking_enabled = (
         policy.thinking_enabled and model_supports_adaptive_thinking(selected_model)
     )
-    profile_ceiling = profile_max_uses(resolved_profile, sev)
-    max_uses = mode_search_budget(mode, profile_ceiling=profile_ceiling)
+    max_uses = profile_max_uses(resolved_profile, sev) if policy.web_search_enabled else 0
 
     include_verdict_tool = verification_request_includes_verdict_tool()
 

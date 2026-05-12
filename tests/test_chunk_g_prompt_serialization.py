@@ -30,13 +30,11 @@ import pytest
 from src.code_cycles import CALIFORNIA_2025
 from src.cross_checker import (
     _build_cross_check_input,
-    _build_cross_discipline_synthesis_input,
     _cross_system_prompt,
     _get_cross_check_user_message,
 )
 from src.extractor import ExtractedSpec
 from src.prompt_serialization import (
-    TAG_CHUNK_FINDINGS,
     TAG_CORPUS,
     TAG_FINDING,
     TAG_FINDINGS,
@@ -206,7 +204,7 @@ class TestReviewSystemPromptIsStable:
 
 
 # ---------------------------------------------------------------------------
-# 3. cross_checker.py — corpus and synthesis wrappers
+# 3. cross_checker.py — corpus wrapper
 # ---------------------------------------------------------------------------
 
 
@@ -258,63 +256,6 @@ class TestCrossCheckUserMessageContext:
         # Empty context omits the wrapper entirely.
         bare = _get_cross_check_user_message("<corpus></corpus>", file_count=0, project_context="")
         assert f"<{TAG_PROJECT_CONTEXT}>" not in bare
-
-
-class TestCrossDisciplineSynthesisInput:
-    """Synthesis input: ``<chunk_findings><chunk><finding/></chunk></chunk_findings>``"""
-
-    def _finding(self, *, issue: str, file: str = "x.docx",
-                 section: str = "2.1", severity: str = "HIGH") -> Finding:
-        return Finding(
-            severity=severity, fileName=file, section=section,
-            issue=issue, actionType="EDIT", existingText=None,
-            replacementText=None, codeReference=None,
-        )
-
-    def _result(self, findings: list[Finding]) -> ReviewResult:
-        return ReviewResult(findings=findings, cross_check_status="completed")
-
-    def test_hostile_finding_issue_does_not_break_chunk(self):
-        out = _build_cross_discipline_synthesis_input([
-            ("div_23", self._result([
-                self._finding(issue=HOSTILE_FINDING_ISSUE),
-            ])),
-        ])
-        # One outer wrapper, one chunk, one inline finding — no early closes.
-        assert out.count(f"<{TAG_CHUNK_FINDINGS}>") == 1
-        assert out.count(f"</{TAG_CHUNK_FINDINGS}>") == 1
-        # The escaped hostile closing tag is present (data preserved).
-        assert "&lt;/finding&gt;" in out
-        # Exactly one literal `</finding>` — the wrapper's own close.
-        assert out.count("</finding>") == 1
-
-    def test_hostile_attribute_values_escaped(self):
-        out = _build_cross_discipline_synthesis_input([
-            ("div_23", self._result([
-                self._finding(
-                    issue="ok",
-                    file=HOSTILE_FILENAME,
-                    section='2"><script>',
-                    severity='HIGH"',
-                ),
-            ])),
-        ])
-        # No raw breaking quote in any attribute.
-        assert 'file="weird&quot;.docx"' in out
-        assert 'section="2&quot;&gt;&lt;script&gt;"' in out
-        assert 'severity="HIGH&quot;"' in out
-        # No "real" `<script>` tag introduced into the prompt.
-        assert "<script>" not in out
-
-    def test_only_completed_chunks_appear(self):
-        out = _build_cross_discipline_synthesis_input([
-            ("div_23", ReviewResult(findings=[], cross_check_status="failed")),
-            ("div_22", self._result([self._finding(issue="real finding")])),
-        ])
-        # Failed chunk omitted; completed one present.
-        assert "real finding" in out
-        # No stray "<chunk ...>div_23..." attributes.
-        assert "div_23" not in out
 
 
 # ---------------------------------------------------------------------------

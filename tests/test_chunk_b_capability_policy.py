@@ -1,17 +1,14 @@
-"""Chunk B — model capability policy and request-shape coverage.
+"""Model capability policy and request-shape coverage.
 
-Centralizes the unit-level coverage of the capability policy added to
-``api_config``: ``ModelCapabilities`` records, ``thinking_config_for``,
-and ``apply_thinking_config``.
+Unit-level coverage of the capability policy in ``api_config``:
+``ModelCapabilities`` records, ``thinking_config_for``, and
+``apply_thinking_config``.
 
 These tests pin the load-bearing invariants that prevent the kind of bug
-the chunk fixes — every request path used to hard-code
-``thinking={"type": "adaptive"}``, which produced an API error the moment
-the synthesis pass switched to Haiku 4.5. The capability policy is the
-single source of truth that keeps unsupported parameters off the wire.
-
-Request-shape regressions for the new behavior live alongside the Chunk A
-shape tests in ``test_request_payload_shape.py``.
+the policy fixes — every request path used to hard-code
+``thinking={"type": "adaptive"}``, which produced an API error against
+Haiku 4.5. The capability policy is the single source of truth that keeps
+unsupported parameters off the wire.
 """
 from __future__ import annotations
 
@@ -20,7 +17,6 @@ from src.api_config import (
     MODEL_OPUS_47,
     MODEL_SONNET_46,
     PHASE_REVIEW,
-    PHASE_SYNTHESIS,
     PHASE_TRIAGE,
     apply_thinking_config,
     thinking_config_for,
@@ -34,9 +30,9 @@ from src.api_config import (
 
 class TestThinkingConfigFor:
     def test_haiku_always_returns_none(self) -> None:
-        """Regression: synthesis defaulted to Haiku while sending thinking,
-        which produced an API error. The helper must return None for Haiku."""
-        assert thinking_config_for(model=MODEL_HAIKU_45, phase=PHASE_SYNTHESIS) is None
+        """Sending ``thinking`` to Haiku returns an API error; the helper
+        must return None for Haiku regardless of phase."""
+        assert thinking_config_for(model=MODEL_HAIKU_45, phase=PHASE_REVIEW) is None
         assert thinking_config_for(model=MODEL_HAIKU_45, phase=PHASE_TRIAGE) is None
 
     def test_triage_phase_returns_none_even_on_capable_model(self) -> None:
@@ -56,7 +52,7 @@ class TestThinkingConfigFor:
 class TestApplyThinkingConfig:
     def test_omits_key_for_haiku(self) -> None:
         kwargs: dict = {"model": MODEL_HAIKU_45, "max_tokens": 1000}
-        result = apply_thinking_config(kwargs, model=MODEL_HAIKU_45, phase=PHASE_SYNTHESIS)
+        result = apply_thinking_config(kwargs, model=MODEL_HAIKU_45, phase=PHASE_TRIAGE)
         assert "thinking" not in result
 
     def test_adds_key_for_opus(self) -> None:
@@ -80,6 +76,6 @@ class TestApplyThinkingConfig:
         entirely. This guards against a future regression where someone
         ``kwargs["thinking"] = None``-s the absent case."""
         kwargs: dict = {"model": MODEL_HAIKU_45}
-        result = apply_thinking_config(kwargs, model=MODEL_HAIKU_45, phase=PHASE_SYNTHESIS)
+        result = apply_thinking_config(kwargs, model=MODEL_HAIKU_45, phase=PHASE_TRIAGE)
         assert "thinking" not in result
-        assert result.get("thinking") is None  # absent reads as None, not present-as-None
+        assert result.get("thinking") is None

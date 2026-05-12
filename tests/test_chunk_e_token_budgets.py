@@ -33,25 +33,21 @@ from src.api_config import (
     MAX_OUTPUT_TOKENS_OPUS,
     MAX_OUTPUT_TOKENS_SONNET,
     MODEL_HAIKU_45,
-    MODEL_OPUS_46,
     MODEL_OPUS_47,
     MODEL_SONNET_46,
     PHASE_BATCH_REVIEW,
     PHASE_CROSS_CHECK,
     PHASE_REVIEW,
-    PHASE_SYNTHESIS,
     PHASE_TRIAGE,
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
     REVIEW_OUTPUT_CAP,
-    SYNTHESIS_OUTPUT_CAP,
     VERIFICATION_OUTPUT_CAP,
     cross_check_max_tokens,
     output_cap_for_model,
     phase_output_cap,
     review_max_tokens,
-    synthesis_max_tokens,
     triage_max_tokens,
     verification_max_tokens,
 )
@@ -80,7 +76,6 @@ class TestPhaseOutputCapRegistry:
         # Real-time and batch share the same baseline cap.
         assert phase_output_cap(PHASE_BATCH_REVIEW, model=MODEL_OPUS_47) == REVIEW_OUTPUT_CAP
         assert phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_OPUS_47) == CROSS_CHECK_OUTPUT_CAP
-        assert phase_output_cap(PHASE_SYNTHESIS, model=MODEL_HAIKU_45) == SYNTHESIS_OUTPUT_CAP
         assert phase_output_cap(PHASE_TRIAGE, model=MODEL_HAIKU_45) == HAIKU_TRIAGE_OUTPUT_CAP
         # Retry / continuation share the verification budget.
         assert phase_output_cap(PHASE_VERIFICATION_RETRY, model=MODEL_SONNET_46) == phase_output_cap(
@@ -103,11 +98,10 @@ class TestPhaseCapsRespectModelCeilings:
     def test_no_phase_exceeds_model_ceiling(self):
         phases = [
             PHASE_REVIEW, PHASE_BATCH_REVIEW, PHASE_CROSS_CHECK,
-            PHASE_SYNTHESIS, PHASE_VERIFICATION, PHASE_VERIFICATION_RETRY,
+            PHASE_VERIFICATION, PHASE_VERIFICATION_RETRY,
             PHASE_VERIFICATION_CONTINUATION, PHASE_TRIAGE,
         ]
         ceilings = {
-            MODEL_OPUS_46: MAX_OUTPUT_TOKENS_OPUS,
             MODEL_OPUS_47: MAX_OUTPUT_TOKENS_OPUS,
             MODEL_SONNET_46: MAX_OUTPUT_TOKENS_SONNET,
             MODEL_HAIKU_45: MAX_OUTPUT_TOKENS_HAIKU,
@@ -137,7 +131,6 @@ class TestPhaseHelpersRouteThroughRegistry:
         assert review_max_tokens(model=MODEL_OPUS_47) == phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_47)
         assert cross_check_max_tokens(model=MODEL_OPUS_47) == phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_OPUS_47)
         assert verification_max_tokens(model=MODEL_SONNET_46) == phase_output_cap(PHASE_VERIFICATION, model=MODEL_SONNET_46)
-        assert synthesis_max_tokens(model=MODEL_HAIKU_45) == phase_output_cap(PHASE_SYNTHESIS, model=MODEL_HAIKU_45)
         assert triage_max_tokens(model=MODEL_HAIKU_45) == phase_output_cap(PHASE_TRIAGE, model=MODEL_HAIKU_45)
 
     def test_verification_max_tokens_routes_through_registry(self):
@@ -157,11 +150,6 @@ class TestPhaseHelpersRouteThroughRegistry:
         assert retry == phase_output_cap(PHASE_VERIFICATION_RETRY, model=MODEL_SONNET_46)
         assert cont == phase_output_cap(
             PHASE_VERIFICATION_CONTINUATION, model=MODEL_SONNET_46
-        )
-
-    def test_synthesis_max_tokens_routes_through_registry(self):
-        assert synthesis_max_tokens(model=MODEL_HAIKU_45) == phase_output_cap(
-            PHASE_SYNTHESIS, model=MODEL_HAIKU_45
         )
 
     def test_triage_max_tokens_routes_through_registry(self):
@@ -342,7 +330,6 @@ class TestPipelinePreflightSelectsModel:
 
         # Make sure preflight is on. Pipeline imports get/cache helpers at
         # module scope, so patch the ``src.pipeline`` references directly.
-        monkeypatch.setenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "1")
         monkeypatch.setattr(
             "src.pipeline.get_cached_token_count", lambda key: None
         )
@@ -368,7 +355,6 @@ class TestPipelinePreflightSelectsModel:
     ):
         from src import pipeline
 
-        monkeypatch.setenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "1")
         monkeypatch.setattr(
             "src.pipeline.get_cached_token_count", lambda key: None
         )
@@ -394,7 +380,6 @@ class TestPipelinePreflightExactCountAuthoritative:
     ):
         from src import pipeline
 
-        monkeypatch.setenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "1")
         # Sidestep the cache so the API stub is consulted.
         monkeypatch.setattr("src.pipeline.get_cached_token_count", lambda key: None)
         monkeypatch.setattr("src.pipeline.cache_token_count", lambda key, value: None)
@@ -420,7 +405,6 @@ class TestPipelinePreflightExactCountAuthoritative:
     ):
         from src import pipeline
 
-        monkeypatch.setenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "1")
         monkeypatch.setattr("src.pipeline.get_cached_token_count", lambda key: None)
         monkeypatch.setattr("src.pipeline.cache_token_count", lambda key, value: None)
         stub_client.return_tokens = 100  # well under the budget
@@ -431,41 +415,6 @@ class TestPipelinePreflightExactCountAuthoritative:
             files=patched_extractor,
             model=MODEL_OPUS_47,
         )
-
-    def test_local_gate_still_applies_when_preflight_disabled(
-        self, monkeypatch, patched_extractor
-    ):
-        """When preflight is off, the local gate (with safety factor) runs."""
-        from src import pipeline
-
-        monkeypatch.setenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "0")
-        # Make the local counter return a value past the recommended max.
-        # cl100k value alone is over budget — no safety factor needed.
-        # Chunk 3: the local gate routes through
-        # ``review_request_builder.estimate_local_request_tokens``, so the
-        # patch must hit the builder's binding (the pipeline binding stays
-        # patched for any direct-from-pipeline callers).
-        monkeypatch.setattr(
-            "src.pipeline.count_tokens",
-            lambda text: RECOMMENDED_MAX + 1_000,
-            raising=False,
-        )
-        monkeypatch.setattr(
-            "src.review_request_builder.count_tokens",
-            lambda text: RECOMMENDED_MAX + 1_000,
-            raising=False,
-        )
-
-        with pytest.raises(ValueError) as excinfo:
-            pipeline._prepare_specs(
-                input_dir=Path("/tmp"),
-                files=patched_extractor,
-                model=MODEL_OPUS_47,
-            )
-
-        msg = str(excinfo.value)
-        assert "cl100k" in msg.lower() or "safety" in msg.lower() or "recommended" in msg.lower()
-        assert "claude-opus-4-7" in msg
 
 
 # ---------------------------------------------------------------------------

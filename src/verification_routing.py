@@ -102,7 +102,6 @@ from .verification_modes import (
     ModePolicy,
     VerificationMode,
     mode_policy,
-    mode_search_budget,
     select_verification_mode,
 )
 from .verification_profiles import (
@@ -175,9 +174,9 @@ class VerificationRoutingDecision:
         builder is the gate.
     web_search_enabled / web_search_max_uses:
         Whether the request should attach the ``web_search`` server tool
-        and, if so, how many uses it gets. ``max_uses`` is computed as
-        ``mode_search_budget(mode, profile_ceiling=profile_max_uses(profile, severity))``
-        so the profile sets the ceiling and the mode scales within it.
+        and, if so, how many uses it gets. ``max_uses`` is severity-based
+        via :func:`verification_profiles.profile_max_uses`; LOCAL_SKIP sets
+        it to 0 since web search is disabled for that mode.
     include_verdict_tool:
         Whether to attach the ``submit_verification_verdict`` custom tool.
         Tied to ``structured_tool_output_enabled()`` at the call site
@@ -441,11 +440,12 @@ def select_routing(
         policy.thinking_enabled and model_supports_adaptive_thinking(selected_model)
     )
 
-    # Search budget: profile sets the per-kind ceiling, mode scales within
-    # it. Floor-of-1 inside :func:`mode_search_budget` ensures a non-zero
-    # multiplier always grants at least one search.
-    profile_ceiling = profile_max_uses(profile, severity)
-    max_uses = mode_search_budget(mode, profile_ceiling=profile_ceiling)
+    # Search budget: severity-based, identical across profiles. LOCAL_SKIP
+    # turns web search off entirely; every other mode uses the full budget.
+    if policy.web_search_enabled:
+        max_uses = profile_max_uses(profile, severity)
+    else:
+        max_uses = 0
 
     # Tool inclusion: defer to the env-gated helper at request-build time
     # unless the caller passed an explicit override. Storing ``None`` here

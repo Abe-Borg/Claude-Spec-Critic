@@ -1,27 +1,18 @@
-"""Verification profiles by issue type (Chunk H).
+"""Verification profiles by issue type.
 
-Before this module, every verification call used the same search budget,
-same domain policy, and same prompt — only severity modulated
-``max_uses``. That is the wrong axis to vary on: a CRITICAL finding
-about an *internal contradiction* (where both sides are quoted from the
-spec itself) does not need any web search, while a MEDIUM finding about
-a *manufacturer model number* needs manufacturer/datasheet sources, and
-a HIGH finding about a *California Title 24 amendment* needs DSA/HCAI
-authorities before anything else.
+The classifier groups findings by *kind* (California / code-standard /
+manufacturer / constructability / internal-coordination) so the verifier
+can attach profile-specific authoritative-source guidance to its system
+prompt. Web-search budget is severity-based and identical across
+profiles — see :func:`profile_max_uses`.
 
-Chunk H Directive 5 calls for profiles that classify the finding by
-*kind* and then route search depth, preferred-source language, and (in
-future chunks) routing rules from there. Severity remains a modifier —
-the profile sets the ceiling for how many searches the model may
-reasonably need, severity just nudges within that ceiling.
-
-The classifier is deliberately keyword-based rather than LLM-driven:
+The classifier is keyword-based rather than LLM-driven:
 
 - It runs on every finding before verification, so it has to be cheap.
 - The signal in the finding text (``codeReference``, ``issue``,
   ``existingText``, ``replacementText``) is usually unambiguous.
-- A wrong classification at worst routes the model to a slightly
-  different ``max_uses``; the grounding invariant in
+- A wrong classification at worst picks the wrong priority-source
+  paragraph; the grounding invariant in
   :func:`src.source_grounding.validate_cited_sources` is the real
   safety net.
 
@@ -29,7 +20,8 @@ Public surface:
 
 - :class:`VerificationProfile` — the small closed enum.
 - :func:`classify_finding_profile` — pure function over a ``Finding``.
-- :func:`profile_max_uses` — search budget for ``(profile, severity)``.
+- :func:`profile_max_uses` — severity-based search budget (profile arg
+  is accepted for call-site compatibility but ignored).
 - :func:`profile_label` — short string used in reports/diagnostics.
 - :func:`profile_priority_domains` — the authoritative-source guidance
   appended to the verifier system prompt for the chosen profile.
@@ -39,7 +31,6 @@ Public surface:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
 
 
@@ -282,58 +273,26 @@ def classify_finding_profile(finding) -> VerificationProfile:
 # Search-budget policy
 # ---------------------------------------------------------------------------
 #
-# Profile sets the ceiling; severity is a modifier within the profile.
-# Internal-coordination findings get a tiny budget because they should
-# not be using web search at all (the upstream pipeline routes them to
-# ``local_skip`` when that flag is enabled; the budget here is a
-# defense in depth).
-
-@dataclass(frozen=True)
-class _ProfileBudget:
-    max_uses_critical: int
-    max_uses_high: int
-    max_uses_medium: int
-    max_uses_gripes: int
-
-
-# Reasonable starting points. Severity ordering within a profile stays
-# monotonic: CRITICAL >= HIGH >= MEDIUM >= GRIPES.
-_PROFILE_BUDGETS: dict[VerificationProfile, _ProfileBudget] = {
-    VerificationProfile.CODE_STANDARD: _ProfileBudget(7, 7, 5, 3),
-    VerificationProfile.CALIFORNIA_AHJ: _ProfileBudget(8, 7, 5, 3),
-    VerificationProfile.MANUFACTURER: _ProfileBudget(6, 5, 4, 3),
-    VerificationProfile.CONSTRUCTABILITY: _ProfileBudget(5, 5, 4, 3),
-    VerificationProfile.INTERNAL_COORDINATION: _ProfileBudget(2, 2, 1, 1),
-}
+# Flat severity-based budget — the same ceiling applies to every profile.
+# The grounding invariant + internal-coordination prompt guidance are the
+# safeguards that prevent low-signal findings from wasting their budget;
+# we don't carve a separate budget tier per kind. The actual map lives in
+# :mod:`api_config` so the web-search tool builder and the verifier read
+# from one source.
 
 
 def profile_max_uses(
     profile: VerificationProfile | str | None,
     severity: str | None,
 ) -> int:
-    """Return the web_search ``max_uses`` budget for ``(profile, severity)``.
+    """Return the web_search ``max_uses`` budget for ``severity``.
 
-    Unknown profiles fall back to ``CONSTRUCTABILITY`` because that is
-    the most permissive non-extreme bucket. Unknown severities fall
-    back to the ``MEDIUM`` row of the chosen profile.
+    Profile is accepted for call-site compatibility but does not affect
+    the budget — every profile shares the same severity-based ceiling.
     """
-    if isinstance(profile, str):
-        try:
-            profile = VerificationProfile(profile)
-        except ValueError:
-            profile = VerificationProfile.CONSTRUCTABILITY
-    if not isinstance(profile, VerificationProfile):
-        profile = VerificationProfile.CONSTRUCTABILITY
-    budget = _PROFILE_BUDGETS[profile]
-    sev = (severity or "").strip().upper()
-    if sev == "CRITICAL":
-        return budget.max_uses_critical
-    if sev == "HIGH":
-        return budget.max_uses_high
-    if sev == "GRIPES":
-        return budget.max_uses_gripes
-    # MEDIUM and anything we don't recognize.
-    return budget.max_uses_medium
+    del profile
+    from .api_config import web_search_max_uses_for_severity
+    return web_search_max_uses_for_severity(severity)
 
 
 def profile_web_search_required(

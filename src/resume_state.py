@@ -13,7 +13,7 @@ from .batch import BatchJob
 from .code_cycles import DEFAULT_CYCLE
 from .extractor import ExtractedSpec
 from .pipeline import BatchSubmission, CollectedBatchState
-from .reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, MODEL_OPUS_46, ReviewResult
+from .reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, MODEL_OPUS_47, ReviewResult
 from .verifier import VerificationResult
 
 _log = logging.getLogger(__name__)
@@ -416,7 +416,7 @@ def deserialize_review_result(payload: dict[str, Any] | None) -> ReviewResult | 
         findings=[deserialize_finding(f) for f in payload.get("findings", [])],
         raw_response=str(payload.get("raw_response", "")),
         thinking=str(payload.get("thinking", "")),
-        model=str(payload.get("model", MODEL_OPUS_46)),
+        model=str(payload.get("model", MODEL_OPUS_47)),
         input_tokens=int(payload.get("input_tokens", 0)),
         output_tokens=int(payload.get("output_tokens", 0)),
         elapsed_seconds=float(payload.get("elapsed_seconds", 0.0)),
@@ -463,7 +463,7 @@ def deserialize_submission(payload: dict[str, Any]) -> BatchSubmission:
         review_request_ids=[str(v) for v in payload.get("review_request_ids", [])],
         leed_alerts=list(payload.get("leed_alerts", [])),
         placeholder_alerts=list(payload.get("placeholder_alerts", [])),
-        model=str(payload.get("model", MODEL_OPUS_46)),
+        model=str(payload.get("model", MODEL_OPUS_47)),
         project_context=str(payload.get("project_context", "")),
         cycle_label=str(payload.get("code_cycle", DEFAULT_CYCLE.label)),
         cross_check_enabled=bool(payload.get("cross_check_enabled", False)),

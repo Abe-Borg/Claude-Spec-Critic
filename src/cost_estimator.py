@@ -39,7 +39,6 @@ from typing import Iterable, Optional
 
 from .api_config import (
     MODEL_HAIKU_45,
-    MODEL_OPUS_46,
     MODEL_OPUS_47,
     MODEL_SONNET_46,
 )
@@ -75,12 +74,6 @@ class ModelPricing:
 
 
 _PRICING: dict[str, ModelPricing] = {
-    MODEL_OPUS_46: ModelPricing(
-        input_rate=15.0,
-        output_rate=75.0,
-        cache_write_1h_rate=30.0,
-        cache_read_rate=1.5,
-    ),
     MODEL_OPUS_47: ModelPricing(
         input_rate=15.0,
         output_rate=75.0,

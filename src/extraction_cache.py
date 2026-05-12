@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import os
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -153,12 +152,8 @@ _extraction_cache = _ExtractionCache()
 
 
 def cache_enabled() -> bool:
-    """Return True unless the cache is explicitly disabled.
-
-    The cache is on by default. Set ``SPEC_CRITIC_EXTRACTION_CACHE=0`` to
-    disable for debugging or reproducibility runs.
-    """
-    return os.environ.get("SPEC_CRITIC_EXTRACTION_CACHE", "1") != "0"
+    """Whether the extraction cache is active. Always True."""
+    return True
 
 
 def extract_text_cached(filepath: Path) -> ExtractedSpec:
