@@ -118,28 +118,16 @@ def make_cache_key(finding, *, cycle: CodeCycle) -> str:
 
 def cache_persist_enabled() -> bool:
     """Whether verification cache should persist to disk between runs."""
-    return os.environ.get("SPEC_CRITIC_VERIFICATION_CACHE_PERSIST", "1") != "0"
+    return True
 
 
 def cache_ttl_days() -> int:
-    """Optional age-based pruning. 0 (default) means no expiry."""
-    raw = os.environ.get("SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS", "0").strip()
-    try:
-        days = int(raw)
-    except ValueError:
-        days = 0
-    return max(0, days)
+    """Age-based pruning in days. 0 means no expiry."""
+    return 0
 
 
 def default_cache_path() -> Path:
-    """Resolve the on-disk cache file path.
-
-    Honors ``SPEC_CRITIC_CACHE_PATH`` for explicit overrides; otherwise
-    defaults to ``~/.spec_critic/verification_cache.json``.
-    """
-    override = os.environ.get("SPEC_CRITIC_CACHE_PATH", "").strip()
-    if override:
-        return Path(override).expanduser()
+    """Return the on-disk cache file path."""
     return Path.home() / ".spec_critic" / "verification_cache.json"
 
 

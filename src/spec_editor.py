@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
@@ -349,40 +348,23 @@ def _is_table_cell_mapping(mapping) -> bool:
 
 
 def _table_cell_auto_edit_enabled() -> bool:
-    """Operator switch for refusing every table-cell auto-edit (Chunk 9).
-
-    Default ``1`` (enabled) preserves backward compatibility with existing
-    AUTO_WITH_CAUTION table-cell edits. When set to ``0``, every table-cell
-    edit is refused with a ``refused_unsafe_markup`` outcome so the finding
-    flows to the manual review track instead. This is the safe
-    knob to flip when a project has table-cell text that is mostly read out
-    of richly formatted runs (manufacturer schedules, equipment tables) and
-    naive replacement would degrade readability.
-    """
-    raw = os.environ.get("SPEC_CRITIC_TABLE_CELL_AUTO_EDIT")
-    if raw is None:
-        return True
-    return raw.strip() not in {"0", "false", "False", ""}
+    """Whether table-cell auto-edits are allowed. Always True."""
+    return True
 
 
 def _edit_transactional_enabled() -> bool:
-    """Whether edit application enforces all-or-none output writes (Chunk 9).
+    """Whether edit application enforces all-or-none output writes.
 
-    Default ``1``: if any auto-edit produced a ``failed`` outcome, the
-    serialized output is suppressed so the user does not silently receive a
-    partially mutated file. Set ``SPEC_CRITIC_EDIT_TRANSACTIONAL=0`` to fall
-    back to best-effort writes (the legacy behavior).
+    Always True: if any auto-edit produced a ``failed`` outcome, the
+    serialized output is suppressed so the user does not silently receive
+    a partially mutated file.
 
-    Skipped outcomes — including the new Chunk 9 unsafe-markup refusals —
-    are deliberate refusals, not failures, and do not abort the
-    transactional write. The visible signal stays in
-    ``EditOutcome.refused_unsafe_markup`` and the corresponding
-    ``EditReport.warnings`` entry.
+    Skipped outcomes — including unsafe-markup refusals — are deliberate
+    refusals, not failures, and do not abort the transactional write. The
+    visible signal stays in ``EditOutcome.refused_unsafe_markup`` and the
+    corresponding ``EditReport.warnings`` entry.
     """
-    raw = os.environ.get("SPEC_CRITIC_EDIT_TRANSACTIONAL")
-    if raw is None:
-        return True
-    return raw.strip() not in {"0", "false", "False", ""}
+    return True
 
 
 def _refuse_unsafe_outcome(

@@ -109,7 +109,6 @@ _DEFAULT_LOCAL_SAFETY_FACTOR = 1.20  # unknown models — widest margin
 _LOCAL_SAFETY_FACTORS: dict[str, float] = {
     # Opus / Sonnet share Claude's main tokenizer; the cl100k_base
     # undercount is small but non-zero.
-    "claude-opus-4-6": 1.10,
     "claude-opus-4-7": 1.10,
     "claude-sonnet-4-6": 1.10,
     # Haiku 4.5 tokenization tends to undercount cl100k a bit more on

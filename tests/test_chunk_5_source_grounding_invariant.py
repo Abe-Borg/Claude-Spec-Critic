@@ -408,7 +408,6 @@ class TestVerificationCacheInvariant:
     def test_cache_load_drops_v1_files(self, tmp_path: Path, monkeypatch):
         """A v1 cache file on disk is silently ignored (schema bump)."""
         cache_path = tmp_path / "cache.json"
-        monkeypatch.setenv("SPEC_CRITIC_CACHE_PATH", str(cache_path))
         v1_payload = {
             "version": 1,
             "saved_at": time.time(),
@@ -433,7 +432,7 @@ class TestVerificationCacheInvariant:
         }
         cache_path.write_text(json.dumps(v1_payload), encoding="utf-8")
         cache = VerificationCache()
-        loaded = cache.load_from_disk()
+        loaded = cache.load_from_disk(path=cache_path)
         # v1 entries are skipped wholesale: the version mismatch returns
         # 0 from load_from_disk, so no entries reach the per-entry
         # validation.
@@ -451,7 +450,6 @@ class TestVerificationCacheInvariant:
         entries because the verifier downgrades them before write.
         """
         cache_path = tmp_path / "cache.json"
-        monkeypatch.setenv("SPEC_CRITIC_CACHE_PATH", str(cache_path))
         bad_v2 = {
             "version": 2,
             "saved_at": time.time(),
@@ -492,7 +490,7 @@ class TestVerificationCacheInvariant:
         }
         cache_path.write_text(json.dumps(bad_v2), encoding="utf-8")
         cache = VerificationCache()
-        loaded = cache.load_from_disk()
+        loaded = cache.load_from_disk(path=cache_path)
         # Only the good entry survives.
         assert loaded == 1
         assert cache.stats()["size"] == 1

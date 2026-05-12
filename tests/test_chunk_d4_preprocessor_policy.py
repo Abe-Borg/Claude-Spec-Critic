@@ -162,29 +162,17 @@ class TestRenderPreDetectedBlock:
 
 
 # ---------------------------------------------------------------------------
-# Chunk D4.1: env toggle
+# pre_detected_alerts_enabled is hardcoded on
 # ---------------------------------------------------------------------------
 
 
-class TestPreDetectedEnvToggle:
-    def test_default_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("SPEC_CRITIC_PRE_DETECTED_ALERTS", raising=False)
+class TestPreDetectedEnabled:
+    def test_always_on(self) -> None:
         assert pre_detected_alerts_enabled() is True
 
-    def test_zero_disables(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("SPEC_CRITIC_PRE_DETECTED_ALERTS", "0")
-        assert pre_detected_alerts_enabled() is False
-
-    def test_other_values_keep_it_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Only the literal ``"0"`` disables; everything else keeps the
-        # default-on behavior (no surprise turn-offs from typos).
-        for value in ("1", "true", "yes", "on", ""):
-            monkeypatch.setenv("SPEC_CRITIC_PRE_DETECTED_ALERTS", value)
-            assert pre_detected_alerts_enabled() is True, value
-
 
 # ---------------------------------------------------------------------------
-# Chunk D4.1: get_single_spec_user_message integration
+# get_single_spec_user_message integration
 # ---------------------------------------------------------------------------
 
 
@@ -250,17 +238,6 @@ class TestGetSingleSpecUserMessageWithAlerts:
         assert "leed_reference" in msg
         assert "placeholder" not in msg
 
-    def test_env_toggle_off_suppresses_block(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("SPEC_CRITIC_PRE_DETECTED_ALERTS", "0")
-        alerts = [_alert("f.docx", "leed_reference", "LEED")]
-        msg = get_single_spec_user_message(
-            "alpha", "f.docx", cycle=CALIFORNIA_2025, pre_detected_alerts=alerts,
-        )
-        assert f"<{TAG_PRE_DETECTED}>" not in msg
-
-
 # ---------------------------------------------------------------------------
 # Chunk D4.1: pipeline plumbing
 # ---------------------------------------------------------------------------
@@ -290,7 +267,10 @@ def stub_count_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "src.review_request_builder.count_tokens", _fake_count, raising=False
     )
-    monkeypatch.setenv("SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT", "0")
+    # Preflight calls the Anthropic API; bypass for hermetic tests.
+    monkeypatch.setattr(
+        "src.pipeline.token_count_preflight_enabled", lambda: False
+    )
 
 
 class TestPipelinePerSpecAlertMap:

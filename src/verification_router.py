@@ -1,21 +1,16 @@
 """Verification model routing and local pre-classification.
 
-Phase 3 (plan sections 7.1, 7.3): split verification into Sonnet-first +
-Opus-escalation routing, and locally classify findings that do not need
-external web grounding so we don't pay tokens for them.
-
-Both behaviors are feature-flagged so Phase 2 callers see no change unless
-they opt in.
+Splits verification into Sonnet-first + Opus-escalation routing, and
+locally classifies findings that do not need external web grounding so
+we don't pay tokens for them.
 """
 from __future__ import annotations
 
-import os
 import re
 
 from .api_config import (
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT,
-    verification_sonnet_default_enabled,
 )
 from .reviewer import Finding
 
@@ -70,11 +65,11 @@ _LOCAL_SKIP_KEYWORDS = (
 def local_skip_enabled() -> bool:
     """Whether to short-circuit verification for clearly local findings.
 
-    On by default: classifying placeholder/LEED/typo/duplicate-paragraph
+    Always True. Classifying placeholder/LEED/typo/duplicate-paragraph
     GRIPES as ``local_skip`` avoids paying for web searches that add no
-    signal. Set SPEC_CRITIC_LOCAL_VERIFICATION_SKIP=0 to disable.
+    signal.
     """
-    return os.environ.get("SPEC_CRITIC_LOCAL_VERIFICATION_SKIP", "1") != "0"
+    return True
 
 
 def classify_finding_for_verification(finding: Finding) -> str:
@@ -84,9 +79,6 @@ def classify_finding_for_verification(finding: Finding) -> str:
     - ``"web_required"``  — needs external grounding (default)
     - ``"local_skip"``    — locally diagnosable; no web search needed
     """
-    if not local_skip_enabled():
-        return "web_required"
-
     # Findings that cite a code reference always need external grounding.
     if (finding.codeReference or "").strip():
         return "web_required"
@@ -132,11 +124,9 @@ def should_escalate_verification(
 ) -> bool:
     """Decide whether to retry a verification with the escalation model.
 
-    Escalation only fires when Sonnet is the initial verifier; if the user
-    is already on Opus, there is nowhere to escalate to.
+    Escalation only fires when the initial verifier is not already the
+    escalation model.
     """
-    if not verification_sonnet_default_enabled():
-        return False
     if VERIFICATION_MODEL_DEFAULT == VERIFICATION_ESCALATION_MODEL:
         return False
 

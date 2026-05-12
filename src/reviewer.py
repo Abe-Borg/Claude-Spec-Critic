@@ -15,7 +15,6 @@ from anthropic import Anthropic, APIError, APIConnectionError, APIStatusError, R
 
 from .code_cycles import CodeCycle, DEFAULT_CYCLE
 from .api_config import (
-    MODEL_OPUS_46,
     MODEL_OPUS_47,
     REVIEW_MODEL_DEFAULT,
     extract_cache_usage,

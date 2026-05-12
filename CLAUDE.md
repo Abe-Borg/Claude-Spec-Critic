@@ -29,7 +29,7 @@ src/
 ├── verifier.py             # Verification (Sonnet/Opus routing, real-time fallback)
 ├── verification_router.py  # Initial/escalation model + local-skip classification
 ├── verification_cache.py   # Persistent claim-keyed verdict cache (JSON on disk)
-├── verification_profiles.py # Profile classifier + per-profile search budgets
+├── verification_profiles.py # Profile classifier + severity-based search budget
 ├── verification_modes.py   # Explicit verification modes + per-mode policy
 ├── verification_routing.py # Unified routing decision + request builder
 ├── source_grounding.py     # URL normalization + cited-source validation
@@ -110,7 +110,7 @@ The instruction prefix in front of `<spec ` must stay byte-identical across call
 `pipeline._prepare_specs` raises `ValueError` when the exact Anthropic count exceeds `RECOMMENDED_MAX`. Earlier behavior was log-only with cl100k as the only hard gate.
 
 ### Model capability whitelist
-`api_config.model_capabilities(model)` is the single source of truth for adaptive-thinking / extended-output / 1M-context eligibility. Whitelist covers Opus 4.6/4.7, Sonnet 4.6, Haiku 4.5. **Unknown model ids degrade to safe defaults that disable every capability flag** — a misconfigured env var produces a smaller request, never an API rejection. Haiku phases (triage, synthesis) never carry the `thinking` key.
+`api_config.model_capabilities(model)` is the single source of truth for adaptive-thinking / extended-output / 1M-context eligibility. Whitelist covers Opus 4.7, Sonnet 4.6, Haiku 4.5. **Unknown model ids degrade to safe defaults that disable every capability flag** — a misconfigured env var produces a smaller request, never an API rejection. Haiku phases (triage) never carry the `thinking` key.
 
 ### Verification cache key
 `cycle_label | actionType | codeReference | sha256(claim_summary)`. Intentionally omits the verifier model — `VerificationResult.model_used` is stored as provenance inside the entry. Switching `SPEC_CRITIC_VERIFICATION_MODEL` does NOT invalidate existing entries; switching the code cycle does. Claim digest is 24 hex chars; legacy 16-char form (`_LEGACY_CLAIM_DIGEST_LEN`) misses → re-grounds → writes new 24-char entry.
@@ -138,17 +138,30 @@ Every preprocessor alert carries a stable `deterministic_rule` id (exposed as `D
 
 ### Profiles (`verification_profiles.classify_finding_profile`)
 
-Profile sets the per-severity ceiling; severity modulates within it. Priority order: internal-coordination → California/AHJ → manufacturer → code-standard (or non-empty `codeReference`) → constructability.
+Profile picks the priority-source language attached to the verifier system prompt. The web-search budget is severity-based and identical across profiles. Priority order: internal-coordination → California/AHJ → manufacturer → code-standard (or non-empty `codeReference`) → constructability.
 
-| Profile | When | `max_uses` ceiling (CRITICAL → HIGH → MEDIUM → GRIPES) |
-|---|---|---|
-| `california_ahj` | mentions California / DSA / HCAI / Title 24 / AHJ | 8 / 7 / 5 / 3 |
-| `code_standard` | cites a code section or standards body without California signals | 7 / 7 / 5 / 3 |
-| `manufacturer` | mentions a manufacturer / model number / datasheet / submittal | 6 / 5 / 4 / 3 |
-| `constructability` | default for substantive technical claims | 5 / 5 / 4 / 3 |
-| `internal_coordination` | mentions internal contradiction / placeholder / LEED / typo / duplicate paragraph | 2 / 2 / 1 / 1 |
+| Profile | When |
+|---|---|
+| `california_ahj` | mentions California / DSA / HCAI / Title 24 / AHJ |
+| `code_standard` | cites a code section or standards body without California signals |
+| `manufacturer` | mentions a manufacturer / model number / datasheet / submittal |
+| `constructability` | default for substantive technical claims |
+| `internal_coordination` | mentions internal contradiction / placeholder / LEED / typo / duplicate paragraph |
 
 `profile_web_search_required(profile)` returns False only for `INTERNAL_COORDINATION`.
+
+### Search budget (`api_config._SEVERITY_MAX_USES`)
+
+Flat severity-based budget, same for every profile:
+
+| Severity | `max_uses` |
+|---|---|
+| CRITICAL | 8 |
+| HIGH | 7 |
+| MEDIUM | 5 |
+| GRIPES | 3 |
+
+`profile_max_uses` ignores the profile arg and delegates to `web_search_max_uses_for_severity` so the web-search tool builder and the verifier read from one map.
 
 ### Modes (`verification_modes.select_verification_mode`)
 
@@ -157,9 +170,9 @@ Priority order: cache-hit replay → local_skip → escalated → CRITICAL `cali
 | Mode | When | Model | Thinking | Search budget | Escalates? |
 |---|---|---|---|---|---|
 | `local_skip` | keyword classifier or Haiku triage said `local_skip` | (none) | n/a | 0 | no |
-| `strict_structured` | GRIPES OR non-GRIPES `internal_coordination` profile | Sonnet | off | profile × 0.5, floor 1 | no |
-| `standard_reasoning` | default for substantive technical claims | Sonnet | on | full profile ceiling | yes |
-| `deep_reasoning` | escalated, OR initial pass for CRITICAL `california_ahj` | Opus | on | full profile ceiling | no (terminal) |
+| `strict_structured` | GRIPES OR non-GRIPES `internal_coordination` profile | Sonnet | off | severity-based | no |
+| `standard_reasoning` | default for substantive technical claims | Sonnet | on | severity-based | yes |
+| `deep_reasoning` | escalated, OR initial pass for CRITICAL `california_ahj` | Opus | on | severity-based | no (terminal) |
 
 `verification_routing.select_routing` is the unified pure-function selector that returns the full policy bundle; `build_verification_request` builds the kwargs dict used by every verification path (real-time, batch initial, batch retry, batch continuation).
 
@@ -167,7 +180,7 @@ Priority order: cache-hit replay → local_skip → escalated → CRITICAL `cali
 `triage.is_eligible_for_haiku_triage` hard contract: findings with any non-empty `codeReference` are never eligible; CRITICAL/HIGH are never eligible; on API failure or parse error all affected findings default to `web_required`.
 
 ### Real-time fallback
-When a batch retry tail shrinks below `SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD` (default 5), the remainder flips to real-time rather than waiting another batch cycle.
+When a batch retry tail shrinks below `_REALTIME_FALLBACK_THRESHOLD` (5), the remainder flips to real-time rather than waiting another batch cycle.
 
 ---
 
@@ -226,7 +239,6 @@ Output caps live in `api_config._PHASE_OUTPUT_BUDGET` and clamp to the selected 
 | Extended batch review | 300k (batch-only, inputs ≥200k) |
 | Cross-check | 96k |
 | Verification (+ retry / continuation) | 16k |
-| Synthesis | 32k |
 | Triage | 8k |
 
 Context limits (`tokenizer.py`): `MAX_CONTEXT_TOKENS=1_000_000`, `RECOMMENDED_MAX=500_000` (per-spec input — preflight raises), `CROSS_CHECK_RECOMMENDED_MAX=822_000`.
@@ -237,51 +249,25 @@ When the exact Anthropic count is unavailable, `tokenizer.safe_local_estimate` p
 
 ## 7) Prompt Caching
 
-`api_config.cache_policy_for(phase)` is the single source of truth.
+`api_config.cache_policy_for(phase)` is the single source of truth. TTL is hardcoded to `1h`.
 
 | Phase | Cached? | Why |
 |---|---|---|
 | Review / batch review / cross-check / verification (+ retry/continuation) | yes | reused across specs/waves |
-| Synthesis / triage | no | one-off and below cache minimums (1024 Sonnet/Opus, 2048 Haiku) |
-
-`SPEC_CRITIC_CACHE_DISABLE` (comma-separated phase names) opts individual phases out without flipping the global switch.
+| Triage | no | one-off and below the 2048-token Haiku cache minimum |
 
 ---
 
-## 8) Feature Flags
+## 8) Environment Variables
 
-Read from environment variables; listed default applies when unset.
+The only env vars are model-id overrides. Everything else is baked at the chosen defaults.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPEC_CRITIC_PROMPT_CACHE` | `1` | `0` disables prompt caching globally |
-| `SPEC_CRITIC_PROMPT_CACHE_TTL` | `1h` | `5m` for ephemeral cache |
-| `SPEC_CRITIC_CACHE_DISABLE` | (empty) | Comma-separated phases to opt out |
-| `SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT` | `1` | `0` falls back to tagged-JSON text parsing |
-| `SPEC_CRITIC_STRUCTURED_OUTPUTS` | `1` | Legacy alias for the above |
-| `SPEC_CRITIC_STRICT_TOOLS` | `0` | `1` attaches `strict: true` (off pending real-call verification under thinking) |
-| `SPEC_CRITIC_TOKEN_COUNT_PREFLIGHT` | `1` | `0` skips Anthropic count_tokens |
-| `SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT` | `1` | `0` reverts to Opus-everywhere |
-| `SPEC_CRITIC_LOCAL_VERIFICATION_SKIP` | `1` | `0` web-verifies all findings |
-| `SPEC_CRITIC_PARALLEL_CROSS_CHECK` | `1` | `0` runs cross-check after verification |
-| `SPEC_CRITIC_REALTIME_FALLBACK_THRESHOLD` | `5` | Real-time fallback when retry tail ≤ N |
-| `SPEC_CRITIC_VERIFICATION_MAX_USES` | `5` | Default web_search `max_uses` |
 | `SPEC_CRITIC_REVIEW_MODEL` | Opus 4.7 | Override review model |
-| `SPEC_CRITIC_SYNTHESIS_MODEL` | Haiku 4.5 | Override synthesis model |
-| `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Override triage model |
-| `SPEC_CRITIC_VERIFICATION_MODEL` | (auto) | Override verifier model |
+| `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 4.6 | Override verifier initial-pass model |
 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 4.7 | Override escalation model |
-| `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | `1` | `0` disables disk cache |
-| `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `0` | Positive int enables TTL pruning |
-| `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override cache path |
-| `SPEC_CRITIC_EXTRACTION_CACHE` | `1` | `0` disables file-extraction cache |
-| `SPEC_CRITIC_ELEMENT_IDS` | `1` | `0` reverts to plain `<spec>` rendering |
-| `SPEC_CRITIC_PRE_DETECTED_ALERTS` | `1` | `0` disables `<pre_detected>` block |
-| `SPEC_CRITIC_EFFORT_POLICY` | `1` | `0` omits `output_config.effort` |
-| `SPEC_CRITIC_EFFORT_OVERRIDE` | (empty) | Force level globally (`low`/`medium`/`high`/`xhigh`); invalid raises |
-| `SPEC_CRITIC_TABLE_CELL_AUTO_EDIT` | `1` | `0` refuses every table-cell auto-edit |
-| `SPEC_CRITIC_EDIT_TRANSACTIONAL` | `1` | `0` reverts to legacy best-effort writes |
-| `SPEC_CRITIC_SERVICE_TIER` | `auto` | `standard_only` pins to standard; empty omits field |
+| `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Override triage model |
 
 ---
 

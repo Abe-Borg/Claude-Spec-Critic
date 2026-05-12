@@ -43,7 +43,6 @@ this file.
 
 from __future__ import annotations
 
-import os
 from typing import Iterable, Mapping, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -190,13 +189,11 @@ def render_blocks(blocks: Iterable[str]) -> str:
 def element_ids_enabled() -> bool:
     """Whether prompt builders should emit element ids alongside spec text.
 
-    Default on. Set ``SPEC_CRITIC_ELEMENT_IDS=0`` to revert to the legacy
-    plain-body rendering (the wrapper-only Chunk G shape). The toggle is
-    cheap because the new rendering only changes the *body* of the
-    ``<spec>`` block, not the surrounding instruction prefix — so prompt-
-    cache breakpoints stay where they were.
+    Always True. The rendering only changes the body of the ``<spec>``
+    block, not the surrounding instruction prefix — so prompt-cache
+    breakpoints stay where they were.
     """
-    return os.environ.get("SPEC_CRITIC_ELEMENT_IDS", "1") != "0"
+    return True
 
 
 def _element_tag(mapping: "ParagraphMapping") -> str:
@@ -293,13 +290,11 @@ _PRE_DETECTED_MATCH_PREVIEW_CHARS: int = 60
 def pre_detected_alerts_enabled() -> bool:
     """Whether the prompt builder should inject the ``<pre_detected>`` block.
 
-    Chunk D4.1 — Option A from the delta plan: deterministic alerts are
-    fed into the LLM context so the model knows what the local detector
-    already found and does not waste output budget reporting duplicates.
-    Default on; set ``SPEC_CRITIC_PRE_DETECTED_ALERTS=0`` to disable for a
-    quick rollback without redeploying.
+    Always True. Deterministic alerts are fed into the LLM context so the
+    model knows what the local detector already found and does not waste
+    output budget reporting duplicates.
     """
-    return os.environ.get("SPEC_CRITIC_PRE_DETECTED_ALERTS", "1") != "0"
+    return True
 
 
 def _truncate_example(text: str, *, limit: int = _PRE_DETECTED_MATCH_PREVIEW_CHARS) -> str:

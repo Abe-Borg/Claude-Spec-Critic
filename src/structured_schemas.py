@@ -1,9 +1,5 @@
 """Best-effort tool-output schemas for review, cross-check, and verification.
 
-Chunk 2 / repair plan terminology fix: this module formerly used the phrase
-"structured outputs" to describe what is really best-effort custom-tool
-output. The actual contract is:
-
 * Every review / cross-check / verification call exposes a single custom
   tool whose ``input_schema`` matches the desired payload shape.
 * ``tool_choice`` is ``{"type": "auto"}`` because the API rejects forcing
@@ -11,66 +7,31 @@ output. The actual contract is:
 * The model is *instructed* to call the tool, but with ``auto`` it MAY
   return a plain-text response instead. Callers must therefore keep the
   tagged-JSON text fallback parsers reachable.
-* Strict-mode constrained sampling (``SPEC_CRITIC_STRICT_TOOLS=1``) is an
-  opt-in tightening, not the default. It is NOT the same thing as the
-  Anthropic Structured Outputs API.
 
-In short: this is a tool-schema convention, not a contractually guaranteed
-JSON-schema final response. The renamed helper
-:func:`structured_tool_output_enabled` makes that explicit; the legacy
-:func:`structured_outputs_enabled` name is preserved as a deprecation
-alias for one release so external callers and tests keep working.
-
-Toggles:
-    SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT — "0" disables; default on.
-        Preferred name as of Chunk 2.
-    SPEC_CRITIC_STRUCTURED_OUTPUTS    — legacy alias for the same flag.
-        Kept working for one release; new code should use the preferred
-        name. If both are set, the preferred name wins.
-    SPEC_CRITIC_STRICT_TOOLS          — "1" enables strict tool-input
-        constrained sampling; default off pending real-call verification
-        under thinking.
+This is a tool-schema convention, not a contractually guaranteed
+JSON-schema final response.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
-
-
-_TOOL_OUTPUT_ENV = "SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT"
-_LEGACY_TOOL_OUTPUT_ENV = "SPEC_CRITIC_STRUCTURED_OUTPUTS"
 
 
 def structured_tool_output_enabled() -> bool:
     """Whether review/cross-check/verification expose their custom tool schemas.
 
-    Default on. With this flag on, every request includes the appropriate
-    custom tool (``submit_review_findings`` / ``submit_cross_check_findings``
-    / ``submit_verification_verdict``) and ``tool_choice={"type": "auto"}``.
-    The model is *expected* but not *required* to call the tool; the
+    Always True. Every request includes the appropriate custom tool
+    (``submit_review_findings`` / ``submit_cross_check_findings`` /
+    ``submit_verification_verdict``) and ``tool_choice={"type": "auto"}``.
+    The model is expected but not required to call the tool; the
     tagged-JSON text-fallback parsers stay reachable for the rare case
     where the model emits plain text instead.
-
-    Setting ``SPEC_CRITIC_STRUCTURED_TOOL_OUTPUT=0`` (or the legacy
-    ``SPEC_CRITIC_STRUCTURED_OUTPUTS=0``) reverts to the text-only path
-    end-to-end. If both env vars are set, the preferred name wins.
     """
-    preferred = os.environ.get(_TOOL_OUTPUT_ENV)
-    if preferred is not None:
-        return preferred != "0"
-    return os.environ.get(_LEGACY_TOOL_OUTPUT_ENV, "1") != "0"
+    return True
 
 
 def structured_outputs_enabled() -> bool:
-    """Deprecated alias for :func:`structured_tool_output_enabled` (Chunk 2).
-
-    The previous name overclaimed: with ``tool_choice=auto`` we get
-    best-effort tool-schema output, not a guaranteed JSON-schema final
-    response. Prefer the renamed helper in new code. Both names dispatch
-    to the same logic, so existing callers and the legacy
-    ``SPEC_CRITIC_STRUCTURED_OUTPUTS`` env var continue to work.
-    """
-    return structured_tool_output_enabled()
+    """Deprecated alias for :func:`structured_tool_output_enabled`."""
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -351,16 +312,13 @@ _TRIAGE_TOOL_NAME = "submit_triage_classifications"
 def _strict_enabled() -> bool:
     """Whether to attach ``"strict": true`` to tool definitions.
 
-    Off by default. Strict mode uses grammar-constrained sampling to
-    guarantee tool inputs match the schema, but the same era of API
-    restrictions that block forcing tool_choice with adaptive thinking
-    (see ``review_tool_choice``) may also reject strict mode under
-    thinking. The schemas are already authored to be strict-compatible
-    (every property required, nullable for optional, no oneOf/anyOf),
-    so flipping ``SPEC_CRITIC_STRICT_TOOLS=1`` after a verifying smoke
-    call is a one-env-var change with no schema rework needed.
+    Off. The same era of API restrictions that block forcing tool_choice
+    with adaptive thinking may also reject strict mode under thinking.
+    The schemas are authored to be strict-compatible (every property
+    required, nullable for optional, no oneOf/anyOf) so flipping this on
+    is a one-line code change with no schema rework needed.
     """
-    return os.environ.get("SPEC_CRITIC_STRICT_TOOLS", "0") == "1"
+    return False
 
 
 def review_findings_tool() -> dict[str, Any]:

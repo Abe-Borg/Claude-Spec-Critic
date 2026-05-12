@@ -1,29 +1,10 @@
-"""Verification modes and model routing (Chunk I).
+"""Verification modes and model routing.
 
-Before this module, the pieces that decide *how* a finding gets verified
-lived in five different places:
-
-- Keyword local-skip classifier (:mod:`verification_router`).
-- Optional Haiku triage classifier (:mod:`triage`).
-- Sonnet-default + Opus-escalation logic
-  (:mod:`verification_router.should_escalate_verification`).
-- Profile-aware web_search ``max_uses`` ceiling
-  (:mod:`verification_profiles.profile_max_uses`).
-- Model-aware ``thinking`` config (:mod:`api_config.apply_thinking_config`).
-
-Each piece is sensible in isolation, but the system as a whole had no
-single answer to "what *kind* of verification is this finding getting?"
-That made it impossible to surface a routing decision in logs or
-reports, and made it easy to accidentally use the deepest path
-everywhere — every non-local-skip call defaulted to Sonnet + adaptive
-thinking + full profile budget, even for a GRIPES-severity placeholder
-finding.
-
-Chunk I formalizes the four modes the plan calls out and wires them
-into a single routing function. Each mode is a closed bundle of
-``(model_family, thinking_enabled, search_budget_multiplier,
-allows_escalation)`` so a future tuning pass can adjust the budget
-shape for one mode without touching the others.
+A finding's verification mode bundles the ``(model, thinking_enabled,
+web_search_enabled, allows_escalation)`` decisions into one record.
+The search budget itself is severity-based and lives in
+:mod:`verification_profiles`; modes pick whether to attach the web
+search tool at all, not how much budget it gets.
 
 Public surface:
 
@@ -34,8 +15,6 @@ Public surface:
   ``Finding`` (+ context) to a :class:`VerificationMode`.
 - :func:`mode_policy` — table lookup.
 - :func:`mode_label` — pretty label for reports / diagnostics.
-- :func:`mode_search_budget` — applies the per-mode multiplier on top
-  of the profile/severity ceiling.
 
 Design rules:
 
@@ -43,13 +22,6 @@ Design rules:
   finding text + a few booleans (escalated, classifier verdict). No
   LLM is consulted to pick a mode — the goal is for the routing
   decision to be reproducible and inspectable.
-- **Backward-compatible defaults.** Today's default behavior is
-  STANDARD_REASONING for most findings: Sonnet + adaptive thinking +
-  full profile budget. STRICT_STRUCTURED narrows the search budget
-  for GRIPES-severity findings (where deep reasoning is overkill);
-  DEEP_REASONING is the explicit name for the existing escalation
-  path. LOCAL_SKIP is the name for what the keyword classifier and
-  Haiku triage already do.
 - **Modes do not bypass the cache.** Routing happens *after* the
   cache lookup and *after* the keyword / Haiku triage local-skip
   decision; the cache and local-skip path already short-circuit
@@ -65,7 +37,6 @@ from .api_config import (
     MODEL_SONNET_46,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT,
-    verification_sonnet_default_enabled,
 )
 from .verification_profiles import VerificationProfile, classify_finding_profile
 
@@ -153,9 +124,7 @@ class ModePolicy:
     Attributes
     ----------
     mode:
-        Identity of the mode this policy describes. Exposed so
-        callers can store the policy and still answer "which mode am
-        I?" without a side channel.
+        Identity of the mode this policy describes.
     model:
         Default Anthropic model id for this mode. The verifier may
         still override with an explicit ``model=`` keyword (operator
@@ -164,49 +133,27 @@ class ModePolicy:
     thinking_enabled:
         Whether the verifier should request ``thinking`` on this
         call. ``False`` for LOCAL_SKIP (which makes no remote call
-        anyway) and STRICT_STRUCTURED (cheap, narrow). The Haiku-
-        based triage classifier has its own no-thinking rule via
-        :data:`api_config._PHASES_NO_THINKING`; this flag is the
-        per-mode complement for non-triage paths.
-    search_budget_multiplier:
-        Multiplier applied on top of the per-(profile, severity)
-        ``max_uses`` ceiling from :mod:`verification_profiles`. 1.0
-        means "use the full profile budget"; 0.5 means "give this
-        mode half"; 0.0 means "no web search" (LOCAL_SKIP). Floor of
-        1 is applied at use-site so a multiplier > 0 always allows
-        at least one search.
+        anyway) and STRICT_STRUCTURED (cheap, narrow).
     web_search_enabled:
         Whether the request should attach the web_search tool. Only
-        ``False`` for LOCAL_SKIP; everything else attaches it (even
-        STRICT_STRUCTURED — the floor of 1 ensures the model can
-        still verify a single factual claim).
+        ``False`` for LOCAL_SKIP; every other mode uses the full
+        severity-based budget from :func:`verification_profiles.profile_max_uses`.
     allows_escalation:
         Whether a failed verification in this mode is eligible to
         escalate. ``False`` for LOCAL_SKIP (terminal), STRICT_STRUCTURED
         (low-stakes), and DEEP_REASONING (already at the top of the
-        ladder). Only STANDARD_REASONING escalates, and only when
-        :func:`verification_router.should_escalate_verification`
-        agrees.
+        ladder). Only STANDARD_REASONING escalates.
     """
 
     mode: VerificationMode
     model: str
     thinking_enabled: bool
-    search_budget_multiplier: float
     web_search_enabled: bool
     allows_escalation: bool
 
 
 def _default_initial_model() -> str:
-    """The model used by STANDARD_REASONING's initial pass.
-
-    Reads through :data:`VERIFICATION_MODEL_DEFAULT` so the
-    ``SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT=0`` toggle (which
-    flips the default verifier to Opus-everywhere) still flows
-    through to the mode policy. The result is recomputed at each
-    call so a test that monkeypatches the env var picks up the
-    change without reloading this module.
-    """
+    """The model used by STANDARD_REASONING's initial pass."""
     return VERIFICATION_MODEL_DEFAULT
 
 
@@ -245,22 +192,18 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
             mode=mode,
             model="local",
             thinking_enabled=False,
-            search_budget_multiplier=0.0,
             web_search_enabled=False,
             allows_escalation=False,
         )
     if mode is VerificationMode.STRICT_STRUCTURED:
-        # Sonnet by default. Even when SPEC_CRITIC_VERIFICATION_SONNET_DEFAULT=0
-        # flips the initial verifier to Opus, STRICT_STRUCTURED stays on the
-        # cheaper model — the whole point of the mode is "use a cheaper /
-        # narrower path for findings that do not need deep reasoning."
+        # Sonnet, no thinking — the cheap / narrow path. STRICT_STRUCTURED
+        # stays on the cheaper model even when the operator overrides the
+        # default verifier to Opus; the whole point of the mode is "use a
+        # cheaper path for findings that do not need deep reasoning."
         return ModePolicy(
             mode=mode,
             model=MODEL_SONNET_46,
             thinking_enabled=False,
-            # Half-budget. Floor-of-1 is applied at use-site, so a profile
-            # whose ceiling is 1-3 still gets at least one search.
-            search_budget_multiplier=0.5,
             web_search_enabled=True,
             allows_escalation=False,
         )
@@ -269,9 +212,7 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
             mode=mode,
             model=_deep_reasoning_model(),
             thinking_enabled=True,
-            search_budget_multiplier=1.0,
             web_search_enabled=True,
-            # Already at the top of the ladder.
             allows_escalation=False,
         )
     # STANDARD_REASONING — the default.
@@ -279,7 +220,6 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
         mode=VerificationMode.STANDARD_REASONING,
         model=_default_initial_model(),
         thinking_enabled=True,
-        search_budget_multiplier=1.0,
         web_search_enabled=True,
         allows_escalation=True,
     )
@@ -374,12 +314,7 @@ def select_verification_mode(
     # local AHJ interpretation) is wide enough that Opus is the right
     # first call.
     if severity == "CRITICAL" and profile is VerificationProfile.CALIFORNIA_AHJ:
-        # Only fire this rule if escalation is actually wired up. When
-        # Sonnet-default is disabled, the initial model is already Opus
-        # and there is no distinct "deep" tier — STANDARD_REASONING is
-        # the correct label for that configuration.
-        if verification_sonnet_default_enabled():
-            return VerificationMode.DEEP_REASONING
+        return VerificationMode.DEEP_REASONING
 
     # 4. GRIPES → strict structured. Internal-coordination GRIPES are
     # already caught by local-skip when that's on; this rule catches
@@ -397,43 +332,10 @@ def select_verification_mode(
     return VerificationMode.STANDARD_REASONING
 
 
-# ---------------------------------------------------------------------------
-# Search-budget application
-# ---------------------------------------------------------------------------
-
-
-def mode_search_budget(
-    mode: VerificationMode | str,
-    *,
-    profile_ceiling: int,
-) -> int:
-    """Apply the per-mode multiplier to a profile/severity ceiling.
-
-    LOCAL_SKIP returns 0 (web search is disabled for that mode).
-    Everything else returns ``max(1, round(ceiling * multiplier))``
-    so a non-zero multiplier always grants at least one search.
-
-    The caller computes the profile/severity ceiling via
-    :func:`verification_profiles.profile_max_uses`; this helper only
-    handles the mode-level scaling so the two policies compose
-    cleanly.
-    """
-    policy = mode_policy(mode)
-    if policy.search_budget_multiplier <= 0.0 or not policy.web_search_enabled:
-        return 0
-    if profile_ceiling <= 0:
-        return 0
-    scaled = profile_ceiling * policy.search_budget_multiplier
-    # ``round(half_to_even)`` is fine here — the multipliers are 0.5 / 1.0
-    # in practice, so the rounding choice has no observable effect.
-    return max(1, int(round(scaled)))
-
-
 __all__ = [
     "VerificationMode",
     "ModePolicy",
     "mode_label",
     "mode_policy",
     "select_verification_mode",
-    "mode_search_budget",
 ]
