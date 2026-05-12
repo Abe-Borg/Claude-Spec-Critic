@@ -38,11 +38,57 @@ from .extractor import ExtractedSpec, extract_text
 _DEFAULT_MAX_ENTRIES = 64
 _DEFAULT_TOKEN_MAX_ENTRIES = 256
 
+# Byte length of head+tail samples folded into the cache fingerprint. Two
+# 64-KiB reads are cheap (single OS read each on typical SSDs) and catch the
+# realistic ways the stat-based key can lie:
+#   * `touch -d` style mtime preservation across a content edit
+#   * Same-size in-place edits (e.g. cosmetic whitespace replacements that
+#     keep file length identical)
+#   * Atomic rename-over with a copy that preserves both size and mtime_ns
+# A DOCX file's central directory and a few opening XML parts both land near
+# the head/tail, so 64 KiB on each end is sufficient to detect any practical
+# bit-level change without paying for a full-file SHA on every cache lookup.
+_FINGERPRINT_SAMPLE_BYTES = 64 * 1024
+
+
+def _content_fingerprint(path: Path, size: int) -> str:
+    """Cheap content fingerprint: SHA-256 of size + head + tail bytes.
+
+    This guards against the same-size+same-mtime collision case that the
+    stat-only key cannot detect. Reading at most ~128 KiB per file keeps the
+    overhead well under a single DOCX parse, so the cache still pays for
+    itself on a typical 200-file run.
+
+    Failures (transient I/O error, file disappeared between stat and open)
+    return an empty string; the caller treats that as "cannot fingerprint"
+    and falls back to the stat-only key.
+    """
+    if size <= 0:
+        return hashlib.sha256(b"empty").hexdigest()
+    h = hashlib.sha256()
+    h.update(str(size).encode("ascii"))
+    h.update(b"\x00")
+    try:
+        with open(path, "rb") as fp:
+            head = fp.read(_FINGERPRINT_SAMPLE_BYTES)
+            h.update(head)
+            if size > _FINGERPRINT_SAMPLE_BYTES:
+                tail_start = max(_FINGERPRINT_SAMPLE_BYTES, size - _FINGERPRINT_SAMPLE_BYTES)
+                fp.seek(tail_start)
+                h.update(fp.read(_FINGERPRINT_SAMPLE_BYTES))
+    except OSError:
+        return ""
+    return h.hexdigest()
+
 
 class _ExtractionCache:
     """Thread-safe bounded cache for ExtractedSpec objects.
 
-    Lookup key: ``(absolute_path, size, mtime_ns)``. Eviction policy is
+    Lookup key: ``(absolute_path, size, mtime_ns, content_fingerprint)``.
+    Adding the head+tail fingerprint catches the case where an edit
+    preserves both size and mtime_ns (e.g. ``touch -d`` after a same-size
+    in-place tweak), which the prior stat-only key would have missed and
+    returned stale extraction data for. Eviction policy is
     least-recently-used. On a hit, a deep copy is returned so callers cannot
     accidentally mutate cached state.
     """
@@ -55,9 +101,11 @@ class _ExtractionCache:
         self._misses = 0
 
     @staticmethod
-    def _key(path: Path) -> tuple[str, int, int]:
+    def _key(path: Path) -> tuple[str, int, int, str]:
         st = path.stat()
-        return (str(path.resolve()), st.st_size, st.st_mtime_ns)
+        resolved = str(path.resolve())
+        fingerprint = _content_fingerprint(path, st.st_size)
+        return (resolved, st.st_size, st.st_mtime_ns, fingerprint)
 
     def get(self, path: Path) -> Optional[ExtractedSpec]:
         try:
