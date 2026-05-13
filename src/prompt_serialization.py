@@ -43,10 +43,25 @@ this file.
 
 from __future__ import annotations
 
+import os
 from typing import Iterable, Mapping, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .extractor import ParagraphMapping
+
+
+# Canonical "disable" tokens for boolean env-var flags. Any of these (case-
+# insensitive) flips the corresponding feature off; anything else — including
+# an unset variable — leaves the default-enabled behavior in place.
+_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
+
+
+def _env_flag_disabled(name: str) -> bool:
+    """Return True when the env var ``name`` is set to a recognized disable token."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in _DISABLE_TOKENS
 
 
 # Tag names used as wrappers across the codebase. Centralized so a future
@@ -189,11 +204,12 @@ def render_blocks(blocks: Iterable[str]) -> str:
 def element_ids_enabled() -> bool:
     """Whether prompt builders should emit element ids alongside spec text.
 
-    Always True. The rendering only changes the body of the ``<spec>``
-    block, not the surrounding instruction prefix — so prompt-cache
-    breakpoints stay where they were.
+    Enabled by default. Set ``SPEC_CRITIC_ELEMENT_IDS=0`` to revert to the
+    legacy plain-body rendering. The rendering only changes the body of the
+    ``<spec>`` block, not the surrounding instruction prefix — so prompt-
+    cache breakpoints stay where they were either way.
     """
-    return True
+    return not _env_flag_disabled("SPEC_CRITIC_ELEMENT_IDS")
 
 
 def _element_tag(mapping: "ParagraphMapping") -> str:

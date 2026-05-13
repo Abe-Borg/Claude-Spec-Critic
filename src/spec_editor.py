@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+import os
 import re
 import unicodedata
 
@@ -347,24 +348,42 @@ def _is_table_cell_mapping(mapping) -> bool:
     return getattr(mapping, "element_type", None) == "table_cell"
 
 
+# Canonical "disable" tokens for boolean env-var flags. Anything else —
+# including an unset variable — leaves the default-enabled behavior in place.
+_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
+
+
+def _env_flag_disabled(name: str) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in _DISABLE_TOKENS
+
+
 def _table_cell_auto_edit_enabled() -> bool:
-    """Whether table-cell auto-edits are allowed. Always True."""
-    return True
+    """Whether table-cell auto-edits are allowed.
+
+    Enabled by default. Set ``SPEC_CRITIC_TABLE_CELL_AUTO_EDIT=0`` to refuse
+    every table-cell auto-edit and route the finding to manual review
+    instead.
+    """
+    return not _env_flag_disabled("SPEC_CRITIC_TABLE_CELL_AUTO_EDIT")
 
 
 def _edit_transactional_enabled() -> bool:
     """Whether edit application enforces all-or-none output writes.
 
-    Always True: if any auto-edit produced a ``failed`` outcome, the
+    Enabled by default: if any auto-edit produced a ``failed`` outcome, the
     serialized output is suppressed so the user does not silently receive
-    a partially mutated file.
+    a partially mutated file. Set ``SPEC_CRITIC_EDIT_TRANSACTIONAL=0`` to
+    fall back to legacy best-effort writes.
 
     Skipped outcomes — including unsafe-markup refusals — are deliberate
     refusals, not failures, and do not abort the transactional write. The
     visible signal stays in ``EditOutcome.refused_unsafe_markup`` and the
     corresponding ``EditReport.warnings`` entry.
     """
-    return True
+    return not _env_flag_disabled("SPEC_CRITIC_EDIT_TRANSACTIONAL")
 
 
 def _refuse_unsafe_outcome(
