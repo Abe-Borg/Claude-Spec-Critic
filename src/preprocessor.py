@@ -41,20 +41,22 @@ class PreprocessResult:
     Attributes:
         leed_alerts: List of detected LEED references with context
         placeholder_alerts: List of detected placeholders with context
-        code_cycle_alerts: Phase 9 (plan 13.1) — references to a stale California
-            code cycle (e.g. ``2019 CBC`` when the selected cycle is 2025).
-        structural_alerts: Phase 9 (plan 13.1) — empty sections and duplicate
-            headings detected without spending model tokens.
-        template_marker_alerts: Chunk O — additional editorial markers
-            (``TODO``, ``FIXME``, ``XXX``, ``???``, lorem-ipsum boilerplate)
-            that the existing ``placeholder_alerts`` regexes do not match.
-        invalid_code_cycle_alerts: Chunk O — California code citations whose
-            year is not a real cycle (e.g. ``2018 CBC`` or ``2020 CMC``). The
-            existing ``code_cycle_alerts`` only catches *stale* but otherwise
-            plausible years; an invalid year is a clear typo or fabrication.
-        duplicate_paragraph_alerts: Chunk O — verbatim duplicate paragraphs of
-            substantial length (≥80 chars by default). A clear deterministic
-            signal for copy-paste mistakes that does not require LLM tokens.
+        code_cycle_alerts: References to a stale California code cycle
+            (e.g. ``2019 CBC`` when the selected cycle is 2025).
+        structural_alerts: Empty sections and duplicate headings detected
+            without spending model tokens.
+        template_marker_alerts: Additional editorial markers (``TODO``,
+            ``FIXME``, ``XXX``, ``???``, lorem-ipsum boilerplate) that the
+            existing ``placeholder_alerts`` regexes do not match.
+        invalid_code_cycle_alerts: California code citations whose year is
+            not a real cycle (e.g. ``2018 CBC`` or ``2020 CMC``). The
+            ``code_cycle_alerts`` list only catches *stale* but otherwise
+            plausible years; an invalid year is a clear typo or
+            fabrication.
+        duplicate_paragraph_alerts: Verbatim duplicate paragraphs of
+            substantial length (≥80 chars by default). A clear
+            deterministic signal for copy-paste mistakes that does not
+            require LLM tokens.
 
     Each alert is a dict with keys:
         - filename: Source file name
@@ -62,7 +64,7 @@ class PreprocessResult:
         - match: The actual matched text
         - context: ~120 char window around the match for human review
         - position: Character offset in the document
-        - deterministic_rule: Chunk O — stable rule id (``leed_reference``,
+        - deterministic_rule: Stable rule id (``leed_reference``,
           ``placeholder``, ``stale_code_cycle``, ``stale_asce7``,
           ``empty_section``, ``duplicate_heading``, ``template_marker``,
           ``invalid_code_cycle``, ``duplicate_paragraph``,
@@ -79,10 +81,10 @@ class PreprocessResult:
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
 
 
-# Chunk O directive 2: stable rule identifiers so every consumer (report,
-# verification router, diagnostics) can branch on a known string instead of
-# sniffing the human-readable ``type`` field. Defined at module level so
-# tests and downstream modules can import the canonical names.
+# Stable rule identifiers so every consumer (report, verification router,
+# diagnostics) can branch on a known string instead of sniffing the
+# human-readable ``type`` field. Defined at module level so tests and
+# downstream modules can import the canonical names.
 DETERMINISTIC_RULE_LEED: str = "leed_reference"
 DETERMINISTIC_RULE_PLACEHOLDER: str = "placeholder"
 DETERMINISTIC_RULE_STALE_CODE_CYCLE: str = "stale_code_cycle"
@@ -144,7 +146,7 @@ def _find_matches(
     e.g. "LEED-NC" from producing both a "LEED-NC reference" alert and a
     duplicate "LEED reference" alert for the "LEED" substring.
 
-    Chunk O: every alert is stamped with ``deterministic_rule = rule_id`` so
+    Every alert is stamped with ``deterministic_rule = rule_id`` so
     downstream consumers can branch on the rule without keyword-sniffing
     the human-readable ``type`` string.
     """
@@ -204,7 +206,7 @@ def detect_placeholders(content: str, filename: str, max_matches: int = 200) -> 
 
 
 # -----------------------------------------------------------------------------
-# Phase 9 (plan section 13.1) — additional local preflight checks.
+# Additional local preflight checks.
 #
 # These run before any model call and surface deterministic issues that should
 # never need an LLM round-trip. Keeping them here means a re-run with toggled
@@ -243,15 +245,15 @@ _ASCE7_PATTERN = re.compile(r"\bASCE[\s-]*7[\s-]*(\d{2})\b", flags=re.IGNORECASE
 _ASCE7_PLAUSIBLE_EDITIONS = {"05", "10", "16", "22"}
 
 
-# Chunk D4.2: terms that, when they appear shortly *before* a stale-cycle
-# match, signal the author is describing an old reference rather than
-# requiring it. The window is intentionally small so a negation in a
-# different sentence does not silently suppress an active requirement.
+# Terms that, when they appear shortly *before* a stale-cycle match,
+# signal the author is describing an old reference rather than requiring
+# it. The window is intentionally small so a negation in a different
+# sentence does not silently suppress an active requirement.
 #
 # Each pattern is a whole-word match (and ``no longer`` is matched as a
-# two-word phrase). The phrase ``not`` is included per the delta plan, but
-# the matcher only treats it as a suppressor when it is genuinely a verb-
-# phrase negation — see ``_should_suppress_stale_cycle``.
+# two-word phrase). Bare ``not`` is intentionally NOT a suppressor; the
+# matcher only treats it as one when it is genuinely a verb-phrase
+# negation — see ``_should_suppress_stale_cycle``.
 _STALE_CYCLE_SUPPRESS_WINDOW: int = 80
 
 _STALE_CYCLE_SUPPRESS_PATTERNS: tuple[re.Pattern, ...] = (
@@ -282,10 +284,10 @@ def _should_suppress_stale_cycle(
 ) -> bool:
     """Return True when a stale-cycle match is qualified by a negation term.
 
-    Chunk D4.2: search up to ``_STALE_CYCLE_SUPPRESS_WINDOW`` characters
-    on either side of the match for a whole-word negation / historical
-    keyword (e.g. ``previously per 2019 CBC`` or ``2022 CBC is no longer
-    used``). When found, treat the citation as descriptive (not an active
+    Searches up to ``_STALE_CYCLE_SUPPRESS_WINDOW`` characters on either
+    side of the match for a whole-word negation / historical keyword
+    (e.g. ``previously per 2019 CBC`` or ``2022 CBC is no longer used``).
+    When found, treat the citation as descriptive (not an active
     requirement) and skip the alert. The window is capped so a negation
     in a different sentence does not bleed across; sentence-terminating
     punctuation (``.``, ``;``, ``\\n\\n``) inside the window narrows the
@@ -356,10 +358,10 @@ def detect_stale_code_cycle_references(
             span = (match.start(), match.end())
             if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
                 continue
-            # Chunk D4.2: skip citations preceded by a negation / historical
-            # keyword in the immediate window. Recorded spans still get
-            # tracked above so a suppressed match doesn't bleed into the
-            # overlap dedup for downstream patterns.
+            # Skip citations preceded by a negation / historical keyword
+            # in the immediate window. Recorded spans still get tracked
+            # above so a suppressed match doesn't bleed into the overlap
+            # dedup for downstream patterns.
             if _should_suppress_stale_cycle(content, span[0], span[1]):
                 seen_spans.append(span)
                 continue
@@ -395,9 +397,9 @@ def detect_stale_code_cycle_references(
             span = (match.start(), match.end())
             if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
                 continue
-            # Chunk D4.2: same suppression for ASCE 7 — a sentence that
-            # explicitly says "no longer use ASCE 7-10" is descriptive,
-            # not a directive to follow it.
+            # Same suppression for ASCE 7 — a sentence that explicitly
+            # says "no longer use ASCE 7-10" is descriptive, not a
+            # requirement.
             if _should_suppress_stale_cycle(content, span[0], span[1]):
                 seen_spans.append(span)
                 continue
@@ -575,14 +577,14 @@ def detect_inconsistent_file_naming(filenames: list[str]) -> list[dict]:
 
 
 # -----------------------------------------------------------------------------
-# Chunk O — additional deterministic checks.
+# Additional deterministic checks.
 #
 # These rules expand the local preflight surface so simple, repetitive,
 # high-confidence issues can be found without paying LLM tokens. Each rule:
 #   - Produces the same alert-dict shape as the existing detectors.
 #   - Stamps ``deterministic_rule`` with a stable id (see DETERMINISTIC_RULE_*).
-#   - Documents its intentional scope so we do not "overreach into code
-#     interpretation" (Chunk O directive 3).
+#   - Documents its intentional scope so the detector does not overreach
+#     into code interpretation.
 # -----------------------------------------------------------------------------
 
 # Template markers that the existing PLACEHOLDER_PATTERNS does *not* catch.
@@ -772,13 +774,10 @@ def preprocess_spec(
 ) -> PreprocessResult:
     """Run all detection passes on a single specification.
 
-    Phase 9 (plan section 13.1): when ``cycle`` is provided, also run stale
-    code-cycle detection and structural checks. ``cycle=None`` preserves the
-    pre-Phase-9 behavior so callers that have not yet plumbed the cycle do
-    not regress.
-
-    Chunk O additions: template-marker, invalid-code-cycle, and
-    duplicate-paragraph detection always run (none of them require a cycle).
+    When ``cycle`` is provided, also run stale code-cycle detection and
+    structural checks. ``cycle=None`` skips those passes — callers without
+    a cycle still get template-marker, invalid-code-cycle, and
+    duplicate-paragraph detection, which never require a cycle.
     """
     code_cycle_alerts: list[dict] = []
     if cycle is not None:

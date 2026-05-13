@@ -133,13 +133,13 @@ class EditOutcome:
     detail: str
     original_text: str
     new_text: str | None
-    # Chunk 9 — tag outcomes that were refused because the target paragraph or
-    # table cell carried unsafe Word markup (hyperlinks, field codes,
-    # drawings, comments, tracked changes, bookmarks, etc.). The status is
-    # still ``"skipped"`` so the existing applied/skipped/failed accounting
-    # is unaffected, but the flag lets the report layer surface "auto-edit
-    # refused due to unsafe Word markup" rather than burying it in a generic
-    # skip reason. Defaults to False so legacy outcomes are unchanged.
+    # Tag outcomes that were refused because the target paragraph or table
+    # cell carried unsafe Word markup (hyperlinks, field codes, drawings,
+    # comments, tracked changes, bookmarks, etc.). The status is still
+    # ``"skipped"`` so the existing applied/skipped/failed accounting is
+    # unaffected, but the flag lets the report layer surface "auto-edit
+    # refused due to unsafe Word markup" rather than burying it in a
+    # generic skip reason.
     refused_unsafe_markup: bool = False
 
 
@@ -153,10 +153,9 @@ class EditReport:
     edits_failed: int
     outcomes: list[EditOutcome]
     warnings: list[str]
-    # Chunk 9 — Boolean signal that the edit pass was aborted before any
-    # output was written because at least one auto-edit failed under the
-    # configured all-or-none transactional policy. Default False keeps
-    # legacy reports unchanged.
+    # Boolean signal that the edit pass was aborted before any output was
+    # written because at least one auto-edit failed under the configured
+    # all-or-none transactional policy.
     aborted_transactional: bool = False
 
 
@@ -244,7 +243,7 @@ def _is_whole_paragraph_delete(action: EditAction) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Chunk 9 — unsafe WordprocessingML markup detection.
+# Unsafe WordprocessingML markup detection.
 #
 # Run-level surgery on paragraphs that carry hyperlinks, field codes,
 # drawings/images, comments, tracked changes, bookmarks, or content controls
@@ -376,7 +375,7 @@ def _edit_transactional_enabled() -> bool:
     Enabled by default: if any auto-edit produced a ``failed`` outcome, the
     serialized output is suppressed so the user does not silently receive
     a partially mutated file. Set ``SPEC_CRITIC_EDIT_TRANSACTIONAL=0`` to
-    fall back to legacy best-effort writes.
+    fall back to best-effort writes.
 
     Skipped outcomes — including unsafe-markup refusals — are deliberate
     refusals, not failures, and do not abort the transactional write. The
@@ -413,7 +412,7 @@ def _refuse_unsafe_outcome(
 
 @dataclass(frozen=True)
 class PreconditionResult:
-    """Outcome of revalidating a recorded edit precondition (Chunk F).
+    """Outcome of revalidating a recorded edit precondition.
 
     Carries the offsets that should be used for the actual mutation. If the
     recorded offsets still match the live text, ``match_start`` /
@@ -436,7 +435,7 @@ def _precondition_holds_for_paragraph(
     match_end: int,
     expected_text: str,
 ) -> PreconditionResult:
-    """Verify the live paragraph still contains the expected slice (audit 8.3, Chunk F).
+    """Verify the live paragraph still contains the expected slice.
 
     Strategy:
 
@@ -766,9 +765,9 @@ def _resolve_cell_and_offsets(
 
     Returns ``(paragraph, start, end, detail, status)`` where ``status`` is
     one of ``"resolved"``, ``"failed"`` (data shape problem the caller
-    should treat as failed), or ``"skipped"`` (a deliberate Chunk F safety
-    refusal — duplicated or missing target text). The caller uses
-    ``status`` to record the right outcome.
+    should treat as failed), or ``"skipped"`` (a deliberate safety refusal
+    for duplicated or missing target text). The caller uses ``status`` to
+    record the right outcome.
     """
     mapping = action.location.mapping
     row_text_parts: list[tuple[object, str]] = []
@@ -804,10 +803,10 @@ def _resolve_cell_and_offsets(
             "failed",
         )
 
-    # Chunk F: enumerate every occurrence of the expected text across the
-    # cell's paragraphs and require uniqueness. The previous implementation
-    # picked the first ``paragraph.text.find()`` hit, which silently guessed
-    # when the text appeared multiple times in the cell.
+    # Enumerate every occurrence of the expected text across the cell's
+    # paragraphs and require uniqueness — picking the first
+    # ``paragraph.text.find()`` hit would silently guess when the text
+    # appeared multiple times in the cell.
     expected = action.location.matched_text
     if not expected:
         return None, None, None, "No expected text recorded for table-cell edit.", "failed"
@@ -903,12 +902,12 @@ def _apply_add_action(
 
     anchor_paragraph = Paragraph(anchor_element, doc)
 
-    # Chunk 9: refuse anchors that carry unsafe Word markup. ADD inserts a
-    # sibling paragraph adjacent to the anchor, which is structurally
-    # simpler than mutating the anchor itself, but inserting beside a
-    # paragraph whose XML carries field characters or bookmark ranges can
-    # still break those structures if the surrounding context relies on
-    # contiguous run order. Conservative refusal keeps the document safe.
+    # Refuse anchors that carry unsafe Word markup. ADD inserts a sibling
+    # paragraph adjacent to the anchor, which is structurally simpler than
+    # mutating the anchor itself, but inserting beside a paragraph whose
+    # XML carries field characters or bookmark ranges can still break
+    # those structures if the surrounding context relies on contiguous
+    # run order. Conservative refusal keeps the document safe.
     unsafe = detect_unsafe_markup(anchor_element)
     if unsafe.unsafe:
         return EditOutcome(
@@ -920,9 +919,9 @@ def _apply_add_action(
             refused_unsafe_markup=True,
         )
 
-    # Phase 4 (audit Section 8.3): revalidate anchor before mutating. If a
-    # prior edit changed the anchor paragraph text in a way that no longer
-    # matches the recorded anchor, do not insert beside it.
+    # Revalidate anchor before mutating. If a prior edit changed the
+    # anchor paragraph text in a way that no longer matches the recorded
+    # anchor, do not insert beside it.
     ok_anchor, anchor_detail = _precondition_holds_for_anchor(
         anchor_paragraph,
         action.location.matched_text,
@@ -1028,11 +1027,11 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
 
-    # Phase 4 (audit Section 8.4): apply edits in a deterministic safety
-    # order — in-place replacements first, then ADDs, then whole-paragraph
-    # DELETEs in descending body_index. This keeps anchor elements live for
-    # ADDs and avoids any ordering surprise where a DELETE shifts the
-    # document structure before later edits run.
+    # Apply edits in a deterministic safety order — in-place replacements
+    # first, then ADDs, then whole-paragraph DELETEs in descending
+    # body_index. This keeps anchor elements live for ADDs and avoids any
+    # ordering surprise where a DELETE shifts the document structure
+    # before later edits run.
     replacement_actions: list[EditAction] = []
     whole_delete_actions: list[EditAction] = []
     for action in actions_to_apply:
@@ -1087,12 +1086,12 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             paragraph = Paragraph(element, doc)
             paragraph_before = paragraph.text
 
-            # Chunk 9: refuse paragraphs that carry unsafe Word markup
-            # (hyperlinks, field codes, drawings, comments, tracked changes,
-            # bookmarks, content controls, footnote/endnote refs). Run-level
-            # surgery on those structures can silently break the underlying
-            # XML — better to skip the auto-edit and route the finding to
-            # manual review than to risk a corrupted spec document.
+            # Refuse paragraphs that carry unsafe Word markup (hyperlinks,
+            # field codes, drawings, comments, tracked changes, bookmarks,
+            # content controls, footnote/endnote refs). Run-level surgery
+            # on those structures can silently break the underlying XML —
+            # better to skip the auto-edit and route the finding to manual
+            # review than to risk a corrupted spec document.
             refusal = _refuse_unsafe_outcome(
                 action,
                 element=element,
@@ -1103,12 +1102,12 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 warnings.append(refusal.detail)
                 continue
 
-            # Phase 4 (audit Section 8.3) + Chunk F: revalidate immediately
-            # before mutating. If a previous edit in this pass changed the
-            # paragraph such that the recorded slice no longer matches, the
-            # precondition returns corrected offsets when the expected text
-            # is uniquely present elsewhere; if it is missing or duplicated
-            # we skip the edit instead of replacing a stale span.
+            # Revalidate immediately before mutating. If a previous edit
+            # in this pass changed the paragraph such that the recorded
+            # slice no longer matches, the precondition returns corrected
+            # offsets when the expected text is uniquely present
+            # elsewhere; if it is missing or duplicated we skip the edit
+            # instead of replacing a stale span.
             precondition = _precondition_holds_for_paragraph(
                 paragraph,
                 action.location.match_start,
@@ -1158,10 +1157,10 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 )
                 continue
 
-            # Chunk 9 operator switch: refuse every table-cell auto-edit when
-            # ``SPEC_CRITIC_TABLE_CELL_AUTO_EDIT=0``. The finding still flows
-            # through the report path; only the silent in-place mutation is
-            # suppressed.
+            # Operator switch: refuse every table-cell auto-edit when
+            # ``SPEC_CRITIC_TABLE_CELL_AUTO_EDIT=0``. The finding still
+            # flows through the report path; only the silent in-place
+            # mutation is suppressed.
             if not _table_cell_auto_edit_enabled():
                 detail = (
                     "Auto-edit refused: table-cell auto-edit is disabled "
@@ -1208,11 +1207,11 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 )
                 continue
 
-            # Chunk 9: refuse table cells whose target paragraph (or any
-            # ancestor cell content) carries unsafe markup. Cell-scoped
-            # check is conservative on purpose: hyperlinks/fields/etc.
-            # anywhere in the same cell tend to share runs/relationships
-            # with the target paragraph.
+            # Refuse table cells whose target paragraph (or any ancestor
+            # cell content) carries unsafe markup. Cell-scoped check is
+            # conservative on purpose: hyperlinks/fields/etc. anywhere in
+            # the same cell tend to share runs/relationships with the
+            # target paragraph.
             cell_element = target_paragraph._element.getparent()
             unsafe_target = _refuse_unsafe_outcome(
                 action,
@@ -1226,8 +1225,8 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
 
             paragraph_before = target_paragraph.text
 
-            # Chunk F: same offset-safety contract as the paragraph path.
-            # The table-cell resolver finds the expected text by substring
+            # Same offset-safety contract as the paragraph path. The
+            # table-cell resolver finds the expected text by substring
             # search, but a prior edit in this pass could have shifted or
             # duplicated it; revalidate and use the precondition's
             # (possibly corrected) offsets for the actual replacement.
@@ -1293,10 +1292,10 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             _apply_add_action(action, doc, original_body_children=body_children)
         )
 
-    # Whole-paragraph DELETEs run last (audit Section 8.4). Descending body
-    # order keeps the snapshot indices stable and avoids any chance that a
-    # remove() upstream of an ADD anchor could orphan that anchor before the
-    # ADD applied.
+    # Whole-paragraph DELETEs run last. Descending body order keeps the
+    # snapshot indices stable and avoids any chance that a remove()
+    # upstream of an ADD anchor could orphan that anchor before the ADD
+    # applied.
     for action in whole_delete_actions:
         mapping = action.location.mapping
         if mapping.body_index < 0 or mapping.body_index >= len(body_children):
@@ -1336,10 +1335,10 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         paragraph = Paragraph(element, doc)
         paragraph_before = paragraph.text
 
-        # Chunk 9: refuse to delete a paragraph that owns unsafe markup. A
-        # whole-paragraph delete that strips a hyperlink or field can leave
-        # orphan relationships/bookmarks in document.xml.rels and other
-        # ancillary parts; safer to route to manual review.
+        # Refuse to delete a paragraph that owns unsafe markup. A
+        # whole-paragraph delete that strips a hyperlink or field can
+        # leave orphan relationships/bookmarks in document.xml.rels and
+        # other ancillary parts; safer to route to manual review.
         refusal = _refuse_unsafe_outcome(
             action,
             element=element,
@@ -1379,14 +1378,13 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             )
         )
 
-    # Chunk 9 — transactional all-or-none output. Serialize to a buffer
-    # first; if *any* individual edit ended in ``failed``, suppress the
-    # output write entirely so the user does not silently receive a
-    # partially mutated file. Skipped outcomes (precondition revalidation,
-    # unsafe-markup refusal, ambiguous overlap) are deliberate refusals,
-    # not failures, and do NOT abort the write. Operators can opt out via
-    # ``SPEC_CRITIC_EDIT_TRANSACTIONAL=0`` if they need the legacy
-    # best-effort behavior.
+    # Transactional all-or-none output. Serialize to a buffer first; if
+    # *any* individual edit ended in ``failed``, suppress the output write
+    # entirely so the user does not silently receive a partially mutated
+    # file. Skipped outcomes (precondition revalidation, unsafe-markup
+    # refusal, ambiguous overlap) are deliberate refusals, not failures,
+    # and do NOT abort the write. Operators can opt out via
+    # ``SPEC_CRITIC_EDIT_TRANSACTIONAL=0`` for best-effort behavior.
     buf = BytesIO()
     try:
         doc.save(buf)
@@ -1527,10 +1525,10 @@ def build_edit_actions(
 ) -> list[EditAction]:
     """Convert locator results into mutating edit actions.
 
-    Phase 4: gate auto-application on locator-level safety categories. Only
-    AUTO_SAFE results are accepted by default; AUTO_WITH_CAUTION is included
-    when allow_caution is True (preserves existing behavior). MANUAL_REVIEW
-    and REPORT_ONLY locator results never produce actions.
+    Gates auto-application on locator-level safety categories: only
+    AUTO_SAFE results are accepted by default; AUTO_WITH_CAUTION is
+    included when allow_caution is True. MANUAL_REVIEW and REPORT_ONLY
+    locator results never produce actions.
     """
     actions: list[EditAction] = []
     for finding_index, result in enumerate(locator_results):
