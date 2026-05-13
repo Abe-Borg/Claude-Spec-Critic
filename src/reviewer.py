@@ -37,33 +37,7 @@ from .structured_schemas import (
     structured_tool_output_enabled,
 )
 
-REVIEW_MODELS = {"Opus 4.7": MODEL_OPUS_47}
 StreamCallback = Callable[[str], None]
-
-# ---------------------------------------------------------------------------
-# Retryable-connection-failure helper (Chunk 6)
-# ---------------------------------------------------------------------------
-# The legacy ``_is_retryable_connection_error`` helper used a string-match
-# heuristic against the exception message body. Chunk 6 replaces it with
-# :func:`retry_policy.classify_exception`, which checks the typed SDK
-# exceptions first (``APIConnectionError`` / ``RateLimitError`` /
-# ``InternalServerError`` / ``APIStatusError``) and falls back to the
-# substring scan only for generic ``Exception`` instances that escaped
-# the SDK's translation layer (audit Issue 9). The wrapper below is
-# preserved for backward compatibility with external callers / tests
-# that imported the legacy name; it now delegates to the centralized
-# classifier.
-
-
-def _is_retryable_connection_error(exc: Exception) -> bool:
-    """Return True if ``exc`` looks like a retryable transport failure.
-
-    Deprecated in Chunk 6 — prefer
-    :func:`src.retry_policy.classify_exception` directly. Kept as a
-    thin wrapper so external callers don't have to flip in lockstep.
-    """
-    return classify_exception(exc) is FailureClass.CONNECTION
-
 
 # Chunk L / plan section "Separate Findings From Edit Proposals":
 # ``REPORT_ONLY`` is the explicit "no edit proposal" action type. Findings

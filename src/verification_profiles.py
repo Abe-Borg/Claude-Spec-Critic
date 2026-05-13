@@ -22,12 +22,6 @@ Public surface:
 - :func:`classify_finding_profile` — pure function over a ``Finding``.
 - :func:`profile_max_uses` — severity-based search budget (profile arg
   is accepted for call-site compatibility but ignored).
-- :func:`profile_label` — short string used in reports/diagnostics.
-- :func:`profile_priority_domains` — the authoritative-source guidance
-  appended to the verifier system prompt for the chosen profile.
-- :func:`profile_web_search_required` — False for the internal-
-  coordination profile (where web search adds no signal); True
-  otherwise.
 """
 from __future__ import annotations
 
@@ -64,35 +58,6 @@ class VerificationProfile(str, Enum):
     """Finding is internally verifiable from the spec text alone — an
     internal contradiction, a formatting issue, a placeholder, a typo,
     or a duplicate. Web search adds no signal."""
-
-
-# Short human-readable labels for reports / diagnostics. Keep these
-# stable; they appear in the diagnostics text output.
-_PROFILE_LABELS: dict[VerificationProfile, str] = {
-    VerificationProfile.CODE_STANDARD: "Code / Standard",
-    VerificationProfile.CALIFORNIA_AHJ: "California / AHJ",
-    VerificationProfile.MANUFACTURER: "Manufacturer / Product",
-    VerificationProfile.CONSTRUCTABILITY: "Constructability",
-    VerificationProfile.INTERNAL_COORDINATION: "Internal Coordination",
-}
-
-
-def profile_label(profile: VerificationProfile | str | None) -> str:
-    """Return the human-readable label for ``profile``.
-
-    Accepts the enum, its string value, or ``None`` (returns ``""``).
-    Unknown strings round-trip unchanged so future profiles flowing in
-    from cached entries still render legibly.
-    """
-    if profile is None:
-        return ""
-    if isinstance(profile, VerificationProfile):
-        return _PROFILE_LABELS[profile]
-    # String — accept either the enum value or an already-pretty label.
-    try:
-        return _PROFILE_LABELS[VerificationProfile(profile)]
-    except (KeyError, ValueError):
-        return str(profile)
 
 
 # Keyword sets per profile. Order matters: classification checks
@@ -295,85 +260,3 @@ def profile_max_uses(
     return web_search_max_uses_for_severity(severity)
 
 
-def profile_web_search_required(
-    profile: VerificationProfile | str | None,
-) -> bool:
-    """Whether web search is meaningful for this profile.
-
-    Returns ``False`` only for ``INTERNAL_COORDINATION`` — the verifier
-    can still attach the web_search tool (the model is allowed to
-    self-route), but the calling pipeline can use this as a cheap gate
-    to skip web verification entirely. Today only the diagnostics path
-    consults this; the verifier itself defers to
-    :mod:`verification_router` for the local-skip decision so the two
-    code paths agree on which findings bypass web search.
-    """
-    if isinstance(profile, str):
-        try:
-            profile = VerificationProfile(profile)
-        except ValueError:
-            return True
-    return profile is not VerificationProfile.INTERNAL_COORDINATION
-
-
-# Authoritative-source language emitted into the verifier system
-# prompt. Keep this in stable-prefix space so prompt-cache breakpoints
-# do not invalidate per finding. Only the profile-specific paragraph
-# changes between calls; the rest of the system prompt is byte-for-
-# byte identical across profiles, so the cache prefix still fires for
-# any two findings of the same profile.
-
-_PROFILE_PROMPT_GUIDANCE: dict[VerificationProfile, str] = {
-    VerificationProfile.CALIFORNIA_AHJ: (
-        "Verification profile: California / AHJ. Prefer California regulatory\n"
-        "authorities (dgs.ca.gov, dsa.ca.gov, hcai.ca.gov, bsc.ca.gov,\n"
-        "energy.ca.gov) and the current California-amended code editions.\n"
-        "Treat model-code (CBC/CMC/CPC/CEC) sources as authoritative only\n"
-        "when the cited section matches the active California amendment;\n"
-        "otherwise fall back to UNVERIFIED."
-    ),
-    VerificationProfile.CODE_STANDARD: (
-        "Verification profile: Code / Standard. Prefer code-publisher\n"
-        "primary sources (up.codes, codes.iccsafe.org) and standards-body\n"
-        "domains (nfpa.org, ashrae.org, iapmo.org, smacna.org, astm.org,\n"
-        "asce.org) over secondary commentary. Confirm both the section\n"
-        "number and the edition cited in the finding."
-    ),
-    VerificationProfile.MANUFACTURER: (
-        "Verification profile: Manufacturer / Product. Prefer the\n"
-        "manufacturer's own technical data pages and listing-agency\n"
-        "databases (ul.com, fmglobal.com). When a datasheet contradicts\n"
-        "a regulatory source, treat the regulatory source as authoritative."
-    ),
-    VerificationProfile.CONSTRUCTABILITY: (
-        "Verification profile: Constructability. Prefer authoritative\n"
-        "industry references (mcaa.org, smacna.org, ashrae.org) for\n"
-        "general technical claims. Broad web search is acceptable when\n"
-        "tier-1 sources do not address the claim."
-    ),
-    VerificationProfile.INTERNAL_COORDINATION: (
-        "Verification profile: Internal Coordination. This finding is\n"
-        "expected to be verifiable from the spec text alone — quote the\n"
-        "contradictory passages or placeholder text and return UNVERIFIED\n"
-        "rather than searching the web."
-    ),
-}
-
-
-def profile_priority_domains(
-    profile: VerificationProfile | str | None,
-) -> str:
-    """Return the authoritative-source guidance paragraph for a profile.
-
-    Empty string for unknown profiles so the verifier system prompt
-    degrades gracefully when an operator wires in a future profile
-    that this module does not yet know about.
-    """
-    if isinstance(profile, str):
-        try:
-            profile = VerificationProfile(profile)
-        except ValueError:
-            return ""
-    if profile is None:
-        return ""
-    return _PROFILE_PROMPT_GUIDANCE.get(profile, "")
