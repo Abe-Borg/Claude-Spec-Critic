@@ -14,44 +14,65 @@ Real-time and batch share identical prompts, models, tool schemas, output caps, 
 
 ```
 src/
-├── __init__.py             # Package version (2.11.0)
-├── gui.py                  # CustomTkinter GUI
+# UI
+├── gui.py                  # CustomTkinter app shell
 ├── widgets.py              # Reusable UI components
+├── about_usage_dialogs.py  # About / API-usage dialogs
+├── *_controller.py         # 8 thin bridges between widgets and pipeline
+                            # (batch, context, diagnostics, edit_workflow,
+                            #  file_selection, report, review_run, token_analysis)
+
+# Orchestration / config
 ├── pipeline.py             # Core orchestration + FindingGroup/FindingOccurrence
-├── api_config.py           # Centralized model/output-cap/feature-flag config
+├── api_config.py           # Models / output caps / feature-flag config
 ├── structured_schemas.py   # Tool-use schemas for review/cross-check/verification
-├── review_modes.py         # Strict / Comprehensive / Safe-edit profiles
 ├── prompts.py              # System + user prompt builders
-├── prompt_serialization.py # Central escape/wrap helpers for prompt boundaries
+├── prompt_serialization.py # Escape/wrap helpers for prompt boundaries
+
+# Review
 ├── reviewer.py             # Anthropic API client (streaming + tool-use parsing)
 ├── review_request_builder.py # Central review request shape builder
 ├── cross_checker.py        # Cross-spec coordination (chunked by CSI division)
-├── verifier.py             # Verification (Sonnet/Opus routing, real-time fallback)
-├── verification_router.py  # Initial/escalation model + local-skip classification
+
+# Verification
+├── verifier.py             # Real-time + batch verification orchestrator
+├── verification_router.py  # Local pre-classification (local_skip / web_required)
 ├── verification_cache.py   # Persistent claim-keyed verdict cache (JSON on disk)
 ├── verification_profiles.py # Profile classifier + severity-based search budget
-├── verification_modes.py   # Explicit verification modes + per-mode policy
+├── verification_modes.py   # Verification modes + per-mode policy
 ├── verification_routing.py # Unified routing decision + request builder
 ├── source_grounding.py     # URL normalization + cited-source validation
 ├── retry_policy.py         # Retry, continuation, and batch-failure taxonomy
 ├── triage.py               # Haiku-based verification triage (opt-in)
-├── verification_config.py  # Backward-compat re-exports from api_config
+
+# Batch
 ├── batch.py                # Anthropic Message Batches API wrapper
 ├── batch_runtime.py        # Bounded polling with progressive backoff
+├── batch_state_store.py    # Atomic JSON state store for batch resume
+
+# Spec input
 ├── extractor.py            # DOCX text extraction (parallelized)
 ├── extraction_cache.py     # LRU caches for extraction + API token counts
 ├── preprocessor.py         # Deterministic local detectors
 ├── tokenizer.py            # Local + Anthropic token counting
-├── edit_locator.py         # Exact / normalized / fuzzy / section-anchored matching
+
+# Edits
+├── edit_locator.py         # Exact / normalized / fuzzy / id-anchored matching
 ├── edit_candidates.py      # Edit safety categories
-├── spec_editor.py          # Surgical edits
+├── spec_editor.py          # Surgical DOCX edits (transactional)
 ├── apply_edits.py          # locate → action build → apply
+
+# Output / state
 ├── report_exporter.py      # Word (.docx) report generation
 ├── report_status.py        # ReportStatus / EditActionLabel + classifiers
 ├── resume_state.py         # Durable resume state (with file-hash validation)
 ├── diagnostics.py          # In-memory diagnostics report
 ├── cost_estimator.py       # USD cost estimator
+
+# Misc
+├── __init__.py             # Package version (2.11.0)
 ├── api_key_store.py        # API key loading and persistence
+├── app_paths.py            # Platform config/state directories
 └── code_cycles.py          # California code cycle definitions
 ```
 
@@ -89,7 +110,7 @@ These are the contracts the agent should preserve when editing the code. Field-l
 When `Finding.evidenceElementId` is set, `edit_locator._id_anchored_match` revalidates the recorded quote against the cited paragraph. If the id is missing or the quote no longer matches, the locator returns `SAFETY_MANUAL_REVIEW` — it does **not** fall back to whole-document text matching. A quoted-text match elsewhere in the document is treated as suspect.
 
 ### Transactional edit writes
-`spec_editor.apply_edits_to_spec` saves to an in-memory buffer first and re-opens it as a `Document` to validate before writing to disk. If any individual outcome ended in `failed`, the disk write is suppressed entirely and previously-applied outcomes demote to `skipped` with `EditReport.aborted_transactional` set. Unsafe-markup skips do NOT abort the transactional write. Override: `SPEC_CRITIC_EDIT_TRANSACTIONAL=0`.
+`spec_editor.apply_edits_to_spec` saves to an in-memory buffer first and re-opens it as a `Document` to validate before writing to disk. If any individual outcome ended in `failed`, the disk write is suppressed entirely and previously-applied outcomes demote to `skipped` with `EditReport.aborted_transactional` set. Unsafe-markup skips do NOT abort the transactional write.
 
 ### Conflict resolution order
 `spec_editor._detect_and_resolve_conflicts` processes overlapping edits in descending start-offset order within each `(body_index, element_type, row_index)` group so downstream edits apply before upstream edits shift their offsets. Strict containment → broader edit wins; identical spans → severity/confidence tie-break; partial overlap → both edits skipped to manual review. `ambiguous_ranges` tracking ensures a third edit overlapping a discarded pair's union span is also routed to manual review.
@@ -113,7 +134,7 @@ The instruction prefix in front of `<spec ` must stay byte-identical across call
 `api_config.model_capabilities(model)` is the single source of truth for adaptive-thinking / extended-output / 1M-context eligibility. Whitelist covers Opus 4.7, Sonnet 4.6, Haiku 4.5. **Unknown model ids degrade to safe defaults that disable every capability flag** — a misconfigured env var produces a smaller request, never an API rejection. Haiku phases (triage) never carry the `thinking` key.
 
 ### Verification cache key
-`cycle_label | actionType | codeReference | sha256(claim_summary)`. Intentionally omits the verifier model — `VerificationResult.model_used` is stored as provenance inside the entry. Switching `SPEC_CRITIC_VERIFICATION_MODEL` does NOT invalidate existing entries; switching the code cycle does. Claim digest is 24 hex chars; legacy 16-char form (`_LEGACY_CLAIM_DIGEST_LEN`) misses → re-grounds → writes new 24-char entry.
+`cycle_label | actionType | codeReference | sha256(claim_summary)`. Intentionally omits the verifier model — `VerificationResult.model_used` is stored as provenance inside the entry. Switching `SPEC_CRITIC_VERIFICATION_MODEL` does NOT invalidate existing entries; switching the code cycle does. Claim digest is 24 hex chars; older 16-char entries miss → re-ground → write new 24-char entries (`_CACHE_SCHEMA_VERSION` bump drops the legacy shape).
 
 ### Deterministic-rule ids are public
 Every preprocessor alert carries a stable `deterministic_rule` id (exposed as `DETERMINISTIC_RULE_*` constants and the `DETERMINISTIC_RULES` frozenset). The verification router's local-skip keyword list recognizes the rule names, so a GRIPES finding mentioning `todo` / `lorem ipsum` / `duplicate paragraph` / etc. is locally skipped. CRITICAL/HIGH and any non-empty `codeReference` still force `web_required`.
@@ -147,8 +168,6 @@ Profile picks the priority-source language attached to the verifier system promp
 | `manufacturer` | mentions a manufacturer / model number / datasheet / submittal |
 | `constructability` | default for substantive technical claims |
 | `internal_coordination` | mentions internal contradiction / placeholder / LEED / typo / duplicate paragraph |
-
-`profile_web_search_required(profile)` returns False only for `INTERNAL_COORDINATION`.
 
 ### Search budget (`api_config._SEVERITY_MAX_USES`)
 
@@ -285,12 +304,11 @@ Phase constants in `resume_state.py`: `PHASE_REVIEW_POLL`, `PHASE_REVIEW_COLLECT
 
 Hermetic by default — no API key, no network, runs in a few seconds.
 
-- `tests/conftest.py` injects placeholder `ANTHROPIC_API_KEY`. `@pytest.mark.network` tests skip unless a real key is set.
-- GUI tests skip at collection time when `tkinter` is unavailable (`pytest_ignore_collect` in conftest).
-- Markers: `smoke`, `fixtures`, `request_shape`, `parser_unification`, `token_budget`, `prompt_serialization`, `source_grounding`, `verification_modes`, `slow`, `network`.
-- Fake Anthropic response builders: `tests/fixtures/fake_anthropic.py`. Cases: structured review tool call, structured verification verdict (incl. `stop_reason="tool_use"`), JSON-text fallback, `max_tokens` incomplete. `dict_shape=True` emits plain-dict variants for the batch retrieval path.
+- `tests/conftest.py` injects a placeholder `ANTHROPIC_API_KEY`. `@pytest.mark.network` tests skip unless a real key is set.
+- GUI tests skip at collection time when `tkinter` is unavailable.
+- Markers registered in `pyproject.toml`: `token_budget`, `prompt_serialization`, `network`.
+- Fake Anthropic response builders: `tests/fixtures/fake_anthropic.py` (tool-use, JSON-text fallback, `max_tokens` incomplete; `dict_shape=True` emits plain-dict variants for the batch retrieval path).
 - In-memory DOCX builders: `tests/fixtures/docx_fixtures.py`.
-- `FakeClient` in `test_request_payload_shape.py` captures kwargs passed to `messages.stream`, `messages.batches.create`, `beta.messages.batches.create`. The `fake_client` fixture monkeypatches `_get_client` in `reviewer` / `batch` / `verifier` / `cross_checker`.
 
 ---
 

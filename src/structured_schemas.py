@@ -29,11 +29,6 @@ def structured_tool_output_enabled() -> bool:
     return True
 
 
-def structured_outputs_enabled() -> bool:
-    """Deprecated alias for :func:`structured_tool_output_enabled`."""
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Shared finding object schema (review + cross-check)
 # ---------------------------------------------------------------------------

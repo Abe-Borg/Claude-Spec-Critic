@@ -60,9 +60,3 @@ def api_key_paths() -> list[Path]:
 
 def batch_state_path() -> Path:
     return app_state_dir() / BATCH_STATE_FILENAME
-
-
-# Backward-compatible private aliases (the legacy gui.py used underscore-prefixed
-# names). Kept for any external callers; new code should use the public names.
-_app_config_dir = app_config_dir
-_app_state_dir = app_state_dir
