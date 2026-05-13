@@ -31,9 +31,9 @@ _ESCALATION_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
 # deterministic checks. A GRIPES-severity finding whose ``issue`` text says
 # "duplicate paragraph" or "invalid code cycle year" should not pay for a
 # Sonnet+web_search round-trip because the preprocessor already detected
-# the same problem locally. Keep this aligned with
-# ``preprocessor.DETERMINISTIC_RULES`` for parity with the rule labels the
-# report renders.
+# the same problem locally. Keep this aligned with the
+# ``preprocessor.DETERMINISTIC_RULE_*`` constants for parity with the rule
+# labels the report renders.
 _LOCAL_SKIP_KEYWORDS = (
     "placeholder",
     "[select]",

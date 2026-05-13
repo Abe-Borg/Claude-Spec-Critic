@@ -130,7 +130,6 @@ _DEFAULT_MAX_CONTINUATIONS = DEFAULT_MAX_CONTINUATIONS
 # without parsing free text. Stable on purpose — adding a new tag is fine
 # but renaming an existing one breaks the aggregation.
 TRACE_LOCAL_SKIP = "local_skip"
-TRACE_LOCAL_SKIP_BYPASSED = "local_skip_bypassed_by_caller"
 TRACE_CACHED_MODE = "cached_mode_replay"
 TRACE_ESCALATED = "escalated_to_deep"
 TRACE_CRITICAL_CALIFORNIA = "critical_california_ahj_initial_deep"
@@ -664,7 +663,6 @@ def apply_routing_to_result(
 
 __all__ = [
     "TRACE_LOCAL_SKIP",
-    "TRACE_LOCAL_SKIP_BYPASSED",
     "TRACE_CACHED_MODE",
     "TRACE_ESCALATED",
     "TRACE_CRITICAL_CALIFORNIA",

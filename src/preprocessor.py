@@ -94,21 +94,6 @@ DETERMINISTIC_RULE_INVALID_CODE_CYCLE: str = "invalid_code_cycle"
 DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH: str = "duplicate_paragraph"
 DETERMINISTIC_RULE_INCONSISTENT_FILENAME: str = "inconsistent_filename"
 
-# Every rule id in one place so the report / diagnostics / tests can iterate
-# without enumerating constants individually.
-DETERMINISTIC_RULES: frozenset[str] = frozenset({
-    DETERMINISTIC_RULE_LEED,
-    DETERMINISTIC_RULE_PLACEHOLDER,
-    DETERMINISTIC_RULE_STALE_CODE_CYCLE,
-    DETERMINISTIC_RULE_STALE_ASCE7,
-    DETERMINISTIC_RULE_EMPTY_SECTION,
-    DETERMINISTIC_RULE_DUPLICATE_HEADING,
-    DETERMINISTIC_RULE_TEMPLATE_MARKER,
-    DETERMINISTIC_RULE_INVALID_CODE_CYCLE,
-    DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH,
-    DETERMINISTIC_RULE_INCONSISTENT_FILENAME,
-})
-
 
 # -----------------------------------------------------------------------------
 # Detection Patterns

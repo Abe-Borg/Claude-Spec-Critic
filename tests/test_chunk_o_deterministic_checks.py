@@ -39,7 +39,6 @@ from src.preprocessor import (
     DETERMINISTIC_RULE_STALE_ASCE7,
     DETERMINISTIC_RULE_STALE_CODE_CYCLE,
     DETERMINISTIC_RULE_TEMPLATE_MARKER,
-    DETERMINISTIC_RULES,
     PreprocessResult,
     detect_duplicate_headings,
     detect_duplicate_paragraphs,

@@ -14,7 +14,6 @@ Public surface:
 - :func:`select_verification_mode` — pure-function router from a
   ``Finding`` (+ context) to a :class:`VerificationMode`.
 - :func:`mode_policy` — table lookup.
-- :func:`mode_label` — pretty label for reports / diagnostics.
 
 Design rules:
 
@@ -77,34 +76,6 @@ class VerificationMode(str, Enum):
     straight to Opus) and for escalation re-runs of CRITICAL / HIGH
     findings that the standard pass could not ground. Terminal — a
     deep-reasoning result does not escalate further."""
-
-
-# Short human-readable labels for reports / diagnostics. Stable on
-# purpose: they appear in diagnostics text output and serialized
-# verification records.
-_MODE_LABELS: dict[VerificationMode, str] = {
-    VerificationMode.LOCAL_SKIP: "Local skip",
-    VerificationMode.STRICT_STRUCTURED: "Strict structured",
-    VerificationMode.STANDARD_REASONING: "Standard reasoning",
-    VerificationMode.DEEP_REASONING: "Deep reasoning",
-}
-
-
-def mode_label(mode: VerificationMode | str | None) -> str:
-    """Return the human-readable label for ``mode``.
-
-    Accepts the enum, its string value, or ``None`` (returns ``""``).
-    Unknown strings round-trip unchanged so future modes flowing in
-    from cached entries still render legibly.
-    """
-    if mode is None:
-        return ""
-    if isinstance(mode, VerificationMode):
-        return _MODE_LABELS[mode]
-    try:
-        return _MODE_LABELS[VerificationMode(mode)]
-    except (KeyError, ValueError):
-        return str(mode)
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +306,6 @@ def select_verification_mode(
 __all__ = [
     "VerificationMode",
     "ModePolicy",
-    "mode_label",
     "mode_policy",
     "select_verification_mode",
 ]
