@@ -61,10 +61,6 @@ _EDITABILITY_CLAUSE = (
 )
 
 
-# Stable, cacheable few-shot examples. The examples must not vary with per-spec
-# content — they are part of the cached system-prompt prefix (keyed by cycle).
-# They must NOT mention ``evidenceElementId`` or ``<para id="…">`` — those are
-# per-request concepts pinned by ``test_system_prompt_unchanged_after_chunk_k``.
 _REVIEW_EXAMPLES = """\
 Example 1 — valid EDIT (stale code-cycle reference):
 {
@@ -254,9 +250,6 @@ _FINAL_TASK_BASE_LINES = (
     "- Submit findings once via the submit_review_findings tool. Do not call it twice.",
     "- Drop any finding that lacks concrete evidence quoted from the document above.",
     "- Ensure every edit field matches its actionType (see the output rules in the system prompt).",
-    # Avoid the literal ``<pre_detected>`` substring here — the env-toggle test
-    # asserts that opening tag is absent when alerts are off, and a bullet that
-    # references the tag verbatim would defeat that substring check.
     "- Do not duplicate items already flagged as pre-detected alerts above.",
 )
 _FINAL_TASK_ID_LINE = (

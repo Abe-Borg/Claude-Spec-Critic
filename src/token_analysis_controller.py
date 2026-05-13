@@ -23,11 +23,6 @@ from .prompts import get_system_prompt
 from .tokenizer import exceeds_per_call_limit
 
 
-# Chunk D2.2: 300–500 ms recommended by the delta plan. 400 ms balances
-# perceived responsiveness against absorbing typical file-toggle bursts;
-# the existing project-context typing debounce (``_context_debounce_id``)
-# uses 300 ms, and a slightly longer window here covers file-load churn
-# (drops + browse) which is naturally slower than keystroke typing.
 EXACT_TOKEN_REFRESH_DEBOUNCE_MS = 400
 
 
@@ -39,16 +34,9 @@ def analyze_tokens(app, file_paths) -> None:
         return
     app.log.log_step(f"Analyzing {len(file_paths)} files...")
 
-    # Capture every UI-thread value the worker needs *before* spawning
-    # the thread; reading Tkinter state from a background thread is not
-    # safe.
     project_context = app._get_project_context()
     cycle = DEFAULT_CYCLE
 
-    # Stale-result guard: bump and capture the analysis epoch. A newer
-    # analysis bumps the epoch; older threads see their captured value
-    # differs from ``app._analysis_epoch`` and silently drop their
-    # results.
     app._analysis_epoch += 1
     captured_epoch = app._analysis_epoch
 
@@ -98,10 +86,6 @@ def analyze_tokens(app, file_paths) -> None:
                     state="disabled" if b else "normal"
                 ))
                 _dispatch_if_current(lambda b=per_file_limit_exceeded: app.file_list_panel.set_over_limit(b))
-                # After the cl100k_base estimate, kick off an exact
-                # Anthropic count_tokens call for the largest spec and
-                # re-render the gauge with the exact value. The local
-                # estimate stays visible while the API call is in flight.
                 refresh_exact_token_count(
                     app, file_data, extracted_specs, project_context, cycle,
                     sys_tokens, ctx_tokens, _dispatch_if_current,
@@ -161,8 +145,6 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
                 biggest_spec.filename,
                 project_context=project_context,
                 cycle=cycle,
-                # Chunk K2: the GUI token gauge must measure the real
-                # request, so id-tagged element overhead is reflected.
                 paragraph_map=biggest_spec.paragraph_map,
             )
             exact = count_tokens_via_api(
@@ -179,26 +161,17 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
                 level="muted",
             ))
         except Exception:
-            # Silent fallback — the cl100k_base estimate is already on screen.
             return
 
     def _launch_thread():
-        # Clear the timer id before launching so the next refresh call
-        # doesn't try to cancel an already-fired timer.
         app._exact_token_refresh_timer_id = None
         threading.Thread(target=_exact, daemon=True).start()
 
-    # Cancel any pending debounce timer and reschedule. Each rapid
-    # invocation slides the deadline forward — only the final state
-    # ever launches the thread.
     prev_timer_id = getattr(app, "_exact_token_refresh_timer_id", None)
     if prev_timer_id is not None:
         try:
             app.after_cancel(prev_timer_id)
         except Exception:
-            # Already fired or invalid id; safe to ignore — we always
-            # overwrite ``_exact_token_refresh_timer_id`` immediately
-            # below.
             pass
     app._exact_token_refresh_timer_id = app.after(
         EXACT_TOKEN_REFRESH_DEBOUNCE_MS, _launch_thread,

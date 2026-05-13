@@ -29,15 +29,10 @@ def structured_tool_output_enabled() -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# Shared finding object schema (review + cross-check)
-# ---------------------------------------------------------------------------
 
 _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    # All properties are required so strict-mode constrained sampling has a
-    # deterministic shape to fill. Optional values use nullable types.
     "required": [
         "severity",
         "fileName",
@@ -50,8 +45,6 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
         "confidence",
         "anchorText",
         "insertPosition",
-        # Chunk K3: optional evidence pointer. Required-but-nullable so
-        # strict-mode constrained sampling still has a deterministic shape.
         "evidenceElementId",
     ],
     "properties": {
@@ -74,11 +67,6 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
         },
         "actionType": {
             "type": "string",
-            # Chunk L / plan section "Separate Findings From Edit Proposals":
-            # ``REPORT_ONLY`` is the explicit "this finding has no clean
-            # textual fix" choice. Models no longer have to manufacture a
-            # replacement quote for coordination / interpretation findings
-            # — they emit REPORT_ONLY and leave the edit-shaped slots null.
             "enum": ["ADD", "EDIT", "DELETE", "REPORT_ONLY"],
             "description": (
                 "Whether the fix is to add, edit, or delete text, or "
@@ -113,15 +101,6 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
             "enum": ["before", "after", None],
             "description": "ADD only: insert before or after the anchor.",
         },
-        # Chunk K3 / plan section "Chunk K — Stable Document IDs": when the
-        # prompt renders spec elements with id attributes, the model should
-        # cite the element id of the paragraph / row / heading the finding
-        # quotes. The id is a stable per-run identifier (e.g. ``p17``,
-        # ``t2r3``) emitted by the extractor — see ``ParagraphMapping.element_id``.
-        # The locator uses the id to disambiguate identical text in
-        # different sections and to revalidate the target before mutating.
-        # Nullable so existing behavior remains the fallback when the model
-        # cannot identify a unique element with confidence.
         "evidenceElementId": {
             "type": ["string", "null"],
             "description": (
@@ -153,13 +132,6 @@ REVIEW_FINDINGS_SCHEMA: dict[str, Any] = {
 }
 
 
-# Chunk M / plan section "Cross-Check Dependency Tracking": cross-check
-# findings extend the shared finding schema with two dependency-tracking
-# fields so post-verification suppression can be deterministic instead of
-# heuristic. Both fields are required arrays — empty is the explicit "no
-# dependency" / "no independent evidence" signal — so strict-mode
-# constrained sampling still has a deterministic shape. The shared
-# ``_FINDING_OBJECT_SCHEMA`` is untouched so review findings stay clean.
 def _build_cross_check_finding_object_schema() -> dict[str, Any]:
     properties: dict[str, Any] = dict(_FINDING_OBJECT_SCHEMA["properties"])
     properties["upstreamFindingIds"] = {
@@ -292,11 +264,6 @@ VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Tool builders. Each returns a single tool dict that callers pass via
-# ``tools=[...]`` together with ``tool_choice={"type": "auto"}`` (forcing
-# tool_choice is incompatible with adaptive thinking; see module docstring).
-# ---------------------------------------------------------------------------
 
 _REVIEW_TOOL_NAME = "submit_review_findings"
 _CROSS_CHECK_TOOL_NAME = "submit_cross_check_findings"
@@ -380,25 +347,13 @@ def verification_verdict_tool() -> dict[str, Any]:
 
 
 def review_tool_choice() -> dict[str, Any]:
-    # Any forcing tool_choice ({"type": "tool", "name": ...} or {"type": "any"})
-    # is rejected by the API when ``thinking`` is enabled. Use {"type": "auto"}
-    # so adaptive thinking is preserved; with only one tool exposed and the
-    # system prompt instructing the model to call it, the tool is reliably —
-    # but not contractually — invoked. The tagged-JSON text parser is the
-    # documented fallback for the path where the model returns text instead.
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 def cross_check_tool_choice() -> dict[str, Any]:
     return {"type": "auto", "disable_parallel_tool_use": True}
 
-# Verification cannot use a forcing tool_choice because the model needs to
-# call ``web_search`` first; instead the prompt instructs the model to emit
-# the verdict tool as the final step. ``any`` lets it pick web_search early.
 
 
-# ---------------------------------------------------------------------------
-# Response unpacking
-# ---------------------------------------------------------------------------
 
 def _coerce_to_dict(value: Any) -> dict[str, Any] | None:
     """Best-effort conversion of an SDK value to a plain dict.
@@ -444,7 +399,6 @@ def extract_tool_use_block(response: object, tool_name: str) -> dict[str, Any] |
     if not content:
         return None
     for block in content:
-        # SDK objects expose ``type``/``name`` as attrs; plain dicts use keys.
         btype = getattr(block, "type", None)
         if btype is None and isinstance(block, dict):
             btype = block.get("type")

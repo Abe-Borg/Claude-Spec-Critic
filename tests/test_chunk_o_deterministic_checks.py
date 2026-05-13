@@ -56,13 +56,7 @@ from src.reviewer import Finding
 from src.verification_router import classify_finding_for_verification
 
 
-# ---------------------------------------------------------------------------
-# Rule id wiring
-# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# detect_unresolved_template_markers
-# ---------------------------------------------------------------------------
 
 class TestUnresolvedTemplateMarkers:
     def test_flags_todo_with_colon(self) -> None:
@@ -71,13 +65,10 @@ class TestUnresolvedTemplateMarkers:
         assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_TEMPLATE_MARKER for a in alerts)
 
     def test_flags_todo_followed_by_uppercase_word(self) -> None:
-        # Bare ``TODO Confirm`` is also flagged so capitalized continuations
-        # don't slip past the colon-only rule.
         alerts = detect_unresolved_template_markers("TODO Confirm hanger spacing.", "s.docx")
         assert any("TODO" in a["match"].upper() for a in alerts)
 
     def test_does_not_flag_lowercase_to_do_phrase(self) -> None:
-        # "things to do" in prose must not trigger.
         alerts = detect_unresolved_template_markers(
             "There are several things to do before submittal.", "s.docx"
         )
@@ -92,7 +83,6 @@ class TestUnresolvedTemplateMarkers:
         assert any("XXX" in a["match"].upper() for a in alerts)
 
     def test_does_not_flag_model_number_like_xxx_dash(self) -> None:
-        # Model numbers ("XXX-12") and digits ("XXX2") should not trigger.
         alerts = detect_unresolved_template_markers("Model XXX-12 specified.", "s.docx")
         assert alerts == []
 
@@ -101,8 +91,6 @@ class TestUnresolvedTemplateMarkers:
         assert any("???" in a["match"] for a in alerts)
 
     def test_does_not_flag_double_question(self) -> None:
-        # Two question marks ("Is it correct??") are not the placeholder
-        # we want to flag.
         alerts = detect_unresolved_template_markers("Is this correct??", "s.docx")
         assert alerts == []
 
@@ -122,13 +110,9 @@ class TestUnresolvedTemplateMarkers:
         assert "context" in a
 
 
-# ---------------------------------------------------------------------------
-# detect_invalid_code_cycle_strings
-# ---------------------------------------------------------------------------
 
 class TestInvalidCodeCycleStrings:
     def test_flags_2018_cbc_as_invalid(self) -> None:
-        # California never published a 2018 cycle.
         alerts = detect_invalid_code_cycle_strings("Per the 2018 CBC.", "s.docx")
         assert any("2018" in a["match"] for a in alerts)
         assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_INVALID_CODE_CYCLE for a in alerts)
@@ -139,23 +123,17 @@ class TestInvalidCodeCycleStrings:
         assert any("2020" in a["match"] for a in alerts)
 
     def test_does_not_flag_real_cycle_years(self) -> None:
-        # Each of these is a real California cycle year and must not trigger.
         for year in ("2010", "2013", "2016", "2019", "2022", "2025", "2028"):
             alerts = detect_invalid_code_cycle_strings(f"Per {year} CBC.", "s.docx")
             assert alerts == [], f"unexpectedly flagged real cycle year {year}"
 
     def test_does_not_flag_year_without_code_abbrev(self) -> None:
-        # A bare year ("In 2018, the school...") with no code reference
-        # must not trigger.
         alerts = detect_invalid_code_cycle_strings(
             "In 2018, the school was renovated.", "s.docx"
         )
         assert alerts == []
 
     def test_disjoint_from_stale_cycle_detector(self) -> None:
-        # 2019 CBC is *stale* (real history). 2018 CBC is *invalid*. The two
-        # detectors must not double-count the same span. Inputs are
-        # constructed so each detector only sees the year it owns.
         content = "Per the 2019 CBC. Per the 2018 CBC."
         stale = detect_stale_code_cycle_references(content, "s.docx", CALIFORNIA_2025)
         invalid = detect_invalid_code_cycle_strings(content, "s.docx")
@@ -165,17 +143,12 @@ class TestInvalidCodeCycleStrings:
         assert "2018" in invalid_years and "2019" not in invalid_years
 
     def test_flags_california_code_full_name_invalid_year(self) -> None:
-        # The third stale-cycle pattern ("2024 California Building Code")
-        # should also surface as invalid.
         alerts = detect_invalid_code_cycle_strings(
             "Comply with 2024 California Building Code.", "s.docx"
         )
         assert any("2024" in a["match"] for a in alerts)
 
 
-# ---------------------------------------------------------------------------
-# detect_duplicate_paragraphs
-# ---------------------------------------------------------------------------
 
 class TestDuplicateParagraphs:
     def test_flags_repeated_long_paragraph(self) -> None:
@@ -190,7 +163,6 @@ class TestDuplicateParagraphs:
         assert alerts[0]["occurrence_count"] == 2
 
     def test_does_not_flag_short_repeats(self) -> None:
-        # Short headings ("PART 1") repeat by design and must not trigger.
         content = "PART 1\n\nbody\n\nPART 1\n\nmore body"
         assert detect_duplicate_paragraphs(content, "s.docx") == []
 
@@ -201,7 +173,6 @@ class TestDuplicateParagraphs:
         )
         content = (
             f"{para}\n\n"
-            # Same paragraph but with extra whitespace and different case.
             f"  PROVIDE   ALL  anchorage  hardware  in  stainless  steel  "
             f"WHERE  exposed  to  weather,  per  the  structural  drawings  "
             f"and  SSF-12.   "
@@ -214,16 +185,14 @@ class TestDuplicateParagraphs:
             "Cleaning shall be performed at the end of each shift and after "
             "all penetrations are sealed per the manufacturer instructions."
         )
-        content = "\n\n".join([para, para, para])  # 3 copies → 2 alerts
+        content = "\n\n".join([para, para, para])
         alerts = detect_duplicate_paragraphs(content, "s.docx")
         assert len(alerts) == 2
 
     def test_respects_min_length_kwarg(self) -> None:
         para = "Short clause but long enough."
         content = f"{para}\n\n{para}"
-        # default min_length=80 → no alert
         assert detect_duplicate_paragraphs(content, "s.docx") == []
-        # custom 20 → flagged
         alerts = detect_duplicate_paragraphs(content, "s.docx", min_length=20)
         assert len(alerts) == 1
 
@@ -231,9 +200,6 @@ class TestDuplicateParagraphs:
         assert detect_duplicate_paragraphs("", "s.docx") == []
 
 
-# ---------------------------------------------------------------------------
-# preprocess_spec aggregator
-# ---------------------------------------------------------------------------
 
 class TestPreprocessSpecAggregator:
     def test_aggregates_all_chunk_o_alerts(self) -> None:
@@ -255,24 +221,16 @@ class TestPreprocessSpecAggregator:
         assert result.template_marker_alerts, "template marker not detected"
         assert result.invalid_code_cycle_alerts, "invalid code cycle not detected"
         assert result.duplicate_paragraph_alerts, "duplicate paragraph not detected"
-        # Existing detectors keep working alongside the new ones.
         assert result.placeholder_alerts
         assert result.leed_alerts
 
     def test_no_cycle_still_runs_chunk_o_detectors(self) -> None:
-        # The new detectors do not require a cycle, so callers that pass
-        # ``cycle=None`` still get template / duplicate / (no-op invalid)
-        # results without crashing.
         content = "TODO: confirm.\n\n" + "x" * 200
         result = preprocess_spec(content, "s.docx")
         assert result.template_marker_alerts
-        # invalid_code_cycle_alerts is fine to be empty when no code cite.
         assert result.invalid_code_cycle_alerts == []
 
 
-# ---------------------------------------------------------------------------
-# Pipeline plumbing — alerts flow from prepare → submission → result
-# ---------------------------------------------------------------------------
 
 class TestPipelinePlumbing:
     def test_finalize_batch_result_forwards_chunk_o_alerts(self) -> None:
@@ -301,8 +259,6 @@ class TestPipelinePlumbing:
         from src.batch import BatchJob
         from src.pipeline import BatchSubmission, collect_review_batch_results
 
-        # Stub the network-facing retrieve_review_results so this test stays
-        # hermetic. An empty result map means no findings are produced.
         monkeypatch.setattr("src.pipeline.retrieve_review_results", lambda job, model: {})
         monkeypatch.setattr(
             "src.pipeline._recover_retryable_review_batch_results",
@@ -319,9 +275,6 @@ class TestPipelinePlumbing:
         assert state.duplicate_paragraph_alerts == sub.duplicate_paragraph_alerts
 
 
-# ---------------------------------------------------------------------------
-# Verification router — new keywords route to local_skip
-# ---------------------------------------------------------------------------
 
 class TestVerificationRouterChunkO:
     """The router treats GRIPES findings about the new rules as local_skip."""
@@ -356,8 +309,6 @@ class TestVerificationRouterChunkO:
         assert classify_finding_for_verification(gripe_finding) == "local_skip"
 
     def test_high_severity_overrides_local_skip(self, gripe_finding: Finding) -> None:
-        # Severity gate: anything above GRIPES needs web verification even if
-        # the issue text looks local.
         gripe_finding.severity = "HIGH"
         gripe_finding.issue = "Duplicate paragraph in submittals section"
         assert classify_finding_for_verification(gripe_finding) == "web_required"
@@ -368,9 +319,6 @@ class TestVerificationRouterChunkO:
         assert classify_finding_for_verification(gripe_finding) == "web_required"
 
 
-# ---------------------------------------------------------------------------
-# Report exporter integration — every alert section renders
-# ---------------------------------------------------------------------------
 
 class _StubPipelineResult:
     """Duck-typed PipelineResult that exercises every alert section.
@@ -495,18 +443,13 @@ class TestReportExporterChunkOIntegration:
     def test_export_skips_alerts_heading_when_no_alerts(self, tmp_path: Path) -> None:
         from src.report_exporter import export_report
 
-        result = _StubPipelineResult()  # every list empty
+        result = _StubPipelineResult()
         out = tmp_path / "report.docx"
         export_report(result, out)
         text = _doc_text(out)
-        # No alerts → no top-level "Alerts" heading, no deterministic-check
-        # banner. (Other report sections may still render.)
         assert "(deterministic check)" not in text
 
 
-# ---------------------------------------------------------------------------
-# Resume-state round-trip — new alert lists survive serialization
-# ---------------------------------------------------------------------------
 
 class TestResumeStateChunkO:
     def test_submission_round_trips_chunk_o_alerts(self) -> None:
@@ -554,7 +497,6 @@ class TestResumeStateChunkO:
             "prepared_specs": [],
         }
         restored = deserialize_submission(legacy)
-        # Backward compatibility: new fields default to empty lists.
         assert restored.template_marker_alerts == []
         assert restored.invalid_code_cycle_alerts == []
         assert restored.duplicate_paragraph_alerts == []

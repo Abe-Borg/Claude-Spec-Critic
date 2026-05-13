@@ -43,9 +43,6 @@ from src.verifier import (
 from src.verification_cache import VerificationCache, _CACHE_SCHEMA_VERSION
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _finding(
     *,
@@ -71,9 +68,6 @@ def _finding(
     )
 
 
-# ===========================================================================
-# 1. The strengthened invariant itself
-# ===========================================================================
 
 
 class TestEnforceGroundingInvariantWithAcceptedCitations:
@@ -107,15 +101,13 @@ class TestEnforceGroundingInvariantWithAcceptedCitations:
         """No accepted citation AND no legacy sources → UNVERIFIED."""
         r = VerificationResult(
             verdict="CONFIRMED",
-            grounded=True,  # search blocks succeeded
+            grounded=True,
             accepted_sources=[],
             sources=[],
         )
         out = _enforce_grounding_invariant(r)
         assert out.verdict == "UNVERIFIED"
         assert out.grounded is False
-        # The explanation has to say WHY so reviewers can audit the
-        # downgrade rather than seeing a silent UNVERIFIED.
         assert "no accepted external citation" in out.explanation.lower()
 
     def test_corrected_with_empty_sources_downgrades(self):
@@ -189,16 +181,12 @@ class TestEnforceGroundingInvariantWithAcceptedCitations:
         )
         once = _enforce_grounding_invariant(r)
         twice = _enforce_grounding_invariant(once)
-        # The suffix appears once even after a second pass.
         suffix_count = twice.explanation.lower().count(
             "no accepted external citation"
         )
         assert suffix_count == 1
 
 
-# ===========================================================================
-# 2. Composition with _apply_source_grounding (the production flow)
-# ===========================================================================
 
 
 class TestProductionGroundingFlow:
@@ -226,7 +214,6 @@ class TestProductionGroundingFlow:
         assert out.verdict == "CONFIRMED"
         assert out.accepted_sources == ["https://dgs.ca.gov/page"]
         assert out.rejected_sources == []
-        # Public ``sources`` is replaced by accepted_sources only.
         assert out.sources == ["https://dgs.ca.gov/page"]
 
     def test_corrected_with_accepted_citation_survives(self):
@@ -255,8 +242,6 @@ class TestProductionGroundingFlow:
         assert out.verdict == "UNVERIFIED"
         assert out.accepted_sources == []
         assert len(out.rejected_sources) == 1
-        # Either downgrade explanation is acceptable as long as it
-        # mentions the cause.
         explanation = out.explanation.lower()
         assert "downgraded" in explanation
         assert (
@@ -283,7 +268,6 @@ class TestProductionGroundingFlow:
         assert out.verdict == "UNVERIFIED"
         assert out.grounded is False
         assert "no accepted external citation" in out.explanation.lower()
-        # Searched sources are still recorded for diagnostics.
         assert out.searched_sources == ["https://dgs.ca.gov/page"]
 
     def test_corrected_with_no_citations_downgrades(self):
@@ -296,15 +280,9 @@ class TestProductionGroundingFlow:
         searched = [SearchedSource(url="https://dgs.ca.gov/page")]
         out = self._run_chain(r, searched)
         assert out.verdict == "UNVERIFIED"
-        # The correction field is preserved on the result even when the
-        # verdict is downgraded — diagnostics may want to see what the
-        # model intended.
         assert out.correction == "should be 2025"
 
 
-# ===========================================================================
-# 3. Local-skip findings remain local-only and clearly labeled
-# ===========================================================================
 
 
 class TestLocalSkipExempt:
@@ -312,9 +290,6 @@ class TestLocalSkipExempt:
         r = _local_skip_result()
         assert r.verdict == "UNVERIFIED"
         assert r.cache_status == "local_skip"
-        # The invariant should not touch a local-skip result — it's
-        # already UNVERIFIED, the CONFIRMED/CORRECTED branch is the only
-        # one that downgrades.
         out = _enforce_grounding_invariant(r)
         assert out.verdict == "UNVERIFIED"
         assert out.cache_status == "local_skip"
@@ -331,18 +306,12 @@ class TestLocalSkipExempt:
         """A local-skip never carries a CONFIRMED verdict, so the new
         invariant cannot accidentally promote it."""
         r = _local_skip_result()
-        # Hand-set CONFIRMED to defend against a future bug — even then
-        # the invariant should downgrade because there is no accepted
-        # citation. (Local skip never has sources.)
         r.verdict = "CONFIRMED"
         r.grounded = True
         out = _enforce_grounding_invariant(r)
         assert out.verdict == "UNVERIFIED"
 
 
-# ===========================================================================
-# 4. Cache: persisted entries cannot bypass the invariant
-# ===========================================================================
 
 
 class TestVerificationCacheInvariant:
@@ -354,8 +323,6 @@ class TestVerificationCacheInvariant:
     def test_cache_put_refuses_source_less_confirmed(self):
         cache = VerificationCache()
         f = _finding()
-        # Source-less CONFIRMED — would have been stored under the old
-        # rule ("grounded is enough"). Now silently refused.
         cache.put(
             f,
             cycle=DEFAULT_CYCLE,
@@ -367,7 +334,6 @@ class TestVerificationCacheInvariant:
             ),
         )
         assert cache.get(f, cycle=DEFAULT_CYCLE) is None
-        # The miss counter increments on get; put-rejection is silent.
         assert cache.stats()["size"] == 0
 
     def test_cache_put_refuses_source_less_corrected(self):
@@ -417,7 +383,7 @@ class TestVerificationCacheInvariant:
                     "result": {
                         "verdict": "CONFIRMED",
                         "grounded": True,
-                        "sources": [],  # pre-Chunk-5 source-less entry
+                        "sources": [],
                         "accepted_sources": [],
                         "explanation": "legacy",
                         "model_used": "claude-sonnet-4-6",
@@ -433,9 +399,6 @@ class TestVerificationCacheInvariant:
         cache_path.write_text(json.dumps(v1_payload), encoding="utf-8")
         cache = VerificationCache()
         loaded = cache.load_from_disk(path=cache_path)
-        # v1 entries are skipped wholesale: the version mismatch returns
-        # 0 from load_from_disk, so no entries reach the per-entry
-        # validation.
         assert loaded == 0
         assert cache.stats()["size"] == 0
 
@@ -491,14 +454,10 @@ class TestVerificationCacheInvariant:
         cache_path.write_text(json.dumps(bad_v2), encoding="utf-8")
         cache = VerificationCache()
         loaded = cache.load_from_disk(path=cache_path)
-        # Only the good entry survives.
         assert loaded == 1
         assert cache.stats()["size"] == 1
 
 
-# ===========================================================================
-# 5. Batch and real-time paths apply the same invariant
-# ===========================================================================
 
 
 class TestBatchAndRealtimePathParity:
@@ -528,25 +487,20 @@ class TestBatchAndRealtimePathParity:
                 ["https://dgs.ca.gov/page"],
                 "CORRECTED",
             ),
-            # Cited but not searched → downgrade.
             (
                 "CONFIRMED",
                 ["https://invented.example.com"],
                 ["https://dgs.ca.gov/page"],
                 "UNVERIFIED",
             ),
-            # No citations at all → downgrade (Chunk 5).
             (
                 "CONFIRMED",
                 [],
                 ["https://dgs.ca.gov/page"],
                 "UNVERIFIED",
             ),
-            # No citations + no search → downgrade (existing invariant).
             ("CONFIRMED", [], [], "UNVERIFIED"),
-            # UNVERIFIED stays UNVERIFIED.
             ("UNVERIFIED", [], [], "UNVERIFIED"),
-            # DISPUTED stays DISPUTED (not in downgrade branch).
             ("DISPUTED", [], ["https://dgs.ca.gov/page"], "DISPUTED"),
         ],
     )
@@ -557,8 +511,6 @@ class TestBatchAndRealtimePathParity:
         searched_urls: list[str],
         expected_verdict: str,
     ):
-        # Real-time path stamps grounded=True iff search blocks
-        # succeeded; mirror that here.
         grounded = len(searched_urls) > 0
         r = VerificationResult(
             verdict=verdict, sources=list(sources), grounded=grounded
@@ -569,9 +521,6 @@ class TestBatchAndRealtimePathParity:
         assert out.verdict == expected_verdict
 
 
-# ===========================================================================
-# 6. Report exporter doesn't claim verified support without accepted citations
-# ===========================================================================
 
 
 class TestReportClassificationGuards:
@@ -589,9 +538,6 @@ class TestReportClassificationGuards:
     ):
         from src.report_status import ReportStatus, classify_status
 
-        # Hand-construct a result that violates the invariant — as if a
-        # bug let it slip through. The classifier should still refuse to
-        # promote it to VERIFIED_SUPPORTED.
         f = _finding()
         f.verification = VerificationResult(
             verdict="CONFIRMED",

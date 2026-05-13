@@ -30,9 +30,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-# ---------------------------------------------------------------------------
-# Fixture data class
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -51,10 +48,6 @@ class GoldenFixture:
     expected: dict[str, Any] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Spec body constants — kept tiny because every fixture only needs enough
-# text to exercise one production code path.
-# ---------------------------------------------------------------------------
 
 _CLEAN_SPEC_BODY = (
     "SECTION 23 21 13 - HYDRONIC PIPING\n"
@@ -105,9 +98,6 @@ _COORDINATION_SPEC_BODY = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helper builders for structured payloads
-# ---------------------------------------------------------------------------
 
 
 def _review_payload(findings: list[dict], summary: str = "Reviewed.") -> dict:
@@ -131,17 +121,11 @@ def _verdict_payload(
     }
 
 
-# ---------------------------------------------------------------------------
-# The 10-case taxonomy
-# ---------------------------------------------------------------------------
 
 
 def _make_fixtures() -> list[GoldenFixture]:
     fixtures: list[GoldenFixture] = []
 
-    # ------------------------------------------------------------------
-    # 1. Clean spec — no expected findings.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="clean_spec",
         category="clean_spec",
@@ -157,9 +141,6 @@ def _make_fixtures() -> list[GoldenFixture]:
         },
     ))
 
-    # ------------------------------------------------------------------
-    # 2. Known stale code-cycle issue.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="stale_code_cycle",
         category="stale_code_cycle",
@@ -191,9 +172,6 @@ def _make_fixtures() -> list[GoldenFixture]:
         },
     ))
 
-    # ------------------------------------------------------------------
-    # 3. Placeholder / template marker.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="placeholder_marker",
         category="placeholder",
@@ -209,9 +187,6 @@ def _make_fixtures() -> list[GoldenFixture]:
         },
     ))
 
-    # ------------------------------------------------------------------
-    # 4. Internal contradiction — REPORT_ONLY, no executable edit.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="internal_contradiction",
         category="internal_contradiction",
@@ -242,9 +217,6 @@ def _make_fixtures() -> list[GoldenFixture]:
         },
     ))
 
-    # ------------------------------------------------------------------
-    # 5. Cross-section coordination — REPORT_ONLY by intent.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="coordination",
         category="coordination",
@@ -275,9 +247,6 @@ def _make_fixtures() -> list[GoldenFixture]:
         },
     ))
 
-    # ------------------------------------------------------------------
-    # 6. Valid safe edit target — EDIT must survive parse + locator.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="valid_edit",
         category="valid_edit",
@@ -310,9 +279,6 @@ def _make_fixtures() -> list[GoldenFixture]:
         },
     ))
 
-    # ------------------------------------------------------------------
-    # 7. Invalid edit proposal — must demote to REPORT_ONLY at parse time.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="invalid_edit_missing_existing",
         category="invalid_edit",
@@ -344,9 +310,6 @@ def _make_fixtures() -> list[GoldenFixture]:
         },
     ))
 
-    # ------------------------------------------------------------------
-    # 8. Unsafe DOCX target — hyperlink-bearing paragraph; detector must refuse.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="unsafe_docx_hyperlink",
         category="unsafe_docx",
@@ -359,9 +322,6 @@ def _make_fixtures() -> list[GoldenFixture]:
         },
     ))
 
-    # ------------------------------------------------------------------
-    # 9. Verification with accepted source — CONFIRMED stays CONFIRMED.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="verification_accepted_source",
         category="verification_with_source",
@@ -379,9 +339,6 @@ def _make_fixtures() -> list[GoldenFixture]:
         },
     ))
 
-    # ------------------------------------------------------------------
-    # 10. Verification source-less CONFIRMED — must downgrade to UNVERIFIED.
-    # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="verification_sourceless_confirmed",
         category="verification_sourceless_confirmed",
@@ -391,7 +348,6 @@ def _make_fixtures() -> list[GoldenFixture]:
             explanation="The 2025 CBC is the current cycle.",
             sources=["https://invented.example.com/never-searched"],
         ),
-        # Searched returns no URLs at all so the cited URL cannot ground.
         searched_urls=[],
         expected={
             "expected_verdict_after_grounding": "UNVERIFIED",
@@ -419,9 +375,6 @@ def fixture_by_id(fixture_id: str) -> GoldenFixture:
     raise KeyError(fixture_id)
 
 
-# ---------------------------------------------------------------------------
-# DOCX staging — fixtures that need a real .docx (locator / unsafe markup).
-# ---------------------------------------------------------------------------
 
 
 def build_docx_for_fixture(fixture: GoldenFixture, tmp_dir: Path) -> Optional[Path]:
@@ -432,8 +385,6 @@ def build_docx_for_fixture(fixture: GoldenFixture, tmp_dir: Path) -> Optional[Pa
     unit-test fixtures stay in lockstep.
     """
     if fixture.docx_kind == "safe_paragraph":
-        # Build a paragraph-bearing .docx whose body contains the spec text
-        # so the locator has something to exact-match.
         from tests.fixtures.docx_fixtures import make_paragraph_spec
 
         paragraphs = [

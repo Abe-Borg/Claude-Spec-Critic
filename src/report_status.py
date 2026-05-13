@@ -37,9 +37,6 @@ from enum import Enum
 from typing import Final, Iterable
 
 
-# ---------------------------------------------------------------------------
-# Closed enums (Chunk N Directive 1 & 4)
-# ---------------------------------------------------------------------------
 
 class ReportStatus(str, Enum):
     """The single trust-model status applied to a finding for display.
@@ -49,19 +46,12 @@ class ReportStatus(str, Enum):
     so callers can persist the value as JSON without bespoke encoders.
     """
 
-    # External verification confirmed the claim with grounded sources.
     VERIFIED_SUPPORTED = "VERIFIED_SUPPORTED"
-    # External verification corrected the claim with grounded sources.
     VERIFIED_CONTRADICTED = "VERIFIED_CONTRADICTED"
-    # Verifier explicitly disputed the claim (not just unverified).
     DISPUTED = "DISPUTED"
-    # Verifier ran but could not produce a grounded verdict.
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
-    # Router decided no external verification was warranted.
     LOCALLY_CLASSIFIED = "LOCALLY_CLASSIFIED"
-    # Finding never reached the verifier.
     NOT_CHECKED = "NOT_CHECKED"
-    # Cross-check suppression or other manual-review-required path.
     MANUAL_REVIEW_REQUIRED = "MANUAL_REVIEW_REQUIRED"
 
 
@@ -74,9 +64,6 @@ class EditActionLabel(str, Enum):
     SUPPRESSED = "SUPPRESSED"
 
 
-# ---------------------------------------------------------------------------
-# Display metadata
-# ---------------------------------------------------------------------------
 
 STATUS_LABELS: Final[dict[ReportStatus, str]] = {
     ReportStatus.VERIFIED_SUPPORTED: "Verified — supported",
@@ -88,7 +75,6 @@ STATUS_LABELS: Final[dict[ReportStatus, str]] = {
     ReportStatus.MANUAL_REVIEW_REQUIRED: "Manual review required",
 }
 
-# Short single-character glyphs for inline display.
 STATUS_GLYPHS: Final[dict[ReportStatus, str]] = {
     ReportStatus.VERIFIED_SUPPORTED: "✓",
     ReportStatus.VERIFIED_CONTRADICTED: "✎",
@@ -107,21 +93,13 @@ EDIT_ACTION_LABELS: Final[dict[EditActionLabel, str]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Classification rules
-# ---------------------------------------------------------------------------
 
 _VERDICT_CONFIRMED = "CONFIRMED"
 _VERDICT_CORRECTED = "CORRECTED"
 _VERDICT_DISPUTED = "DISPUTED"
 
-# cache_status sentinel from verifier._local_skip_result.
 _LOCAL_SKIP = "local_skip"
 
-# Edit confidence required for AUTO_EDIT_CANDIDATE. Mirrors the
-# SAFETY_AUTO_SAFE / SAFETY_AUTO_WITH_CAUTION split in edit_candidates:
-# high-confidence + supported verdicts default-selected, lower needs
-# manual review.
 AUTO_EDIT_CONFIDENCE_FLOOR: Final[float] = 0.7
 
 
@@ -177,12 +155,6 @@ def classify_status(finding) -> ReportStatus:
     return ReportStatus.INSUFFICIENT_EVIDENCE
 
 
-# Supportive statuses for auto-edit eligibility. ``LOCALLY_CLASSIFIED``
-# qualifies because the router decided no external check was needed
-# (e.g. placeholder text, LEED references, internal duplicates) — these
-# are self-evident from the spec itself. The locator/spec_editor
-# preconditions still gate the actual mutation, so a false-supportive
-# router result cannot cause a wrong-text replacement.
 _SUPPORTIVE_STATUSES: Final[frozenset[ReportStatus]] = frozenset({
     ReportStatus.VERIFIED_SUPPORTED,
     ReportStatus.VERIFIED_CONTRADICTED,
@@ -203,7 +175,6 @@ def classify_edit_action(finding) -> EditActionLabel:
     """
     if getattr(finding, "suppression_reason", None):
         return EditActionLabel.SUPPRESSED
-    # Findings constructed in legacy tests may not have ``as_edit_proposal``.
     proposal = (
         finding.as_edit_proposal()
         if hasattr(finding, "as_edit_proposal")
@@ -220,9 +191,6 @@ def classify_edit_action(finding) -> EditActionLabel:
     return EditActionLabel.AUTO_EDIT_CANDIDATE
 
 
-# ---------------------------------------------------------------------------
-# Label helpers
-# ---------------------------------------------------------------------------
 
 def status_label(status: ReportStatus | str) -> str:
     """Human-readable label for a status (accepts the enum or the raw string)."""
@@ -254,12 +222,7 @@ def edit_action_label(action: EditActionLabel | str) -> str:
         return str(action)
 
 
-# ---------------------------------------------------------------------------
-# Aggregation helpers
-# ---------------------------------------------------------------------------
 
-# Stable display order for the summary table. Supportive first, then
-# uncertain, then suppressed — matches the reading order on the report.
 STATUS_DISPLAY_ORDER: Final[tuple[ReportStatus, ...]] = (
     ReportStatus.VERIFIED_SUPPORTED,
     ReportStatus.VERIFIED_CONTRADICTED,

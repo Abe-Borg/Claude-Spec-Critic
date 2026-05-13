@@ -46,27 +46,8 @@ from .code_cycles import CodeCycle
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
-# JSON schema version for the on-disk cache file. Bumped when the entry
-# shape changes incompatibly so older readers can refuse to load instead of
-# silently mis-deserializing.
-#
-# v2 — invalidates pre-v2 entries that may have stored a CONFIRMED/CORRECTED
-# verdict without an accepted external citation. The strengthened
-# :func:`src.verifier._enforce_grounding_invariant` would now downgrade
-# those verdicts, so silently reusing them would let the old behavior
-# leak through. Bumping the version drops every v1 cache file on first
-# load; users get fresh verifications under the new invariant.
 _CACHE_SCHEMA_VERSION = 2
 
-# Cache-key claim digest length (hex chars). 24 hex chars = 96 bits of entropy,
-# enough that two distinct claims colliding is astronomically unlikely even
-# across a corpus of millions of findings; the previous 16 hex chars / 64-bit
-# digest was thin under birthday-bound math (50%+ collision risk at ~5B keys
-# and observable collision risk at ~1M). Lookups that present an old 16-char
-# digest will simply miss in the new cache, which is the safe failure mode —
-# the next verification call re-grounds the claim and writes a 24-char entry.
-# Going higher (32+) would add latency and disk-write bytes for diminishing
-# safety; 24 hex chars is the deliberate sweet spot.
 _CLAIM_DIGEST_LEN = 24
 
 
@@ -164,16 +145,8 @@ class VerificationCache:
         return _clone_for_hit(entry.result)
 
     def put(self, finding, *, cycle: CodeCycle, result: "VerificationResult") -> None:
-        # Don't cache results that explicitly opted out of caching, or
-        # results that came from an unsuccessful local skip path. We only
-        # want to share *grounded* verdicts across findings.
         if not getattr(result, "grounded", False):
             return
-        # Refuse to cache a CONFIRMED/CORRECTED that lacks any accepted
-        # external citation. The verifier's
-        # ``_enforce_grounding_invariant`` would have downgraded such a
-        # result to UNVERIFIED before reaching here; this is defense in
-        # depth against a test or future call site that puts directly.
         verdict_upper = (getattr(result, "verdict", "") or "").strip().upper()
         if verdict_upper in ("CONFIRMED", "CORRECTED") and not (
             getattr(result, "accepted_sources", None) or getattr(result, "sources", None)
@@ -196,9 +169,6 @@ class VerificationCache:
                 "oldest_entry_ts": int(oldest_ts) if oldest_ts else 0,
             }
 
-    # ------------------------------------------------------------------
-    # Disk persistence
-    # ------------------------------------------------------------------
 
     def load_from_disk(self, path: str | Path | None = None) -> int:
         """Load entries from a JSON cache file.
@@ -272,9 +242,6 @@ class VerificationCache:
                             result_payload.get("successful_source_count", 0) or 0
                         ),
                         search_error_count=int(result_payload.get("search_error_count", 0) or 0),
-                        # Source-grounding evidence. Legacy entries lack
-                        # these keys; the defaults below preserve the
-                        # cached verdict exactly.
                         searched_sources=[
                             str(s) for s in (result_payload.get("searched_sources") or []) if s
                         ],
@@ -288,10 +255,6 @@ class VerificationCache:
                         verification_profile=str(
                             result_payload.get("verification_profile") or ""
                         ),
-                        # Stored verification mode. Missing on legacy
-                        # entries — defaults to "" so the routing logic
-                        # falls back to STANDARD_REASONING the next time
-                        # the entry is used.
                         verification_mode=str(
                             result_payload.get("verification_mode") or ""
                         ),
@@ -299,14 +262,7 @@ class VerificationCache:
                 except Exception:
                     continue
                 if not entry_result.grounded:
-                    # Defensive: only grounded entries should ever be on
-                    # disk, but reject any that slipped in.
                     continue
-                # Belt-and-suspenders against a v2 entry that somehow
-                # shipped without an accepted citation — silently
-                # reusing it would power a source-less CONFIRMED on a
-                # cache hit. Mirrors the invariant in
-                # :func:`src.verifier._enforce_grounding_invariant`.
                 verdict_upper = (entry_result.verdict or "").strip().upper()
                 if verdict_upper in ("CONFIRMED", "CORRECTED") and not (
                     entry_result.accepted_sources or entry_result.sources
@@ -343,7 +299,6 @@ class VerificationCache:
             "saved_at": time.time(),
             "entries": entries_payload,
         }
-        # Atomic write: temp file in the same directory + rename.
         tmp_fd, tmp_name = tempfile.mkstemp(
             prefix=".verification_cache.",
             suffix=".tmp",
@@ -374,18 +329,11 @@ def _result_to_dict(result: "VerificationResult") -> dict:
         "web_search_requests": int(result.web_search_requests),
         "successful_source_count": int(result.successful_source_count),
         "search_error_count": int(result.search_error_count),
-        # Persist the source-grounding partition + profile so a restored
-        # cache hit shows reports the same accepted / rejected sources the
-        # original run produced.
         "searched_sources": list(result.searched_sources),
         "cited_sources": list(result.cited_sources),
         "accepted_sources": list(result.accepted_sources),
         "rejected_sources": [dict(r) for r in result.rejected_sources],
         "verification_profile": result.verification_profile,
-        # Persist the verification mode so a restored cache hit carries the
-        # original routing decision into reports and diagnostics. Legacy
-        # entries (without this field) load as empty string; the routing
-        # logic treats that as STANDARD_REASONING for backward compatibility.
         "verification_mode": result.verification_mode,
     }
 

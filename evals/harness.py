@@ -58,9 +58,6 @@ from .fixtures import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Result dataclasses
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -75,15 +72,7 @@ class FixtureResult:
     seeded_finding_count: int = 0
     duplicate_finding_count: int = 0
     parse_failure_count: int = 0
-    # Input findings whose raw ``actionType`` was an executable edit
-    # (EDIT/ADD/DELETE). The Chunk 7 contract requires that every one of
-    # these either parses into a valid :class:`EditProposal` or gets
-    # demoted with a ``demotion_reason``. The denominator of the
-    # edit-proposal-validity metric.
     edit_proposal_input_count: int = 0
-    # Parsed findings whose ``as_edit_proposal()`` returns non-None — i.e.
-    # the parser preserved them as executable edits. Numerator of the
-    # edit-proposal-validity metric.
     edit_proposal_valid_count: int = 0
     demoted_findings: int = 0
     locator_attempted: int = 0
@@ -114,9 +103,6 @@ class HarnessResult:
     metrics: dict[str, Any] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Per-fixture runners
-# ---------------------------------------------------------------------------
 
 
 def _safe_divide(numer: float, denom: float) -> float:
@@ -155,11 +141,6 @@ def _run_review_fixture(fixture: GoldenFixture, fr: FixtureResult) -> None:
     fr.review_findings_parsed = len(parsed)
     fr.parse_failure_count = max(0, len(raw_findings) - len(parsed))
 
-    # The denominator of the edit-proposal-validity metric is the input
-    # count of executable-edit findings — anything the model emitted as
-    # ``EDIT`` / ``ADD`` / ``DELETE``. Counting on the *raw* payload (rather
-    # than ``parsed``) catches the case where the parser drops a finding
-    # outright (e.g., missing ``issue``) so a regression there shows up.
     fr.edit_proposal_input_count = sum(
         1
         for item in raw_findings
@@ -268,8 +249,6 @@ def _run_locator_fixture(
         return
 
     if fixture.docx_kind == "safe_paragraph":
-        # Extract the spec and run the locator over the fixture's parsed
-        # findings. ``review_payload`` may be None for non-edit fixtures.
         spec = extractor.extract_text_from_docx(docx_path)
         payload = fixture.review_payload or {"findings": []}
         parsed = reviewer._parse_findings(list(payload.get("findings") or []))
@@ -288,13 +267,9 @@ def _run_locator_fixture(
                 f"locator successes: expected {expected}, got {fr.locator_succeeded}"
             )
     elif fixture.docx_kind == "unsafe_hyperlink":
-        from docx import Document  # local import — hermetic dependency
+        from docx import Document
 
         doc = Document(str(docx_path))
-        # The hyperlink fixture's hyperlink-bearing paragraph is the
-        # second paragraph (index 1); index 0 is the "PART 1 GENERAL"
-        # heading. The detector walks the subtree, so we hand the
-        # paragraph element directly.
         target_paragraph = doc.paragraphs[1]
         fr.unsafe_markup_attempted = 1
         outcome = spec_editor.detect_unsafe_markup(target_paragraph)
@@ -354,9 +329,6 @@ def _run_verification_fixture(fixture: GoldenFixture, fr: FixtureResult) -> None
             f"downgrade observed={fr.downgrade_observed}, expected={fr.downgrade_expected}"
         )
 
-    # Sanity-check report-status classifier — confirms Chunk 5's belt-and-
-    # suspenders accepted-citation check on supportive statuses lines up
-    # with the source-grounding outcome.
     finding = reviewer.Finding(
         severity="HIGH",
         fileName=fixture.filename or "verification.docx",
@@ -369,9 +341,6 @@ def _run_verification_fixture(fixture: GoldenFixture, fr: FixtureResult) -> None
         verification=result,
     )
     status = report_status.classify_status(finding)
-    # If the harness downgraded, the supportive status branch should not
-    # apply — guard a regression where a future helper bypasses the
-    # invariant and classify_status mis-promotes.
     if fr.downgrade_observed and status in (
         report_status.ReportStatus.VERIFIED_SUPPORTED,
         report_status.ReportStatus.VERIFIED_CONTRADICTED,
@@ -381,9 +350,6 @@ def _run_verification_fixture(fixture: GoldenFixture, fr: FixtureResult) -> None
         )
 
 
-# ---------------------------------------------------------------------------
-# Cost estimator — covers metric #10 (cost estimate availability)
-# ---------------------------------------------------------------------------
 
 
 def _exercise_cost_estimator() -> dict[str, Any]:
@@ -433,9 +399,6 @@ def _exercise_cost_estimator() -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Top-level orchestrator
-# ---------------------------------------------------------------------------
 
 
 def run_harness(*, tmp_dir: Path | None = None) -> HarnessResult:
@@ -469,9 +432,6 @@ def run_harness(*, tmp_dir: Path | None = None) -> HarnessResult:
     return HarnessResult(fixtures=fixture_results, metrics=metrics)
 
 
-# ---------------------------------------------------------------------------
-# Metric aggregation
-# ---------------------------------------------------------------------------
 
 
 def _aggregate_metrics(results: list[FixtureResult]) -> dict[str, Any]:
@@ -483,9 +443,6 @@ def _aggregate_metrics(results: list[FixtureResult]) -> dict[str, Any]:
     duplicate_total = sum(r.duplicate_finding_count for r in results)
     parse_failures = sum(r.parse_failure_count for r in results)
 
-    # Recall counts findings the parser surfaced relative to what the
-    # fixture seeded — capped at the seeded count so an over-emit
-    # cannot make recall exceed 1.0.
     recall_numer = sum(
         min(r.review_findings_parsed, r.seeded_finding_count) for r in results
     )

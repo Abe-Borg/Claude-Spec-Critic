@@ -8,10 +8,6 @@ from typing import Final
 from .reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, REPORT_ONLY_ACTION
 
 
-# Phase 4 edit-safety categories (audit Section 8.1). The eligibility flag and
-# default_selected stay for UI back-compat; safety_category gives downstream
-# code (and the locator/spec_editor) a single dimension on which to gate
-# auto-application versus manual review.
 SAFETY_AUTO_SAFE: Final[str] = "AUTO_SAFE"
 SAFETY_AUTO_WITH_CAUTION: Final[str] = "AUTO_WITH_CAUTION"
 SAFETY_MANUAL_REVIEW: Final[str] = "MANUAL_REVIEW"
@@ -92,19 +88,6 @@ def classify_edit_candidates(
         eligible = True
         ineligible_reason: str | None = None
 
-        # Chunk L Directive 6: edit-candidate generation considers only
-        # findings with valid edit proposals. REPORT_ONLY and findings
-        # whose legacy actionType is outside the EDIT_ACTION_TYPES set
-        # produce ``proposal is None`` and fall straight into the
-        # "report-only" bucket with a clear, user-readable reason.
-        #
-        # Chunk 7: when the parser demoted an EDIT/DELETE/ADD because a
-        # required field was missing, the finding now carries the specific
-        # reason on ``demotion_reason``. Surface it so the UI explains
-        # *why* the proposal was rejected (e.g., "EDIT action missing
-        # required existingText") rather than reporting a generic
-        # REPORT_ONLY or — worse — falling through to the legacy "no
-        # anchor text" branch and inventing a misleading explanation.
         if proposal is None:
             eligible = False
             demotion = (finding.demotion_reason or "").strip()
@@ -122,8 +105,6 @@ def classify_edit_candidates(
                     f"Unsupported action type: {finding.actionType or 'UNKNOWN'}"
                 )
 
-        # ADD actions may use the explicit anchorText field instead of
-        # existingText to locate the insertion point (audit Issue 5).
         has_anchor_for_add = action_type == "ADD" and bool(anchor_text)
         if eligible and not existing_text and not has_anchor_for_add:
             eligible = False
@@ -147,7 +128,6 @@ def classify_edit_candidates(
         elif verdict in {"CONFIRMED", "CORRECTED"}:
             safety_category = SAFETY_AUTO_SAFE
         else:
-            # UNVERIFIED is eligible but not auto-selected; treat as caution.
             safety_category = SAFETY_AUTO_WITH_CAUTION
 
         candidates.append(

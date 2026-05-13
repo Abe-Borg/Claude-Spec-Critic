@@ -31,14 +31,11 @@ from pathlib import Path
 
 from .app_paths import api_key_paths
 
-# Keyring is optional. The package isn't pinned in requirements.txt, and on
-# headless CI / minimal Linux installs the import or the first ``get_password``
-# call can fail. We swallow every failure so the file fallback always works.
-try:  # pragma: no cover - import path depends on optional dependency
-    import keyring as _keyring  # type: ignore
+try:
+    import keyring as _keyring
 
     _KEYRING_AVAILABLE = True
-except Exception:  # pragma: no cover - keyring not installed
+except Exception:
     _keyring = None
     _KEYRING_AVAILABLE = False
 

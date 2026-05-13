@@ -314,7 +314,6 @@ def build_token_count_request(
         "messages": built.params["messages"],
     }
     if built.tools is not None:
-        # Recompute the raw tool list without the cache_control block.
         count_kwargs["tools"] = [review_findings_tool()]
     return built, count_kwargs
 

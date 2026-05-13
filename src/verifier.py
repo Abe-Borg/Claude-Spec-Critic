@@ -14,7 +14,7 @@ from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitErr
 from .batch import (
     BatchJob,
     build_verification_tools_for_profile,
-    poll_batch,  # Backward-compatibility export for older tests/patching.
+    poll_batch,
     retrieve_verification_results_detailed,
     submit_verification_batch,
     submit_verification_followup_wave,
@@ -76,17 +76,11 @@ from .verification_routing import (
     select_routing,
 )
 
-# VERIFICATION_MAX_TOKENS is computed once at import for backward-compat
-# with callers that read the constant. The dynamic helper is used for the
-# request shape so future model routing (Phase 3) can change it per call.
 VERIFICATION_MAX_TOKENS = verification_max_tokens()
 
 VerifyProgressFn = Callable[[int, int, str], None]
 MAX_VERIFICATION_WAVES = 3
 
-# When a batch run finishes with only a few unresolved items, fall back to
-# real-time verification for the remainder instead of paying for another
-# full batch wave.
 _REALTIME_FALLBACK_THRESHOLD = 5
 
 
@@ -98,93 +92,27 @@ def _noop_verify_progress(_: int, __: int, ___: str) -> None:
 class VerificationResult:
     verdict: str
     explanation: str = ""
-    # ``sources`` is the publicly-rendered source list. Chunk H makes it
-    # contain only **accepted** citations (model-cited URLs that matched
-    # an actual web_search result). The raw cited / accepted / rejected
-    # fields below let reports and diagnostics show the full picture.
     sources: list[str] = field(default_factory=list)
     correction: str | None = None
-    # ----- Phase 3 evidence model (plan 7.5) -------------------------------
-    # ``grounded`` records whether the verdict was backed by at least one
-    # successful web_search_result block. The verifier production paths
-    # never mark a result CONFIRMED/CORRECTED unless this is True.
     grounded: bool = False
     model_used: str = ""
     escalated: bool = False
-    # "n/a" — not part of a cache-aware run
-    # "miss" — verifier ran fresh and produced this result
-    # "hit"  — result reused from a previous finding in the same run
-    # "local_skip" — finding was diagnosed locally; no web verification ran
     cache_status: str = "n/a"
     web_search_requests: int = 0
     successful_source_count: int = 0
     search_error_count: int = 0
-    # ----- Chunk H source-grounding evidence -------------------------------
-    # The four concepts (Chunk H Directive 4):
-    #   - searched_sources  : URLs the web_search server tool actually fetched.
-    #   - cited_sources     : URLs the model included in its verdict payload.
-    #   - accepted_sources  : cited URLs that matched a searched URL after
-    #                         normalization. ``sources`` is kept in sync for
-    #                         backward compatibility with cache + report code.
-    #   - rejected_sources  : cited URLs that did NOT match any searched URL.
-    #                         Each entry is ``{"url": ..., "reason": ...}``.
-    # ``verification_profile`` is the :class:`VerificationProfile` value used
-    # to route the search budget for this call. Stored as a string so the
-    # whole record round-trips through JSON cleanly.
     searched_sources: list[str] = field(default_factory=list)
     cited_sources: list[str] = field(default_factory=list)
     accepted_sources: list[str] = field(default_factory=list)
     rejected_sources: list[dict] = field(default_factory=list)
     verification_profile: str = ""
-    # ----- Chunk I verification mode --------------------------------------
-    # The :class:`VerificationMode` value that routed this verification. Stored
-    # as a string so the whole record round-trips through JSON cleanly. Empty
-    # string for pre-Chunk-I cache entries or unit-test results constructed
-    # without going through the router.
     verification_mode: str = ""
-    # ----- Chunk D1.3 escalation telemetry --------------------------------
-    # The existing ``escalated: bool`` records "this result was produced by
-    # the Opus escalation path." The fields below answer the harder
-    # question: did escalation actually pay off?
-    #
-    # ``escalation_attempted`` is True whenever
-    # :func:`verification_router.should_escalate_verification` fired and the
-    # escalation call was issued — regardless of whether the escalated result
-    # was kept. ``escalated`` (above) is the subset where the escalated
-    # result became the final one.
-    # ``initial_model`` / ``initial_verdict`` capture the first-pass model
-    # and verdict so reports can show before-and-after.
-    # ``escalation_changed_verdict`` is True iff the final verdict differs
-    # from the initial verdict (the metric the delta plan calls out).
-    # ``escalation_reason`` is a short tag describing why escalation fired
-    # (e.g. ``"ungrounded_critical_high"``); empty when escalation did not
-    # fire. The string is intentionally machine-readable so a future
-    # aggregation pass can bucket by reason without parsing free text.
     escalation_attempted: bool = False
     initial_model: str = ""
     initial_verdict: str = ""
     escalation_changed_verdict: bool = False
     escalation_reason: str = ""
-    # ----- Chunk 2 structured-payload preservation -----------------------
-    # When the model invoked ``submit_verification_verdict`` (the success
-    # path under the best-effort tool-output flag), this is the raw
-    # parsed tool input. Held in memory so diagnostics can preserve the
-    # actual structured payload alongside the regular telemetry. Not
-    # persisted by ``verification_cache`` — only the derived semantic
-    # fields are cached.
     structured_payload: dict | None = None
-    # ----- Chunk 6 retry / continuation telemetry -------------------------
-    # Small JSON-safe dict describing why this finding's verification
-    # took the path it did. Keys: ``attempts`` (total wave attempts),
-    # ``failure_class`` (last :class:`FailureClass` value, if any),
-    # ``terminal_reason`` (short tag explaining why the verifier
-    # gave up), ``continuation_count`` (pause-turn rounds spent).
-    # Populated by the batch wave loop and the real-time call when a
-    # finding goes terminal-unverified, succeeded after retries, or
-    # consumed continuations; ``None`` for the default success path.
-    # Like other runtime telemetry (``escalation_*``), this is NOT
-    # persisted by the verification cache or resume state — it
-    # describes runtime behavior, not durable verdict semantics.
     retry_telemetry: dict | None = None
 
 
@@ -233,19 +161,9 @@ def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResu
             result.explanation = result.explanation + suffix
         return result
 
-    # Chunk 5: a grounded search alone is not enough — the model must
-    # actually cite at least one source that survived
-    # :func:`_apply_source_grounding`. ``accepted_sources`` is the
-    # canonical post-validation list; ``sources`` is checked too only
-    # so legacy unit tests that bypass the partition still pass (the
-    # production path keeps both lists in sync).
     has_accepted = bool(result.accepted_sources) or bool(result.sources)
     if not has_accepted:
         result.verdict = "UNVERIFIED"
-        # The downgrade implies the result is no longer "grounded" for
-        # report-status purposes — keeps :func:`classify_status` from
-        # promoting it back to VERIFIED_SUPPORTED on a stale ``grounded``
-        # flag.
         result.grounded = False
         suffix = (
             " (downgraded: no accepted external citation was provided)"
@@ -292,9 +210,6 @@ def _apply_source_grounding(
     this helper handles the inverse case (citations present but none
     actually grounded).
     """
-    # Carry the raw searched URLs (deduped) onto the result regardless
-    # of the cited-source path so diagnostics see the full retrieval
-    # picture even when the model emitted no citations.
     searched_urls = [s.url for s in searched]
     result.searched_sources = searched_urls
 
@@ -307,8 +222,6 @@ def _apply_source_grounding(
     )
     result.accepted_sources = list(outcome.accepted)
     result.rejected_sources = [dict(r) for r in outcome.rejected]
-    # ``sources`` is the public list — keep only accepted citations so
-    # downstream reports and the cache don't echo invented URLs.
     result.sources = list(outcome.accepted)
 
     if cited_raw and not outcome.has_any_grounded_citation():
@@ -326,7 +239,6 @@ def _apply_source_grounding(
                 )
             elif suffix not in result.explanation:
                 result.explanation = result.explanation + suffix
-            # The downgrade implies no longer grounded for invariant purposes.
             result.grounded = False
     return result
 
@@ -338,14 +250,7 @@ def _local_skip_result(reason: str = "Locally classified: external grounding not
         grounded=False,
         cache_status="local_skip",
         model_used="local",
-        # Chunk H: locally-skipped findings are by definition internal-
-        # coordination claims. Stamping the profile here means reports
-        # and diagnostics can label them consistently with everything
-        # that flowed through the web-verification path.
         verification_profile=VerificationProfile.INTERNAL_COORDINATION.value,
-        # Chunk I: explicit mode tag. Local skip is the most-deterministic
-        # mode in the router; reports/diagnostics use this to count how
-        # many findings the keyword/Haiku classifiers caught.
         verification_mode=VerificationMode.LOCAL_SKIP.value,
     )
 
@@ -495,10 +400,6 @@ def _get_verification_system_prompt(
             "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
         ]
     else:
-        # Structured outputs disabled: the request payload only includes
-        # web_search, so the prompt must not advertise the verdict tool.
-        # The model emits a plain JSON object that the text fallback parser
-        # in :func:`_parse_verification_response` consumes.
         tool_lines = [
             "Tool usage:",
             "",
@@ -585,13 +486,8 @@ def _collect_search_evidence_detailed(
         if block_type == "web_search_tool_result":
             block_content = _maybe_attr(block, "content")
             if block_content is None:
-                # Backward-compatible fallback for legacy/mocked objects.
                 block_content = _maybe_attr(block, "results")
             if isinstance(block_content, list):
-                # Only count this block as a successful search if it contains
-                # at least one usable web_search_result item. Error-only lists
-                # must not count as success — that would let verdicts pass the
-                # external-grounding gate without any real evidence.
                 block_had_valid_result = False
                 for item in block_content:
                     item_type = _maybe_attr(item, "type")
@@ -608,11 +504,8 @@ def _collect_search_evidence_detailed(
                 if block_had_valid_result:
                     success_count += 1
             elif _maybe_attr(block_content, "type") == "web_search_tool_result_error":
-                # Anthropic SDK models this as a union:
-                # WebSearchToolResultBlock.content can be a WebSearchToolResultError object.
                 error_count += 1
         elif block_type == "web_search_tool_result_error":
-            # Backward-compatible fallback in case SDK/server emits top-level error blocks.
             error_count += 1
     return detailed, success_count, error_count
 
@@ -700,10 +593,6 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
 
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        # Chunk D: always emit the recognizable parse-error prefix so the
-        # canonical parser can flag this as ``text_parse_error`` regardless
-        # of what raw text the model returned. The raw text is preserved
-        # (truncated) for debugging.
         explanation = "Verification response did not contain structured JSON."
         if text:
             explanation += f" Raw text: {text[:200]}"
@@ -748,28 +637,12 @@ def _verdict_from_tool_use(message) -> VerificationResult | None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Chunk D: canonical verification parser
-#
-# Every verification result path (real-time initial, batch initial, batch
-# retry, batch continuation) feeds through :func:`parse_verification_response`
-# so the same precedence rules and verdict normalization apply everywhere.
-# Stop-reason classification is :func:`classify_verification_stop_reason`;
-# the two helpers are intentionally split because the right response for a
-# given stop_reason differs per path (real-time runs continuations inline,
-# the wave path schedules a follow-up batch wave).
-# ---------------------------------------------------------------------------
 
-# Parse status sentinels. Callers branch on these to decide whether to keep
-# the verdict, run a retry, or emit a terminal unverified outcome. The set
-# is small and closed; future status additions should preserve the existing
-# names to avoid silent caller-side fallthrough.
 PARSE_STATUS_STRUCTURED = "structured"
 PARSE_STATUS_TEXT = "text"
 PARSE_STATUS_TEXT_PARSE_ERROR = "text_parse_error"
 PARSE_STATUS_NO_CONTENT = "no_content"
 
-# Stop reason classification sentinels (see classify_verification_stop_reason).
 STOP_CLASS_COMPLETE = "complete"
 STOP_CLASS_PAUSE = "pause"
 STOP_CLASS_INCOMPLETE = "incomplete"
@@ -849,10 +722,6 @@ def parse_verification_response(messages) -> VerificationParseOutcome:
     if not messages:
         return VerificationParseOutcome(verdict=None, parse_status=PARSE_STATUS_NO_CONTENT)
 
-    # Prefer the final structured payload — the verdict tool is invoked in
-    # the last terminal response under normal flow, but iterating in
-    # reverse means a verdict from any earlier message still wins over a
-    # text-only fallback on a malformed final message.
     for msg in reversed(messages):
         structured = _verdict_from_tool_use(msg)
         if structured is not None:
@@ -865,11 +734,6 @@ def parse_verification_response(messages) -> VerificationParseOutcome:
         return VerificationParseOutcome(verdict=None, parse_status=PARSE_STATUS_NO_CONTENT)
 
     text_parsed = _parse_verification_response(response_text)
-    # Surface parse errors explicitly so callers can choose to treat them
-    # as terminal failures rather than supported UNVERIFIED verdicts.
-    # Directive 8 of Chunk D: invalid/malformed payloads must not be
-    # silently trusted. The two error explanations emitted by the text
-    # parser are matched here as the parse-error sentinel.
     explanation = (text_parsed.explanation or "").lower()
     if text_parsed.verdict == "UNVERIFIED" and (
         "not valid json" in explanation
@@ -890,11 +754,6 @@ class VerificationItemOutcome:
     parsed_verification: VerificationResult | None = None
     assistant_content_blocks: list | None = None
     unverified_reason: str | None = None
-    # Chunk 6: failure class for the per-finding wave tracker. Set on
-    # ``retry`` and ``terminal_unverified`` outcomes so the wave loop
-    # can apply the "two of the same class → terminal" rule and the
-    # "invalid_request → never retry" rule without re-parsing the
-    # error message. ``None`` on success / continue outcomes.
     failure_class: FailureClass | None = None
 
 
@@ -931,13 +790,6 @@ def verify_finding(
     if local_skip_enabled() and classify_finding_for_verification(finding) == "local_skip":
         return _local_skip_result()
 
-    # Chunk 4: route the initial-model selection through the central
-    # decision selector so ``verify_finding`` and ``_run_verification_call``
-    # agree on which model the request will run on. The decision is
-    # recomputed inside ``_run_verification_call`` so the request build
-    # cannot accept a stale model; consulting it here is purely so the
-    # caller can pass ``selected_model`` into the call and let the
-    # ``model_override=`` keyword wire it through.
     if model is not None:
         selected_model = model
     else:
@@ -953,12 +805,6 @@ def verify_finding(
         escalated=escalated,
     )
 
-    # Escalation: re-run on Opus when Sonnet failed to ground a high-stakes
-    # finding. Skip when caller already passed escalated=True (avoid loops).
-    # ``should_escalate_verification`` is the policy gate (severity + Sonnet-
-    # is-initial); ``select_routing(escalated=True)`` is the single source
-    # of truth for which model and request shape the escalation runs on, so
-    # the real-time and batch escalation paths cannot drift.
     if not escalated and should_escalate_verification(
         finding,
         verdict=result.verdict,
@@ -982,8 +828,6 @@ def verify_finding(
                 max_retries=max_retries,
                 escalated=True,
             )
-            # Prefer the escalated result when it produced a grounded verdict;
-            # otherwise keep the first pass so we don't lose its evidence.
             if esc_result.grounded or (
                 esc_result.verdict in ("CONFIRMED", "CORRECTED", "DISPUTED")
                 and result.verdict == "UNVERIFIED"
@@ -1022,9 +866,6 @@ def _classify_escalation_reason(initial_result: VerificationResult) -> str:
         and initial_result.successful_source_count == 0
     ):
         return "initial_all_search_errors"
-    # Defensive fallback — the router would not have asked for escalation
-    # without one of the above being true, but a future router rule should
-    # remain visible.
     return "router_decision"
 
 
@@ -1046,17 +887,6 @@ def _run_verification_call(
     selector and request builder as the batch initial / retry /
     continuation paths.
     """
-    # Chunk 4: single routing decision. The decision encodes profile,
-    # mode, model, thinking, search budget, escalation eligibility, and
-    # tool inclusion in one record. Both real-time and batch construct
-    # the same decision for the same finding, so the two paths cannot
-    # drift on which policy bundle is applied.
-    #
-    # ``local_skip=False`` is explicit: by the time we reach this
-    # function, ``verify_finding`` has already short-circuited the
-    # local-skip branch via ``classify_finding_for_verification``. We
-    # pass ``False`` so the selector does not re-run the classifier on
-    # the remote path.
     decision = select_routing(
         finding,
         escalated=escalated,
@@ -1086,10 +916,6 @@ def _run_verification_call(
         return _make_unverified("No API key available for verification.")
 
     client = _get_client()
-    # Chunk C: build prompt + tools through the shared helpers so the
-    # real-time path matches batch initial / retry / continuation. The
-    # ``include_verdict_tool`` flag is computed once and threaded into both
-    # so the prompt cannot claim a tool the request omits (or vice versa).
     include_verdict_tool = decision.include_verdict_tool
     prompt = _build_verification_prompt(
         finding, cycle=cycle, include_verdict_tool=include_verdict_tool
@@ -1097,59 +923,26 @@ def _run_verification_call(
     system_prompt = _get_verification_system_prompt(
         cycle, include_verdict_tool=include_verdict_tool
     )
-    # Chunk 4: route through the central :func:`build_verification_request`
-    # so the real-time path uses the same shape as the batch initial /
-    # retry / continuation paths. The builder applies cache controls,
-    # thinking, effort, and the mode-scaled web_search max_uses in one
-    # place; the only call-site decision is whether to include the
-    # batch ``service_tier`` (not for the streaming path).
     stream_kwargs = build_verification_request(
         decision,
         prompt=prompt,
         system_prompt=system_prompt,
         include_service_tier=False,
     )
-    # The streaming path uses ``client.messages.stream(...)`` which
-    # accepts ``messages`` as a top-level kwarg, but the builder bundles
-    # it into the params dict. Lift it out so we can keep the same
-    # ``messages.append(...)`` continuation loop below.
     messages = stream_kwargs.pop("messages")
 
-    # Chunk 6: route through the centralized retry policy so this loop,
-    # the cross-check loop, and the review streaming loop all use the
-    # same backoff schedule for the same SDK exception classes. The
-    # caller's ``max_retries`` still wins so existing tests inject a
-    # different cap. The continuation cap is now drawn from the routing
-    # decision and capped further by :data:`retry_policy.DEFAULT_MAX_CONTINUATIONS`
-    # (or the deep-mode override) so a runaway ``pause_turn`` loop cannot
-    # quietly run five rounds by default.
     policy = DEFAULT_VERIFICATION_RETRY_POLICY
     attempts_planned = max(1, int(max_retries) + 1)
-    # Per-call continuation accounting (audit Chunk 6, Task 5): the cap
-    # comes from the routing decision; we additionally track total
-    # web-search uses across continuations so a model that keeps
-    # pausing without making progress goes terminal-unverified.
     continuation_total = 0
     for attempt in range(attempts_planned):
         is_last_attempt = attempt == attempts_planned - 1
         try:
             all_responses = []
-            # Reset messages each attempt — the builder produces a fresh
-            # ``[{"role": "user", "content": prompt}]`` list and the
-            # continuation loop appends assistant turns as pauses occur.
             messages = [{"role": "user", "content": prompt}]
-            # The default per-mode cap is 2 (drops from the legacy 5);
-            # DEEP_REASONING gets 4. The routing decision carries the
-            # final value so a future tuning pass touches one map.
             max_continuations = decision.max_continuations
-            # Hard cap on the web_search budget across the whole call.
-            # The mode-scaled per-call ceiling is the budget the model
-            # was supposed to spend; if it asks for more we treat that
-            # as a continuation that did not converge.
             search_budget_ceiling = max(1, int(decision.web_search_max_uses) * 2)
             continuation_count = 0
             for _ in range(max_continuations + 1):
-                # --- Streaming API required for web search server tool ---
                 with client.messages.stream(
                     messages=messages,
                     **stream_kwargs,
@@ -1158,17 +951,9 @@ def _run_verification_call(
                 all_responses.append(response)
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)
-                # ``tool_use`` is a successful terminal state when the model
-                # emits the structured ``submit_verification_verdict`` call as
-                # its final action; treat it like ``end_turn``. Chunk D
-                # routes that decision through ``classify_verification_stop_reason``
-                # so the wave path and real-time path agree.
                 if stop_class == STOP_CLASS_COMPLETE:
                     break
                 if stop_class == STOP_CLASS_PAUSE:
-                    # Chunk 6: count this pause/continue. Hard caps fire
-                    # when the total continuations or the total
-                    # web-search uses would exceed the configured budget.
                     continuation_count += 1
                     continuation_total += 1
                     total_search_so_far = sum(
@@ -1180,15 +965,6 @@ def _run_verification_call(
                             f"({total_search_so_far} > {search_budget_ceiling}) "
                             "without producing a verdict."
                         )
-                    # Chunk D1.1: server-tool ``pause_turn`` is resumed by
-                    # re-sending the assistant response as-is. Appending a
-                    # synthetic ``"continue"`` user turn (the prior behavior)
-                    # wastes tokens, changes the model's continuation
-                    # behavior, and interferes with thinking / tool-state
-                    # continuity. Anthropic's stop_reason docs explicitly
-                    # call out that the correct response is to put the
-                    # assistant content back into ``messages`` and reissue
-                    # the same request — without a new user turn.
                     messages.append({"role": "assistant", "content": response.content})
                     continue
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
@@ -1210,8 +986,6 @@ def _run_verification_call(
                 total_search_errors += errors
                 total_search_requests += _web_search_count(resp)
 
-            # Chunk H Directive 4: dedupe across waves with normalized URLs
-            # so two queries that landed on the same page are counted once.
             deduped_searched = dedupe_searched_sources(all_searched)
 
             grounded = success_blocks > 0
@@ -1228,13 +1002,6 @@ def _run_verification_call(
                     search_errors=total_search_errors,
                 )
 
-            # Phase 2.5 / Chunk D: route the structured-then-text parsing
-            # through the canonical :func:`parse_verification_response` so
-            # the real-time path and the batch wave path produce identical
-            # verdicts for identical responses. The canonical parser
-            # prefers the ``submit_verification_verdict`` tool input, falls
-            # back to JSON-in-text, and finally reports ``no_content`` when
-            # neither path produced a verdict.
             outcome = parse_verification_response(all_responses)
             if outcome.parse_status == PARSE_STATUS_NO_CONTENT:
                 return _make_unverified(
@@ -1243,15 +1010,7 @@ def _run_verification_call(
                     search_errors=total_search_errors,
                     search_successes=success_blocks,
                 )
-            # text_parse_error and text both produce a (UNVERIFIED) result
-            # that should flow through the grounding invariant. The
-            # explanation already documents the parse failure; downgrading
-            # a real verdict to UNVERIFIED is the safe behavior here.
             parsed = outcome.verdict
-            # Source trimming: keep only the URLs the model actually cited
-            # in its ``submit_verification_verdict`` payload. The full set of
-            # URLs the model saw across all web_search calls is preserved in
-            # ``successful_source_count`` for diagnostics; reports stay clean.
             parsed.grounded = True
             parsed.model_used = model
             parsed.escalated = escalated
@@ -1259,27 +1018,12 @@ def _run_verification_call(
             parsed.web_search_requests = total_search_requests
             parsed.successful_source_count = len(deduped_searched)
             parsed.search_error_count = total_search_errors
-            # Chunk 4: stamp the routed decision (mode/profile/escalation
-            # flag) onto the result via the centralized helper so the
-            # real-time path and the batch wave path use the same
-            # stamping routine.
             apply_routing_to_result(decision, parsed)
-            # Chunk H: validate cited sources against the URLs the API
-            # actually fetched. Ungrounded citations are partitioned off
-            # and the verdict is downgraded when every citation missed.
             parsed = _apply_source_grounding(parsed, searched=deduped_searched)
             return _enforce_grounding_invariant(parsed)
         except (KeyboardInterrupt, SystemExit):
-            # Control-flow exceptions must escape so Ctrl-C / interpreter
-            # shutdown work as the user expects.
             raise
         except Exception as e:
-            # Route the exception through the centralized classifier so
-            # RATE_LIMIT / SERVER_ERROR / CONNECTION get the same backoff
-            # schedule the review and cross-check paths use.
-            # INVALID_REQUEST and UNKNOWN are non-retryable and surface the
-            # original error message visibly so the operator sees what
-            # went wrong.
             failure_class = classify_exception(e)
             if not is_retryable_failure_class(failure_class):
                 if failure_class is FailureClass.INVALID_REQUEST:
@@ -1371,7 +1115,6 @@ def prepare_findings_for_verification(
 def verify_findings(findings: list[Finding], *, progress: VerifyProgressFn = _noop_verify_progress, cycle: CodeCycle = DEFAULT_CYCLE, cache: VerificationCache | None = None) -> list[Finding]:
     verifiable = list(findings)
     verifiable.sort(key=lambda f: f.confidence)
-    # Resolve local-skip and cache-hit findings before spinning up workers.
     remaining = prepare_findings_for_verification(verifiable, cycle=cycle, cache=cache)
     total = len(remaining)
     if total == 0:
@@ -1419,10 +1162,6 @@ def verify_findings_batch(
 
 
 def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, model: str | None = None) -> BatchJob:
-    # Chunk C: compute include_verdict_tool once and thread it through both
-    # the user-prompt builder and the system-prompt builder so the batch
-    # request payload (built by submit_verification_batch via
-    # build_verification_tools) and the prompt agree on tool availability.
     include_verdict_tool = verification_request_includes_verdict_tool()
     return submit_verification_batch(
         findings,
@@ -1575,13 +1314,10 @@ def _decision_from_legacy_params(
     Chunk-4 behavior where retry / continuation used the default
     verification phase shape (Sonnet + thinking + full budget).
     """
-    from dataclasses import replace as _dc_replace  # local import
+    from dataclasses import replace as _dc_replace
 
     sev = (severity or "MEDIUM").strip().upper() or "MEDIUM"
 
-    # Resolve the profile. Unknown strings fall back to CONSTRUCTABILITY
-    # (the most permissive bucket) so a typo cannot route a real claim
-    # into INTERNAL_COORDINATION's tiny budget.
     if profile is None:
         resolved_profile = VerificationProfile.CONSTRUCTABILITY
     elif isinstance(profile, VerificationProfile):
@@ -1592,12 +1328,6 @@ def _decision_from_legacy_params(
         except ValueError:
             resolved_profile = VerificationProfile.CONSTRUCTABILITY
 
-    # Mode: escalation forces DEEP_REASONING; GRIPES → STRICT_STRUCTURED;
-    # non-GRIPES internal-coordination → STRICT_STRUCTURED; otherwise
-    # STANDARD_REASONING. This mirrors the priority order in
-    # :func:`select_verification_mode` minus the local-skip branch
-    # (legacy retry / continuation never receives a local-skip finding,
-    # so we don't bother computing it).
     if escalated:
         mode = VerificationMode.DEEP_REASONING
     elif sev == "GRIPES":
@@ -1617,9 +1347,6 @@ def _decision_from_legacy_params(
 
     include_verdict_tool = verification_request_includes_verdict_tool()
 
-    # Chunk 6: the legacy path also gets the per-mode continuation cap
-    # from the centralized policy. Default modes get 2; DEEP_REASONING
-    # gets 4.
     from .retry_policy import max_continuations_for_mode as _max_cont
     return VerificationRoutingDecision(
         finding_id="",
@@ -1658,10 +1385,6 @@ def _classify_wave_results(
         escalated = bool(context.get("escalated", False))
         result = detailed.get(custom_id)
         if result is None:
-            # Chunk 6: a missing batch result is a SERVER_ERROR-equivalent
-            # transient failure (the wave path detected something but the
-            # entry didn't land). The tracker decides whether the same
-            # class repeats across waves.
             outcomes.append(
                 VerificationItemOutcome(
                     finding_idx=finding_idx,
@@ -1679,10 +1402,6 @@ def _classify_wave_results(
             unverified_msg = f"Batch request {result.result.type}"
             if error_detail:
                 unverified_msg += f": {error_detail}"
-            # Chunk 6: classify the batch failure with the centralized
-            # classifier. The wave loop applies the "never retry
-            # INVALID_REQUEST" rule, so structured-error-type
-            # ``invalid_request_error`` becomes terminal immediately.
             error_obj = getattr(result.result, "error", None)
             error_type = getattr(error_obj, "type", None) if error_obj is not None else None
             failure_class = classify_batch_failure(
@@ -1701,9 +1420,6 @@ def _classify_wave_results(
                     )
                 )
             else:
-                # INVALID_REQUEST / BATCH_CANCELED: terminal at parse
-                # time. The request shape is bad — resubmitting will
-                # produce the same error.
                 outcomes.append(
                     VerificationItemOutcome(
                         finding_idx=finding_idx,
@@ -1727,20 +1443,12 @@ def _classify_wave_results(
                     finding_idx=finding_idx,
                     original_custom_id=custom_id,
                     classification="continue",
-                    # Plain dicts decouple the continuation payload from SDK
-                    # Pydantic shape changes (audit Issue 8). maybe_transform
-                    # accepts these the same way it accepts model objects.
                     assistant_content_blocks=plain_blocks,
                     unverified_reason="pause_turn",
                     failure_class=FailureClass.PAUSE_TURN,
                 )
             )
             continue
-        # Chunk D: ``tool_use`` is a successful terminal state when the
-        # model emits the structured ``submit_verification_verdict`` call
-        # as its final action. ``classify_verification_stop_reason``
-        # collapses ``tool_use`` and ``end_turn`` into ``complete`` so the
-        # batch wave path and the real-time path agree.
         if stop_class != STOP_CLASS_COMPLETE:
             outcomes.append(
                 VerificationItemOutcome(
@@ -1764,12 +1472,6 @@ def _classify_wave_results(
                 )
             )
             continue
-        # Chunk D: canonical parser. Structured tool input first, then JSON
-        # text fallback, then conservative classification. A text-fallback
-        # parse error is surfaced as a ``terminal_unverified`` outcome so
-        # the retry loop does not re-run on a deterministically broken
-        # response, and so the result is never cached as a supported
-        # verdict.
         outcome = parse_verification_response(message)
         if outcome.parse_status == PARSE_STATUS_NO_CONTENT:
             outcomes.append(
@@ -1796,12 +1498,6 @@ def _classify_wave_results(
         parsed = outcome.verdict
         searched_detailed, success_blocks, error_count = _collect_search_evidence_detailed(message)
         deduped_searched = dedupe_searched_sources(searched_detailed)
-        # Source trimming (Phase 10): keep only the model's cited sources from
-        # the structured verdict payload. ``successful_source_count`` still
-        # records how many distinct URLs the model retrieved across searches
-        # so diagnostics retain the full evidence-gathering picture.
-        # Phase 3 evidence model: stamp grounding/source counts so the
-        # downstream invariant can downgrade ungrounded verified verdicts.
         parsed.grounded = success_blocks > 0
         parsed.model_used = model_used
         parsed.escalated = escalated
@@ -1809,22 +1505,11 @@ def _classify_wave_results(
         parsed.web_search_requests = _web_search_count(message)
         parsed.successful_source_count = len(deduped_searched)
         parsed.search_error_count = error_count
-        # Chunk 4: prefer the stored routing decision from the request
-        # context so the wave parser stamps the result with the *same*
-        # mode/profile/escalation the request was actually built against.
-        # Re-deriving from the finding alone (the pre-Chunk-4 behavior)
-        # could disagree with the request that ran — e.g. a STRICT_STRUCTURED
-        # initial call would get re-stamped as STANDARD_REASONING if the
-        # routing rules ever changed mid-flight, or vice versa.
         stored_routing = context.get("routing")
         if isinstance(stored_routing, dict):
             decision = VerificationRoutingDecision.from_dict(stored_routing)
             apply_routing_to_result(decision, parsed)
         else:
-            # Legacy / first-wave path: rebuild the decision from the
-            # finding. This still flows through the same selector as the
-            # real-time path, so the result is identical to what would
-            # have been stored if Chunk 4 had been on at submission time.
             decision = select_routing(
                 findings[finding_idx],
                 escalated=escalated,
@@ -1867,38 +1552,18 @@ def collect_verification_batch_results(
         if realtime_fallback_threshold is not None
         else _REALTIME_FALLBACK_THRESHOLD
     )
-    # Chunk 4: thread the routing decision from the batch submission's
-    # request_map into the wave-loop's request_contexts so the wave
-    # parser stamps results with the SAME decision the request was
-    # built against. Pre-Chunk-4 submissions stored no ``routing`` key,
-    # in which case the wave parser falls back to re-deriving the
-    # decision from the finding (matching the legacy behavior).
     request_contexts = {
         custom_id: {
             "finding_idx": meta["finding_idx"],
             "original_prompt": _build_verification_prompt(findings[meta["finding_idx"]], cycle=cycle),
             "model": meta.get("model") or initial_verification_model(),
             "escalated": False,
-            # Chunk 6: stamp the *original* custom_id on the context so
-            # the wave-failure tracker keys by the stable id across
-            # wave re-stamps (``verify_retry_<wave>__<original>``).
             "original_custom_id": custom_id,
             **({"routing": meta["routing"]} if meta.get("routing") else {}),
         }
         for custom_id, meta in job.request_map.items()
     }
-    # Chunk 6: per-finding wave failure tracker. The tracker is keyed by
-    # the original custom_id (the first-wave id) so a finding's failure
-    # history follows it through wave re-stamps. Repeated same-class
-    # failures and INVALID_REQUEST become terminal-unverified earlier
-    # than the global wave cap.
     failure_tracker = BatchWaveFailureTracker()
-    # Per-finding continuation counter. The wave loop has its own
-    # ``MAX_VERIFICATION_WAVES`` cap, but the real-time path's
-    # continuation cap (2 by default) is the more direct budget signal —
-    # a finding that pause_turns its way through three waves has spent
-    # the same number of pause/resume rounds the real-time path would
-    # have allowed in one call, and the next wave is unlikely to help.
     continuation_counts: dict[str, int] = {}
     current_job = job
     for wave_index in range(max_waves):
@@ -1918,15 +1583,6 @@ def collect_verification_batch_results(
         outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts)
         needs_retry: list[VerificationItemOutcome] = []
         needs_continue: list[VerificationItemOutcome] = []
-        # Chunk 6: findings the tracker has decided should stop burning
-        # batch waves. They are NOT resubmitted via
-        # ``submit_verification_followup_wave``, but they stay eligible
-        # for the real-time fallback path on the last wave (a different
-        # code path that may succeed where batch did not). Findings
-        # whose class is in the never-retry set (e.g. INVALID_REQUEST)
-        # are written to terminal-UNVERIFIED immediately and not
-        # included here, because the request shape is the problem and
-        # real-time would hit the same wall.
         tracker_terminated: list[VerificationItemOutcome] = []
         terminal_unverified = 0
         succeeded = 0
@@ -1941,15 +1597,6 @@ def collect_verification_batch_results(
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 succeeded += 1
             elif outcome.classification == "retry":
-                # Chunk 6: apply the per-finding wave tracker.
-                #
-                # * Never-retry classes (INVALID_REQUEST, BATCH_CANCELED)
-                #   → terminal-unverified immediately. The request shape
-                #   is the problem, so resubmitting (batch or real-time)
-                #   would produce the same error.
-                # * Repeated same-class failures → "tracker_terminated":
-                #   no more batch waves, but real-time fallback is still
-                #   eligible because a different transport may succeed.
                 fc = outcome.failure_class or FailureClass.UNKNOWN
                 if not should_retry_batch_failure(fc):
                     failure_tracker.record(stable_key, fc)
@@ -1972,13 +1619,7 @@ def collect_verification_batch_results(
                     request_contexts[outcome.original_custom_id]["resolved"] = True
                     terminal_unverified += 1
                 elif failure_tracker.is_terminal(stable_key, current=fc):
-                    # Repeated same class: stop submitting batch waves
-                    # but keep the finding eligible for the real-time
-                    # fallback on the last wave.
                     failure_tracker.record(stable_key, fc)
-                    # Stamp a placeholder reason so the unresolved-tail
-                    # branch can attribute the failure if fallback
-                    # is disabled or the threshold is exceeded.
                     outcome.unverified_reason = (
                         f"{outcome.unverified_reason or 'Verification failed.'} "
                         f"({failure_tracker.terminal_reason(stable_key, current=fc)})"
@@ -1988,15 +1629,9 @@ def collect_verification_batch_results(
                     failure_tracker.record(stable_key, fc)
                     needs_retry.append(outcome)
             elif outcome.classification == "continue":
-                # Continuations consume the per-finding pause-turn
-                # budget. The wave loop bounds them through the same
-                # cap the real-time path uses (2 default / 4 deep) so a
-                # pause-turn-only finding cannot eat all three waves.
                 continuation_counts[stable_key] = (
                     continuation_counts.get(stable_key, 0) + 1
                 )
-                # Read the cap from the stored decision if available,
-                # otherwise fall back to the centralized default.
                 stored_routing = ctx.get("routing")
                 if isinstance(stored_routing, dict):
                     cap = int(stored_routing.get("max_continuations") or 0)
@@ -2056,13 +1691,7 @@ def collect_verification_batch_results(
         if not needs_retry and not needs_continue and not tracker_terminated:
             break
         if wave_index == max_waves - 1:
-            # Chunk 6: include tracker_terminated findings in the
-            # unresolved set. They cannot ride more batch waves, but
-            # the real-time fallback is a different code path that
-            # may succeed (or fail with a clearer error).
             unresolved = needs_retry + needs_continue + tracker_terminated
-            # Phase 3 (plan 7.4): if only a small tail remains, fall back to
-            # real-time verification rather than waiting for another batch.
             if (
                 fallback_threshold > 0
                 and len(unresolved) <= fallback_threshold
@@ -2072,10 +1701,6 @@ def collect_verification_batch_results(
                     f"unresolved finding(s) (threshold={fallback_threshold}).",
                     level="info",
                 )
-                # Run the fallback tail in parallel — each call is a streaming
-                # web-search-grounded verification that blocks on the network,
-                # so sequential execution is wasteful when there are 3-5
-                # findings left over.
                 max_workers = min(5, len(unresolved))
                 fallback_findings = [findings[outcome.finding_idx] for outcome in unresolved]
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -2095,9 +1720,6 @@ def collect_verification_batch_results(
                 break
             for outcome in unresolved:
                 finding = findings[outcome.finding_idx]
-                # Chunk 6: include the wave history in the
-                # retry_telemetry so reports / diagnostics can attribute
-                # why the finding never resolved.
                 stable_key = (
                     request_contexts.get(outcome.original_custom_id, {})
                     .get("original_custom_id")
@@ -2124,12 +1746,6 @@ def collect_verification_batch_results(
             original = request_contexts[item.original_custom_id]
             wave_finding = findings[item.finding_idx]
             wave_escalated = bool(original.get("escalated", False))
-            # Chunk 4: rebuild the routing decision for the retry wave
-            # through the central selector. ``model`` may have been
-            # set by the initial call (sticky across waves); pass it
-            # as an override so the retry uses the same model unless
-            # the decision selector explicitly chose a different one
-            # (it does not today, but stays consistent if it ever does).
             retry_decision = select_routing(
                 wave_finding,
                 escalated=wave_escalated,
@@ -2160,9 +1776,6 @@ def collect_verification_batch_results(
                 "model": wave_model,
                 "severity": wave_severity,
                 "profile": wave_profile,
-                # Chunk 4: stash the full routing decision so the wave
-                # parser can stamp the result with the *actual* mode
-                # the request was built against, not a re-derived one.
                 "routing": retry_decision.to_dict(),
             }
             next_contexts[custom_id] = {
@@ -2174,9 +1787,6 @@ def collect_verification_batch_results(
                 "severity": wave_severity,
                 "profile": wave_profile,
                 "routing": retry_decision.to_dict(),
-                # Chunk 6: preserve the stable original custom_id so
-                # the failure tracker can follow the finding across
-                # wave re-stamps.
                 "original_custom_id": original.get("original_custom_id") or item.original_custom_id,
             }
         for item in needs_continue:
@@ -2225,16 +1835,9 @@ def collect_verification_batch_results(
                 "severity": wave_severity,
                 "profile": wave_profile,
                 "routing": cont_decision.to_dict(),
-                # Chunk 6: preserve the stable original custom_id so
-                # the failure tracker can follow the finding across
-                # wave re-stamps.
                 "original_custom_id": original.get("original_custom_id") or item.original_custom_id,
             }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
-        # Chunk 6: if the only unresolved items this wave are
-        # tracker_terminated (no retries / continuations), there is no
-        # follow-up wave to submit. Mark those findings now and break —
-        # the wave loop is done.
         if not next_requests:
             for outcome in tracker_terminated:
                 finding = findings[outcome.finding_idx]

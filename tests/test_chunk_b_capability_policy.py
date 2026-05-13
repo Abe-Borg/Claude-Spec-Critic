@@ -23,9 +23,6 @@ from src.api_config import (
 )
 
 
-# ---------------------------------------------------------------------------
-# thinking_config_for — phase opt-outs and model degradation
-# ---------------------------------------------------------------------------
 
 
 class TestThinkingConfigFor:
@@ -44,9 +41,6 @@ class TestThinkingConfigFor:
         assert thinking_config_for(model="claude-mystery", phase=PHASE_REVIEW) is None
 
 
-# ---------------------------------------------------------------------------
-# apply_thinking_config
-# ---------------------------------------------------------------------------
 
 
 class TestApplyThinkingConfig:

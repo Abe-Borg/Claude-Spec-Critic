@@ -9,8 +9,6 @@ from docx.text.paragraph import Paragraph
 
 SUPPORTED_EXTENSIONS = {".docx"}
 
-# Project-context attachments are reviewed as background reference material
-# (not edited by the spec pipeline), so PDFs are accepted in addition to DOCX.
 CONTEXT_ATTACHMENT_EXTENSIONS = {".docx", ".pdf"}
 
 
@@ -24,27 +22,9 @@ class ParagraphMapping:
     cell_index: int | None
     section_index: int | None = None
     container_type: str | None = None
-    # Phase 4 (audit Section 8.5): rich-formatting downgrade. ``run_count``
-    # is the number of non-empty runs in the source paragraph;
-    # ``distinct_formatting_runs`` is the count of distinct character-format
-    # signatures across those runs (bold/italic/underline/font/size/color).
-    # Both are 0 for non-paragraph mappings (table cells flatten multiple
-    # paragraphs and runs; treat them via the table-cell caution path).
     run_count: int = 0
     distinct_formatting_runs: int = 0
-    # Chunk K1: stable, deterministic element identifier scoped to a single
-    # extracted document. The format is human-readable so a finding that
-    # cites it can be debugged at a glance: ``p<body_index>`` for body
-    # paragraphs, ``t<table>r<row>`` for table-cell rows, ``s<n>h<i>`` /
-    # ``s<n>f<i>`` for section header / footer paragraphs, and ``meta<n>``
-    # for the synthetic header/footer delimiter. The id is stable within a
-    # single extraction run; for cross-run stability the document_id of the
-    # owning ``ExtractedSpec`` should also be checked. Empty string for
-    # legacy mappings constructed by tests that predate Chunk K.
     element_id: str = ""
-    # Section heading text the element belongs to (best-effort). Surfacing
-    # this lets the locator disambiguate identical text in different
-    # sections without re-scanning the paragraph map.
     section_id: str = ""
 
 
@@ -56,11 +36,6 @@ class ExtractedSpec:
     source_path: str = ""
     source_format: str = ""
     paragraph_map: list[ParagraphMapping] | None = None
-    # Chunk K1: stable, human-debuggable document identifier. Defaults to
-    # the filename without extension; when filenames could collide the
-    # caller can override. Element ids are only unique inside a single
-    # document, so the locator pairs ``(document_id, element_id)`` when it
-    # disambiguates findings that cite an id.
     document_id: str = ""
 
 
@@ -92,11 +67,9 @@ def _is_heading_paragraph(text: str) -> bool:
     stripped = (text or "").strip()
     if not stripped or len(stripped) > 80:
         return False
-    # "PART 1 GENERAL" / "SECTION 23 05 23" — explicit headings.
     upper = stripped.upper()
     if upper.startswith("PART ") or upper.startswith("SECTION "):
         return True
-    # "1.01 SUMMARY" / "2.3.A …" — numbered CSI subheadings.
     first_token = stripped.split(maxsplit=1)[0]
     if first_token and first_token[0].isdigit() and any(
         ch == "." for ch in first_token
@@ -151,10 +124,6 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     paragraphs: list[str] = []
     paragraph_map: list[ParagraphMapping] = []
     table_counter = 0
-    # Chunk K1: track the most recently seen heading paragraph so each
-    # element below it can carry a ``section_id``. Reset to empty when the
-    # extractor crosses a top-level "PART ..." boundary so subsequent
-    # subheadings nest under the right ancestor.
     current_section: str = ""
 
     for body_index, child in enumerate(doc.element.body):
@@ -248,8 +217,6 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     content = "\n\n".join(paragraphs)
     reconstructed = "\n\n".join(m.text for m in paragraph_map)
     if reconstructed != content:
-        # Controlled error preserves context (audit Issue 10). The raw assert
-        # version was stripped under -O and produced an opaque AssertionError.
         raise ValueError(
             f"Paragraph map for '{filepath.name}' does not reconstruct extracted content "
             f"(map_chars={len(reconstructed)}, content_chars={len(content)})."

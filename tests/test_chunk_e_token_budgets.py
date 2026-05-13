@@ -63,9 +63,6 @@ from src.tokenizer import (
 pytestmark = pytest.mark.token_budget
 
 
-# ---------------------------------------------------------------------------
-# Phase output budget registry
-# ---------------------------------------------------------------------------
 
 
 class TestPhaseOutputCapRegistry:
@@ -73,11 +70,9 @@ class TestPhaseOutputCapRegistry:
 
     def test_each_phase_resolves_to_its_documented_cap(self):
         assert phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_47) == REVIEW_OUTPUT_CAP
-        # Real-time and batch share the same baseline cap.
         assert phase_output_cap(PHASE_BATCH_REVIEW, model=MODEL_OPUS_47) == REVIEW_OUTPUT_CAP
         assert phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_OPUS_47) == CROSS_CHECK_OUTPUT_CAP
         assert phase_output_cap(PHASE_TRIAGE, model=MODEL_HAIKU_45) == HAIKU_TRIAGE_OUTPUT_CAP
-        # Retry / continuation share the verification budget.
         assert phase_output_cap(PHASE_VERIFICATION_RETRY, model=MODEL_SONNET_46) == phase_output_cap(
             PHASE_VERIFICATION, model=MODEL_SONNET_46
         )
@@ -86,8 +81,6 @@ class TestPhaseOutputCapRegistry:
         )
 
     def test_unknown_phase_degrades_to_verification_cap(self):
-        # A future phase that forgets to register loses headroom rather than
-        # silently inheriting the 128k review cap.
         cap = phase_output_cap("future_phase_we_havent_added", model=MODEL_OPUS_47)
         assert cap == VERIFICATION_OUTPUT_CAP
 
@@ -117,7 +110,6 @@ class TestPhaseCapsRespectModelCeilings:
         assert phase_output_cap(PHASE_REVIEW, model=MODEL_HAIKU_45) == MAX_OUTPUT_TOKENS_HAIKU
 
     def test_only_extended_batch_path_returns_300k(self):
-        # Standard phases never grant 300k; the extended path requires the flag.
         assert phase_output_cap(PHASE_BATCH_REVIEW, model=MODEL_OPUS_47) < BATCH_MAX_OUTPUT_TOKENS
         assert review_max_tokens(
             batch=True, model=MODEL_OPUS_47, allow_extended_output=True
@@ -139,8 +131,6 @@ class TestPhaseHelpersRouteThroughRegistry:
         )
 
     def test_verification_max_tokens_phase_parameter(self):
-        # The phase kwarg lets the caller pick retry vs continuation budgets
-        # without hard-coding the constant.
         retry = verification_max_tokens(
             model=MODEL_SONNET_46, phase=PHASE_VERIFICATION_RETRY
         )
@@ -158,9 +148,6 @@ class TestPhaseHelpersRouteThroughRegistry:
         )
 
 
-# ---------------------------------------------------------------------------
-# Local cl100k_base safety factor
-# ---------------------------------------------------------------------------
 
 
 class TestLocalEstimateSafetyFactor:
@@ -192,33 +179,22 @@ class TestExceedsPerCallLimitForModel:
     """Directive 5: the local fallback gate uses the safety factor."""
 
     def test_returns_false_when_well_under_budget(self):
-        # 100k tokens is well under RECOMMENDED_MAX (500k) for any safety
-        # factor on the registry.
         assert (
             exceeds_per_call_limit_for_model(80_000, 20_000, model=MODEL_OPUS_47)
             is False
         )
 
     def test_safety_factor_pushes_borderline_over_limit(self):
-        # cl100k says 450k input — under the 500k recommended max — but
-        # Haiku's 1.15× margin pushes the gate. Without the safety factor
-        # we would have silently submitted.
         local_total = 450_000
         spec = 430_000
         overhead = 20_000
-        # Sanity: under the legacy gate this is *not* over budget.
         assert exceeds_per_call_limit(spec, overhead) is False
-        # Under the model-aware gate, Haiku's wider margin breaches the
-        # recommended max.
         assert (
             exceeds_per_call_limit_for_model(spec, overhead, model=MODEL_HAIKU_45)
             is True
         )
 
     def test_safety_factor_uses_model_specific_value(self):
-        # Same input. Opus (1.10×) and Haiku (1.15×) disagree about whether
-        # 450k of cl100k tokens fits the 500k budget — that disagreement
-        # *is* directive 5.
         spec = 444_000
         overhead = 10_000
         opus_padded = safe_local_estimate(spec + overhead, model=MODEL_OPUS_47)
@@ -226,9 +202,6 @@ class TestExceedsPerCallLimitForModel:
         assert opus_padded < haiku_padded
 
 
-# ---------------------------------------------------------------------------
-# Pipeline preflight: selected model + exact-count gate
-# ---------------------------------------------------------------------------
 
 
 class _StubClient:
@@ -282,8 +255,6 @@ def patched_extractor(monkeypatch):
         "src.pipeline.extract_multiple_specs_cached",
         lambda paths: specs,
     )
-    # _prepare_specs walks Path(input_dir).iterdir() when files isn't passed.
-    # Provide a non-empty files list so we never touch the filesystem.
     return [Path(f"/tmp/{s.filename}") for s in specs]
 
 
@@ -299,8 +270,6 @@ def stub_count_tokens(monkeypatch):
 
     monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
-    # Chunk 3: the central review request builder also imports
-    # ``count_tokens`` to gate the extended-output decision.
     monkeypatch.setattr(
         "src.review_request_builder.count_tokens", _fake_count, raising=False
     )
@@ -309,8 +278,6 @@ def stub_count_tokens(monkeypatch):
 
 @pytest.fixture
 def stub_client(monkeypatch, stub_count_tokens):
-    # The pipeline preflight caches exact counts in a module-level dict.
-    # Clear it so cross-test state can't make this test see a stale value.
     from src.extraction_cache import clear_token_cache
 
     clear_token_cache()
@@ -328,8 +295,6 @@ class TestPipelinePreflightSelectsModel:
     ):
         from src import pipeline
 
-        # Make sure preflight is on. Pipeline imports get/cache helpers at
-        # module scope, so patch the ``src.pipeline`` references directly.
         monkeypatch.setattr(
             "src.pipeline.get_cached_token_count", lambda key: None
         )
@@ -346,8 +311,6 @@ class TestPipelinePreflightSelectsModel:
         assert stub_client.calls, "expected at least one count_tokens call"
         models_used = {call["model"] for call in stub_client.calls}
         assert MODEL_SONNET_46 in models_used
-        # And nothing should have been called with Opus, since that wasn't
-        # the selected model.
         assert MODEL_OPUS_47 not in models_used
 
     def test_preflight_uses_haiku_when_haiku_selected(
@@ -380,11 +343,8 @@ class TestPipelinePreflightExactCountAuthoritative:
     ):
         from src import pipeline
 
-        # Sidestep the cache so the API stub is consulted.
         monkeypatch.setattr("src.pipeline.get_cached_token_count", lambda key: None)
         monkeypatch.setattr("src.pipeline.cache_token_count", lambda key, value: None)
-        # API returns a huge count that breaches RECOMMENDED_MAX even
-        # though the local cl100k estimate is tiny.
         stub_client.return_tokens = RECOMMENDED_MAX + 50_000
 
         with pytest.raises(ValueError) as excinfo:
@@ -394,7 +354,6 @@ class TestPipelinePreflightExactCountAuthoritative:
                 model=MODEL_OPUS_47,
             )
 
-        # Error message names the spec + cites the exact count.
         msg = str(excinfo.value)
         assert "spec_0.docx" in msg
         assert "exact" in msg.lower()
@@ -407,9 +366,8 @@ class TestPipelinePreflightExactCountAuthoritative:
 
         monkeypatch.setattr("src.pipeline.get_cached_token_count", lambda key: None)
         monkeypatch.setattr("src.pipeline.cache_token_count", lambda key, value: None)
-        stub_client.return_tokens = 100  # well under the budget
+        stub_client.return_tokens = 100
 
-        # Should not raise.
         pipeline._prepare_specs(
             input_dir=Path("/tmp"),
             files=patched_extractor,
@@ -417,20 +375,14 @@ class TestPipelinePreflightExactCountAuthoritative:
         )
 
 
-# ---------------------------------------------------------------------------
-# Output cap defense-in-depth
-# ---------------------------------------------------------------------------
 
 
 class TestOutputCapsAreModelLimitAware:
     """``output_cap_for_model`` is the floor under the phase registry."""
 
     def test_clamps_each_model_to_its_ceiling(self):
-        # Under ceiling: passes through.
         assert output_cap_for_model(MODEL_OPUS_47, requested=50_000) == 50_000
-        # Over ceiling: clamped to each model's hard limit.
         assert output_cap_for_model(MODEL_OPUS_47, requested=999_999) == MAX_OUTPUT_TOKENS_OPUS
         assert output_cap_for_model(MODEL_SONNET_46, requested=999_999) == MAX_OUTPUT_TOKENS_SONNET
         assert output_cap_for_model(MODEL_HAIKU_45, requested=999_999) == MAX_OUTPUT_TOKENS_HAIKU
-        # Unknown → safest known ceiling (Sonnet).
         assert output_cap_for_model("claude-future-2030", requested=999_999) == MAX_OUTPUT_TOKENS_SONNET

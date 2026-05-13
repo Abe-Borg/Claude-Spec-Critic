@@ -16,12 +16,6 @@ from platformdirs import user_config_dir, user_state_dir
 API_KEY_FILENAME = "spec_critic_api_key.txt"
 BATCH_STATE_FILENAME = "batch_state.json"
 
-# Chunk 1: keep local resume-state retention conservatively under the
-# Anthropic Message Batches result-download window. The API holds batch
-# results for ~29 days; expiring our local state at 28 days guarantees
-# any state we still keep can actually be redeemed. The warning threshold
-# fires earlier so the GUI can surface a "results may expire soon" hint
-# before we are out of runway.
 BATCH_STATE_MAX_AGE_HOURS = 24 * 28
 BATCH_STATE_WARNING_AGE_HOURS = 24 * 25
 

@@ -88,11 +88,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-# The typed SDK exceptions. Imported eagerly so the classifier can do
-# real ``isinstance`` checks rather than string-matching class names.
-# This module is import-light by design (no other src deps) so it can
-# be loaded from the tests' fake-anthropic harness without pulling in
-# the full pipeline graph.
 from anthropic import (
     APIConnectionError,
     APIError,
@@ -102,9 +97,6 @@ from anthropic import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Failure taxonomy
-# ---------------------------------------------------------------------------
 
 
 class FailureClass(str, Enum):
@@ -121,48 +113,25 @@ class FailureClass(str, Enum):
     value without round-tripping through the enum.
     """
 
-    # The model overloaded our token bucket. Retry with a long backoff.
     RATE_LIMIT = "rate_limit"
 
-    # The Anthropic server is overloaded (HTTP 529) or returned a 5xx.
-    # Retry with a moderate backoff.
     SERVER_ERROR = "server_error"
 
-    # Transport-level connection failure (httpx / urllib3 / aiohttp).
-    # Retry with a short backoff.
     CONNECTION = "connection"
 
-    # The request itself is malformed (HTTP 400 / 422). NEVER retry —
-    # the request shape would have to change to get a different answer.
     INVALID_REQUEST = "invalid_request"
 
-    # The batch run reported the request errored / expired / canceled.
-    # Retry once at most; repeated occurrences indicate a permanent
-    # failure (e.g. the request shape was rejected by validation).
     BATCH_ERRORED = "batch_errored"
     BATCH_EXPIRED = "batch_expired"
     BATCH_CANCELED = "batch_canceled"
 
-    # The model returned text that could not be parsed (no tool_use
-    # block, no JSON array, stop_reason=max_tokens). Retry once at
-    # most; a finding that keeps producing parse errors should go
-    # terminal unverified rather than burn another wave.
     PARSE_ERROR = "parse_error"
 
-    # The model paused with ``stop_reason=pause_turn`` and needs the
-    # server-tool turn resumed. NOT a failure per se — distinct
-    # class so the continuation loop can count it separately.
     PAUSE_TURN = "pause_turn"
 
-    # Any other error. Conservative default: do not retry.
     UNKNOWN = "unknown"
 
 
-# Failure classes that the app-level retry loop should retry. The batch
-# wave loop applies its own per-class policy via
-# :func:`should_retry_batch_failure` because the trade-offs are
-# different there (an invalid_request_error from the batch API means
-# the request shape is bad, not that the call is transiently broken).
 _RETRYABLE_REALTIME = frozenset(
     {
         FailureClass.RATE_LIMIT,
@@ -177,17 +146,8 @@ def is_retryable_failure_class(failure_class: FailureClass) -> bool:
     return failure_class in _RETRYABLE_REALTIME
 
 
-# ---------------------------------------------------------------------------
-# Exception classification (typed-SDK-first)
-# ---------------------------------------------------------------------------
 
 
-# Connection-error message substrings (audit Issue 9). Used ONLY as a
-# last resort, when the exception came in as a generic ``Exception``
-# rather than one of the typed SDK classes. The typed SDK
-# ``APIConnectionError`` covers the modern path; this list catches
-# stale wrappers (e.g. an httpx ``RemoteProtocolError`` that escapes
-# the SDK's translation layer).
 _CONNECTION_PATTERNS = (
     "peer closed connection",
     "incomplete chunked read",
@@ -217,39 +177,24 @@ def classify_exception(exc: BaseException) -> FailureClass:
         return FailureClass.SERVER_ERROR
     if isinstance(exc, APIStatusError):
         status = getattr(exc, "status_code", None)
-        # 529 (overloaded) and the explicit ``OverloadedError`` subclass
-        # are server-side overload, not client-side bugs.
         if status == 529 or exc.__class__.__name__ == "OverloadedError":
             return FailureClass.SERVER_ERROR
         if isinstance(status, int) and 500 <= status < 600:
             return FailureClass.SERVER_ERROR
         if isinstance(status, int) and 400 <= status < 500:
-            # 408 / 429 are technically client errors but semantically
-            # retryable. The SDK already exposes 429 as RateLimitError
-            # (caught above); 408 is rare enough that we leave it in
-            # INVALID_REQUEST and let the operator surface it.
             return FailureClass.INVALID_REQUEST
         return FailureClass.UNKNOWN
     if isinstance(exc, APIConnectionError):
         return FailureClass.CONNECTION
     if isinstance(exc, APIError):
-        # Generic API error from the SDK — neither a status error nor
-        # a connection error. Treat as INVALID_REQUEST so we do not
-        # blindly retry; the operator should see the error text.
         return FailureClass.INVALID_REQUEST
 
-    # Last resort: a generic exception that did not pass through the
-    # SDK's translation. Use the message-substring heuristic only for
-    # this branch (audit Issue 9).
     msg = str(exc).lower()
     if any(pat in msg for pat in _CONNECTION_PATTERNS):
         return FailureClass.CONNECTION
     return FailureClass.UNKNOWN
 
 
-# ---------------------------------------------------------------------------
-# Batch failure classification
-# ---------------------------------------------------------------------------
 
 
 def classify_batch_failure(
@@ -283,8 +228,6 @@ def classify_batch_failure(
     et = (error_type or "").lower()
     em = (error_message or "").lower()
 
-    # Structured error type wins when present — it is the SDK's typed
-    # answer to "what went wrong?".
     if et:
         if "invalid_request" in et:
             return FailureClass.INVALID_REQUEST
@@ -300,7 +243,6 @@ def classify_batch_failure(
     if rt == "canceled":
         return FailureClass.BATCH_CANCELED
     if rt == "errored":
-        # Try to find a structured signal in the message body.
         if "invalid_request" in em or "invalid request" in em:
             return FailureClass.INVALID_REQUEST
         if "overloaded" in em or "rate limit" in em or "rate_limit" in em:
@@ -311,10 +253,6 @@ def classify_batch_failure(
     return FailureClass.UNKNOWN
 
 
-# Batch wave failure classes that should NOT be retried even on the
-# first occurrence. ``INVALID_REQUEST`` is the canonical case: the
-# request shape would have to change, and the wave loop does not
-# rebuild request bodies.
 _BATCH_NEVER_RETRY = frozenset(
     {
         FailureClass.INVALID_REQUEST,
@@ -334,9 +272,6 @@ def should_retry_batch_failure(failure_class: FailureClass) -> bool:
     return failure_class not in _BATCH_NEVER_RETRY
 
 
-# ---------------------------------------------------------------------------
-# Per-finding wave failure tracking
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -361,7 +296,6 @@ class BatchWaveFailureTracker:
     follows a finding across waves.
     """
 
-    # original_custom_id -> [FailureClass, FailureClass, ...] across waves
     history: dict[str, list[FailureClass]] = field(default_factory=dict)
 
     def record(self, original_custom_id: str, failure_class: FailureClass) -> None:
@@ -404,9 +338,6 @@ class BatchWaveFailureTracker:
         )
 
 
-# ---------------------------------------------------------------------------
-# Real-time retry policy (review / cross-check / verification streaming)
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -431,17 +362,11 @@ class RetryPolicy:
     connection_multiplier: float = 1.0
 
 
-# Conservative defaults — wire each call site to a single shared
-# policy so a future tuning pass touches one constant. The plan
-# explicitly does not want per-call-site bespoke schedules.
 DEFAULT_REALTIME_RETRY_POLICY = RetryPolicy(
     max_attempts=3,
     base_backoff_seconds=5.0,
 )
 
-# Verification has historically used 2 retries (3 attempts) with the
-# same base backoff. The legacy loop multiplied SERVER_ERROR by 3x
-# (``15 * (attempt+1)``) — we match that here.
 DEFAULT_VERIFICATION_RETRY_POLICY = RetryPolicy(
     max_attempts=3,
     base_backoff_seconds=5.0,
@@ -476,15 +401,8 @@ def compute_backoff_seconds(
     return base * (multiplier ** max(0, int(attempt)))
 
 
-# ---------------------------------------------------------------------------
-# Continuation policy (verification pause-turn loop)
-# ---------------------------------------------------------------------------
 
 
-# Default cap for the real-time pause-turn continuation loop. The plan
-# explicitly calls this out: drop from 5 to 2. The deep-mode override
-# (4) is reserved for DEEP_REASONING routing — a CRITICAL CALIFORNIA_AHJ
-# finding may legitimately need more web_search rounds.
 DEFAULT_MAX_CONTINUATIONS = 2
 DEEP_MAX_CONTINUATIONS = 4
 
@@ -503,9 +421,6 @@ def max_continuations_for_mode(mode_value: str) -> int:
     return DEFAULT_MAX_CONTINUATIONS
 
 
-# ---------------------------------------------------------------------------
-# Diagnostics payload shape
-# ---------------------------------------------------------------------------
 
 
 def retry_diagnostics_payload(

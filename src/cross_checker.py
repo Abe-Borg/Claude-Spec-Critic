@@ -70,13 +70,10 @@ def _sanitize_narrative(text: str) -> str:
     lines = text.split('\n')
     cleaned = []
     for line in lines:
-        # Strip markdown headers: "## HEADING" -> "HEADING"
         stripped = line
         while stripped.startswith('#'):
             stripped = stripped[1:]
         stripped = stripped.strip()
-        # Skip lines that were ONLY a markdown header with no content after stripping
-        # (e.g., "##" by itself). Keep lines that had content after the #s.
         if line.startswith('#') and not stripped:
             continue
         cleaned.append(stripped if line.startswith('#') else line)
@@ -117,13 +114,6 @@ def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list
     corpus_inner = render_blocks(spec_blocks)
     sections = [f"<{TAG_CORPUS}>\n{corpus_inner}\n</{TAG_CORPUS}>"]
     if existing_findings:
-        # Chunk M: every per-spec review finding has been stamped with a
-        # stable id by ``pipeline._deduplicate_findings``. Render each
-        # ``<prior>`` block with its id so the cross-check model can cite
-        # them back in ``upstreamFindingIds``. Findings without an id (e.g.
-        # legacy resume payloads or hand-built test fixtures) still appear
-        # but are unaddressable — they fall through to the heuristic
-        # suppression path.
         prior_blocks: list[str] = []
         for f in existing_findings:
             attrs: dict[str, str | None] = {
@@ -208,9 +198,6 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
 
 
 def _get_cross_check_user_message(spec_input: str, file_count: int, project_context: str = "") -> str:
-    # Chunk G: project_context serialized via wrap_document_block so a literal
-    # ``</project_context>`` (or any reserved character) inside the operator-
-    # supplied context cannot escape the wrapper.
     ctx = (
         "\n" + wrap_document_block(TAG_PROJECT_CONTEXT, project_context.strip()) + "\n"
         if project_context.strip()
@@ -242,23 +229,13 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
         "messages": [{"role": "user", "content": user_message}],
     }
     apply_thinking_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
-    # Chunk D1.2: pair the effort policy with the thinking config so the
-    # cross-check request includes ``output_config.effort`` on models
-    # that support it (Opus / Sonnet — both standard cross-check models).
     apply_effort_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
     if use_structured_tool:
-        # Chunk J: cross-check tools cache under the cross_check phase
-        # policy. Today this is the global default (cache=on, ttl=1h);
-        # routing through ``tools_with_cache`` keeps the policy in one
-        # place if a future tuning pass diverges.
         request_kwargs["tools"] = tools_with_cache(
             [cross_check_findings_tool()], phase=PHASE_CROSS_CHECK
         )
         request_kwargs["tool_choice"] = cross_check_tool_choice()
 
-    # Chunk 6: route through the centralized retry policy so cross-check,
-    # review streaming, and verification streaming agree on which
-    # exception classes are retryable and how long to back off.
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
     last_failure_class: FailureClass | None = None
@@ -308,8 +285,6 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             result.elapsed_seconds = time.time() - start
             return result
         except (KeyboardInterrupt, SystemExit):
-            # Control-flow exceptions must escape so Ctrl-C / interpreter
-            # shutdown work as the user expects.
             raise
         except Exception as e:
             failure_class = classify_exception(e)
@@ -324,7 +299,6 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 result.elapsed_seconds = time.time() - start
                 return result
             if is_last_attempt:
-                # Fall through to the after-loop "failed after N" message.
                 continue
             time.sleep(
                 compute_backoff_seconds(
@@ -343,30 +317,14 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     return result
 
 
-# ---------------------------------------------------------------------------
-# Phase 8 / plan section 12.3: chunked cross-check for large projects
-# ---------------------------------------------------------------------------
 
-# CSI MasterFormat division 22/23 dominate K-12 mechanical/plumbing reviews.
-# Chunking by these division families lets a 2,000-section megaproject still
-# get coordination review instead of returning a "skipped" status when the
-# combined input exceeds CROSS_CHECK_RECOMMENDED_MAX.
-#
-# The mapping is intentionally coarse — each chunk gets enough context to
-# find within-discipline conflicts. Files whose CSI prefix does not match
-# any chunk (rare) are pooled into a "general" chunk so they are never
-# silently dropped.
 _CSI_PREFIX_RE = re.compile(r"^\s*(\d{2})\s?(\d{2})?")
 
 
 _CHUNK_GROUPS: list[tuple[str, str, frozenset[str]]] = [
-    # (chunk_id, label, set of CSI division prefixes)
     ("div_21", "Division 21 — Fire Suppression", frozenset({"21"})),
     ("div_22", "Division 22 — Plumbing", frozenset({"22"})),
     ("div_23", "Division 23 — HVAC", frozenset({"23"})),
-    # Division 25 controls + commissioning sections (often 23 09 / 25 xx /
-    # 01 91 / 23 08 testing) live together so coordination claims about
-    # sequences and TAB stay in one chunk.
     ("controls_commissioning", "Controls / Commissioning / TAB", frozenset({"25", "01"})),
 ]
 
@@ -406,8 +364,6 @@ def _group_specs_by_chunk(specs: list[ExtractedSpec]) -> list[tuple[str, list[Ex
         cid = _assign_chunk(spec.filename)
         buckets.setdefault(cid, []).append(spec)
 
-    # Merge singletons into the project-wide bucket so each chunk has at
-    # least two specs to coordinate against.
     merged: dict[str, list[ExtractedSpec]] = {}
     project_wide: list[ExtractedSpec] = []
     for cid, group in buckets.items():
@@ -418,14 +374,12 @@ def _group_specs_by_chunk(specs: list[ExtractedSpec]) -> list[tuple[str, list[Ex
     if project_wide:
         merged.setdefault("general", []).extend(project_wide)
 
-    # Stable order: predefined chunk groups first, then "general" last.
     ordered: list[tuple[str, list[ExtractedSpec]]] = []
     for cid, _label, _ in _CHUNK_GROUPS:
         if cid in merged:
             ordered.append((cid, merged[cid]))
     if "general" in merged:
         ordered.append(("general", merged["general"]))
-    # Anything else (shouldn't happen, but be defensive) preserves insertion order.
     for cid, group in merged.items():
         if cid not in {c for c, _ in ordered}:
             ordered.append((cid, group))
@@ -552,8 +506,6 @@ def run_chunked_cross_check(
 
     chunks = _group_specs_by_chunk(specs)
     if len(chunks) <= 1 or all(len(group) < 2 for _, group in chunks):
-        # Cannot meaningfully chunk — surface the original skip so the GUI
-        # can warn the user. Better than silently truncating.
         log(
             f"Cross-check input ({total_tokens:,} tokens) exceeds "
             f"{CROSS_CHECK_RECOMMENDED_MAX:,} and cannot be chunked by CSI "

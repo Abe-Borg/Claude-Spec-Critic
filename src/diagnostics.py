@@ -11,41 +11,20 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 
-# Phase 7.3 (audit Section 11.3): cap retained events so a long-running batch
-# poll cannot grow the in-memory report unbounded. Truncation tracking lets
-# the report still surface that older events were dropped.
 _DEFAULT_MAX_EVENTS = 5000
 
-# Chunk 2: structured tool payloads (the parsed ``submit_review_findings`` /
-# ``submit_verification_verdict`` input dicts) preserve "what the model
-# actually emitted" alongside the regular telemetry. The serialized form is
-# byte-capped so a large findings array on a 50-spec batch run cannot blow
-# up diagnostics memory or report size.
 _STRUCTURED_PAYLOAD_MAX_BYTES = 4096
 
-# Chunk 10 — bounded diagnostics. The event-count cap (above) keeps the list
-# length finite, but a single event can still carry a multi-megabyte field
-# (long raw_response, sprawling source list, etc.). These caps put a hard
-# byte ceiling on per-event data and on the cumulative data footprint so a
-# pathological prompt cannot bloat memory or blow up JSON exports.
-_DEFAULT_MAX_EVENT_DATA_BYTES = 16 * 1024     # 16 KiB per event
-_DEFAULT_MAX_TOTAL_DATA_BYTES = 8 * 1024 * 1024  # 8 MiB total across all events
-_MAX_STRING_FIELD_BYTES = 4 * 1024            # 4 KiB per individual string field
+_DEFAULT_MAX_EVENT_DATA_BYTES = 16 * 1024
+_DEFAULT_MAX_TOTAL_DATA_BYTES = 8 * 1024 * 1024
+_MAX_STRING_FIELD_BYTES = 4 * 1024
 _TRUNCATION_MARKER = "...(truncated)"
 
-# Chunk 10 — secrets scrub. Diagnostics never need to retain credentials, so
-# any data field whose key looks secret-shaped or whose value matches a
-# well-known secret prefix is replaced with ``"<redacted>"``. The patterns
-# below are deliberately conservative — false positives only obscure data;
-# false negatives leak credentials.
 _SECRET_KEY_PATTERN = re.compile(
     r"(api[_-]?key|secret|password|passwd|auth|bearer|access[_-]?token|"
     r"private[_-]?key|credentials?|client[_-]?secret|x[_-]?api[_-]?key)",
     re.IGNORECASE,
 )
-# Anthropic API keys begin with ``sk-ant-``; OpenAI / cloud keys often begin
-# with ``sk-`` or ``AKIA``. Pattern matches a prefix followed by a long
-# token-shaped run of safe characters.
 _SECRET_VALUE_PATTERNS = (
     re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
     re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.=]{12,}", re.IGNORECASE),
@@ -144,17 +123,9 @@ def _bound_event_data(
     if size <= max_bytes:
         return scrubbed, truncated, redaction_count
 
-    # Whole-event still over cap. Drop the largest *string-shaped* fields
-    # first; never touch numeric telemetry (input_tokens, output_tokens,
-    # etc.) because the summary rollup parses those with ``int(...)`` and
-    # a marker string would crash it. Numbers are tiny by definition, so
-    # excluding them from eviction does not weaken the cap.
     safe: dict = {}
     if isinstance(scrubbed, dict):
         safe.update(scrubbed)
-        # Only evict containers / strings. Booleans / ints / floats /
-        # ``None`` are left alone — they're typically <8 bytes each so
-        # they cannot be the source of the overrun.
         evictable_keys = [
             k for k, v in safe.items()
             if isinstance(v, (str, list, tuple, dict))
@@ -230,8 +201,6 @@ class DiagnosticsReport:
     project_context_tokens: int = 0
     cross_check_enabled: bool = False
     events: list[DiagnosticEvent] = field(default_factory=list)
-    # Phase 7.3 actionable fields. Populated by the pipeline / GUI when the
-    # corresponding phase records actionable failure or skip information.
     failed_specs: list[str] = field(default_factory=list)
     skipped_specs: list[str] = field(default_factory=list)
     edit_skip_reasons: dict[str, int] = field(default_factory=dict)
@@ -239,20 +208,9 @@ class DiagnosticsReport:
     edits_applied_total: int = 0
     edits_skipped_total: int = 0
     edits_failed_total: int = 0
-    # Chunk K5: locator-method telemetry. Surfaces how many findings the
-    # locator resolved via the id path vs. text-based fallbacks so a
-    # future tuning pass can tell whether the model is actually citing
-    # ids and whether the id rendering in the prompt is pulling its
-    # weight. Keys are :attr:`EditLocation.match_method` values
-    # (``"id"`` / ``"exact"`` / ``"normalized"`` / ``"section_anchored"``
-    # / ``"fuzzy"``) so the breakdown reads cleanly in diagnostics.
     locator_methods: dict[str, int] = field(default_factory=dict)
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
-    # Chunk 10 — diagnostic byte caps. Prevent a single event from blowing up
-    # in-memory size and prevent the cumulative event payload from growing
-    # unbounded. Both caps default to conservative ceilings; operators that
-    # need every byte of detail can bump them per-instance.
     max_event_data_bytes: int = _DEFAULT_MAX_EVENT_DATA_BYTES
     max_total_data_bytes: int = _DEFAULT_MAX_TOTAL_DATA_BYTES
     total_data_bytes: int = 0
@@ -272,10 +230,6 @@ class DiagnosticsReport:
         bounded, was_truncated, redactions = _bound_event_data(
             data, max_bytes=self.max_event_data_bytes
         )
-        # ``was_truncated`` covers any kind of reduction (scrub, string
-        # truncation, whole-field eviction). Only the whole-event byte
-        # eviction is what users care about as "size truncation" — we
-        # increment that counter only when the per-event cap was hit.
         if bounded is not None and _event_data_byte_size(data) > self.max_event_data_bytes:
             self.events_truncated_by_size += 1
         elif was_truncated and isinstance(bounded, dict) and bounded.get("_event_truncated"):
@@ -303,9 +257,6 @@ class DiagnosticsReport:
             self.bytes_dropped += evicted_size
 
     def log(self, phase: str, level: str, message: str, data: Optional[dict] = None) -> None:
-        # Cap the event list to bound memory on long-running batch polls.
-        # When the cap is exceeded, drop the oldest event and remember that
-        # truncation happened so the summary can flag it.
         if self.max_events > 0 and len(self.events) >= self.max_events:
             oldest = self.events.pop(0)
             self.events_dropped += 1
@@ -376,8 +327,8 @@ class DiagnosticsReport:
         web_search_requests: int = 0,
         max_output_tokens: int = 0,
         stop_reason: str | None = None,
-        mode: str | None = None,           # "realtime" | "batch"
-        retry_status: str | None = None,   # "initial" | "retry" | "continuation"
+        mode: str | None = None,
+        retry_status: str | None = None,
         structured_payload: object = None,
         extra: dict | None = None,
     ) -> None:
@@ -427,9 +378,6 @@ class DiagnosticsReport:
         if self.ended_at is None:
             self.ended_at = time.time()
 
-    # ------------------------------------------------------------------
-    # Summaries
-    # ------------------------------------------------------------------
 
     def summary(self) -> dict:
         total_time = (self.ended_at or time.time()) - self.started_at
@@ -437,7 +385,6 @@ class DiagnosticsReport:
         warning_events = [e for e in self.events if e.level == "warning"]
         success_events = [e for e in self.events if e.level == "success"]
 
-        # Phase durations: first event to last event per phase
         phase_times: dict[str, dict] = {}
         for e in self.events:
             if e.phase not in phase_times:
@@ -453,27 +400,16 @@ class DiagnosticsReport:
             p: round(t["end"] - t["start"], 2) for p, t in phase_times.items()
         }
 
-        # Aggregate token data from events
         total_input_tokens = 0
         total_output_tokens = 0
         total_cache_creation_tokens = 0
         total_cache_read_tokens = 0
         total_web_search_requests = 0
-        # Phase 9 plan 13.4: output-size and search-budget telemetry. We track
-        # the maximum output observed per phase, the count of truncated calls
-        # (stop_reason != end_turn), and aggregate search budget consumption
-        # so future tuning has data to draw on.
         output_samples: list[int] = []
         output_max_by_phase: dict[str, int] = {}
         truncated_calls = 0
         truncated_phases: dict[str, int] = {}
         max_output_cap_observed = 0
-        # Chunk J directive 7: per-phase rollup so the summary can answer
-        # "which phases cost the most?" / "which phases get cache hits?" /
-        # "how many retries/continuations occurred?" / "which phases were
-        # batch vs real-time?" without re-walking events. Each phase entry
-        # accumulates calls, tokens, cache usage, search requests, and
-        # retry/continuation/realtime/batch counts as the loop runs.
         def _new_phase_bucket() -> dict:
             return {
                 "calls": 0,
@@ -482,7 +418,7 @@ class DiagnosticsReport:
                 "cache_creation_input_tokens": 0,
                 "cache_read_input_tokens": 0,
                 "web_search_requests": 0,
-                "models": [],          # ordered, deduped
+                "models": [],
                 "retries": 0,
                 "continuations": 0,
                 "realtime_calls": 0,
@@ -519,10 +455,6 @@ class DiagnosticsReport:
             if cap > max_output_cap_observed:
                 max_output_cap_observed = cap
 
-            # Per-phase rollup. Only events that look like API calls (have
-            # any of the token/search/api_call markers) contribute to the
-            # phase ``calls`` counter so phase-tagged informational logs do
-            # not inflate the count.
             looks_like_api_call = bool(
                 e.data.get("api_call")
                 or in_tok
@@ -557,7 +489,6 @@ class DiagnosticsReport:
             if is_truncated:
                 bucket["truncated_calls"] += 1
 
-        # Verification verdict breakdown + Phase 3 evidence telemetry
         verdicts: dict[str, int] = {}
         verification_stats = {
             "grounded": 0,
@@ -569,58 +500,28 @@ class DiagnosticsReport:
             "search_errors": 0,
             "search_requests": 0,
         }
-        # Chunk D1.3: escalation telemetry rollup. The verifier records
-        # before-and-after fields on every result that triggered the
-        # Sonnet -> Opus escalation path; aggregating them here answers
-        # "is escalation actually changing verdicts?".
-        #
-        # - ``attempts`` counts findings where a second pass ran, regardless
-        #   of whether the escalated result was kept.
-        # - ``changed_verdict`` counts findings whose final verdict differs
-        #   from the initial Sonnet verdict.
-        # - ``no_change`` is the difference, useful for spotting wasted
-        #   escalations.
-        # - ``by_reason`` buckets attempts by the router's classification
-        #   tag (``initial_unverified`` / ``initial_ungrounded`` / etc.).
-        # - ``by_initial_verdict`` and ``by_final_verdict`` track the
-        #   verdict transitions for a future routing-tuning pass.
-        # - ``by_severity`` reports counts per finding severity so a
-        #   future routing-tuning pass can see whether escalation pays
-        #   off more on CRITICAL than HIGH.
         escalation_stats = {
             "attempts": 0,
             "changed_verdict": 0,
             "no_change": 0,
-            "by_reason": {},          # type: dict[str, int]
-            "by_initial_verdict": {}, # type: dict[str, int]
-            "by_final_verdict": {},   # type: dict[str, int]
-            "by_severity": {},        # type: dict[str, int]
+            "by_reason": {},
+            "by_initial_verdict": {},
+            "by_final_verdict": {},
+            "by_severity": {},
         }
-        # Chunk I: per-mode counter. Keys are the
-        # :class:`VerificationMode` string values; missing-mode events
-        # are bucketed under ``"unknown"`` so a legacy entry without a
-        # mode is still visible.
         verification_modes: dict[str, int] = {}
-        # Chunk I: per-profile counter so reports can tell at a glance
-        # which kinds of claims dominated a run.
         verification_profiles: dict[str, int] = {}
-        # Chunk 6: retry / continuation telemetry. Aggregates the
-        # ``retry_telemetry`` block the verifier stamps onto findings
-        # that hit retries, the continuation cap, or terminal-unverified
-        # via the wave failure tracker. Empty on runs where no finding
-        # consumed a retry.
         retry_stats = {
             "findings_with_retries": 0,
             "total_retry_attempts": 0,
             "total_continuations": 0,
-            "by_failure_class": {},   # type: dict[str, int]
-            "by_terminal_reason": {}, # type: dict[str, int]
+            "by_failure_class": {},
+            "by_terminal_reason": {},
         }
         for e in self.events:
             if e.data and "verdict" in e.data:
                 v = e.data["verdict"]
                 verdicts[v] = verdicts.get(v, 0) + 1
-                # Optional Phase 3 fields. Missing keys are simply ignored.
                 if e.data.get("grounded") is True:
                     verification_stats["grounded"] += 1
                 elif "grounded" in e.data:
@@ -640,10 +541,6 @@ class DiagnosticsReport:
                 verification_modes[mode_key] = verification_modes.get(mode_key, 0) + 1
                 profile_key = str(e.data.get("verification_profile") or "unknown")
                 verification_profiles[profile_key] = verification_profiles.get(profile_key, 0) + 1
-                # Chunk D1.3: aggregate escalation telemetry per-finding.
-                # Missing keys (legacy events / non-escalation events)
-                # are treated as ``escalation_attempted=False`` and
-                # silently skipped.
                 if e.data.get("escalation_attempted") is True:
                     escalation_stats["attempts"] += 1
                     if e.data.get("escalation_changed_verdict") is True:
@@ -666,10 +563,6 @@ class DiagnosticsReport:
                     escalation_stats["by_severity"][sev_key] = (
                         escalation_stats["by_severity"].get(sev_key, 0) + 1
                     )
-                # Chunk 6: aggregate retry_telemetry. ``None`` is the
-                # default (success path with no retries); only events
-                # carrying a non-empty dict count toward the rollup so
-                # the "no retries observed" run still shows zeros.
                 rt = e.data.get("retry_telemetry") or None
                 if isinstance(rt, dict) and rt:
                     attempts_count = int(rt.get("attempts", 0) or 0)
@@ -691,11 +584,6 @@ class DiagnosticsReport:
                                 retry_stats["by_terminal_reason"].get(tr_key, 0) + 1
                             )
 
-        # Phase 9 plan 13.4: search-budget telemetry. We aggregate per-finding
-        # search-request counts so a future tuning pass can see whether the
-        # default ``max_uses`` is over- or under-allocated. Findings with zero
-        # web-search activity (local-skip / cache hit) are excluded so the
-        # budget percentile reflects calls that actually used the tool.
         search_budget_samples: list[int] = []
         budget_ceiling = 0
         try:
@@ -743,17 +631,12 @@ class DiagnosticsReport:
             "max_cap_observed": max_output_cap_observed,
         }
 
-        # Finding severity breakdown
         severities: dict[str, int] = {}
         for e in self.events:
             if e.data and "severity_counts" in e.data:
                 for sev, cnt in e.data["severity_counts"].items():
                     severities[sev] = severities.get(sev, 0) + cnt
 
-        # Chunk J directive 7: derive per-phase ``cache_hit_ratio`` and a
-        # cross-phase rollup so a glance at the summary tells you whether
-        # caching is actually paying off. Ratio is reads / (reads + creates),
-        # the same shape Anthropic recommends for prompt-cache effectiveness.
         for bucket in phase_telemetry.values():
             denom = bucket["cache_creation_input_tokens"] + bucket["cache_read_input_tokens"]
             bucket["cache_hit_ratio"] = (
@@ -772,13 +655,6 @@ class DiagnosticsReport:
             "phases": dict(phase_telemetry),
         }
 
-        # Chunk 10 — estimated USD cost. Walk the events through the
-        # central pricing table so the report and GUI can show "what
-        # did this run actually cost?" alongside the token telemetry.
-        # Falls back to ``available=False`` when no priced calls ran
-        # (zero API activity, or every call used an unknown model);
-        # the renderers print "cost unavailable" instead of $0.00 so
-        # the reader isn't misled.
         from .cost_estimator import estimate_run_cost
         estimated_cost = estimate_run_cost(self.events)
 
@@ -801,18 +677,8 @@ class DiagnosticsReport:
             "total_web_search_requests": total_web_search_requests,
             "verification_verdicts": verdicts,
             "verification_evidence": verification_stats,
-            # Chunk I: explicit routing visibility. Per-mode counts
-            # answer "which path handled how many findings?"; per-
-            # profile counts answer "what kind of claims dominated?".
             "verification_modes": verification_modes,
             "verification_profiles": verification_profiles,
-            # Chunk D1.3: escalation telemetry rollup. ``escalation_stats``
-            # carries the per-reason / per-severity / per-verdict counts
-            # plus a derived ``change_rate`` so an operator can answer
-            # "is the Sonnet -> Opus escalation actually paying off?"
-            # at a glance. ``change_rate`` is 0.0 on runs with no
-            # escalation attempts (avoiding divide-by-zero) and is
-            # rounded to four decimal places for stable JSON output.
             "escalation_stats": {
                 **escalation_stats,
                 "change_rate": (
@@ -825,29 +691,13 @@ class DiagnosticsReport:
                     else 0.0
                 ),
             },
-            # Chunk 6: retry / continuation telemetry rollup. The
-            # individual fields are populated from per-finding
-            # ``retry_telemetry`` blocks the verifier stamps on
-            # outcomes that hit the wave tracker, the continuation
-            # cap, or the unresolved-tail branch. Empty by-class /
-            # by-reason dicts on runs where no retry occurred.
             "retry_stats": retry_stats,
             "search_budget": search_budget,
             "output_telemetry": output_telemetry,
             "severity_counts": severities,
-            # Chunk J: per-phase telemetry rollup + a small ``cost_summary``
-            # block. ``phase_telemetry`` is the per-phase breakdown the
-            # directive asks for; ``cost_summary`` echoes the cross-phase
-            # totals plus the global cache hit ratio so reports do not have
-            # to recompute them.
             "phase_telemetry": dict(phase_telemetry),
             "cost_summary": cost_summary,
-            # Chunk 10 — central cost estimator output. ``available=False``
-            # means no priced calls were observed (or every call used an
-            # unknown model); the renderers must say "cost unavailable"
-            # rather than pretending $0.00 was the real spend.
             "estimated_cost": estimated_cost,
-            # Phase 7.3 actionable fields.
             "failed_specs": list(self.failed_specs),
             "skipped_specs": list(self.skipped_specs),
             "edit_skip_reasons": dict(self.edit_skip_reasons),
@@ -855,21 +705,14 @@ class DiagnosticsReport:
             "edits_applied_total": self.edits_applied_total,
             "edits_skipped_total": self.edits_skipped_total,
             "edits_failed_total": self.edits_failed_total,
-            # Chunk K5: locator method telemetry. Empty dict on legacy runs.
             "locator_methods": dict(self.locator_methods),
             "events_dropped": self.events_dropped,
-            # Chunk 10 — diagnostics-cap visibility. Operators can see at a
-            # glance whether the run hit the per-event byte cap or had any
-            # secret-shaped values scrubbed.
             "events_truncated_by_size": self.events_truncated_by_size,
             "secrets_redacted": self.secrets_redacted,
             "bytes_dropped": self.bytes_dropped,
             "total_data_bytes": self.total_data_bytes,
         }
 
-    # ------------------------------------------------------------------
-    # Serialization
-    # ------------------------------------------------------------------
 
     def _event_to_dict(self, e: DiagnosticEvent) -> dict:
         d: dict = {
@@ -890,7 +733,6 @@ class DiagnosticsReport:
         lines.append("=" * 72)
         lines.append("")
 
-        # Config
         lines.append("RUN CONFIGURATION")
         lines.append("-" * 40)
         lines.append(f"  Run ID:          {self.run_id}")
@@ -910,7 +752,6 @@ class DiagnosticsReport:
             lines.append(f"  Duration:        {self.ended_at - self.started_at:.1f}s")
         lines.append("")
 
-        # Summary
         s = self.summary()
         lines.append("SUMMARY")
         lines.append("-" * 40)
@@ -925,9 +766,6 @@ class DiagnosticsReport:
         if cache_create or cache_read:
             lines.append(f"  Cache Creation:  {cache_create:,} tokens")
             lines.append(f"  Cache Read:      {cache_read:,} tokens")
-            # Chunk J: surface the global cache hit ratio so an operator can
-            # see at a glance whether caching is actually paying off without
-            # eyeballing the per-phase rollup below.
             cache_total = cache_create + cache_read
             if cache_total:
                 hit_ratio = cache_read / cache_total
@@ -953,9 +791,6 @@ class DiagnosticsReport:
         profiles_breakdown = s.get("verification_profiles") or {}
         if profiles_breakdown:
             lines.append(f"  Profiles:        {profiles_breakdown}")
-        # Chunk D1.3: render the escalation rollup only when at least one
-        # escalation was attempted, so legacy runs (and runs that did not
-        # trigger any escalation) stay compact.
         esc_stats = s.get("escalation_stats") or {}
         if esc_stats.get("attempts"):
             change_rate = esc_stats.get("change_rate") or 0.0
@@ -970,9 +805,6 @@ class DiagnosticsReport:
                 lines.append(f"    by_reason:     {esc_stats['by_reason']}")
             if esc_stats.get("by_severity"):
                 lines.append(f"    by_severity:   {esc_stats['by_severity']}")
-        # Chunk 6: render the retry rollup only when at least one
-        # finding consumed a retry or continuation. Keeps the summary
-        # tight on runs where everything went through cleanly.
         retry_stats = s.get("retry_stats") or {}
         if retry_stats.get("findings_with_retries"):
             lines.append(
@@ -993,9 +825,6 @@ class DiagnosticsReport:
             lines.append("  Phase Durations:")
             for phase, dur in s["phase_durations"].items():
                 lines.append(f"    {phase:20s} {dur:.1f}s")
-        # Phase 9 plan 13.4: surface output-size and search-budget usage so
-        # operators can see whether dynamic caps and ``max_uses`` defaults
-        # match real workloads.
         out_t = s.get("output_telemetry") or {}
         if out_t.get("samples"):
             lines.append(
@@ -1026,12 +855,6 @@ class DiagnosticsReport:
                 f"p50={budget['p50']}, p95={budget['p95']}, "
                 f"total={budget['total']}{saturated_part}"
             )
-        # Chunk J: per-phase telemetry rollup. One line per phase that
-        # actually made API calls so an operator can see at a glance which
-        # phase dominated the token spend, which got cache hits, and
-        # whether retries / continuations piled up. Phases with zero API
-        # calls (e.g., extraction-only events) are intentionally omitted
-        # to keep the output compact.
         per_phase = s.get("phase_telemetry") or {}
         if per_phase:
             lines.append("")
@@ -1068,9 +891,6 @@ class DiagnosticsReport:
                     bits.append("models=" + ",".join(bucket["models"]))
                 lines.append(f"    {phase_name:20s} {', '.join(bits)}")
 
-        # Phase 7.3 actionable section: surface failed specs, skipped edits,
-        # ambiguous locator count, and event truncation so users can see
-        # what required attention without scanning the timeline.
         if s.get("failed_specs"):
             lines.append("")
             lines.append(f"  Failed Specs:    {len(s['failed_specs'])}")
@@ -1094,8 +914,6 @@ class DiagnosticsReport:
                 f"skipped={s['edits_skipped_total']}, "
                 f"failed={s['edits_failed_total']}"
             )
-        # Chunk K5: locator-method breakdown. Hidden when no edit plan ran
-        # so legacy runs (no apply_edits invocation) stay clean.
         locator_methods = s.get("locator_methods") or {}
         if locator_methods:
             lines.append(f"  Locator Methods: {locator_methods}")
@@ -1114,10 +932,6 @@ class DiagnosticsReport:
                 f"  Secrets Redacted: {s['secrets_redacted']} field(s) replaced with <redacted>"
             )
 
-        # Chunk 10 — estimated cost block. Renders only when at least one
-        # priced call was observed (so legacy / API-failure runs do not
-        # show a misleading $0.00 line). Kept conservative: per the plan
-        # this is "Estimated API cost", not exact billing.
         ec = s.get("estimated_cost") or {}
         lines.append("")
         lines.append("ESTIMATED API COST")
@@ -1166,7 +980,6 @@ class DiagnosticsReport:
                 lines.append(f"  Note: {note}")
         lines.append("")
 
-        # Timeline
         lines.append("EVENT TIMELINE")
         lines.append("-" * 72)
         level_icons = {

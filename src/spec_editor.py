@@ -132,13 +132,6 @@ class EditOutcome:
     detail: str
     original_text: str
     new_text: str | None
-    # Chunk 9 — tag outcomes that were refused because the target paragraph or
-    # table cell carried unsafe Word markup (hyperlinks, field codes,
-    # drawings, comments, tracked changes, bookmarks, etc.). The status is
-    # still ``"skipped"`` so the existing applied/skipped/failed accounting
-    # is unaffected, but the flag lets the report layer surface "auto-edit
-    # refused due to unsafe Word markup" rather than burying it in a generic
-    # skip reason. Defaults to False so legacy outcomes are unchanged.
     refused_unsafe_markup: bool = False
 
 
@@ -152,10 +145,6 @@ class EditReport:
     edits_failed: int
     outcomes: list[EditOutcome]
     warnings: list[str]
-    # Chunk 9 — Boolean signal that the edit pass was aborted before any
-    # output was written because at least one auto-edit failed under the
-    # configured all-or-none transactional policy. Default False keeps
-    # legacy reports unchanged.
     aborted_transactional: bool = False
 
 
@@ -242,23 +231,6 @@ def _is_whole_paragraph_delete(action: EditAction) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Chunk 9 — unsafe WordprocessingML markup detection.
-#
-# Run-level surgery on paragraphs that carry hyperlinks, field codes,
-# drawings/images, comments, tracked changes, bookmarks, or content controls
-# can silently corrupt the underlying XML: removing or rewriting a run can
-# leave dangling field characters, orphaned bookmark/comment ranges, broken
-# hyperlink relationships, or inline drawings with no anchor. Per the plan,
-# the safe behavior is to refuse the auto-edit and route the finding to
-# manual review rather than risk corruption.
-#
-# The detector returns a structured :class:`UnsafeMarkupResult` so the
-# caller can attach a refusal reason to the EditOutcome. Detection works on
-# raw lxml elements and is intentionally cheap — it scans the paragraph's
-# subtree for known unsafe tags via :func:`qn` lookups; no heuristics, no
-# regex over rendered text.
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -279,9 +251,6 @@ class UnsafeMarkupResult:
         )
 
 
-# Mapping from a WordprocessingML local tag name to a human-readable reason.
-# Order matters only for the reasons list — we report every distinct hit so
-# the EditOutcome detail is useful for an operator triaging the report.
 _UNSAFE_TAGS: tuple[tuple[str, str], ...] = (
     ("w:hyperlink", "hyperlink"),
     ("w:fldChar", "field character"),
@@ -331,9 +300,6 @@ def detect_unsafe_markup(element) -> UnsafeMarkupResult:
     seen: set[str] = set()
     for tag, reason in _UNSAFE_TAGS:
         qname = qn(tag)
-        # ``iter(tag)`` short-circuits as soon as a match is found if we
-        # break, but we want to know whether *any* descendant matches; the
-        # presence check is enough.
         if next(raw.iter(qname), None) is not None:
             if reason not in seen:
                 found.append(reason)
@@ -549,9 +515,6 @@ def _resolve_overlap_winner(action_a: EditAction, action_b: EditAction) -> EditA
     b_contains_a = b_range[0] <= a_range[0] and b_range[1] >= a_range[1]
 
     if a_contains_b and b_contains_a:
-        # Identical spans — duplicate or near-duplicate findings. Keep the
-        # heuristic tie-breaker so dedup-survivors still collapse to one
-        # applied edit rather than both being lost to "ambiguous".
         rank_a = _severity_rank(action_a)
         rank_b = _severity_rank(action_b)
         if rank_a != rank_b:
@@ -569,7 +532,6 @@ def _resolve_overlap_winner(action_a: EditAction, action_b: EditAction) -> EditA
     if b_contains_a and not a_contains_b:
         return action_b
 
-    # Partial overlap with no containment is ambiguous. Caller must skip both.
     return None
 
 
@@ -609,12 +571,6 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
                 )
             continue
 
-        # Process the group in descending-start order so the higher-offset
-        # edit is checked first. Track tainted ranges from ambiguous-overlap
-        # resolutions so a third edit overlapping with either side of an
-        # already-discarded ambiguous pair is also skipped (rather than
-        # slipping through because the original conflicting actions were
-        # removed from ``accepted``).
         sorted_group = sorted(group, key=lambda item: item.location.match_start, reverse=True)
         accepted: list[EditAction] = []
         ambiguous_ranges: list[tuple[int, int]] = []
@@ -626,9 +582,6 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
             a_start = action.location.match_start
             a_end = action.location.match_end
 
-            # If this action overlaps any previously-tainted region, it is
-            # also ambiguous: the original conflicting pair is gone from
-            # ``accepted`` but their span is still untrustworthy.
             tainted = next(
                 (
                     (start, end)
@@ -670,9 +623,6 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
 
             winner = _resolve_overlap_winner(action, overlap)
             if winner is None:
-                # Ambiguous partial overlap — skip both edits and
-                # taint the union range so any further action overlapping
-                # this region is also routed to manual review.
                 accepted.remove(overlap)
                 detail = (
                     "Skipped due to ambiguous overlapping edits in the same "
@@ -785,10 +735,6 @@ def _resolve_cell_and_offsets(
             "failed",
         )
 
-    # Chunk F: enumerate every occurrence of the expected text across the
-    # cell's paragraphs and require uniqueness. The previous implementation
-    # picked the first ``paragraph.text.find()`` hit, which silently guessed
-    # when the text appeared multiple times in the cell.
     expected = action.location.matched_text
     if not expected:
         return None, None, None, "No expected text recorded for table-cell edit.", "failed"
@@ -844,8 +790,6 @@ def _apply_add_action(
             new_text=None,
         )
 
-    # Use the pre-mutation snapshot so DELETE actions earlier in the same
-    # apply pass do not shift the body_index used by ADD (audit Issue 6).
     body_children = (
         list(original_body_children)
         if original_body_children is not None
@@ -870,9 +814,6 @@ def _apply_add_action(
             new_text=None,
         )
 
-    # If the anchor was already removed by a DELETE earlier in this run,
-    # there is no longer a parent to insert beside. Fail safely instead of
-    # silently writing into an orphaned XML node.
     if anchor_element.getparent() is None:
         return EditOutcome(
             action=action,
@@ -884,12 +825,6 @@ def _apply_add_action(
 
     anchor_paragraph = Paragraph(anchor_element, doc)
 
-    # Chunk 9: refuse anchors that carry unsafe Word markup. ADD inserts a
-    # sibling paragraph adjacent to the anchor, which is structurally
-    # simpler than mutating the anchor itself, but inserting beside a
-    # paragraph whose XML carries field characters or bookmark ranges can
-    # still break those structures if the surrounding context relies on
-    # contiguous run order. Conservative refusal keeps the document safe.
     unsafe = detect_unsafe_markup(anchor_element)
     if unsafe.unsafe:
         return EditOutcome(
@@ -901,9 +836,6 @@ def _apply_add_action(
             refused_unsafe_markup=True,
         )
 
-    # Phase 4 (audit Section 8.3): revalidate anchor before mutating. If a
-    # prior edit changed the anchor paragraph text in a way that no longer
-    # matches the recorded anchor, do not insert beside it.
     ok_anchor, anchor_detail = _precondition_holds_for_anchor(
         anchor_paragraph,
         action.location.matched_text,
@@ -931,9 +863,6 @@ def _apply_add_action(
     replacement_norm = _normalize_text_for_add(replacement)
     anchor_norm = _normalize_text_for_add(anchor_text)
 
-    # If the model provided an explicit insertPosition, trust it instead of
-    # guessing from text overlap (audit Issue 5). This makes ADD edits
-    # deterministic when the prompt produced the structured anchor model.
     explicit_position = (
         getattr(action.locator_result.finding, "insertPosition", None) or ""
     ).strip().lower()
@@ -1009,11 +938,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
 
-    # Phase 4 (audit Section 8.4): apply edits in a deterministic safety
-    # order — in-place replacements first, then ADDs, then whole-paragraph
-    # DELETEs in descending body_index. This keeps anchor elements live for
-    # ADDs and avoids any ordering surprise where a DELETE shifts the
-    # document structure before later edits run.
     replacement_actions: list[EditAction] = []
     whole_delete_actions: list[EditAction] = []
     for action in actions_to_apply:
@@ -1068,12 +992,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             paragraph = Paragraph(element, doc)
             paragraph_before = paragraph.text
 
-            # Chunk 9: refuse paragraphs that carry unsafe Word markup
-            # (hyperlinks, field codes, drawings, comments, tracked changes,
-            # bookmarks, content controls, footnote/endnote refs). Run-level
-            # surgery on those structures can silently break the underlying
-            # XML — better to skip the auto-edit and route the finding to
-            # manual review than to risk a corrupted spec document.
             refusal = _refuse_unsafe_outcome(
                 action,
                 element=element,
@@ -1084,12 +1002,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 warnings.append(refusal.detail)
                 continue
 
-            # Phase 4 (audit Section 8.3) + Chunk F: revalidate immediately
-            # before mutating. If a previous edit in this pass changed the
-            # paragraph such that the recorded slice no longer matches, the
-            # precondition returns corrected offsets when the expected text
-            # is uniquely present elsewhere; if it is missing or duplicated
-            # we skip the edit instead of replacing a stale span.
             precondition = _precondition_holds_for_paragraph(
                 paragraph,
                 action.location.match_start,
@@ -1139,10 +1051,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 )
                 continue
 
-            # Chunk 9 operator switch: refuse every table-cell auto-edit when
-            # ``SPEC_CRITIC_TABLE_CELL_AUTO_EDIT=0``. The finding still flows
-            # through the report path; only the silent in-place mutation is
-            # suppressed.
             if not _table_cell_auto_edit_enabled():
                 detail = (
                     "Auto-edit refused: table-cell auto-edit is disabled "
@@ -1189,11 +1097,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 )
                 continue
 
-            # Chunk 9: refuse table cells whose target paragraph (or any
-            # ancestor cell content) carries unsafe markup. Cell-scoped
-            # check is conservative on purpose: hyperlinks/fields/etc.
-            # anywhere in the same cell tend to share runs/relationships
-            # with the target paragraph.
             cell_element = target_paragraph._element.getparent()
             unsafe_target = _refuse_unsafe_outcome(
                 action,
@@ -1207,11 +1110,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
 
             paragraph_before = target_paragraph.text
 
-            # Chunk F: same offset-safety contract as the paragraph path.
-            # The table-cell resolver finds the expected text by substring
-            # search, but a prior edit in this pass could have shifted or
-            # duplicated it; revalidate and use the precondition's
-            # (possibly corrected) offsets for the actual replacement.
             precondition = _precondition_holds_for_paragraph(
                 target_paragraph,
                 start,
@@ -1274,10 +1172,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             _apply_add_action(action, doc, original_body_children=body_children)
         )
 
-    # Whole-paragraph DELETEs run last (audit Section 8.4). Descending body
-    # order keeps the snapshot indices stable and avoids any chance that a
-    # remove() upstream of an ADD anchor could orphan that anchor before the
-    # ADD applied.
     for action in whole_delete_actions:
         mapping = action.location.mapping
         if mapping.body_index < 0 or mapping.body_index >= len(body_children):
@@ -1317,10 +1211,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         paragraph = Paragraph(element, doc)
         paragraph_before = paragraph.text
 
-        # Chunk 9: refuse to delete a paragraph that owns unsafe markup. A
-        # whole-paragraph delete that strips a hyperlink or field can leave
-        # orphan relationships/bookmarks in document.xml.rels and other
-        # ancillary parts; safer to route to manual review.
         refusal = _refuse_unsafe_outcome(
             action,
             element=element,
@@ -1360,14 +1250,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             )
         )
 
-    # Chunk 9 — transactional all-or-none output. Serialize to a buffer
-    # first; if *any* individual edit ended in ``failed``, suppress the
-    # output write entirely so the user does not silently receive a
-    # partially mutated file. Skipped outcomes (precondition revalidation,
-    # unsafe-markup refusal, ambiguous overlap) are deliberate refusals,
-    # not failures, and do NOT abort the write. Operators can opt out via
-    # ``SPEC_CRITIC_EDIT_TRANSACTIONAL=0`` if they need the legacy
-    # best-effort behavior.
     buf = BytesIO()
     try:
         doc.save(buf)
@@ -1395,9 +1277,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             aborted_transactional=True,
         )
 
-    # Validate the buffer reopens cleanly so we never write a file Word
-    # cannot parse. The serialize-then-reopen step is feasible even for
-    # large specs because python-docx parses lxml lazily on read.
     buf.seek(0)
     try:
         Document(buf)
@@ -1437,9 +1316,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
     failed_count = sum(1 for outcome in outcomes if outcome.status == "failed")
 
     if failed_count > 0 and _edit_transactional_enabled():
-        # Demote every ``applied`` outcome to skipped-due-to-abort so the
-        # report makes clear nothing was written. The originally-failed
-        # outcomes keep their ``failed`` status.
         rewritten: list[EditOutcome] = []
         for outcome in outcomes:
             if outcome.status == "applied":
@@ -1479,8 +1355,6 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             aborted_transactional=True,
         )
 
-    # Either the all-or-none policy passed (no failures) or the operator
-    # opted into best-effort writes. Stream the validated buffer to disk.
     buf.seek(0)
     output_path.write_bytes(buf.read())
 
@@ -1521,10 +1395,6 @@ def build_edit_actions(
         if result.status == "not_found" or not result.locations:
             continue
 
-        # Ambiguous locator results have multiple plausible targets; previous
-        # behavior silently picked the highest-confidence candidate, which
-        # could mutate the wrong paragraph. Per audit Issue 4, ambiguous
-        # matches must be manual-review-only.
         if result.status == "ambiguous":
             result.warning = (
                 "Ambiguous locator result; multiple targets matched. "

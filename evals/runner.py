@@ -33,9 +33,6 @@ from . import BASELINE_PATH
 from .harness import FixtureResult, HarnessResult, run_harness
 
 
-# ---------------------------------------------------------------------------
-# Rendering helpers
-# ---------------------------------------------------------------------------
 
 
 _METRIC_DISPLAY_ORDER = (
@@ -99,9 +96,6 @@ def render_summary(result: HarnessResult) -> str:
     return "\n".join(lines) + "\n"
 
 
-# ---------------------------------------------------------------------------
-# Baseline IO + comparison
-# ---------------------------------------------------------------------------
 
 
 def _result_to_dict(result: HarnessResult) -> dict[str, Any]:
@@ -127,7 +121,6 @@ def load_baseline(path: Path = BASELINE_PATH) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-# Metric keys that ship with a rate component — compared as floats.
 _RATE_KEYS = (
     "review_recall",
     "duplicate_finding",
@@ -180,9 +173,6 @@ def compare_to_baseline(
     return drift
 
 
-# ---------------------------------------------------------------------------
-# Argument parsing + main
-# ---------------------------------------------------------------------------
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -210,10 +200,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
-    # The runner must be importable on a clean environment; the production
-    # modules read ``ANTHROPIC_API_KEY`` at import time. Mirror the test
-    # conftest's placeholder so a CI runner without secrets configured can
-    # still execute the harness.
     os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-not-real-do-not-use")
 
     result = run_harness()
@@ -256,5 +242,5 @@ def main(argv: list[str] | None = None) -> int:
     return exit_code
 
 
-if __name__ == "__main__":  # pragma: no cover — invoked via __main__
+if __name__ == "__main__":
     sys.exit(main())

@@ -222,7 +222,6 @@ def test_conflict_resolution_skips_both_on_ambiguous_partial_overlap(tmp_path: P
     report = apply_edits_to_spec(source, output, build_edit_actions([low, high]))
     saved = Document(output)
 
-    # Paragraph unchanged; both edits routed to manual review.
     assert saved.paragraphs[0].text == "abc def ghi"
     assert report.edits_applied == 0
     assert report.edits_skipped == 2

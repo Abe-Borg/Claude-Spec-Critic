@@ -116,8 +116,6 @@ def load_batch_state() -> Optional[dict]:
             return None
         return restored
     except (KeyError, TypeError, ValueError):
-        # Intentionally retained for upgrade continuity with older installed versions
-        # that persisted pre-resume-state (v1) payloads.
         try:
             batch_id = state.get("batch_id", "")
             if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):

@@ -27,10 +27,6 @@ def _tkinter_available() -> bool:
     return importlib.util.find_spec("tkinter") is not None
 
 
-# Skip GUI-dependent test files at collection time when ``tkinter`` is missing
-# (common in CI / containers without the python3-tk system package). The files
-# import ``src.gui`` / ``src.batch_controller`` at module scope, so collection
-# fails outright otherwise. When tkinter is installed, these files run normally.
 _GUI_DEPENDENT_TESTS = {"test_core_regressions.py", "test_gui_refactor_modules.py"}
 
 
@@ -63,9 +59,6 @@ def pytest_collection_modifyitems(
             item.add_marker(skip_marker)
 
 
-# ---------------------------------------------------------------------------
-# Fake Anthropic response fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

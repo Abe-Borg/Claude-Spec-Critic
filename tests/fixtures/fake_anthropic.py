@@ -32,9 +32,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-# ---------------------------------------------------------------------------
-# Attribute-accessible stand-ins for SDK Pydantic models.
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -89,9 +86,6 @@ class FakeMessage:
     stop_sequence: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Canonical structured payloads (validate against schemas in tests).
-# ---------------------------------------------------------------------------
 
 
 def sample_review_findings_payload() -> dict[str, Any]:
@@ -114,9 +108,6 @@ def sample_review_findings_payload() -> dict[str, Any]:
                 "confidence": 0.85,
                 "anchorText": None,
                 "insertPosition": None,
-                # Chunk K3: the schema now requires evidenceElementId on
-                # every finding (nullable). Fixture findings cite an id
-                # so request-shape tests cover the populated path.
                 "evidenceElementId": "p17",
             }
         ],
@@ -137,9 +128,6 @@ def sample_verification_verdict_payload(
     }
 
 
-# ---------------------------------------------------------------------------
-# Response builders (case 1 – case 5 from Chunk A directive 4).
-# ---------------------------------------------------------------------------
 
 
 def _maybe_dict(message: FakeMessage, *, dict_shape: bool) -> Any:
@@ -258,15 +246,12 @@ def max_tokens_incomplete_response(
     )
 
 
-# ---------------------------------------------------------------------------
-# Batch-result wrappers
-# ---------------------------------------------------------------------------
 
 
 @dataclass
 class FakeBatchResultEnvelope:
     """Mimic the ``BatchResult.result`` inner type the SDK returns."""
-    type: str = "succeeded"  # or "errored" / "expired" / "canceled"
+    type: str = "succeeded"
     message: Any = None
     error: Any = None
 
@@ -319,9 +304,6 @@ def batch_errored_result(
     )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _to_dict(obj: Any) -> Any:

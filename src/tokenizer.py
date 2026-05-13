@@ -33,45 +33,20 @@ import tiktoken
 _log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Model limits
-# ---------------------------------------------------------------------------
 
-# Claude Opus 4.7 context window (1M tokens, no beta header required).
 MAX_CONTEXT_TOKENS = 1_000_000
 
-# Opus 4.7 max output tokens
 MAX_OUTPUT_TOKENS_OPUS = 128_000
-# Sonnet 4.6 max output tokens
 MAX_OUTPUT_TOKENS_SONNET = 64_000
 
 
-# ---------------------------------------------------------------------------
-# Per-spec review limits (used by GUI token gauge and per-spec pipeline)
-# ---------------------------------------------------------------------------
 
-# Practical per-call input limit for per-spec reviews.
-# Individual specs are reviewed one at a time — this is the budget for a
-# single (system prompt + project context + spec content) API call.
-# Conservative relative to the 1M window and intended as a practical guardrail.
 RECOMMENDED_MAX = 500_000
 
-# Hard cap on the Project Context block. The context is sent on every per-spec
-# review call, every cross-check call, and every verification call, so it
-# multiplies cost quickly. 100K tokens leaves ~400K of the per-spec budget for
-# the spec itself.
 PROJECT_CONTEXT_MAX_TOKENS = 100_000
 
 
-# ---------------------------------------------------------------------------
-# Cross-check limits (v2.2.0)
-# ---------------------------------------------------------------------------
 
-# Cross-check uses Sonnet 4.6 with full spec content and adaptive thinking.
-# With thinking enabled, thinking tokens + text output share the max_tokens budget.
-# We keep a 128K output reserve (matches the api_config cross-check cap before
-# the per-model clamp) so the input budget stays stable across model changes.
-# Budget: 1M context - 128K output reserve - 50K overhead = 822K
 CROSS_CHECK_OVERHEAD = 50_000
 CROSS_CHECK_OUTPUT_BUDGET = 128_000
 CROSS_CHECK_RECOMMENDED_MAX = (
@@ -89,30 +64,10 @@ def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
     return (overhead_tokens + spec_tokens) > RECOMMENDED_MAX
 
 
-# ---------------------------------------------------------------------------
-# Model-specific safety multipliers for the local cl100k_base estimate
-# ---------------------------------------------------------------------------
-#
-# cl100k_base is OpenAI's tokenizer and does not exactly match Claude's
-# tokenization. The undercount is usually modest for English prose
-# (≤10%) but can be larger for structured spec text full of section
-# numbers, table cells, and unicode punctuation. Without a safety factor
-# the local estimate looks reassuring even when the real Claude count
-# would breach the per-call budget — directive 4 of Chunk E calls this
-# out as "local tokenizer estimates no longer create false confidence."
-#
-# The multipliers below are intentionally conservative. They are only
-# consulted on the fallback path when the Anthropic ``count_tokens``
-# endpoint is unavailable; once we have an exact count, that becomes
-# the authoritative gate (directive 3).
-_DEFAULT_LOCAL_SAFETY_FACTOR = 1.20  # unknown models — widest margin
+_DEFAULT_LOCAL_SAFETY_FACTOR = 1.20
 _LOCAL_SAFETY_FACTORS: dict[str, float] = {
-    # Opus / Sonnet share Claude's main tokenizer; the cl100k_base
-    # undercount is small but non-zero.
     "claude-opus-4-7": 1.10,
     "claude-sonnet-4-6": 1.10,
-    # Haiku 4.5 tokenization tends to undercount cl100k a bit more on
-    # structured construction-spec text in practice. Pad more.
     "claude-haiku-4-5": 1.15,
 }
 
@@ -132,7 +87,6 @@ def local_estimate_safety_factor(model: str | None) -> float:
 def safe_local_estimate(local_tokens: int, *, model: str | None) -> int:
     """Return ``local_tokens`` padded by the model-specific safety factor."""
     factor = local_estimate_safety_factor(model)
-    # Round up — the factor is a safety margin, not a midpoint estimate.
     return math.ceil(local_tokens * factor)
 
 
@@ -189,7 +143,7 @@ def count_tokens_via_api(
         try:
             from .reviewer import _get_client
             client = _get_client()
-        except Exception as exc:  # pragma: no cover - exercised via tests
+        except Exception as exc:
             _log.warning("count_tokens_via_api: no client available (%s)", exc)
             return None
     try:
@@ -202,7 +156,6 @@ def count_tokens_via_api(
         if tools:
             kwargs["tools"] = tools
         result = client.messages.count_tokens(**kwargs)
-        # MessageTokensCount has an input_tokens attribute.
         return int(getattr(result, "input_tokens", 0) or 0)
     except Exception as exc:
         _log.warning("count_tokens_via_api failed: %s", exc)

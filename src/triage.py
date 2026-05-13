@@ -129,8 +129,6 @@ def _build_user_prompt(findings_batch: list[tuple[int, Finding]]) -> str:
         section = (f.section or "").strip()
         severity = (f.severity or "").strip().upper() or "GRIPES"
         action = (f.actionType or "").strip().upper() or "EDIT"
-        # Truncate long fields so a runaway findings block can't blow up
-        # the input. 600 chars is plenty to convey the claim.
         parts.append(f'  <{TAG_FINDING} index="{escape_attr(str(idx))}">')
         parts.append("    " + wrap_data_block("severity", severity))
         parts.append("    " + wrap_data_block("actionType", action))
@@ -173,9 +171,6 @@ def _classify_batch(
     request_kwargs: dict = {
         "model": model,
         "max_tokens": triage_max_tokens(model=model),
-        # Triage prompts run ~375 tokens, well under Haiku's cache minimum,
-        # so a cache write would be paid for nothing. The phase policy
-        # disables caching here; the helper still no-ops cleanly when on.
         "system": system_prompt_with_cache(_TRIAGE_SYSTEM_PROMPT, phase=PHASE_TRIAGE),
         "tools": tools_with_cache([triage_classifications_tool()], phase=PHASE_TRIAGE),
         "tool_choice": triage_tool_choice(),
@@ -183,8 +178,6 @@ def _classify_batch(
     }
     batch_size = len(findings_batch)
     try:
-        # Non-streaming is fine — no server-side tools to require streaming,
-        # and the response is small.
         response = client.messages.create(**request_kwargs)
     except (RateLimitError, APIConnectionError, InternalServerError, APIStatusError, APIError) as e:
         log(
@@ -265,8 +258,6 @@ def classify_findings_with_haiku(
         chunk = eligible[chunk_start:chunk_start + batch_size]
         chunk_indices = {idx for idx, _ in chunk}
         chunk_results = _classify_batch(chunk, model=selected_model, log=log)
-        # Only accept results for indices we actually sent — defends against
-        # a hallucinated index in the tool payload.
         for idx, cls in chunk_results.items():
             if idx in chunk_indices:
                 classifications[idx] = cls

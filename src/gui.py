@@ -37,7 +37,6 @@ base_path = os.path.dirname(os.path.abspath(__file__))
 exe_dir = Path(base_path).parent
 sys.path.insert(0, str(exe_dir))
 
-# Type annotations on method signatures
 from src.batch import BatchStatus
 from src.diagnostics import DiagnosticsReport
 from src.extractor import ExtractedSpec
@@ -45,7 +44,6 @@ from src.pipeline import BatchSubmission
 from src.reviewer import Finding
 from src.spec_editor import EditReport
 
-# Constants used by widgets
 from src.code_cycles import DEFAULT_CYCLE
 from src.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 
@@ -58,8 +56,6 @@ from src.widgets import (
     TokenGauge,
 )
 
-# Persistence helpers (also re-exported for backward compatibility with
-# tests/external code that imports them from ``src.gui``)
 from src.api_key_store import load_api_key_from_file
 from src.batch_state_store import (
     delete_batch_state,
@@ -67,7 +63,6 @@ from src.batch_state_store import (
     save_batch_state,
 )
 
-# Controllers
 from src.about_usage_dialogs import show_about_dialog, show_usage_dialog
 from src.batch_controller import (
     check_pending_batch,
@@ -134,7 +129,6 @@ from src.token_analysis_controller import (
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
-# Mode selector labels
 _MODE_REALTIME = "Real-time (FAST: Expensive!)"
 _MODE_BATCH = "Batch (SLOW: Cheap!)"
 _BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
@@ -145,7 +139,6 @@ _FONT_SCALE_OPTIONS = {
     "Larger (+20%)": 1.2,
 }
 
-# Consistent font size for all input row labels and controls
 _UI_FONT_SIZE = 12
 
 class SpecReviewApp(_CTkDnDRoot):
@@ -166,11 +159,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self._project_context_tokens = 0
         self._batch_submission: Optional[BatchSubmission] = None
         self._run_epoch = 0
-        # Phase 7.2 (audit Section 11.2): every background token analysis
-        # captures an epoch when launched. When a newer analysis starts, the
-        # epoch increments — older threads silently drop their results so a
-        # stale background pass cannot overwrite UI state that already
-        # reflects the latest user action.
         self._analysis_epoch = 0
         self._extracted_specs: list[ExtractedSpec] = []
         fk = load_api_key_from_file()
@@ -187,9 +175,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self._diagnostics_window: Optional[DiagnosticsWindow] = None
         self._realtime_confirmed: bool = False
         self._context_debounce_id: str | None = None
-        # Chunk D2.2: debounce timer id for the exact-token-count refresh.
-        # Tracked here so rapid file-list churn cancels the prior timer
-        # instead of stacking up multiple outbound API calls.
         self._exact_token_refresh_timer_id: str | None = None
         self._selected_cycle_label: str = DEFAULT_CYCLE.label
         self._font_scale_label: str = "Default (100%)"
@@ -201,7 +186,6 @@ class SpecReviewApp(_CTkDnDRoot):
         c.pack(fill="both", expand=True, padx=24, pady=24)
         self.container = c
 
-        # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
         self.hdr.pack(fill="x", pady=(0, 8))
         hdr_title_row = ctk.CTkFrame(self.hdr, fg_color="transparent")
@@ -223,7 +207,6 @@ class SpecReviewApp(_CTkDnDRoot):
         ).pack(side="right", padx=(0, 8), pady=(4, 0))
         ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.7", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
-        # --- Accessibility row: sits between header and inputs card ---
         accessibility_bar = ctk.CTkFrame(c, fg_color="transparent")
         accessibility_bar.pack(fill="x", pady=(8, 12))
         ctk.CTkLabel(accessibility_bar, text="Accessibility", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"]).pack(side="left", padx=(0, 12))
@@ -278,13 +261,11 @@ class SpecReviewApp(_CTkDnDRoot):
         self.inputs_content = ctk.CTkFrame(self.inputs_card, fg_color="transparent")
         self.inputs_content.pack(fill="x", padx=16, pady=(0, 16))
 
-        # --- Row 0: API Key ---
         ctk.CTkLabel(self.inputs_content, text="API Key", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=0, column=0, sticky="w", pady=8)
         self.api_key_entry = ctk.CTkEntry(self.inputs_content, placeholder_text="sk-ant-...", font=ctk.CTkFont(family="Consolas", size=_UI_FONT_SIZE), fg_color=COLORS["bg_input"], border_color=COLORS["border"], text_color=COLORS["text_primary"], height=36, show="\u2022")
         self.api_key_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=8)
         if self.api_key: self.api_key_entry.insert(0, self.api_key)
 
-        # --- Row 1: Specs ---
         ctk.CTkLabel(self.inputs_content, text="Specs", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=1, column=0, sticky="w", pady=8)
         ef = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ef.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=8)
@@ -295,7 +276,6 @@ class SpecReviewApp(_CTkDnDRoot):
         ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
         self._register_specs_drop_target()
 
-        # --- Row 2: Project Context ---
         ctx_label_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ctx_label_frame.grid(row=2, column=0, sticky="nw", pady=8)
         ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
@@ -325,7 +305,6 @@ class SpecReviewApp(_CTkDnDRoot):
         )
         self.context_token_label.grid(row=1, column=0, sticky="e", pady=(4, 0))
 
-        # --- Row 3: Review Mode ---
         ctk.CTkLabel(self.inputs_content, text="Mode", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
         mode_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         mode_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
@@ -343,7 +322,6 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._mode_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 4: Options ---
         ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
         options_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         options_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
@@ -361,7 +339,6 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
-        # (Accessibility row is now in the header area, not inside the inputs card)
 
         self.inputs_content.columnconfigure(1, weight=1)
 
@@ -370,7 +347,6 @@ class SpecReviewApp(_CTkDnDRoot):
         ctk.set_widget_scaling(scale)
         self._font_scale_label = value
 
-    # --- Project context placeholder helpers ---
 
     def _context_focus_in(self, event=None):
         context_focus_in(self, event)
@@ -523,7 +499,6 @@ class SpecReviewApp(_CTkDnDRoot):
     def _on_review_error(self, err):
         on_review_error(self, err)
 
-    # ----- Batch mode -----
 
     def _submit_batch_thread(self, run_epoch: int):
         submit_batch_thread(self, run_epoch)
@@ -540,7 +515,6 @@ class SpecReviewApp(_CTkDnDRoot):
     def _poll_and_collect_thread(self, run_epoch: int):
         poll_and_collect_thread(self, run_epoch)
 
-    # Backward-compatible helper retained for tests and legacy call paths.
     def _on_poll_result(self, status: BatchStatus):
         on_poll_result(self, status)
 
@@ -550,7 +524,6 @@ class SpecReviewApp(_CTkDnDRoot):
     def _reset_ui(self):
         reset_ui(self)
 
-    # ----- Persistent batch state -----
 
     def _check_pending_batch(self):
         check_pending_batch(self)
