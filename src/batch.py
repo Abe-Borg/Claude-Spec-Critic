@@ -15,17 +15,8 @@ from .api_config import (
     BATCH_OUTPUT_BETA,
     PHASE_VERIFICATION,
     REVIEW_MODEL_DEFAULT,
-    VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
-    WEB_SEARCH_TOOL,
-    apply_effort_config,
-    apply_thinking_config,
     assert_extended_output_allowed,
-    batch_service_tier,
     extract_cache_usage,
-    system_prompt_with_cache,
-    tools_with_cache,
-    verification_max_tokens,
-    web_search_tool_for_severity,
 )
 from .structured_schemas import (
     REVIEW_TOOL_NAME,
@@ -266,46 +257,22 @@ def verification_request_includes_verdict_tool() -> bool:
     return structured_tool_output_enabled()
 
 
-def build_verification_tools(severity: str | None = None) -> list[dict]:
-    """Build the verification request tool list (Chunk C).
-
-    Single source of truth for verification tool payloads. Returns the
-    web_search tool with the severity-tiered ``max_uses`` budget plus the
-    custom ``submit_verification_verdict`` tool when the tool-output flag
-    is on. Cache controls are NOT applied here — wrap with
-    :func:`tools_with_cache` at the call site if a cache breakpoint should
-    pin the tools prefix.
-
-    Every verification path (real-time initial, batch initial, batch retry,
-    batch continuation) must build its tools through this helper. The
-    Chunk C invariant is that the prompt and the tools list never disagree
-    about which tools the model has access to.
-    """
-    web_tool = web_search_tool_for_severity(severity) if severity is not None else WEB_SEARCH_TOOL
-    tools: list[dict] = [web_tool]
-    if verification_request_includes_verdict_tool():
-        tools.append(verification_verdict_tool())
-    return tools
-
-
 def build_verification_tools_for_profile(
     profile,
     severity: str | None = None,
 ) -> list[dict]:
-    """Profile-aware variant of :func:`build_verification_tools` (Chunk H).
+    """Build the verification request tool list (web_search + verdict tool).
 
     The web_search ``max_uses`` is taken from
     :func:`src.verification_profiles.profile_max_uses(profile, severity)`
     so profile sets the ceiling and severity modulates within it. The
-    verdict tool inclusion still respects
-    :func:`verification_request_includes_verdict_tool`, identical to the
-    severity-only helper, so structured outputs being disabled has the
-    same effect on both paths.
+    verdict tool inclusion respects
+    :func:`verification_request_includes_verdict_tool`, so structured
+    outputs being disabled drops it from the list.
 
     ``profile`` can be a :class:`VerificationProfile`, its string value,
     or ``None`` (treated as the constructability default). The helper
-    lives in :mod:`batch` rather than :mod:`verifier` to mirror the
-    existing helper and avoid a circular import — :mod:`verifier`
+    lives in :mod:`batch` to avoid a circular import — :mod:`verifier`
     already depends on :mod:`batch`, not the reverse.
     """
     from .api_config import build_web_search_tool  # local import — keeps the
@@ -318,72 +285,6 @@ def build_verification_tools_for_profile(
     if verification_request_includes_verdict_tool():
         tools.append(verification_verdict_tool())
     return tools
-
-
-def _build_verification_request_params(
-    *,
-    prompt: str,
-    system_prompt: str,
-    assistant_content: list | None = None,
-    model: str | None = None,
-    severity: str | None = None,
-    profile: Any = None,
-) -> dict[str, Any]:
-    # Chunk 4: this helper is now a legacy entry point. The production
-    # batch path (``submit_verification_batch``) routes through
-    # :func:`src.verification_routing.build_verification_request` so
-    # the shared routing decision (model, mode, thinking, search budget,
-    # tool inclusion) governs both batch and real-time. This function
-    # is preserved as a thin legacy adapter so tests that build a
-    # verification request from ``(severity, profile)`` rather than
-    # from a Finding still produce the pre-Chunk-4 (profile-only,
-    # mode-unaware) request shape. New callers should use
-    # :func:`src.verification_routing.build_verification_request`.
-    #
-    # Chunk D1.1: this helper builds either the initial verification
-    # request (no assistant_content) or a pause_turn resumption request
-    # (assistant_content carries the prior assistant blocks). Server-tool
-    # pause_turn is resumed by re-sending the assistant content as-is;
-    # no synthetic ``"continue"`` user turn is appended.
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
-    if assistant_content is not None:
-        messages.append({"role": "assistant", "content": assistant_content})
-    selected_model = model or VERIFICATION_MODEL
-    # Phase 2.5 (audit Section 6.5, Option B) / Chunk C: include the verdict
-    # tool alongside web_search via the shared :func:`build_verification_tools`
-    # helper so every verification path agrees on the tool list. The system
-    # prompt is built by the caller and must mirror this decision (see
-    # ``verifier._get_verification_system_prompt``).
-    # Chunk H: prefer the profile-aware helper when the caller supplied a
-    # profile so the batch path uses the same per-kind budget as the
-    # real-time path. Falling back to the severity-only helper keeps
-    # backward compatibility for callers (and tests) that have not
-    # opted in.
-    if profile is not None:
-        tool_list = build_verification_tools_for_profile(profile, severity)
-    else:
-        tool_list = build_verification_tools(severity)
-    # Chunk J: PHASE_VERIFICATION cache policy applies to both the
-    # initial wave and the retry/continuation builders below. All three
-    # share the same system prompt and tool list across the wave, which
-    # is exactly the prefix-reuse pattern caching is designed for.
-    params: dict[str, Any] = {
-        "model": selected_model,
-        "max_tokens": verification_max_tokens(model=selected_model),
-        "system": system_prompt_with_cache(system_prompt, phase=PHASE_VERIFICATION),
-        "tools": tools_with_cache(tool_list, phase=PHASE_VERIFICATION),
-        "messages": messages,
-    }
-    apply_thinking_config(params, model=selected_model, phase=PHASE_VERIFICATION)
-    # Chunk D1.2: pair effort with thinking so batch verification requests
-    # carry the verification-phase effort default (``medium`` for Sonnet,
-    # ``high`` for Opus escalation). The helper omits the field for
-    # Haiku / unknown models.
-    apply_effort_config(params, model=selected_model, phase=PHASE_VERIFICATION)
-    tier = batch_service_tier()
-    if tier:
-        params["service_tier"] = tier
-    return params
 
 
 def submit_verification_batch(

@@ -1,10 +1,8 @@
 """Persistent batch-state JSON storage.
 
 Reads, writes, and deletes the saved batch resume state at
-``app_paths.batch_state_path()``. Enforces a maximum state age, handles
-corrupt/unsupported saved state gracefully, and preserves backward
-compatibility with the pre-resume-state (v1) payload shape used by older
-installed versions.
+``app_paths.batch_state_path()``. Enforces a maximum state age and handles
+corrupt/unsupported saved state gracefully.
 
 This module knows nothing about GUI widgets — it returns plain dicts (or
 ``None``) and lets the controller decide how to display messages.
@@ -29,7 +27,6 @@ from .app_paths import (
     BATCH_STATE_WARNING_AGE_HOURS,
     batch_state_path,
 )
-from .batch import BatchJob
 
 
 def _batch_state_path():
@@ -40,11 +37,7 @@ def _batch_state_path():
     """
     return batch_state_path()
 
-from .code_cycles import DEFAULT_CYCLE
-from .extractor import ExtractedSpec
-from .pipeline import BatchSubmission
-from .resume_state import PHASE_REVIEW_POLL, deserialize_resume_state
-from .reviewer import MODEL_OPUS_47
+from .resume_state import deserialize_resume_state
 
 
 def save_batch_state(state: dict) -> None:
@@ -116,37 +109,8 @@ def load_batch_state() -> Optional[dict]:
             return None
         return restored
     except (KeyError, TypeError, ValueError):
-        # Intentionally retained for upgrade continuity with older installed versions
-        # that persisted pre-resume-state (v1) payloads.
-        try:
-            batch_id = state.get("batch_id", "")
-            if not isinstance(batch_id, str) or not batch_id.startswith("msgbatch_"):
-                delete_batch_state()
-                return None
-            legacy_submission = BatchSubmission(
-                job=BatchJob(
-                    batch_id=batch_id,
-                    job_type=state.get("job_type", "review"),
-                    request_map=state["request_map"],
-                    created_at=state["created_at"],
-                ),
-                files_reviewed=state.get("files_reviewed", []),
-                review_request_ids=state.get("review_request_ids", []),
-                leed_alerts=state.get("leed_alerts", []),
-                placeholder_alerts=state.get("placeholder_alerts", []),
-                model=MODEL_OPUS_47,
-                project_context=state.get("project_context", ""),
-                cycle_label=state.get("code_cycle", DEFAULT_CYCLE.label),
-                cross_check_enabled=state.get("cross_check_enabled", False),
-                prepared_specs=[ExtractedSpec(**s) for s in (state.get("prepared_specs") or [])] if state.get("prepared_specs") else None,
-            )
-            phase = state.get("phase", "review")
-            phase_map = {"review": PHASE_REVIEW_POLL}
-            migrated_phase = phase_map.get(phase, phase)
-            return {"phase": migrated_phase, "submission": legacy_submission, "resume_flags": {}}
-        except Exception:
-            delete_batch_state()
-            return None
+        delete_batch_state()
+        return None
 
 
 def delete_batch_state() -> None:

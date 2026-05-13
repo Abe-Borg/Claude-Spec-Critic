@@ -75,7 +75,6 @@ from src.batch_controller import (
     format_batch_age,
     is_valid_verification_resume_state,
     on_batch_submitted,
-    on_poll_result,
     poll_and_collect_thread,
     poll_batch,
     resume_batch,
@@ -539,10 +538,6 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _poll_and_collect_thread(self, run_epoch: int):
         poll_and_collect_thread(self, run_epoch)
-
-    # Backward-compatible helper retained for tests and legacy call paths.
-    def _on_poll_result(self, status: BatchStatus):
-        on_poll_result(self, status)
 
     def _collect_batch_results(self):
         collect_batch_results(self)
