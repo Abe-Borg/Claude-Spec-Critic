@@ -48,11 +48,11 @@ from .verification_cache import VerificationCache, cache_persist_enabled
 from .cross_checker import run_cross_check, run_chunked_cross_check
 from .code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 
-# Phase 7.1 (audit Section 11.1): log/progress callbacks accept explicit
-# ``level`` and ``phase`` keywords so pipeline code can categorize messages
-# (info / success / warning / error / step / muted) and route them to the
-# right diagnostics bucket without the GUI keyword-sniffing the message text.
-# Older single-arg callers still work — kwargs default cleanly.
+# Log/progress callbacks accept explicit ``level`` and ``phase`` keywords
+# so pipeline code can categorize messages (info / success / warning /
+# error / step / muted) and route them to the right diagnostics bucket
+# without the GUI keyword-sniffing the message text. Single-arg callers
+# still work — kwargs default cleanly.
 LogFn = Callable[..., None]
 ProgressFn = Callable[..., None]
 
@@ -139,9 +139,9 @@ class PipelineResult:
     cross_check_result: Optional[ReviewResult] = None
     cycle_label: str = DEFAULT_CYCLE.label
     total_elapsed_seconds: float | None = None
-    # Chunk O — the remaining deterministic alert types collected during
-    # preflight. Previously only ``leed_alerts`` / ``placeholder_alerts``
-    # made it to the result, so the report could not render the rest.
+    # Remaining deterministic alert types collected during preflight.
+    # Carrying them through here lets the report render every detector's
+    # output, not just LEED / placeholder.
     code_cycle_alerts: list[dict] = field(default_factory=list)
     structural_alerts: list[dict] = field(default_factory=list)
     naming_alerts: list[dict] = field(default_factory=list)
@@ -160,9 +160,9 @@ class CollectedBatchState:
     cross_check_result: Optional[ReviewResult] = None
     cross_check_skipped_due_to_missing_specs: bool = False
     truncated_specs: list[str] = field(default_factory=list)
-    # Chunk O — propagate the rest of the deterministic alerts through the
+    # Propagate the rest of the deterministic alerts through the
     # collect / finalize handoff so the resulting PipelineResult carries
-    # them. Existing resume-state payloads load with empty defaults.
+    # them.
     code_cycle_alerts: list[dict] = field(default_factory=list)
     structural_alerts: list[dict] = field(default_factory=list)
     naming_alerts: list[dict] = field(default_factory=list)
@@ -179,17 +179,16 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1.3: formal grouping vs occurrence types.
+# Formal grouping vs occurrence types.
 #
-# Audit Section 5.3 / plan Sprint 1 item 3 asked for a clean separation
-# between the *display* concept ("the same issue appears in N files") and the
-# *executable edit* concept ("apply this change to file X at location Y").
-# The pipeline already achieves the behavioral goal via ``Finding.affected_files``,
-# but having explicit types makes it harder to lose per-file occurrences when
-# new code paths get added (e.g., the report exporter, edit dialog, comments
-# mode). These dataclasses are produced by ``group_findings()`` and consumed
-# by code that needs the formal split. The legacy list-of-Finding API is
-# preserved so existing callers do not need to change.
+# Separates the *display* concept ("the same issue appears in N files")
+# from the *executable edit* concept ("apply this change to file X at
+# location Y"). The behavioral split is enforced through
+# ``Finding.affected_files``; the explicit types below make it harder to
+# lose per-file occurrences when new code paths get added (e.g., report
+# exporter, edit dialog, comments mode). These dataclasses are produced by
+# ``group_findings()`` and consumed by code that needs the formal split.
+# The list-of-Finding API is preserved so existing callers do not change.
 # ---------------------------------------------------------------------------
 
 
@@ -197,15 +196,16 @@ def _get_spec_files(input_dir: Path) -> list[Path]:
 class FindingOccurrence:
     """One executable edit candidate: a finding bound to a single file.
 
-    ``finding`` is the display-level (representative) finding. ``original_finding``
-    is the per-file pre-merge member finding (Chunk 8) when available — that is
-    the source of truth for executable edit fields (``existingText``,
-    ``replacementText``, ``anchorText``, ``evidenceElementId``,
-    ``edit_proposal``). ``original_finding`` is ``None`` when the merged
-    representative did not record a per-file original for this file (legacy
-    resume payload, or singleton finding where the representative *is* the
-    only original); callers that need executable edit fields should resolve
-    the executable finding via :meth:`executable_finding`.
+    ``finding`` is the display-level (representative) finding.
+    ``original_finding`` is the per-file pre-merge member finding when
+    available — that is the source of truth for executable edit fields
+    (``existingText``, ``replacementText``, ``anchorText``,
+    ``evidenceElementId``, ``edit_proposal``). ``original_finding`` is
+    ``None`` when the merged representative did not record a per-file
+    original for this file (singleton finding where the representative
+    *is* the only original, or pre-tracking resume payload); callers that
+    need executable edit fields should resolve via
+    :meth:`executable_finding`.
     """
     occurrence_id: str
     file_name: str
@@ -215,12 +215,12 @@ class FindingOccurrence:
     def executable_finding(self) -> Finding:
         """Return the per-file original when available, else the representative.
 
-        Chunk 8: edit execution should prefer the original member finding for
-        each affected file so a representative's edit text is never applied
-        to a file whose original text differed. Falls back to the
-        representative when no per-file original was recorded — callers that
-        treat that fallback as unsafe (apply_edits.execute_edit_plan) should
-        check :meth:`has_original` first.
+        Edit execution should prefer the original member finding for each
+        affected file so a representative's edit text is never applied to
+        a file whose original text differed. Falls back to the
+        representative when no per-file original was recorded — callers
+        that treat that fallback as unsafe (apply_edits.execute_edit_plan)
+        should check :meth:`has_original` first.
         """
         return self.original_finding if self.original_finding is not None else self.finding
 
@@ -254,10 +254,10 @@ def _occurrence_id(group_id: str, file_name: str, idx: int) -> str:
 def _originals_by_filename(finding: Finding) -> dict[str, Finding]:
     """Build a per-file lookup of ``Finding.occurrence_originals``.
 
-    Chunk 8 helper. The first original per ``fileName`` wins (originals with
-    the same fileName share a dedup key by construction, so they have
-    equivalent edit text). Empty-fileName originals are skipped — there is
-    no executable file to bind them to.
+    The first original per ``fileName`` wins (originals with the same
+    fileName share a dedup key by construction, so they have equivalent
+    edit text). Empty-fileName originals are skipped — there is no
+    executable file to bind them to.
     """
     by_name: dict[str, Finding] = {}
     for orig in finding.occurrence_originals:
@@ -275,10 +275,10 @@ def group_findings(findings: list[Finding]) -> list[FindingGroup]:
     placeholder occurrence with an empty file name; downstream code should
     check for that and skip.
 
-    Chunk 8: each ``FindingOccurrence`` is also bound to the per-file
-    pre-merge original via ``occurrence_originals`` so edit execution can
-    use the per-file ``existingText`` instead of the representative's. When
-    the merged finding is a singleton (its ``fileName`` matches the lone
+    Each ``FindingOccurrence`` is also bound to the per-file pre-merge
+    original via ``occurrence_originals`` so edit execution can use the
+    per-file ``existingText`` instead of the representative's. When the
+    merged finding is a singleton (its ``fileName`` matches the lone
     affected file), the occurrence binds the representative itself as its
     own original — the representative *is* the original in that case.
     """
@@ -293,7 +293,7 @@ def group_findings(findings: list[Finding]) -> list[FindingGroup]:
         for i, name in enumerate(files):
             original = originals_by_file.get(name)
             if original is None and name and not f.occurrence_originals and name == f.fileName:
-                # Singleton / legacy path: the merged finding has no recorded
+                # Singleton path: the merged finding has no recorded
                 # originals AND this occurrence is for the representative's
                 # own file. The representative *is* the original — bind it
                 # as such so executable_finding() returns the right thing.
@@ -321,7 +321,7 @@ def _normalized_text_digest(value: str | None) -> str:
         return ""
     # Hash the full text so long passages can never collide just because
     # their first 200 characters happen to match. Truncating before hashing
-    # silently merged distinct findings (audit Issue 2).
+    # silently merged distinct findings.
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -339,11 +339,10 @@ def _dedup_key(f: Finding) -> tuple:
 def compute_finding_id(f: Finding) -> str:
     """Compute a stable, deterministic id for a finding.
 
-    Chunk M / plan section "Cross-Check Dependency Tracking": each review
-    finding gets a stable id at dedup time so the cross-check pass can cite
-    those ids in ``upstreamFindingIds`` and the post-verification
-    suppression filter can match dependencies deterministically instead of
-    falling back to file/section overlap.
+    Each review finding gets a stable id at dedup time so the cross-check
+    pass can cite those ids in ``upstreamFindingIds`` and the
+    post-verification suppression filter can match dependencies
+    deterministically instead of falling back to file/section overlap.
 
     The id is derived from the same key the dedup helper uses, so two
     findings with the same dedup identity share the same id (and a
@@ -359,10 +358,8 @@ def compute_finding_id(f: Finding) -> str:
 
 def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
     if len(findings) <= 1:
-        # Chunk M: singleton lists still need a stable finding_id so the
-        # cross-check pass can cite the review finding via upstream ids.
-        # The early-return path used to skip the loop below, which left
-        # the one finding unstamped.
+        # Singleton lists still need a stable finding_id so the cross-check
+        # pass can cite the review finding via upstream ids.
         for f in findings:
             if not f.finding_id:
                 f.finding_id = compute_finding_id(f)
@@ -378,9 +375,9 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             f = group[0]
             if not f.affected_files and f.fileName:
                 f.affected_files = [f.fileName]
-            # Chunk M: stamp a stable finding id so the cross-check pass can
-            # cite it via upstream_finding_ids. Computed from the dedup key
-            # so the id is deterministic across runs of the same content.
+            # Stamp a stable finding id so the cross-check pass can cite
+            # it via upstream_finding_ids. Computed from the dedup key so
+            # the id is deterministic across runs of the same content.
             if not f.finding_id:
                 f.finding_id = compute_finding_id(f)
             out.append(f)
@@ -388,25 +385,23 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
         group.sort(key=lambda f: (rank.get(f.severity, 99), -f.confidence))
         rep = group[0]
         files = list(dict.fromkeys([f.fileName for f in group if f.fileName]))
-        # Chunk L: carry the representative's edit_proposal (or legacy
-        # equivalent) onto the merged finding so REPORT_ONLY findings stay
-        # REPORT_ONLY after dedupe and so the locator/edit pipeline does
-        # not see a freshly-constructed Finding that lost its proposal
-        # half. ``as_edit_proposal()`` reconstructs from legacy fields
-        # when the representative was loaded from an older resume state.
+        # Carry the representative's edit_proposal onto the merged finding
+        # so REPORT_ONLY findings stay REPORT_ONLY after dedupe and so the
+        # locator/edit pipeline does not see a freshly-constructed Finding
+        # that lost its proposal half.
         merged_proposal = rep.as_edit_proposal()
-        # Chunk M: derive the merged finding's id from the representative
-        # before issue-text mutation. The dedup key already collapses the
-        # whole group to one identity, so every member would hash to the
-        # same id; using rep is the cheaper of the two equivalent paths.
+        # Derive the merged finding's id from the representative before
+        # issue-text mutation. The dedup key already collapses the whole
+        # group to one identity, so every member would hash to the same
+        # id; using rep is the cheaper of the two equivalent paths.
         merged_id = rep.finding_id or compute_finding_id(rep)
-        # Chunk 8: retain the per-file pre-merge member findings on the
-        # merged representative so edit execution can use each file's own
+        # Retain the per-file pre-merge member findings on the merged
+        # representative so edit execution can use each file's own
         # ``existingText`` / ``replacementText`` / ``anchorText`` /
         # ``evidenceElementId`` / ``edit_proposal`` instead of fanning the
-        # representative's text across files that may have differed.
-        # The representative itself is included because it IS the original
-        # for its own file. Members keep their own ``occurrence_originals``
+        # representative's text across files that may have differed. The
+        # representative itself is included because it IS the original for
+        # its own file. Members keep their own ``occurrence_originals``
         # empty (they are themselves singletons), so this terminates after
         # one level — no recursive nesting.
         member_originals = list(group)
@@ -426,11 +421,11 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             evidenceElementId=rep.evidenceElementId,
             edit_proposal=merged_proposal,
             finding_id=merged_id,
-            # Chunk 7: carry the representative's parse-time demotion
-            # reason onto the merged finding so dedup cannot rehydrate a
-            # demoted edit. If the rep was demoted (proposal cleared,
-            # reason stamped), the merged finding inherits both halves of
-            # that decision; if the rep was a clean edit, this stays None.
+            # Carry the representative's parse-time demotion reason onto
+            # the merged finding so dedup cannot rehydrate a demoted edit.
+            # If the rep was demoted (proposal cleared, reason stamped),
+            # the merged finding inherits both halves of that decision;
+            # if the rep was a clean edit, this stays None.
             demotion_reason=rep.demotion_reason,
             occurrence_originals=member_originals,
         ))
@@ -439,51 +434,45 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
 
 @dataclass
 class _PreparedSpecs:
-    """Phase 9 plan 13.1: preflight alerts ride alongside the leed/placeholder
-    alerts. Pipeline callers log them via diagnostics; the GUI/report can pick
-    them up in a follow-up commit without breaking serialization here.
+    """Preflight alerts ride alongside the leed/placeholder alerts.
 
-    Chunk O additions: ``template_marker_alerts`` (TODO/FIXME/XXX/???),
-    ``invalid_code_cycle_alerts`` (year/code citations whose year is not a
-    real California cycle), and ``duplicate_paragraph_alerts`` (verbatim
-    long-paragraph duplicates) sit alongside the existing lists. The pipeline
-    forwards every one of them through the submission / collected-state /
-    pipeline-result chain so the report can render them — previously
-    ``code_cycle_alerts`` / ``structural_alerts`` / ``naming_alerts`` were
-    logged but silently dropped before the report saw them.
+    The pipeline forwards every one of them through the submission /
+    collected-state / pipeline-result chain so the report can render them.
+
+    - ``template_marker_alerts`` — TODO/FIXME/XXX/???
+    - ``invalid_code_cycle_alerts`` — year/code citations whose year is
+      not a real California cycle
+    - ``duplicate_paragraph_alerts`` — verbatim long-paragraph duplicates
+    - ``code_cycle_alerts`` — references to a stale cycle for the
+      selected :class:`CodeCycle`
+    - ``structural_alerts`` — empty sections and duplicate headings
+    - ``naming_alerts`` — project-level CSI naming consistency
     """
     specs: list[ExtractedSpec]
     leed_alerts: list[dict]
     placeholder_alerts: list[dict]
-    # Phase 9 (plan 13.1): deterministic preflight alerts surfaced before any
-    # model call. ``code_cycle_alerts`` flags references to a stale California
-    # cycle for the selected ``CodeCycle``; ``structural_alerts`` includes
-    # empty sections and duplicate headings; ``naming_alerts`` is a project-
-    # level CSI naming consistency check across all selected files.
     code_cycle_alerts: list[dict] = field(default_factory=list)
     structural_alerts: list[dict] = field(default_factory=list)
     naming_alerts: list[dict] = field(default_factory=list)
-    # Chunk O additions
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
-    # Chunk D4.1: per-spec view of every deterministic alert that fired for
-    # that filename. The reviewer / batch paths use this to populate the
-    # ``<pre_detected>`` block in each per-spec user message so the model is
-    # told what was already detected locally and does not duplicate it.
-    # Naming-style alerts attach to the file they describe; the project-wide
-    # ``inconsistent_filename`` rule is still surfaced because each alert is
-    # tagged with the offending filename.
+    # Per-spec view of every deterministic alert that fired for that
+    # filename. The reviewer / batch paths use this to populate the
+    # ``<pre_detected>`` block in each per-spec user message so the model
+    # is told what was already detected locally and does not duplicate it.
+    # Naming-style alerts attach to the file they describe; the project-
+    # wide ``inconsistent_filename`` rule is still surfaced because each
+    # alert is tagged with the offending filename.
     pre_detected_by_filename: dict[str, list[dict]] = field(default_factory=dict)
 
 
-# Chunk 3: how many specs we exact-count before falling back to a top-K
-# selection. The Anthropic ``count_tokens`` endpoint is a real API call —
-# every spec we count adds latency to preflight and consumes a token-
-# counting request. For typical project sizes (≤ this many specs) we count
-# every one so no spec slips past. Above the threshold we exact-count the
-# top K candidates ranked by the FULL local request shape, not the raw
-# spec body (plan task 7).
+# How many specs we exact-count before falling back to a top-K selection.
+# The Anthropic ``count_tokens`` endpoint is a real API call — every spec
+# we count adds latency to preflight and consumes a token-counting
+# request. For typical project sizes (≤ this many specs) we count every
+# one so no spec slips past. Above the threshold we exact-count the top K
+# candidates ranked by the FULL local request shape, not the raw spec body.
 _PREFLIGHT_EXACT_COUNT_ALL_THRESHOLD = 8
 _PREFLIGHT_EXACT_COUNT_TOP_K = 4
 
@@ -496,18 +485,18 @@ def _run_exact_token_preflight(
 ) -> None:
     """Validate each request fits under :data:`RECOMMENDED_MAX` with exact counts.
 
-    Chunk 3: counts the *same* request shape that the batch path will
-    submit (system prompt + user message including the ``<pre_detected>``
-    block + tool schema + cache controls). The cache is keyed on a hash
-    of the full request shape so a cached count is only reused when those
-    inputs are unchanged — adding or removing a ``pre_detected`` alert
+    Counts the *same* request shape that the batch path will submit
+    (system prompt + user message including the ``<pre_detected>`` block +
+    tool schema + cache controls). The cache is keyed on a hash of the
+    full request shape so a cached count is only reused when those inputs
+    are unchanged — adding or removing a ``pre_detected`` alert
     deterministically invalidates the entry.
 
     For small batches (``≤ _PREFLIGHT_EXACT_COUNT_ALL_THRESHOLD``) every
     spec is exact-counted. Above the threshold the top-K ranked by full
     local estimate are counted; the local-only gate in
-    :func:`_prepare_specs` still applies the model-aware safety factor
-    to the rest so an undercount cannot mask an overage.
+    :func:`_prepare_specs` still applies the model-aware safety factor to
+    the rest so an undercount cannot mask an overage.
 
     Raises ``ValueError`` when any exact count exceeds the recommended
     maximum. ``count_tokens_via_api`` returning ``None`` (preflight
@@ -523,7 +512,7 @@ def _run_exact_token_preflight(
         # Rank by the FULL local request shape (system + user_message
         # including pre_detected alerts). Reordering files cannot cause a
         # smaller raw spec to bypass exact-count when its alert block
-        # makes the real request larger — plan task 7.
+        # makes the real request larger.
         scored = sorted(
             ((estimate_local_request_tokens(rs), idx, rs) for idx, rs in enumerate(request_specs)),
             key=lambda triple: triple[0],
@@ -570,18 +559,18 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     template_marker_alerts: list[dict] = []
     invalid_code_cycle_alerts: list[dict] = []
     duplicate_paragraph_alerts: list[dict] = []
-    # Chunk D4.1: per-filename view of the per-spec alerts so the reviewer
-    # / batch paths can hand each spec only its own alerts when building
-    # the ``<pre_detected>`` block.
+    # Per-filename view of the per-spec alerts so the reviewer / batch
+    # paths can hand each spec only its own alerts when building the
+    # ``<pre_detected>`` block.
     pre_detected_by_filename: dict[str, list[dict]] = {}
     progress(0.0, "Extracting text from specifications...")
-    # Phase 5.2 (audit Section 9.2): parallel extraction. Order is preserved
-    # by extract_multiple_specs, so deterministic file ordering and per-spec
-    # progress reporting remain stable. Per-file errors still propagate to
-    # the caller — the pool maintains the original semantics.
-    # Phase 9 plan 13.2: cache extraction by file identity so repeated runs
-    # with toggled options skip the DOCX parse. Falls through to the parallel
-    # extractor for misses.
+    # Parallel extraction. Order is preserved by extract_multiple_specs,
+    # so deterministic file ordering and per-spec progress reporting
+    # remain stable. Per-file errors still propagate to the caller — the
+    # pool maintains the original semantics.
+    # Extraction is cached by file identity so repeated runs with toggled
+    # options skip the DOCX parse; misses fall through to the parallel
+    # extractor.
     extracted = extract_multiple_specs_cached(spec_files)
     for i, (p, spec) in enumerate(zip(spec_files, extracted), start=1):
         if spec.word_count == 0 or not spec.content.strip():
@@ -597,10 +586,10 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         template_marker_alerts.extend(pre.template_marker_alerts)
         invalid_code_cycle_alerts.extend(pre.invalid_code_cycle_alerts)
         duplicate_paragraph_alerts.extend(pre.duplicate_paragraph_alerts)
-        # Chunk D4.1: cache this spec's alerts under its filename so the
-        # reviewer / batch paths can hand them to the prompt builder.
-        # Naming-style alerts are appended below once the project-wide
-        # check runs (they aren't part of ``preprocess_spec``).
+        # Cache this spec's alerts under its filename so the reviewer /
+        # batch paths can hand them to the prompt builder. Naming-style
+        # alerts are appended below once the project-wide check runs
+        # (they aren't part of ``preprocess_spec``).
         pre_detected_by_filename[spec.filename] = [
             *pre.leed_alerts,
             *pre.placeholder_alerts,
@@ -614,11 +603,11 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     if not specs:
         raise FileNotFoundError("All files failed extraction. No specs to review.")
 
-    # Phase 9 plan 13.1: project-level naming consistency check. Logged so
-    # users see it before submission; never raises.
+    # Project-level naming consistency check. Logged so users see it
+    # before submission; never raises.
     naming_alerts = detect_inconsistent_file_naming([s.filename for s in specs])
-    # Chunk D4.1: route project-level naming alerts back to the file they
-    # describe so the model sees them in its ``<pre_detected>`` block too.
+    # Route project-level naming alerts back to the file they describe so
+    # the model sees them in its ``<pre_detected>`` block too.
     for alert in naming_alerts:
         fname = alert.get("filename")
         if fname:
@@ -660,11 +649,11 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             level="warning",
         )
 
-    # Chunk 3: build a ReviewRequestSpec per ExtractedSpec so the preflight
-    # counts the same request shape that the batch path will submit. The
-    # builder owns the prompt construction including the ``<pre_detected>``
-    # alert block and the id-tagged paragraph rendering, so a spec with a
-    # small body but a large alert block cannot slip past preflight.
+    # Build a ReviewRequestSpec per ExtractedSpec so the preflight counts
+    # the same request shape that the batch path will submit. The builder
+    # owns the prompt construction including the ``<pre_detected>`` alert
+    # block and the id-tagged paragraph rendering, so a spec with a small
+    # body but a large alert block cannot slip past preflight.
     request_specs: list[ReviewRequestSpec] = [
         ReviewRequestSpec(
             spec_content=spec.content,
@@ -679,16 +668,14 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         for spec in specs
     ]
 
-    # Chunk E directive 3: when the Anthropic ``count_tokens`` endpoint
-    # returns a number, that is the authoritative gate. The local
-    # cl100k_base count is only used as a fast pre-check and as the
-    # fallback when the API call is disabled or fails.
-    #
-    # Chunk 3 plan task 7: rank candidates by the FULL local request shape
-    # (system + user_message including pre_detected alerts) rather than by
-    # raw spec body length. Reordering files cannot cause a smaller raw
-    # spec to bypass exact-count when its wrapper / alerts make the real
-    # request larger.
+    # When the Anthropic ``count_tokens`` endpoint returns a number, that
+    # is the authoritative gate. The local cl100k_base count is only used
+    # as a fast pre-check and as the fallback when the API call is
+    # disabled or fails. Candidates are ranked by the FULL local request
+    # shape (system + user_message including pre_detected alerts) rather
+    # than by raw spec body length, so reordering files cannot cause a
+    # smaller raw spec to bypass exact-count when its wrapper / alerts
+    # make the real request larger.
     if token_count_preflight_enabled() and request_specs:
         _run_exact_token_preflight(
             request_specs,
@@ -698,12 +685,11 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
 
     # Per-spec local gate. Runs whether or not the exact preflight fired;
     # if exact counts are available the candidates are already known safe,
-    # but every spec must still pass the local + safety-factor gate.
-    # Chunk E directive 5: apply the model-specific safety multiplier so a
-    # cl100k_base undercount cannot mask a real overage.
-    # Chunk 3: the local gate also uses the *full* request shape (system +
-    # the materialized user message with pre_detected alerts) so the gate
-    # no longer undercounts when alerts dominate the request body.
+    # but every spec must still pass the local + safety-factor gate. The
+    # model-specific safety multiplier prevents a cl100k_base undercount
+    # from masking a real overage; the gate uses the *full* request shape
+    # (system + materialized user message with pre_detected alerts) so it
+    # does not undercount when alerts dominate the request body.
     safety = local_estimate_safety_factor(model)
     for spec, rs in zip(specs, request_specs):
         total_local = estimate_local_request_tokens(rs)
@@ -754,10 +740,8 @@ class BatchSubmission:
     prepared_specs: list[ExtractedSpec] | None = None
     cycle_label: str = DEFAULT_CYCLE.label
     cross_check_enabled: bool = False
-    # Chunk O — carry the remaining deterministic alert lists so the
-    # collect / finalize path can hand them off to the final PipelineResult.
-    # All default to empty lists so legacy callers that build BatchSubmission
-    # without these fields keep working.
+    # Carry the remaining deterministic alert lists so the collect /
+    # finalize path can hand them off to the final PipelineResult.
     code_cycle_alerts: list[dict] = field(default_factory=list)
     structural_alerts: list[dict] = field(default_factory=list)
     naming_alerts: list[dict] = field(default_factory=list)
@@ -773,9 +757,9 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         project_context=project_context,
         model=model,
         cycle=cycle,
-        # Chunk D4.1: feed each spec's deterministic alerts to the prompt
-        # builder so the model is told what local rules already detected
-        # and skips duplicating those items as new findings.
+        # Feed each spec's deterministic alerts to the prompt builder so
+        # the model is told what local rules already detected and skips
+        # duplicating those items as new findings.
         pre_detected_alerts=prepared.pre_detected_by_filename,
     )
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
@@ -841,10 +825,11 @@ def _recover_retryable_review_batch_results(
         return results_by_request
 
     log(f"Submitting review repair batch for {len(repair_specs)} failed item(s)...", level="step")
-    # Chunk D4.1: the repair batch reuses the same prompt builder, so it
-    # should also tell the model what was already detected locally. Alerts
-    # are deterministic given (content, filename, cycle), so we recompute
-    # them here rather than threading the original map through resume state.
+    # The repair batch reuses the same prompt builder, so it should also
+    # tell the model what was already detected locally. Alerts are
+    # deterministic given (content, filename, cycle), so we recompute
+    # them here rather than threading the original map through resume
+    # state.
     repair_pre_detected: dict[str, list[dict]] = {}
     for spec in repair_specs:
         pre = preprocess_spec(spec.content, spec.filename, cycle=cycle)
@@ -916,9 +901,9 @@ def classify_cross_check_dependencies(
 ) -> tuple[list[Finding], list[Finding]]:
     """Partition cross-check findings into (kept, suppressed) by upstream verdict.
 
-    Chunk M / plan section "Cross-Check Dependency Tracking": when a
-    cross-check finding cites upstream review ids in ``upstream_finding_ids``,
-    those ids are the authoritative dependency check. The rules are:
+    When a cross-check finding cites upstream review ids in
+    ``upstream_finding_ids``, those ids are the authoritative dependency
+    check. The rules are:
 
     * If at least one cited upstream is NOT DISPUTED, keep the finding —
       the dependency still holds on the surviving upstream(s).
@@ -928,20 +913,20 @@ def classify_cross_check_dependencies(
     * If every cited upstream is DISPUTED and there is no independent
       evidence, suppress the finding with a reason naming the disputed
       upstream(s) so the report can explain the decision.
-    * If the finding cites no upstream ids, fall back to the prior file +
+    * If the finding cites no upstream ids, fall back to the file +
       section overlap heuristic. The fallback is labeled as such so
       operators can see when the model failed to emit ids — typically a
-      sign that a future ID rollout is incomplete or that the fallback
-      tagged-JSON parser was used. ``suppression_reason`` carries the
-      fallback marker so the report can render the reduced confidence.
+      sign that the fallback tagged-JSON parser was used.
+      ``suppression_reason`` carries the fallback marker so the report
+      can render the reduced confidence.
 
     Returns ``(kept, suppressed)``. Suppressed findings have their
     ``suppression_reason`` field set; callers should stash them on
     ``ReviewResult.suppressed_findings`` rather than dropping them silently.
     """
-    # Build lookups keyed by stable finding id (Chunk M) and by the legacy
-    # (filename, section) tuple (pre-Chunk-M heuristic fallback). The id
-    # path is preferred when both are populated.
+    # Build lookups keyed by stable finding id and by the (filename,
+    # section) tuple (heuristic fallback). The id path is preferred when
+    # both are populated.
     id_to_verdict: dict[str, str] = {}
     id_to_finding: dict[str, Finding] = {}
     for f in review_findings:
@@ -1007,9 +992,9 @@ def classify_cross_check_dependencies(
             id_dropped += 1
             continue
 
-        # Fallback path: the model did not cite upstream ids (older payload,
-        # tagged-JSON fallback, or a coordination claim the model genuinely
-        # could not attribute). Use the legacy file+section heuristic.
+        # Fallback path: the model did not cite upstream ids (tagged-JSON
+        # fallback, or a coordination claim the model genuinely could
+        # not attribute). Use the file+section heuristic.
         if not disputed_keys:
             kept.append(f)
             continue
@@ -1093,11 +1078,11 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
             continue
         if rr.error:
             errors.append(f"{filename}: {rr.error}")
-            # Errored/expired/canceled batch requests previously fell through
-            # silently as "no findings" — cross-check would then run as if the
-            # spec had been reviewed cleanly (audit Issue 7). Surface them as
-            # truncated so the GUI flags the spec and downstream filters can
-            # exclude it.
+            # Errored/expired/canceled batch requests are surfaced as
+            # truncated so the GUI flags the spec and downstream filters
+            # exclude it. Letting them fall through silently as "no
+            # findings" would let cross-check run as if the spec had been
+            # reviewed cleanly.
             truncated_specs.append(filename)
             continue
         all_findings.extend(rr.findings)
@@ -1120,7 +1105,7 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         leed_alerts=submission.leed_alerts,
         placeholder_alerts=submission.placeholder_alerts,
         truncated_specs=truncated_specs,
-        # Chunk O — forward every alert list the submission carries so
+        # Forward every alert list the submission carries so
         # finalize_batch_result can ship them on the PipelineResult.
         code_cycle_alerts=list(submission.code_cycle_alerts),
         structural_alerts=list(submission.structural_alerts),
@@ -1146,7 +1131,7 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
         return state
     # Exclude specs whose individual review failed/truncated so cross-check
     # does not make coordination claims based on a spec that was never
-    # successfully reviewed (audit Issue 7).
+    # successfully reviewed.
     failed_filenames = set(state.truncated_specs or [])
     if failed_filenames:
         filtered_specs = [s for s in specs if s.filename not in failed_filenames]
@@ -1176,11 +1161,11 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
             "They remain on the final result; only the cross-check input is filtered.",
             level="info",
         )
-    # Phase 8 / plan section 12.3: chunk by CSI division when the combined
-    # input would otherwise exceed the cross-check token budget. This used
-    # to surface as a ``skipped`` status — large projects therefore got no
-    # coordination review at all. ``run_chunked_cross_check`` falls back to
-    # the original single-pass ``run_cross_check`` when the input fits.
+    # Chunk by CSI division when the combined input would otherwise
+    # exceed the cross-check token budget. Without this, a large project
+    # would get a ``skipped`` status and no coordination review at all.
+    # ``run_chunked_cross_check`` falls back to the single-pass
+    # ``run_cross_check`` when the input fits.
     cross = run_chunked_cross_check(specs, dedup_findings, project_context=project_context, cycle=cycle, log=log)
     state.cross_check_result = cross
     _log_cross_check_status(log, cross)
@@ -1195,7 +1180,7 @@ def start_batch_verification(
     progress: ProgressFn = _noop_progress,
     cache: VerificationCache | None = None,
 ) -> BatchJob | None:
-    """Submit a verification batch, applying Phase 3 pre-pass first.
+    """Submit a verification batch, applying the local pre-pass first.
 
     Returns ``None`` if every finding resolved locally (local-skip or cache
     hit) — callers should treat that as "verification complete" without
@@ -1243,7 +1228,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         cross_check_result=state.cross_check_result,
         cycle_label=state.submission.cycle_label,
         total_elapsed_seconds=time.time() - state.submission.job.created_at,
-        # Chunk O — pass the deterministic-check lists through to the report.
+        # Pass the deterministic-check lists through to the report.
         code_cycle_alerts=list(state.code_cycle_alerts),
         structural_alerts=list(state.structural_alerts),
         naming_alerts=list(state.naming_alerts),
@@ -1287,12 +1272,12 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
             verbose=verbose,
             stream_callback=stream_callback,
             cycle=cycle,
-            # Chunk K2: forward the paragraph map so the prompt builder
-            # can render id-tagged elements and the model can cite ids.
+            # Forward the paragraph map so the prompt builder can render
+            # id-tagged elements and the model can cite ids.
             paragraph_map=spec.paragraph_map,
-            # Chunk D4.1: forward the per-spec deterministic alerts so the
-            # model is told what local rules already detected and skips
-            # duplicating them as new findings.
+            # Forward the per-spec deterministic alerts so the model is
+            # told what local rules already detected and skips duplicating
+            # them as new findings.
             pre_detected_alerts=prepared.pre_detected_by_filename.get(spec.filename),
         )
         if rr.parse_status == "incomplete":

@@ -44,11 +44,11 @@ class LocatorResult:
     replacement_text: str | None
     action_type: str
     warning: str | None = None
-    # Phase 4 (audit Section 8.1): paragraph-locator safety category. Values:
-    # AUTO_SAFE, AUTO_WITH_CAUTION, MANUAL_REVIEW, REPORT_ONLY. Computed
-    # from match method/confidence, ambiguity, element type, and structural
-    # span. build_edit_actions uses this to gate auto-application. Left as
-    # None by default so __post_init__ can derive it from the result data;
+    # Paragraph-locator safety category. Values: AUTO_SAFE,
+    # AUTO_WITH_CAUTION, MANUAL_REVIEW, REPORT_ONLY. Computed from match
+    # method/confidence, ambiguity, element type, and structural span.
+    # build_edit_actions uses this to gate auto-application. Left as None
+    # by default so __post_init__ can derive it from the result data;
     # locate_edit also passes an explicit value when it has cross-paragraph
     # context that __post_init__ can't see.
     safety_category: str | None = None
@@ -78,16 +78,15 @@ def _formatting_downgrade(
     action_type: str,
     base_category: str,
 ) -> str:
-    """Apply audit Section 8.5 formatting downgrades.
+    """Apply formatting downgrades for richly-formatted paragraphs.
 
     A paragraph counts as "richly formatted" when it has 2+ runs with
     distinct character-format signatures. Run-level replacement of a
     sub-span across such runs collapses non-matching formatting into the
     first run and silently destroys inline emphasis, so we downgrade.
 
-    - Whole-paragraph replacements/DELETEs that touch a richly formatted
-      paragraph are demoted to MANUAL_REVIEW (the audit calls these
-      "richly formatted paragraphs: mark manual review").
+    - Whole-paragraph replacements/DELETEs on a richly formatted paragraph
+      are demoted to MANUAL_REVIEW.
     - Partial-run replacements that span multiple distinct-format runs are
       demoted to AUTO_WITH_CAUTION.
     """
@@ -137,18 +136,18 @@ def _classify_locator_safety(
     elif method == "fuzzy":
         category = SAFETY_MANUAL_REVIEW
     elif method == "section_anchored_fuzzy":
-        # Chunk D3.2: section-anchored matches whose underlying matcher was
-        # fuzzy are still fuzzy text rediscovery — narrowing the search
-        # window does not make a paraphrase identification safe enough for
-        # silent document mutation. Route to manual review only.
+        # Section-anchored matches whose underlying matcher was fuzzy are
+        # still fuzzy text rediscovery — narrowing the search window does
+        # not make a paraphrase identification safe enough for silent
+        # document mutation. Route to manual review only.
         category = SAFETY_MANUAL_REVIEW
     elif method == "id":
-        # Chunk K4: id-based match plus exact-text precondition is the
-        # strictest signal the locator can produce — equivalent to an
-        # exact text match but immune to whole-document duplicates.
-        # Body paragraphs go AUTO_SAFE; table cells stay AUTO_WITH_CAUTION
-        # so the table-cell precondition revalidation in spec_editor
-        # still gates the actual mutation.
+        # Id-based match plus exact-text precondition is the strictest
+        # signal the locator can produce — equivalent to an exact text
+        # match but immune to whole-document duplicates. Body paragraphs
+        # go AUTO_SAFE; table cells stay AUTO_WITH_CAUTION so the
+        # table-cell precondition revalidation in spec_editor still gates
+        # the actual mutation.
         category = SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
     elif method == "exact" and confidence >= 0.95:
         category = SAFETY_AUTO_SAFE if element_type == "paragraph" else SAFETY_AUTO_WITH_CAUTION
@@ -167,10 +166,9 @@ def _classify_locator_safety(
 
 
 def _resolve_replacement_text(finding: Finding) -> str | None:
-    # Chunk L: pull replacement text off the edit proposal (when present)
-    # rather than the legacy field, so a REPORT_ONLY finding cannot
-    # accidentally surface a stale quote left in ``finding.replacementText``
-    # by an earlier code path.
+    # Pull replacement text off the edit proposal (when present) so a
+    # REPORT_ONLY finding cannot accidentally surface a stale quote left
+    # in ``finding.replacementText`` by an earlier code path.
     proposal = finding.as_edit_proposal()
     base_replacement = proposal.replacement_text if proposal is not None else None
     verification = finding.verification
@@ -304,9 +302,9 @@ def _normalized_match(existing_text: str, paragraph_map: list[ParagraphMapping],
 def _fuzzy_match(existing_text: str, paragraph_map: list[ParagraphMapping], threshold: float = 0.80) -> list[EditLocation]:
     """Fuzzy match against the paragraph map.
 
-    Phase 9.3 (audit Section 13.3): SequenceMatcher.ratio() over every
-    paragraph is the dominant cost on long documents. We pre-filter with
-    cheap length and quick_ratio gates before paying for the full ratio:
+    SequenceMatcher.ratio() over every paragraph is the dominant cost on
+    long documents. We pre-filter with cheap length and quick_ratio gates
+    before paying for the full ratio:
 
     * Length ratio: SequenceMatcher's max possible ratio is bounded by
       ``2 * min(len(a), len(b)) / (len(a) + len(b))``. If that ceiling is
@@ -433,11 +431,10 @@ def _section_anchored_match(existing_text: str, section: str, paragraph_map: lis
     if not neighborhood:
         return []
 
-    # Chunk D3.2: track which underlying matcher produced the hit so the
-    # classifier can route section-anchored fuzzy matches to manual review
-    # only. Previously every matcher's output was relabeled "section_anchored"
-    # and a fuzzy-derived match could slip into AUTO_WITH_CAUTION and
-    # auto-apply.
+    # Track which underlying matcher produced the hit so the classifier
+    # can route section-anchored fuzzy matches to manual review only.
+    # Relabeling every matcher's output as "section_anchored" would let a
+    # fuzzy-derived match slip into AUTO_WITH_CAUTION and auto-apply.
     matchers: list[tuple[str, callable]] = [
         ("exact", lambda: _exact_match(existing_text, neighborhood, short_text=short_text)),
         ("normalized", lambda: _normalized_match(existing_text, neighborhood, short_text=short_text)),
@@ -493,13 +490,13 @@ def _id_anchored_match(
 ) -> tuple[list[EditLocation], str | None]:
     """Locate the edit target by ``evidenceElementId`` with text revalidation.
 
-    Chunk K4: when the model emitted an element id, we trust it as the
-    primary locator signal but still revalidate the recorded exact-text
-    quote against the live element. The validation guarantees the id
-    points at the same text the model saw at review time — if a later
-    edit shifted the paragraph, the precondition will fail at apply time
-    and the id-based ``LocatorResult`` will be regenerated from the live
-    map on the next pass.
+    When the model emitted an element id, we trust it as the primary
+    locator signal but still revalidate the recorded exact-text quote
+    against the live element. The validation guarantees the id points at
+    the same text the model saw at review time — if a later edit shifted
+    the paragraph, the precondition will fail at apply time and the
+    id-based ``LocatorResult`` will be regenerated from the live map on
+    the next pass.
 
     Returns ``(locations, warning)`` where ``warning`` is non-empty only
     when the id was set but the locator could not turn it into a usable
@@ -588,12 +585,10 @@ def locate_edit(
     *,
     min_confidence: float = 0.60,
 ) -> LocatorResult:
-    # Chunk L / plan section "Separate Findings From Edit Proposals":
-    # findings without an edit proposal short-circuit here. REPORT_ONLY
+    # Findings without an edit proposal short-circuit here. REPORT_ONLY
     # and other non-edit findings get a clear ``status="not_found"`` /
     # ``safety_category=REPORT_ONLY`` result instead of falling through
-    # the locator and producing fuzzy not-found warnings rooted in the
-    # legacy ``finding.actionType="EDIT"`` default.
+    # the locator and producing fuzzy not-found warnings.
     proposal = finding.as_edit_proposal()
     if proposal is None:
         return LocatorResult(
@@ -613,19 +608,19 @@ def locate_edit(
     action_type = proposal.action_type.upper()
     existing_text = (proposal.existing_text or "").strip()
 
-    # ADD actions may rely on an explicit anchorText (audit Issue 5). If
-    # provided, locate the anchor paragraph using the same matchers as EDIT.
+    # ADD actions may rely on an explicit anchorText. If provided, locate
+    # the anchor paragraph using the same matchers as EDIT.
     if action_type == "ADD":
         anchor_candidate = (proposal.anchor_text or "").strip()
         if anchor_candidate:
             existing_text = anchor_candidate
 
-    # Chunk K4: prefer the element id when the model supplied one. The id
-    # path validates the exact-text quote against the live element; if the
+    # Prefer the element id when the model supplied one. The id path
+    # validates the exact-text quote against the live element; if the
     # quote no longer matches, we return early with a manual-review
-    # warning instead of falling through to fuzzy text matching. That
-    # preserves the audit's "ID + exact text are both used" rule and
-    # makes wrong-span replacements impossible on the id path.
+    # warning instead of falling through to fuzzy text matching. ID +
+    # exact-text revalidation makes wrong-span replacements impossible
+    # on the id path.
     id_locations, id_warning = _id_anchored_match(
         finding, existing_text, paragraph_map,
     )
