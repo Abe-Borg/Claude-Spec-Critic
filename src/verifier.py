@@ -1422,7 +1422,8 @@ def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFA
     # Chunk C: compute include_verdict_tool once and thread it through both
     # the user-prompt builder and the system-prompt builder so the batch
     # request payload (built by submit_verification_batch via
-    # build_verification_tools) and the prompt agree on tool availability.
+    # build_verification_tools_for_profile) and the prompt agree on tool
+    # availability.
     include_verdict_tool = verification_request_includes_verdict_tool()
     return submit_verification_batch(
         findings,

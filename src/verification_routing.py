@@ -27,14 +27,13 @@ Before Chunk 4, the verification routing decision lived in three places:
   ``thinking_enabled`` gate (skipping ``thinking`` for STRICT_STRUCTURED),
   scales ``max_uses`` by the mode multiplier, and stamps the routed mode
   + profile on the result.
-* ``batch._build_verification_request_params`` — batch initial path. Calls
-  ``apply_thinking_config`` unconditionally and uses the profile-aware
-  ``max_uses`` ceiling *without* the mode multiplier. A GRIPES-severity
-  finding that would have been STRICT_STRUCTURED in real-time (Sonnet, no
-  thinking, half budget) ran through the batch path as STANDARD_REASONING
-  (Sonnet, thinking on, full budget). The result was then *re-stamped* by
-  the wave parser as STRICT_STRUCTURED — disagreeing with what the request
-  actually sent.
+* The batch initial path applied ``apply_thinking_config`` unconditionally
+  and used the profile-aware ``max_uses`` ceiling *without* the mode
+  multiplier. A GRIPES-severity finding that would have been
+  STRICT_STRUCTURED in real-time (Sonnet, no thinking, half budget) ran
+  through the batch path as STANDARD_REASONING (Sonnet, thinking on, full
+  budget). The result was then *re-stamped* by the wave parser as
+  STRICT_STRUCTURED — disagreeing with what the request actually sent.
 * ``verifier._build_retry_request`` / ``_build_continuation_request`` —
   retry and continuation paths. Same problem as the batch initial path:
   they take ``model`` / ``severity`` / ``profile`` but not the mode, so

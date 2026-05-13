@@ -169,17 +169,6 @@ def poll_and_collect_thread(app, run_epoch: int) -> None:
     app._dispatch_if_current(run_epoch, app._collect_batch_results)
 
 
-def on_poll_result(app, status: BatchStatus) -> None:
-    """Backward-compatible helper retained for tests and legacy call paths."""
-    if hasattr(app, "_update_poll_progress"):
-        app._update_poll_progress(status)
-    normalized_status = status.status.replace("-", "_")
-    if normalized_status in ("ended", "failed", "expired", "canceled"):
-        if app._batch_submission is not None:
-            save_batch_state(build_resume_state(phase=PHASE_REVIEW_COLLECT, submission=app._batch_submission))
-        app._collect_batch_results()
-
-
 def collect_batch_results(app) -> None:
     run_epoch = app._next_run_epoch()
     diag = app._diagnostics_report
