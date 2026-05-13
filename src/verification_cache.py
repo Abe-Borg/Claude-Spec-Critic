@@ -116,18 +116,56 @@ def make_cache_key(finding, *, cycle: CodeCycle) -> str:
     return f"{cycle_label}|{action}|{code_ref}|{_digest(claim)}"
 
 
+# Canonical "disable" tokens for boolean env-var flags. Anything else —
+# including an unset variable — leaves the default-enabled behavior in place.
+_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
+
+
+def _env_flag_disabled(name: str) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in _DISABLE_TOKENS
+
+
 def cache_persist_enabled() -> bool:
-    """Whether verification cache should persist to disk between runs."""
-    return True
+    """Whether verification cache should persist to disk between runs.
+
+    Enabled by default. Set ``SPEC_CRITIC_VERIFICATION_CACHE_PERSIST=0`` to
+    keep the cache in-memory only — useful for one-off runs and tests that
+    don't want to touch the user's on-disk cache.
+    """
+    return not _env_flag_disabled("SPEC_CRITIC_VERIFICATION_CACHE_PERSIST")
 
 
 def cache_ttl_days() -> int:
-    """Age-based pruning in days. 0 means no expiry."""
-    return 0
+    """Age-based pruning in days. 0 (the default) means no expiry.
+
+    Override via ``SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS``. Non-integer
+    or negative values are ignored and treated as 0 — a malformed override
+    should never accidentally invalidate the entire cache.
+    """
+    raw = os.environ.get("SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS")
+    if raw is None or not raw.strip():
+        return 0
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return 0
+    return value if value > 0 else 0
 
 
 def default_cache_path() -> Path:
-    """Return the on-disk cache file path."""
+    """Return the on-disk cache file path.
+
+    Overridable via ``SPEC_CRITIC_CACHE_PATH``. The default is
+    ``~/.spec_critic/verification_cache.json``. ``~`` and environment
+    variables in the override are expanded so users can point at e.g.
+    ``$XDG_CACHE_HOME/spec_critic/cache.json``.
+    """
+    override = os.environ.get("SPEC_CRITIC_CACHE_PATH")
+    if override and override.strip():
+        return Path(os.path.expandvars(os.path.expanduser(override.strip())))
     return Path.home() / ".spec_critic" / "verification_cache.json"
 
 

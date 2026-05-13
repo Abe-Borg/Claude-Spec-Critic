@@ -279,7 +279,7 @@ When the exact Anthropic count is unavailable, `tokenizer.safe_local_estimate` p
 
 ## 8) Environment Variables
 
-The only env vars are model-id overrides. Everything else is baked at the chosen defaults.
+Model-id overrides plus a handful of operator switches for rollback / cache control. Boolean flags accept `0` / `false` / `no` / `off` (case-insensitive) to disable; anything else leaves the default-enabled behavior in place.
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -287,6 +287,12 @@ The only env vars are model-id overrides. Everything else is baked at the chosen
 | `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 4.6 | Override verifier initial-pass model |
 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 4.7 | Override escalation model |
 | `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Override triage model |
+| `SPEC_CRITIC_ELEMENT_IDS` | on | Disable to revert to legacy plain-body spec rendering (no `<para id="...">` wrappers) |
+| `SPEC_CRITIC_TABLE_CELL_AUTO_EDIT` | on | Disable to refuse every table-cell auto-edit and route to manual review |
+| `SPEC_CRITIC_EDIT_TRANSACTIONAL` | on | Disable to fall back to best-effort writes when any edit fails |
+| `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |
+| `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `0` (no expiry) | Age-based pruning on cache load; non-integer/negative values fall back to 0 |
+| `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override the on-disk cache file path; `~` and `$VAR` are expanded |
 
 ---
 
