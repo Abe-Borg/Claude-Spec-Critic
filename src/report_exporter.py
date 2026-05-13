@@ -57,18 +57,14 @@ from .report_status import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Color constants
-# ---------------------------------------------------------------------------
 
 SEVERITY_COLORS = {
-    "CRITICAL": RGBColor(192, 0, 0),      # Dark red
-    "HIGH": RGBColor(255, 102, 0),         # Orange
-    "MEDIUM": RGBColor(192, 152, 0),       # Dark yellow/gold
-    "GRIPES": RGBColor(128, 0, 128),       # Purple
+    "CRITICAL": RGBColor(192, 0, 0),
+    "HIGH": RGBColor(255, 102, 0),
+    "MEDIUM": RGBColor(192, 152, 0),
+    "GRIPES": RGBColor(128, 0, 128),
 }
 
-# Hex versions for cell shading (no # prefix)
 SEVERITY_SHADING = {
     "CRITICAL": "C00000",
     "HIGH": "FF6600",
@@ -77,10 +73,10 @@ SEVERITY_SHADING = {
 }
 
 VERDICT_COLORS = {
-    "CONFIRMED": RGBColor(0, 128, 0),     # Green
-    "CORRECTED": RGBColor(204, 132, 0),    # Amber
-    "UNVERIFIED": RGBColor(128, 128, 128), # Gray
-    "DISPUTED": RGBColor(192, 0, 0),       # Red
+    "CONFIRMED": RGBColor(0, 128, 0),
+    "CORRECTED": RGBColor(204, 132, 0),
+    "UNVERIFIED": RGBColor(128, 128, 128),
+    "DISPUTED": RGBColor(192, 0, 0),
 }
 
 VERDICT_ICONS = {
@@ -91,28 +87,23 @@ VERDICT_ICONS = {
 }
 
 CONFIDENCE_COLORS = {
-    "high": RGBColor(0, 128, 0),           # Green
-    "moderate": RGBColor(204, 132, 0),     # Amber
-    "low": RGBColor(192, 0, 0),            # Red
+    "high": RGBColor(0, 128, 0),
+    "moderate": RGBColor(204, 132, 0),
+    "low": RGBColor(192, 0, 0),
 }
 
-COORDINATION_COLOR = RGBColor(6, 182, 212)  # Cyan
+COORDINATION_COLOR = RGBColor(6, 182, 212)
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]
 
-# Chunk N — closed-set status display colors. The plan (Directive 5) calls
-# out "avoid presenting all findings as equally certain", so each status
-# gets a distinct color so a quick scroll of the report makes the
-# evidence picture visible. Status color hex strings double as the
-# summary-table cell shading values.
 STATUS_COLORS: dict[ReportStatus, RGBColor] = {
-    ReportStatus.VERIFIED_SUPPORTED: RGBColor(0, 128, 0),          # Green
-    ReportStatus.VERIFIED_CONTRADICTED: RGBColor(204, 132, 0),     # Amber
-    ReportStatus.DISPUTED: RGBColor(192, 0, 0),                    # Red
-    ReportStatus.INSUFFICIENT_EVIDENCE: RGBColor(128, 128, 128),   # Gray
-    ReportStatus.LOCALLY_CLASSIFIED: RGBColor(59, 130, 246),       # Blue
-    ReportStatus.NOT_CHECKED: RGBColor(100, 100, 100),             # Dark gray
-    ReportStatus.MANUAL_REVIEW_REQUIRED: RGBColor(255, 102, 0),    # Orange
+    ReportStatus.VERIFIED_SUPPORTED: RGBColor(0, 128, 0),
+    ReportStatus.VERIFIED_CONTRADICTED: RGBColor(204, 132, 0),
+    ReportStatus.DISPUTED: RGBColor(192, 0, 0),
+    ReportStatus.INSUFFICIENT_EVIDENCE: RGBColor(128, 128, 128),
+    ReportStatus.LOCALLY_CLASSIFIED: RGBColor(59, 130, 246),
+    ReportStatus.NOT_CHECKED: RGBColor(100, 100, 100),
+    ReportStatus.MANUAL_REVIEW_REQUIRED: RGBColor(255, 102, 0),
 }
 
 STATUS_SHADING: dict[ReportStatus, str] = {
@@ -126,16 +117,13 @@ STATUS_SHADING: dict[ReportStatus, str] = {
 }
 
 EDIT_ACTION_COLORS: dict[EditActionLabel, RGBColor] = {
-    EditActionLabel.AUTO_EDIT_CANDIDATE: RGBColor(0, 128, 0),       # Green
-    EditActionLabel.MANUAL_EDIT_CANDIDATE: RGBColor(204, 132, 0),   # Amber
-    EditActionLabel.REPORT_ONLY: RGBColor(100, 100, 100),           # Gray
-    EditActionLabel.SUPPRESSED: RGBColor(192, 0, 0),                # Red
+    EditActionLabel.AUTO_EDIT_CANDIDATE: RGBColor(0, 128, 0),
+    EditActionLabel.MANUAL_EDIT_CANDIDATE: RGBColor(204, 132, 0),
+    EditActionLabel.REPORT_ONLY: RGBColor(100, 100, 100),
+    EditActionLabel.SUPPRESSED: RGBColor(192, 0, 0),
 }
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _confidence_tier(confidence: float) -> str:
     """Return 'high', 'moderate', or 'low' for a confidence score."""
@@ -153,8 +141,6 @@ def _set_cell_shading(cell, hex_color: str) -> None:
     cell._tc.get_or_add_tcPr().append(shading)
 
 
-# Word 2012 extension namespace — NOT the base w: namespace.
-# Per [MS-DOCX] §2.5.1.3, the `collapsed` element lives here.
 _W15_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
 
 
@@ -219,9 +205,6 @@ def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
     return para
 
 
-# ---------------------------------------------------------------------------
-# Title block
-# ---------------------------------------------------------------------------
 
 def _write_title_block(doc: Document, review, files_reviewed: list[str],
                        cycle_label: str = "2025") -> None:
@@ -233,7 +216,6 @@ def _write_title_block(doc: Document, review, files_reviewed: list[str],
     title = doc.add_heading("Spec Critic — M&P Specification Review Report", level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    # Metadata as separate centered paragraphs (not \n in a single para)
     meta_lines = [
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"Model: {review.model}",
@@ -250,9 +232,6 @@ def _write_title_block(doc: Document, review, files_reviewed: list[str],
         para.paragraph_format.space_after = Pt(2)
 
 
-# ---------------------------------------------------------------------------
-# Files reviewed
-# ---------------------------------------------------------------------------
 
 def _write_files_reviewed(doc: Document, files_reviewed: list[str]) -> None:
     """Write the files reviewed section with a bullet list."""
@@ -262,9 +241,6 @@ def _write_files_reviewed(doc: Document, files_reviewed: list[str]) -> None:
 
 
 
-# ---------------------------------------------------------------------------
-# Methodology note
-# ---------------------------------------------------------------------------
 
 def _summarize_verification_outcomes(findings: list) -> dict[str, object]:
     """Roll up the trust-model statuses + raw verdict counts for the methodology note.
@@ -352,7 +328,6 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
 
     doc.add_paragraph(para2_text)
 
-    # Collapsibility tip
     doc.add_paragraph(
         "Tip: In Word, hover over any heading to reveal a collapse triangle. "
         "Click it to hide the content beneath that heading. Use this to "
@@ -360,9 +335,6 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
     )
 
 
-# ---------------------------------------------------------------------------
-# Summary table
-# ---------------------------------------------------------------------------
 
 def _write_summary_table(doc: Document, review, cross_check_result, *, total_elapsed_seconds: float | None = None) -> None:
     """Write the summary section with a styled severity counts table."""
@@ -371,7 +343,6 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
     cc_count = (len(cross_check_result.findings)
                 if cross_check_result and cross_check_result.findings else 0)
 
-    # Build column definitions
     columns = [
         ("CRITICAL", review.critical_count, "C00000"),
         ("HIGH", review.high_count, "FF6600"),
@@ -382,29 +353,24 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
     if cc_count > 0:
         columns.append(("CROSS-CHECK", cc_count, "06B6D4"))
 
-    # Create table: header row + count row
     table = doc.add_table(rows=2, cols=len(columns))
     table.style = 'Table Grid'
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-    # Header row (colored backgrounds with white text)
     for col_idx, (label, _count, hex_color) in enumerate(columns):
         cell = table.rows[0].cells[col_idx]
         _set_cell_shading(cell, hex_color)
-        # Clear default paragraph and write header text
         cell.text = ""
         p = cell.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p.add_run(label)
         run.bold = True
         run.font.size = Pt(9)
-        # White text on all dark backgrounds, black on medium yellow
         if label == "MEDIUM":
             run.font.color.rgb = RGBColor(0, 0, 0)
         else:
             run.font.color.rgb = RGBColor(255, 255, 255)
 
-    # Count row
     for col_idx, (_label, count, _hex) in enumerate(columns):
         cell = table.rows[1].cells[col_idx]
         cell.text = ""
@@ -414,9 +380,8 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
         run.bold = True
         run.font.size = Pt(14)
 
-    doc.add_paragraph()  # Spacer
+    doc.add_paragraph()
 
-    # Review-stage token usage only (excludes cross-check + verification)
     para = doc.add_paragraph()
     para.add_run("Review Stage Tokens: ").bold = True
     para.add_run(
@@ -430,13 +395,11 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
         "Cross-check and verification token usage are not included in the totals above."
     )
 
-    # Processing time
     para = doc.add_paragraph()
     para.add_run("Processing Time: ").bold = True
     processing_seconds = total_elapsed_seconds if total_elapsed_seconds is not None else review.elapsed_seconds
     para.add_run(f"{processing_seconds:.1f} seconds")
 
-    # Verification summary
     all_findings = list(review.findings)
     if cross_check_result and cross_check_result.findings:
         all_findings.extend(cross_check_result.findings)
@@ -458,9 +421,6 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
         para.add_run(", ".join(verdict_parts))
 
 
-# ---------------------------------------------------------------------------
-# Estimated API cost (Chunk 10)
-# ---------------------------------------------------------------------------
 
 def _write_estimated_cost(doc: Document, estimated_cost: dict | None) -> None:
     """Render the conservative API-cost estimate for the run.
@@ -546,9 +506,6 @@ def _write_estimated_cost(doc: Document, estimated_cost: dict | None) -> None:
         wrun.font.color.rgb = RGBColor(150, 100, 0)
 
 
-# ---------------------------------------------------------------------------
-# Trust-model summary (Chunk N)
-# ---------------------------------------------------------------------------
 
 def _write_trust_model_summary(
     doc: Document,
@@ -580,7 +537,6 @@ def _write_trust_model_summary(
     intro_run.font.color.rgb = RGBColor(100, 100, 100)
     intro.paragraph_format.space_after = Pt(6)
 
-    # --- Status histogram table ---
     visible_statuses = [
         s for s in STATUS_DISPLAY_ORDER if status_counts.get(s, 0) > 0
     ]
@@ -610,7 +566,6 @@ def _write_trust_model_summary(
             run.font.size = Pt(14)
             run.font.color.rgb = STATUS_COLORS[status]
 
-    # --- Edit-action histogram (compact inline form) ---
     visible_actions = [
         a for a in EDIT_ACTION_DISPLAY_ORDER if edit_action_counts.get(a, 0) > 0
     ]
@@ -631,9 +586,6 @@ def _write_trust_model_summary(
         para.paragraph_format.space_after = Pt(6)
 
 
-# ---------------------------------------------------------------------------
-# Alerts
-# ---------------------------------------------------------------------------
 
 def _write_alert_section(
     doc: Document,
@@ -775,9 +727,6 @@ def _write_alerts(
     )
 
 
-# ---------------------------------------------------------------------------
-# Single finding entry (collapsible via Heading 3)
-# ---------------------------------------------------------------------------
 
 def _write_finding_entry(doc: Document, finding, index: int) -> None:
     """Write a single finding as a collapsible block.
@@ -815,46 +764,33 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     conf_tier = _confidence_tier(finding.confidence)
     conf_color = CONFIDENCE_COLORS[conf_tier]
 
-    # --- Finding header as Heading 3 (enables Word collapse) ---
     para = doc.add_paragraph()
     para.style = doc.styles['Heading 3']
     para.paragraph_format.space_before = Pt(12)
     para.paragraph_format.space_after = Pt(4)
 
 
-    # Index + severity badge
     run = para.add_run(f"{index}. [{finding.severity}] ")
     run.bold = True
     run.font.color.rgb = severity_color
     run.font.size = Pt(11)
-    # Confidence
     run = para.add_run(f"{finding.confidence:.0%} ")
     run.bold = True
     run.font.size = Pt(11)
     run.font.color.rgb = conf_color
-    # Separator
     run = para.add_run("— ")
     run.font.color.rgb = RGBColor(128, 128, 128)
     run.font.size = Pt(11)
-    # Filename
     run = para.add_run(finding.fileName or "Unknown")
     run.bold = True
     run.font.size = Pt(11)
     run.font.color.rgb = RGBColor(0, 0, 0)
-    # Section (inline in header for compact view)
     if finding.section:
         run = para.add_run(f" — {finding.section}")
         run.font.size = Pt(10)
         run.font.color.rgb = RGBColor(100, 100, 100)
 
-    # --- Body content (Normal paragraphs, hidden when heading is collapsed) ---
 
-    # --- Status + edit-action line (Chunk N) ---
-    # The trust-model status renders right under the header so readers
-    # see "Verified — supported" / "Disputed" / "Insufficient evidence"
-    # before they read the issue. The edit-action label sits on the
-    # same line so a reader scanning by finding can also see whether
-    # there's an actionable edit attached.
     status = classify_status(finding)
     edit_action = classify_edit_action(finding)
     status_color = STATUS_COLORS[status]
@@ -872,7 +808,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     value_run.bold = True
     value_run.font.color.rgb = status_color
     value_run.font.size = Pt(10)
-    # Separator + edit-action.
     sep_run = status_para.add_run("  •  ")
     sep_run.font.color.rgb = RGBColor(160, 160, 160)
     sep_run.font.size = Pt(10)
@@ -885,24 +820,11 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     edit_value_run.font.size = Pt(10)
     status_para.paragraph_format.space_after = Pt(3)
 
-    # --- Issue ---
     para = doc.add_paragraph()
     para.add_run("Issue: ").bold = True
     para.add_run(finding.issue or "")
     para.paragraph_format.space_after = Pt(3)
 
-    # --- Action / edit-proposal block ---
-    # Chunk L / plan section "Separate Findings From Edit Proposals":
-    # the report now distinguishes findings that carry an edit proposal
-    # from ones that don't. REPORT_ONLY findings render an explicit
-    # "No edit proposal — surfaced for review only" line so readers see
-    # the finding without expecting an edit; findings with a proposal
-    # keep the original Action / Existing / Replace With layout.
-    #
-    # Chunk N: the "Existing Text" label becomes "Spec evidence" so the
-    # quoted-from-the-spec source is explicitly the *spec evidence*
-    # concept in Directive 3, distinct from web/code evidence (sources)
-    # and verification rationale (explanation).
     proposal = finding.as_edit_proposal()
     if proposal is None:
         para = doc.add_paragraph()
@@ -910,13 +832,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         run.bold = True
         para.paragraph_format.space_after = Pt(3)
 
-        # Chunk 7 / plan section "Validate edit proposals at parse time":
-        # when the parser demoted an EDIT/DELETE/ADD because a required
-        # field was missing, surface the specific reason inline so a
-        # reader sees "the model claimed EDIT but no existingText was
-        # provided" instead of the generic coordination/interpretation
-        # explanation. Native REPORT_ONLY emissions keep the original
-        # note text.
         demotion = (getattr(finding, "demotion_reason", None) or "").strip()
         if demotion:
             note_text = (
@@ -941,7 +856,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         para.add_run(proposal.action_type or "")
         para.paragraph_format.space_after = Pt(3)
 
-        # --- Spec evidence (red) — the text quoted from the source spec ---
         if proposal.existing_text:
             para = doc.add_paragraph()
             para.add_run("Spec evidence: ").bold = True
@@ -949,7 +863,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
             run.font.color.rgb = RGBColor(192, 0, 0)
             para.paragraph_format.space_after = Pt(3)
 
-        # --- Proposed replacement (green) ---
         if proposal.replacement_text:
             para = doc.add_paragraph()
             para.add_run("Proposed replacement: ").bold = True
@@ -957,7 +870,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
             run.font.color.rgb = RGBColor(0, 128, 0)
             para.paragraph_format.space_after = Pt(3)
 
-    # --- Code reference (blue) ---
     if finding.codeReference:
         para = doc.add_paragraph()
         para.add_run("Reference: ").bold = True
@@ -965,7 +877,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         run.font.color.rgb = RGBColor(59, 130, 246)
         para.paragraph_format.space_after = Pt(3)
 
-    # --- Verification verdict + rationale ---
     if finding.verification:
         vr = finding.verification
         verdict_color = VERDICT_COLORS.get(vr.verdict, VERDICT_COLORS["UNVERIFIED"])
@@ -977,9 +888,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         run.font.color.rgb = verdict_color
         para.paragraph_format.space_after = Pt(3)
 
-        # Chunk N Directive 3: the explanation is "Verification rationale"
-        # — distinct from "Spec evidence" (the quoted text) and from the
-        # accepted/rejected source URLs that follow under "Sources".
         if vr.explanation:
             para = doc.add_paragraph()
             label_run = para.add_run("Verification rationale: ")
@@ -995,28 +903,9 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
             para = doc.add_paragraph()
             para.add_run("Correction: ").bold = True
             run = para.add_run(vr.correction)
-            run.font.color.rgb = RGBColor(204, 132, 0)  # Amber
+            run.font.color.rgb = RGBColor(204, 132, 0)
             para.paragraph_format.space_after = Pt(3)
 
-        # --- Verification sources (verbose only) ---
-        # Rendered under a Heading 4 "Sources" sub-heading that is marked
-        # collapsed-by-default, so Word hides the URL list when the document
-        # is first opened. The URL paragraph below carries outlineLvl=8 so
-        # Word's open-time collapse treats it as part of the Sources heading's
-        # zone (plain body paragraphs without an outline level are ignored at
-        # open time). The next Heading 3 (next finding) terminates the zone.
-        #
-        # Chunk H: distinguish accepted (grounded) sources from rejected
-        # (cited-but-not-grounded) sources. ``vr.sources`` already holds the
-        # accepted citations (the verifier replaces it with the validator's
-        # accepted list); ``vr.rejected_sources`` is a list of
-        # ``{"url", "reason"}`` dicts. Both sections live under the same
-        # collapsed-by-default "Sources" heading so the open-time collapse
-        # zone hides everything until the user explicitly expands it.
-        #
-        # Chunk N: the "Accepted sources" label becomes "Web/code evidence"
-        # and "Rejected sources" becomes "Unsupported / rejected sources"
-        # so the four evidence concepts in Directive 3 read naturally.
         accepted = list(vr.sources or [])
         rejected = list(getattr(vr, "rejected_sources", []) or [])
         if accepted or rejected:
@@ -1069,9 +958,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
                         reason_run.font.color.rgb = RGBColor(192, 0, 0)
 
 
-# ---------------------------------------------------------------------------
-# Findings section
-# ---------------------------------------------------------------------------
 
 def _write_findings_section(doc: Document, review) -> None:
     """Write per-spec findings grouped by severity, sorted by confidence.
@@ -1094,7 +980,7 @@ def _write_findings_section(doc: Document, review) -> None:
         )
         return
 
-    finding_number = 0  # Running counter across all severities
+    finding_number = 0
 
     for severity in SEVERITY_ORDER:
         severity_findings = sorted(
@@ -1105,7 +991,6 @@ def _write_findings_section(doc: Document, review) -> None:
         if not severity_findings:
             continue
 
-        # Severity sub-heading with colored text
         heading = doc.add_heading(
             f"{severity} ({len(severity_findings)})", level=1,
         )
@@ -1117,9 +1002,6 @@ def _write_findings_section(doc: Document, review) -> None:
             _write_finding_entry(doc, finding, finding_number)
 
 
-# ---------------------------------------------------------------------------
-# Cross-spec coordination section
-# ---------------------------------------------------------------------------
 
 def _write_dependency_note(
     doc: Document,
@@ -1248,9 +1130,6 @@ def _write_cross_check_section(doc: Document, cross_check_result, review_result=
     if status in ("skipped", "failed"):
         return
 
-    # Chunk M: build an id → review Finding lookup once so dependency
-    # annotations on the kept findings can be rendered without scanning
-    # the review list for every cross-check finding.
     upstream_lookup: dict = {}
     if review_result is not None:
         for f in getattr(review_result, "findings", []) or []:
@@ -1258,7 +1137,6 @@ def _write_cross_check_section(doc: Document, cross_check_result, review_result=
             if fid:
                 upstream_lookup[fid] = f
 
-    # Sort by severity then confidence
     severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
     sorted_findings = sorted(
         cross_check_result.findings,
@@ -1269,16 +1147,10 @@ def _write_cross_check_section(doc: Document, cross_check_result, review_result=
         _write_finding_entry(doc, finding, idx)
         _write_dependency_note(doc, finding, upstream_lookup)
 
-    # Coordination summary narrative
     if cross_check_result.thinking:
         doc.add_heading("Coordination Summary", level=2)
         _write_narrative_text(doc, cross_check_result.thinking)
 
-    # Chunk M: suppressed findings rendered under a dedicated sub-heading
-    # so the report makes the suppression decision visible. The "Suppressed:"
-    # line on each entry carries the reason recorded by the dependency
-    # classifier (id-based when the model emitted upstream ids, heuristic
-    # fallback otherwise).
     if suppressed:
         doc.add_heading("Suppressed Coordination Findings", level=2)
         intro = doc.add_paragraph()
@@ -1329,9 +1201,6 @@ def _write_narrative_text(doc: Document, text: str) -> None:
             para.paragraph_format.space_after = Pt(8)
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def export_report(
     pipeline_result,
@@ -1370,11 +1239,6 @@ def export_report(
 
     review = pipeline_result.review_result
     cross_check = pipeline_result.cross_check_result
-    # Chunk N: include suppressed cross-check findings in the trust-model
-    # summary so the "manual review required" count is accurate. The
-    # severity table above is intentionally unaffected — suppressed
-    # findings already render under a dedicated section so they don't
-    # contribute to severity counts.
     all_findings = list(review.findings)
     if cross_check and cross_check.findings:
         all_findings.extend(cross_check.findings)
@@ -1384,29 +1248,23 @@ def export_report(
 
     doc = Document()
 
-    # Set default font (Arial 11pt — clean and professional)
     style = doc.styles['Normal']
     style.font.name = 'Arial'
     style.font.size = Pt(11)
 
-    # Configure Heading 3 style for finding entries
-    # Keep it compact so findings don't dominate vertical space
     h3_style = doc.styles['Heading 3']
     h3_style.font.name = 'Arial'
     h3_style.font.size = Pt(11)
     h3_style.paragraph_format.space_before = Pt(12)
     h3_style.paragraph_format.space_after = Pt(4)
-    # Remove the default Heading 3 color so our per-run colors show through
     h3_style.font.color.rgb = RGBColor(0, 0, 0)
 
-    # Set margins (1 inch sides, 0.75 top/bottom)
     for section in doc.sections:
         section.top_margin = Inches(0.75)
         section.bottom_margin = Inches(0.75)
         section.left_margin = Inches(1.0)
         section.right_margin = Inches(1.0)
 
-    # Build the report
     cycle_label = getattr(pipeline_result, "cycle_label", "2025") or "2025"
     _write_title_block(
         doc,
@@ -1437,25 +1295,14 @@ def export_report(
         total_elapsed_seconds=getattr(pipeline_result, "total_elapsed_seconds", None),
     )
 
-    # Chunk 10 — estimated cost. Rendered immediately after the severity
-    # table so the reader sees "what did this run cost?" alongside the
-    # severity totals, before drilling into individual findings. Silently
-    # skipped when no estimate was supplied (legacy callers, test stubs).
     _write_estimated_cost(doc, estimated_cost)
 
-    # Chunk N — trust-model histogram. Renders right after the severity
-    # summary so the reader sees "how many issues are critical?" and
-    # "how many of them are actually trustworthy?" together.
     _write_trust_model_summary(
         doc,
         verification_stats.get("status_counts", {}),
         verification_stats.get("edit_action_counts", {}),
     )
 
-    # Chunk O — fall back to ``getattr`` for the new alert lists so
-    # ``_StubPipelineResult`` style ad-hoc test doubles (and any legacy
-    # callers that build the result by hand without the new fields)
-    # keep working. The real ``PipelineResult`` dataclass always has them.
     _write_alerts(
         doc,
         pipeline_result.leed_alerts,
@@ -1471,7 +1318,6 @@ def export_report(
     _write_cross_check_section(doc, cross_check, review_result=review)
 
 
-    # Save
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))

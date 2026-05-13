@@ -16,9 +16,6 @@ import customtkinter as ctk
 from .edit_candidates import EditCandidate
 from .spec_editor import EditReport
 
-# ============================================================================
-# SHARED CONFIG
-# ============================================================================
 
 COLORS = {
     "bg_dark": "#0D0D0D",
@@ -86,9 +83,6 @@ _VERDICT_ICONS = {
 }
 
 
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
 
 def lerp(start, end, t): return start + (end - start) * t
 def ease_out_cubic(t): return 1 - pow(1 - t, 3)
@@ -107,9 +101,6 @@ def _confidence_color(confidence: float) -> str:
 def _confidence_label(confidence: float) -> str: return f"{confidence:.0%}"
 
 
-# ============================================================================
-# TOKEN GAUGE
-# ============================================================================
 
 class TokenGauge(ctk.CTkFrame):
     """Displays the largest single spec's estimated API call size against the
@@ -192,9 +183,6 @@ class TokenGauge(ctk.CTkFrame):
         self.status_label.configure(text="Select specs to analyze token usage", text_color=COLORS["text_muted"])
 
 
-# ============================================================================
-# FILE LIST PANEL
-# ============================================================================
 
 class FileListPanel(ctk.CTkFrame):
     def __init__(self, master, on_selection_change=None, pack_after=None, **kwargs):
@@ -272,9 +260,6 @@ class FileListPanel(ctk.CTkFrame):
         self._file_data.clear(); self.pack_forget()
 
 
-# ============================================================================
-# ENHANCED LOG
-# ============================================================================
 
 class EnhancedLog(ctk.CTkFrame):
     _COLLAPSED_HEIGHT = 48
@@ -325,9 +310,6 @@ class EnhancedLog(ctk.CTkFrame):
         for fn in filenames: self._queue_log(f"  \u2192 {fn}", "file", False, ANIM["log_file_delay"])
 
 
-# ============================================================================
-# ANIMATED BUTTON
-# ============================================================================
 
 class AnimatedButton(ctk.CTkButton):
     def __init__(self, master, **kwargs):
@@ -360,9 +342,6 @@ class AnimatedButton(ctk.CTkButton):
 
 
 
-# ============================================================================
-# EDIT SELECTION + SUMMARY DIALOGS
-# ============================================================================
 
 class EditSelectionDialog(ctk.CTkToplevel):
     def __init__(
@@ -739,9 +718,6 @@ class EditSummaryDialog(ctk.CTkToplevel):
         ).pack(anchor="e", padx=16, pady=(0, 16))
 
 
-# ============================================================================
-# DIAGNOSTICS WINDOW (pop-out toplevel)
-# ============================================================================
 
 class DiagnosticsWindow(ctk.CTkToplevel):
     """Displays the in-memory diagnostics report for a pipeline run."""
@@ -763,7 +739,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
         self.focus_force()
 
     def _build_ui(self):
-        # Toolbar
         toolbar = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=0, height=48)
         toolbar.pack(fill="x")
         toolbar.pack_propagate(False)
@@ -783,7 +758,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
         }
         ctk.CTkButton(tb_inner, text="Copy to Clipboard", width=130, command=self._copy_text, **btn_kw).pack(side="right")
 
-        # Body
         body = ctk.CTkScrollableFrame(self, fg_color="transparent", corner_radius=0)
         body.pack(fill="both", expand=True, padx=16, pady=16)
 
@@ -791,9 +765,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
         self._render_summary_section(body)
         self._render_timeline_section(body)
 
-    # ------------------------------------------------------------------
-    # Sections
-    # ------------------------------------------------------------------
 
     def _render_config_section(self, parent):
         card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -841,7 +812,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
 
         s = self._report.summary()
 
-        # Stats grid
         stats_frame = ctk.CTkFrame(inner, fg_color="transparent")
         stats_frame.pack(fill="x", pady=(8, 0))
 
@@ -864,7 +834,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
             ctk.CTkLabel(cell, text=label, font=ctk.CTkFont(size=10), text_color=COLORS["text_muted"]).place(relx=0.5, rely=0.72, anchor="center")
         stats_frame.grid_columnconfigure(list(range(len(stat_items))), weight=1)
 
-        # Severity counts
         if s["severity_counts"]:
             sev_frame = ctk.CTkFrame(inner, fg_color="transparent")
             sev_frame.pack(fill="x", pady=(10, 0))
@@ -873,7 +842,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                 color = SEVERITY_COLORS.get(sev, COLORS["text_secondary"])
                 ctk.CTkLabel(sev_frame, text=f"  {sev}: {cnt}", font=ctk.CTkFont(family="Consolas", size=12, weight="bold"), text_color=color).pack(side="left")
 
-        # Verdict breakdown
         if s["verification_verdicts"]:
             verd_frame = ctk.CTkFrame(inner, fg_color="transparent")
             verd_frame.pack(fill="x", pady=(4, 0))
@@ -882,7 +850,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                 color = VERDICT_COLORS.get(verdict, COLORS["text_secondary"])
                 ctk.CTkLabel(verd_frame, text=f"  {verdict}: {cnt}", font=ctk.CTkFont(family="Consolas", size=12, weight="bold"), text_color=color).pack(side="left")
 
-        # Phase durations
         if s["phase_durations"]:
             pd_frame = ctk.CTkFrame(inner, fg_color="transparent")
             pd_frame.pack(fill="x", pady=(8, 0))
@@ -890,13 +857,10 @@ class DiagnosticsWindow(ctk.CTkToplevel):
             for phase, dur in s["phase_durations"].items():
                 ctk.CTkLabel(pd_frame, text=f"  {phase:22s} {dur:.1f}s", font=ctk.CTkFont(family="Consolas", size=12), text_color=COLORS["text_muted"]).pack(anchor="w")
 
-        # Phase 7.3: actionable diagnostics — render the fields previously
-        # only available in the Save-as-Text/JSON exports.
         self._render_actionable_section(inner, s)
 
     def _render_actionable_section(self, parent, summary: dict):
         """Render Phase 7.3 / 9.4 actionable diagnostics in the summary card."""
-        # Cache token usage.
         cache_creation = summary.get("total_cache_creation_input_tokens", 0)
         cache_read = summary.get("total_cache_read_input_tokens", 0)
         if cache_creation or cache_read:
@@ -914,7 +878,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                 text_color=COLORS["text_muted"],
             ).pack(side="left")
 
-        # Verification evidence (grounded / cache hits / escalations).
         evidence = summary.get("verification_evidence") or {}
         if any(evidence.values()):
             evi_frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -943,7 +906,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                     text_color=COLORS["text_muted"],
                 ).pack(anchor="w")
 
-        # Failed / skipped specs.
         failed = summary.get("failed_specs") or []
         skipped = summary.get("skipped_specs") or []
         if failed or skipped:
@@ -969,7 +931,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                     text_color=COLORS["warning"],
                 ).pack(anchor="w")
 
-        # Edit pipeline outcomes.
         applied = summary.get("edits_applied_total", 0)
         skipped_e = summary.get("edits_skipped_total", 0)
         failed_e = summary.get("edits_failed_total", 0)
@@ -992,7 +953,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                         text_color=COLORS["text_muted"],
                     ).pack(anchor="w")
 
-        # Output / search budget telemetry.
         ot = summary.get("output_telemetry") or {}
         if ot.get("samples"):
             ot_frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1048,10 +1008,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                 text_color=COLORS["text_secondary"],
             ).pack(anchor="w", pady=(2, 0))
 
-        # Chunk 10 — estimated cost card. Renders only when the cost
-        # estimator was able to price at least one call. The wording is
-        # intentionally conservative ("Estimated API cost") so users do
-        # not treat it as exact billing.
         self._render_estimated_cost_section(parent, summary)
 
     def _render_estimated_cost_section(self, parent, summary: dict):
@@ -1060,7 +1016,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
         if not ec:
             return
 
-        # Lazy import to keep widgets.py self-contained for legacy tests.
         from .cost_estimator import format_usd
 
         cost_frame = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1149,7 +1104,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
             "step": "> ",
         }
 
-        # Use a textbox for efficient rendering of many events
         textbox = ctk.CTkTextbox(
             inner, fg_color=COLORS["bg_input"], corner_radius=4,
             font=ctk.CTkFont(family="Consolas", size=12),
@@ -1184,9 +1138,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                     inner_text.insert("end", f"\n{'':38s}{k}: {v}", ("data_tag",))
         textbox.configure(state="disabled")
 
-    # ------------------------------------------------------------------
-    # Export actions
-    # ------------------------------------------------------------------
 
     def _copy_text(self):
         text = self._report.to_text()

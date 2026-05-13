@@ -62,9 +62,6 @@ from src.structured_schemas import (
 from src.verifier import VerificationResult
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _review_finding(
@@ -115,9 +112,6 @@ def _cross_finding(
     )
 
 
-# ---------------------------------------------------------------------------
-# M-Schema — cross-check tool schema additions
-# ---------------------------------------------------------------------------
 
 
 class TestCrossCheckSchemaFields:
@@ -163,17 +157,12 @@ class TestCrossCheckSchemaFields:
             CROSS_CHECK_FINDINGS_SCHEMA["properties"]["findings"]["items"]
             is _CROSS_CHECK_FINDING_OBJECT_SCHEMA
         )
-        # And the review schema continues to point at the original shared
-        # finding schema so review findings stay clean.
         assert (
             REVIEW_FINDINGS_SCHEMA["properties"]["findings"]["items"]
             is _FINDING_OBJECT_SCHEMA
         )
 
 
-# ---------------------------------------------------------------------------
-# M-Parser — Finding.upstream_finding_ids / independent_evidence_ids
-# ---------------------------------------------------------------------------
 
 
 class TestParserAcceptsDependencyFields:
@@ -223,7 +212,6 @@ class TestParserAcceptsDependencyFields:
                 "insertPosition": None,
                 "evidenceElementId": None,
                 "upstreamFindingIds": ["", "  ", "rf-real"],
-                # ``independentEvidenceIds`` deliberately omitted
             }
         ]
         f = _parse_findings(payload)[0]
@@ -257,9 +245,6 @@ class TestParserAcceptsDependencyFields:
         assert f.independent_evidence_ids == []
 
 
-# ---------------------------------------------------------------------------
-# M-IDs — compute_finding_id + dedup stamps stable ids
-# ---------------------------------------------------------------------------
 
 
 class TestComputeFindingId:
@@ -284,8 +269,6 @@ class TestComputeFindingId:
         so a stray id in a transcript is obviously a review-finding id."""
         fid = compute_finding_id(_review_finding())
         assert fid.startswith("rf-")
-        # 12 hex chars after the prefix — short enough to fit in a prompt
-        # attribute, long enough to make collision negligible at our scale.
         assert len(fid) == len("rf-") + 12
 
     def test_dedup_stamps_finding_id_on_singleton(self):
@@ -304,8 +287,6 @@ class TestComputeFindingId:
         a = _review_finding(file="A.docx", section="2.1")
         b = _review_finding(file="B.docx", section="2.1")
         deduped = _deduplicate_findings([a, b])
-        # The dedup key is content-based, so both should collapse to one
-        # group with the rep's id.
         assert len(deduped) == 1
         assert deduped[0].finding_id == compute_finding_id(a)
 
@@ -318,9 +299,6 @@ class TestComputeFindingId:
         assert out[0].finding_id == "rf-preserved"
 
 
-# ---------------------------------------------------------------------------
-# M-Prompt — cross-check input renders <prior id="..."> and instructions
-# ---------------------------------------------------------------------------
 
 
 class TestCrossCheckPromptRendersIds:
@@ -355,7 +333,7 @@ class TestCrossCheckPromptRendersIds:
         the ``<prior>`` block so the legacy / heuristic-fallback path keeps
         working. The id attribute is simply omitted."""
         review = _review_finding(file="A.docx", section="2.1")
-        review.finding_id = ""  # legacy / pre-Chunk-M
+        review.finding_id = ""
         specs = [
             ExtractedSpec(filename="A.docx", content="body", word_count=1),
             ExtractedSpec(filename="B.docx", content="body", word_count=1),
@@ -374,9 +352,6 @@ class TestCrossCheckPromptRendersIds:
         assert "<dependency_tracking>" in prompt
 
 
-# ---------------------------------------------------------------------------
-# M-Filter — id-based suppression with heuristic fallback
-# ---------------------------------------------------------------------------
 
 
 class TestSuppressionFilter:
@@ -395,8 +370,6 @@ class TestSuppressionFilter:
         )
         assert kept == []
         assert len(suppressed) == 1
-        # The reason should name the upstream id so a reader can correlate
-        # against the per-spec review section.
         assert "rf-disputed-1" in (suppressed[0].suppression_reason or "")
 
     def test_finding_with_mixed_upstream_is_kept(self):
@@ -440,10 +413,8 @@ class TestSuppressionFilter:
         overlap and labels the suppression so the report can show the
         decision was made on weaker evidence."""
         upstream = _review_finding(file="A.docx", section="2.1", verdict="DISPUTED")
-        # No finding_id on the upstream either — same as legacy path.
         upstream.finding_id = ""
         cross = _cross_finding(file="A.docx", section="2.1")
-        # No upstream_finding_ids cited.
 
         kept, suppressed = classify_cross_check_dependencies(
             [cross], [upstream],
@@ -451,8 +422,6 @@ class TestSuppressionFilter:
         assert kept == []
         assert len(suppressed) == 1
         reason = suppressed[0].suppression_reason or ""
-        # The reason must mention fallback / heuristic so operators can
-        # see which path made the decision.
         assert "heuristic" in reason.lower() or "fallback" in reason.lower()
 
     def test_finding_with_no_dependency_is_always_kept(self):
@@ -465,7 +434,6 @@ class TestSuppressionFilter:
         )
         upstream.finding_id = "rf-disputed"
         cross = _cross_finding(file="Z.docx", section="9.9")
-        # Cross finding does not cite upstream and doesn't overlap.
 
         kept, suppressed = classify_cross_check_dependencies(
             [cross], [upstream],
@@ -494,14 +462,11 @@ class TestSuppressionFilter:
         decision. Two log lines are emitted when both paths fire so a
         future ID rollout shows up clearly when the fallback count drops
         toward zero."""
-        # ID-path: upstream has an id, cross-check cites it.
         id_upstream = _review_finding(
             file="A.docx", section="2.1", verdict="DISPUTED",
         )
         id_upstream.finding_id = "rf-id-path"
         id_cross = _cross_finding(upstream_ids=["rf-id-path"])
-        # Fallback path: upstream lacks an id, cross-check overlaps by
-        # (file, section).
         fb_upstream = _review_finding(
             file="B.docx", section="3.0", verdict="DISPUTED",
         )
@@ -518,15 +483,11 @@ class TestSuppressionFilter:
         )
         assert kept == []
         assert len(suppressed) == 2
-        # One id-path message + one fallback message — both at warning.
         warning_msgs = [m for lvl, m in log_messages if lvl == "warning"]
         assert any("id-based" in m for m in warning_msgs)
         assert any("heuristic" in m.lower() for m in warning_msgs)
 
 
-# ---------------------------------------------------------------------------
-# M-Resume — round-trip the new fields through serialize/deserialize
-# ---------------------------------------------------------------------------
 
 
 class TestResumeRoundTrip:
@@ -566,8 +527,6 @@ class TestResumeRoundTrip:
             "codeReference": "CBC §1",
             "confidence": 0.7,
             "affected_files": ["A.docx"],
-            # No finding_id, upstream_finding_ids, independent_evidence_ids,
-            # or suppression_reason — pre-Chunk-M shape.
         }
         loaded = deserialize_finding(legacy_payload)
         assert loaded.finding_id == ""
@@ -589,7 +548,6 @@ class TestResumeRoundTrip:
         )
         payload = serialize_review_result(result)
         assert payload is not None
-        # JSON round-trip — resume state lives on disk as JSON.
         loaded = deserialize_review_result(json.loads(json.dumps(payload)))
         assert loaded is not None
         assert len(loaded.suppressed_findings) == 1
@@ -597,9 +555,6 @@ class TestResumeRoundTrip:
         assert loaded.suppressed_findings[0].upstream_finding_ids == ["rf-x"]
 
 
-# ---------------------------------------------------------------------------
-# M-End-to-end — pipeline-level wiring sanity check
-# ---------------------------------------------------------------------------
 
 
 class TestPipelineWiring:
@@ -610,18 +565,16 @@ class TestPipelineWiring:
         the happy path the chunk is built to enable."""
         review = _review_finding(file="A.docx", section="2.1", issue="Stale")
         review_deduped = _deduplicate_findings([review])[0]
-        assert review_deduped.finding_id  # set by dedup
+        assert review_deduped.finding_id
 
         cross = _cross_finding(upstream_ids=[review_deduped.finding_id])
 
-        # No verification yet → finding stays.
         kept, suppressed = classify_cross_check_dependencies(
             [cross], [review_deduped],
         )
         assert kept == [cross]
         assert suppressed == []
 
-        # Now mark upstream DISPUTED → finding is suppressed.
         review_deduped.verification = VerificationResult(
             verdict="DISPUTED", explanation="",
         )

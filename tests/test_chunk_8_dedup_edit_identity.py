@@ -42,9 +42,6 @@ from src.resume_state import deserialize_finding, serialize_finding
 from src.reviewer import EditProposal, Finding, REPORT_ONLY_ACTION
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_finding(
@@ -84,9 +81,6 @@ def _write_docx(path: Path, text: str) -> None:
     doc.save(path)
 
 
-# ---------------------------------------------------------------------------
-# _deduplicate_findings — occurrence_originals capture
-# ---------------------------------------------------------------------------
 
 
 class TestDedupCapturesOriginals:
@@ -94,12 +88,9 @@ class TestDedupCapturesOriginals:
         f = _make_finding(file_name="a.docx")
         out = _deduplicate_findings([f])
         assert len(out) == 1
-        # Singleton: the finding IS its own original; no separate list needed.
         assert out[0].occurrence_originals == []
 
     def test_merged_multifile_finding_retains_one_original_per_file(self):
-        # Two findings with identical dedup identity but different filenames
-        # collapse into one merged representative — the originals are kept.
         a = _make_finding(file_name="a.docx", existing="per CBC 2019", replacement="per CBC 2025")
         b = _make_finding(file_name="b.docx", existing="per CBC 2019", replacement="per CBC 2025")
         out = _deduplicate_findings([a, b])
@@ -111,11 +102,8 @@ class TestDedupCapturesOriginals:
         assert files_in_originals == ["a.docx", "b.docx"]
 
     def test_originals_preserve_per_file_edit_text(self):
-        # Same dedup key, but each original carries its own text. The merged
-        # representative's text is the rep's; per-file text lives on originals.
         a = _make_finding(file_name="a.docx", existing="per CBC 2019", replacement="per CBC 2025")
         b = _make_finding(file_name="b.docx", existing="per CBC 2019", replacement="per CBC 2025")
-        # Tweak b's anchor to verify per-file fields are not overwritten.
         b.anchorText = "near top of section"
         out = _deduplicate_findings([a, b])
         merged = out[0]
@@ -124,7 +112,6 @@ class TestDedupCapturesOriginals:
         assert by_file["b.docx"].anchorText == "near top of section"
 
     def test_originals_themselves_have_empty_occurrence_originals(self):
-        # No recursive nesting — members are leaves.
         a = _make_finding(file_name="a.docx")
         b = _make_finding(file_name="b.docx")
         out = _deduplicate_findings([a, b])
@@ -132,9 +119,6 @@ class TestDedupCapturesOriginals:
             assert orig.occurrence_originals == []
 
 
-# ---------------------------------------------------------------------------
-# group_findings — FindingOccurrence binds per-file original
-# ---------------------------------------------------------------------------
 
 
 class TestGroupFindingsPerFileOriginal:
@@ -143,8 +127,6 @@ class TestGroupFindingsPerFileOriginal:
         groups = group_findings([f])
         assert len(groups) == 1
         occ = groups[0].occurrences[0]
-        # Singleton: the representative is the only original (Chunk 8
-        # backfill so executable_finding() returns the right thing).
         assert occ.has_original()
         assert occ.original_finding is f
         assert occ.executable_finding() is f
@@ -155,44 +137,29 @@ class TestGroupFindingsPerFileOriginal:
         merged = _deduplicate_findings([a, b])[0]
         groups = group_findings([merged])
         occs_by_file = {o.file_name: o for o in groups[0].occurrences}
-        # Each file's occurrence binds to the original that came from that file.
         assert occs_by_file["a.docx"].executable_finding().fileName == "a.docx"
         assert occs_by_file["b.docx"].executable_finding().fileName == "b.docx"
-        # The representative is shared (display layer) — but the executable
-        # finding is the per-file original, not the representative.
         assert occs_by_file["a.docx"].finding is merged
         assert occs_by_file["b.docx"].finding is merged
         assert occs_by_file["a.docx"].executable_finding() is not merged
         assert occs_by_file["b.docx"].executable_finding() is not merged
 
     def test_legacy_multifile_finding_without_originals_marks_missing(self):
-        # Pre-Chunk-8 payload: a finding with multiple affected files but no
-        # ``occurrence_originals``. The representative's own file binds to the
-        # representative; other affected files have no original (manual
-        # review path in apply_edits).
         f = _make_finding(file_name="a.docx")
         f.affected_files = ["a.docx", "b.docx"]
-        # ``occurrence_originals`` left empty.
         groups = group_findings([f])
         occs_by_file = {o.file_name: o for o in groups[0].occurrences}
         assert occs_by_file["a.docx"].has_original()
         assert occs_by_file["a.docx"].original_finding is f
         assert not occs_by_file["b.docx"].has_original()
-        assert occs_by_file["b.docx"].executable_finding() is f  # fallback only
+        assert occs_by_file["b.docx"].executable_finding() is f
 
-# ---------------------------------------------------------------------------
-# apply_edits.execute_edit_plan — uses per-file originals
-# ---------------------------------------------------------------------------
 
 
 class TestExecuteEditPlanUsesPerFileOriginals:
     def test_two_files_different_exact_text_use_their_own_text(self, tmp_path: Path):
-        # Acceptance scenario 1 from the chunk: the merged finding's display
-        # is one row, but the executor uses each file's own existingText.
         file_a = tmp_path / "a.docx"
         file_b = tmp_path / "b.docx"
-        # Different exact text per file — would mis-apply if the executor
-        # blindly used the representative's text.
         _write_docx(file_a, "Comply with ASCE 7-16 wind requirements.")
         _write_docx(file_b, "Comply with ASCE 7-22 wind requirements.")
         spec_a = extract_text(file_a)
@@ -200,12 +167,6 @@ class TestExecuteEditPlanUsesPerFileOriginals:
         spec_b = extract_text(file_b)
         spec_b.filename = "b.docx"
 
-        # Two findings with the same dedup key (same normalized issue,
-        # section, code ref, action) but different per-file existingText.
-        # Use the same replacement text and existingText hash so the dedup
-        # key collapses both. To trigger that we use the same exact text;
-        # test the executor's per-file routing by varying the *original's*
-        # ``existingText`` after dedup populates ``occurrence_originals``.
         merged = _make_finding(
             file_name="a.docx",
             existing="ASCE 7-16",
@@ -213,10 +174,6 @@ class TestExecuteEditPlanUsesPerFileOriginals:
             code_ref="ASCE 7",
         )
         merged.affected_files = ["a.docx", "b.docx"]
-        # Hand-built originals carrying file-specific edit text. This mirrors
-        # what _deduplicate_findings would produce when the originals were
-        # close in dedup key but had divergent existingText (e.g., a
-        # normalization that squashed the version difference).
         orig_a = _make_finding(
             file_name="a.docx",
             existing="ASCE 7-16",
@@ -238,23 +195,15 @@ class TestExecuteEditPlanUsesPerFileOriginals:
             output_dir=tmp_path / "out",
         )
         assert len(reports) == 2
-        # Both files were edited (each using its own existingText).
         for r in reports:
             assert r.edits_applied == 1
-        # Verify the actual replacements landed correctly.
         outputs = {r.source_path.name: r.output_path for r in reports}
         assert Document(outputs["a.docx"]).paragraphs[0].text == "Comply with ASCE 7-25 wind requirements."
         assert Document(outputs["b.docx"]).paragraphs[0].text == "Comply with ASCE 7-25 wind requirements."
 
     def test_legacy_payload_only_edits_representative_file_others_manual_review(self, tmp_path: Path):
-        # Acceptance scenario 3: representative-only legacy payload does NOT
-        # auto-apply across files. The representative's own file edits; the
-        # other affected file is routed to manual review.
         file_a = tmp_path / "a.docx"
         file_b = tmp_path / "b.docx"
-        # Both happen to contain the representative's text — a real-world
-        # legacy payload could not distinguish, so executor falls back to
-        # safety routing.
         _write_docx(file_a, "Comply with ASCE 7-16 wind requirements.")
         _write_docx(file_b, "Comply with ASCE 7-16 wind requirements.")
         spec_a = extract_text(file_a)
@@ -268,8 +217,6 @@ class TestExecuteEditPlanUsesPerFileOriginals:
             replacement="ASCE 7-25",
         )
         legacy.affected_files = ["a.docx", "b.docx"]
-        # NOTE: occurrence_originals deliberately NOT populated — the legacy
-        # payload predates Chunk 8.
         assert legacy.occurrence_originals == []
 
         warnings: list[str] = []
@@ -282,19 +229,15 @@ class TestExecuteEditPlanUsesPerFileOriginals:
             output_dir=tmp_path / "out",
             log=lambda msg: warnings.append(msg),
         )
-        # Two reports: a.docx with auto-edit applied, b.docx as manual review.
         assert len(reports) == 2
         by_name = {r.source_path.name: r for r in reports}
         assert by_name["a.docx"].edits_applied == 1
         assert by_name["b.docx"].edits_applied == 0
         assert by_name["b.docx"].edits_skipped == 1
         assert any("manual review" in w.lower() for w in by_name["b.docx"].warnings)
-        # Log surfaces the per-file safety routing decision.
         assert any("manual review" in m.lower() and "b.docx" in m for m in warnings)
 
     def test_singleton_finding_still_auto_edits(self, tmp_path: Path):
-        # Backward-compat: a singleton finding (one file) goes through the
-        # representative-IS-original fallback and edits as before.
         file_a = tmp_path / "a.docx"
         _write_docx(file_a, "Use CBC 2019 references.")
         spec_a = extract_text(file_a)
@@ -305,8 +248,6 @@ class TestExecuteEditPlanUsesPerFileOriginals:
             existing="CBC 2019",
             replacement="CBC 2025",
         )
-        # No multi-file fan-out here: the executor binds the rep as its own
-        # original because file_a is the rep's own file.
         reports = execute_edit_plan(
             selected_finding_indices=[0],
             all_findings=[f],
@@ -319,16 +260,10 @@ class TestExecuteEditPlanUsesPerFileOriginals:
         assert reports[0].edits_applied == 1
 
 
-# ---------------------------------------------------------------------------
-# Same-file findings in different paragraphs stay separate
-# ---------------------------------------------------------------------------
 
 
 class TestSameFileDifferentParagraphsStaySeparate:
     def test_two_findings_same_file_different_text_not_merged(self):
-        # Acceptance scenario 2: same file, similar issue text, different
-        # exact existingText — must not be collapsed by dedup (so the edit
-        # planner keeps the locations separate).
         f1 = _make_finding(
             file_name="a.docx",
             issue="Outdated code edition reference.",
@@ -342,22 +277,14 @@ class TestSameFileDifferentParagraphsStaySeparate:
             replacement="per CMC 2025",
         )
         out = _deduplicate_findings([f1, f2])
-        # Different existingText → different dedup key → not merged.
         assert len(out) == 2
         assert {f.existingText for f in out} == {"per CBC 2019", "per CMC 2019"}
 
 
-# ---------------------------------------------------------------------------
-# REPORT_ONLY grouped findings still display correctly
-# ---------------------------------------------------------------------------
 
 
 class TestReportOnlyGroupedFindings:
     def test_report_only_finding_merges_and_stays_report_only(self):
-        # Acceptance scenario 4: REPORT_ONLY findings can group across files
-        # without rehydrating an edit slot. The merged representative stays
-        # REPORT_ONLY, the per-file originals stay REPORT_ONLY, no edit
-        # proposal materializes.
         a = _make_finding(
             file_name="a.docx",
             issue="Coordination conflict — sleeve sizing not coordinated with structural.",
@@ -384,9 +311,6 @@ class TestReportOnlyGroupedFindings:
             assert orig.as_edit_proposal() is None
 
     def test_report_only_grouped_finding_renders_through_group_findings(self):
-        # group_findings should still produce occurrences for REPORT_ONLY
-        # findings so the report can list affected files even though no
-        # edit will be executed.
         a = _make_finding(
             file_name="a.docx",
             action=REPORT_ONLY_ACTION,
@@ -405,26 +329,18 @@ class TestReportOnlyGroupedFindings:
         assert sorted(names) == ["a.docx", "b.docx"]
 
 
-# ---------------------------------------------------------------------------
-# Resume state round-trip
-# ---------------------------------------------------------------------------
 
 
 class TestResumeStateRoundTrip:
     def test_round_trip_preserves_occurrence_originals(self):
-        # Same existingText/replacementText (so the dedup key collapses) but
-        # different per-file anchor — anchor isn't part of the dedup key, so
-        # this is a realistic shape for what occurrence_originals captures.
         a = _make_finding(file_name="a.docx", existing="ASCE 7-16", replacement="ASCE 7-25")
         a.anchorText = "near top of section 1"
         b = _make_finding(file_name="b.docx", existing="ASCE 7-16", replacement="ASCE 7-25")
         b.anchorText = "near top of section 2"
         merged = _deduplicate_findings([a, b])[0]
         payload = serialize_finding(merged)
-        # The serialized form contains the originals.
         assert "occurrence_originals" in payload
         assert len(payload["occurrence_originals"]) == 2
-        # Round-trip preserves per-file edit metadata.
         loaded = deserialize_finding(payload)
         by_file = {o.fileName: o for o in loaded.occurrence_originals}
         assert by_file["a.docx"].existingText == "ASCE 7-16"
@@ -433,7 +349,6 @@ class TestResumeStateRoundTrip:
         assert by_file["b.docx"].anchorText == "near top of section 2"
 
     def test_legacy_payload_without_originals_loads_with_empty_list(self):
-        # Pre-Chunk-8 payload: no ``occurrence_originals`` key at all.
         legacy_payload = {
             "severity": "HIGH",
             "fileName": "a.docx",
@@ -448,18 +363,13 @@ class TestResumeStateRoundTrip:
         }
         loaded = deserialize_finding(legacy_payload)
         assert loaded.occurrence_originals == []
-        # Backward compatibility: the legacy fields still load.
         assert loaded.affected_files == ["a.docx", "b.docx"]
 
     def test_nested_originals_are_not_serialized_recursively(self):
-        # Defense in depth: even if a member somehow carried its own
-        # occurrence_originals, the second-level serialization clears it so
-        # the JSON cannot grow without bound.
         member_with_nested = _make_finding(file_name="a.docx")
         member_with_nested.occurrence_originals = [_make_finding(file_name="a.docx")]
         merged = _make_finding(file_name="a.docx")
         merged.occurrence_originals = [member_with_nested]
         payload = serialize_finding(merged)
         nested = payload["occurrence_originals"][0]
-        # The nested member's own occurrence_originals is forced empty.
         assert nested["occurrence_originals"] == []

@@ -37,16 +37,6 @@ from .extractor import ExtractedSpec, extract_text
 _DEFAULT_MAX_ENTRIES = 64
 _DEFAULT_TOKEN_MAX_ENTRIES = 256
 
-# Byte length of head+tail samples folded into the cache fingerprint. Two
-# 64-KiB reads are cheap (single OS read each on typical SSDs) and catch the
-# realistic ways the stat-based key can lie:
-#   * `touch -d` style mtime preservation across a content edit
-#   * Same-size in-place edits (e.g. cosmetic whitespace replacements that
-#     keep file length identical)
-#   * Atomic rename-over with a copy that preserves both size and mtime_ns
-# A DOCX file's central directory and a few opening XML parts both land near
-# the head/tail, so 64 KiB on each end is sufficient to detect any practical
-# bit-level change without paying for a full-file SHA on every cache lookup.
 _FINGERPRINT_SAMPLE_BYTES = 64 * 1024
 
 
@@ -116,7 +106,6 @@ class _ExtractionCache:
             if spec is None:
                 self._misses += 1
                 return None
-            # Refresh LRU position.
             self._entries.move_to_end(key)
             self._hits += 1
             return copy.deepcopy(spec)
@@ -201,7 +190,6 @@ def extract_multiple_specs_cached(
         for (idx, path), spec in zip(misses, extracted):
             _extraction_cache.put(path, spec)
             out[idx] = spec
-    # Every slot is now populated.
     return [s for s in out if s is not None]
 
 
@@ -213,11 +201,6 @@ def clear_extraction_cache() -> None:
     _extraction_cache.clear()
 
 
-# ---------------------------------------------------------------------------
-# Token-count cache (plan 13.2: "exact token preflight is reused when prompt
-# /model/config are unchanged"). Keyed on a content + config hash so callers
-# do not accidentally share counts across cycles, models, or modes.
-# ---------------------------------------------------------------------------
 
 
 class _TokenCountCache:
@@ -291,9 +274,6 @@ def token_count_cache_key(
         cycle_label or "",
     ]
     if tools:
-        # Hash the tool list as a stable JSON serialization so any change to
-        # tool definitions (schema, description, name, strict flag) busts
-        # the cache.
         import json as _json
         try:
             parts.append(_json.dumps(tools, sort_keys=True, default=str))

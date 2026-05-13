@@ -49,9 +49,6 @@ if TYPE_CHECKING:
     from .extractor import ParagraphMapping
 
 
-# Tag names used as wrappers across the codebase. Centralized so a future
-# rename is one edit and so tests can assert "this content lands inside
-# the canonical block" without hard-coding the string everywhere.
 TAG_SPEC = "spec"
 TAG_PROJECT_CONTEXT = "project_context"
 TAG_CORPUS = "corpus"
@@ -61,17 +58,9 @@ TAG_FINDING = "finding"
 TAG_FINDINGS = "findings"
 TAG_CHUNK_FINDINGS = "chunk_findings"
 TAG_CHUNK = "chunk"
-# Chunk K2: element-level wrappers used when the id-tagged rendering is on.
-# The model receives one ``<para id="...">…</para>`` (or ``<row …>``) per
-# extracted element so it can cite ``evidenceElementId`` precisely.
 TAG_PARA = "para"
 TAG_ROW = "row"
 TAG_HEADING = "heading"
-# Chunk D4.1: wrapper for the per-spec list of items the deterministic
-# preprocessor already detected. The block sits at the *end* of the user
-# message so the cached system prompt prefix is unchanged and the
-# instruction-prefix invariant tested by ``TestPromptCacheBreakpointSafety``
-# still holds for the spec wrapper.
 TAG_PRE_DETECTED = "pre_detected"
 
 
@@ -121,10 +110,6 @@ def _render_attrs(attrs: Mapping[str, str | None] | None) -> str:
         return ""
     parts: list[str] = []
     for key, value in attrs.items():
-        # Skip blanks rather than emitting ``key=""`` everywhere — the
-        # existing prompts treated missing attributes as absent and we
-        # want the rendered shape to stay the same for callers that
-        # provide every attribute today.
         if value is None:
             continue
         parts.append(f'{key}="{escape_attr(value)}"')
@@ -181,9 +166,6 @@ def render_blocks(blocks: Iterable[str]) -> str:
     return "\n".join(block for block in blocks if block)
 
 
-# ---------------------------------------------------------------------------
-# Chunk K2: id-tagged document rendering
-# ---------------------------------------------------------------------------
 
 
 def element_ids_enabled() -> bool:
@@ -209,10 +191,6 @@ def _element_tag(mapping: "ParagraphMapping") -> str:
     """
     if mapping.element_type == "table_cell":
         return TAG_ROW
-    # Best-effort heading detection: the extractor stamps section_id on
-    # every paragraph, but only the heading paragraph's section_id equals
-    # its own text. Using that equality (after a strip+casefold) keeps
-    # the rule trivial and avoids re-importing _is_heading_paragraph here.
     if (
         mapping.element_type == "paragraph"
         and mapping.section_id
@@ -253,15 +231,11 @@ def render_spec_with_ids(
     for mapping in paragraph_map:
         eid = (getattr(mapping, "element_id", "") or "").strip()
         if not eid:
-            # Mapping predates Chunk K1 — fall back to a plain ``<para>``
-            # without an id so the model still sees the body text.
             body_lines.append(wrap_data_block(TAG_PARA, mapping.text))
             continue
         tag = _element_tag(mapping)
         attr_block: dict[str, str | None] = {"id": eid}
         section = (getattr(mapping, "section_id", "") or "").strip()
-        # Don't repeat the heading text in its own ``section`` attribute —
-        # that wastes tokens for no information gain.
         if section and tag != TAG_HEADING:
             attr_block["section"] = section
         body_lines.append(wrap_data_block(tag, mapping.text, attrs=attr_block))
@@ -271,19 +245,9 @@ def render_spec_with_ids(
     return f"<{TAG_SPEC}{attr_str}>\n{body}\n</{TAG_SPEC}>"
 
 
-# ---------------------------------------------------------------------------
-# Chunk D4.1: pre-detected deterministic-alerts block
-# ---------------------------------------------------------------------------
 
 
-# Per-rule cap on how many example matches we surface inside the block. Three
-# is enough to give the model a sense of what the deterministic detector
-# found without exploding the input-token budget on, say, a 50-placeholder
-# spec. The full alert set still lands in the final report's Alerts section.
 _PRE_DETECTED_EXAMPLES_PER_RULE: int = 3
-# Per-example match-text cap. Long placeholder bodies ("[INSERT lengthy
-# editorial note here ...]") would dominate the block; truncating keeps
-# the rule + matched-text pair short while still showing what was flagged.
 _PRE_DETECTED_MATCH_PREVIEW_CHARS: int = 60
 
 
@@ -364,10 +328,6 @@ def render_pre_detected_block(
     if not filtered:
         return ""
 
-    # Preserve first-seen rule order so the block is deterministic — the
-    # rule order is part of the prompt and shuffling it would silently
-    # invalidate any prompt-level cache hits in callers that bypass the
-    # phase-aware cache machinery.
     by_rule: dict[str, list[str]] = {}
     order: list[str] = []
     for alert in filtered:
@@ -375,9 +335,6 @@ def render_pre_detected_block(
             continue
         rule = str(alert.get("deterministic_rule") or "").strip()
         if not rule:
-            # No stable rule id (very old payload). Fall back to the
-            # human-readable ``type`` so the block still says something
-            # informative — but do not let an empty string collapse rules.
             rule = str(alert.get("type") or "other").strip() or "other"
         match_text = str(alert.get("match") or "").strip()
         if rule not in by_rule:
@@ -400,9 +357,6 @@ def render_pre_detected_block(
             for m in matches[:_PRE_DETECTED_EXAMPLES_PER_RULE]
             if m
         ]
-        # When matches are all empty (rule fired without a quotable span,
-        # e.g. ``inconsistent_filename`` whose match is the filename), still
-        # render the rule + count so the model knows the rule fired.
         examples_str = ", ".join(escape_text(e) for e in examples if e)
         suffix = f": {examples_str}" if examples_str else ""
         lines.append(f"- {escape_text(rule)} (count={len(matches)}){suffix}")

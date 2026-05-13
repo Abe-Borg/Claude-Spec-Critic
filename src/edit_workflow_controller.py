@@ -148,9 +148,6 @@ def apply_selected_edits(
                 log=lambda msg: app._dispatch_if_current(
                     run_epoch, lambda m=msg: app.log.log(m, level="info")
                 ),
-                # Chunk K5: forwarding the diagnostics report lets
-                # execute_edit_plan tally locator methods so the summary
-                # shows how often the id path was used.
                 diagnostics=app._diagnostics_report,
             )
             app._dispatch_if_current(
@@ -190,12 +187,6 @@ def on_edits_applied(app, reports: list[EditReport]) -> None:
             for outcome in getattr(report, "outcomes", []) or []:
                 if outcome.status in ("skipped", "failed"):
                     reason = (outcome.detail or outcome.status).strip().lower()
-                    # Chunk 9 — unsafe-markup refusals get their own bucket
-                    # so the diagnostics summary can show how many edits
-                    # were refused because of Word structure (hyperlinks,
-                    # field codes, drawings, comments, tracked changes,
-                    # etc.). Checked first so it wins over the generic
-                    # "manual review" suffix in the same detail string.
                     if getattr(outcome, "refused_unsafe_markup", False):
                         bucket = "unsafe_markup"
                     elif "ambiguous" in reason:

@@ -18,75 +18,45 @@ import os
 from dataclasses import dataclass
 from typing import Iterable
 
-# ---------------------------------------------------------------------------
-# Model identifiers (centralized)
-# ---------------------------------------------------------------------------
 
 MODEL_OPUS_47 = "claude-opus-4-7"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
 MODEL_HAIKU_45 = "claude-haiku-4-5"
 
-# Verification routes through Sonnet first and reserves Opus for escalation
-# on CRITICAL/HIGH UNVERIFIED findings.
 REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_47)
 CROSS_CHECK_MODEL_DEFAULT = MODEL_SONNET_46
 VERIFICATION_MODEL_DEFAULT = os.environ.get(
     "SPEC_CRITIC_VERIFICATION_MODEL", MODEL_SONNET_46
 )
 
-# Model used when escalating a low-confidence/high-severity verification.
 VERIFICATION_ESCALATION_MODEL = os.environ.get(
     "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_47
 )
 
-# Verification triage pre-pass (triage.classify_findings_with_haiku) decides
-# whether a finding can be locally resolved or needs web verification. The
-# task is shallow classification over short inputs; Haiku fits.
 TRIAGE_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_TRIAGE_MODEL", MODEL_HAIKU_45)
 
 
-# Convenience sets for output-cap dispatch.
 OPUS_MODELS = frozenset({MODEL_OPUS_47})
 HAIKU_MODELS = frozenset({MODEL_HAIKU_45})
 
 
-# ---------------------------------------------------------------------------
-# Output-token caps
-# ---------------------------------------------------------------------------
 
-# Hard ceilings imposed by the model.
 MAX_OUTPUT_TOKENS_OPUS = 128_000
 MAX_OUTPUT_TOKENS_SONNET = 64_000
 MAX_OUTPUT_TOKENS_HAIKU = 64_000
 
-# Extended-output batch beta. Required header to use 300k output in batch.
 BATCH_OUTPUT_BETA = "output-300k-2026-03-24"
 BATCH_MAX_OUTPUT_TOKENS = 300_000
 
-# Per-phase dynamic caps. These are intentionally lower than the hard model
-# ceilings so the app does not blanket-allocate the maximum on every call.
-# The review cap is unified across real-time and batch so findings cannot
-# diverge between modes on normal-size specs. (Anthropic bills by actual
-# output, so the cap is a fail-fast guard, not a cost lever.) The extended
-# 300k path is batch-only — the ``output-300k-2026-03-24`` beta header is
-# not honored on streaming requests.
-REVIEW_OUTPUT_CAP = 128_000              # baseline for both real-time and batch
-REVIEW_OUTPUT_CAP_BATCH_EXTENDED = 300_000  # batch-only, with 300k beta header
-CROSS_CHECK_OUTPUT_CAP = 96_000       # cross-check needs more than verify
-# Verdicts are 1-2 sentences per the verifier system prompt; 16k is a
-# fail-fast guard, not a billing knob (you pay only for actual output).
+REVIEW_OUTPUT_CAP = 128_000
+REVIEW_OUTPUT_CAP_BATCH_EXTENDED = 300_000
+CROSS_CHECK_OUTPUT_CAP = 96_000
 VERIFICATION_OUTPUT_CAP = 16_000
-# Triage emits a small array of {index, classification, reason}; 8k is more
-# than enough even for a 50-finding chunk.
 HAIKU_TRIAGE_OUTPUT_CAP = 8_000
 
-# Token threshold above which a review uses the larger batch cap.
 LARGE_REVIEW_INPUT_THRESHOLD = 200_000
 
 
-# Phase identifiers. Defined here (before the phase→budget registry) so
-# the registry can reference them directly. ``thinking_config_for`` and
-# ``apply_thinking_config`` further below also consume these.
 PHASE_REVIEW = "review"
 PHASE_BATCH_REVIEW = "batch_review"
 PHASE_CROSS_CHECK = "cross_check"
@@ -107,16 +77,6 @@ def output_cap_for_model(model: str, *, requested: int) -> int:
     return min(requested, ceiling)
 
 
-# Single registry of per-phase output budgets so verification
-# retry/continuation and triage all resolve through the same lookup. Each
-# phase declares its desired cap; ``phase_output_cap`` clamps that to the
-# selected model's ceiling. The phase helpers below stay as thin wrappers
-# so callers can keep their existing imports.
-#
-# Verification retry/continuation reuse the verification cap by default —
-# the verdict envelope is unchanged across retries, so granting more output
-# only invites the model to ramble. If a future investigation shows
-# continuations need more headroom, this is the one place to tune it.
 _PHASE_OUTPUT_BUDGET: dict[str, int] = {
     PHASE_REVIEW: REVIEW_OUTPUT_CAP,
     PHASE_BATCH_REVIEW: REVIEW_OUTPUT_CAP,
@@ -193,20 +153,6 @@ def assert_extended_output_allowed(*, max_tokens: int, betas: Iterable[str] | No
         )
 
 
-# ---------------------------------------------------------------------------
-# Model capability policy (Chunk B)
-# ---------------------------------------------------------------------------
-#
-# Whitelist-style registry of per-model capabilities. The Anthropic API
-# rejects requests that include feature parameters the selected model does
-# not support — most notably ``thinking`` against Haiku 4.5, which produces
-# an API error.
-#
-# To add a new model: register it in ``_MODEL_CAPABILITIES``. Unknown model
-# IDs fall through to ``_DEFAULT_CAPABILITIES``, which disables every
-# capability flag — intentional. Stripping a feature from a future model is
-# strictly safer than sending an invalid request that fails deep in the
-# request lifecycle.
 
 
 @dataclass(frozen=True)
@@ -215,13 +161,8 @@ class ModelCapabilities:
 
     supports_adaptive_thinking: bool
     max_output_tokens: int
-    supports_extended_output_beta: bool  # 300k batch-only beta header
+    supports_extended_output_beta: bool
     context_window: int
-    # Chunk D1.2: whether the model accepts ``output_config.effort``. The
-    # parameter controls token eagerness and tool-call behavior. Sending
-    # it to an unsupported model returns an API error, so the policy in
-    # :func:`effort_config_for` must consult this flag before attaching
-    # the field. Default ``False`` so unknown models silently omit it.
     supports_effort: bool = False
 
 
@@ -236,33 +177,20 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     MODEL_SONNET_46: ModelCapabilities(
         supports_adaptive_thinking=True,
         max_output_tokens=MAX_OUTPUT_TOKENS_SONNET,
-        # Chunk 1: Sonnet 4.6 supports the ``output-300k-2026-03-24`` beta
-        # on Message Batches. The prior ``False`` value predated that
-        # capability rollout and forced the batch path to gate extended
-        # output by Opus-only family membership.
         supports_extended_output_beta=True,
         context_window=1_000_000,
         supports_effort=True,
     ),
     MODEL_HAIKU_45: ModelCapabilities(
-        # Anthropic models overview lists Haiku 4.5 without adaptive
-        # thinking support; sending ``thinking`` to it returns an API error.
         supports_adaptive_thinking=False,
         max_output_tokens=MAX_OUTPUT_TOKENS_HAIKU,
         supports_extended_output_beta=False,
         context_window=200_000,
-        # The Anthropic effort docs list Haiku 4.5 without effort support.
-        # Omit ``output_config.effort`` for Haiku to keep request shapes
-        # safe across model swaps (e.g. triage).
         supports_effort=False,
     ),
 }
 
 
-# Unknown models: every capability flag defaults to False so we never
-# construct an invalid request payload. Output cap defaults to the Sonnet
-# ceiling, the most conservative of the supported models that still leaves
-# room for a meaningful response.
 _DEFAULT_CAPABILITIES = ModelCapabilities(
     supports_adaptive_thinking=False,
     max_output_tokens=MAX_OUTPUT_TOKENS_SONNET,
@@ -304,11 +232,6 @@ def model_supports_extended_output_beta(model: str) -> bool:
     return model_capabilities(model).supports_extended_output_beta
 
 
-# Phase identifiers (declared above so the phase→budget registry can use
-# them) gate per-phase request decisions. ``_PHASES_NO_THINKING`` is the
-# extension point for phases that should never request thinking regardless
-# of model capability — currently only the Haiku triage classifier, which
-# is a shallow batch-classification pass.
 _PHASES_NO_THINKING: frozenset[str] = frozenset({PHASE_TRIAGE})
 
 
@@ -340,30 +263,6 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
     return kwargs
 
 
-# ---------------------------------------------------------------------------
-# Output-config effort policy (Chunk D1.2)
-# ---------------------------------------------------------------------------
-#
-# The Anthropic API accepts an ``output_config.effort`` parameter on
-# supported models. The value tunes how eagerly the model produces tokens
-# and how aggressively it pursues tool calls. The four documented levels
-# are ``low`` / ``medium`` / ``high`` / ``xhigh`` (plus ``max``); we don't
-# use ``max`` because it overshoots the verification verdict envelope.
-#
-# Effort is a request-policy decision, not a prompt one. Centralizing it
-# here keeps every request site (review / batch review / cross-check /
-# verification / retry / continuation) reaching for the same lever via
-# :func:`apply_effort_config`. Unsupported models silently omit the
-# parameter via :func:`model_supports_effort`.
-#
-# Default policy:
-#
-# - Sonnet verification (PHASE_VERIFICATION{,_RETRY,_CONTINUATION}): medium.
-# - Opus verification (i.e. escalation): high.
-# - Opus/Sonnet deep review (PHASE_REVIEW, PHASE_BATCH_REVIEW,
-#   PHASE_CROSS_CHECK): high.
-# - Triage (Haiku): omit (Haiku does not support effort).
-# - Unknown model: omit.
 
 EFFORT_LOW = "low"
 EFFORT_MEDIUM = "medium"
@@ -374,10 +273,6 @@ _VALID_EFFORT_LEVELS: frozenset[str] = frozenset(
     {EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH}
 )
 
-# Phases whose request paths route through ``output_config.effort``. Triage
-# is intentionally omitted — it defaults to Haiku which does not support
-# effort, and the workload is a small classification pass that does not
-# benefit from elevated effort.
 _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     PHASE_REVIEW: EFFORT_HIGH,
     PHASE_BATCH_REVIEW: EFFORT_HIGH,
@@ -387,8 +282,6 @@ _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     PHASE_VERIFICATION_CONTINUATION: EFFORT_MEDIUM,
 }
 
-# Verification phases get the model-aware bump: Opus on verification is
-# always the escalation tier, so the policy lifts effort to ``high``.
 _VERIFICATION_PHASES: frozenset[str] = frozenset(
     {
         PHASE_VERIFICATION,
@@ -415,8 +308,6 @@ def effort_config_for(*, model: str, phase: str) -> dict | None:
         return None
 
     if phase in _VERIFICATION_PHASES:
-        # Opus on a verification phase is the escalation tier — every
-        # initial verification call routes to Sonnet by default.
         if model in OPUS_MODELS:
             return {"effort": EFFORT_HIGH}
         return {"effort": EFFORT_MEDIUM}
@@ -444,16 +335,6 @@ def apply_effort_config(kwargs: dict, *, model: str, phase: str) -> dict:
     return kwargs
 
 
-# ---------------------------------------------------------------------------
-# Prompt caching (centralized phase-aware policy)
-# ---------------------------------------------------------------------------
-#
-# Each phase declares whether its system prompt and tool list are stable /
-# large / repeated enough to benefit from caching. Caching is enabled for
-# high-value phases (review, batch review, cross-check, verification +
-# retry/continuation) and disabled for triage where the prompt is below
-# the Anthropic cache minimum (2048 tokens for Haiku) so a cache write
-# would be paid for nothing.
 
 
 @dataclass(frozen=True)
@@ -482,9 +363,6 @@ _PHASE_CACHE_POLICY: dict[str, CachePolicy] = {
     PHASE_VERIFICATION: CachePolicy(cache_system=True, cache_tools=True),
     PHASE_VERIFICATION_RETRY: CachePolicy(cache_system=True, cache_tools=True),
     PHASE_VERIFICATION_CONTINUATION: CachePolicy(cache_system=True, cache_tools=True),
-    # Triage: ~375-token system prompt called in batches of up to 20,
-    # below the 2048-token Haiku cache minimum so repeated calls cannot
-    # hit. Skip caching to avoid the cache-write cost.
     PHASE_TRIAGE: CachePolicy(cache_system=False, cache_tools=False),
 }
 
@@ -554,9 +432,6 @@ def tools_with_cache(tools: list[dict], *, phase: str | None = None) -> list[dic
     return [*tools[:-1], last]
 
 
-# ---------------------------------------------------------------------------
-# Service tier (priority capacity)
-# ---------------------------------------------------------------------------
 
 
 def batch_service_tier() -> str:
@@ -568,9 +443,6 @@ def batch_service_tier() -> str:
     return "auto"
 
 
-# ---------------------------------------------------------------------------
-# Anthropic token-counting preflight
-# ---------------------------------------------------------------------------
 
 def token_count_preflight_enabled() -> bool:
     """Whether to call Anthropic's count_tokens endpoint before submission.
@@ -582,66 +454,27 @@ def token_count_preflight_enabled() -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# Web-search tool configuration
-# ---------------------------------------------------------------------------
 
-# Source-quality blocklist for ``web_search_20260209``. Mixing
-# ``allowed_domains`` and ``blocked_domains`` is not supported by the tool,
-# so this is blocked-only; California priority sources are documented in the
-# verifier system prompt as guidance rather than encoded as an allow-list.
-#
-# Domains are listed bare (no scheme/path) and the tool treats each entry as
-# "this apex and every subdomain", so adding ``simple.wikipedia.org`` when
-# ``wikipedia.org`` is already on the list adds nothing.
-#
-# Categories (kept as inline comment groups so the intent of each line is
-# obvious; do *not* hand-sort across categories without checking that no
-# entry's category interpretation changes):
-#   - Aggregators / Q&A: forums where contractor-grade evidence is rare.
-#   - LLM-assistant outputs: another model's answer is not a citable source.
-#   - Trade forums: useful peer chatter, not authoritative for code.
-#   - DIY / home-improvement content farms.
-#   - Social: unsuitable for a defensible engineering review.
-#   - General encyclopedias: tertiary sources.
-#
-# TODO: explore a category-based blocking helper so each entry is annotated
-# with its category and the report can explain *why* a citation was rejected
-# (Chunk 13 deferred this; the immediate fix here is just deduplicating the
-# obvious subdomain overlap). Any change to this list should be exercised
-# against the verifier's grounding tests in
-# ``tests/test_chunk_h_source_grounding.py``.
 _WEB_SEARCH_BLOCKED_DOMAINS = [
-    # Aggregators / Q&A
     "reddit.com", "quora.com", "medium.com",
     "stackexchange.com", "stackoverflow.com",
     "answers.yahoo.com", "fixya.com",
-    # LLM-assistant outputs
     "chatgpt.com", "perplexity.ai", "openai.com", "gemini.google.com",
     "claude.ai", "you.com", "phind.com", "copilot.microsoft.com",
     "poe.com", "character.ai", "jasper.ai", "writesonic.com",
-    # Trade forums (peer chatter, not authoritative for code compliance)
     "diychatroom.com", "forums.jlconline.com", "hvac-talk.com",
     "inspectionnews.net", "inspectorsforum.com", "contractortalk.com",
-    # DIY / home-improvement / lead-gen content farms
     "doityourself.com", "homeadvisor.com", "thumbtack.com", "angi.com",
     "ehow.com", "wikihow.com", "about.com", "thespruce.com", "bobvila.com",
     "familyhandyman.com", "hunker.com", "sapling.com", "reference.com",
     "leaf.tv", "sciencing.com", "bizfluent.com", "pocketsense.com",
-    # Social
     "facebook.com", "twitter.com", "x.com", "instagram.com", "tiktok.com",
     "linkedin.com", "pinterest.com", "youtube.com", "threads.net",
-    # General encyclopedias (tertiary). ``wikipedia.org`` already covers
-    # every subdomain (``simple.wikipedia.org``, ``en.wikipedia.org``, ...).
     "wikipedia.org", "britannica.com",
 ]
 
-# Fallback budget for severities outside the known set.
 DEFAULT_VERIFICATION_MAX_USES = 5
 
-# Per-severity search budgets. High-stakes claims get more rope; editorial
-# gripes get less. Applied identically to real-time and batch verification
-# paths so the budget shape doesn't depend on which mode you ran in.
 _SEVERITY_MAX_USES: dict[str, int] = {
     "CRITICAL": 8,
     "HIGH": 7,
@@ -681,14 +514,9 @@ def web_search_tool_for_severity(severity: str | None) -> dict:
     )
 
 
-# Default web-search tool used when no per-call override is needed (preserved
-# for backward compatibility with any caller that imports the constant).
 WEB_SEARCH_TOOL = build_web_search_tool()
 
 
-# ---------------------------------------------------------------------------
-# Cache-token usage extraction (for diagnostics)
-# ---------------------------------------------------------------------------
 
 def extract_cache_usage(usage) -> dict[str, int]:
     """Pull cache-related fields off an Anthropic usage object.

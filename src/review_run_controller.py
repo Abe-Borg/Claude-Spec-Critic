@@ -251,9 +251,6 @@ def run_review_thread(app, run_epoch: int) -> None:
         if diag and result.review_result:
             rv = result.review_result
             review_cap = _review_max_tokens(batch=False, model=rv.model)
-            # Chunk J: route through ``record_api_call`` so the per-phase
-            # rollup in ``DiagnosticsReport.summary`` picks up consistent
-            # call_mode / retry_status / model fields.
             diag.record_api_call(
                 phase="review",
                 model=rv.model,
@@ -316,41 +313,22 @@ def run_review_thread(app, run_epoch: int) -> None:
                         "web_search_requests": v.web_search_requests,
                         "successful_source_count": v.successful_source_count,
                         "search_error_count": v.search_error_count,
-                        # Chunk I: surface the routing decision in
-                        # diagnostics so a run summary can show how
-                        # many findings each mode handled.
                         "verification_mode": v.verification_mode,
                         "verification_profile": v.verification_profile,
-                        # Chunk D1.3: escalation telemetry. ``escalation_attempted``
-                        # is True whenever a second pass ran (regardless of
-                        # whether it changed the verdict); the remaining
-                        # fields let the summary report "did escalation
-                        # actually pay off?".
                         "escalation_attempted": v.escalation_attempted,
                         "initial_model": v.initial_model,
                         "initial_verdict": v.initial_verdict,
                         "escalation_changed_verdict": v.escalation_changed_verdict,
                         "escalation_reason": v.escalation_reason,
-                        # Chunk J: ``api_call`` flag tells the per-phase
-                        # rollup whether to count this verification toward
-                        # the verification phase's call count. Cache hits
-                        # and local skips are already attributed to the
-                        # initial wave's API call.
                         "api_call": v.cache_status not in ("hit", "local_skip"),
                         "call_mode": "realtime",
                         "model": v.model_used,
-                        # Chunk 6: surface retry telemetry so the
-                        # per-phase rollup can attribute findings by
-                        # failure class / terminal reason.
                         "retry_telemetry": v.retry_telemetry,
                     }
                     if v.sources:
                         event_data["sources"] = v.sources[:3]
                     if v.correction:
                         event_data["correction"] = v.correction
-                    # Chunk 2: preserve the parsed verdict-tool payload in
-                    # diagnostics so structured-output debugging does not
-                    # have to rely on regenerating the call.
                     from .diagnostics import bound_structured_payload
                     bounded_payload = bound_structured_payload(v.structured_payload)
                     if bounded_payload is not None:
@@ -406,9 +384,6 @@ def on_review_complete(app, result) -> None:
             else rv.elapsed_seconds
         )
         app.log.log(f"Time: {total_elapsed:.1f}s", level="muted")
-        # Chunk 10 — show the estimated cost in the run log alongside the
-        # other completion-summary lines, before the export dialog opens.
-        # The full breakdown still lives in the report + diagnostics view.
         diag = getattr(app, "_diagnostics_report", None)
         if diag is not None:
             try:

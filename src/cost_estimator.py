@@ -44,9 +44,6 @@ from .api_config import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Pricing table (Anthropic list rates, USD per million tokens)
-# ---------------------------------------------------------------------------
 
 PRICING_AS_OF = "2026-05-01"
 """Snapshot date for the pricing table.
@@ -95,11 +92,8 @@ _PRICING: dict[str, ModelPricing] = {
 }
 
 
-# Batch API: Anthropic discounts both input and output by 50%. Cache
-# writes / reads and web-search tool usage are not discounted.
 BATCH_DISCOUNT = 0.5
 
-# Server-side web_search tool: $10 per 1,000 requests, flat across models.
 WEB_SEARCH_PRICE_PER_1K = 10.0
 
 
@@ -115,9 +109,6 @@ def model_pricing(model: str) -> Optional[ModelPricing]:
     return _PRICING.get(model)
 
 
-# ---------------------------------------------------------------------------
-# Per-event cost calculation
-# ---------------------------------------------------------------------------
 
 
 def _round_cents(value: float) -> float:
@@ -160,8 +151,6 @@ def estimate_event_cost(event_data: dict) -> Optional[dict]:
 
     input_usd = (input_tokens / 1_000_000.0) * pricing.input_rate * discount
     output_usd = (output_tokens / 1_000_000.0) * pricing.output_rate * discount
-    # Cache writes and reads bill at the same rate regardless of mode —
-    # the batch discount applies to standard input/output only.
     cache_write_usd = (cache_create / 1_000_000.0) * pricing.cache_write_1h_rate
     cache_read_usd = (cache_read / 1_000_000.0) * pricing.cache_read_rate
     web_search_usd = (web_searches / 1_000.0) * WEB_SEARCH_PRICE_PER_1K
@@ -181,9 +170,6 @@ def estimate_event_cost(event_data: dict) -> Optional[dict]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Run-level aggregation
-# ---------------------------------------------------------------------------
 
 
 def _empty_phase_bucket() -> dict:

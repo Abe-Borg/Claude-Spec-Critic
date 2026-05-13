@@ -15,25 +15,10 @@ from .api_config import (
 from .reviewer import Finding
 
 
-# Severities that warrant Opus escalation when the first pass returns
-# UNVERIFIED. CRITICAL/HIGH findings drive go/no-go decisions in DSA review.
 _ESCALATION_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
 
 
-# ---------------------------------------------------------------------------
-# Local pre-classification (plan section 7.3)
-# ---------------------------------------------------------------------------
 
-# Tokens that strongly indicate a finding is a local quality gripe / placeholder
-# / duplicate, where web search adds no signal. Conservative on purpose.
-#
-# Chunk O — extended with the additional rule names produced by the new
-# deterministic checks. A GRIPES-severity finding whose ``issue`` text says
-# "duplicate paragraph" or "invalid code cycle year" should not pay for a
-# Sonnet+web_search round-trip because the preprocessor already detected
-# the same problem locally. Keep this aligned with
-# ``preprocessor.DETERMINISTIC_RULES`` for parity with the rule labels the
-# report renders.
 _LOCAL_SKIP_KEYWORDS = (
     "placeholder",
     "[select]",
@@ -79,13 +64,10 @@ def classify_finding_for_verification(finding: Finding) -> str:
     - ``"web_required"``  — needs external grounding (default)
     - ``"local_skip"``    — locally diagnosable; no web search needed
     """
-    # Findings that cite a code reference always need external grounding.
     if (finding.codeReference or "").strip():
         return "web_required"
 
     severity = (finding.severity or "").strip().upper()
-    # Only the lowest-severity bucket is eligible for skip. Anything higher
-    # gets web verification even without a code reference.
     if severity != "GRIPES":
         return "web_required"
 
@@ -104,9 +86,6 @@ def classify_finding_for_verification(finding: Finding) -> str:
     return "web_required"
 
 
-# ---------------------------------------------------------------------------
-# Model routing (plan section 7.1)
-# ---------------------------------------------------------------------------
 
 
 def initial_verification_model() -> str:
@@ -135,8 +114,6 @@ def should_escalate_verification(
         return False
 
     verdict_upper = (verdict or "").strip().upper()
-    # Escalate when the first pass failed to verify high-stakes findings,
-    # or when search returned nothing usable despite trying.
     if verdict_upper == "UNVERIFIED":
         return True
     if not grounded:

@@ -44,9 +44,6 @@ from src.prompt_serialization import (
 from src.prompts import get_single_spec_user_message
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _alert(filename: str, rule: str, match: str, *, atype: str | None = None) -> dict:
     """Build a minimal alert dict shaped like the ones from preprocessor.py."""
@@ -60,9 +57,6 @@ def _alert(filename: str, rule: str, match: str, *, atype: str | None = None) ->
     }
 
 
-# ---------------------------------------------------------------------------
-# Chunk D4.1: render_pre_detected_block helper
-# ---------------------------------------------------------------------------
 
 
 class TestRenderPreDetectedBlock:
@@ -83,8 +77,6 @@ class TestRenderPreDetectedBlock:
         assert "LEED Gold" in out
 
     def test_groups_by_rule_and_preserves_first_seen_order(self) -> None:
-        # Three rules in interleaved input order. Output groups by rule and
-        # the order matches first-seen order so the block is deterministic.
         alerts = [
             _alert("f.docx", "leed_reference", "LEED"),
             _alert("f.docx", "placeholder", "[TBD]"),
@@ -93,25 +85,20 @@ class TestRenderPreDetectedBlock:
             _alert("f.docx", "placeholder", "[INSERT NAME]"),
         ]
         out = render_pre_detected_block(alerts, filename="f.docx")
-        # Counts merged across the per-rule entries.
         assert "leed_reference (count=2)" in out
         assert "placeholder (count=2)" in out
         assert "stale_code_cycle (count=1)" in out
-        # First-seen rule order: leed, placeholder, stale_code_cycle.
         leed_pos = out.index("leed_reference")
         ph_pos = out.index("placeholder")
         stale_pos = out.index("stale_code_cycle")
         assert leed_pos < ph_pos < stale_pos
 
     def test_caps_examples_per_rule(self) -> None:
-        # Eight matches under one rule → block lists at most a few of them.
         alerts = [
             _alert("f.docx", "placeholder", f"[TBD-{i}]") for i in range(8)
         ]
         out = render_pre_detected_block(alerts, filename="f.docx")
-        # All 8 are counted...
         assert "placeholder (count=8)" in out
-        # ...but the block does not echo all 8 examples (compactness).
         listed = sum(1 for i in range(8) if f"[TBD-{i}]" in out)
         assert listed <= 3, f"expected ≤3 examples shown, got {listed}"
 
@@ -119,13 +106,10 @@ class TestRenderPreDetectedBlock:
         long_match = "X" * 500
         alerts = [_alert("f.docx", "placeholder", long_match)]
         out = render_pre_detected_block(alerts, filename="f.docx")
-        # The block should NOT echo a 500-char body verbatim.
         assert "X" * 500 not in out
-        # Ellipsis truncation marker is present.
         assert "…" in out
 
     def test_escape_safety_match_cannot_close_wrapper(self) -> None:
-        # Hostile match body tries to close the wrapper and inject a sibling.
         alerts = [
             _alert(
                 "f.docx",
@@ -134,9 +118,7 @@ class TestRenderPreDetectedBlock:
             )
         ]
         out = render_pre_detected_block(alerts, filename="f.docx")
-        # Only the closing tag we emitted ourselves should be in the output.
         assert out.count(f"</{TAG_PRE_DETECTED}>") == 1
-        # The injected tag is escaped, not honored.
         assert "<inject>" not in out
         assert "&lt;inject&gt;" in out
 
@@ -147,8 +129,6 @@ class TestRenderPreDetectedBlock:
         assert "&lt;bad&gt;" in out
 
     def test_handles_alert_with_empty_match(self) -> None:
-        # ``inconsistent_filename`` alerts may have empty matches; the block
-        # should still report the rule + count so the model sees the signal.
         alerts = [_alert("f.docx", "inconsistent_filename", "")]
         out = render_pre_detected_block(alerts, filename="f.docx")
         assert "inconsistent_filename (count=1)" in out
@@ -156,14 +136,10 @@ class TestRenderPreDetectedBlock:
     def test_collapses_whitespace_in_example(self) -> None:
         alerts = [_alert("f.docx", "placeholder", "[TBD\n with   newlines]")]
         out = render_pre_detected_block(alerts, filename="f.docx")
-        # The example is collapsed to one line.
         assert "[TBD with newlines]" in out
         assert "[TBD\n" not in out
 
 
-# ---------------------------------------------------------------------------
-# pre_detected_alerts_enabled is hardcoded on
-# ---------------------------------------------------------------------------
 
 
 class TestPreDetectedEnabled:
@@ -171,9 +147,6 @@ class TestPreDetectedEnabled:
         assert pre_detected_alerts_enabled() is True
 
 
-# ---------------------------------------------------------------------------
-# get_single_spec_user_message integration
-# ---------------------------------------------------------------------------
 
 
 class TestGetSingleSpecUserMessageWithAlerts:
@@ -196,15 +169,11 @@ class TestGetSingleSpecUserMessageWithAlerts:
         )
         assert f"<{TAG_PRE_DETECTED}>" in msg
         assert f"</{TAG_PRE_DETECTED}>" in msg
-        # Block sits AFTER the spec body so the cache-prefix invariant holds.
         spec_close = msg.rindex("</spec>")
         block_open = msg.index(f"<{TAG_PRE_DETECTED}>")
         assert block_open > spec_close
 
     def test_cache_prefix_invariant_holds_with_and_without_alerts(self) -> None:
-        # Chunk G's TestPromptCacheBreakpointSafety pins the prefix before
-        # ``<spec ``. Adding a pre_detected block at the END must not change
-        # that prefix.
         without = get_single_spec_user_message(
             "alpha", "f.docx", cycle=CALIFORNIA_2025,
         )
@@ -219,8 +188,6 @@ class TestGetSingleSpecUserMessageWithAlerts:
         msg = get_single_spec_user_message(
             "alpha", "f.docx", cycle=CALIFORNIA_2025, pre_detected_alerts=alerts,
         )
-        # The model is told what to do with the block. We don't pin the
-        # exact wording, but the anti-duplication intent must be present.
         lowered = msg.lower()
         assert "do not duplicate" in lowered or "do not report" in lowered
 
@@ -234,13 +201,9 @@ class TestGetSingleSpecUserMessageWithAlerts:
         )
         assert "LEED-mine" in msg
         assert "TBD-other" not in msg
-        # Only the matching spec's rule appears.
         assert "leed_reference" in msg
         assert "placeholder" not in msg
 
-# ---------------------------------------------------------------------------
-# Chunk D4.1: pipeline plumbing
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -259,15 +222,9 @@ def stub_count_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
-    # Chunk 3: ``src.batch`` no longer imports ``count_tokens`` directly —
-    # every batch token count is computed inside the central review
-    # request builder. Patch the binding there so the per-spec
-    # extended-output gating and the local preflight estimate don't trip
-    # the lazy tiktoken download.
     monkeypatch.setattr(
         "src.review_request_builder.count_tokens", _fake_count, raising=False
     )
-    # Preflight calls the Anthropic API; bypass for hermetic tests.
     monkeypatch.setattr(
         "src.pipeline.token_count_preflight_enabled", lambda: False
     )
@@ -306,16 +263,13 @@ class TestPipelinePerSpecAlertMap:
             project_context="",
             cycle=CALIFORNIA_2025,
         )
-        # Every selected spec has its own entry, even if empty.
         assert set(prepared.pre_detected_by_filename) >= {p.name for p in files}
-        # Alerts surfaced (LEED + placeholder + template marker at least).
         for f in files:
             spec_alerts = prepared.pre_detected_by_filename[f.name]
             rules = {a["deterministic_rule"] for a in spec_alerts}
             assert "leed_reference" in rules
             assert "placeholder" in rules
             assert "template_marker" in rules
-            # Every alert in this spec's bucket carries its own filename.
             for alert in spec_alerts:
                 assert alert["filename"] == f.name
 
@@ -341,7 +295,6 @@ class TestBatchSubmissionFeedsAlerts:
     """``submit_review_batch`` must pass each spec's alerts into the prompt."""
 
     def test_per_spec_alerts_land_in_user_message(self, monkeypatch, stub_count_tokens):
-        # We capture the kwargs handed to the batch API via a fake client.
         from src import batch as batch_mod
         from src.extractor import ExtractedSpec
 
@@ -358,7 +311,7 @@ class TestBatchSubmissionFeedsAlerts:
             pass
 
         class FakeBeta:
-            class messages:  # noqa: N801 — mimic SDK shape
+            class messages:
                 batches = FakeBetaBatches()
 
         class FakeMessages:
@@ -392,8 +345,6 @@ class TestBatchSubmissionFeedsAlerts:
         )
         assert captured, "no batch request was issued"
         requests = captured[0]["requests"]
-        # Two requests, one per spec. Each carries its own pre_detected block
-        # and not the other spec's alerts.
         bodies = {req["custom_id"]: req["params"]["messages"][0]["content"]
                   for req in requests}
         a_body = next(b for cid, b in bodies.items() if "a_docx" in cid or "a__" in cid)
@@ -402,15 +353,11 @@ class TestBatchSubmissionFeedsAlerts:
         assert "[INSERT NAME]" not in a_body
         assert "[INSERT NAME]" in b_body
         assert "LEED Gold" not in b_body
-        # Both bodies carry the block + anti-duplication instruction.
         for body in (a_body, b_body):
             assert f"<{TAG_PRE_DETECTED}>" in body
             assert "do not duplicate" in body.lower()
 
 
-# ---------------------------------------------------------------------------
-# Chunk D4.2: stale-cycle context suppression
-# ---------------------------------------------------------------------------
 
 
 class TestStaleCycleSuppression:
@@ -437,10 +384,6 @@ class TestStaleCycleSuppression:
         assert alerts == []
 
     def test_superseded_trailing_suppresses(self) -> None:
-        # The citation is in the same sentence as ``superseded``; the author
-        # is explicitly describing a superseded reference, so the alert is
-        # suppressed regardless of whether the keyword sits before or after
-        # the cycle citation.
         content = "The 2019 CBC has been superseded for this project."
         alerts = detect_stale_code_cycle_references(
             content, "s.docx", CALIFORNIA_2025
@@ -455,7 +398,6 @@ class TestStaleCycleSuppression:
         assert alerts == []
 
     def test_shall_not_follow_suppresses(self) -> None:
-        # "shall not follow the 2019 CBC" — explicit negation.
         content = "The work shall not follow the 2019 CBC approach."
         alerts = detect_stale_code_cycle_references(
             content, "s.docx", CALIFORNIA_2025
@@ -477,7 +419,6 @@ class TestStaleCycleSuppression:
         assert alerts == []
 
     def test_active_requirement_still_flagged(self) -> None:
-        # The author actively requires a stale cycle — must still flag.
         content = "Comply with 2019 CBC for piping installations."
         alerts = detect_stale_code_cycle_references(
             content, "s.docx", CALIFORNIA_2025
@@ -489,8 +430,6 @@ class TestStaleCycleSuppression:
         )
 
     def test_active_requirement_at_start_of_document_still_flagged(self) -> None:
-        # No preceding window content. The detector must not over-suppress
-        # just because the window is empty.
         content = "2019 CBC governs all piping work."
         alerts = detect_stale_code_cycle_references(
             content, "s.docx", CALIFORNIA_2025
@@ -499,8 +438,6 @@ class TestStaleCycleSuppression:
         assert any(a["found_year"] == "2019" for a in alerts)
 
     def test_negated_does_not_suppress_unrelated_stale_reference(self) -> None:
-        # Two stale citations: one negated, one active. Only the active one
-        # should be flagged.
         content = (
             "Previously per the 2019 CBC. Comply with 2022 CBC for all work."
         )

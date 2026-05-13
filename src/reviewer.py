@@ -39,15 +39,6 @@ from .structured_schemas import (
 
 StreamCallback = Callable[[str], None]
 
-# Chunk L / plan section "Separate Findings From Edit Proposals":
-# ``REPORT_ONLY`` is the explicit "no edit proposal" action type. Findings
-# tagged this way are surfaced in the report but never produce edit
-# candidates, so coordination/code findings that have no clean textual
-# fix no longer have to manufacture replacement text just to satisfy a
-# schema slot. ``EDIT_ACTION_TYPES`` is the set of action types that
-# *do* carry a real edit proposal — every consumer that has to decide
-# "is this thing editable?" routes through this constant so adding a
-# new edit action is a one-line change.
 REPORT_ONLY_ACTION: str = "REPORT_ONLY"
 EDIT_ACTION_TYPES: frozenset[str] = frozenset({"ADD", "EDIT", "DELETE"})
 
@@ -156,68 +147,15 @@ class Finding:
     confidence: float = 0.5
     verification: VerificationResult | None = None
     affected_files: list[str] = field(default_factory=list)
-    # ADD-action insertion model (audit Issue 5). When the model explicitly
-    # provides an anchor and a side, the editor inserts deterministically
-    # instead of falling back to brittle prefix/suffix text heuristics.
     anchorText: str | None = None
-    insertPosition: str | None = None  # "before" | "after" | None
-    # Chunk K3 / plan section "Stable Document IDs": optional pointer to
-    # the paragraph / row / heading id (see ``ParagraphMapping.element_id``).
-    # The locator prefers this id when it is non-empty and revalidates the
-    # exact-text quote against the live element before applying any edit.
-    # Empty string is the legacy fallback path (text-based matching).
+    insertPosition: str | None = None
     evidenceElementId: str | None = None
-    # Chunk L / plan section "Separate Findings From Edit Proposals":
-    # the optional structured edit half. Findings with no clean textual fix
-    # leave this None and set ``actionType = "REPORT_ONLY"`` (or leave the
-    # legacy fields blank). The locator and edit-candidate paths route
-    # through :meth:`as_edit_proposal` so they see the same value whether
-    # the proposal arrived from the new schema slot or was reconstructed
-    # from legacy fields at runtime.
     edit_proposal: EditProposal | None = None
-    # Chunk M / plan section "Cross-Check Dependency Tracking": stable
-    # identifier assigned at dedup time. Cross-check findings cite these
-    # ids in ``upstream_finding_ids`` so post-verification suppression can
-    # be deterministic instead of relying on file/section overlap. Empty
-    # string is the pre-Chunk-M / legacy path (suppression falls back to
-    # heuristic matching).
     finding_id: str = ""
-    # Chunk M: per-cross-check-finding dependency tracking. Populated only
-    # on cross-check findings; review findings leave both empty. The model
-    # emits these via the cross-check tool schema's ``upstreamFindingIds``
-    # and ``independentEvidenceIds`` slots; the suppression filter uses
-    # them to drop coordination claims whose every upstream went DISPUTED
-    # while keeping claims that have independent spec evidence.
     upstream_finding_ids: list[str] = field(default_factory=list)
     independent_evidence_ids: list[str] = field(default_factory=list)
-    # Chunk M: when the suppression filter drops a cross-check finding,
-    # it stamps a human-readable reason here so the report can explain the
-    # decision instead of silently omitting the finding. ``None`` is the
-    # default "not suppressed" state; non-None implies the finding lives
-    # on ``ReviewResult.suppressed_findings`` rather than the main list.
     suppression_reason: str | None = None
-    # Chunk 7 / plan section "Validate edit proposals at parse time":
-    # when the parser demotes an EDIT / DELETE / ADD action to REPORT_ONLY
-    # because action-specific fields were missing, it stamps the short
-    # reason here so diagnostics, the report's demoted-edits section, and
-    # the edit-candidate UI can explain *why* the proposal was rejected
-    # instead of treating the finding as a generic REPORT_ONLY. ``None`` is
-    # the default — the finding was either a real edit, a native
-    # REPORT_ONLY emission, or an unknown action coerced to REPORT_ONLY
-    # without a per-action shape requirement to cite.
     demotion_reason: str | None = None
-    # Chunk 8 / plan section "Separate report deduplication from
-    # executable edit identity": when ``_deduplicate_findings`` collapses
-    # findings from multiple files into one representative, the original
-    # per-file member findings are retained here. Edit execution looks up
-    # the matching original by ``fileName`` so the representative's
-    # ``existingText`` / ``replacementText`` / ``anchorText`` /
-    # ``evidenceElementId`` / ``edit_proposal`` are never fanned out
-    # across files that may have different exact text. Singletons leave
-    # this empty (the finding *is* its own original); legacy resume
-    # payloads (pre-Chunk-8) also load empty and the executor falls back
-    # to "auto-edit only the representative's own file, route others to
-    # manual review" rather than guessing.
     occurrence_originals: list["Finding"] = field(default_factory=list)
 
     def as_edit_proposal(self) -> EditProposal | None:
@@ -281,8 +219,6 @@ class ReviewResult:
     model: str = REVIEW_MODEL_DEFAULT
     input_tokens: int = 0
     output_tokens: int = 0
-    # Phase 2 prompt-caching telemetry. Populated when the API returns
-    # cache_creation_input_tokens / cache_read_input_tokens in usage.
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
     elapsed_seconds: float = 0.0
@@ -290,20 +226,7 @@ class ReviewResult:
     stop_reason: str | None = None
     parse_status: str | None = None
     cross_check_status: str | None = None
-    # Chunk 2: when the model invoked the ``submit_review_findings`` tool,
-    # this is the raw parsed tool input (the dict the model sent through
-    # the schema). Held in memory so diagnostics can preserve the actual
-    # structured payload instead of relying on ``raw_response``, which is
-    # the text-block concatenation and is empty for tool-use responses.
-    # Not persisted by ``resume_state`` — telemetry describes runtime
-    # behavior, not durable state.
     structured_payload: dict | None = None
-    # Chunk M / plan section "Cross-Check Dependency Tracking": findings
-    # dropped by the upstream-disputed suppression filter live here, each
-    # stamped with a ``suppression_reason``. The report renders them under
-    # a dedicated "Suppressed coordination findings" subsection so the
-    # decision is visible rather than silently making the finding vanish.
-    # Verification skips suppressed findings — they are end-state.
     suppressed_findings: list[Finding] = field(default_factory=list)
 
     @property
@@ -383,9 +306,6 @@ def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[l
         end_idx = text.rfind("]", 0, end_idx)
 
     if text.strip() == "[]":
-        # Chunk 2: a literal empty-array body is a legitimate "no findings"
-        # response, not thinking. Storing ``"[]"`` as the thinking text was
-        # a bug that polluted the report's analysis-summary field.
         return [], ""
 
     raise ValueError(f"Could not extract JSON findings from response (stop_reason: {stop_reason}): {text[:200]}...")
@@ -418,13 +338,6 @@ def _parse_findings(data: list) -> list[Finding]:
         sev = str(item.get("severity", "")).strip().upper()
         if sev not in {"CRITICAL", "HIGH", "MEDIUM", "GRIPES"}:
             continue
-        # Chunk L: actionType is no longer forced to "EDIT". A finding that
-        # has no clean textual fix can declare ``REPORT_ONLY`` (or leave the
-        # field blank, treated as REPORT_ONLY) and skip the edit slot
-        # entirely. Anything outside the EDIT/ADD/DELETE/REPORT_ONLY set
-        # is downgraded to REPORT_ONLY rather than silently coerced to EDIT,
-        # so a model that hallucinates an unknown action type no longer
-        # produces a phantom edit candidate.
         action_raw = item.get("actionType")
         action = str(action_raw).strip().upper() if action_raw is not None else ""
         if action not in EDIT_ACTION_TYPES and action != REPORT_ONLY_ACTION:
@@ -444,20 +357,12 @@ def _parse_findings(data: list) -> list[Finding]:
         position = str(position_raw).strip().lower() if position_raw is not None else None
         if position not in {"before", "after"}:
             position = None
-        # Chunk K3: ``evidenceElementId`` is optional. Normalize to None on
-        # empty / null so downstream "id is truthy" checks remain simple.
         evidence_raw = item.get("evidenceElementId")
         evidence_id: str | None
         if evidence_raw is None:
             evidence_id = None
         else:
             evidence_id = str(evidence_raw).strip() or None
-        # Chunk M: cross-check findings can cite upstream review finding
-        # ids and independent raw-spec evidence ids. The review schema does
-        # not surface these fields, so review findings parse as empty lists.
-        # The cross-check schema lists them as required arrays (possibly
-        # empty), so a missing field on a well-formed cross-check payload
-        # is unusual but tolerated to keep fallback parsing robust.
         upstream_raw = item.get("upstreamFindingIds")
         upstream_ids: list[str] = []
         if isinstance(upstream_raw, list):
@@ -482,23 +387,6 @@ def _parse_findings(data: list) -> list[Finding]:
             if item.get("replacementText") is not None
             else None
         )
-        # Chunk L: build the structured EditProposal alongside the legacy
-        # fields. When the action is REPORT_ONLY the proposal is None and
-        # we zero out the edit-shaped legacy fields so a stale quote from a
-        # model that filled them in anyway cannot accidentally produce an
-        # edit candidate downstream.
-        #
-        # Chunk 7 / plan section "Validate edit proposals at parse time":
-        # if the model claims EDIT/DELETE/ADD but omits an action-specific
-        # required field, demote the finding to REPORT_ONLY *here*, stamp
-        # a clear ``demotion_reason``, and clear every executable edit
-        # field. Downstream code (locator, edit-candidates, spec_editor)
-        # then sees a clean REPORT_ONLY and the finding's underlying
-        # issue is preserved for the report. The previous behavior
-        # silently built an EditProposal with missing fields and pushed
-        # the error detection into the locator, which had to invent
-        # warnings like "Finding has no anchor text" instead of citing
-        # the specific schema field that was missing.
         demotion_reason: str | None = None
         if action in EDIT_ACTION_TYPES:
             demotion_reason = validate_edit_shape(
@@ -550,26 +438,12 @@ def _parse_findings(data: list) -> list[Finding]:
 def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = REVIEW_MODEL_DEFAULT, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
     start_time = time.time()
     result = ReviewResult(model=model)
-    # Chunk 3: request kwargs come from the central review request builder
-    # so the real-time streaming path, batch submission, and token
-    # preflight cannot drift. The builder applies the cache breakpoint,
-    # max_tokens, thinking config, effort config, and the structured
-    # ``submit_review_findings`` tool with ``tool_choice=auto`` in one
-    # place. The tagged-JSON text parser stays reachable because
-    # ``tool_choice=auto`` does not contractually force a tool call when
-    # adaptive thinking is enabled.
     request_kwargs = build_realtime_review_kwargs(
         system_prompt=system_prompt,
         user_message=user_message,
         model=model,
     )
     use_structured_tool = "tools" in request_kwargs
-    # Chunk 6: route through the centralized retry policy. The policy
-    # encodes max_attempts and per-failure-class backoff; the loop
-    # routes the typed SDK exception through :func:`classify_exception`
-    # so the string-matching heuristic is only consulted as a last
-    # resort. The caller's ``max_retries`` still wins so existing tests
-    # that inject a different attempt count keep their expectations.
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
     last_exception: Exception | None = None
@@ -598,8 +472,6 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
                 result.cache_creation_input_tokens = cache["cache_creation_input_tokens"]
                 result.cache_read_input_tokens = cache["cache_read_input_tokens"]
 
-            # Tool-use stops report stop_reason="tool_use", which is the
-            # success path when the model invoked the custom tool.
             if result.stop_reason not in ("end_turn", "tool_use"):
                 result.parse_status = "incomplete"
                 result.error = f"Response incomplete (stop_reason: {result.stop_reason}). The model likely ran out of output tokens. Partial response preserved in raw_response."
@@ -618,20 +490,11 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
             result.elapsed_seconds = time.time() - start_time
             return result
         except (KeyboardInterrupt, SystemExit):
-            # Control-flow exceptions must escape the retry loop so Ctrl-C
-            # / interpreter shutdown work as the user expects.
             raise
         except Exception as e:
-            # Route every other exception through the central classifier
-            # so the loop behaves the same way as the cross-check and
-            # verification loops for identical SDK exception classes. The
-            # classifier returns INVALID_REQUEST for non-status APIError so
-            # we surface that error visibly rather than blindly retrying.
             failure_class = classify_exception(e)
             last_failure_class = failure_class
             if not is_retryable_failure_class(failure_class):
-                # Non-retryable: surface the original error message in
-                # the result so the operator can see what the SDK said.
                 if failure_class is FailureClass.INVALID_REQUEST:
                     result.error = f"API error: {e}"
                 else:

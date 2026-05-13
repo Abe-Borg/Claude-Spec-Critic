@@ -47,9 +47,6 @@ from src.reviewer import EditProposal, Finding, ReviewResult
 from src.verifier import VerificationResult
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _finding(
     *,
@@ -92,10 +89,6 @@ def _verification(
     rejected: list[dict] | None = None,
     correction: str | None = None,
 ) -> VerificationResult:
-    # Chunk 5: a grounded CONFIRMED/CORRECTED requires at least one
-    # accepted external citation. Default to a representative one so
-    # individual tests focused on status / edit-action classification
-    # do not have to thread sources through every call.
     if sources is None:
         sources = (
             ["https://dgs.ca.gov"]
@@ -113,9 +106,6 @@ def _verification(
     )
 
 
-# ---------------------------------------------------------------------------
-# classify_status — every branch (Chunk N Directive 1)
-# ---------------------------------------------------------------------------
 
 class TestReportStatusClassification:
     def test_no_verification_is_not_checked(self):
@@ -144,22 +134,14 @@ class TestReportStatusClassification:
         assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
 
     def test_unknown_verdict_falls_through_to_insufficient_evidence(self):
-        # Belt-and-suspenders: malformed verdict strings should not crash
-        # and should land in the conservative bucket.
         f = _finding(verification=_verification("???", grounded=False))
         assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
 
     def test_confirmed_but_ungrounded_does_not_count_as_supported(self):
-        # The grounding invariant in the verifier should already have
-        # downgraded this, but the classifier is the second line of
-        # defense for tests that construct results by hand.
         f = _finding(verification=_verification("CONFIRMED", grounded=False))
         assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
 
     def test_suppression_reason_beats_everything(self):
-        # Even a confirmed+grounded finding renders as MANUAL_REVIEW_REQUIRED
-        # if it was suppressed; the report shows it under the suppressed
-        # section, not the verified section.
         f = _finding(
             verification=_verification("CONFIRMED", grounded=True),
             suppression_reason="All upstream review findings disputed",
@@ -167,9 +149,6 @@ class TestReportStatusClassification:
         assert classify_status(f) is ReportStatus.MANUAL_REVIEW_REQUIRED
 
 
-# ---------------------------------------------------------------------------
-# classify_edit_action — every branch (Chunk N Directive 4)
-# ---------------------------------------------------------------------------
 
 class TestEditActionClassification:
     def test_suppressed_short_circuits(self):
@@ -197,11 +176,6 @@ class TestEditActionClassification:
         assert classify_edit_action(f) is EditActionLabel.AUTO_EDIT_CANDIDATE
 
     def test_locally_classified_can_become_auto_edit(self):
-        # Chunk 7: EDIT requires non-empty replacement_text; an empty
-        # string is rejected by ``as_edit_proposal``'s defensive
-        # validation and the finding falls into REPORT_ONLY. Use a
-        # non-empty replacement so this test exercises the original
-        # intent (LOCALLY_CLASSIFIED + high confidence → auto-edit).
         proposal = EditProposal(
             action_type="EDIT",
             existing_text="LEED Gold",
@@ -239,8 +213,6 @@ class TestEditActionClassification:
         assert classify_edit_action(f) is EditActionLabel.MANUAL_EDIT_CANDIDATE
 
     def test_insufficient_evidence_with_proposal_is_manual(self):
-        # Plan Directive 7 from Chunk L: do not auto-apply edits for
-        # disputed/insufficient verification of code claims.
         proposal = EditProposal(
             action_type="EDIT",
             existing_text="old",
@@ -264,18 +236,10 @@ class TestEditActionClassification:
         assert classify_edit_action(f) is EditActionLabel.MANUAL_EDIT_CANDIDATE
 
     def test_legacy_finding_without_edit_proposal_field_is_report_only(self):
-        # Pre-Chunk-L payloads round-trip without the new ``edit_proposal``
-        # field. ``as_edit_proposal`` falls back to the legacy actionType /
-        # existingText / replacementText fields; if those don't carry an
-        # ADD/EDIT/DELETE action, classify_edit_action returns REPORT_ONLY.
         f = _finding(action="REPORT_ONLY", existing=None, replacement=None)
         assert classify_edit_action(f) is EditActionLabel.REPORT_ONLY
 
     def test_legacy_edit_finding_routes_through_as_edit_proposal(self):
-        # An old-shaped finding with actionType=EDIT and existingText set
-        # should still pick up the auto-edit route when the verdict is
-        # supportive and confidence is high — the legacy proposal is
-        # synthesized on the fly by ``as_edit_proposal``.
         f = _finding(
             action="EDIT",
             existing="old",
@@ -287,9 +251,6 @@ class TestEditActionClassification:
         assert classify_edit_action(f) is EditActionLabel.AUTO_EDIT_CANDIDATE
 
 
-# ---------------------------------------------------------------------------
-# Aggregation helpers
-# ---------------------------------------------------------------------------
 
 class TestSummarizeHelpers:
     def test_summarize_statuses_returns_zero_filled_dict_on_empty_input(self):
@@ -361,13 +322,7 @@ class TestSummarizeHelpers:
         assert counts[EditActionLabel.SUPPRESSED] == 1
 
 
-# ---------------------------------------------------------------------------
-# Label / glyph helpers
-# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Report exporter integration (snapshot-style)
-# ---------------------------------------------------------------------------
 
 class _StubPipelineResult:
     """Minimal duck-typed PipelineResult for export_report.
@@ -491,12 +446,8 @@ class TestReportExporterStatusIntegration:
         doc = Document(str(out))
         text = _all_text_from(doc)
 
-        # Every finding renders a "Status:" line, so the substring count
-        # should equal the finding count.
         assert text.count("Status:") == len(diverse_review_result.findings)
 
-        # Each status label appears at least once. The label lives on
-        # the status line, the trust-model histogram cell, or both.
         assert STATUS_LABELS[ReportStatus.VERIFIED_SUPPORTED] in text
         assert STATUS_LABELS[ReportStatus.DISPUTED] in text
         assert STATUS_LABELS[ReportStatus.INSUFFICIENT_EVIDENCE] in text
@@ -513,13 +464,7 @@ class TestReportExporterStatusIntegration:
         doc = Document(str(out))
         text = _all_text_from(doc)
 
-        # Auto-edit candidate (verified+grounded+high-confidence) and
-        # manual-edit candidate (disputed/insufficient with proposal)
-        # and report-only (no proposal) should all be visible somewhere.
         assert "Auto-edit candidate" in text
-        # The disputed finding has no edit_proposal in this fixture, so
-        # it lands on REPORT_ONLY rather than manual-edit. That's still
-        # correct for the snapshot; verify report-only is visible.
         assert "Report only" in text
 
     def test_export_includes_trust_model_summary_heading(
@@ -532,15 +477,11 @@ class TestReportExporterStatusIntegration:
         doc = Document(str(out))
         text = _all_text_from(doc)
         assert "Trust Model Summary" in text
-        # Edit eligibility line includes the at-a-glance histogram.
         assert "Edit eligibility:" in text
 
     def test_export_renames_existing_text_label_to_spec_evidence(
         self, tmp_path: Path, diverse_review_result: ReviewResult
     ):
-        # Chunk N Directive 3: spec evidence is distinct from web/code
-        # evidence and verification rationale. The label rename makes
-        # the four concepts explicit.
         out = tmp_path / "report.docx"
         export_report(
             _StubPipelineResult(review_result=diverse_review_result), out
@@ -549,7 +490,6 @@ class TestReportExporterStatusIntegration:
         text = _all_text_from(doc)
         assert "Spec evidence:" in text
         assert "Proposed replacement:" in text
-        # The old labels should be gone now.
         assert "Existing Text:" not in text
         assert "Replace With:" not in text
 
@@ -573,19 +513,12 @@ class TestReportExporterStatusIntegration:
         )
         doc = Document(str(out))
         text = _all_text_from(doc)
-        # The verified finding has an accepted source list, so the
-        # web/code-evidence label must render.
         assert "Web/code evidence" in text
-        # The disputed finding has a rejected source, so the
-        # unsupported-sources label must render.
         assert "Unsupported / rejected sources" in text
 
     def test_suppressed_findings_dont_pollute_main_severity_section(
         self, tmp_path: Path
     ):
-        # Suppressed findings must remain distinguishable from supported
-        # findings. The report renders them in their own subsection under
-        # the cross-check section; they should be tagged MANUAL_REVIEW_REQUIRED.
         verified = _finding(
             severity="HIGH",
             verification=_verification("CONFIRMED", grounded=True),
@@ -614,12 +547,6 @@ class TestReportExporterStatusIntegration:
         doc = Document(str(out))
         text = _all_text_from(doc)
 
-        # The suppressed finding is rendered under a dedicated
-        # "Suppressed Coordination Findings" subsection (Chunk M wiring,
-        # preserved by Chunk N).
         assert "Suppressed Coordination Findings" in text
-        # And it shows the MANUAL_REVIEW_REQUIRED status (Chunk N), so
-        # the reader doesn't think it's an accepted finding.
         assert STATUS_LABELS[ReportStatus.MANUAL_REVIEW_REQUIRED] in text
-        # The Edit: Suppressed label must be visible on the finding.
         assert "Suppressed" in text

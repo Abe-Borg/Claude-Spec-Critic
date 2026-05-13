@@ -94,15 +94,6 @@ def make_real_world_section_spec(
     return make_paragraph_spec(tmp_path, paragraphs, filename=filename)
 
 
-# ---------------------------------------------------------------------------
-# Chunk 9 — unsafe-markup paragraph builders.
-#
-# Each helper crafts a paragraph whose run-text reads as the supplied
-# ``text`` string for python-docx purposes (so the locator can still find
-# the substring), but whose XML carries the unsafe WordprocessingML
-# construct named after the helper. The detect_unsafe_markup() scan in
-# spec_editor.py should refuse to mutate these paragraphs.
-# ---------------------------------------------------------------------------
 
 
 def _add_plain_run(paragraph_element, text: str) -> None:
@@ -125,9 +116,7 @@ def make_paragraph_with_hyperlink(
     doc.add_paragraph(f"PART 1 GENERAL")
     para = doc.add_paragraph()
     p_elem = para._element
-    # Plain prefix.
     _add_plain_run(p_elem, text + " ")
-    # Hyperlink with anchor attribute (no relationship needed for the unsafe-markup test).
     hyperlink = OxmlElement("w:hyperlink")
     hyperlink.set(qn("w:anchor"), "ref1")
     h_run = OxmlElement("w:r")
@@ -153,19 +142,16 @@ def make_paragraph_with_field_code(
     para = doc.add_paragraph()
     p_elem = para._element
     _add_plain_run(p_elem, text + " ")
-    # Field begin.
     begin_run = OxmlElement("w:r")
     begin = OxmlElement("w:fldChar")
     begin.set(qn("w:fldCharType"), "begin")
     begin_run.append(begin)
     p_elem.append(begin_run)
-    # Field instruction.
     instr_run = OxmlElement("w:r")
     instr = OxmlElement("w:instrText")
     instr.text = " PAGE "
     instr_run.append(instr)
     p_elem.append(instr_run)
-    # Field end.
     end_run = OxmlElement("w:r")
     end = OxmlElement("w:fldChar")
     end.set(qn("w:fldCharType"), "end")
@@ -287,7 +273,6 @@ def make_table_with_unsafe_cell(
     doc.add_paragraph("PART 2 PRODUCTS")
     table = doc.add_table(rows=1, cols=1)
     cell = table.cell(0, 0)
-    # Clear the default paragraph the cell ships with so we control the runs.
     para = cell.paragraphs[0]
     p_elem = para._element
     for child in list(p_elem):

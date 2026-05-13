@@ -79,10 +79,6 @@ class PreprocessResult:
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
 
 
-# Chunk O directive 2: stable rule identifiers so every consumer (report,
-# verification router, diagnostics) can branch on a known string instead of
-# sniffing the human-readable ``type`` field. Defined at module level so
-# tests and downstream modules can import the canonical names.
 DETERMINISTIC_RULE_LEED: str = "leed_reference"
 DETERMINISTIC_RULE_PLACEHOLDER: str = "placeholder"
 DETERMINISTIC_RULE_STALE_CODE_CYCLE: str = "stale_code_cycle"
@@ -94,8 +90,6 @@ DETERMINISTIC_RULE_INVALID_CODE_CYCLE: str = "invalid_code_cycle"
 DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH: str = "duplicate_paragraph"
 DETERMINISTIC_RULE_INCONSISTENT_FILENAME: str = "inconsistent_filename"
 
-# Every rule id in one place so the report / diagnostics / tests can iterate
-# without enumerating constants individually.
 DETERMINISTIC_RULES: frozenset[str] = frozenset({
     DETERMINISTIC_RULE_LEED,
     DETERMINISTIC_RULE_PLACEHOLDER,
@@ -110,17 +104,13 @@ DETERMINISTIC_RULES: frozenset[str] = frozenset({
 })
 
 
-# -----------------------------------------------------------------------------
-# Detection Patterns
-# -----------------------------------------------------------------------------
 
 LEED_PATTERNS: list[tuple[str, str]] = [
-    # Specific patterns first so they claim spans before the generic \bLEED\b
     (r"(?i)\bLEED[-\s]?NC\b", "LEED-NC reference"),
     (r"(?i)\bLEED[-\s]?CI\b", "LEED-CI reference"),
     (r"(?i)\bLEED[-\s]?EB\b", "LEED-EB reference"),
     (r"(?i)\bUSGBC\b", "USGBC reference"),
-    (r"(?i)\bLEED\b", "LEED reference"),  # Generic last
+    (r"(?i)\bLEED\b", "LEED reference"),
 ]
 
 PLACEHOLDER_PATTERNS: list[tuple[str, str]] = [
@@ -141,9 +131,6 @@ PLACEHOLDER_PATTERNS: list[tuple[str, str]] = [
 ]
 
 
-# -----------------------------------------------------------------------------
-# Detection Functions
-# -----------------------------------------------------------------------------
 def _find_matches(
     patterns: Iterable[tuple[str, str]],
     content: str,
@@ -169,7 +156,6 @@ def _find_matches(
         try:
             for match in re.finditer(pattern, content):
                 m_start, m_end = match.start(), match.end()
-                # Skip if this span overlaps with an already-seen span
                 if any(s <= m_start and m_end <= e for s, e in seen_spans):
                     continue
                 seen_spans.append((m_start, m_end))
@@ -218,24 +204,11 @@ def detect_placeholders(content: str, filename: str, max_matches: int = 200) -> 
     )
 
 
-# -----------------------------------------------------------------------------
-# Phase 9 (plan section 13.1) — additional local preflight checks.
-#
-# These run before any model call and surface deterministic issues that should
-# never need an LLM round-trip. Keeping them here means a re-run with toggled
-# project options does not pay tokens for catching a stale ``2019 CBC``
-# reference or an empty section heading.
-# -----------------------------------------------------------------------------
 
-# Years that should trigger a stale-cycle alert when they sit next to a
-# California code abbreviation. Limited to a recent window so we do not flag
-# legitimate historical references far from the current cycle.
 _PLAUSIBLE_CODE_YEARS = {"2010", "2013", "2016", "2019", "2022", "2025"}
 
-# Code abbreviations recognised on the right-hand side of "<year> <code>".
 _CODE_ABBREVS = ("CBC", "CMC", "CPC", "CEC", "CFC", "CALGreen", "CalGreen", "CRC")
 
-# Captures "2019 CBC", "CBC 2019", "2019 California Building Code", etc.
 _STALE_CYCLE_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(
         r"\b(20\d{2})\s+(?:" + "|".join(_CODE_ABBREVS) + r")\b",
@@ -252,21 +225,10 @@ _STALE_CYCLE_PATTERNS: tuple[re.Pattern, ...] = (
     ),
 )
 
-# ASCE 7 edition references. Only flag editions older than the cycle's
-# nominal ASCE 7 edition (e.g. 7-10 / 7-05 when cycle says 7-22).
 _ASCE7_PATTERN = re.compile(r"\bASCE[\s-]*7[\s-]*(\d{2})\b", flags=re.IGNORECASE)
 _ASCE7_PLAUSIBLE_EDITIONS = {"05", "10", "16", "22"}
 
 
-# Chunk D4.2: terms that, when they appear shortly *before* a stale-cycle
-# match, signal the author is describing an old reference rather than
-# requiring it. The window is intentionally small so a negation in a
-# different sentence does not silently suppress an active requirement.
-#
-# Each pattern is a whole-word match (and ``no longer`` is matched as a
-# two-word phrase). The phrase ``not`` is included per the delta plan, but
-# the matcher only treats it as a suppressor when it is genuinely a verb-
-# phrase negation — see ``_should_suppress_stale_cycle``.
 _STALE_CYCLE_SUPPRESS_WINDOW: int = 80
 
 _STALE_CYCLE_SUPPRESS_PATTERNS: tuple[re.Pattern, ...] = (
@@ -275,18 +237,9 @@ _STALE_CYCLE_SUPPRESS_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(r"\bsuperseded\b", flags=re.IGNORECASE),
     re.compile(r"\bwithdrawn\b", flags=re.IGNORECASE),
     re.compile(r"\bobsolete\b", flags=re.IGNORECASE),
-    # "no longer" only as a phrase — single-word ``no`` is too noisy.
     re.compile(r"\bno\s+longer\b", flags=re.IGNORECASE),
-    # ``prior`` and ``historical`` are common enough in spec prose that we
-    # only suppress when the keyword appears in the immediately preceding
-    # window (the regex itself is whole-word).
     re.compile(r"\bprior\b", flags=re.IGNORECASE),
     re.compile(r"\bhistorical\b", flags=re.IGNORECASE),
-    # ``shall not / will not / does not / is not`` plus a small set of
-    # related contractions: the model author is explicitly negating the
-    # requirement that follows. We deliberately do NOT match bare ``not``
-    # because phrases like "Section X is also referenced in 2019 CBC and
-    # not 2022 CBC" would otherwise suppress the wrong year.
     re.compile(r"\b(?:shall|will|does|do|is|are|was|were|must|may|can)\s+not\b", flags=re.IGNORECASE),
     re.compile(r"\b(?:isn't|wasn't|aren't|weren't|won't|don't|doesn't|shan't|mustn't|can't|cannot)\b", flags=re.IGNORECASE),
 )
@@ -311,15 +264,12 @@ def _should_suppress_stale_cycle(
         return False
     pre_start = max(0, match_start - _STALE_CYCLE_SUPPRESS_WINDOW)
     pre_window = content[pre_start:match_start]
-    # Restrict the *preceding* window to the current sentence so a
-    # negation in a previous clause doesn't suppress the active one.
     for term in (".", ";", "\n\n"):
         cut = pre_window.rfind(term)
         if cut >= 0:
             pre_window = pre_window[cut + len(term):]
     post_end = min(len(content), match_end + _STALE_CYCLE_SUPPRESS_WINDOW)
     post_window = content[match_end:post_end]
-    # Same for the *trailing* window: stop at the next sentence boundary.
     for term in (".", ";", "\n\n"):
         cut = post_window.find(term)
         if cut >= 0:
@@ -371,10 +321,6 @@ def detect_stale_code_cycle_references(
             span = (match.start(), match.end())
             if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
                 continue
-            # Chunk D4.2: skip citations preceded by a negation / historical
-            # keyword in the immediate window. Recorded spans still get
-            # tracked above so a suppressed match doesn't bleed into the
-            # overlap dedup for downstream patterns.
             if _should_suppress_stale_cycle(content, span[0], span[1]):
                 seen_spans.append(span)
                 continue
@@ -410,9 +356,6 @@ def detect_stale_code_cycle_references(
             span = (match.start(), match.end())
             if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
                 continue
-            # Chunk D4.2: same suppression for ASCE 7 — a sentence that
-            # explicitly says "no longer use ASCE 7-10" is descriptive,
-            # not a directive to follow it.
             if _should_suppress_stale_cycle(content, span[0], span[1]):
                 seen_spans.append(span)
                 continue
@@ -436,9 +379,6 @@ def detect_stale_code_cycle_references(
     return alerts
 
 
-# Numbered CSI-style heading at the start of a paragraph: "1.01", "2.3 ",
-# "PART 1", "1.0 GENERAL", etc. We anchor at the start of a paragraph
-# (preceded by paragraph delimiter "\n\n" or string start).
 _HEADING_LINE_RE = re.compile(
     r"(?:^|\n\n)\s*(?P<num>(?:PART\s+\d+|\d+(?:\.\d+){0,2}))\s+(?P<title>[^\n]{1,120})",
     flags=re.IGNORECASE,
@@ -516,7 +456,6 @@ def detect_duplicate_headings(
     for number, occurrences in counts.items():
         if len(occurrences) < 2:
             continue
-        # Report each occurrence after the first so users see every duplicate.
         for title, h_start in occurrences[1:]:
             ctx_start = max(0, h_start - 60)
             ctx_end = min(len(content), h_start + 120)
@@ -537,9 +476,6 @@ def detect_duplicate_headings(
     return alerts
 
 
-# CSI-style filenames: "23 21 13 - Hydronic Piping.docx" etc. We accept either
-# space-separated triples or hyphen-separated triples but flag mixed styles
-# within a single project.
 _CSI_FILENAME_RE = re.compile(
     r"^\s*(\d{2})\s*(?P<sep>[\s-])\s*(\d{2})\s*(?P=sep)\s*(\d{2})\b"
 )
@@ -589,26 +525,7 @@ def detect_inconsistent_file_naming(filenames: list[str]) -> list[dict]:
     return alerts
 
 
-# -----------------------------------------------------------------------------
-# Chunk O — additional deterministic checks.
-#
-# These rules expand the local preflight surface so simple, repetitive,
-# high-confidence issues can be found without paying LLM tokens. Each rule:
-#   - Produces the same alert-dict shape as the existing detectors.
-#   - Stamps ``deterministic_rule`` with a stable id (see DETERMINISTIC_RULE_*).
-#   - Documents its intentional scope so we do not "overreach into code
-#     interpretation" (Chunk O directive 3).
-# -----------------------------------------------------------------------------
 
-# Template markers that the existing PLACEHOLDER_PATTERNS does *not* catch.
-# Each rule below has been chosen to minimize false positives:
-#   - TODO / FIXME / XXX / HACK / NOTE — require a delimiter ("\bTODO:" or
-#     "TODO followed by an uppercase word" so phrases like "to do list"
-#     don't trigger).
-#   - "???"  — three or more consecutive question marks; valid prose almost
-#     never has this.
-#   - "Lorem ipsum" — fragment of the canonical lorem-ipsum boilerplate
-#     occasionally left in template starter specs.
 _TEMPLATE_MARKER_PATTERNS: list[tuple[str, str]] = [
     (r"\bTODO\s*:", "TODO marker"),
     (r"\bTODO\b(?=\s+[A-Z])", "TODO marker"),
@@ -642,15 +559,6 @@ def detect_unresolved_template_markers(
     )
 
 
-# Known California code-cycle years. California publishes a new cycle every
-# three years (with a six-month grace period); ``2025`` is the active cycle
-# and ``2028`` is the next anticipated cycle. Any year/code citation outside
-# this set is almost certainly a typo or fabrication (e.g. ``2018 CBC``).
-#
-# Distinct from ``_PLAUSIBLE_CODE_YEARS`` above (used by the *stale*-cycle
-# detector to flag known historical cycles that aren't current). Stale and
-# invalid are different problems: ``2019 CBC`` is stale-but-historical;
-# ``2018 CBC`` is invalid because California never published a 2018 cycle.
 _VALID_CALIFORNIA_CODE_YEARS: frozenset[str] = frozenset(_PLAUSIBLE_CODE_YEARS) | {"2028"}
 
 
@@ -705,11 +613,6 @@ def detect_invalid_code_cycle_strings(
     return alerts
 
 
-# Minimum length (in characters) for a paragraph to be considered for the
-# duplicate-paragraph detector. Short paragraphs ("PART 1", "SECTION 23 21 13",
-# numbered subheadings, etc.) repeat by design and would generate noise. 80
-# characters is roughly one short sentence — large enough that an exact
-# duplicate is meaningful, small enough to catch a single repeated bullet.
 _DUPLICATE_PARAGRAPH_MIN_LENGTH: int = 80
 
 
@@ -745,9 +648,6 @@ def detect_duplicate_paragraphs(
     seen: dict[str, list[tuple[str, int]]] = {}
     cursor = 0
     for para in content.split("\n\n"):
-        # ``cursor`` is the absolute offset of ``para`` in the original
-        # content. Bump it by the paragraph length + the 2-char separator
-        # we just consumed so subsequent positions stay accurate.
         para_start = cursor
         cursor += len(para) + 2
         stripped = para.strip()
@@ -760,7 +660,6 @@ def detect_duplicate_paragraphs(
     for occurrences in seen.values():
         if len(occurrences) < 2:
             continue
-        # Report each occurrence after the first so users see every dup.
         for original, position in occurrences[1:]:
             preview = original if len(original) <= 140 else original[:140] + "…"
             alerts.append(

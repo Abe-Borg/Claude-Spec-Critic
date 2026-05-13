@@ -83,9 +83,6 @@ def deserialize_batch_job(payload: dict[str, Any]) -> BatchJob:
 
 
 def serialize_extracted_spec(spec: ExtractedSpec) -> dict[str, Any]:
-    # Phase 5.5 (audit Section 9.5): record both the extracted-content digest
-    # and the source-file digest so deserialize can detect that the spec was
-    # changed on disk between save and resume.
     return {
         "filename": spec.filename,
         "content": spec.content,
@@ -105,9 +102,6 @@ def deserialize_extracted_spec(payload: dict[str, Any]) -> ExtractedSpec:
         source_path=str(payload.get("source_path", "")),
         source_format=str(payload.get("source_format", "unknown")),
     )
-    # Phase 5.5: warn when the on-disk file no longer matches the saved
-    # digest. Resume continues — the saved content is still authoritative
-    # for the in-flight batch — but the user is told the file changed.
     expected_content = payload.get("content_sha256")
     if expected_content:
         actual_content = _content_digest(spec.content)
@@ -140,8 +134,6 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         "explanation": result.explanation,
         "sources": list(result.sources),
         "correction": result.correction,
-        # Phase 3 evidence model fields. Missing keys deserialize to safe
-        # defaults so legacy resume payloads still load.
         "grounded": result.grounded,
         "model_used": result.model_used,
         "escalated": result.escalated,
@@ -149,18 +141,11 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         "web_search_requests": result.web_search_requests,
         "successful_source_count": result.successful_source_count,
         "search_error_count": result.search_error_count,
-        # Chunk H source-grounding evidence + verification profile. All
-        # are optional on the way in so legacy payloads (pre-Chunk H)
-        # still deserialize with safe defaults.
         "searched_sources": list(result.searched_sources),
         "cited_sources": list(result.cited_sources),
         "accepted_sources": list(result.accepted_sources),
         "rejected_sources": [dict(r) for r in result.rejected_sources],
         "verification_profile": result.verification_profile,
-        # Chunk I: verification mode round-trips through resume state so
-        # a session resumed after a crash still reports each finding's
-        # original routing decision. Pre-Chunk-I payloads deserialize
-        # with the empty-string default below.
         "verification_mode": result.verification_mode,
     }
 
@@ -197,10 +182,6 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
 
 
 def serialize_edit_proposal(proposal: EditProposal | None) -> dict[str, Any] | None:
-    # Chunk L: persist the structured edit proposal alongside the legacy
-    # fields. Findings with no proposal (REPORT_ONLY) round-trip as None
-    # so a resumed session sees the same "no edit half" state the original
-    # run saw.
     if proposal is None:
         return None
     return {
@@ -259,38 +240,14 @@ def serialize_finding(finding: Finding, *, _include_originals: bool = True) -> d
         "verification": serialize_verification_result(finding.verification),
         "anchorText": finding.anchorText,
         "insertPosition": finding.insertPosition,
-        # Chunk K3: round-trip the evidence id so resume restores the
-        # same locator behavior the original review picked.
         "evidenceElementId": finding.evidenceElementId,
-        # Chunk L: round-trip the structured edit proposal so a resumed
-        # session sees the same REPORT_ONLY vs. edit split the original
-        # parser produced. Pre-Chunk-L payloads load with this missing
-        # and the deserializer falls back to ``as_edit_proposal()`` on
-        # the loaded legacy fields.
         "edit_proposal": serialize_edit_proposal(finding.edit_proposal),
-        # Chunk M: stable finding id (review findings) and the cross-check
-        # dependency-tracking fields. Pre-Chunk-M payloads load with these
-        # missing; the deserializer treats them as empty so a resumed run
-        # falls back to the heuristic suppression path until the next
-        # cross-check pass populates the new fields.
         "finding_id": finding.finding_id,
         "upstream_finding_ids": list(finding.upstream_finding_ids),
         "independent_evidence_ids": list(finding.independent_evidence_ids),
         "suppression_reason": finding.suppression_reason,
-        # Chunk 7: round-trip the parse-time demotion reason so a resumed
-        # session can still explain why a finding lost its edit slot
-        # (e.g., "EDIT action missing required existingText"). Pre-Chunk-7
-        # payloads load with this missing and the deserializer treats it
-        # as None — the legacy locator/edit-candidate fallback paths
-        # already handle the no-proposal case without it.
         "demotion_reason": finding.demotion_reason,
     }
-    # Chunk 8: persist per-file pre-merge originals so resume restores the
-    # same per-file edit identity the dedup pass produced. The originals
-    # are themselves singleton findings (their own ``occurrence_originals``
-    # is empty), so the recursion is bounded at one level — but the
-    # ``_include_originals=False`` guard makes that explicit and prevents
-    # infinite nesting if a future code path nests merged findings.
     if _include_originals:
         payload["occurrence_originals"] = [
             serialize_finding(orig, _include_originals=False)
@@ -313,12 +270,6 @@ def deserialize_finding(payload: dict[str, Any], *, _include_originals: bool = T
         evidence_id = str(evidence_id_raw).strip() or None
     proposal = deserialize_edit_proposal(payload.get("edit_proposal"))
     action_type = str(payload.get("actionType", "EDIT"))
-    # Chunk L: legacy resume payloads (pre-Chunk-L) lack ``edit_proposal``.
-    # Synthesize one from the legacy fields so the loaded Finding behaves
-    # identically to a freshly-parsed Finding. The synthesis only fires
-    # when the action type is a real edit; REPORT_ONLY-shaped legacy
-    # payloads (rare; only present in test fixtures) correctly land at
-    # ``proposal=None``.
     if proposal is None and action_type.strip().upper() in EDIT_ACTION_TYPES:
         proposal = EditProposal(
             action_type=action_type.strip().upper(),
@@ -337,10 +288,6 @@ def deserialize_finding(payload: dict[str, Any], *, _include_originals: bool = T
             target_element_id=evidence_id,
             edit_confidence=float(payload.get("confidence", 0.5)),
         )
-    # Chunk M: legacy resume payloads (pre-Chunk-M) lack the dependency
-    # tracking fields. Treat them as empty/unset so a resumed run behaves
-    # like the old heuristic path until the next cross-check pass
-    # populates the new fields.
     upstream_ids_raw = payload.get("upstream_finding_ids", []) or []
     upstream_ids = [str(uid).strip() for uid in upstream_ids_raw if str(uid).strip()]
     independent_ids_raw = payload.get("independent_evidence_ids", []) or []
@@ -349,10 +296,6 @@ def deserialize_finding(payload: dict[str, Any], *, _include_originals: bool = T
     suppression_reason = str(suppression_raw) if suppression_raw is not None else None
     demotion_raw = payload.get("demotion_reason")
     demotion_reason = str(demotion_raw) if demotion_raw is not None else None
-    # Chunk 8: load per-file originals when present. Pre-Chunk-8 payloads
-    # lack this field and load with an empty list, which keeps the legacy
-    # behavior (apply_edits routes non-representative affected files to
-    # manual review since there is no per-file edit text to use).
     if _include_originals:
         originals_raw = payload.get("occurrence_originals", []) or []
         occurrence_originals = [
@@ -402,9 +345,6 @@ def serialize_review_result(result: ReviewResult | None) -> dict[str, Any] | Non
         "stop_reason": result.stop_reason,
         "parse_status": result.parse_status,
         "cross_check_status": result.cross_check_status,
-        # Chunk M: persist suppressed cross-check findings so a resumed
-        # session restores the same report-time visibility into which
-        # coordination claims were dropped and why.
         "suppressed_findings": [serialize_finding(f) for f in result.suppressed_findings],
     }
 
@@ -442,9 +382,6 @@ def serialize_submission(submission: BatchSubmission) -> dict[str, Any]:
         "code_cycle": submission.cycle_label,
         "cross_check_enabled": submission.cross_check_enabled,
         "prepared_specs": [serialize_extracted_spec(s) for s in (submission.prepared_specs or [])],
-        # Chunk O — persist the remaining deterministic preflight alerts so a
-        # resume picks them up on the final PipelineResult without re-running
-        # extraction. Older payloads without these keys load with empty lists.
         "code_cycle_alerts": list(submission.code_cycle_alerts),
         "structural_alerts": list(submission.structural_alerts),
         "naming_alerts": list(submission.naming_alerts),
@@ -486,8 +423,6 @@ def serialize_collected_batch_state(state: CollectedBatchState) -> dict[str, Any
         "placeholder_alerts": list(state.placeholder_alerts),
         "cross_check_skipped_due_to_missing_specs": bool(state.cross_check_skipped_due_to_missing_specs),
         "truncated_specs": list(state.truncated_specs),
-        # Chunk O — the collected state carries through to finalize, so
-        # persist the deterministic alert lists alongside the existing pair.
         "code_cycle_alerts": list(state.code_cycle_alerts),
         "structural_alerts": list(state.structural_alerts),
         "naming_alerts": list(state.naming_alerts),
@@ -510,8 +445,6 @@ def deserialize_collected_batch_state(payload: dict[str, Any], submission: Batch
         cross_check_result=deserialize_review_result(payload.get("cross_check_result")),
         cross_check_skipped_due_to_missing_specs=bool(payload.get("cross_check_skipped_due_to_missing_specs", False)),
         truncated_specs=[str(v) for v in payload.get("truncated_specs", [])],
-        # Chunk O — accept missing keys from older payloads by falling back to
-        # the submission's lists (or empty for legacy payloads with neither).
         code_cycle_alerts=list(payload.get("code_cycle_alerts", submission.code_cycle_alerts)),
         structural_alerts=list(payload.get("structural_alerts", submission.structural_alerts)),
         naming_alerts=list(payload.get("naming_alerts", submission.naming_alerts)),

@@ -116,19 +116,8 @@ from .verification_router import (
 )
 
 
-# Chunk 6: default max continuation count for the real-time path drops
-# from the legacy 5 to 2. The deep-reasoning override (4) lives in
-# :mod:`retry_policy.max_continuations_for_mode` and is applied by
-# :func:`select_routing` after the mode is selected, so a single map
-# governs the per-mode cap and a future tuning pass touches one
-# constant. The batch wave loop bounds continuations through
-# ``MAX_VERIFICATION_WAVES`` instead, so this field is only consulted
-# on the real-time path.
 _DEFAULT_MAX_CONTINUATIONS = DEFAULT_MAX_CONTINUATIONS
 
-# Routing trace tags. Kept short so a diagnostics dump can bucket by tag
-# without parsing free text. Stable on purpose — adding a new tag is fine
-# but renaming an existing one breaks the aggregation.
 TRACE_LOCAL_SKIP = "local_skip"
 TRACE_LOCAL_SKIP_BYPASSED = "local_skip_bypassed_by_caller"
 TRACE_CACHED_MODE = "cached_mode_replay"
@@ -225,11 +214,6 @@ class VerificationRoutingDecision:
     escalated: bool
     trace_reason: str
 
-    # -------------------------------------------------------------------
-    # Serialization. Returns a JSON-safe dict so the decision can be
-    # stashed in ``request_map`` / ``request_contexts`` and round-tripped
-    # by the wave parser without depending on pickle or pydantic.
-    # -------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -293,9 +277,6 @@ class VerificationRoutingDecision:
         )
 
 
-# ---------------------------------------------------------------------------
-# Selector
-# ---------------------------------------------------------------------------
 
 
 def _trace_for(
@@ -317,10 +298,6 @@ def _trace_for(
     if mode is VerificationMode.DEEP_REASONING:
         return TRACE_CRITICAL_CALIFORNIA
     if mode is VerificationMode.STRICT_STRUCTURED:
-        # STRICT_STRUCTURED has two routing branches with different policy
-        # implications: GRIPES (any non-internal-coord profile), and
-        # non-GRIPES internal-coord. Split the trace so diagnostics can
-        # bucket them separately.
         if severity != "GRIPES" and profile is VerificationProfile.INTERNAL_COORDINATION:
             return TRACE_INTERNAL_COORD_STRICT
         return TRACE_GRIPES_STRICT
@@ -398,10 +375,6 @@ def select_routing(
         local_skip = False
 
     if finding is None:
-        # Pure-defensive fallback. Real callers always have a finding;
-        # tests sometimes synthesize a "what would routing pick for nothing"
-        # check, and the answer should be STANDARD_REASONING with empty
-        # identity fields.
         severity = "GRIPES"
         profile = VerificationProfile.CONSTRUCTABILITY
         finding_id = ""
@@ -410,10 +383,6 @@ def select_routing(
         profile = classify_finding_profile(finding)
         finding_id = finding.finding_id or ""
 
-    # Selecting the mode itself is delegated to :mod:`verification_modes`
-    # so the priority order (local_skip → escalated → critical-AHJ → GRIPES
-    # → internal-coord → default) stays in one place. The router applies
-    # the rules in the documented order.
     mode = select_verification_mode(
         finding,
         local_skip=local_skip,
@@ -422,36 +391,20 @@ def select_routing(
     )
     policy: ModePolicy = mode_policy(mode)
 
-    # Model: operator/test override wins, otherwise the mode's model.
-    # Falls back to ``initial_verification_model()`` for the (rare) case
-    # where the mode policy returns an empty string — same defensive
-    # fallback the legacy ``_run_verification_call`` used.
     if model_override:
         selected_model = model_override
     else:
         selected_model = policy.model or initial_verification_model()
 
-    # Thinking: mode opts out OR model does not support adaptive thinking.
-    # Both gates are required so an operator override to Haiku does not
-    # crash the request build. The actual ``thinking`` key only lands on
-    # the request when ``apply_thinking_config`` agrees, but the decision
-    # records the intent.
     thinking_enabled = (
         policy.thinking_enabled and model_supports_adaptive_thinking(selected_model)
     )
 
-    # Search budget: severity-based, identical across profiles. LOCAL_SKIP
-    # turns web search off entirely; every other mode uses the full budget.
     if policy.web_search_enabled:
         max_uses = profile_max_uses(profile, severity)
     else:
         max_uses = 0
 
-    # Tool inclusion: defer to the env-gated helper at request-build time
-    # unless the caller passed an explicit override. Storing ``None`` here
-    # would leak through to the dict-form, so we resolve to a bool now
-    # using the env helper. Importing locally avoids a cycle through
-    # :mod:`batch`.
     if include_verdict_tool is None:
         from .batch import verification_request_includes_verdict_tool
         include_verdict_tool = verification_request_includes_verdict_tool()
@@ -465,10 +418,6 @@ def select_routing(
         profile=profile,
     )
 
-    # Chunk 6: derive the per-mode continuation cap from the centralized
-    # policy when the caller did not override it. Default modes get 2
-    # (drops from the legacy 5); DEEP_REASONING gets 4 so a legitimate
-    # CRITICAL CALIFORNIA_AHJ finding still has room to converge.
     if max_continuations is None:
         max_continuations = max_continuations_for_mode(mode.value)
 
@@ -491,9 +440,6 @@ def select_routing(
     )
 
 
-# ---------------------------------------------------------------------------
-# Request builder
-# ---------------------------------------------------------------------------
 
 
 def build_verification_tools_from_decision(
@@ -509,19 +455,12 @@ def build_verification_tools_from_decision(
     helper, so a decision built with one value remains internally
     consistent even if the env toggle flips mid-flight.
     """
-    # Local import — :mod:`batch` already depends on :mod:`verifier`, and
-    # :mod:`verifier` will depend on this module, so importing batch at
-    # module load would form a cycle.
     from .batch import build_verification_tools_for_profile
     from .structured_schemas import verification_verdict_tool
 
     tool_list = build_verification_tools_for_profile(
         decision.profile, decision.severity
     )
-    # Drop the verdict tool when the decision says not to attach it. The
-    # profile-aware builder always appends it when
-    # ``verification_request_includes_verdict_tool()`` is True at its call
-    # site; we strip here so the decision is the final authority.
     web_tool_list: list[dict] = []
     verdict_tool: dict | None = None
     for tool in tool_list:
@@ -530,17 +469,11 @@ def build_verification_tools_from_decision(
         else:
             verdict_tool = tool
 
-    # Mode-scaled max_uses. The real-time path already overwrote this; the
-    # batch path used to ignore it. Centralizing here closes that gap.
     if web_tool_list and decision.web_search_max_uses != web_tool_list[0].get("max_uses"):
         web_tool_list[0]["max_uses"] = decision.web_search_max_uses
 
     out: list[dict] = list(web_tool_list)
     if decision.include_verdict_tool:
-        # If the profile builder produced a verdict tool, keep it; otherwise
-        # synthesize one. This handles the rare case where the env flag was
-        # off when the profile builder ran but the decision was built
-        # asking for the verdict tool.
         out.append(verdict_tool if verdict_tool is not None else verification_verdict_tool())
     return out
 
@@ -592,12 +525,6 @@ def build_verification_request(
 
     tools = build_verification_tools_from_decision(decision)
 
-    # Phase-aware cache wrapping — the cache helpers consult the registry
-    # entry for ``decision.cache_phase`` so the verification retry /
-    # continuation paths reach for the same prefix the initial call
-    # cached. Each phase has its own row in the cache policy registry,
-    # so a future tuning pass that wants the retry path to skip caching
-    # touches one map.
     system_payload = system_prompt_with_cache(system_prompt, phase=decision.cache_phase)
     tools_payload = tools_with_cache(tools, phase=decision.cache_phase)
 
@@ -608,15 +535,8 @@ def build_verification_request(
         "tools": tools_payload,
         "messages": messages,
     }
-    # Thinking: the decision encodes the intent (mode policy AND model
-    # capability). The helper still applies the per-phase no-thinking
-    # opt-out for triage, but the verification phases are all eligible
-    # so the gate here is the union of (mode allows, model supports).
     if decision.thinking_enabled:
         apply_thinking_config(params, model=decision.model, phase=decision.cache_phase)
-    # Effort: paired with thinking per Chunk D1.2. The helper is model-
-    # aware and phase-aware on its own; we always call it (the helper
-    # omits ``output_config`` for unsupported models).
     apply_effort_config(params, model=decision.model, phase=decision.cache_phase)
 
     if include_service_tier:
@@ -627,9 +547,6 @@ def build_verification_request(
     return params
 
 
-# ---------------------------------------------------------------------------
-# Result stamping
-# ---------------------------------------------------------------------------
 
 
 def apply_routing_to_result(
@@ -656,9 +573,6 @@ def apply_routing_to_result(
         return
     result.verification_profile = decision.profile.value
     result.verification_mode = decision.mode.value
-    # ``escalated`` is the runtime "this result came from Opus" flag. The
-    # decision records the same fact for callers that want to inspect the
-    # routing without consulting the result.
     result.escalated = decision.escalated
 
 

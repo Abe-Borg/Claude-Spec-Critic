@@ -38,11 +38,6 @@ from typing import Iterable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit, unquote
 
 
-# Tracking parameters that mean the same URL when stripped. Keep this
-# list conservative — adding too aggressive a filter could collapse two
-# semantically different pages (e.g. ``?page=2`` vs ``?page=3``).
-# These are the well-known cross-site analytics tags that web search
-# results pages routinely append. The verifier never depends on them.
 _TRACKING_QUERY_KEYS = frozenset({
     "utm_source",
     "utm_medium",
@@ -63,9 +58,6 @@ _TRACKING_QUERY_KEYS = frozenset({
 })
 
 
-# Schemes we treat as equivalent for grounding purposes. ``http`` and
-# ``https`` for the same host+path are clearly the same source; the
-# search tool occasionally returns one when the model cites the other.
 _EQUIVALENT_SCHEMES = frozenset({"http", "https"})
 
 
@@ -82,9 +74,6 @@ def _strip_default_port(host: str, scheme: str) -> str:
     bare, _, port = host.rpartition(":")
     if not bare:
         return host
-    # After scheme folding the canonical scheme is "https"; strip both
-    # default ports (80 from the original http, 443 from https) so they
-    # never break a comparison.
     if scheme == "https" and port in ("80", "443"):
         return bare
     if scheme == "http" and port == "80":
@@ -127,16 +116,8 @@ def normalize_url(url: str | None) -> str:
     cleaned = url.strip()
     if not cleaned:
         return ""
-    # Many models emit URLs wrapped in angle brackets, markdown link
-    # syntax, or trailing punctuation. Strip the common cases so
-    # comparison-with-search-results doesn't fail on cosmetic noise.
     if cleaned.startswith("<") and cleaned.endswith(">"):
         cleaned = cleaned[1:-1].strip()
-    # Strip any combination of trailing punctuation. The previous loop
-    # iterated each character class separately and stopped after the
-    # first one stripped, so an input like ``"...x).""`` would strip
-    # ``.`` but leave ``)`` in place. The single-character loop here
-    # peels off whatever trailing punctuation is present in any order.
     trailing_punct = set(",;)]}.'\"")
     while cleaned and cleaned[-1] in trailing_punct:
         cleaned = cleaned[:-1].rstrip()
@@ -145,46 +126,30 @@ def normalize_url(url: str | None) -> str:
     try:
         parts = urlsplit(cleaned)
     except ValueError:
-        # urlsplit can ValueError on extremely malformed input (e.g. a
-        # bare port like ``http://:80``). Treat that as un-normalizable.
         return ""
     scheme = (parts.scheme or "").lower()
-    # Bare hosts ("dgs.ca.gov/x") become netloc=="" with everything in
-    # ``path``. Best-effort recovery: assume https.
     if not scheme and not parts.netloc and parts.path:
         return normalize_url("https://" + cleaned)
     if scheme in _EQUIVALENT_SCHEMES:
         scheme = "https"
     host = (parts.netloc or "").lower()
-    # Strip credentials (``user:pass@host``) — only an unauthenticated
-    # source can plausibly match a public search result.
     if "@" in host:
         host = host.split("@", 1)[1]
     host = host.rstrip(".")
     host = _strip_default_port(host, scheme)
     path = _strip_trailing_slash(parts.path or "")
-    # Sort + filter query params. ``parse_qsl`` decodes percent-escapes
-    # so two URLs that differ only in encoding compare equal.
     raw_query = parts.query or ""
     if raw_query:
         items = parse_qsl(raw_query, keep_blank_values=True)
         kept = [(k, v) for k, v in items if k.lower() not in _TRACKING_QUERY_KEYS]
         kept.sort()
-        # Re-encode by hand instead of urlencode so we keep decoded values
-        # stable (urlencode would re-percent-encode the same way each
-        # call, which is what we want anyway, but parse_qsl already
-        # decoded — round-tripping through urlencode is the right move).
         from urllib.parse import urlencode
         query = urlencode(kept)
     else:
         query = ""
-    # Drop fragment unconditionally.
     return urlunsplit((scheme, host, path, query, ""))
 
 
-# Rejection reasons emitted by :func:`validate_cited_sources`. These
-# string sentinels surface in reports and diagnostics; renaming them
-# would invalidate cached entries that include them.
 REJECT_UNGROUNDED = "ungrounded"
 REJECT_MALFORMED = "malformed"
 REJECT_EMPTY = "empty"
@@ -258,8 +223,6 @@ def validate_cited_sources(
             rejected_records.append({"url": raw, "reason": REJECT_MALFORMED})
             continue
         if normalized in searched_set:
-            # De-duplicate against the *normalized* form so two cosmetically
-            # different citations to the same source render once.
             if normalized in seen_normalized:
                 continue
             seen_normalized.add(normalized)
@@ -295,9 +258,6 @@ def is_grounded_against_search_results(
     return validate_cited_sources(cited, searched).has_any_grounded_citation()
 
 
-# ---------------------------------------------------------------------------
-# Structured search-evidence records
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

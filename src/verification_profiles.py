@@ -60,12 +60,6 @@ class VerificationProfile(str, Enum):
     or a duplicate. Web search adds no signal."""
 
 
-# Keyword sets per profile. Order matters: classification checks
-# California first (so a "CBC + DSA" finding becomes CALIFORNIA_AHJ,
-# not CODE_STANDARD), then manufacturer, then code/standard, then
-# internal-coordination, with constructability as the last-resort
-# default for findings that have substantive issue text but no clear
-# kind signal.
 
 _CALIFORNIA_KEYWORDS = (
     "california",
@@ -158,7 +152,7 @@ _INTERNAL_COORDINATION_KEYWORDS = (
     "typographical",
     "leed",
     "missing placeholder",
-    "self-referen",  # "self-referential", "self-references"
+    "self-referen",
     "inconsistent within",
 )
 
@@ -210,40 +204,24 @@ def classify_finding_profile(finding) -> VerificationProfile:
     if not text:
         return VerificationProfile.CONSTRUCTABILITY
 
-    # 1. Internal coordination — checked first.
     if any(kw in text for kw in _INTERNAL_COORDINATION_KEYWORDS):
         return VerificationProfile.INTERNAL_COORDINATION
 
-    # 2. California / AHJ.
     if any(kw in text for kw in _CALIFORNIA_KEYWORDS):
         return VerificationProfile.CALIFORNIA_AHJ
 
-    # 3. Manufacturer.
     if any(kw in text for kw in _MANUFACTURER_KEYWORDS):
         return VerificationProfile.MANUFACTURER
 
-    # 4. Code / standard. ``codeReference`` is the most reliable signal —
-    # a finding that names a code section is by definition a code claim.
     code_ref = (getattr(finding, "codeReference", None) or "").strip()
     if code_ref:
         return VerificationProfile.CODE_STANDARD
     if any(kw in text for kw in _CODE_STANDARD_KEYWORDS):
         return VerificationProfile.CODE_STANDARD
 
-    # 5. Default.
     return VerificationProfile.CONSTRUCTABILITY
 
 
-# ---------------------------------------------------------------------------
-# Search-budget policy
-# ---------------------------------------------------------------------------
-#
-# Flat severity-based budget — the same ceiling applies to every profile.
-# The grounding invariant + internal-coordination prompt guidance are the
-# safeguards that prevent low-signal findings from wasting their budget;
-# we don't carve a separate budget tier per kind. The actual map lives in
-# :mod:`api_config` so the web-search tool builder and the verifier read
-# from one source.
 
 
 def profile_max_uses(

@@ -43,10 +43,6 @@ class BatchJob:
     request_map: dict
     created_at: float
     status: str = "submitted"
-    # Populated by start_batch_verification so collect_batch_verification_results
-    # can pass the exact submitted list (not the full pre-pass input) to
-    # collect_verification_batch_results, avoiding finding-index mismatch when
-    # local-skip or cache-hit findings are filtered out before submission.
     submitted_findings: list | None = None
 
 
@@ -82,12 +78,6 @@ def submit_review_batch(
     if not specs:
         raise ValueError("No specs to submit for batch review")
     client = _get_client()
-    # Chunk 3: route every spec through the central review request builder
-    # so the batch path, the real-time path, and the token preflight share
-    # the same request-shape contributors (system prompt + cache control,
-    # user message with paragraph map / pre_detected alerts, structured
-    # tool, thinking, effort, max_tokens, service tier). A future change
-    # to any of those lands in one place rather than three.
     batch_requests = []
     request_map = {}
     any_extended_output = False
@@ -111,10 +101,6 @@ def submit_review_batch(
         )
         if built.allow_extended_output:
             any_extended_output = True
-        # Fail-fast guard: 300k requires the batch beta header. Plan
-        # Sprint 2 item 8 — never let a 300k request slip through without
-        # it. The builder still computes ``max_tokens`` for the extended
-        # path so the check fires before we hand the params to the SDK.
         betas = (
             [BATCH_OUTPUT_BETA]
             if (built.allow_extended_output and hasattr(client, "beta"))
@@ -163,8 +149,6 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
         cache = extract_cache_usage(usage)
         stop_reason = getattr(message, "stop_reason", None)
 
-        # Tool-use stops are the success path when the model invoked the
-        # ``submit_review_findings`` custom tool.
         if stop_reason not in ("end_turn", "tool_use"):
             results[custom_id] = ReviewResult(
                 findings=[], raw_response=response_text, stop_reason=stop_reason,
@@ -215,7 +199,6 @@ def _extract_api_error_message(error_obj) -> str:
     """
     if error_obj is None:
         return ""
-    # Try to get the nested error message
     if hasattr(error_obj, "error"):
         inner = error_obj.error
         if hasattr(inner, "message"):
@@ -224,25 +207,12 @@ def _extract_api_error_message(error_obj) -> str:
             if error_type:
                 return f"{error_type}: {msg}"
             return msg
-    # Try direct message attribute
     if hasattr(error_obj, "message"):
         return str(error_obj.message)
-    # Fall back to str, but truncate long reprs
     s = str(error_obj)
     return s[:200] if len(s) > 200 else s
 
 
-# Chunk D: ``retrieve_verification_results`` (text-only legacy batch
-# parser) was removed because (a) it had no callers, and (b) it pre-dates
-# structured tool use and treated every non-``end_turn`` stop reason as
-# incomplete. Under structured outputs the model frequently stops with
-# ``tool_use`` after emitting ``submit_verification_verdict``; the legacy
-# function would have misclassified those as failures. The canonical
-# parser lives in ``verifier.parse_verification_response`` and is consumed
-# by both the real-time path (``verifier._run_verification_call``) and the
-# batch wave path (``verifier._classify_wave_results``). The
-# detail-retrieval helper below remains; it returns the raw batch result
-# envelopes so wave parsing in ``verifier`` owns the parse decisions.
 
 
 def retrieve_verification_results_detailed(job: BatchJob) -> dict[str, Any]:
@@ -308,8 +278,7 @@ def build_verification_tools_for_profile(
     existing helper and avoid a circular import — :mod:`verifier`
     already depends on :mod:`batch`, not the reverse.
     """
-    from .api_config import build_web_search_tool  # local import — keeps the
-    # `api_config` import surface inside this module small
+    from .api_config import build_web_search_tool
     from .verification_profiles import profile_max_uses as _profile_max_uses
 
     max_uses = _profile_max_uses(profile, severity)
@@ -329,44 +298,14 @@ def _build_verification_request_params(
     severity: str | None = None,
     profile: Any = None,
 ) -> dict[str, Any]:
-    # Chunk 4: this helper is now a legacy entry point. The production
-    # batch path (``submit_verification_batch``) routes through
-    # :func:`src.verification_routing.build_verification_request` so
-    # the shared routing decision (model, mode, thinking, search budget,
-    # tool inclusion) governs both batch and real-time. This function
-    # is preserved as a thin legacy adapter so tests that build a
-    # verification request from ``(severity, profile)`` rather than
-    # from a Finding still produce the pre-Chunk-4 (profile-only,
-    # mode-unaware) request shape. New callers should use
-    # :func:`src.verification_routing.build_verification_request`.
-    #
-    # Chunk D1.1: this helper builds either the initial verification
-    # request (no assistant_content) or a pause_turn resumption request
-    # (assistant_content carries the prior assistant blocks). Server-tool
-    # pause_turn is resumed by re-sending the assistant content as-is;
-    # no synthetic ``"continue"`` user turn is appended.
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     if assistant_content is not None:
         messages.append({"role": "assistant", "content": assistant_content})
     selected_model = model or VERIFICATION_MODEL
-    # Phase 2.5 (audit Section 6.5, Option B) / Chunk C: include the verdict
-    # tool alongside web_search via the shared :func:`build_verification_tools`
-    # helper so every verification path agrees on the tool list. The system
-    # prompt is built by the caller and must mirror this decision (see
-    # ``verifier._get_verification_system_prompt``).
-    # Chunk H: prefer the profile-aware helper when the caller supplied a
-    # profile so the batch path uses the same per-kind budget as the
-    # real-time path. Falling back to the severity-only helper keeps
-    # backward compatibility for callers (and tests) that have not
-    # opted in.
     if profile is not None:
         tool_list = build_verification_tools_for_profile(profile, severity)
     else:
         tool_list = build_verification_tools(severity)
-    # Chunk J: PHASE_VERIFICATION cache policy applies to both the
-    # initial wave and the retry/continuation builders below. All three
-    # share the same system prompt and tool list across the wave, which
-    # is exactly the prefix-reuse pattern caching is designed for.
     params: dict[str, Any] = {
         "model": selected_model,
         "max_tokens": verification_max_tokens(model=selected_model),
@@ -375,10 +314,6 @@ def _build_verification_request_params(
         "messages": messages,
     }
     apply_thinking_config(params, model=selected_model, phase=PHASE_VERIFICATION)
-    # Chunk D1.2: pair effort with thinking so batch verification requests
-    # carry the verification-phase effort default (``medium`` for Sonnet,
-    # ``high`` for Opus escalation). The helper omits the field for
-    # Haiku / unknown models.
     apply_effort_config(params, model=selected_model, phase=PHASE_VERIFICATION)
     tier = batch_service_tier()
     if tier:
@@ -401,17 +336,6 @@ def submit_verification_batch(
     client = _get_client()
     reqs = []
     request_map = {}
-    # Chunk 4: route every finding through the same selector and
-    # request builder as the real-time path. ``select_routing`` reads
-    # severity / profile / mode / model / thinking / search budget /
-    # tool inclusion in one place; ``build_verification_request``
-    # consumes the decision to produce the exact same request shape
-    # the streaming path uses. This removes the pre-Chunk-4 drift
-    # where the batch initial pass applied ``thinking`` unconditionally
-    # and used the profile-only ``max_uses`` ceiling regardless of
-    # mode (a GRIPES finding routed through batch got the full
-    # STANDARD_REASONING bundle even though real-time would have
-    # given it STRICT_STRUCTURED).
     from .verification_routing import (
         build_verification_request,
         select_routing,
@@ -440,16 +364,9 @@ def submit_verification_batch(
             "model": decision.model,
             "severity": decision.severity,
             "profile": decision.profile.value,
-            # Chunk 4: stash the full routing decision so the wave
-            # parser can stamp the result with the actual policy that
-            # produced this request (rather than re-deriving the mode
-            # from the finding alone).
             "routing": decision.to_dict(),
         }
 
-    # Verification output is capped at 32k, well within both Sonnet and Opus
-    # base ceilings, so the 300k extended-output beta is not needed. Use the
-    # standard batches endpoint.
     mb = client.messages.batches.create(requests=reqs)
 
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())

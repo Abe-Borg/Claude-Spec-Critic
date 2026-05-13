@@ -79,9 +79,6 @@ class VerificationMode(str, Enum):
     deep-reasoning result does not escalate further."""
 
 
-# Short human-readable labels for reports / diagnostics. Stable on
-# purpose: they appear in diagnostics text output and serialized
-# verification records.
 _MODE_LABELS: dict[VerificationMode, str] = {
     VerificationMode.LOCAL_SKIP: "Local skip",
     VerificationMode.STRICT_STRUCTURED: "Strict structured",
@@ -107,9 +104,6 @@ def mode_label(mode: VerificationMode | str | None) -> str:
         return str(mode)
 
 
-# ---------------------------------------------------------------------------
-# Mode policy
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -196,10 +190,6 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
             allows_escalation=False,
         )
     if mode is VerificationMode.STRICT_STRUCTURED:
-        # Sonnet, no thinking — the cheap / narrow path. STRICT_STRUCTURED
-        # stays on the cheaper model even when the operator overrides the
-        # default verifier to Opus; the whole point of the mode is "use a
-        # cheaper path for findings that do not need deep reasoning."
         return ModePolicy(
             mode=mode,
             model=MODEL_SONNET_46,
@@ -215,7 +205,6 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
             web_search_enabled=True,
             allows_escalation=False,
         )
-    # STANDARD_REASONING — the default.
     return ModePolicy(
         mode=VerificationMode.STANDARD_REASONING,
         model=_default_initial_model(),
@@ -225,48 +214,6 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
     )
 
 
-# ---------------------------------------------------------------------------
-# Routing
-# ---------------------------------------------------------------------------
-#
-# The router is pure-function over a small set of inputs:
-#
-#   1. ``finding`` — used to read severity + classify the profile.
-#   2. ``local_skip`` — True iff the keyword classifier or Haiku triage
-#      already decided the finding can be locally resolved. Caller passes
-#      this in rather than re-running the classifier so the caller stays
-#      in control of the local-skip feature flag.
-#   3. ``escalated`` — True iff this call is the second pass after a
-#      failed STANDARD_REASONING attempt. Forces DEEP_REASONING.
-#   4. ``cached_mode`` — when the cache returns a hit, the caller passes
-#      the stored mode so the returned record carries the original
-#      routing decision instead of being silently relabeled.
-#
-# Rules, in priority order:
-#
-#   1. ``local_skip`` → LOCAL_SKIP. Highest priority — if the upstream
-#      classifier said "no web verification needed," nothing in this
-#      module should override that.
-#   2. ``escalated`` → DEEP_REASONING. The escalation path is reserved
-#      for CRITICAL/HIGH UNVERIFIED reruns; once we're escalating, we're
-#      committing to Opus regardless of what severity or profile would
-#      have picked initially.
-#   3. CRITICAL + CALIFORNIA_AHJ → DEEP_REASONING. The initial pass
-#      jumps straight to Opus for CRITICAL California-specific claims
-#      because the ambiguity surface is large enough that a Sonnet pass
-#      will usually escalate anyway, and skipping a wasted call is a
-#      direct cost win.
-#   4. GRIPES (any profile that is not INTERNAL_COORDINATION) →
-#      STRICT_STRUCTURED. GRIPES are editorial / cosmetic / placeholder
-#      style findings; the local-skip classifier catches most of them,
-#      and the ones that slip through (typically with a non-empty
-#      codeReference) do not need deep reasoning. Save the budget.
-#   5. INTERNAL_COORDINATION (non-GRIPES) → STRICT_STRUCTURED. The
-#      local-skip classifier only catches GRIPES; a HIGH-severity
-#      internal contradiction still falls through here. The profile
-#      classifier already throttled the search budget to 1-2 — match
-#      that with the cheaper mode.
-#   6. Default → STANDARD_REASONING.
 
 
 def select_verification_mode(
@@ -282,23 +229,17 @@ def select_verification_mode(
     :class:`VerificationMode`; callers should pass it to
     :func:`mode_policy` to get the actual policy bundle.
     """
-    # 0. Cache hit — preserve the stored mode if it was recorded. A
-    # legacy cache entry without a mode falls through to the regular
-    # routing rules; that is what we want, because the entry will be
-    # re-tagged with its current mode the next time it's used.
     if cached_mode is not None:
         if isinstance(cached_mode, VerificationMode):
             return cached_mode
         try:
             return VerificationMode(cached_mode)
         except (TypeError, ValueError):
-            pass  # fall through
+            pass
 
-    # 1. Local skip wins outright.
     if local_skip:
         return VerificationMode.LOCAL_SKIP
 
-    # 2. Escalation forces DEEP_REASONING regardless of severity/profile.
     if escalated:
         return VerificationMode.DEEP_REASONING
 
@@ -308,27 +249,15 @@ def select_verification_mode(
     severity = (getattr(finding, "severity", None) or "").strip().upper()
     profile = classify_finding_profile(finding)
 
-    # 3. Critical California/AHJ goes straight to deep reasoning. The
-    # initial Sonnet pass for these almost always escalates anyway —
-    # the ambiguity surface (Title 24 amendments, DSA / HCAI nuance,
-    # local AHJ interpretation) is wide enough that Opus is the right
-    # first call.
     if severity == "CRITICAL" and profile is VerificationProfile.CALIFORNIA_AHJ:
         return VerificationMode.DEEP_REASONING
 
-    # 4. GRIPES → strict structured. Internal-coordination GRIPES are
-    # already caught by local-skip when that's on; this rule catches
-    # GRIPES with a non-empty ``codeReference`` and any GRIPES seen
-    # while local-skip is disabled.
     if severity == "GRIPES":
         return VerificationMode.STRICT_STRUCTURED
 
-    # 5. Non-GRIPES internal-coordination findings — match the
-    # profile classifier's tight budget with a cheap mode.
     if profile is VerificationProfile.INTERNAL_COORDINATION:
         return VerificationMode.STRICT_STRUCTURED
 
-    # 6. Default.
     return VerificationMode.STANDARD_REASONING
 
 

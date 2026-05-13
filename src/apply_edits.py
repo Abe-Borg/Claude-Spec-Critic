@@ -111,20 +111,6 @@ def execute_edit_plan(
         else:
             log(f"Skipping out-of-range selected finding index: {idx}")
 
-    # Findings that were merged across multiple files during deduplication
-    # carry every affected file in `affected_files`. The display layer keeps a
-    # single representative row, but edit application must fan out to every
-    # file or the user only edits one of N affected specs (audit Issue 3).
-    #
-    # Chunk 8: Display deduplication is fine for the report, but executable
-    # edits MUST use the per-file pre-merge original (existingText,
-    # replacementText, anchorText, evidenceElementId, edit_proposal) and not
-    # the representative's. ``Finding.occurrence_originals`` is populated by
-    # ``_deduplicate_findings`` for merged findings; lookup by fileName.
-    # When the per-file original is missing (legacy resume payload, or an
-    # affected file that wasn't reviewed in this run), the representative's
-    # text is only safe on the representative's own file — other affected
-    # files are routed to manual review rather than guessing.
     findings_by_file: dict[str, list[tuple[int, Finding, Finding | None]]] = defaultdict(list)
     manual_review_skips: dict[str, list[tuple[int, Finding]]] = defaultdict(list)
     for original_index, finding in selected_pairs:
@@ -142,13 +128,8 @@ def execute_edit_plan(
         for file_name in target_files:
             per_file_original = originals_by_file.get(file_name)
             if per_file_original is None and file_name == finding.fileName:
-                # The representative IS the original for its own file.
                 per_file_original = finding
             if per_file_original is None:
-                # Chunk 8: a different file in affected_files but no per-file
-                # original was recorded. The representative's text was
-                # produced from its own file, so applying it here would be a
-                # guess. Route to manual review.
                 log(
                     f"[{file_name}] Finding #{original_index}: no per-file edit original "
                     "recorded for this affected file; routed to manual review (Chunk 8 safety)."
@@ -171,10 +152,6 @@ def execute_edit_plan(
             log(f"Skipping '{filename}': paragraph map unavailable and re-extraction was not possible.")
             continue
 
-        # Chunk 8: pass each file the per-file ORIGINAL finding to the
-        # locator, not the merged representative. The representative's
-        # ``existingText`` is for its own file only; every other affected
-        # file gets its own original's text.
         findings_for_locator = [executable for _, _, executable in indexed_findings]
         locator_results = locate_edits(findings_for_locator, paragraph_map)
         for pair, locator_result in zip(indexed_findings, locator_results):
@@ -185,10 +162,6 @@ def execute_edit_plan(
                 log(f"[{filename}] Finding #{original_index} matched multiple locations; skipped — review and apply manually.")
             if locator_result.warning:
                 log(f"[{filename}] Finding #{original_index} warning: {locator_result.warning}")
-            # Chunk K5: record locator-method telemetry and surface a
-            # human-readable trace for id-based matches so a future
-            # debugging session can grep the logs for "via id=" and tell
-            # which findings carried evidence pointers.
             if locator_result.locations:
                 best = max(
                     locator_result.locations,
@@ -226,10 +199,6 @@ def execute_edit_plan(
         try:
             report = apply_edits_to_spec(source_path, output_path, actions)
             reports.append(report)
-            # Chunk 9: surface unsafe-markup refusals in the run log so users
-            # know an auto-edit was deliberately not applied because of Word
-            # markup (hyperlinks, field codes, drawings, etc.) rather than a
-            # silent skip. Same for the all-or-none transactional abort.
             for outcome in getattr(report, "outcomes", []) or []:
                 if getattr(outcome, "refused_unsafe_markup", False):
                     log(f"[{filename}] {outcome.detail}")
@@ -250,12 +219,6 @@ def execute_edit_plan(
                 )
             )
 
-    # Chunk 8: emit a no-output report for affected files where the per-file
-    # edit original was missing. The user sees that the file was affected,
-    # but no auto-edit was attempted because the representative's text would
-    # have been a guess. Files that are also in ``findings_by_file`` (i.e.,
-    # had at least one valid per-file original) collapse into the existing
-    # per-file report rather than producing a separate manual-review entry.
     for filename, indexed_findings in manual_review_skips.items():
         if filename in findings_by_file:
             continue

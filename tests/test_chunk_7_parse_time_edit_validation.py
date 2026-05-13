@@ -29,9 +29,6 @@ from src.reviewer import (
 from src.verifier import VerificationResult
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _verified(verdict: str) -> VerificationResult:
@@ -80,9 +77,6 @@ def _valid_review_payload(**overrides) -> dict:
     return base
 
 
-# ---------------------------------------------------------------------------
-# 1. validate_edit_shape returns specific demotion reasons
-# ---------------------------------------------------------------------------
 
 
 class TestValidateEditShape:
@@ -126,7 +120,6 @@ class TestValidateEditShape:
         assert "existingText" in reason
 
     def test_edit_blank_existing_text_demotes(self):
-        # Whitespace-only existingText is treated as missing.
         reason = validate_edit_shape(
             "EDIT", existing_text="   ", replacement_text="new"
         )
@@ -193,8 +186,6 @@ class TestValidateEditShape:
         assert "replacementText" in reason
 
     def test_report_only_returns_none(self):
-        # REPORT_ONLY is the explicit "no edit" action; the validator
-        # returns None so the parser's cleanup path keeps the finding.
         assert (
             validate_edit_shape(
                 REPORT_ONLY_ACTION,
@@ -205,14 +196,10 @@ class TestValidateEditShape:
         )
 
 
-# ---------------------------------------------------------------------------
-# 2. Parse-time demotion: invalid EDIT / DELETE / ADD payloads
-# ---------------------------------------------------------------------------
 
 
 class TestParseTimeDemotion:
     def test_invalid_edit_demotes_to_report_only(self):
-        # Acceptance: "invalid EDIT demotes."
         findings = _parse_findings(
             [_valid_review_payload(existingText=None)]
         )
@@ -225,7 +212,6 @@ class TestParseTimeDemotion:
         assert f.demotion_reason is not None
         assert "EDIT" in f.demotion_reason
         assert "existingText" in f.demotion_reason
-        # The finding itself is preserved (issue, severity, file).
         assert f.issue == "Stale code reference."
         assert f.severity == "HIGH"
 
@@ -240,7 +226,6 @@ class TestParseTimeDemotion:
         assert "replacementText" in f.demotion_reason
 
     def test_invalid_delete_demotes_to_report_only(self):
-        # Acceptance: "invalid DELETE demotes."
         findings = _parse_findings(
             [
                 _valid_review_payload(
@@ -258,7 +243,6 @@ class TestParseTimeDemotion:
         assert "DELETE" in f.demotion_reason
 
     def test_invalid_add_missing_anchor_demotes(self):
-        # Acceptance: "invalid ADD demotes." — anchor missing.
         findings = _parse_findings(
             [
                 _valid_review_payload(
@@ -315,14 +299,10 @@ class TestParseTimeDemotion:
         assert "replacementText" in f.demotion_reason
 
 
-# ---------------------------------------------------------------------------
-# 3. Valid proposals survive intact
-# ---------------------------------------------------------------------------
 
 
 class TestValidProposalsSurvive:
     def test_valid_edit_survives(self):
-        # Acceptance: "valid proposals survive."
         findings = _parse_findings([_valid_review_payload()])
         f = findings[0]
         assert f.actionType == "EDIT"
@@ -371,14 +351,10 @@ class TestValidProposalsSurvive:
         assert f.edit_proposal.action_type == "ADD"
 
 
-# ---------------------------------------------------------------------------
-# 4. REPORT_ONLY with stray edit fields is cleaned
-# ---------------------------------------------------------------------------
 
 
 class TestReportOnlyCleansStrayFields:
     def test_report_only_clears_stray_existing_and_replacement(self):
-        # Acceptance: "REPORT_ONLY with stray edit fields is cleaned."
         findings = _parse_findings(
             [
                 _valid_review_payload(
@@ -397,22 +373,13 @@ class TestReportOnlyCleansStrayFields:
         assert f.anchorText is None
         assert f.insertPosition is None
         assert f.edit_proposal is None
-        # REPORT_ONLY emitted natively does NOT get a demotion reason —
-        # this is the model's explicit choice, not a parser-driven demote.
         assert f.demotion_reason is None
 
 
-# ---------------------------------------------------------------------------
-# 5. Dedup/grouping does not rehydrate invalid edit fields
-# ---------------------------------------------------------------------------
 
 
 class TestDedupDoesNotRehydrate:
     def test_dedup_preserves_demoted_status(self):
-        # Acceptance: "dedup/grouping does not rehydrate invalid edit fields."
-        # Two identical demoted findings merge into one — the merged finding
-        # must still be REPORT_ONLY with cleared fields and the original
-        # demotion_reason intact.
         findings = _parse_findings(
             [
                 _valid_review_payload(
@@ -423,8 +390,6 @@ class TestDedupDoesNotRehydrate:
                 ),
             ]
         )
-        # Both demote and have the same dedup identity (REPORT_ONLY +
-        # empty existing/replacement), so dedup merges them.
         assert all(f.actionType == REPORT_ONLY_ACTION for f in findings)
         merged = _deduplicate_findings(findings)
         assert len(merged) == 1
@@ -436,10 +401,6 @@ class TestDedupDoesNotRehydrate:
         assert m.demotion_reason is not None
 
     def test_dedup_does_not_resurrect_proposal_from_legacy_field(self):
-        # Construct a demoted finding directly with a stale legacy
-        # existingText (as if a buggy code path tried to "fix" the demote
-        # afterwards). The merged group must NOT rehydrate a proposal
-        # from those legacy fields.
         demoted = Finding(
             severity="HIGH",
             fileName="spec1.docx",
@@ -454,16 +415,10 @@ class TestDedupDoesNotRehydrate:
         )
         merged = _deduplicate_findings([demoted])
         m = merged[0]
-        # The finding stays REPORT_ONLY; even though legacy fields are
-        # set, ``as_edit_proposal`` rejects the shape because the action
-        # is REPORT_ONLY (not in EDIT_ACTION_TYPES).
         assert m.actionType == REPORT_ONLY_ACTION
         assert m.as_edit_proposal() is None
 
 
-# ---------------------------------------------------------------------------
-# 6. Downstream consumers see demoted findings as report-only
-# ---------------------------------------------------------------------------
 
 
 class TestDownstreamConsumers:
@@ -477,8 +432,6 @@ class TestDownstreamConsumers:
         c = candidates[0]
         assert c.eligible is False
         assert c.safety_category == SAFETY_REPORT_ONLY
-        # The UI sees the specific demotion reason, not the legacy
-        # generic "REPORT_ONLY" message.
         assert "Demoted to REPORT_ONLY" in (c.ineligible_reason or "")
         assert "replacementText" in (c.ineligible_reason or "")
 
@@ -502,18 +455,13 @@ class TestDownstreamConsumers:
         assert result.safety_category == SAFETY_REPORT_ONLY
 
     def test_as_edit_proposal_defends_against_legacy_invalid_shapes(self):
-        # A Finding constructed directly with actionType="EDIT" but
-        # missing existingText must not produce an EditProposal. The
-        # parser is the canonical demotion path, but the defensive check
-        # in ``as_edit_proposal`` guards legacy resume payloads and
-        # ad-hoc test Findings that bypass the parser.
         legacy = Finding(
             severity="MEDIUM",
             fileName="spec.docx",
             section="3.0",
             issue="Stale claim.",
             actionType="EDIT",
-            existingText=None,  # invalid for EDIT
+            existingText=None,
             replacementText="new",
             codeReference=None,
             confidence=0.6,
@@ -522,14 +470,11 @@ class TestDownstreamConsumers:
         assert legacy.has_edit_proposal() is False
 
     def test_explicit_proposal_with_invalid_shape_is_rejected(self):
-        # Even when ``edit_proposal`` is set explicitly, an invalid shape
-        # is rejected so a buggy resume payload or test can't smuggle a
-        # bad proposal past the validator.
         bad_proposal = EditProposal(
             action_type="ADD",
             existing_text=None,
             replacement_text="new",
-            anchor_text=None,  # invalid for ADD
+            anchor_text=None,
             insert_position="after",
         )
         f = Finding(
@@ -549,9 +494,6 @@ class TestDownstreamConsumers:
         assert f.as_edit_proposal() is None
 
 
-# ---------------------------------------------------------------------------
-# 7. Resume state round-trips demotion_reason
-# ---------------------------------------------------------------------------
 
 
 class TestResumeStateRoundTrip:
@@ -568,8 +510,6 @@ class TestResumeStateRoundTrip:
         assert restored.existingText is None
 
     def test_legacy_resume_payload_loads_with_demotion_reason_none(self):
-        # Pre-Chunk-7 payloads omit ``demotion_reason``. They must load
-        # cleanly with the field set to None — no migration required.
         legacy_payload = {
             "severity": "HIGH",
             "fileName": "spec.docx",
@@ -591,9 +531,6 @@ class TestResumeStateRoundTrip:
         assert restored.actionType == "EDIT"
 
 
-# ---------------------------------------------------------------------------
-# 8. Sanity: native REPORT_ONLY emissions are not stamped with a reason
-# ---------------------------------------------------------------------------
 
 
 def test_native_report_only_emission_has_no_demotion_reason():
