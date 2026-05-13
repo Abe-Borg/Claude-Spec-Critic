@@ -370,10 +370,6 @@ EFFORT_MEDIUM = "medium"
 EFFORT_HIGH = "high"
 EFFORT_XHIGH = "xhigh"
 
-_VALID_EFFORT_LEVELS: frozenset[str] = frozenset(
-    {EFFORT_LOW, EFFORT_MEDIUM, EFFORT_HIGH, EFFORT_XHIGH}
-)
-
 # Phases whose request paths route through ``output_config.effort``. Triage
 # is intentionally omitted — it defaults to Haiku which does not support
 # effort, and the workload is a small classification pass that does not

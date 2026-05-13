@@ -40,11 +40,6 @@ _log = logging.getLogger(__name__)
 # Claude Opus 4.7 context window (1M tokens, no beta header required).
 MAX_CONTEXT_TOKENS = 1_000_000
 
-# Opus 4.7 max output tokens
-MAX_OUTPUT_TOKENS_OPUS = 128_000
-# Sonnet 4.6 max output tokens
-MAX_OUTPUT_TOKENS_SONNET = 64_000
-
 
 # ---------------------------------------------------------------------------
 # Per-spec review limits (used by GUI token gauge and per-spec pipeline)

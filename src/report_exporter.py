@@ -68,14 +68,6 @@ SEVERITY_COLORS = {
     "GRIPES": RGBColor(128, 0, 128),       # Purple
 }
 
-# Hex versions for cell shading (no # prefix)
-SEVERITY_SHADING = {
-    "CRITICAL": "C00000",
-    "HIGH": "FF6600",
-    "MEDIUM": "C09800",
-    "GRIPES": "800080",
-}
-
 VERDICT_COLORS = {
     "CONFIRMED": RGBColor(0, 128, 0),     # Green
     "CORRECTED": RGBColor(204, 132, 0),    # Amber
@@ -95,8 +87,6 @@ CONFIDENCE_COLORS = {
     "moderate": RGBColor(204, 132, 0),     # Amber
     "low": RGBColor(192, 0, 0),            # Red
 }
-
-COORDINATION_COLOR = RGBColor(6, 182, 212)  # Cyan
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]
 
