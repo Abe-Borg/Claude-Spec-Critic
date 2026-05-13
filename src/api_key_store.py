@@ -17,11 +17,10 @@ key when they upgrade.
 
 File permissions
 ----------------
-On POSIX, :func:`save_api_key_to_file` chmods the file to ``0600`` (owner
-read+write only) so a freshly-written fallback never lands world-readable.
-:func:`load_api_key_from_file` lazily tightens the permissions of any
-fallback file it can read so an in-place upgrade improves the existing
-key file's posture without requiring the user to re-enter the key.
+On POSIX, :func:`load_api_key_from_file` lazily tightens the permissions of
+any fallback file it can read to ``0600`` (owner read+write only) so an
+in-place upgrade improves the existing key file's posture without
+requiring the user to re-enter the key.
 """
 from __future__ import annotations
 
@@ -54,16 +53,6 @@ def _keyring_get() -> str:
     except Exception:
         return ""
     return (value or "").strip()
-
-
-def _keyring_set(value: str) -> bool:
-    if not _KEYRING_AVAILABLE or _keyring is None:
-        return False
-    try:
-        _keyring.set_password(_KEYRING_SERVICE, _KEYRING_USERNAME, value)
-    except Exception:
-        return False
-    return True
 
 
 def _restrict_permissions(path: Path) -> None:
@@ -105,37 +94,3 @@ def load_api_key_from_file() -> str:
             return value
     return ""
 
-
-def save_api_key_to_file(value: str) -> Path | None:
-    """Persist the API key to the primary fallback file with 0600 perms.
-
-    Returns the path written, or ``None`` if ``value`` is empty. The caller
-    is responsible for confirming the user intended this (the GUI prompts
-    explicitly). Keyring callers should use :func:`save_api_key_to_keyring`.
-    """
-    value = (value or "").strip()
-    if not value:
-        return None
-    target = api_key_paths()[0]
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(value, encoding="utf-8")
-    _restrict_permissions(target)
-    return target
-
-
-def save_api_key_to_keyring(value: str) -> bool:
-    """Persist the API key to the OS keyring when available.
-
-    Returns ``True`` on success, ``False`` if the keyring is unavailable
-    or the backend rejected the write. Callers should fall back to
-    :func:`save_api_key_to_file` on ``False``.
-    """
-    value = (value or "").strip()
-    if not value:
-        return False
-    return _keyring_set(value)
-
-
-def keyring_available() -> bool:
-    """Whether OS-keyring storage is wired up in this environment."""
-    return _KEYRING_AVAILABLE
