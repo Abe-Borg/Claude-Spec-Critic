@@ -49,7 +49,7 @@ from src.editing.spec_editor import EditReport
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 
-from src.widgets import (
+from src.gui.widgets import (
     AnimatedButton,
     COLORS,
     DiagnosticsWindow,
@@ -68,8 +68,8 @@ from src.batch.batch_state_store import (
 )
 
 # Controllers
-from src.about_usage_dialogs import show_about_dialog, show_usage_dialog
-from src.batch_controller import (
+from src.gui.about_usage_dialogs import show_about_dialog, show_usage_dialog
+from src.gui.batch_controller import (
     check_pending_batch,
     collect_batch_results,
     format_batch_age,
@@ -83,7 +83,7 @@ from src.batch_controller import (
     submit_batch_thread,
     update_poll_progress,
 )
-from src.context_controller import (
+from src.gui.context_controller import (
     attach_context_files,
     context_focus_in,
     context_focus_out,
@@ -95,26 +95,26 @@ from src.context_controller import (
     set_context_text,
     update_context_token_label,
 )
-from src.diagnostics_controller import (
+from src.gui.diagnostics_controller import (
     finalize_diagnostics,
     make_diag_log,
     make_diag_progress,
     open_diagnostics_window,
 )
-from src.edit_workflow_controller import (
+from src.gui.edit_workflow_controller import (
     apply_selected_edits,
     on_edits_applied,
     show_edit_selection_dialog,
 )
-from src.file_selection_controller import (
+from src.gui.file_selection_controller import (
     apply_selected_specs,
     browse_for_specs,
     clear_file_state,
     parse_dropped_paths,
     set_file_data,
 )
-from src.report_controller import export_report_to_file
-from src.review_run_controller import (
+from src.gui.report_controller import export_report_to_file
+from src.gui.review_run_controller import (
     confirm_realtime_cost,
     dispatch_if_current,
     next_run_epoch,
@@ -125,7 +125,7 @@ from src.review_run_controller import (
     start_review as _start_review,
     validate_inputs,
 )
-from src.token_analysis_controller import (
+from src.gui.token_analysis_controller import (
     analyze_tokens,
     on_file_selection_change,
     refresh_exact_token_count,
