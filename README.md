@@ -31,19 +31,12 @@ Configured for the **California 2025 code cycle** by default (`src/code_cycles.p
 
 Both modes share identical prompts, models, tool schemas, output caps, and parsing logic. The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header is not honored on streaming) and triggers only for inputs ≥200k tokens.
 
-## Review Modes
-
-| Mode | Scope | Auto-edit |
-|---|---|---|
-| Strict | Evidence-backed contradictions and code-cycle issues only | Allowed |
-| Comprehensive *(default)* | Strict + constructability, TAB/commissioning, equipment schedules, Div 01 coordination, warranty, basis-of-design, controls, DSA/HCAI/Title 24 closeout, fire/smoke dampers, seismic, sprinkler/hydraulic, materials, submittals/O&M | Allowed |
-| Safe-edit | Findings with exact editable anchors and low-risk replacements only | Allowed |
-
 ## Model Stack
 
 Defaults (all overridable via env var; see `api_config.py`):
 
-- Review / Cross-check: Claude Opus 4.7
+- Review: Claude Opus 4.7
+- Cross-check: Claude Sonnet 4.6
 - Verification (initial): Claude Sonnet 4.6
 - Verification (escalation / deep-reasoning): Claude Opus 4.7
 - Synthesis / Triage: Claude Haiku 4.5
@@ -62,10 +55,9 @@ Test suite is hermetic by default — no API key, no network. `tests/conftest.py
 
 ```
 pytest -q              # full hermetic suite
-pytest -q -m smoke     # fast import/compile sanity (a few seconds)
 ```
 
-Test markers: `smoke`, `fixtures`, `request_shape`, `parser_unification`, `token_budget`, `prompt_serialization`, `source_grounding`, `verification_modes`, `slow`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`; in-memory DOCX builders in `tests/fixtures/docx_fixtures.py`.
+Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`; in-memory DOCX builders in `tests/fixtures/docx_fixtures.py`.
 
 ## Further Reading
 
