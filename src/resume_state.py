@@ -36,7 +36,7 @@ from .core.code_cycles import DEFAULT_CYCLE
 from .input.extractor import ExtractedSpec
 from .pipeline import BatchSubmission, CollectedBatchState
 from .review.reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, MODEL_OPUS_47, ReviewResult
-from .verifier import VerificationResult
+from .verification.verifier import VerificationResult
 
 _log = logging.getLogger(__name__)
 

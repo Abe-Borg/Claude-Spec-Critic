@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .verifier import VerificationResult
 
-from .core.code_cycles import CodeCycle
+from ..core.code_cycles import CodeCycle
 
 
 _WHITESPACE_RE = re.compile(r"\s+")

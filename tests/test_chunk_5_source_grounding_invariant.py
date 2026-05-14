@@ -33,14 +33,14 @@ import pytest
 
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.review.reviewer import Finding
-from src.source_grounding import SearchedSource
-from src.verifier import (
+from src.verification.source_grounding import SearchedSource
+from src.verification.verifier import (
     VerificationResult,
     _apply_source_grounding,
     _enforce_grounding_invariant,
     _local_skip_result,
 )
-from src.verification_cache import VerificationCache, _CACHE_SCHEMA_VERSION
+from src.verification.verification_cache import VerificationCache, _CACHE_SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------------------

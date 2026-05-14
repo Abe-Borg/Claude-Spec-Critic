@@ -59,7 +59,7 @@ from src.review.structured_schemas import (
     _CROSS_CHECK_FINDING_OBJECT_SCHEMA,
     _FINDING_OBJECT_SCHEMA,
 )
-from src.verifier import VerificationResult
+from src.verification.verifier import VerificationResult
 
 
 # ---------------------------------------------------------------------------

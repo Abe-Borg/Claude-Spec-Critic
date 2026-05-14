@@ -52,7 +52,7 @@ from src.input.preprocessor import (
     preprocess_spec,
 )
 from src.review.reviewer import Finding
-from src.verification_router import classify_finding_for_verification
+from src.verification.verification_router import classify_finding_for_verification
 
 
 # ---------------------------------------------------------------------------

@@ -28,21 +28,21 @@ from typing import Callable, Iterable
 
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .core.api_config import (
+from ..core.api_config import (
     PHASE_TRIAGE,
     TRIAGE_MODEL_DEFAULT,
     system_prompt_with_cache,
     tools_with_cache,
     triage_max_tokens,
 )
-from .review.prompt_serialization import (
+from ..review.prompt_serialization import (
     TAG_FINDING,
     TAG_FINDINGS,
     escape_attr,
     wrap_data_block,
 )
-from .review.reviewer import Finding, _get_client
-from .review.structured_schemas import (
+from ..review.reviewer import Finding, _get_client
+from ..review.structured_schemas import (
     TRIAGE_TOOL_NAME,
     extract_tool_use_block,
     triage_classifications_tool,

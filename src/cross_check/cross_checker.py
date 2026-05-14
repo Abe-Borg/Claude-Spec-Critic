@@ -35,7 +35,7 @@ from ..core.api_config import (
     system_prompt_with_cache,
     tools_with_cache,
 )
-from ..retry_policy import (
+from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
     classify_exception,

@@ -26,7 +26,7 @@ from src.review.reviewer import (
     _parse_findings,
     validate_edit_shape,
 )
-from src.verifier import VerificationResult
+from src.verification.verifier import VerificationResult
 
 
 # ---------------------------------------------------------------------------

@@ -80,7 +80,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .core.api_config import (
+from ..core.api_config import (
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
@@ -96,7 +96,7 @@ from .retry_policy import (
     DEFAULT_MAX_CONTINUATIONS,
     max_continuations_for_mode,
 )
-from .review.reviewer import Finding
+from ..review.reviewer import Finding
 from .verification_modes import (
     ModePolicy,
     VerificationMode,
@@ -451,7 +451,7 @@ def select_routing(
     # using the env helper. Importing locally avoids a cycle through
     # :mod:`batch`.
     if include_verdict_tool is None:
-        from .batch.batch import verification_request_includes_verdict_tool
+        from ..batch.batch import verification_request_includes_verdict_tool
         include_verdict_tool = verification_request_includes_verdict_tool()
 
     trace_reason = _trace_for(
@@ -510,8 +510,8 @@ def build_verification_tools_from_decision(
     # Local import — :mod:`batch` already depends on :mod:`verifier`, and
     # :mod:`verifier` will depend on this module, so importing batch at
     # module load would form a cycle.
-    from .batch.batch import build_verification_tools_for_profile
-    from .review.structured_schemas import verification_verdict_tool
+    from ..batch.batch import build_verification_tools_for_profile
+    from ..review.structured_schemas import verification_verdict_tool
 
     tool_list = build_verification_tools_for_profile(
         decision.profile, decision.severity

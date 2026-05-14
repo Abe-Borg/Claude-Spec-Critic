@@ -36,7 +36,7 @@ from .review.review_request_builder import (
 from .batch.batch import BatchJob, submit_review_batch, retrieve_review_results
 from .batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from .core.api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
-from .verifier import (
+from .verification.verifier import (
     verify_findings,
     verify_findings_batch,
     start_verification_batch,
@@ -44,7 +44,7 @@ from .verifier import (
     prepare_findings_for_verification,
     VerificationResult,
 )
-from .verification_cache import VerificationCache, cache_persist_enabled
+from .verification.verification_cache import VerificationCache, cache_persist_enabled
 from .cross_check.cross_checker import run_cross_check, run_chunked_cross_check
 from .core.code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 

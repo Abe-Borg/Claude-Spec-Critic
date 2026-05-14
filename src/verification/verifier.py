@@ -11,7 +11,7 @@ from typing import Callable
 
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .batch.batch import (
+from ..batch.batch import (
     BatchJob,
     build_verification_tools_for_profile,
     poll_batch,  # Backward-compatibility export for older tests/patching.
@@ -21,10 +21,10 @@ from .batch.batch import (
     verification_request_includes_verdict_tool,
     _extract_api_error_message,
 )
-from .batch.batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
-from .review.reviewer import Finding, _get_client
-from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
-from .core.api_config import (
+from ..batch.batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
+from ..review.reviewer import Finding, _get_client
+from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..core.api_config import (
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
@@ -44,7 +44,7 @@ from .retry_policy import (
     retry_diagnostics_payload,
     should_retry_batch_failure,
 )
-from .review.prompt_serialization import (
+from ..review.prompt_serialization import (
     TAG_FINDING,
     wrap_data_block,
 )
@@ -726,7 +726,7 @@ def _verdict_from_tool_use(message) -> VerificationResult | None:
     :attr:`VerificationResult.structured_payload` so diagnostics retain
     the actual structured payload.
     """
-    from .review.structured_schemas import VERIFICATION_TOOL_NAME, extract_tool_use_block
+    from ..review.structured_schemas import VERIFICATION_TOOL_NAME, extract_tool_use_block
 
     payload = extract_tool_use_block(message, VERIFICATION_TOOL_NAME)
     if not isinstance(payload, dict):

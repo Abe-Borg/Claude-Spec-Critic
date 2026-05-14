@@ -277,7 +277,7 @@ def build_verification_tools_for_profile(
     """
     from ..core.api_config import build_web_search_tool  # local import — keeps the
     # `api_config` import surface inside this module small
-    from ..verification_profiles import profile_max_uses as _profile_max_uses
+    from ..verification.verification_profiles import profile_max_uses as _profile_max_uses
 
     max_uses = _profile_max_uses(profile, severity)
     web_tool = build_web_search_tool(max_uses=max_uses)
@@ -313,7 +313,7 @@ def submit_verification_batch(
     # mode (a GRIPES finding routed through batch got the full
     # STANDARD_REASONING bundle even though real-time would have
     # given it STRICT_STRUCTURED).
-    from ..verification_routing import (
+    from ..verification.verification_routing import (
         build_verification_request,
         select_routing,
     )

@@ -44,7 +44,7 @@ from src.output.report_status import (
     summarize_statuses,
 )
 from src.review.reviewer import EditProposal, Finding, ReviewResult
-from src.verifier import VerificationResult
+from src.verification.verifier import VerificationResult
 
 
 # ---------------------------------------------------------------------------

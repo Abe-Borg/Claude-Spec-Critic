@@ -51,8 +51,8 @@ from src.review.prompts import (
     get_system_prompt,
 )
 from src.review.reviewer import Finding, ReviewResult
-from src.triage import _build_user_prompt as triage_build_user_prompt
-from src.verifier import _build_verification_prompt
+from src.verification.triage import _build_user_prompt as triage_build_user_prompt
+from src.verification.verifier import _build_verification_prompt
 
 
 pytestmark = pytest.mark.prompt_serialization
@@ -518,6 +518,6 @@ class TestNoRawXMLEscapeLeakage:
         assert cross_checker.wrap_document_block is not None
 
     def test_verifier_uses_central_helper(self):
-        from src import verifier
+        from src.verification import verifier
         assert not hasattr(verifier, "_xml_escape")
         assert verifier.wrap_data_block is not None

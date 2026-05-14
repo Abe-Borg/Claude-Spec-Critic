@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..verifier import VerificationResult
+    from ..verification.verifier import VerificationResult
 
 from anthropic import Anthropic, APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
@@ -19,7 +19,7 @@ from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,
     extract_cache_usage,
 )
-from ..retry_policy import (
+from ..verification.retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
     classify_exception,
