@@ -10,15 +10,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .input.extractor import extract_text, extract_multiple_specs, ExtractedSpec, SUPPORTED_EXTENSIONS
-from .input.extraction_cache import (
+from ..input.extractor import extract_text, extract_multiple_specs, ExtractedSpec, SUPPORTED_EXTENSIONS
+from ..input.extraction_cache import (
     cache_token_count,
     extract_multiple_specs_cached,
     extraction_cache_stats,
     get_cached_token_count,
 )
-from .input.preprocessor import preprocess_spec, detect_inconsistent_file_naming
-from .core.tokenizer import (
+from ..input.preprocessor import preprocess_spec, detect_inconsistent_file_naming
+from ..core.tokenizer import (
     RECOMMENDED_MAX,
     count_tokens,
     count_tokens_via_api,
@@ -26,17 +26,17 @@ from .core.tokenizer import (
     local_estimate_safety_factor,
     safe_local_estimate,
 )
-from .review.reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_47, StreamCallback
-from .review.review_request_builder import (
+from ..review.reviewer import review_single_spec, ReviewResult, Finding, MODEL_OPUS_47, StreamCallback
+from ..review.review_request_builder import (
     ReviewRequestSpec,
     build_token_count_request,
     estimate_local_request_tokens,
     review_request_cache_key,
 )
-from .batch.batch import BatchJob, submit_review_batch, retrieve_review_results
-from .batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
-from .core.api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
-from .verification.verifier import (
+from ..batch.batch import BatchJob, submit_review_batch, retrieve_review_results
+from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
+from ..core.api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
+from ..verification.verifier import (
     verify_findings,
     verify_findings_batch,
     start_verification_batch,
@@ -44,9 +44,9 @@ from .verification.verifier import (
     prepare_findings_for_verification,
     VerificationResult,
 )
-from .verification.verification_cache import VerificationCache, cache_persist_enabled
-from .cross_check.cross_checker import run_cross_check, run_chunked_cross_check
-from .core.code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
+from ..verification.verification_cache import VerificationCache, cache_persist_enabled
+from ..cross_check.cross_checker import run_cross_check, run_chunked_cross_check
+from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 
 # Log/progress callbacks accept explicit ``level`` and ``phase`` keywords
 # so pipeline code can categorize messages (info / success / warning /

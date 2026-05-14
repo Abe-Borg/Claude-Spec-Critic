@@ -30,13 +30,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import __version__
-from .batch.batch import BatchJob
-from .core.code_cycles import DEFAULT_CYCLE
-from .input.extractor import ExtractedSpec
+from .. import __version__
+from ..batch.batch import BatchJob
+from ..core.code_cycles import DEFAULT_CYCLE
+from ..input.extractor import ExtractedSpec
 from .pipeline import BatchSubmission, CollectedBatchState
-from .review.reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, MODEL_OPUS_47, ReviewResult
-from .verification.verifier import VerificationResult
+from ..review.reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, MODEL_OPUS_47, ReviewResult
+from ..verification.verifier import VerificationResult
 
 _log = logging.getLogger(__name__)
 

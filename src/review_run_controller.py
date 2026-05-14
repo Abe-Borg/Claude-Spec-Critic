@@ -23,8 +23,8 @@ import customtkinter as ctk
 from .core.api_config import review_max_tokens as _review_max_tokens
 from .batch.batch_state_store import delete_batch_state
 from .core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
-from .diagnostics import DiagnosticsReport
-from .pipeline import run_review
+from .orchestration.diagnostics import DiagnosticsReport
+from .orchestration.pipeline import run_review
 from .review.reviewer import MODEL_OPUS_47
 from .core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
 from .widgets import COLORS
@@ -351,7 +351,7 @@ def run_review_thread(app, run_epoch: int) -> None:
                     # Chunk 2: preserve the parsed verdict-tool payload in
                     # diagnostics so structured-output debugging does not
                     # have to rely on regenerating the call.
-                    from .diagnostics import bound_structured_payload
+                    from .orchestration.diagnostics import bound_structured_payload
                     bounded_payload = bound_structured_payload(v.structured_payload)
                     if bounded_payload is not None:
                         event_data["structured_payload"] = bounded_payload
@@ -416,7 +416,7 @@ def on_review_complete(app, result) -> None:
             except Exception:
                 ec = {}
             if ec.get("available"):
-                from .cost_estimator import format_usd
+                from .orchestration.cost_estimator import format_usd
                 app.log.log(
                     f"Estimated API cost: {format_usd(ec.get('total_usd', 0.0))} "
                     f"(see report / diagnostics for breakdown)",

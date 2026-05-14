@@ -39,9 +39,9 @@ sys.path.insert(0, str(exe_dir))
 
 # Type annotations on method signatures
 from src.batch.batch import BatchStatus
-from src.diagnostics import DiagnosticsReport
+from src.orchestration.diagnostics import DiagnosticsReport
 from src.input.extractor import ExtractedSpec
-from src.pipeline import BatchSubmission
+from src.orchestration.pipeline import BatchSubmission
 from src.review.reviewer import Finding
 from src.editing.spec_editor import EditReport
 

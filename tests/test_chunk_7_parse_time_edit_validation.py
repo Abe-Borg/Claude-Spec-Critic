@@ -16,8 +16,8 @@ import pytest
 from src.editing.edit_candidates import SAFETY_REPORT_ONLY, classify_edit_candidates
 from src.editing.edit_locator import locate_edit
 from src.input.extractor import ParagraphMapping
-from src.pipeline import _deduplicate_findings
-from src.resume_state import deserialize_finding, serialize_finding
+from src.orchestration.pipeline import _deduplicate_findings
+from src.orchestration.resume_state import deserialize_finding, serialize_finding
 from src.review.reviewer import (
     EDIT_ACTION_TYPES,
     EditProposal,

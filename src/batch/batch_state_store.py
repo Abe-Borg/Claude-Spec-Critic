@@ -37,7 +37,7 @@ def _batch_state_path():
     """
     return batch_state_path()
 
-from ..resume_state import deserialize_resume_state
+from ..orchestration.resume_state import deserialize_resume_state
 
 
 def save_batch_state(state: dict) -> None:

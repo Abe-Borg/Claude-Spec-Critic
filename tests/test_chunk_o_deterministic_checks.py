@@ -277,7 +277,7 @@ class TestPipelinePlumbing:
     def test_finalize_batch_result_forwards_chunk_o_alerts(self) -> None:
         """finalize_batch_result copies every alert list onto the result."""
         from src.batch.batch import BatchJob
-        from src.pipeline import BatchSubmission, CollectedBatchState, finalize_batch_result
+        from src.orchestration.pipeline import BatchSubmission, CollectedBatchState, finalize_batch_result
         from src.review.reviewer import ReviewResult
 
         sub = BatchSubmission(
@@ -298,13 +298,13 @@ class TestPipelinePlumbing:
     def test_collect_review_batch_results_forwards_submission_alerts(self, monkeypatch) -> None:
         """collect_review_batch_results copies submission alerts onto state."""
         from src.batch.batch import BatchJob
-        from src.pipeline import BatchSubmission, collect_review_batch_results
+        from src.orchestration.pipeline import BatchSubmission, collect_review_batch_results
 
         # Stub the network-facing retrieve_review_results so this test stays
         # hermetic. An empty result map means no findings are produced.
-        monkeypatch.setattr("src.pipeline.retrieve_review_results", lambda job, model: {})
+        monkeypatch.setattr("src.orchestration.pipeline.retrieve_review_results", lambda job, model: {})
         monkeypatch.setattr(
-            "src.pipeline._recover_retryable_review_batch_results",
+            "src.orchestration.pipeline._recover_retryable_review_batch_results",
             lambda submission, results, log: results,
         )
 
@@ -510,8 +510,8 @@ class TestReportExporterChunkOIntegration:
 class TestResumeStateChunkO:
     def test_submission_round_trips_chunk_o_alerts(self) -> None:
         from src.batch.batch import BatchJob
-        from src.pipeline import BatchSubmission
-        from src.resume_state import deserialize_submission, serialize_submission
+        from src.orchestration.pipeline import BatchSubmission
+        from src.orchestration.resume_state import deserialize_submission, serialize_submission
 
         sub = BatchSubmission(
             job=BatchJob(batch_id="msgbatch_test", job_type="review", request_map={}, created_at=0.0),
@@ -532,7 +532,7 @@ class TestResumeStateChunkO:
 
     def test_legacy_submission_payload_loads_with_empty_chunk_o_lists(self) -> None:
         """Older resume-state JSON omits the chunk O keys."""
-        from src.resume_state import deserialize_submission
+        from src.orchestration.resume_state import deserialize_submission
 
         legacy = {
             "job": {
@@ -563,8 +563,8 @@ class TestResumeStateChunkO:
 
     def test_collected_state_round_trips_chunk_o_alerts(self) -> None:
         from src.batch.batch import BatchJob
-        from src.pipeline import BatchSubmission, CollectedBatchState
-        from src.resume_state import (
+        from src.orchestration.pipeline import BatchSubmission, CollectedBatchState
+        from src.orchestration.resume_state import (
             deserialize_collected_batch_state,
             serialize_collected_batch_state,
         )

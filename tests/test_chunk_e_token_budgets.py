@@ -279,7 +279,7 @@ def patched_extractor(monkeypatch):
     """Bypass DOCX extraction — feed _prepare_specs a stub spec list."""
     specs = _make_specs()
     monkeypatch.setattr(
-        "src.pipeline.extract_multiple_specs_cached",
+        "src.orchestration.pipeline.extract_multiple_specs_cached",
         lambda paths: specs,
     )
     # _prepare_specs walks Path(input_dir).iterdir() when files isn't passed.
@@ -298,7 +298,7 @@ def stub_count_tokens(monkeypatch):
         return len((text or "").split()) * 2
 
     monkeypatch.setattr("src.core.tokenizer.count_tokens", _fake_count)
-    monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
+    monkeypatch.setattr("src.orchestration.pipeline.count_tokens", _fake_count, raising=False)
     # Chunk 3: the central review request builder also imports
     # ``count_tokens`` to gate the extended-output decision.
     monkeypatch.setattr(
@@ -326,15 +326,15 @@ class TestPipelinePreflightSelectsModel:
     def test_preflight_passes_selected_model_to_api(
         self, monkeypatch, patched_extractor, stub_client
     ):
-        from src import pipeline
+        from src.orchestration import pipeline
 
         # Make sure preflight is on. Pipeline imports get/cache helpers at
         # module scope, so patch the ``src.pipeline`` references directly.
         monkeypatch.setattr(
-            "src.pipeline.get_cached_token_count", lambda key: None
+            "src.orchestration.pipeline.get_cached_token_count", lambda key: None
         )
         monkeypatch.setattr(
-            "src.pipeline.cache_token_count", lambda key, value: None
+            "src.orchestration.pipeline.cache_token_count", lambda key, value: None
         )
 
         pipeline._prepare_specs(
@@ -353,13 +353,13 @@ class TestPipelinePreflightSelectsModel:
     def test_preflight_uses_haiku_when_haiku_selected(
         self, monkeypatch, patched_extractor, stub_client
     ):
-        from src import pipeline
+        from src.orchestration import pipeline
 
         monkeypatch.setattr(
-            "src.pipeline.get_cached_token_count", lambda key: None
+            "src.orchestration.pipeline.get_cached_token_count", lambda key: None
         )
         monkeypatch.setattr(
-            "src.pipeline.cache_token_count", lambda key, value: None
+            "src.orchestration.pipeline.cache_token_count", lambda key, value: None
         )
 
         pipeline._prepare_specs(
@@ -378,11 +378,11 @@ class TestPipelinePreflightExactCountAuthoritative:
     def test_exact_count_over_budget_raises(
         self, monkeypatch, patched_extractor, stub_client
     ):
-        from src import pipeline
+        from src.orchestration import pipeline
 
         # Sidestep the cache so the API stub is consulted.
-        monkeypatch.setattr("src.pipeline.get_cached_token_count", lambda key: None)
-        monkeypatch.setattr("src.pipeline.cache_token_count", lambda key, value: None)
+        monkeypatch.setattr("src.orchestration.pipeline.get_cached_token_count", lambda key: None)
+        monkeypatch.setattr("src.orchestration.pipeline.cache_token_count", lambda key, value: None)
         # API returns a huge count that breaches RECOMMENDED_MAX even
         # though the local cl100k estimate is tiny.
         stub_client.return_tokens = RECOMMENDED_MAX + 50_000
@@ -403,10 +403,10 @@ class TestPipelinePreflightExactCountAuthoritative:
     def test_exact_count_under_budget_does_not_raise(
         self, monkeypatch, patched_extractor, stub_client
     ):
-        from src import pipeline
+        from src.orchestration import pipeline
 
-        monkeypatch.setattr("src.pipeline.get_cached_token_count", lambda key: None)
-        monkeypatch.setattr("src.pipeline.cache_token_count", lambda key, value: None)
+        monkeypatch.setattr("src.orchestration.pipeline.get_cached_token_count", lambda key: None)
+        monkeypatch.setattr("src.orchestration.pipeline.cache_token_count", lambda key, value: None)
         stub_client.return_tokens = 100  # well under the budget
 
         # Should not raise.

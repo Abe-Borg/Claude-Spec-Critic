@@ -41,12 +41,12 @@ import pytest
 from src.cross_check.cross_checker import _build_cross_check_input, _cross_system_prompt
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.input.extractor import ExtractedSpec
-from src.pipeline import (
+from src.orchestration.pipeline import (
     _deduplicate_findings,
     classify_cross_check_dependencies,
     compute_finding_id,
 )
-from src.resume_state import (
+from src.orchestration.resume_state import (
     deserialize_finding,
     deserialize_review_result,
     serialize_finding,

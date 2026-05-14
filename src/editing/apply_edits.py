@@ -21,7 +21,7 @@ from .spec_editor import (
 )
 
 if TYPE_CHECKING:
-    from ..diagnostics import DiagnosticsReport
+    from ..orchestration.diagnostics import DiagnosticsReport
 
 
 def _ensure_paragraph_maps(specs: list[ExtractedSpec], source_paths: list[Path]) -> list[ExtractedSpec]:

@@ -258,7 +258,7 @@ def stub_count_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
         return len((text or "").split()) * 2
 
     monkeypatch.setattr("src.core.tokenizer.count_tokens", _fake_count)
-    monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
+    monkeypatch.setattr("src.orchestration.pipeline.count_tokens", _fake_count, raising=False)
     # Chunk 3: ``src.batch`` no longer imports ``count_tokens`` directly —
     # every batch token count is computed inside the central review
     # request builder. Patch the binding there so the per-spec
@@ -269,7 +269,7 @@ def stub_count_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     # Preflight calls the Anthropic API; bypass for hermetic tests.
     monkeypatch.setattr(
-        "src.pipeline.token_count_preflight_enabled", lambda: False
+        "src.orchestration.pipeline.token_count_preflight_enabled", lambda: False
     )
 
 
@@ -297,7 +297,7 @@ class TestPipelinePerSpecAlertMap:
     def test_prepare_specs_returns_per_filename_map(
         self, tmp_path, stub_count_tokens
     ) -> None:
-        from src.pipeline import _prepare_specs
+        from src.orchestration.pipeline import _prepare_specs
 
         files = self._make_spec_files(tmp_path)
         prepared = _prepare_specs(
@@ -322,7 +322,7 @@ class TestPipelinePerSpecAlertMap:
     def test_per_filename_buckets_do_not_cross_contaminate(
         self, tmp_path, stub_count_tokens
     ) -> None:
-        from src.pipeline import _prepare_specs
+        from src.orchestration.pipeline import _prepare_specs
 
         files = self._make_spec_files(tmp_path)
         prepared = _prepare_specs(

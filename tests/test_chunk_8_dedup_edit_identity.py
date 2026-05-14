@@ -32,13 +32,13 @@ from docx import Document
 
 from src.editing.apply_edits import execute_edit_plan
 from src.input.extractor import ParagraphMapping, extract_text
-from src.pipeline import (
+from src.orchestration.pipeline import (
     FindingGroup,
     FindingOccurrence,
     _deduplicate_findings,
     group_findings,
 )
-from src.resume_state import deserialize_finding, serialize_finding
+from src.orchestration.resume_state import deserialize_finding, serialize_finding
 from src.review.reviewer import EditProposal, Finding, REPORT_ONLY_ACTION
 
 
