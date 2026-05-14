@@ -465,7 +465,7 @@ def _write_estimated_cost(doc: Document, estimated_cost: dict | None) -> None:
     if not estimated_cost:
         return
 
-    from .cost_estimator import format_usd
+    from ..cost_estimator import format_usd
 
     doc.add_heading("Estimated API Cost", level=1)
     if not estimated_cost.get("available"):

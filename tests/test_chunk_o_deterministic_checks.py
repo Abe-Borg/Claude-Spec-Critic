@@ -419,7 +419,7 @@ def _doc_text(path: Path) -> str:
 
 class TestReportExporterChunkOIntegration:
     def test_export_renders_template_marker_section(self, tmp_path: Path) -> None:
-        from src.report_exporter import export_report
+        from src.output.report_exporter import export_report
 
         result = _StubPipelineResult(
             template_marker_alerts=[_alert("TODO: confirm hanger spacing.", DETERMINISTIC_RULE_TEMPLATE_MARKER)],
@@ -432,7 +432,7 @@ class TestReportExporterChunkOIntegration:
         assert "TODO: confirm hanger spacing." in text
 
     def test_export_renders_invalid_code_cycle_section(self, tmp_path: Path) -> None:
-        from src.report_exporter import export_report
+        from src.output.report_exporter import export_report
 
         result = _StubPipelineResult(
             invalid_code_cycle_alerts=[_alert("2018 CBC", DETERMINISTIC_RULE_INVALID_CODE_CYCLE)],
@@ -444,7 +444,7 @@ class TestReportExporterChunkOIntegration:
         assert "2018 CBC" in text
 
     def test_export_renders_duplicate_paragraph_section(self, tmp_path: Path) -> None:
-        from src.report_exporter import export_report
+        from src.output.report_exporter import export_report
 
         result = _StubPipelineResult(
             duplicate_paragraph_alerts=[_alert("Provide cut sheets for all submittals.", DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH)],
@@ -456,7 +456,7 @@ class TestReportExporterChunkOIntegration:
         assert "Provide cut sheets" in text
 
     def test_export_renders_structural_section(self, tmp_path: Path) -> None:
-        from src.report_exporter import export_report
+        from src.output.report_exporter import export_report
 
         result = _StubPipelineResult(
             structural_alerts=[_alert("1.02 EMPTY SECTION", DETERMINISTIC_RULE_EMPTY_SECTION)],
@@ -468,7 +468,7 @@ class TestReportExporterChunkOIntegration:
         assert "1.02 EMPTY SECTION" in text
 
     def test_export_renders_stale_cycle_section(self, tmp_path: Path) -> None:
-        from src.report_exporter import export_report
+        from src.output.report_exporter import export_report
 
         result = _StubPipelineResult(
             code_cycle_alerts=[_alert("2019 CBC", DETERMINISTIC_RULE_STALE_CODE_CYCLE)],
@@ -480,7 +480,7 @@ class TestReportExporterChunkOIntegration:
         assert "2019 CBC" in text
 
     def test_export_renders_naming_section(self, tmp_path: Path) -> None:
-        from src.report_exporter import export_report
+        from src.output.report_exporter import export_report
 
         result = _StubPipelineResult(
             naming_alerts=[_alert("23-23-13 - Refrigerant Piping.docx", DETERMINISTIC_RULE_INCONSISTENT_FILENAME, filename="23-23-13 - Refrigerant Piping.docx")],
@@ -492,7 +492,7 @@ class TestReportExporterChunkOIntegration:
         assert "23-23-13" in text
 
     def test_export_skips_alerts_heading_when_no_alerts(self, tmp_path: Path) -> None:
-        from src.report_exporter import export_report
+        from src.output.report_exporter import export_report
 
         result = _StubPipelineResult()  # every list empty
         out = tmp_path / "report.docx"

@@ -32,8 +32,8 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from src.report_exporter import export_report
-from src.report_status import (
+from src.output.report_exporter import export_report
+from src.output.report_status import (
     AUTO_EDIT_CONFIDENCE_FLOOR,
     EditActionLabel,
     ReportStatus,
