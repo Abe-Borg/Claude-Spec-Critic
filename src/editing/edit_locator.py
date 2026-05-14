@@ -13,8 +13,8 @@ from .edit_candidates import (
     SAFETY_MANUAL_REVIEW,
     SAFETY_REPORT_ONLY,
 )
-from .input.extractor import ParagraphMapping
-from .review.reviewer import Finding
+from ..input.extractor import ParagraphMapping
+from ..review.reviewer import Finding
 
 
 _WHITESPACE_RE = re.compile(r"[\s\u00A0]+")

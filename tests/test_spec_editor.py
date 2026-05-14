@@ -3,10 +3,10 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from src.edit_locator import EditLocation, LocatorResult
+from src.editing.edit_locator import EditLocation, LocatorResult
 from src.input.extractor import ParagraphMapping
 from src.review.reviewer import Finding
-from src.spec_editor import apply_edits_to_spec, build_edit_actions
+from src.editing.spec_editor import apply_edits_to_spec, build_edit_actions
 
 
 def _finding(*, action: str = "EDIT", existing: str = "", replacement: str | None = "") -> Finding:

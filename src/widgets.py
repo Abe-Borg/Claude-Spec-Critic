@@ -13,8 +13,8 @@ from collections import deque
 
 import customtkinter as ctk
 
-from .edit_candidates import EditCandidate
-from .spec_editor import EditReport
+from .editing.edit_candidates import EditCandidate
+from .editing.spec_editor import EditReport
 
 # ============================================================================
 # SHARED CONFIG

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from .review.reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, REPORT_ONLY_ACTION
+from ..review.reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, REPORT_ONLY_ACTION
 
 
 # Phase 4 edit-safety categories (audit Section 8.1). The eligibility flag and

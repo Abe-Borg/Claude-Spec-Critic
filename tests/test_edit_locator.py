@@ -1,4 +1,4 @@
-from src.edit_locator import locate_edit, locate_edits
+from src.editing.edit_locator import locate_edit, locate_edits
 from src.input.extractor import ParagraphMapping
 from src.review.reviewer import Finding
 from src.verifier import VerificationResult
