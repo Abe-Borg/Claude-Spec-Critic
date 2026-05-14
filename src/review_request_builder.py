@@ -69,7 +69,7 @@ from .structured_schemas import (
 from .core.tokenizer import count_tokens
 
 if TYPE_CHECKING:
-    from .extractor import ParagraphMapping
+    from .input.extractor import ParagraphMapping
 
 
 @dataclass(frozen=True)
@@ -329,7 +329,7 @@ def review_request_cache_key(spec: ReviewRequestSpec) -> str:
     whether this is a batch request — every input that can move the
     count.
     """
-    from .extraction_cache import token_count_cache_key
+    from .input.extraction_cache import token_count_cache_key
 
     system_prompt = get_system_prompt(spec.cycle)
     user_message = build_user_message(spec)

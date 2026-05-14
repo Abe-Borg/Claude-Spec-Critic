@@ -12,7 +12,7 @@ import shlex
 from pathlib import Path
 from tkinter import filedialog
 
-from .extractor import SUPPORTED_EXTENSIONS
+from .input.extractor import SUPPORTED_EXTENSIONS
 
 _SPEC_FILETYPES = [
     ("Word Specifications", "*.docx"),

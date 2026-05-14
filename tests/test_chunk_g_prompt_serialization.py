@@ -33,7 +33,7 @@ from src.cross_checker import (
     _cross_system_prompt,
     _get_cross_check_user_message,
 )
-from src.extractor import ExtractedSpec
+from src.input.extractor import ExtractedSpec
 from src.prompt_serialization import (
     TAG_CORPUS,
     TAG_FINDING,

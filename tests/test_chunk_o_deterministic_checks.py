@@ -28,7 +28,7 @@ import pytest
 from docx import Document
 
 from src.core.code_cycles import CALIFORNIA_2025
-from src.preprocessor import (
+from src.input.preprocessor import (
     DETERMINISTIC_RULE_DUPLICATE_HEADING,
     DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH,
     DETERMINISTIC_RULE_EMPTY_SECTION,

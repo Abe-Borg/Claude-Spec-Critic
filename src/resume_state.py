@@ -33,7 +33,7 @@ from typing import Any
 from . import __version__
 from .batch import BatchJob
 from .core.code_cycles import DEFAULT_CYCLE
-from .extractor import ExtractedSpec
+from .input.extractor import ExtractedSpec
 from .pipeline import BatchSubmission, CollectedBatchState
 from .reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, MODEL_OPUS_47, ReviewResult
 from .verifier import VerificationResult

@@ -32,7 +32,7 @@ from typing import Mapping
 import pytest
 
 from src.core.code_cycles import CALIFORNIA_2025
-from src.preprocessor import (
+from src.input.preprocessor import (
     DETERMINISTIC_RULE_STALE_CODE_CYCLE,
     detect_stale_code_cycle_references,
 )
@@ -343,7 +343,7 @@ class TestBatchSubmissionFeedsAlerts:
     def test_per_spec_alerts_land_in_user_message(self, monkeypatch, stub_count_tokens):
         # We capture the kwargs handed to the batch API via a fake client.
         from src import batch as batch_mod
-        from src.extractor import ExtractedSpec
+        from src.input.extractor import ExtractedSpec
 
         captured: list[dict] = []
 

@@ -10,14 +10,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from .extractor import extract_text, extract_multiple_specs, ExtractedSpec, SUPPORTED_EXTENSIONS
-from .extraction_cache import (
+from .input.extractor import extract_text, extract_multiple_specs, ExtractedSpec, SUPPORTED_EXTENSIONS
+from .input.extraction_cache import (
     cache_token_count,
     extract_multiple_specs_cached,
     extraction_cache_stats,
     get_cached_token_count,
 )
-from .preprocessor import preprocess_spec, detect_inconsistent_file_naming
+from .input.preprocessor import preprocess_spec, detect_inconsistent_file_naming
 from .core.tokenizer import (
     RECOMMENDED_MAX,
     count_tokens,

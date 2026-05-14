@@ -4,7 +4,7 @@ import pytest
 from docx import Document
 
 from src.edit_locator import EditLocation, LocatorResult
-from src.extractor import ParagraphMapping
+from src.input.extractor import ParagraphMapping
 from src.reviewer import Finding
 from src.spec_editor import apply_edits_to_spec, build_edit_actions
 

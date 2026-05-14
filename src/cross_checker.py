@@ -8,7 +8,7 @@ from typing import Callable
 
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .extractor import ExtractedSpec
+from .input.extractor import ExtractedSpec
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
 from .core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from .core.code_cycles import CodeCycle, DEFAULT_CYCLE

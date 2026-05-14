@@ -16,7 +16,7 @@ from .prompt_serialization import (
 )
 
 if TYPE_CHECKING:
-    from .extractor import ParagraphMapping
+    from .input.extractor import ParagraphMapping
 
 
 _CATEGORIES_TEMPLATE = """\

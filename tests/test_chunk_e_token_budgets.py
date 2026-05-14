@@ -259,7 +259,7 @@ class _StubClient:
 
 
 def _make_specs(content: str = "Sample spec content.", count: int = 1):
-    from src.extractor import ExtractedSpec
+    from src.input.extractor import ExtractedSpec
 
     return [
         ExtractedSpec(
@@ -311,7 +311,7 @@ def stub_count_tokens(monkeypatch):
 def stub_client(monkeypatch, stub_count_tokens):
     # The pipeline preflight caches exact counts in a module-level dict.
     # Clear it so cross-test state can't make this test see a stale value.
-    from src.extraction_cache import clear_token_cache
+    from src.input.extraction_cache import clear_token_cache
 
     clear_token_cache()
     client = _StubClient(return_tokens=1_000)

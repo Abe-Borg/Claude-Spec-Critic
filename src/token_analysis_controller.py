@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 
 from .core.code_cycles import DEFAULT_CYCLE
-from .extractor import ExtractedSpec, extract_text
+from .input.extractor import ExtractedSpec, extract_text
 from .prompts import get_system_prompt
 from .core.tokenizer import exceeds_per_call_limit
 

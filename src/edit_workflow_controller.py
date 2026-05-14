@@ -20,9 +20,9 @@ from tkinter import filedialog
 
 from .apply_edits import execute_edit_plan
 from .edit_candidates import classify_edit_candidates
-from .extractor import extract_text
+from .input.extractor import extract_text
 from .reviewer import Finding
-from .extractor import ExtractedSpec
+from .input.extractor import ExtractedSpec
 from .spec_editor import EditReport
 from .widgets import EditSelectionDialog, EditSummaryDialog
 

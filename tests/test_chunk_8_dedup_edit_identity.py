@@ -31,7 +31,7 @@ import pytest
 from docx import Document
 
 from src.apply_edits import execute_edit_plan
-from src.extractor import ParagraphMapping, extract_text
+from src.input.extractor import ParagraphMapping, extract_text
 from src.pipeline import (
     FindingGroup,
     FindingOccurrence,

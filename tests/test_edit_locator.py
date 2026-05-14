@@ -1,5 +1,5 @@
 from src.edit_locator import locate_edit, locate_edits
-from src.extractor import ParagraphMapping
+from src.input.extractor import ParagraphMapping
 from src.reviewer import Finding
 from src.verifier import VerificationResult
 

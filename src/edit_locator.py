@@ -13,7 +13,7 @@ from .edit_candidates import (
     SAFETY_MANUAL_REVIEW,
     SAFETY_REPORT_ONLY,
 )
-from .extractor import ParagraphMapping
+from .input.extractor import ParagraphMapping
 from .reviewer import Finding
 
 
