@@ -23,10 +23,10 @@ import time
 
 import customtkinter as ctk
 
-from .core.api_key_store import load_api_key_from_file
-from .batch.batch import BatchJob, BatchStatus
-from .batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
-from . import batch_state_store as _batch_state_store
+from ..core.api_key_store import load_api_key_from_file
+from ..batch.batch import BatchJob, BatchStatus
+from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
+from ..batch import batch_state_store as _batch_state_store
 
 
 def save_batch_state(state):
@@ -44,8 +44,8 @@ def delete_batch_state():
 
 def batch_state_nearing_expiry(created_at):
     return _batch_state_store.batch_state_nearing_expiry(created_at)
-from .core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
-from .orchestration.pipeline import (
+from ..core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
+from ..orchestration.pipeline import (
     BatchSubmission,
     CollectedBatchState,
     collect_batch_verification_results,
@@ -57,7 +57,7 @@ from .orchestration.pipeline import (
     _make_verification_cache,
     _persist_verification_cache,
 )
-from .orchestration.resume_state import (
+from ..orchestration.resume_state import (
     PHASE_CROSS_CHECK,
     PHASE_CROSS_CHECK_VERIFICATION_POLL,
     PHASE_CROSS_CHECK_VERIFICATION_WAVE_POLL,
@@ -69,7 +69,7 @@ from .orchestration.resume_state import (
     SUPPORTED_PHASES,
     build_resume_state,
 )
-from .review.reviewer import MODEL_OPUS_47
+from ..review.reviewer import MODEL_OPUS_47
 from .widgets import COLORS
 
 _UI_FONT_SIZE = 12
@@ -265,7 +265,7 @@ def collect_batch_results(app) -> None:
                     )
                     verification_completed = True
                 if diag:
-                    from .orchestration.diagnostics import bound_structured_payload
+                    from ..orchestration.diagnostics import bound_structured_payload
                     verdicts = {}
                     for f in verifiable_findings:
                         if f.verification:

@@ -18,12 +18,12 @@ import threading
 from pathlib import Path
 from tkinter import filedialog
 
-from .editing.apply_edits import execute_edit_plan
-from .editing.edit_candidates import classify_edit_candidates
-from .input.extractor import extract_text
-from .review.reviewer import Finding
-from .input.extractor import ExtractedSpec
-from .editing.spec_editor import EditReport
+from ..editing.apply_edits import execute_edit_plan
+from ..editing.edit_candidates import classify_edit_candidates
+from ..input.extractor import extract_text
+from ..review.reviewer import Finding
+from ..input.extractor import ExtractedSpec
+from ..editing.spec_editor import EditReport
 from .widgets import EditSelectionDialog, EditSummaryDialog
 
 

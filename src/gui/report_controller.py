@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
 
-from .output.report_exporter import export_report
+from ..output.report_exporter import export_report
 
 
 def export_report_to_file(app, result) -> str:

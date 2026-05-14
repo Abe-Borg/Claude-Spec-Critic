@@ -13,8 +13,8 @@ from collections import deque
 
 import customtkinter as ctk
 
-from .editing.edit_candidates import EditCandidate
-from .editing.spec_editor import EditReport
+from ..editing.edit_candidates import EditCandidate
+from ..editing.spec_editor import EditReport
 
 # ============================================================================
 # SHARED CONFIG
@@ -1061,7 +1061,7 @@ class DiagnosticsWindow(ctk.CTkToplevel):
             return
 
         # Lazy import to keep widgets.py self-contained for legacy tests.
-        from .orchestration.cost_estimator import format_usd
+        from ..orchestration.cost_estimator import format_usd
 
         cost_frame = ctk.CTkFrame(parent, fg_color="transparent")
         cost_frame.pack(fill="x", pady=(10, 0))
