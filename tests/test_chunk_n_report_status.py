@@ -32,8 +32,8 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from src.report_exporter import export_report
-from src.report_status import (
+from src.output.report_exporter import export_report
+from src.output.report_status import (
     AUTO_EDIT_CONFIDENCE_FLOOR,
     EditActionLabel,
     ReportStatus,
@@ -43,8 +43,8 @@ from src.report_status import (
     summarize_edit_actions,
     summarize_statuses,
 )
-from src.reviewer import EditProposal, Finding, ReviewResult
-from src.verifier import VerificationResult
+from src.review.reviewer import EditProposal, Finding, ReviewResult
+from src.verification.verifier import VerificationResult
 
 
 # ---------------------------------------------------------------------------

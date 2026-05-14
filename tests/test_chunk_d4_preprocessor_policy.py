@@ -31,17 +31,17 @@ from typing import Mapping
 
 import pytest
 
-from src.code_cycles import CALIFORNIA_2025
-from src.preprocessor import (
+from src.core.code_cycles import CALIFORNIA_2025
+from src.input.preprocessor import (
     DETERMINISTIC_RULE_STALE_CODE_CYCLE,
     detect_stale_code_cycle_references,
 )
-from src.prompt_serialization import (
+from src.review.prompt_serialization import (
     TAG_PRE_DETECTED,
     pre_detected_alerts_enabled,
     render_pre_detected_block,
 )
-from src.prompts import get_single_spec_user_message
+from src.review.prompts import get_single_spec_user_message
 
 
 # ---------------------------------------------------------------------------
@@ -257,19 +257,19 @@ def stub_count_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_count(text: str | None) -> int:
         return len((text or "").split()) * 2
 
-    monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
-    monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
+    monkeypatch.setattr("src.core.tokenizer.count_tokens", _fake_count)
+    monkeypatch.setattr("src.orchestration.pipeline.count_tokens", _fake_count, raising=False)
     # Chunk 3: ``src.batch`` no longer imports ``count_tokens`` directly —
     # every batch token count is computed inside the central review
     # request builder. Patch the binding there so the per-spec
     # extended-output gating and the local preflight estimate don't trip
     # the lazy tiktoken download.
     monkeypatch.setattr(
-        "src.review_request_builder.count_tokens", _fake_count, raising=False
+        "src.review.review_request_builder.count_tokens", _fake_count, raising=False
     )
     # Preflight calls the Anthropic API; bypass for hermetic tests.
     monkeypatch.setattr(
-        "src.pipeline.token_count_preflight_enabled", lambda: False
+        "src.orchestration.pipeline.token_count_preflight_enabled", lambda: False
     )
 
 
@@ -297,7 +297,7 @@ class TestPipelinePerSpecAlertMap:
     def test_prepare_specs_returns_per_filename_map(
         self, tmp_path, stub_count_tokens
     ) -> None:
-        from src.pipeline import _prepare_specs
+        from src.orchestration.pipeline import _prepare_specs
 
         files = self._make_spec_files(tmp_path)
         prepared = _prepare_specs(
@@ -322,7 +322,7 @@ class TestPipelinePerSpecAlertMap:
     def test_per_filename_buckets_do_not_cross_contaminate(
         self, tmp_path, stub_count_tokens
     ) -> None:
-        from src.pipeline import _prepare_specs
+        from src.orchestration.pipeline import _prepare_specs
 
         files = self._make_spec_files(tmp_path)
         prepared = _prepare_specs(
@@ -342,8 +342,8 @@ class TestBatchSubmissionFeedsAlerts:
 
     def test_per_spec_alerts_land_in_user_message(self, monkeypatch, stub_count_tokens):
         # We capture the kwargs handed to the batch API via a fake client.
-        from src import batch as batch_mod
-        from src.extractor import ExtractedSpec
+        from src.batch import batch as batch_mod
+        from src.input.extractor import ExtractedSpec
 
         captured: list[dict] = []
 

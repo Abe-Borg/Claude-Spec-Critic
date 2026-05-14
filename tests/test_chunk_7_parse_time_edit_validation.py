@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.edit_candidates import SAFETY_REPORT_ONLY, classify_edit_candidates
-from src.edit_locator import locate_edit
-from src.extractor import ParagraphMapping
-from src.pipeline import _deduplicate_findings
-from src.resume_state import deserialize_finding, serialize_finding
-from src.reviewer import (
+from src.editing.edit_candidates import SAFETY_REPORT_ONLY, classify_edit_candidates
+from src.editing.edit_locator import locate_edit
+from src.input.extractor import ParagraphMapping
+from src.orchestration.pipeline import _deduplicate_findings
+from src.orchestration.resume_state import deserialize_finding, serialize_finding
+from src.review.reviewer import (
     EDIT_ACTION_TYPES,
     EditProposal,
     Finding,
@@ -26,7 +26,7 @@ from src.reviewer import (
     _parse_findings,
     validate_edit_shape,
 )
-from src.verifier import VerificationResult
+from src.verification.verifier import VerificationResult
 
 
 # ---------------------------------------------------------------------------

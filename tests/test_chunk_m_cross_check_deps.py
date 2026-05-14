@@ -38,28 +38,28 @@ import json
 
 import pytest
 
-from src.cross_checker import _build_cross_check_input, _cross_system_prompt
-from src.code_cycles import DEFAULT_CYCLE
-from src.extractor import ExtractedSpec
-from src.pipeline import (
+from src.cross_check.cross_checker import _build_cross_check_input, _cross_system_prompt
+from src.core.code_cycles import DEFAULT_CYCLE
+from src.input.extractor import ExtractedSpec
+from src.orchestration.pipeline import (
     _deduplicate_findings,
     classify_cross_check_dependencies,
     compute_finding_id,
 )
-from src.resume_state import (
+from src.orchestration.resume_state import (
     deserialize_finding,
     deserialize_review_result,
     serialize_finding,
     serialize_review_result,
 )
-from src.reviewer import Finding, ReviewResult, _parse_findings
-from src.structured_schemas import (
+from src.review.reviewer import Finding, ReviewResult, _parse_findings
+from src.review.structured_schemas import (
     CROSS_CHECK_FINDINGS_SCHEMA,
     REVIEW_FINDINGS_SCHEMA,
     _CROSS_CHECK_FINDING_OBJECT_SCHEMA,
     _FINDING_OBJECT_SCHEMA,
 )
-from src.verifier import VerificationResult
+from src.verification.verifier import VerificationResult
 
 
 # ---------------------------------------------------------------------------

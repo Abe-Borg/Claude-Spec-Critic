@@ -27,14 +27,14 @@ import re
 
 import pytest
 
-from src.code_cycles import CALIFORNIA_2025
-from src.cross_checker import (
+from src.core.code_cycles import CALIFORNIA_2025
+from src.cross_check.cross_checker import (
     _build_cross_check_input,
     _cross_system_prompt,
     _get_cross_check_user_message,
 )
-from src.extractor import ExtractedSpec
-from src.prompt_serialization import (
+from src.input.extractor import ExtractedSpec
+from src.review.prompt_serialization import (
     TAG_CORPUS,
     TAG_FINDING,
     TAG_FINDINGS,
@@ -46,13 +46,13 @@ from src.prompt_serialization import (
     wrap_data_block,
     wrap_document_block,
 )
-from src.prompts import (
+from src.review.prompts import (
     get_single_spec_user_message,
     get_system_prompt,
 )
-from src.reviewer import Finding, ReviewResult
-from src.triage import _build_user_prompt as triage_build_user_prompt
-from src.verifier import _build_verification_prompt
+from src.review.reviewer import Finding, ReviewResult
+from src.verification.triage import _build_user_prompt as triage_build_user_prompt
+from src.verification.verifier import _build_verification_prompt
 
 
 pytestmark = pytest.mark.prompt_serialization
@@ -506,18 +506,18 @@ class TestNoRawXMLEscapeLeakage:
     local ``_xml_escape`` (the old fragile helpers should be gone)."""
 
     def test_prompts_module_uses_central_helper(self):
-        from src import prompts
+        from src.review import prompts
         # The old module-private helper is removed; central serialization is
         # imported instead.
         assert not hasattr(prompts, "_xml_escape")
         assert prompts.wrap_document_block is not None  # imported into ns
 
     def test_cross_checker_uses_central_helper(self):
-        from src import cross_checker
+        from src.cross_check import cross_checker
         assert not hasattr(cross_checker, "_xml_escape")
         assert cross_checker.wrap_document_block is not None
 
     def test_verifier_uses_central_helper(self):
-        from src import verifier
+        from src.verification import verifier
         assert not hasattr(verifier, "_xml_escape")
         assert verifier.wrap_data_block is not None

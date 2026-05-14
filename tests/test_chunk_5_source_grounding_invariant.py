@@ -31,16 +31,16 @@ from pathlib import Path
 
 import pytest
 
-from src.code_cycles import DEFAULT_CYCLE
-from src.reviewer import Finding
-from src.source_grounding import SearchedSource
-from src.verifier import (
+from src.core.code_cycles import DEFAULT_CYCLE
+from src.review.reviewer import Finding
+from src.verification.source_grounding import SearchedSource
+from src.verification.verifier import (
     VerificationResult,
     _apply_source_grounding,
     _enforce_grounding_invariant,
     _local_skip_result,
 )
-from src.verification_cache import VerificationCache, _CACHE_SCHEMA_VERSION
+from src.verification.verification_cache import VerificationCache, _CACHE_SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +321,7 @@ class TestLocalSkipExempt:
 
     def test_local_skip_classifies_as_locally_classified_status(self):
         """Reports must distinguish local skips from web-confirmed findings."""
-        from src.report_status import ReportStatus, classify_status
+        from src.output.report_status import ReportStatus, classify_status
 
         f = _finding()
         f.verification = _local_skip_result()
@@ -587,7 +587,7 @@ class TestReportClassificationGuards:
     def test_confirmed_no_accepted_sources_renders_as_insufficient_evidence(
         self,
     ):
-        from src.report_status import ReportStatus, classify_status
+        from src.output.report_status import ReportStatus, classify_status
 
         # Hand-construct a result that violates the invariant — as if a
         # bug let it slip through. The classifier should still refuse to
@@ -604,7 +604,7 @@ class TestReportClassificationGuards:
     def test_corrected_no_accepted_sources_renders_as_insufficient_evidence(
         self,
     ):
-        from src.report_status import ReportStatus, classify_status
+        from src.output.report_status import ReportStatus, classify_status
 
         f = _finding()
         f.verification = VerificationResult(
@@ -619,7 +619,7 @@ class TestReportClassificationGuards:
     def test_confirmed_with_accepted_citation_renders_as_verified_supported(
         self,
     ):
-        from src.report_status import ReportStatus, classify_status
+        from src.output.report_status import ReportStatus, classify_status
 
         f = _finding()
         f.verification = VerificationResult(

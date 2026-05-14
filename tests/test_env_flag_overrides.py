@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from src import prompt_serialization, spec_editor, verification_cache
+from src.editing import spec_editor
+from src.verification import verification_cache
+from src.review import prompt_serialization
 
 
 # ---------------------------------------------------------------------------

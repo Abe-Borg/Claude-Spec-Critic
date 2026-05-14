@@ -10,7 +10,7 @@ else:
     base_path = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, base_path)
 
-from src.gui import main
+from src.gui.gui import main
 
 if __name__ == "__main__":
     main()

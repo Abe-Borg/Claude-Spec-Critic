@@ -34,22 +34,21 @@ from src import (
     cost_estimator,
     diagnostics,
     edit_locator,
-    extractor,
-    preprocessor,
     report_status,
-    reviewer,
     source_grounding,
     spec_editor,
     verifier,
 )
-from src.api_config import (
+from src.input import extractor, preprocessor
+from src.review import reviewer
+from src.core.api_config import (
     MODEL_HAIKU_45,
     MODEL_OPUS_47,
     MODEL_SONNET_46,
     PHASE_REVIEW,
     PHASE_VERIFICATION,
 )
-from src.code_cycles import CALIFORNIA_2025
+from src.core.code_cycles import CALIFORNIA_2025
 
 from .fixtures import (
     GoldenFixture,
