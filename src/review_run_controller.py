@@ -21,7 +21,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from .core.api_config import review_max_tokens as _review_max_tokens
-from .batch_state_store import delete_batch_state
+from .batch.batch_state_store import delete_batch_state
 from .core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
 from .diagnostics import DiagnosticsReport
 from .pipeline import run_review

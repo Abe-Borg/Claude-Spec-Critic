@@ -276,7 +276,7 @@ class TestPreprocessSpecAggregator:
 class TestPipelinePlumbing:
     def test_finalize_batch_result_forwards_chunk_o_alerts(self) -> None:
         """finalize_batch_result copies every alert list onto the result."""
-        from src.batch import BatchJob
+        from src.batch.batch import BatchJob
         from src.pipeline import BatchSubmission, CollectedBatchState, finalize_batch_result
         from src.review.reviewer import ReviewResult
 
@@ -297,7 +297,7 @@ class TestPipelinePlumbing:
 
     def test_collect_review_batch_results_forwards_submission_alerts(self, monkeypatch) -> None:
         """collect_review_batch_results copies submission alerts onto state."""
-        from src.batch import BatchJob
+        from src.batch.batch import BatchJob
         from src.pipeline import BatchSubmission, collect_review_batch_results
 
         # Stub the network-facing retrieve_review_results so this test stays
@@ -509,7 +509,7 @@ class TestReportExporterChunkOIntegration:
 
 class TestResumeStateChunkO:
     def test_submission_round_trips_chunk_o_alerts(self) -> None:
-        from src.batch import BatchJob
+        from src.batch.batch import BatchJob
         from src.pipeline import BatchSubmission
         from src.resume_state import deserialize_submission, serialize_submission
 
@@ -562,7 +562,7 @@ class TestResumeStateChunkO:
         assert restored.naming_alerts == []
 
     def test_collected_state_round_trips_chunk_o_alerts(self) -> None:
-        from src.batch import BatchJob
+        from src.batch.batch import BatchJob
         from src.pipeline import BatchSubmission, CollectedBatchState
         from src.resume_state import (
             deserialize_collected_batch_state,

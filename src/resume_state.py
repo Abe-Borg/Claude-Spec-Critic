@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .batch import BatchJob
+from .batch.batch import BatchJob
 from .core.code_cycles import DEFAULT_CYCLE
 from .input.extractor import ExtractedSpec
 from .pipeline import BatchSubmission, CollectedBatchState

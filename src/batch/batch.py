@@ -8,17 +8,17 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
-from .review.reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
-from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
-from .review.review_request_builder import ReviewRequestSpec, build_review_request
-from .core.api_config import (
+from ..review.reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
+from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..review.review_request_builder import ReviewRequestSpec, build_review_request
+from ..core.api_config import (
     BATCH_OUTPUT_BETA,
     PHASE_VERIFICATION,
     REVIEW_MODEL_DEFAULT,
     assert_extended_output_allowed,
     extract_cache_usage,
 )
-from .review.structured_schemas import (
+from ..review.structured_schemas import (
     REVIEW_TOOL_NAME,
     VERIFICATION_TOOL_NAME,
     extract_tool_use_block,
@@ -275,9 +275,9 @@ def build_verification_tools_for_profile(
     lives in :mod:`batch` to avoid a circular import — :mod:`verifier`
     already depends on :mod:`batch`, not the reverse.
     """
-    from .core.api_config import build_web_search_tool  # local import — keeps the
+    from ..core.api_config import build_web_search_tool  # local import — keeps the
     # `api_config` import surface inside this module small
-    from .verification_profiles import profile_max_uses as _profile_max_uses
+    from ..verification_profiles import profile_max_uses as _profile_max_uses
 
     max_uses = _profile_max_uses(profile, severity)
     web_tool = build_web_search_tool(max_uses=max_uses)
@@ -313,7 +313,7 @@ def submit_verification_batch(
     # mode (a GRIPES finding routed through batch got the full
     # STANDARD_REASONING bundle even though real-time would have
     # given it STRICT_STRUCTURED).
-    from .verification_routing import (
+    from ..verification_routing import (
         build_verification_request,
         select_routing,
     )

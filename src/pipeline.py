@@ -33,8 +33,8 @@ from .review.review_request_builder import (
     estimate_local_request_tokens,
     review_request_cache_key,
 )
-from .batch import BatchJob, submit_review_batch, retrieve_review_results
-from .batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
+from .batch.batch import BatchJob, submit_review_batch, retrieve_review_results
+from .batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from .core.api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
 from .verifier import (
     verify_findings,

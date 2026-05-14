@@ -342,7 +342,7 @@ class TestBatchSubmissionFeedsAlerts:
 
     def test_per_spec_alerts_land_in_user_message(self, monkeypatch, stub_count_tokens):
         # We capture the kwargs handed to the batch API via a fake client.
-        from src import batch as batch_mod
+        from src.batch import batch as batch_mod
         from src.input.extractor import ExtractedSpec
 
         captured: list[dict] = []

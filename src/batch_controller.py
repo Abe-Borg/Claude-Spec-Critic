@@ -24,8 +24,8 @@ import time
 import customtkinter as ctk
 
 from .core.api_key_store import load_api_key_from_file
-from .batch import BatchJob, BatchStatus
-from .batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
+from .batch.batch import BatchJob, BatchStatus
+from .batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from . import batch_state_store as _batch_state_store
 
 

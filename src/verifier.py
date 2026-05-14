@@ -11,7 +11,7 @@ from typing import Callable
 
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .batch import (
+from .batch.batch import (
     BatchJob,
     build_verification_tools_for_profile,
     poll_batch,  # Backward-compatibility export for older tests/patching.
@@ -21,7 +21,7 @@ from .batch import (
     verification_request_includes_verdict_tool,
     _extract_api_error_message,
 )
-from .batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
+from .batch.batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
 from .review.reviewer import Finding, _get_client
 from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from .core.api_config import (

@@ -38,7 +38,7 @@ exe_dir = Path(base_path).parent
 sys.path.insert(0, str(exe_dir))
 
 # Type annotations on method signatures
-from src.batch import BatchStatus
+from src.batch.batch import BatchStatus
 from src.diagnostics import DiagnosticsReport
 from src.input.extractor import ExtractedSpec
 from src.pipeline import BatchSubmission
@@ -61,7 +61,7 @@ from src.widgets import (
 # Persistence helpers (also re-exported for backward compatibility with
 # tests/external code that imports them from ``src.gui``)
 from src.core.api_key_store import load_api_key_from_file
-from src.batch_state_store import (
+from src.batch.batch_state_store import (
     delete_batch_state,
     load_batch_state,
     save_batch_state,
