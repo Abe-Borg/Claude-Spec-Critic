@@ -47,7 +47,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, TYPE_CHECKING
 
-from .core.api_config import (
+from ..core.api_config import (
     LARGE_REVIEW_INPUT_THRESHOLD,
     PHASE_BATCH_REVIEW,
     PHASE_REVIEW,
@@ -59,17 +59,17 @@ from .core.api_config import (
     system_prompt_with_cache,
     tools_with_cache,
 )
-from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from .prompts import get_single_spec_user_message, get_system_prompt
 from .structured_schemas import (
     review_findings_tool,
     review_tool_choice,
     structured_tool_output_enabled,
 )
-from .core.tokenizer import count_tokens
+from ..core.tokenizer import count_tokens
 
 if TYPE_CHECKING:
-    from .input.extractor import ParagraphMapping
+    from ..input.extractor import ParagraphMapping
 
 
 @dataclass(frozen=True)
@@ -329,7 +329,7 @@ def review_request_cache_key(spec: ReviewRequestSpec) -> str:
     whether this is a batch request — every input that can move the
     count.
     """
-    from .input.extraction_cache import token_count_cache_key
+    from ..input.extraction_cache import token_count_cache_key
 
     system_prompt = get_system_prompt(spec.cycle)
     user_message = build_user_message(spec)

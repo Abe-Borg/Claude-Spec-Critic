@@ -12,7 +12,7 @@ from .core.api_config import (
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT,
 )
-from .reviewer import Finding
+from .review.reviewer import Finding
 
 
 # Severities that warrant Opus escalation when the first pass returns

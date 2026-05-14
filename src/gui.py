@@ -42,7 +42,7 @@ from src.batch import BatchStatus
 from src.diagnostics import DiagnosticsReport
 from src.input.extractor import ExtractedSpec
 from src.pipeline import BatchSubmission
-from src.reviewer import Finding
+from src.review.reviewer import Finding
 from src.spec_editor import EditReport
 
 # Constants used by widgets

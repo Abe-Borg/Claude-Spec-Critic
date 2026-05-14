@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Mapping, Sequence
 
-from .core.code_cycles import CodeCycle
+from ..core.code_cycles import CodeCycle
 from .prompt_serialization import (
     TAG_PROJECT_CONTEXT,
     TAG_SPEC,
@@ -16,7 +16,7 @@ from .prompt_serialization import (
 )
 
 if TYPE_CHECKING:
-    from .input.extractor import ParagraphMapping
+    from ..input.extractor import ParagraphMapping
 
 
 _CATEGORIES_TEMPLATE = """\

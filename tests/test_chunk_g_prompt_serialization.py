@@ -34,7 +34,7 @@ from src.cross_checker import (
     _get_cross_check_user_message,
 )
 from src.input.extractor import ExtractedSpec
-from src.prompt_serialization import (
+from src.review.prompt_serialization import (
     TAG_CORPUS,
     TAG_FINDING,
     TAG_FINDINGS,
@@ -46,11 +46,11 @@ from src.prompt_serialization import (
     wrap_data_block,
     wrap_document_block,
 )
-from src.prompts import (
+from src.review.prompts import (
     get_single_spec_user_message,
     get_system_prompt,
 )
-from src.reviewer import Finding, ReviewResult
+from src.review.reviewer import Finding, ReviewResult
 from src.triage import _build_user_prompt as triage_build_user_prompt
 from src.verifier import _build_verification_prompt
 
@@ -506,7 +506,7 @@ class TestNoRawXMLEscapeLeakage:
     local ``_xml_escape`` (the old fragile helpers should be gone)."""
 
     def test_prompts_module_uses_central_helper(self):
-        from src import prompts
+        from src.review import prompts
         # The old module-private helper is removed; central serialization is
         # imported instead.
         assert not hasattr(prompts, "_xml_escape")

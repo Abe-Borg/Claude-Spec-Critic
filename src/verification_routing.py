@@ -96,7 +96,7 @@ from .retry_policy import (
     DEFAULT_MAX_CONTINUATIONS,
     max_continuations_for_mode,
 )
-from .reviewer import Finding
+from .review.reviewer import Finding
 from .verification_modes import (
     ModePolicy,
     VerificationMode,
@@ -511,7 +511,7 @@ def build_verification_tools_from_decision(
     # :mod:`verifier` will depend on this module, so importing batch at
     # module load would form a cycle.
     from .batch import build_verification_tools_for_profile
-    from .structured_schemas import verification_verdict_tool
+    from .review.structured_schemas import verification_verdict_tool
 
     tool_list = build_verification_tools_for_profile(
         decision.profile, decision.severity

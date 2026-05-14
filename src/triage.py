@@ -35,14 +35,14 @@ from .core.api_config import (
     tools_with_cache,
     triage_max_tokens,
 )
-from .prompt_serialization import (
+from .review.prompt_serialization import (
     TAG_FINDING,
     TAG_FINDINGS,
     escape_attr,
     wrap_data_block,
 )
-from .reviewer import Finding, _get_client
-from .structured_schemas import (
+from .review.reviewer import Finding, _get_client
+from .review.structured_schemas import (
     TRIAGE_TOOL_NAME,
     extract_tool_use_block,
     triage_classifications_tool,

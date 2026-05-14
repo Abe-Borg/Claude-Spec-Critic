@@ -18,7 +18,7 @@ from src.edit_locator import locate_edit
 from src.input.extractor import ParagraphMapping
 from src.pipeline import _deduplicate_findings
 from src.resume_state import deserialize_finding, serialize_finding
-from src.reviewer import (
+from src.review.reviewer import (
     EDIT_ACTION_TYPES,
     EditProposal,
     Finding,

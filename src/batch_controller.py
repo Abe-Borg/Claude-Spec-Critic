@@ -69,7 +69,7 @@ from .resume_state import (
     SUPPORTED_PHASES,
     build_resume_state,
 )
-from .reviewer import MODEL_OPUS_47
+from .review.reviewer import MODEL_OPUS_47
 from .widgets import COLORS
 
 _UI_FONT_SIZE = 12

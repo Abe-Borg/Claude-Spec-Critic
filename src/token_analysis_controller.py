@@ -19,7 +19,7 @@ import threading
 
 from .core.code_cycles import DEFAULT_CYCLE
 from .input.extractor import ExtractedSpec, extract_text
-from .prompts import get_system_prompt
+from .review.prompts import get_system_prompt
 from .core.tokenizer import exceeds_per_call_limit
 
 
@@ -136,7 +136,7 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
     """
     from .core.api_config import REVIEW_MODEL_DEFAULT
     from .core.tokenizer import count_tokens_via_api
-    from .prompts import get_single_spec_user_message, get_system_prompt
+    from .review.prompts import get_single_spec_user_message, get_system_prompt
 
     selected_model = REVIEW_MODEL_DEFAULT
     model_getter = getattr(app, "_get_selected_model", None)

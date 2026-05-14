@@ -43,7 +43,7 @@ from src.report_status import (
     summarize_edit_actions,
     summarize_statuses,
 )
-from src.reviewer import EditProposal, Finding, ReviewResult
+from src.review.reviewer import EditProposal, Finding, ReviewResult
 from src.verifier import VerificationResult
 
 

@@ -14,7 +14,7 @@ from .edit_candidates import (
     SAFETY_REPORT_ONLY,
 )
 from .input.extractor import ParagraphMapping
-from .reviewer import Finding
+from .review.reviewer import Finding
 
 
 _WHITESPACE_RE = re.compile(r"[\s\u00A0]+")

@@ -51,7 +51,7 @@ from src.input.preprocessor import (
     detect_unresolved_template_markers,
     preprocess_spec,
 )
-from src.reviewer import Finding
+from src.review.reviewer import Finding
 from src.verification_router import classify_finding_for_verification
 
 
@@ -278,7 +278,7 @@ class TestPipelinePlumbing:
         """finalize_batch_result copies every alert list onto the result."""
         from src.batch import BatchJob
         from src.pipeline import BatchSubmission, CollectedBatchState, finalize_batch_result
-        from src.reviewer import ReviewResult
+        from src.review.reviewer import ReviewResult
 
         sub = BatchSubmission(
             job=BatchJob(batch_id="msgbatch_test", job_type="review", request_map={}, created_at=0.0),
@@ -379,7 +379,7 @@ class _StubPipelineResult:
     """
 
     def __init__(self, **kwargs) -> None:
-        from src.reviewer import ReviewResult
+        from src.review.reviewer import ReviewResult
 
         self.review_result = kwargs.get("review_result", ReviewResult(findings=[]))
         self.cross_check_result = None
@@ -568,7 +568,7 @@ class TestResumeStateChunkO:
             deserialize_collected_batch_state,
             serialize_collected_batch_state,
         )
-        from src.reviewer import ReviewResult
+        from src.review.reviewer import ReviewResult
 
         sub = BatchSubmission(
             job=BatchJob(batch_id="msgbatch_test", job_type="review", request_map={}, created_at=0.0),

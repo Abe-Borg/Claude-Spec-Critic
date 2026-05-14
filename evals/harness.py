@@ -34,14 +34,13 @@ from src import (
     cost_estimator,
     diagnostics,
     edit_locator,
-    extractor,
-    preprocessor,
     report_status,
-    reviewer,
     source_grounding,
     spec_editor,
     verifier,
 )
+from src.input import extractor, preprocessor
+from src.review import reviewer
 from src.core.api_config import (
     MODEL_HAIKU_45,
     MODEL_OPUS_47,

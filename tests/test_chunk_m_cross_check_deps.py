@@ -52,8 +52,8 @@ from src.resume_state import (
     serialize_finding,
     serialize_review_result,
 )
-from src.reviewer import Finding, ReviewResult, _parse_findings
-from src.structured_schemas import (
+from src.review.reviewer import Finding, ReviewResult, _parse_findings
+from src.review.structured_schemas import (
     CROSS_CHECK_FINDINGS_SCHEMA,
     REVIEW_FINDINGS_SCHEMA,
     _CROSS_CHECK_FINDING_OBJECT_SCHEMA,

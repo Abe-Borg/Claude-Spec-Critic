@@ -25,7 +25,7 @@ from .batch_state_store import delete_batch_state
 from .core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
 from .diagnostics import DiagnosticsReport
 from .pipeline import run_review
-from .reviewer import MODEL_OPUS_47
+from .review.reviewer import MODEL_OPUS_47
 from .core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
 from .widgets import COLORS
 

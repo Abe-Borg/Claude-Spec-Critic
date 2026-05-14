@@ -302,7 +302,7 @@ def stub_count_tokens(monkeypatch):
     # Chunk 3: the central review request builder also imports
     # ``count_tokens`` to gate the extended-output decision.
     monkeypatch.setattr(
-        "src.review_request_builder.count_tokens", _fake_count, raising=False
+        "src.review.review_request_builder.count_tokens", _fake_count, raising=False
     )
     return _fake_count
 
@@ -316,7 +316,7 @@ def stub_client(monkeypatch, stub_count_tokens):
     clear_token_cache()
     client = _StubClient(return_tokens=1_000)
     monkeypatch.setattr("src.core.tokenizer._log", type("L", (), {"warning": lambda *a, **k: None})())
-    monkeypatch.setattr("src.reviewer._get_client", lambda: client)
+    monkeypatch.setattr("src.review.reviewer._get_client", lambda: client)
     return client
 
 

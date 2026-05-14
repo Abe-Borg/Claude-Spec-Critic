@@ -9,17 +9,17 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .verifier import VerificationResult
+    from ..verifier import VerificationResult
 
 from anthropic import Anthropic, APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
-from .core.api_config import (
+from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..core.api_config import (
     MODEL_OPUS_47,
     REVIEW_MODEL_DEFAULT,
     extract_cache_usage,
 )
-from .retry_policy import (
+from ..retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
     classify_exception,

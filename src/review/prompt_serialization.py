@@ -47,7 +47,7 @@ import os
 from typing import Iterable, Mapping, Sequence, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .input.extractor import ParagraphMapping
+    from ..input.extractor import ParagraphMapping
 
 
 # Canonical "disable" tokens for boolean env-var flags. Any of these (case-

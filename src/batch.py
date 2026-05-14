@@ -8,9 +8,9 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
-from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
+from .review.reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
 from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
-from .review_request_builder import ReviewRequestSpec, build_review_request
+from .review.review_request_builder import ReviewRequestSpec, build_review_request
 from .core.api_config import (
     BATCH_OUTPUT_BETA,
     PHASE_VERIFICATION,
@@ -18,7 +18,7 @@ from .core.api_config import (
     assert_extended_output_allowed,
     extract_cache_usage,
 )
-from .structured_schemas import (
+from .review.structured_schemas import (
     REVIEW_TOOL_NAME,
     VERIFICATION_TOOL_NAME,
     extract_tool_use_block,

@@ -39,7 +39,7 @@ from src.pipeline import (
     group_findings,
 )
 from src.resume_state import deserialize_finding, serialize_finding
-from src.reviewer import EditProposal, Finding, REPORT_ONLY_ACTION
+from src.review.reviewer import EditProposal, Finding, REPORT_ONLY_ACTION
 
 
 # ---------------------------------------------------------------------------

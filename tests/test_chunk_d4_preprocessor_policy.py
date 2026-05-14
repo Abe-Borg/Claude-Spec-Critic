@@ -36,12 +36,12 @@ from src.input.preprocessor import (
     DETERMINISTIC_RULE_STALE_CODE_CYCLE,
     detect_stale_code_cycle_references,
 )
-from src.prompt_serialization import (
+from src.review.prompt_serialization import (
     TAG_PRE_DETECTED,
     pre_detected_alerts_enabled,
     render_pre_detected_block,
 )
-from src.prompts import get_single_spec_user_message
+from src.review.prompts import get_single_spec_user_message
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ def stub_count_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     # extended-output gating and the local preflight estimate don't trip
     # the lazy tiktoken download.
     monkeypatch.setattr(
-        "src.review_request_builder.count_tokens", _fake_count, raising=False
+        "src.review.review_request_builder.count_tokens", _fake_count, raising=False
     )
     # Preflight calls the Anthropic API; bypass for hermetic tests.
     monkeypatch.setattr(

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from .edit_locator import locate_edits
 from .input.extractor import ExtractedSpec, extract_text_from_docx
-from .reviewer import Finding
+from .review.reviewer import Finding
 from .spec_editor import (
     EditAction,
     EditOutcome,
