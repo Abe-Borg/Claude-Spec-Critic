@@ -45,7 +45,7 @@ from .verifier import (
     VerificationResult,
 )
 from .verification_cache import VerificationCache, cache_persist_enabled
-from .cross_checker import run_cross_check, run_chunked_cross_check
+from .cross_check.cross_checker import run_cross_check, run_chunked_cross_check
 from .core.code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 
 # Log/progress callbacks accept explicit ``level`` and ``phase`` keywords

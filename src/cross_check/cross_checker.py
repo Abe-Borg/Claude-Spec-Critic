@@ -8,11 +8,11 @@ from typing import Callable
 
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .input.extractor import ExtractedSpec
-from .review.reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
-from .core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
-from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
-from .review.prompt_serialization import (
+from ..input.extractor import ExtractedSpec
+from ..review.reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
+from ..core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
+from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..review.prompt_serialization import (
     TAG_ALREADY_IDENTIFIED,
     TAG_CORPUS,
     TAG_PRIOR_FINDING,
@@ -25,7 +25,7 @@ from .review.prompt_serialization import (
     wrap_data_block,
     wrap_document_block,
 )
-from .core.api_config import (
+from ..core.api_config import (
     CROSS_CHECK_MODEL_DEFAULT,
     PHASE_CROSS_CHECK,
     apply_effort_config,
@@ -35,14 +35,14 @@ from .core.api_config import (
     system_prompt_with_cache,
     tools_with_cache,
 )
-from .retry_policy import (
+from ..retry_policy import (
     DEFAULT_REALTIME_RETRY_POLICY,
     FailureClass,
     classify_exception,
     compute_backoff_seconds,
     is_retryable_failure_class,
 )
-from .review.structured_schemas import (
+from ..review.structured_schemas import (
     CROSS_CHECK_TOOL_NAME,
     cross_check_findings_tool,
     cross_check_tool_choice,

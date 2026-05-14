@@ -28,7 +28,7 @@ import re
 import pytest
 
 from src.core.code_cycles import CALIFORNIA_2025
-from src.cross_checker import (
+from src.cross_check.cross_checker import (
     _build_cross_check_input,
     _cross_system_prompt,
     _get_cross_check_user_message,
@@ -513,7 +513,7 @@ class TestNoRawXMLEscapeLeakage:
         assert prompts.wrap_document_block is not None  # imported into ns
 
     def test_cross_checker_uses_central_helper(self):
-        from src import cross_checker
+        from src.cross_check import cross_checker
         assert not hasattr(cross_checker, "_xml_escape")
         assert cross_checker.wrap_document_block is not None
 
