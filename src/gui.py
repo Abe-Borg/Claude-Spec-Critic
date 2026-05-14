@@ -46,8 +46,8 @@ from src.reviewer import Finding
 from src.spec_editor import EditReport
 
 # Constants used by widgets
-from src.code_cycles import DEFAULT_CYCLE
-from src.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
+from src.core.code_cycles import DEFAULT_CYCLE
+from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 
 from src.widgets import (
     AnimatedButton,
@@ -60,7 +60,7 @@ from src.widgets import (
 
 # Persistence helpers (also re-exported for backward compatibility with
 # tests/external code that imports them from ``src.gui``)
-from src.api_key_store import load_api_key_from_file
+from src.core.api_key_store import load_api_key_from_file
 from src.batch_state_store import (
     delete_batch_state,
     load_batch_state,

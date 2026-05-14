@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from src.api_config import (
+from src.core.api_config import (
     BATCH_MAX_OUTPUT_TOKENS,
     CROSS_CHECK_OUTPUT_CAP,
     HAIKU_TRIAGE_OUTPUT_CAP,
@@ -51,7 +51,7 @@ from src.api_config import (
     triage_max_tokens,
     verification_max_tokens,
 )
-from src.tokenizer import (
+from src.core.tokenizer import (
     RECOMMENDED_MAX,
     exceeds_per_call_limit,
     exceeds_per_call_limit_for_model,
@@ -297,7 +297,7 @@ def stub_count_tokens(monkeypatch):
     def _fake_count(text: str | None) -> int:
         return len((text or "").split()) * 2
 
-    monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
+    monkeypatch.setattr("src.core.tokenizer.count_tokens", _fake_count)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
     # Chunk 3: the central review request builder also imports
     # ``count_tokens`` to gate the extended-output decision.
@@ -315,7 +315,7 @@ def stub_client(monkeypatch, stub_count_tokens):
 
     clear_token_cache()
     client = _StubClient(return_tokens=1_000)
-    monkeypatch.setattr("src.tokenizer._log", type("L", (), {"warning": lambda *a, **k: None})())
+    monkeypatch.setattr("src.core.tokenizer._log", type("L", (), {"warning": lambda *a, **k: None})())
     monkeypatch.setattr("src.reviewer._get_client", lambda: client)
     return client
 

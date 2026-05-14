@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
-from .code_cycles import CodeCycle, DEFAULT_CYCLE
+from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from .review_request_builder import ReviewRequestSpec, build_review_request
-from .api_config import (
+from .core.api_config import (
     BATCH_OUTPUT_BETA,
     PHASE_VERIFICATION,
     REVIEW_MODEL_DEFAULT,
@@ -275,7 +275,7 @@ def build_verification_tools_for_profile(
     lives in :mod:`batch` to avoid a circular import — :mod:`verifier`
     already depends on :mod:`batch`, not the reverse.
     """
-    from .api_config import build_web_search_tool  # local import — keeps the
+    from .core.api_config import build_web_search_tool  # local import — keeps the
     # `api_config` import surface inside this module small
     from .verification_profiles import profile_max_uses as _profile_max_uses
 

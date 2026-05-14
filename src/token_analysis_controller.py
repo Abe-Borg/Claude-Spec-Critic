@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import threading
 
-from .code_cycles import DEFAULT_CYCLE
+from .core.code_cycles import DEFAULT_CYCLE
 from .extractor import ExtractedSpec, extract_text
 from .prompts import get_system_prompt
-from .tokenizer import exceeds_per_call_limit
+from .core.tokenizer import exceeds_per_call_limit
 
 
 # Chunk D2.2: 300–500 ms recommended by the delta plan. 400 ms balances
@@ -134,8 +134,8 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
     ``REVIEW_MODEL_DEFAULT`` so headless and partially-initialized callers
     still get a sensible count.
     """
-    from .api_config import REVIEW_MODEL_DEFAULT
-    from .tokenizer import count_tokens_via_api
+    from .core.api_config import REVIEW_MODEL_DEFAULT
+    from .core.tokenizer import count_tokens_via_api
     from .prompts import get_single_spec_user_message, get_system_prompt
 
     selected_model = REVIEW_MODEL_DEFAULT

@@ -20,13 +20,13 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
-from .api_config import review_max_tokens as _review_max_tokens
+from .core.api_config import review_max_tokens as _review_max_tokens
 from .batch_state_store import delete_batch_state
-from .code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
+from .core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
 from .diagnostics import DiagnosticsReport
 from .pipeline import run_review
 from .reviewer import MODEL_OPUS_47
-from .tokenizer import PROJECT_CONTEXT_MAX_TOKENS
+from .core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
 from .widgets import COLORS
 
 _UI_FONT_SIZE = 12

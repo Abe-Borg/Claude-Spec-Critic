@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Mapping, Sequence
 
-from .code_cycles import CodeCycle
+from .core.code_cycles import CodeCycle
 from .prompt_serialization import (
     TAG_PROJECT_CONTEXT,
     TAG_SPEC,

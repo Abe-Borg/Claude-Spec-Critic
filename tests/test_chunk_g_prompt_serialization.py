@@ -27,7 +27,7 @@ import re
 
 import pytest
 
-from src.code_cycles import CALIFORNIA_2025
+from src.core.code_cycles import CALIFORNIA_2025
 from src.cross_checker import (
     _build_cross_check_input,
     _cross_system_prompt,

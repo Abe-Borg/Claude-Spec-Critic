@@ -182,7 +182,7 @@ def count_tokens_via_api(
     """
     if client is None:
         try:
-            from .reviewer import _get_client
+            from ..reviewer import _get_client
             client = _get_client()
         except Exception as exc:  # pragma: no cover - exercised via tests
             _log.warning("count_tokens_via_api: no client available (%s)", exc)

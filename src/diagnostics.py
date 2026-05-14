@@ -692,7 +692,7 @@ class DiagnosticsReport:
         search_budget_samples: list[int] = []
         budget_ceiling = 0
         try:
-            from .api_config import DEFAULT_VERIFICATION_MAX_USES
+            from .core.api_config import DEFAULT_VERIFICATION_MAX_USES
             budget_ceiling = int(DEFAULT_VERIFICATION_MAX_USES)
         except Exception:
             budget_ceiling = 0

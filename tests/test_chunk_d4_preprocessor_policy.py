@@ -31,7 +31,7 @@ from typing import Mapping
 
 import pytest
 
-from src.code_cycles import CALIFORNIA_2025
+from src.core.code_cycles import CALIFORNIA_2025
 from src.preprocessor import (
     DETERMINISTIC_RULE_STALE_CODE_CYCLE,
     detect_stale_code_cycle_references,
@@ -257,7 +257,7 @@ def stub_count_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_count(text: str | None) -> int:
         return len((text or "").split()) * 2
 
-    monkeypatch.setattr("src.tokenizer.count_tokens", _fake_count)
+    monkeypatch.setattr("src.core.tokenizer.count_tokens", _fake_count)
     monkeypatch.setattr("src.pipeline.count_tokens", _fake_count, raising=False)
     # Chunk 3: ``src.batch`` no longer imports ``count_tokens`` directly —
     # every batch token count is computed inside the central review

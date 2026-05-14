@@ -20,7 +20,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from .extractor import CONTEXT_ATTACHMENT_EXTENSIONS, extract_context_text
-from .tokenizer import PROJECT_CONTEXT_MAX_TOKENS
+from .core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
 from .widgets import COLORS
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"

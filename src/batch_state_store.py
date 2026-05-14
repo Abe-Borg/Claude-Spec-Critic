@@ -22,7 +22,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
-from .app_paths import (
+from .core.app_paths import (
     BATCH_STATE_MAX_AGE_HOURS,
     BATCH_STATE_WARNING_AGE_HOURS,
     batch_state_path,

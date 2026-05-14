@@ -80,7 +80,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .api_config import (
+from .core.api_config import (
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,

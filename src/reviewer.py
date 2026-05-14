@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 
 from anthropic import Anthropic, APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .code_cycles import CodeCycle, DEFAULT_CYCLE
-from .api_config import (
+from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from .core.api_config import (
     MODEL_OPUS_47,
     REVIEW_MODEL_DEFAULT,
     extract_cache_usage,

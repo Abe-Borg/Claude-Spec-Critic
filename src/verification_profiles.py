@@ -256,7 +256,7 @@ def profile_max_uses(
     the budget — every profile shares the same severity-based ceiling.
     """
     del profile
-    from .api_config import web_search_max_uses_for_severity
+    from .core.api_config import web_search_max_uses_for_severity
     return web_search_max_uses_for_severity(severity)
 
 

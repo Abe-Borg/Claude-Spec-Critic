@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from .api_config import (
+from .core.api_config import (
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT,
 )

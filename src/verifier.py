@@ -23,8 +23,8 @@ from .batch import (
 )
 from .batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
 from .reviewer import Finding, _get_client
-from .code_cycles import CodeCycle, DEFAULT_CYCLE
-from .api_config import (
+from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from .core.api_config import (
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,

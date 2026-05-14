@@ -12,7 +12,7 @@ unsupported parameters off the wire.
 """
 from __future__ import annotations
 
-from src.api_config import (
+from src.core.api_config import (
     MODEL_HAIKU_45,
     MODEL_OPUS_47,
     MODEL_SONNET_46,

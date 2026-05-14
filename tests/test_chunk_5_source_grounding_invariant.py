@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from src.code_cycles import DEFAULT_CYCLE
+from src.core.code_cycles import DEFAULT_CYCLE
 from src.reviewer import Finding
 from src.source_grounding import SearchedSource
 from src.verifier import (

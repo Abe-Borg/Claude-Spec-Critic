@@ -39,7 +39,7 @@ import json
 import pytest
 
 from src.cross_checker import _build_cross_check_input, _cross_system_prompt
-from src.code_cycles import DEFAULT_CYCLE
+from src.core.code_cycles import DEFAULT_CYCLE
 from src.extractor import ExtractedSpec
 from src.pipeline import (
     _deduplicate_findings,

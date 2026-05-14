@@ -10,8 +10,8 @@ from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitErr
 
 from .extractor import ExtractedSpec
 from .reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client, MODEL_OPUS_47
-from .tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
-from .code_cycles import CodeCycle, DEFAULT_CYCLE
+from .core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
+from .core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from .prompt_serialization import (
     TAG_ALREADY_IDENTIFIED,
     TAG_CORPUS,
@@ -25,7 +25,7 @@ from .prompt_serialization import (
     wrap_data_block,
     wrap_document_block,
 )
-from .api_config import (
+from .core.api_config import (
     CROSS_CHECK_MODEL_DEFAULT,
     PHASE_CROSS_CHECK,
     apply_effort_config,

@@ -30,7 +30,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
-from .code_cycles import CodeCycle
+from .core.code_cycles import CodeCycle
 
 
 @dataclass

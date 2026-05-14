@@ -28,7 +28,7 @@ from typing import Callable, Iterable
 
 from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
 
-from .api_config import (
+from .core.api_config import (
     PHASE_TRIAGE,
     TRIAGE_MODEL_DEFAULT,
     system_prompt_with_cache,
