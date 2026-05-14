@@ -30,15 +30,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from src import (
-    cost_estimator,
-    diagnostics,
-    edit_locator,
-    report_status,
-    source_grounding,
-    spec_editor,
-    verifier,
-)
+from src.orchestration import cost_estimator, diagnostics
+from src.editing import edit_locator, spec_editor
+from src.output import report_status
+from src.verification import source_grounding, verifier
 from src.input import extractor, preprocessor
 from src.review import reviewer
 from src.core.api_config import (
