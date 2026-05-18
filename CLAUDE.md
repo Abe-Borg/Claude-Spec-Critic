@@ -14,66 +14,59 @@ Real-time and batch share identical prompts, models, tool schemas, output caps, 
 
 ```
 src/
-# UI
-├── gui.py                  # CustomTkinter app shell
-├── widgets.py              # Reusable UI components
-├── about_usage_dialogs.py  # About / API-usage dialogs
-├── *_controller.py         # 8 thin bridges between widgets and pipeline
-                            # (batch, context, diagnostics, edit_workflow,
-                            #  file_selection, report, review_run, token_analysis)
-
-# Orchestration / config
-├── pipeline.py             # Core orchestration + FindingGroup/FindingOccurrence
-├── api_config.py           # Models / output caps / feature-flag config
-├── structured_schemas.py   # Tool-use schemas for review/cross-check/verification
-├── prompts.py              # System + user prompt builders
-├── prompt_serialization.py # Escape/wrap helpers for prompt boundaries
-
-# Review
-├── reviewer.py             # Anthropic API client (streaming + tool-use parsing)
-├── review_request_builder.py # Central review request shape builder
-├── cross_checker.py        # Cross-spec coordination (chunked by CSI division)
-
-# Verification
-├── verifier.py             # Real-time + batch verification orchestrator
-├── verification_router.py  # Local pre-classification (local_skip / web_required)
-├── verification_cache.py   # Persistent claim-keyed verdict cache (JSON on disk)
-├── verification_profiles.py # Profile classifier + severity-based search budget
-├── verification_modes.py   # Verification modes + per-mode policy
-├── verification_routing.py # Unified routing decision + request builder
-├── source_grounding.py     # URL normalization + cited-source validation
-├── retry_policy.py         # Retry, continuation, and batch-failure taxonomy
-├── triage.py               # Haiku-based verification triage (opt-in)
-
-# Batch
-├── batch.py                # Anthropic Message Batches API wrapper
-├── batch_runtime.py        # Bounded polling with progressive backoff
-├── batch_state_store.py    # Atomic JSON state store for batch resume
-
-# Spec input
-├── extractor.py            # DOCX text extraction (parallelized)
-├── extraction_cache.py     # LRU caches for extraction + API token counts
-├── preprocessor.py         # Deterministic local detectors
-├── tokenizer.py            # Local + Anthropic token counting
-
-# Edits
-├── edit_locator.py         # Exact / normalized / fuzzy / id-anchored matching
-├── edit_candidates.py      # Edit safety categories
-├── spec_editor.py          # Surgical DOCX edits (transactional)
-├── apply_edits.py          # locate → action build → apply
-
-# Output / state
-├── report_exporter.py      # Word (.docx) report generation
-├── report_status.py        # ReportStatus / EditActionLabel + classifiers
-├── resume_state.py         # Durable resume state (with file-hash validation)
-├── diagnostics.py          # In-memory diagnostics report
-├── cost_estimator.py       # USD cost estimator
-
-# Misc
-├── __init__.py             # Package version (2.11.0)
-├── api_key_store.py        # API key loading and persistence
-├── app_paths.py            # Platform config/state directories
-└── code_cycles.py          # California code cycle definitions
+├── __init__.py              # Package version (2.11.0)
+├── core/                    # Config + shared utilities
+│   ├── api_config.py        # Models / output caps / feature-flag config
+│   ├── api_key_store.py     # API key loading and persistence
+│   ├── app_paths.py         # Platform config/state directories
+│   ├── code_cycles.py       # California code cycle definitions
+│   └── tokenizer.py         # Local + Anthropic token counting
+├── gui/                     # UI
+│   ├── gui.py               # CustomTkinter app shell
+│   ├── widgets.py           # Reusable UI components
+│   ├── about_usage_dialogs.py # About / API-usage dialogs
+│   └── *_controller.py      # 8 thin bridges between widgets and pipeline
+│                             # (batch, context, diagnostics, edit_workflow,
+│                             #  file_selection, report, review_run, token_analysis)
+├── orchestration/
+│   ├── pipeline.py          # Core orchestration + FindingGroup/FindingOccurrence
+│   ├── resume_state.py      # Durable resume state (with file-hash validation)
+│   ├── diagnostics.py       # In-memory diagnostics report
+│   └── cost_estimator.py    # USD cost estimator
+├── review/
+│   ├── reviewer.py          # Anthropic API client (streaming + tool-use parsing)
+│   ├── review_request_builder.py # Central review request shape builder
+│   ├── structured_schemas.py # Tool-use schemas for review/cross-check/verification
+│   ├── prompts.py           # System + user prompt builders
+│   └── prompt_serialization.py # Escape/wrap helpers for prompt boundaries
+├── cross_check/
+│   └── cross_checker.py     # Cross-spec coordination (chunked by CSI division)
+├── verification/
+│   ├── verifier.py          # Real-time + batch verification orchestrator
+│   ├── verification_router.py # Local pre-classification (local_skip / web_required)
+│   ├── verification_cache.py # Persistent claim-keyed verdict cache (JSON on disk)
+│   ├── verification_profiles.py # Profile classifier + severity-based search budget
+│   ├── verification_modes.py # Verification modes + per-mode policy
+│   ├── verification_routing.py # Unified routing decision + request builder
+│   ├── source_grounding.py  # URL normalization + cited-source validation
+│   ├── retry_policy.py      # Retry, continuation, and batch-failure taxonomy
+│   └── triage.py            # Haiku-based verification triage (opt-in)
+├── batch/
+│   ├── batch.py             # Anthropic Message Batches API wrapper
+│   ├── batch_runtime.py     # Bounded polling with progressive backoff
+│   └── batch_state_store.py # Atomic JSON state store for batch resume
+├── input/
+│   ├── extractor.py         # DOCX text extraction (parallelized)
+│   ├── extraction_cache.py  # LRU caches for extraction + API token counts
+│   └── preprocessor.py      # Deterministic local detectors
+├── editing/
+│   ├── edit_locator.py      # Exact / normalized / fuzzy / id-anchored matching
+│   ├── edit_candidates.py   # Edit safety categories
+│   ├── spec_editor.py       # Surgical DOCX edits (transactional)
+│   └── apply_edits.py       # locate → action build → apply
+└── output/
+    ├── report_exporter.py   # Word (.docx) report generation
+    └── report_status.py     # ReportStatus / EditActionLabel + classifiers
 ```
 
 ## High-level flow
