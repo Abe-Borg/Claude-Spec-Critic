@@ -245,6 +245,13 @@ class DiagnosticsReport:
     # ``"normalized"`` / ``"section_anchored"`` / ``"fuzzy"``) so the
     # breakdown reads cleanly in diagnostics.
     locator_methods: dict[str, int] = field(default_factory=dict)
+    # Phase 1 / Step 1.1 of the auto-apply quality plan: count of edits
+    # whose replacement text was rewritten to match the source
+    # document's typographic conventions (curly vs straight quotes,
+    # em-dash vs hyphen, NBSP in measurements, etc.) before being
+    # applied. Aggregated from ``EditReport.replacement_normalized_count``
+    # by :func:`apply_edits.execute_edit_plan`.
+    replacement_text_normalized_count: int = 0
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
     # Diagnostic byte caps. Prevent a single event from blowing up
@@ -347,6 +354,22 @@ class DiagnosticsReport:
         self.edits_applied_total += int(applied)
         self.edits_skipped_total += int(skipped)
         self.edits_failed_total += int(failed)
+
+    def _auto_apply_quality_lines(self) -> list[str]:
+        """Render the Phase 1 auto-apply quality counters.
+
+        Returns an empty list when every counter is zero so
+        :meth:`to_text` can skip the section header for runs that did
+        not exercise the edit pipeline. New counters added by later
+        Phase 1 / 2 steps land here as additional one-liners.
+        """
+        rows: list[tuple[str, int]] = [
+            ("Replacement text normalized", self.replacement_text_normalized_count),
+        ]
+        active = [(label, count) for label, count in rows if count]
+        if not active:
+            return []
+        return [f"  {label:35s} {count}" for label, count in active]
 
     def record_locator_method(self, method: str) -> None:
         """Count how many findings used each locator method.
@@ -1086,6 +1109,16 @@ class DiagnosticsReport:
         locator_methods = s.get("locator_methods") or {}
         if locator_methods:
             lines.append(f"  Locator Methods: {locator_methods}")
+        # Phase 1 of the auto-apply quality plan: surface per-fix
+        # counters under a dedicated section so users can see which
+        # quality guards fired. Hidden entirely when every counter is
+        # zero (typical for runs without an edit pass).
+        quality_lines = self._auto_apply_quality_lines()
+        if quality_lines:
+            lines.append("")
+            lines.append("AUTO-APPLY QUALITY")
+            lines.append("-" * 40)
+            lines.extend(quality_lines)
         if s.get("events_dropped"):
             lines.append(
                 f"  Events Dropped:  {s['events_dropped']} "

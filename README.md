@@ -24,6 +24,25 @@ Configured for the **California 2025 code cycle** by default (`src/code_cycles.p
 6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 4.6 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 4.7. Persistent on-disk cache.
 7. **Edit Application** *(optional)* — **Edit mode** applies surgical edits to a copy. **Annotate mode** inserts yellow-highlighted suggestions without mutating the original.
 
+## Auto-Apply Quality Guarantees
+
+Edit mode applies surgical edits to a copy of each spec. The auto-apply
+pipeline enforces the following quality guarantees so the output
+document reads consistently with the source:
+
+- **Replacement text style matching.** Before each edit is applied, the
+  source document is profiled for its typographic conventions (curly vs
+  straight quotes, em-dash vs hyphen, ASCII vs Unicode apostrophe, NBSP
+  in measurements). The model's `replacement_text` is rewritten to
+  match the profile, so an edit landing in a curly-quote document keeps
+  curly quotes (and vice versa). Counter:
+  `DiagnosticsReport.replacement_text_normalized_count`. Kill switch:
+  `SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE=0`.
+
+Counters render under the "AUTO-APPLY QUALITY" section of the
+diagnostics report; the section is hidden entirely when no quality
+guard fired.
+
 ## Processing Modes
 
 - **Real-time** — Immediate processing (streaming API, higher cost).

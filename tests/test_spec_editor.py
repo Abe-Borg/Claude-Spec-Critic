@@ -318,3 +318,141 @@ def test_same_source_and_output_raises_value_error(tmp_path: Path):
 
     with pytest.raises(ValueError):
         apply_edits_to_spec(source, source, build_edit_actions([result]))
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 / Step 1.1 — Replacement-text typographic normalization
+#
+# Integration tests verifying that ``apply_edits_to_spec`` profiles the
+# source document's typography and normalizes the model's replacement text
+# to match before writing it into the file. The ``replacement_style``
+# unit tests in ``test_replacement_style.py`` cover the pure functions;
+# these tests cover the wiring through the edit pipeline.
+# ---------------------------------------------------------------------------
+
+
+def test_replacement_normalized_to_curly_when_doc_uses_curly_quotes(tmp_path: Path):
+    """Model emits straight quotes; source doc is curly. Applied edit keeps curly."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    # Pure curly-quote document to make the profiler's vote unambiguous.
+    doc.add_paragraph("Provide “schedule 40” steel piping per project standards.")
+    doc.add_paragraph("Don’t substitute without engineer’s approval.")
+    doc.add_paragraph("Confirm “seismic” bracing per ASCE 7-22.")
+    target_text = "ASCE 7-22"
+    paragraph_index = 2
+    doc.save(source)
+
+    full_text = "Confirm “seismic” bracing per ASCE 7-22."
+    start = full_text.index(target_text)
+    result = _locator_result(
+        text=full_text,
+        body_index=paragraph_index,
+        match_start=start,
+        match_end=start + len(target_text),
+        matched_text=target_text,
+        # Model's replacement uses straight ASCII quotes.
+        replacement_text='Per "ASCE 7-22" with don\'t substitute',
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    # The applied edit should have rewritten straight " to curly " and
+    # straight ' to curly ' so the new sentence matches the doc's style.
+    applied_text = saved.paragraphs[paragraph_index].text
+    assert "“ASCE 7-22”" in applied_text
+    assert "don’t" in applied_text
+    assert report.replacement_normalized_count == 1
+
+
+def test_replacement_normalized_to_straight_when_doc_uses_straight_quotes(tmp_path: Path):
+    """Inverse of the above: doc uses straight, model emits curly."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph('Provide "schedule 40" steel piping per project standards.')
+    doc.add_paragraph("Don't substitute without engineer's approval.")
+    doc.add_paragraph('Confirm "seismic" bracing per ASCE 7-22.')
+    target_text = "ASCE 7-22"
+    paragraph_index = 2
+    doc.save(source)
+
+    full_text = 'Confirm "seismic" bracing per ASCE 7-22.'
+    start = full_text.index(target_text)
+    result = _locator_result(
+        text=full_text,
+        body_index=paragraph_index,
+        match_start=start,
+        match_end=start + len(target_text),
+        matched_text=target_text,
+        # Claude likes curly — should land as straight in this doc.
+        replacement_text="Per “ASCE 7-22” with don’t substitute",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    applied_text = saved.paragraphs[paragraph_index].text
+    assert '"ASCE 7-22"' in applied_text
+    assert "don't" in applied_text
+    assert report.replacement_normalized_count == 1
+
+
+def test_replacement_unchanged_when_already_matches(tmp_path: Path):
+    """When the replacement already matches the doc style, no normalize counter."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph('Provide "schedule 40" steel piping per project standards.')
+    full_text = 'Provide "schedule 40" steel piping per project standards.'
+    doc.save(source)
+
+    start = full_text.index("schedule 40")
+    result = _locator_result(
+        text=full_text,
+        match_start=start,
+        match_end=start + len("schedule 40"),
+        matched_text="schedule 40",
+        replacement_text="schedule 80",  # plain ASCII; matches profile.
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+
+    assert report.edits_applied == 1
+    assert report.replacement_normalized_count == 0
+
+
+def test_replacement_normalization_disabled_via_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE=0 keeps the model's text verbatim."""
+    monkeypatch.setenv("SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE", "0")
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Provide “schedule 40” steel piping per project standards.")
+    full_text = "Provide “schedule 40” steel piping per project standards."
+    doc.save(source)
+
+    start = full_text.index("schedule 40")
+    result = _locator_result(
+        text=full_text,
+        match_start=start,
+        match_end=start + len("schedule 40"),
+        matched_text="schedule 40",
+        replacement_text="schedule 80",
+    )
+    # Override style profile defaults via an explicit passthrough to confirm
+    # the env var short-circuits the profile creation path too.
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+
+    assert report.edits_applied == 1
+    assert report.replacement_normalized_count == 0

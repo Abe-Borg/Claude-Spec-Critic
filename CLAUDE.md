@@ -60,6 +60,7 @@ src/
 ├── edit_locator.py         # Exact / normalized / fuzzy / id-anchored matching
 ├── edit_candidates.py      # Edit safety categories
 ├── spec_editor.py          # Surgical DOCX edits (transactional)
+├── replacement_style.py    # Per-document typographic profile + replacement normalizer
 ├── apply_edits.py          # locate → action build → apply
 
 # Output / state
@@ -290,6 +291,7 @@ Model-id overrides plus a handful of operator switches for rollback / cache cont
 | `SPEC_CRITIC_ELEMENT_IDS` | on | Disable to revert to legacy plain-body spec rendering (no `<para id="...">` wrappers) |
 | `SPEC_CRITIC_TABLE_CELL_AUTO_EDIT` | on | Disable to refuse every table-cell auto-edit and route to manual review |
 | `SPEC_CRITIC_EDIT_TRANSACTIONAL` | on | Disable to fall back to best-effort writes when any edit fails |
+| `SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE` | on | Disable to skip per-document typographic normalization of replacement text (quotes / dashes / NBSP) before edits are applied |
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `0` (no expiry) | Age-based pruning on cache load; non-integer/negative values fall back to 0 |
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override the on-disk cache file path; `~` and `$VAR` are expanded |
