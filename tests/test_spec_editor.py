@@ -456,3 +456,191 @@ def test_replacement_normalization_disabled_via_env_var(
 
     assert report.edits_applied == 1
     assert report.replacement_normalized_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 / Step 1.2 — Punctuation boundary preservation
+#
+# When the model's existingText includes terminal punctuation but the
+# replacement_text does not (or vice versa), the applied edit used to
+# silently drop or double the punctuation. The fix is a deterministic
+# pass that compares the trailing character of existing vs replacement
+# and inspects the character immediately after the match in the live
+# paragraph to decide whether to add or strip a terminating punctuation
+# mark on the replacement.
+# ---------------------------------------------------------------------------
+
+
+def test_punctuation_boundary_preserves_trailing_period(tmp_path: Path):
+    """existing ends with '.', replacement does not -> add the period back."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Provide seismic bracing per ASCE 7-16.")
+    doc.save(source)
+
+    full = "Provide seismic bracing per ASCE 7-16."
+    start = full.index("per ASCE 7-16.")
+    result = _locator_result(
+        text=full,
+        match_start=start,
+        match_end=start + len("per ASCE 7-16."),
+        matched_text="per ASCE 7-16.",
+        replacement_text="per ASCE 7-22",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    assert saved.paragraphs[0].text == "Provide seismic bracing per ASCE 7-22."
+    assert report.punctuation_boundary_fixed_count == 1
+
+
+def test_punctuation_boundary_prevents_doubled_period(tmp_path: Path):
+    """existing and replacement both end with '.' next char is also '.' -> strip."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    # Construct a sentence whose terminal period is the char after the match.
+    doc.add_paragraph("Confirm sec 5.")
+    doc.save(source)
+
+    full = "Confirm sec 5."
+    start = full.index("sec 5")
+    result = _locator_result(
+        text=full,
+        match_start=start,
+        match_end=start + len("sec 5"),
+        matched_text="sec 5",
+        replacement_text="sec 6.",  # already ends with period, next char is also period.
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    assert saved.paragraphs[0].text == "Confirm sec 6."  # not "Confirm sec 6.."
+    assert report.punctuation_boundary_fixed_count == 1
+
+
+def test_punctuation_boundary_noop_when_already_correct(tmp_path: Path):
+    """No boundary issue: replacement ends as expected, no counter bump."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Provide ASCE 7-16 references.")
+    doc.save(source)
+
+    full = "Provide ASCE 7-16 references."
+    start = full.index("ASCE 7-16")
+    result = _locator_result(
+        text=full,
+        match_start=start,
+        match_end=start + len("ASCE 7-16"),
+        matched_text="ASCE 7-16",
+        replacement_text="ASCE 7-22",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    assert saved.paragraphs[0].text == "Provide ASCE 7-22 references."
+    assert report.punctuation_boundary_fixed_count == 0
+
+
+def test_punctuation_boundary_preserves_trailing_comma(tmp_path: Path):
+    """existing ends with ',', replacement does not -> add the comma back."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Provide ASCE 7-16, ASHRAE 90.1 and CBC 2025.")
+    doc.save(source)
+
+    full = "Provide ASCE 7-16, ASHRAE 90.1 and CBC 2025."
+    start = full.index("ASCE 7-16,")
+    result = _locator_result(
+        text=full,
+        match_start=start,
+        match_end=start + len("ASCE 7-16,"),
+        matched_text="ASCE 7-16,",
+        replacement_text="ASCE 7-22",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    assert saved.paragraphs[0].text == "Provide ASCE 7-22, ASHRAE 90.1 and CBC 2025."
+    assert report.punctuation_boundary_fixed_count == 1
+
+
+def test_punctuation_boundary_does_not_add_period_when_next_is_word(
+    tmp_path: Path,
+):
+    """The fix only adds punctuation back when the next char is whitespace or end-of-paragraph.
+
+    If the match was mid-word (unusual but possible with normalized
+    matching), don't fabricate a period that interrupts the next token.
+    """
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Provide foo.bar baseline.")
+    doc.save(source)
+
+    full = "Provide foo.bar baseline."
+    start = full.index("foo.")
+    result = _locator_result(
+        text=full,
+        match_start=start,
+        match_end=start + len("foo."),
+        matched_text="foo.",
+        replacement_text="qux",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    # Period is *not* re-added because the char after the match is 'b', not
+    # whitespace or end-of-paragraph. The fix is conservative.
+    assert saved.paragraphs[0].text == "Provide quxbar baseline."
+    assert report.punctuation_boundary_fixed_count == 0
+
+
+def test_punctuation_boundary_fix_disabled_via_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX=0 disables the fix entirely."""
+    monkeypatch.setenv("SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX", "0")
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("Provide seismic bracing per ASCE 7-16.")
+    doc.save(source)
+
+    full = "Provide seismic bracing per ASCE 7-16."
+    start = full.index("per ASCE 7-16.")
+    result = _locator_result(
+        text=full,
+        match_start=start,
+        match_end=start + len("per ASCE 7-16."),
+        matched_text="per ASCE 7-16.",
+        replacement_text="per ASCE 7-22",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    # With the fix off, the terminal period is lost.
+    assert saved.paragraphs[0].text == "Provide seismic bracing per ASCE 7-22"
+    assert report.punctuation_boundary_fixed_count == 0

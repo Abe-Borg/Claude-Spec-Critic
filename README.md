@@ -38,6 +38,16 @@ document reads consistently with the source:
   curly quotes (and vice versa). Counter:
   `DiagnosticsReport.replacement_text_normalized_count`. Kill switch:
   `SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE=0`.
+- **Punctuation boundary preservation.** When the model's `existingText`
+  ends with `.`, `,`, `;`, or `:` and the corresponding
+  `replacement_text` does not (or vice versa), the applied edit silently
+  drops or doubles the punctuation. The fix is a deterministic pass
+  that adds back the original trailing punctuation when the next live
+  character is whitespace / end-of-paragraph, and strips a doubled
+  trailing mark when the replacement adds one already present in the
+  live paragraph. Counter:
+  `DiagnosticsReport.punctuation_boundary_fixed_count`. Kill switch:
+  `SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX=0`.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

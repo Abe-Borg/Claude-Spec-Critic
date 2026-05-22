@@ -292,6 +292,7 @@ Model-id overrides plus a handful of operator switches for rollback / cache cont
 | `SPEC_CRITIC_TABLE_CELL_AUTO_EDIT` | on | Disable to refuse every table-cell auto-edit and route to manual review |
 | `SPEC_CRITIC_EDIT_TRANSACTIONAL` | on | Disable to fall back to best-effort writes when any edit fails |
 | `SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE` | on | Disable to skip per-document typographic normalization of replacement text (quotes / dashes / NBSP) before edits are applied |
+| `SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX` | on | Disable to skip the trailing-`.,;:` boundary repair (drop avoidance / doubling prevention) on EDIT replacements |
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `0` (no expiry) | Age-based pruning on cache load; non-integer/negative values fall back to 0 |
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override the on-disk cache file path; `~` and `$VAR` are expanded |

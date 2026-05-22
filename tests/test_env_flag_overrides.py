@@ -198,3 +198,23 @@ def test_normalize_replacement_style_disabled_via_env(
 ) -> None:
     monkeypatch.setenv("SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE", value)
     assert replacement_style.normalize_replacement_style_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX
+# ---------------------------------------------------------------------------
+
+
+def test_punctuation_boundary_fix_enabled_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX", raising=False)
+    assert spec_editor._punctuation_boundary_fix_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "No", "OFF"])
+def test_punctuation_boundary_fix_disabled_via_env(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX", value)
+    assert spec_editor._punctuation_boundary_fix_enabled() is False

@@ -169,6 +169,11 @@ class EditReport:
     # The counter is per-spec; ``apply_edits.execute_edit_plan`` rolls
     # it up into the run-level :class:`DiagnosticsReport`.
     replacement_normalized_count: int = 0
+    # Phase 1 / Step 1.2: count of replacements whose trailing
+    # punctuation was repaired so the applied edit does not silently
+    # drop a sentence-terminating period/comma or double-stamp one
+    # already present in the live paragraph.
+    punctuation_boundary_fixed_count: int = 0
 
 
 def _build_run_offset_map(paragraph: Paragraph) -> list[tuple[int, int, int]]:
@@ -369,6 +374,113 @@ def _env_flag_disabled(name: str) -> bool:
     if raw is None:
         return False
     return raw.strip().lower() in _DISABLE_TOKENS
+
+
+def _punctuation_boundary_fix_enabled() -> bool:
+    """Whether the trailing-punctuation boundary fix runs.
+
+    Phase 1 / Step 1.2. Default enabled. Set
+    ``SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX=0`` (or false/no/off,
+    case-insensitive) to skip the post-locate punctuation reconciliation
+    pass and write the model's ``replacement_text`` verbatim.
+    """
+    return not _env_flag_disabled("SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX")
+
+
+# Punctuation characters the boundary fix is allowed to add or strip.
+# Brackets, quotes, and multi-character sequences (...) are intentionally
+# excluded — pairing them safely requires more context than the
+# substring-level fix has and a wrong pairing produces a more visible
+# defect than the original drop / double.
+_BOUNDARY_PUNCT = frozenset(".,;:")
+
+
+def _punctuation_boundary_repair(
+    *,
+    existing_text: str,
+    replacement_text: str,
+    paragraph_text: str,
+    match_end: int,
+) -> tuple[str, bool]:
+    """Reconcile trailing punctuation between ``existing`` and ``replacement``.
+
+    Returns ``(adjusted_replacement, fixed)``. ``fixed`` is True iff the
+    replacement was rewritten — callers bump
+    :attr:`EditReport.punctuation_boundary_fixed_count` when it flips.
+
+    Two cases are handled, both conservatively (only ``.,;:`` qualify):
+
+    * **Drop avoidance.** ``existing`` ends with a single punctuation
+      character that ``replacement`` lacks, AND the character
+      immediately after the match in the live paragraph is whitespace
+      or end-of-paragraph. Without the fix, applying the edit drops
+      the sentence-terminator and the next word runs into this one.
+    * **Doubling prevention.** ``existing`` and ``replacement`` both
+      end with the same punctuation, AND the character immediately
+      after the match in the live paragraph is that same punctuation.
+      Without the fix, the user sees ``..`` / ``,,``.
+
+    Other shapes (leading punctuation, paired delimiters, multi-char
+    sequences like ``...``) are intentionally left alone — they need
+    richer context than this helper has.
+    """
+    if not existing_text or not replacement_text:
+        return replacement_text, False
+    existing_tail = existing_text[-1]
+    replacement_tail = replacement_text[-1]
+    next_char = paragraph_text[match_end] if 0 <= match_end < len(paragraph_text) else ""
+
+    # Drop avoidance: existing carried punctuation that replacement
+    # does not, AND the live char right after the match is whitespace
+    # or end-of-paragraph (so there is no inherited punctuation to
+    # absorb the original mark).
+    if (
+        existing_tail in _BOUNDARY_PUNCT
+        and replacement_tail != existing_tail
+        and (not next_char or next_char.isspace())
+    ):
+        return replacement_text + existing_tail, True
+
+    # Doubling prevention: replacement ends with a punctuation
+    # character AND the live char immediately after the match is the
+    # same punctuation. Catches the common shape "model included the
+    # period in replacement but existingText did not, so the live
+    # paragraph still owns one" — applying naively would write "..".
+    if (
+        replacement_tail in _BOUNDARY_PUNCT
+        and next_char == replacement_tail
+    ):
+        return replacement_text[:-1], True
+
+    return replacement_text, False
+
+
+def _maybe_punctuation_repair(
+    *,
+    action: EditAction,
+    replacement: str,
+    paragraph_text: str,
+    match_end: int,
+) -> tuple[str, bool]:
+    """Run the boundary repair gated by the env-var kill switch.
+
+    Pulls the original ``existingText`` off the action's locator-result
+    finding so the helper compares against the model's quoted span
+    rather than ``location.matched_text`` (which may carry case /
+    whitespace normalization from the locator).
+    """
+    if not _punctuation_boundary_fix_enabled() or not replacement:
+        return replacement, False
+    finding = action.locator_result.finding
+    existing = (getattr(finding, "existingText", "") or "").strip()
+    if not existing:
+        return replacement, False
+    return _punctuation_boundary_repair(
+        existing_text=existing,
+        replacement_text=replacement,
+        paragraph_text=paragraph_text,
+        match_end=match_end,
+    )
 
 
 def _table_cell_auto_edit_enabled() -> bool:
@@ -1117,6 +1229,7 @@ def apply_edits_to_spec(
     outcomes: list[EditOutcome] = list(pre_skipped)
     warnings: list[str] = []
     normalized_count = 0
+    punctuation_fixed_count = 0
 
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
@@ -1226,6 +1339,14 @@ def apply_edits_to_spec(
             )
             if was_normalized:
                 normalized_count += 1
+            replacement, was_punct_fixed = _maybe_punctuation_repair(
+                action=action,
+                replacement=replacement,
+                paragraph_text=paragraph.text,
+                match_end=precondition.match_end,
+            )
+            if was_punct_fixed:
+                punctuation_fixed_count += 1
             ok, detail = _replace_in_paragraph(
                 paragraph,
                 precondition.match_start,
@@ -1369,6 +1490,14 @@ def apply_edits_to_spec(
             )
             if was_normalized:
                 normalized_count += 1
+            replacement, was_punct_fixed = _maybe_punctuation_repair(
+                action=action,
+                replacement=replacement,
+                paragraph_text=target_paragraph.text,
+                match_end=cell_end,
+            )
+            if was_punct_fixed:
+                punctuation_fixed_count += 1
             ok, replace_detail = _replace_in_paragraph(target_paragraph, cell_start, cell_end, replacement)
             outcomes.append(
                 EditOutcome(
@@ -1521,6 +1650,7 @@ def apply_edits_to_spec(
             warnings=warnings + [f"Serialization check failed: {exc}"],
             aborted_transactional=True,
             replacement_normalized_count=normalized_count,
+            punctuation_boundary_fixed_count=punctuation_fixed_count,
         )
 
     # Validate the buffer reopens cleanly so we never write a file Word
@@ -1561,6 +1691,7 @@ def apply_edits_to_spec(
             warnings=warnings,
             aborted_transactional=True,
             replacement_normalized_count=normalized_count,
+            punctuation_boundary_fixed_count=punctuation_fixed_count,
         )
 
     failed_count = sum(1 for outcome in outcomes if outcome.status == "failed")
@@ -1607,6 +1738,7 @@ def apply_edits_to_spec(
             warnings=warnings,
             aborted_transactional=True,
             replacement_normalized_count=normalized_count,
+            punctuation_boundary_fixed_count=punctuation_fixed_count,
         )
 
     # Either the all-or-none policy passed (no failures) or the operator
@@ -1629,6 +1761,7 @@ def apply_edits_to_spec(
         warnings=warnings,
         aborted_transactional=False,
         replacement_normalized_count=normalized_count,
+        punctuation_boundary_fixed_count=punctuation_fixed_count,
     )
 
 

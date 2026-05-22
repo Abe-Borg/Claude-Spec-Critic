@@ -252,6 +252,12 @@ class DiagnosticsReport:
     # applied. Aggregated from ``EditReport.replacement_normalized_count``
     # by :func:`apply_edits.execute_edit_plan`.
     replacement_text_normalized_count: int = 0
+    # Phase 1 / Step 1.2: count of edits whose trailing punctuation was
+    # repaired (drop avoidance or doubling prevention) before being
+    # applied. Aggregated from
+    # ``EditReport.punctuation_boundary_fixed_count`` by
+    # :func:`apply_edits.execute_edit_plan`.
+    punctuation_boundary_fixed_count: int = 0
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
     # Diagnostic byte caps. Prevent a single event from blowing up
@@ -365,6 +371,7 @@ class DiagnosticsReport:
         """
         rows: list[tuple[str, int]] = [
             ("Replacement text normalized", self.replacement_text_normalized_count),
+            ("Punctuation boundary fixed", self.punctuation_boundary_fixed_count),
         ]
         active = [(label, count) for label, count in rows if count]
         if not active:
