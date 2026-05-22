@@ -130,6 +130,18 @@ document reads consistently with the source:
   `DiagnosticsReport.contained_edits_lost_intent_count` aggregates the
   run-wide frequency. Identical-span duplicates still resolve via the
   severity / confidence tie-break with no change.
+- **Per-file edit originals survive case/whitespace-only dedup
+  collisions.** `_deduplicate_findings` keys on a digest of normalized
+  (lowercase + whitespace-stripped) issue / existing / replacement
+  text, so two findings whose `existingText` differs only in case or
+  trailing whitespace collapse to one representative. The merged
+  representative's `occurrence_originals` lists every group member as
+  the original `Finding` object, which still carries its
+  pre-normalization text. Edit execution looks up each affected file's
+  original by `fileName` and uses that file's actual `existingText` for
+  locator matching — so the case-only collision does not break either
+  file's edit. This invariant is now locked in by regression tests in
+  `tests/test_chunk_8_dedup_edit_identity.py`.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

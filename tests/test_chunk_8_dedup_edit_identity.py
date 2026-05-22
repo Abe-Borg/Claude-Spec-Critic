@@ -131,6 +131,60 @@ class TestDedupCapturesOriginals:
         for orig in out[0].occurrence_originals:
             assert orig.occurrence_originals == []
 
+    def test_case_only_existing_text_difference_preserves_per_file_originals(self):
+        """Phase 4 / Step 4.2 regression: case/whitespace-only differences in
+        ``existingText`` collapse into one dedup group, but each per-file
+        original retains its UNMODIFIED text.
+
+        The dedup key normalizes ``existingText`` and ``replacementText``
+        via ``_normalized_text_digest`` (lowercase + strip), so two
+        findings whose existing text differs only in case or trailing
+        whitespace land in the same group. The premise that triggered
+        this test (P9 from the auto-apply quality plan) was that the
+        per-file text for the dedup loser would be lost; in practice
+        ``_deduplicate_findings`` keeps every group member in
+        ``occurrence_originals`` as the original ``Finding`` object,
+        which still carries its pre-normalization text. This regression
+        test locks in that behavior so a future refactor cannot silently
+        re-introduce the bug the plan worried about.
+        """
+        # Case-only difference in existing text.
+        a = _make_finding(
+            file_name="a.docx",
+            existing="Per CBC 2019",
+            replacement="Per CBC 2025",
+        )
+        b = _make_finding(
+            file_name="b.docx",
+            existing="per cbc 2019",
+            replacement="per cbc 2025",
+        )
+        # Trailing-whitespace-only difference layered on top.
+        c = _make_finding(
+            file_name="c.docx",
+            existing="per CBC 2019   ",
+            replacement="per CBC 2025\n",
+        )
+
+        out = _deduplicate_findings([a, b, c])
+
+        # All three collapse to one representative (same dedup key after
+        # normalization).
+        assert len(out) == 1
+        merged = out[0]
+        assert sorted(merged.affected_files) == ["a.docx", "b.docx", "c.docx"]
+
+        # Every per-file original is preserved with its ORIGINAL text
+        # intact — not the normalized form, not the representative's
+        # form. Edit execution can rely on each file's own text.
+        by_file = {o.fileName: o for o in merged.occurrence_originals}
+        assert by_file["a.docx"].existingText == "Per CBC 2019"
+        assert by_file["a.docx"].replacementText == "Per CBC 2025"
+        assert by_file["b.docx"].existingText == "per cbc 2019"
+        assert by_file["b.docx"].replacementText == "per cbc 2025"
+        assert by_file["c.docx"].existingText == "per CBC 2019   "
+        assert by_file["c.docx"].replacementText == "per CBC 2025\n"
+
 
 # ---------------------------------------------------------------------------
 # group_findings — FindingOccurrence binds per-file original
@@ -186,6 +240,67 @@ class TestGroupFindingsPerFileOriginal:
 
 
 class TestExecuteEditPlanUsesPerFileOriginals:
+    def test_case_only_dedup_executor_uses_each_files_original_text(self, tmp_path: Path):
+        """Phase 4 / Step 4.2 regression: end-to-end coverage for the P9
+        scenario. Two files have ``existingText`` that differs only in
+        case. They share a dedup key (normalization collapses them) but
+        the executor must use each file's original text — which is the
+        only thing that will actually match the source paragraph.
+        """
+        file_a = tmp_path / "a.docx"
+        file_b = tmp_path / "b.docx"
+        # Source paragraphs in mixed case. The executor needs each
+        # file's per-original existingText to locate the right span.
+        _write_docx(file_a, "Per CBC 2019 fire-rated assemblies.")
+        _write_docx(file_b, "per cbc 2019 fire-rated assemblies.")
+        spec_a = extract_text(file_a)
+        spec_a.filename = "a.docx"
+        spec_b = extract_text(file_b)
+        spec_b.filename = "b.docx"
+
+        # Two findings, same dedup key after normalization, different
+        # case in existingText. The dedup helper should collapse them
+        # AND preserve both per-file originals with their original text
+        # intact so the executor's locator can find the match.
+        a = _make_finding(
+            file_name="a.docx",
+            existing="Per CBC 2019",
+            replacement="Per CBC 2025",
+            code_ref="CBC 2025",
+        )
+        b = _make_finding(
+            file_name="b.docx",
+            existing="per cbc 2019",
+            replacement="per cbc 2025",
+            code_ref="CBC 2025",
+        )
+
+        deduped = _deduplicate_findings([a, b])
+        assert len(deduped) == 1
+        merged = deduped[0]
+        # Both files captured; each per-file original retained its
+        # original (case-different) existingText.
+        assert sorted(merged.affected_files) == ["a.docx", "b.docx"]
+        by_file = {o.fileName: o for o in merged.occurrence_originals}
+        assert by_file["a.docx"].existingText == "Per CBC 2019"
+        assert by_file["b.docx"].existingText == "per cbc 2019"
+
+        reports = execute_edit_plan(
+            selected_finding_indices=[0],
+            all_findings=deduped,
+            cross_check_findings=[],
+            extracted_specs=[spec_a, spec_b],
+            source_paths=[file_a, file_b],
+            output_dir=tmp_path / "out",
+        )
+        assert len(reports) == 2
+        # Both files edited cleanly via their own per-file originals.
+        for r in reports:
+            assert r.edits_applied == 1
+        outputs = {r.source_path.name: r.output_path for r in reports}
+        assert Document(outputs["a.docx"]).paragraphs[0].text == "Per CBC 2025 fire-rated assemblies."
+        assert Document(outputs["b.docx"]).paragraphs[0].text == "per cbc 2025 fire-rated assemblies."
+
     def test_two_files_different_exact_text_use_their_own_text(self, tmp_path: Path):
         # Acceptance scenario 1 from the chunk: the merged finding's display
         # is one row, but the executor uses each file's own existingText.
