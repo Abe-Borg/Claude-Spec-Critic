@@ -70,9 +70,13 @@ def show_about_dialog(parent) -> None:
             "extracted — nothing is sent to Claude yet."
         )),
         ("2.  Local Pre-Screening", (
-            "Before any API calls, the tool scans for LEED references and unresolved "
-            "placeholders (like [EDIT] or [VERIFY]). These are flagged as alerts and "
-            "don’t cost any tokens."
+            "Before any API calls, deterministic detectors scan each spec for "
+            "LEED references inappropriate for the project, unresolved placeholders "
+            "(like [SELECT] or [VERIFY]), template markers (TODO / FIXME / XXX / "
+            "lorem ipsum), stale code-cycle references, invalid cycles (year/code "
+            "combinations that aren’t real, like “2018 CBC”), empty sections, "
+            "duplicate headings, duplicate paragraphs, and CSI-number / filename "
+            "mismatches. These alerts are flagged locally and don’t cost any tokens."
         )),
         ("3.  Per-Spec Review", (
             "Each specification is sent individually to Claude Opus 4.7. "
@@ -106,17 +110,24 @@ def show_about_dialog(parent) -> None:
             "cheaper); Opus 4.7 is used as an escalation model for Critical/High "
             "findings the first pass couldn’t ground (Unverified or no usable "
             "web evidence). Verdicts are Confirmed, Corrected, Disputed, or "
-            "Unverified, and a verdict cannot be marked Confirmed/Corrected unless real "
-            "web evidence was actually returned. Internal-only issues (placeholders, "
-            "duplicates, internal contradictions) are resolved locally without web search. "
-            "This is an AI-assisted check, not a substitute for engineer review."
+            "Unverified — a verdict cannot be marked Confirmed or Corrected unless the "
+            "model’s cited URL actually appears in the web_search results, so model-"
+            "invented citations are stripped and the finding is downgraded. Internal-only "
+            "issues (placeholders, duplicates, internal contradictions, LEED, template "
+            "markers) are resolved locally without web search and reported as Locally "
+            "classified. This is an AI-assisted check, not a substitute for engineer review."
         )),
         ("7.  Edit Safety Classification", (
-            "Each finding is classified into an edit-safety category: Auto-safe "
-            "(unambiguous single-paragraph match), Auto-with-caution (exact match with "
-            "minor risk), Manual-review (ambiguous or structurally complex), or "
-            "Report-only (no safe edit possible). Ambiguous matches, missing ADD anchors, "
-            "and table/header/footer/rich-format edits are never auto-applied."
+            "Each finding is labeled in the report as Auto-edit candidate, "
+            "Manual edit candidate, Report only, or Suppressed. Auto-edit candidate "
+            "requires a supportive verification status (Verified-supported, "
+            "Verified-contradicted, or Locally classified), an edit-confidence of at "
+            "least 0.7, and no cross-check suppression. Findings that propose an edit "
+            "but don’t clear that bar fall to Manual edit candidate. Ambiguous "
+            "matches, missing ADD anchors, and table/header/footer/rich-format edits "
+            "are never auto-applied. When an id-anchored quote no longer matches the "
+            "cited paragraph, the locator routes the edit to manual review rather than "
+            "matching the quote elsewhere in the document."
         )),
         ("8.  Output", (
             "Results can be viewed in-app, exported as a Word report, or used to produce "
