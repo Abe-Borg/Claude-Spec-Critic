@@ -48,21 +48,12 @@ _METRIC_DISPLAY_ORDER = (
     ("unsafe_edit_refusal", "Unsafe-edit refusal"),
     ("citation_acceptance", "Citation acceptance"),
     ("sourceless_confirmed", "Sourceless CONFIRMED survivors"),
-    ("cost_estimate", "Cost estimate"),
 )
 
 
 def _fmt_rate(metric: dict) -> str:
     rate = metric.get("rate", 0.0)
     return f"{rate:.4f} ({metric.get('numerator', 0)}/{metric.get('denominator', 0)})"
-
-
-def _fmt_cost(cost: dict) -> str:
-    if not cost.get("available"):
-        return "unavailable"
-    total = cost.get("total_usd", 0.0)
-    phases = ", ".join(cost.get("phases") or ())
-    return f"${total:.4f} across [{phases}]"
 
 
 def render_summary(result: HarnessResult) -> str:
@@ -82,8 +73,6 @@ def render_summary(result: HarnessResult) -> str:
     for key, label in _METRIC_DISPLAY_ORDER:
         if key == "false_positive_count":
             value = str(metrics.get("false_positive_count", 0))
-        elif key == "cost_estimate":
-            value = _fmt_cost(metrics.get("cost_estimate") or {})
         else:
             value = _fmt_rate(metrics.get(key) or {})
         lines.append(f"{label:<38}| {value}")
@@ -161,13 +150,6 @@ def compare_to_baseline(
     if cur_fp is not None and base_fp is not None and cur_fp != base_fp:
         drift.append(
             f"false_positive_count: baseline {base_fp} vs current {cur_fp}"
-        )
-
-    cur_cost = (current_metrics.get("cost_estimate") or {}).get("available")
-    base_cost = (baseline_metrics.get("cost_estimate") or {}).get("available")
-    if cur_cost is not None and base_cost is not None and cur_cost != base_cost:
-        drift.append(
-            f"cost_estimate.available: baseline {base_cost} vs current {cur_cost}"
         )
 
     cur_pass = current_metrics.get("fixture_pass_count")

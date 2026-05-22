@@ -28,22 +28,7 @@ def export_report_to_file(app, result) -> str:
     try:
         output_path = Path(path)
         app.log.log_step(f"Exporting report to {output_path.name}...")
-        # Chunk 10 — surface the run's estimated cost in the report. The
-        # diagnostics report is finalized after the run completes; we pull
-        # the cost summary off it here so the report has the same number
-        # the diagnostics window will show.
-        estimated_cost = None
-        diag = getattr(app, "_diagnostics_report", None)
-        if diag is not None:
-            try:
-                estimated_cost = diag.summary().get("estimated_cost")
-            except Exception:
-                estimated_cost = None
-        export_report(
-            result,
-            output_path,
-            estimated_cost=estimated_cost,
-        )
+        export_report(result, output_path)
         app.log.log_success(f"Report saved: {output_path}")
         return "success"
     except Exception as e:

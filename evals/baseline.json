@@ -276,20 +276,6 @@
       "numerator": 1,
       "rate": 0.5
     },
-    "cost_estimate": {
-      "available": true,
-      "currency": "USD",
-      "models": [
-        "claude-opus-4-7",
-        "claude-sonnet-4-6"
-      ],
-      "phases": [
-        "review",
-        "verification"
-      ],
-      "pricing_as_of": "2026-05-01",
-      "total_usd": 0.4197
-    },
     "duplicate_finding": {
       "denominator": 5,
       "numerator": 0,

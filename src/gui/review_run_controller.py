@@ -406,28 +406,6 @@ def on_review_complete(app, result) -> None:
             else rv.elapsed_seconds
         )
         app.log.log(f"Time: {total_elapsed:.1f}s", level="muted")
-        # Chunk 10 — show the estimated cost in the run log alongside the
-        # other completion-summary lines, before the export dialog opens.
-        # The full breakdown still lives in the report + diagnostics view.
-        diag = getattr(app, "_diagnostics_report", None)
-        if diag is not None:
-            try:
-                ec = diag.summary().get("estimated_cost") or {}
-            except Exception:
-                ec = {}
-            if ec.get("available"):
-                from ..orchestration.cost_estimator import format_usd
-                app.log.log(
-                    f"Estimated API cost: {format_usd(ec.get('total_usd', 0.0))} "
-                    f"(see report / diagnostics for breakdown)",
-                    level="info",
-                )
-            elif ec.get("missing_pricing_models"):
-                app.log.log(
-                    "Estimated API cost: unavailable (pricing not recorded for "
-                    f"{', '.join(ec['missing_pricing_models'])})",
-                    level="muted",
-                )
         export_status = app._export_report_to_file(result)
         if export_status == "canceled":
             app.log.log_warning("Export canceled; results are still available in memory.")

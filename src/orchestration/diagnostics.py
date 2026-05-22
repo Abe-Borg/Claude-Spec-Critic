@@ -867,15 +867,6 @@ class DiagnosticsReport:
             "phases": dict(phase_telemetry),
         }
 
-        # Estimated USD cost. Walk the events through the central pricing
-        # table so the report and GUI can show "what did this run actually
-        # cost?" alongside the token telemetry. Falls back to
-        # ``available=False`` when no priced calls ran (zero API activity,
-        # or every call used an unknown model); the renderers print "cost
-        # unavailable" instead of $0.00 so the reader isn't misled.
-        from .cost_estimator import estimate_run_cost
-        estimated_cost = estimate_run_cost(self.events)
-
         return {
             "run_id": self.run_id,
             "mode": self.mode,
@@ -934,11 +925,6 @@ class DiagnosticsReport:
             # so reports do not have to recompute them.
             "phase_telemetry": dict(phase_telemetry),
             "cost_summary": cost_summary,
-            # Central cost estimator output. ``available=False`` means no
-            # priced calls were observed (or every call used an unknown
-            # model); the renderers must say "cost unavailable" rather than
-            # pretending $0.00 was the real spend.
-            "estimated_cost": estimated_cost,
             "failed_specs": list(self.failed_specs),
             "skipped_specs": list(self.skipped_specs),
             "edit_skip_reasons": dict(self.edit_skip_reasons),
@@ -1212,58 +1198,6 @@ class DiagnosticsReport:
             lines.append(
                 f"  Secrets Redacted: {s['secrets_redacted']} field(s) replaced with <redacted>"
             )
-
-        # Estimated cost block. Renders only when at least one priced call
-        # was observed (so API-failure runs do not show a misleading $0.00
-        # line). Kept conservative: this is "Estimated API cost", not exact
-        # billing.
-        ec = s.get("estimated_cost") or {}
-        lines.append("")
-        lines.append("ESTIMATED API COST")
-        lines.append("-" * 40)
-        if not ec.get("available"):
-            lines.append("  Cost unavailable — pricing not recorded for this run.")
-            missing = ec.get("missing_pricing_models") or []
-            if missing:
-                lines.append(f"  Models without pricing: {', '.join(missing)}")
-        else:
-            from .cost_estimator import format_usd
-            lines.append(f"  Total Estimate:  {format_usd(ec['total_usd'])}")
-            lines.append(f"  Currency:        {ec.get('currency', 'USD')}")
-            lines.append(f"  Pricing As Of:   {ec.get('pricing_as_of', '')}")
-            if ec.get("by_phase"):
-                lines.append("  By Phase:")
-                for phase_name, bucket in ec["by_phase"].items():
-                    bits = [f"total={format_usd(bucket['total_usd'])}"]
-                    bits.append(f"in={format_usd(bucket['input_usd'])}")
-                    bits.append(f"out={format_usd(bucket['output_usd'])}")
-                    if bucket.get("cache_write_usd") or bucket.get("cache_read_usd"):
-                        bits.append(
-                            f"cache_w={format_usd(bucket['cache_write_usd'])}/"
-                            f"r={format_usd(bucket['cache_read_usd'])}"
-                        )
-                    if bucket.get("web_search_usd"):
-                        bits.append(f"search={format_usd(bucket['web_search_usd'])}")
-                    if bucket.get("missing_pricing_calls"):
-                        bits.append(f"missing={bucket['missing_pricing_calls']}")
-                    lines.append(f"    {phase_name:20s} {', '.join(bits)}")
-            if ec.get("by_model"):
-                lines.append("  By Model:")
-                for model_name, mb in ec["by_model"].items():
-                    lines.append(
-                        f"    {model_name:24s} "
-                        f"{format_usd(mb['total_usd'])} "
-                        f"({mb['calls']} call{'s' if mb['calls'] != 1 else ''})"
-                    )
-            if ec.get("missing_pricing_calls"):
-                lines.append(
-                    f"  Missing Pricing: {ec['missing_pricing_calls']} call(s) "
-                    f"on unknown model(s) "
-                    f"({', '.join(ec.get('missing_pricing_models') or [])})"
-                )
-            for note in ec.get("notes") or []:
-                lines.append(f"  Note: {note}")
-        lines.append("")
 
         # Timeline
         lines.append("EVENT TIMELINE")
