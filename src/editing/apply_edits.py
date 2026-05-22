@@ -275,6 +275,21 @@ def execute_edit_plan(
                 diagnostics.known_pattern_formatting_restored_count += (
                     known_pattern_restored
                 )
+            # Phase 4 / Step 4.1: roll up the count of narrower edits
+            # whose intent was lost to a broader containing edit's
+            # replacement. The broader edit applies; the narrower one
+            # is recorded on ``EditReport.outcomes`` with
+            # ``contained_edit_lost_intent=True`` so the per-spec
+            # report still surfaces "you probably want to revisit
+            # these manually". The run-level counter aggregates the
+            # frequency for the diagnostics quality block.
+            contained_lost_intent = getattr(
+                report, "contained_edits_lost_intent_count", 0
+            )
+            if contained_lost_intent and diagnostics is not None:
+                diagnostics.contained_edits_lost_intent_count += (
+                    contained_lost_intent
+                )
         except Exception as exc:
             warning = f"Failed to apply edits: {exc}"
             log(f"[{filename}] {warning}")
