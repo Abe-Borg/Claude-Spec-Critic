@@ -250,6 +250,17 @@ def execute_edit_plan(
             punct_fixed = getattr(report, "punctuation_boundary_fixed_count", 0)
             if punct_fixed and diagnostics is not None:
                 diagnostics.punctuation_boundary_fixed_count += punct_fixed
+            # Phase 2 / Step 2.2: roll up the apply-time defensive
+            # refusal counter for ADDs missing a usable insertPosition.
+            # Typically 0 in normal flow because the parser demotes
+            # these at parse time; non-zero values are a visible signal
+            # that a Finding bypassed the parser (legacy resume payload
+            # or directly-constructed test fixture).
+            add_pos_missing = getattr(
+                report, "add_demoted_missing_position_count", 0
+            )
+            if add_pos_missing and diagnostics is not None:
+                diagnostics.add_demoted_missing_position_count += add_pos_missing
         except Exception as exc:
             warning = f"Failed to apply edits: {exc}"
             log(f"[{filename}] {warning}")
