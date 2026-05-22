@@ -54,6 +54,17 @@ document reads consistently with the source:
   clearing its text and leaving a blank line in the cell. When the
   paragraph is the cell's only one, its text is cleared in place so
   Word's "every cell needs at least one paragraph" rule still holds.
+- **ADD-inserted paragraphs do not join the anchor's list.** When an
+  ADD action's anchor paragraph is part of a numbered/bulleted list,
+  the inherited paragraph properties are scrubbed before the new
+  paragraph is built: `<w:numPr>`, `<w:outlineLvl>`, and `<w:pBdr>`
+  are always stripped; `<w:ind>` is stripped only when the inserted
+  text itself does not read as list-shaped (no `A.` / `1.` / `•` /
+  `–` / `-` prefix). `<w:pStyle>`, `<w:jc>`, `<w:spacing>`, and the
+  pPr `<w:rPr>` are preserved so the new paragraph still inherits
+  font, size, and alignment from its anchor. Kill switch:
+  `SPEC_CRITIC_ADD_INHERITS_LIST_NUMBERING=1` reverts to the legacy
+  verbatim-deepcopy behavior.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

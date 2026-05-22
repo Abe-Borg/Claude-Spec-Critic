@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from src.editing.edit_locator import EditLocation, LocatorResult
 from src.input.extractor import ParagraphMapping
@@ -37,6 +39,8 @@ def _locator_result(
     confidence: float = 1.0,
     row_index: int | None = None,
     severity: str = "HIGH",
+    anchor_text: str | None = None,
+    insert_position: str | None = None,
 ) -> LocatorResult:
     mapping = ParagraphMapping(
         body_index=body_index,
@@ -65,6 +69,8 @@ def _locator_result(
             replacementText=replacement_text,
             codeReference="Code",
             confidence=0.9,
+            anchorText=anchor_text,
+            insertPosition=insert_position,
         ),
         status=status,
         locations=[location],
@@ -785,3 +791,236 @@ def test_table_cell_partial_delete_still_uses_substring_path(tmp_path: Path):
     # Paragraph survives, just with the suffix gone.
     assert len(cell_paragraphs) == 1
     assert cell_paragraphs[0].text == "Keep prefix"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 / Step 2.1 — Strip list / numbering properties from inherited pPr
+#
+# When an ADD action's anchor paragraph is part of a numbered list, the
+# legacy code deep-copied the anchor's <w:pPr> verbatim, so the inserted
+# paragraph joined the list. Word auto-renumbered the items after it,
+# the new paragraph inherited indentation/outline level it should not
+# have, and the visual result was a list item that wasn't supposed to
+# exist. The fix strips <w:numPr>, <w:outlineLvl>, and <w:pBdr> from
+# the cloned pPr unconditionally and strips <w:ind> when the inserted
+# text doesn't itself read as list-shaped.
+# ---------------------------------------------------------------------------
+
+
+def _make_numbered_list_anchor_spec(tmp_path: Path) -> Path:
+    """Three-item numbered list using w:numPr so the inserted paragraph
+    can be checked for list-membership inheritance."""
+    source = tmp_path / "numbered_anchor.docx"
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    for text in ("First list item.", "Second list item.", "Third list item."):
+        para = doc.add_paragraph(text)
+        ppr = para._element.get_or_add_pPr()
+        num_pr = OxmlElement("w:numPr")
+        ilvl = OxmlElement("w:ilvl")
+        ilvl.set(qn("w:val"), "0")
+        num_id = OxmlElement("w:numId")
+        num_id.set(qn("w:val"), "1")
+        num_pr.append(ilvl)
+        num_pr.append(num_id)
+        ppr.append(num_pr)
+        # Outline level + paragraph border to exercise the broader strip
+        # rules. <w:ind> is added without a list prefix in the insert
+        # text so the inserted paragraph should drop it.
+        outline = OxmlElement("w:outlineLvl")
+        outline.set(qn("w:val"), "2")
+        ppr.append(outline)
+        ind = OxmlElement("w:ind")
+        ind.set(qn("w:left"), "720")
+        ppr.append(ind)
+        border = OxmlElement("w:pBdr")
+        top = OxmlElement("w:top")
+        top.set(qn("w:val"), "single")
+        border.append(top)
+        ppr.append(border)
+    doc.save(source)
+    return source
+
+
+def _paragraph_ppr_children(paragraph) -> set[str]:
+    """Return the local-name set of every <w:pPr> child element."""
+    ppr = paragraph._element.find(qn("w:pPr"))
+    if ppr is None:
+        return set()
+    return {child.tag.split("}", 1)[-1] for child in ppr}
+
+
+def test_add_inserted_paragraph_strips_numbering_from_inherited_ppr(
+    tmp_path: Path,
+):
+    """ADD next to a numbered-list anchor inherits style but NOT numPr."""
+    source = _make_numbered_list_anchor_spec(tmp_path)
+    output = tmp_path / "output.docx"
+
+    # Anchor is "Second list item." at body_index=2 (PART line at 0,
+    # first item at 1, second at 2). ADD "after" inserts a sibling
+    # paragraph that should NOT pick up <w:numPr> or <w:outlineLvl>.
+    anchor_text = "Second list item."
+    result = _locator_result(
+        action="ADD",
+        body_index=2,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        replacement_text="Inserted commentary on second item.",
+        anchor_text=anchor_text,
+        insert_position="after",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+    assert report.edits_applied == 1
+
+    # The inserted paragraph sits immediately after the original anchor
+    # paragraph index. Body indices: PART(0), item1(1), item2(2),
+    # INSERTED(3), item3(4).
+    inserted = saved.paragraphs[3]
+    assert inserted.text == "Inserted commentary on second item."
+
+    children = _paragraph_ppr_children(inserted)
+    # Hard guarantee: list-numbering and outline-level dropped.
+    assert "numPr" not in children
+    assert "outlineLvl" not in children
+    # Paragraph border is also stripped — see the rationale in
+    # _clean_inherited_ppr.
+    assert "pBdr" not in children
+    # Indent is stripped because the insert text does NOT look
+    # list-shaped (no leading "A.", "1.", "•", etc.).
+    assert "ind" not in children
+
+    # The neighbors still have their list structure.
+    item_one = saved.paragraphs[1]
+    item_three = saved.paragraphs[4]
+    assert "numPr" in _paragraph_ppr_children(item_one)
+    assert "numPr" in _paragraph_ppr_children(item_three)
+
+
+def test_add_inserted_list_shaped_text_keeps_indent(tmp_path: Path):
+    """When the inserted text reads as a list item, <w:ind> survives.
+
+    The numbering/outline strip still runs (we never want to silently
+    extend a numbered list), but indentation is preserved because the
+    visual intent of the inserted item matches the anchor's indented
+    list context.
+    """
+    source = _make_numbered_list_anchor_spec(tmp_path)
+    output = tmp_path / "output.docx"
+
+    anchor_text = "Second list item."
+    result = _locator_result(
+        action="ADD",
+        body_index=2,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        # Literal "A. " prefix tells the cleaner the inserted paragraph
+        # is itself list-shaped; the inherited <w:ind> stays so it
+        # visually aligns with the surrounding items.
+        replacement_text="A. Inserted list item for the second item context.",
+        anchor_text=anchor_text,
+        insert_position="after",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+    assert report.edits_applied == 1
+
+    inserted = saved.paragraphs[3]
+    children = _paragraph_ppr_children(inserted)
+    # Numbering and outline level are always stripped — we trust the
+    # literal prefix, not the list semantics.
+    assert "numPr" not in children
+    assert "outlineLvl" not in children
+    # Indent inherited because the insert text reads list-shaped.
+    assert "ind" in children
+
+
+def test_add_inherits_list_numbering_env_flag_reverts_to_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """SPEC_CRITIC_ADD_INHERITS_LIST_NUMBERING=1 preserves legacy pPr deepcopy."""
+    monkeypatch.setenv("SPEC_CRITIC_ADD_INHERITS_LIST_NUMBERING", "1")
+    source = _make_numbered_list_anchor_spec(tmp_path)
+    output = tmp_path / "output.docx"
+
+    anchor_text = "Second list item."
+    result = _locator_result(
+        action="ADD",
+        body_index=2,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        replacement_text="Inserted commentary on second item.",
+        anchor_text=anchor_text,
+        insert_position="after",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+    assert report.edits_applied == 1
+
+    inserted = saved.paragraphs[3]
+    children = _paragraph_ppr_children(inserted)
+    # Legacy behavior: inserted paragraph inherits the full pPr.
+    assert "numPr" in children
+    assert "outlineLvl" in children
+
+
+def test_add_inserted_paragraph_inherits_style_id(tmp_path: Path):
+    """When the anchor's pPr has a <w:pStyle>, the inserted paragraph keeps it.
+
+    Step 2.1 only strips list/numbering machinery; the paragraph style id
+    is what binds the inserted paragraph to the document's font/size
+    conventions and must survive.
+    """
+    source = tmp_path / "styled_anchor.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    para = doc.add_paragraph("Body paragraph with explicit style.")
+    ppr = para._element.get_or_add_pPr()
+    pstyle = OxmlElement("w:pStyle")
+    pstyle.set(qn("w:val"), "BodyText")
+    ppr.append(pstyle)
+    # Add justification too — that is preserved as well.
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "both")
+    ppr.append(jc)
+    doc.save(source)
+
+    anchor_text = "Body paragraph with explicit style."
+    result = _locator_result(
+        action="ADD",
+        body_index=1,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        replacement_text="Sibling paragraph that should inherit style.",
+        anchor_text=anchor_text,
+        insert_position="after",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+    assert report.edits_applied == 1
+
+    inserted = saved.paragraphs[2]
+    # In the styled-anchor case the anchor has a pStyle, so
+    # ``_reference_style_for_text`` short-circuits at the styled
+    # build_paragraph_element path which writes a fresh pPr that only
+    # carries the pStyle. Verify the inserted paragraph carries that
+    # style id rather than picking up the legacy unbounded inheritance.
+    children = _paragraph_ppr_children(inserted)
+    assert "pStyle" in children
+    pstyle_el = inserted._element.find(qn("w:pPr")).find(qn("w:pStyle"))
+    assert pstyle_el.get(qn("w:val")) == "BodyText"

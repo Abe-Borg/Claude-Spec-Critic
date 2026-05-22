@@ -35,11 +35,45 @@ from .replacement_style import (
 _WHITESPACE_RE = re.compile(r"[\s\u00A0]+")
 _HEADING_HINT_RE = re.compile(r"^\s*(PART\s+\d+|SECTION\s+\d+(\.\d+)*)\b", flags=re.IGNORECASE)
 
+# Phase 2 / Step 2.1: list-prefix detector for ADD-insertion content.
+# Recognizes the common shapes the model emits as list items \u2014 uppercase
+# letter + period (``A.``), digits + period (``1.``), digits + close-paren
+# (``1)``), bullet (``\u2022``), en-dash (``\u2013``), or hyphen (``-``) \u2014 each
+# followed by a separator (whitespace or end-of-line). Used by
+# :func:`_clean_inherited_ppr` to decide whether to preserve the
+# anchor's indentation when the inserted text itself reads as a list
+# item. Step 2.3 reuses the same regex for paragraph-split decisions.
+_LIST_PREFIX_RE = re.compile(r"^\s*(?:[A-Z]\.|\d+\.|\d+\)|\u2022|\u2013|-)(?:\s|$)")
+
 
 def _normalize_text_for_add(text: str) -> str:
     normalized = unicodedata.normalize("NFC", text)
     normalized = _WHITESPACE_RE.sub(" ", normalized)
     return normalized.strip().casefold()
+
+
+def _looks_list_prefix(line: str) -> bool:
+    """Return True if ``line`` starts with a recognized list-item prefix."""
+    return bool(_LIST_PREFIX_RE.match(line))
+
+
+def _looks_list_shaped(text: str) -> bool:
+    """Return True if the first non-empty line of ``text`` reads as a list item.
+
+    Used by :func:`_clean_inherited_ppr` to decide whether to preserve
+    the anchor's indentation. The model often writes inserted content
+    where the first paragraph carries the explicit list prefix; when
+    that's the case the inserted paragraph wants to visually align with
+    the list, so we keep the inherited ``<w:ind>``. When the inserted
+    text reads as ordinary prose, we strip the indent so the new
+    paragraph doesn't sit awkwardly under list-level indentation.
+    """
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        return _looks_list_prefix(line)
+    return False
 
 
 def _split_insert_paragraphs(text: str) -> list[str]:
@@ -83,6 +117,56 @@ def _reference_style_for_text(anchor_index: int, body_children: list, text: str)
     return anchor_style
 
 
+def _clean_inherited_ppr(ppr_element, insert_text: str) -> None:
+    """Strip list / numbering machinery from a cloned pPr in place.
+
+    Phase 2 / Step 2.1. When an ADD action's anchor paragraph is part of
+    a numbered list, the legacy deepcopy carried ``<w:numPr>`` over to
+    the inserted paragraph, which made Word auto-renumber the list and
+    promote the inserted content into the same list level. The visual
+    effect was an extra list item appearing where the model intended a
+    sibling paragraph.
+
+    The cleaner removes:
+
+    * ``<w:numPr>`` — list numbering. Always stripped; trusting the
+      literal text prefix is safer than inheriting list semantics, which
+      we cannot reliably recover from the cloned pPr.
+    * ``<w:outlineLvl>`` — outline level. Always stripped; outline
+      promotion is decided by ``<w:pStyle>``, not by an inherited level
+      from a list anchor.
+    * ``<w:pBdr>`` — paragraph borders. Always stripped; borders rarely
+      want to flow to a sibling paragraph and the inherited shape often
+      looks visibly wrong (top border but no bottom border, etc.).
+    * ``<w:ind>`` — paragraph indentation. Stripped only when the
+      inserted text does NOT itself read as list-shaped. When the
+      inserted text starts with ``A.`` / ``1.`` / ``•`` / ``–`` / etc.,
+      the indentation is preserved so the new paragraph visually aligns
+      with the list it is sitting next to.
+
+    Left in place:
+
+    * ``<w:pStyle>`` — paragraph style id binds the inserted paragraph
+      to the document's font/size conventions.
+    * ``<w:jc>`` — justification.
+    * ``<w:spacing>`` — line spacing.
+    * ``<w:rPr>`` inside pPr — default run properties.
+
+    The env-var kill switch ``SPEC_CRITIC_ADD_INHERITS_LIST_NUMBERING``
+    short-circuits the entire cleaner so operators can revert to the
+    legacy unbounded-inheritance behavior if a particular workflow
+    depended on it.
+    """
+    if _add_inherits_list_numbering_legacy():
+        return
+    for tag in ("w:numPr", "w:outlineLvl", "w:pBdr"):
+        for el in ppr_element.findall(qn(tag)):
+            ppr_element.remove(el)
+    if not _looks_list_shaped(insert_text):
+        for el in ppr_element.findall(qn("w:ind")):
+            ppr_element.remove(el)
+
+
 def _build_paragraph_element(text: str, style_id: str | None, anchor_element) -> object:
     paragraph_element = OxmlElement("w:p")
     if style_id:
@@ -94,7 +178,12 @@ def _build_paragraph_element(text: str, style_id: str | None, anchor_element) ->
     else:
         anchor_ppr = anchor_element.find(qn("w:pPr"))
         if anchor_ppr is not None:
-            paragraph_element.append(deepcopy(anchor_ppr))
+            cloned = deepcopy(anchor_ppr)
+            # Phase 2 / Step 2.1: scrub list/numbering machinery so the
+            # inserted paragraph is a sibling of the anchor's parent,
+            # not the next item in the anchor's list.
+            _clean_inherited_ppr(cloned, text)
+            paragraph_element.append(cloned)
 
     run_element = OxmlElement("w:r")
     text_element = OxmlElement("w:t")
@@ -374,6 +463,33 @@ def _env_flag_disabled(name: str) -> bool:
     if raw is None:
         return False
     return raw.strip().lower() in _DISABLE_TOKENS
+
+
+def _env_flag_enabled(name: str) -> bool:
+    """Inverse of :func:`_env_flag_disabled` for default-off flags.
+
+    Returns True when ``os.environ[name]`` is set to anything that is
+    not a disable token (``0`` / ``false`` / ``no`` / ``off``). An unset
+    variable yields False so the caller's default-off behavior holds.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() not in _DISABLE_TOKENS
+
+
+def _add_inherits_list_numbering_legacy() -> bool:
+    """Whether ADD-inserted paragraphs inherit numbering/outline level.
+
+    Phase 2 / Step 2.1. Default OFF — :func:`_clean_inherited_ppr`
+    strips ``<w:numPr>`` / ``<w:outlineLvl>`` / ``<w:pBdr>`` from the
+    cloned anchor pPr so the inserted paragraph does not join the
+    anchor's numbered list. Set
+    ``SPEC_CRITIC_ADD_INHERITS_LIST_NUMBERING=1`` (or true/yes/on) to
+    revert to the legacy verbatim-deepcopy behavior, where the
+    inserted paragraph kept every property of the anchor's pPr.
+    """
+    return _env_flag_enabled("SPEC_CRITIC_ADD_INHERITS_LIST_NUMBERING")
 
 
 def _punctuation_boundary_fix_enabled() -> bool:
