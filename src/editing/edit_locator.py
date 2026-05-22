@@ -13,6 +13,10 @@ from .edit_candidates import (
     SAFETY_MANUAL_REVIEW,
     SAFETY_REPORT_ONLY,
 )
+from .replacement_style import (
+    correction_looks_replaceable,
+    use_verifier_correction_as_replacement_enabled,
+)
 from ..input.extractor import ParagraphMapping
 from ..review.reviewer import Finding
 
@@ -63,6 +67,21 @@ class LocatorResult:
     # path and every non-ambiguous result unchanged, and old resume
     # payloads load cleanly.
     cross_paragraph_ambiguous: bool = False
+    # Phase 5 / Step 5.1: True when the finding had a CORRECTED verdict
+    # with a non-empty ``verification.correction`` but the
+    # :func:`replacement_style.correction_looks_replaceable` sanity
+    # check failed — meaning the locator fell back to the model's
+    # original ``replacement_text`` for the applied edit instead of
+    # using the verifier's correction verbatim. The verifier's
+    # correction is still preserved on
+    # ``Finding.verification.correction`` so the report renders it as
+    # the verifier's explanation; only the *applied* edit text changes.
+    # ``apply_edits.execute_edit_plan`` sums this across locator
+    # results to roll up
+    # ``DiagnosticsReport.verifier_correction_rejected_as_replacement_count``.
+    # Default False keeps the regular path and every legacy resume
+    # payload unchanged.
+    correction_rejected_as_replacement: bool = False
 
     def __post_init__(self) -> None:
         if self.safety_category is None:
@@ -206,7 +225,25 @@ def _classify_locator_safety(
     )
 
 
-def _resolve_replacement_text(finding: Finding) -> str | None:
+def _resolve_replacement_text(finding: Finding) -> tuple[str | None, bool]:
+    """Resolve the applied edit's replacement text from finding + verification.
+
+    Returns ``(replacement_text, correction_rejected_as_replacement)``.
+
+    The boolean is True only when the finding had a CORRECTED verdict
+    with a non-empty ``verification.correction`` but
+    :func:`replacement_style.correction_looks_replaceable` rejected the
+    correction — in that case the verifier's correction is preserved
+    on the result for the report, but the *applied* edit uses the
+    model's original ``replacement_text``. The locator stamps the flag
+    on every :class:`LocatorResult` it constructs so
+    ``apply_edits.execute_edit_plan`` can sum it into the per-spec /
+    run-level diagnostics counters.
+
+    The legacy verbatim path is preserved behind
+    ``SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT=1`` — when set,
+    the sanity check is skipped and the correction is always used.
+    """
     # Pull replacement text off the edit proposal (when present) so a
     # REPORT_ONLY finding cannot accidentally surface a stale quote left
     # in ``finding.replacementText`` by an earlier code path.
@@ -214,14 +251,27 @@ def _resolve_replacement_text(finding: Finding) -> str | None:
     base_replacement = proposal.replacement_text if proposal is not None else None
     verification = finding.verification
     if verification is None:
-        return base_replacement
+        return base_replacement, False
     if verification.verdict == "CORRECTED" and verification.correction:
-        return verification.correction
+        # Phase 5 / Step 5.1: sanity-check the verifier's correction
+        # before treating it as clean replacement text. The verifier
+        # prompt is optimized for explanation, not for substitution
+        # into a CSI spec paragraph — corrections often carry
+        # parenthetical citations, URLs, or temporal qualifiers that
+        # don't belong in body text. When the check fails, fall back
+        # to ``base_replacement`` (the model's own attempt at clean
+        # replacement text) and flag the rejection so the diagnostics
+        # rollup can surface "you may want to revisit these manually".
+        if use_verifier_correction_as_replacement_enabled():
+            return verification.correction, False
+        if correction_looks_replaceable(verification.correction, base_replacement):
+            return verification.correction, False
+        return base_replacement, True
     if verification.verdict in ("CONFIRMED", "UNVERIFIED"):
-        return base_replacement
+        return base_replacement, False
     if verification.verdict == "DISPUTED":
-        return None
-    return base_replacement
+        return None, False
+    return base_replacement, False
 
 
 def _normalize_text(text: str) -> str:
@@ -645,7 +695,7 @@ def locate_edit(
             safety_category=SAFETY_REPORT_ONLY,
         )
 
-    replacement = _resolve_replacement_text(finding)
+    replacement, correction_rejected = _resolve_replacement_text(finding)
     action_type = proposal.action_type.upper()
     existing_text = (proposal.existing_text or "").strip()
 
@@ -688,6 +738,7 @@ def locate_edit(
                 replacement_text=replacement,
                 cross_paragraph=False,
             ),
+            correction_rejected_as_replacement=correction_rejected,
         )
     if id_warning:
         # Id was set but unusable — manual review only. Do not fall back
@@ -702,6 +753,7 @@ def locate_edit(
             action_type=action_type,
             warning=id_warning,
             safety_category=SAFETY_MANUAL_REVIEW,
+            correction_rejected_as_replacement=correction_rejected,
         )
 
     if not existing_text:
@@ -713,6 +765,7 @@ def locate_edit(
             action_type=action_type,
             warning="Finding has no existingText; locator cannot determine an edit target.",
             safety_category=SAFETY_REPORT_ONLY,
+            correction_rejected_as_replacement=correction_rejected,
         )
 
     short_text = len(existing_text) < 15
@@ -782,6 +835,7 @@ def locate_edit(
                 warning=warning,
                 safety_category=safety_category,
                 cross_paragraph_ambiguous=multi_window,
+                correction_rejected_as_replacement=correction_rejected,
             )
         return LocatorResult(
             finding=finding,
@@ -791,6 +845,7 @@ def locate_edit(
             action_type=action_type,
             warning="No paragraph match met the confidence threshold.",
             safety_category=SAFETY_REPORT_ONLY,
+            correction_rejected_as_replacement=correction_rejected,
         )
 
     status = "matched" if len(match_candidates) == 1 else "ambiguous"
@@ -808,6 +863,7 @@ def locate_edit(
             replacement_text=replacement,
             cross_paragraph=False,
         ),
+        correction_rejected_as_replacement=correction_rejected,
     )
 
 

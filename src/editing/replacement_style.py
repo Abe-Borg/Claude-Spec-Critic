@@ -77,6 +77,41 @@ def restore_known_formatting_enabled() -> bool:
     return raw.strip().lower() not in _DISABLE_TOKENS
 
 
+# Tokens that mean "set the env var on" — the standard set used by every
+# other Phase-1/5 boolean flag in the codebase. Anything outside this set
+# (and outside ``_DISABLE_TOKENS``) leaves the per-flag default in place.
+_ENABLE_TOKENS = frozenset({"1", "true", "yes", "on"})
+
+
+def use_verifier_correction_as_replacement_enabled() -> bool:
+    """Whether the legacy "use verification.correction verbatim" path runs.
+
+    Phase 5 / Step 5.1. The verifier's prompt asks for "1-2 sentences
+    explaining the verdict and the corrected reference text" — that is
+    explanation text, not clean replacement text. Corrections often
+    carry parenthetical citations, URLs, or "current / latest" temporal
+    qualifiers that don't belong in the body of a CSI spec paragraph.
+
+    Default **off**: the locator runs the
+    :func:`correction_looks_replaceable` sanity check on every CORRECTED
+    finding and falls back to the model's original
+    ``replacement_text`` when the check fails. Operators that want the
+    legacy verbatim behavior set
+    ``SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT=1`` to skip the
+    sanity check entirely.
+
+    Unlike the other Phase-1 flags (which default *on* and accept
+    disable tokens to flip off), this flag defaults *off* and accepts
+    enable tokens to flip on — so unrecognized values leave the safe
+    new behavior in place rather than reverting to the buggy legacy
+    path on a typo.
+    """
+    raw = os.environ.get("SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT")
+    if raw is None:
+        return False
+    return raw.strip().lower() in _ENABLE_TOKENS
+
+
 # ---------------------------------------------------------------------------
 # Profile
 # ---------------------------------------------------------------------------
@@ -355,3 +390,148 @@ def known_pattern_spans(text: str) -> list[tuple[int, int]]:
         else:
             merged.append((start, end))
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 / Step 5.1 — Verifier correction replaceability sanity check.
+#
+# ``VerificationResult.correction`` is populated by the verifier when the
+# verdict is ``CORRECTED``. The verifier prompt asks for "1-2 sentences
+# explaining the verdict and the corrected reference text" — that string is
+# optimized for explanation, not for clean substitution into a spec
+# paragraph. The legacy path used the correction verbatim as the applied
+# edit's replacement text, which produced visibly off output whenever the
+# verifier emitted parenthetical citations, URLs, or temporal qualifiers
+# that the spec paragraph itself did not contain.
+#
+# The sanity check below is a small set of conservative heuristics that
+# reject *obviously-explanatory* corrections. It is intentionally lenient
+# on the common case (a short, prose-only correction that simply swaps the
+# bad code reference for the right one) — when in doubt the check returns
+# True and the locator uses the correction. The caller falls back to the
+# model's original ``replacement_text`` only when at least one heuristic
+# trips.
+#
+# This is a pure-text predicate; callers that have a Finding /
+# VerificationResult on hand combine it with verdict / verification gating
+# at their own layer.
+# ---------------------------------------------------------------------------
+
+
+# Maximum length ratio of correction-to-original beyond which the
+# correction is treated as explanatory rather than a clean replacement.
+# The verifier producing a paragraph in response to a one-line original
+# is the canonical "this is explanation, not substitution text" signal.
+_CORRECTION_LENGTH_RATIO_MAX = 3.0
+
+# URL detection covers both ``http(s)://`` and bare ``www.`` patterns.
+# Corrections that cite a source URL never belong as body text in a CSI
+# paragraph — even when the original somehow had one, we'd rather use the
+# original than risk a verifier-invented citation landing in the spec.
+_URL_RE = re.compile(r"\b(?:https?://|www\.)\S+", flags=re.IGNORECASE)
+
+# Citation-style parenthetical markers. The verifier commonly emits
+# ``(per Section 5.7)`` / ``(see CBC § 1613.1)`` / ``(according to ASCE 7-22)``
+# inside a CORRECTED correction; those are explanatory annotations the
+# spec paragraph itself does not carry. ``Section``/``Chapter``/``§``
+# followed by a number is the strongest signal; the small set of citation
+# verbs (``per``/``see``/``ref``/``cf``/``according to``/``as defined``)
+# catches the looser variants. Matched inside any ``(...)`` group.
+_PARENTHETICAL_CITATION_RE = re.compile(
+    r"\((?:[^()]*?\b"
+    r"(?:per|see|ref|refer|refers|refer to|cf\.?|according(?:\s+to)?|"
+    r"as\s+(?:defined|noted|stated|required)|"
+    r"section|chapter|§|¶|note)\b"
+    r"[^()]*)\)",
+    flags=re.IGNORECASE,
+)
+
+# Temporal / "freshness" qualifiers the verifier likes to add when
+# explaining why an old code reference is wrong. ``current edition``,
+# ``latest revision``, ``as of 2025`` — all signal explanation rather
+# than replacement text. ``as of`` is paired with a 4-digit year to
+# avoid catching ordinary uses of the phrase.
+_QUALIFIER_RES = (
+    re.compile(r"\bcurrent\b", flags=re.IGNORECASE),
+    re.compile(r"\blatest\b", flags=re.IGNORECASE),
+    re.compile(r"\bas\s+of\s+\d{4}\b", flags=re.IGNORECASE),
+)
+
+
+def _has_url(text: str) -> bool:
+    return bool(_URL_RE.search(text))
+
+
+def _has_parenthetical_citation(text: str) -> bool:
+    return bool(_PARENTHETICAL_CITATION_RE.search(text))
+
+
+def _has_temporal_qualifier(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _QUALIFIER_RES)
+
+
+def correction_looks_replaceable(
+    correction: str | None, original_replacement: str | None
+) -> bool:
+    """Decide whether ``correction`` is clean enough to use as replacement text.
+
+    Returns True iff the correction passes every heuristic. The locator
+    treats False as "fall back to the model's original
+    ``replacement_text`` for the applied edit" while preserving the
+    verifier's correction on the result for the report.
+
+    The four heuristics (all conservative — when in doubt, return True
+    so the common path keeps the verifier's correction):
+
+    1. **Non-empty.** Empty / whitespace-only corrections are by
+       definition not replaceable.
+    2. **Length ratio.** The correction may be at most
+       :data:`_CORRECTION_LENGTH_RATIO_MAX` times the length of the
+       original replacement. Skipped when no original is available
+       (``original_replacement`` is None or empty) since there is no
+       baseline to measure against. A correction much *shorter* than
+       the original is fine — short corrections like ``"ASCE 7-22"``
+       are the common clean case.
+    3. **No URLs.** URLs are absolute red flags; no escape hatch even
+       when the original somehow carried a URL.
+    4. **No parenthetical citations / temporal qualifiers** unless the
+       original carried them. The original's own use of a parenthetical
+       citation (or a ``current``/``latest`` qualifier) means the
+       proposed replacement already has that shape, so a correction
+       keeping it is fine.
+    """
+    if not correction or not correction.strip():
+        return False
+
+    # Heuristic 2: length ratio (skipped when no baseline is available).
+    if original_replacement and original_replacement.strip():
+        if len(correction) > _CORRECTION_LENGTH_RATIO_MAX * len(original_replacement):
+            return False
+
+    # Heuristic 3: URLs. Hard fail — never let the verifier's cited URL
+    # land in the body of a spec paragraph.
+    if _has_url(correction):
+        return False
+
+    # Heuristic 4: parenthetical citations are OK only when the
+    # original replacement also carried a parenthetical citation. This
+    # keeps a sentence like ``Comply with ASCE 7-22 (current revision)``
+    # → ``Comply with ASCE 7-16 (current revision)`` from being
+    # rejected just because the proposal happens to use parentheses.
+    if _has_parenthetical_citation(correction):
+        if not original_replacement or not _has_parenthetical_citation(
+            original_replacement
+        ):
+            return False
+
+    # Heuristic 4 (continued): temporal qualifiers (``current`` /
+    # ``latest`` / ``as of <year>``) are OK only when the original had
+    # them. Same logic — the proposal already qualifies temporally so
+    # the correction keeping a qualifier is fine.
+    if _has_temporal_qualifier(correction):
+        if not original_replacement or not _has_temporal_qualifier(
+            original_replacement
+        ):
+            return False
+
+    return True

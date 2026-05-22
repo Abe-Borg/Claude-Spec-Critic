@@ -40,14 +40,38 @@ def _resolved_replacement_text(
     Chunk L: when there is no edit proposal, there is no replacement text
     either — return None so the UI/edit pipeline does not show a stale
     quote that the model emitted before the parser zeroed it out.
+
+    Phase 5 / Step 5.1: when the verdict is CORRECTED, sanity-check
+    ``verification.correction`` via
+    :func:`replacement_style.correction_looks_replaceable` before
+    surfacing it to the candidate UI. The check rejects explanatory
+    corrections (parenthetical citations, URLs, temporal qualifiers,
+    paragraph-length expansions) that the locator would also reject —
+    keeping the UI and the actual apply path showing the *same* text.
+    The legacy verbatim path is still available via
+    ``SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT=1``.
     """
+    # Local import avoids importing replacement_style at module load
+    # time (edit_candidates is one of the lowest-level modules; this
+    # keeps the import graph clean and matches edit_locator's pattern).
+    from .replacement_style import (
+        correction_looks_replaceable,
+        use_verifier_correction_as_replacement_enabled,
+    )
+
     if proposal is None:
         return None
     verification = finding.verification
     if verification is None:
         return proposal.replacement_text
     if verification.verdict == "CORRECTED" and verification.correction:
-        return verification.correction
+        if use_verifier_correction_as_replacement_enabled():
+            return verification.correction
+        if correction_looks_replaceable(
+            verification.correction, proposal.replacement_text
+        ):
+            return verification.correction
+        return proposal.replacement_text
     return proposal.replacement_text
 
 

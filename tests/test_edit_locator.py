@@ -343,3 +343,229 @@ def test_locate_edits_batch_helper():
     assert len(results) == 2
     assert results[0].status == "matched"
     assert results[1].status == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 / Step 5.1 — Verifier correction sanity check at the locator.
+#
+# When verdict is ``CORRECTED`` and ``verification.correction`` is non-empty,
+# the locator previously used the correction verbatim as the replacement
+# text. The verifier's prompt asks for "1-2 sentences explaining the verdict
+# and the corrected reference text" — that's explanation, not clean
+# replacement text. The locator now runs a sanity check and falls back to
+# ``proposal.replacement_text`` when the correction does not look
+# replaceable. The verifier's correction is preserved on the
+# ``VerificationResult`` for the report; only the applied edit text changes.
+# ---------------------------------------------------------------------------
+
+
+def test_clean_corrected_correction_still_used_as_replacement():
+    """A short, prose-only CORRECTED.correction still wins over replacement_text.
+
+    Pins the existing behavior for clean corrections (the legacy
+    ``test_replacement_resolution_from_verification_verdicts`` case) so the
+    new sanity check does not over-fire on the common path.
+    """
+    paragraph_map = [_mapping("Target text here", idx=0)]
+    finding = _finding("Target text", replacement="orig")
+    finding.verification = VerificationResult(
+        verdict="CORRECTED",
+        correction="ASCE 7-22",
+        explanation="",
+        sources=[],
+    )
+
+    result = locate_edit(finding, paragraph_map)
+
+    assert result.replacement_text == "ASCE 7-22"
+    assert getattr(result, "correction_rejected_as_replacement", False) is False
+
+
+def test_paragraph_length_correction_falls_back_to_replacement_text():
+    """A ~10× longer correction triggers the sanity check fallback."""
+    paragraph_map = [_mapping("Use ASCE 7-16 for seismic design.", idx=0)]
+    finding = _finding("Use ASCE 7-16", replacement="Use ASCE 7-22")
+    finding.verification = VerificationResult(
+        verdict="CORRECTED",
+        correction=(
+            "The applicable standard is ASCE 7-22 because the 2025 California "
+            "Building Code adopted that revision through Title 24 Part 2, and "
+            "the 7-16 reference is obsolete for projects permitted after "
+            "January 1 2026."
+        ),
+        explanation="",
+        sources=[],
+    )
+
+    result = locate_edit(finding, paragraph_map)
+
+    # The applied edit uses the model's original replacement, not the
+    # verifier's explanatory paragraph.
+    assert result.replacement_text == "Use ASCE 7-22"
+    assert result.correction_rejected_as_replacement is True
+    # The verifier's correction is preserved on the result for the report.
+    assert finding.verification.correction.startswith("The applicable standard")
+
+
+def test_parenthetical_citation_correction_falls_back_to_replacement_text():
+    """``(per CBC § 1613.1)``-style citations are explanatory."""
+    paragraph_map = [_mapping("Use ASCE 7-16 for seismic design.", idx=0)]
+    finding = _finding("Use ASCE 7-16", replacement="Use ASCE 7-22")
+    finding.verification = VerificationResult(
+        verdict="CORRECTED",
+        correction="Use ASCE 7-22 (per CBC § 1613.1).",
+        explanation="",
+        sources=[],
+    )
+
+    result = locate_edit(finding, paragraph_map)
+
+    assert result.replacement_text == "Use ASCE 7-22"
+    assert result.correction_rejected_as_replacement is True
+
+
+def test_url_in_correction_falls_back_to_replacement_text():
+    """URLs in the correction never belong in spec body text."""
+    paragraph_map = [_mapping("Use ASCE 7-16 for seismic design.", idx=0)]
+    finding = _finding("Use ASCE 7-16", replacement="Use ASCE 7-22")
+    finding.verification = VerificationResult(
+        verdict="CORRECTED",
+        correction="See https://www.iccsafe.org/asce-7-22.",
+        explanation="",
+        sources=[],
+    )
+
+    result = locate_edit(finding, paragraph_map)
+
+    assert result.replacement_text == "Use ASCE 7-22"
+    assert result.correction_rejected_as_replacement is True
+
+
+def test_env_var_preserves_legacy_verbatim_behavior(
+    monkeypatch,
+):
+    """``SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT=1`` skips the sanity check."""
+    monkeypatch.setenv(
+        "SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT", "1"
+    )
+    paragraph_map = [_mapping("Use ASCE 7-16 for seismic design.", idx=0)]
+    finding = _finding("Use ASCE 7-16", replacement="Use ASCE 7-22")
+    finding.verification = VerificationResult(
+        verdict="CORRECTED",
+        correction="Use ASCE 7-22 (per CBC § 1613.1).",
+        explanation="",
+        sources=[],
+    )
+
+    result = locate_edit(finding, paragraph_map)
+
+    # Env var on → legacy verbatim path: use the parenthetical correction.
+    assert result.replacement_text == "Use ASCE 7-22 (per CBC § 1613.1)."
+    assert result.correction_rejected_as_replacement is False
+
+
+def test_locator_result_correction_rejected_default_false_on_legacy_construction():
+    """LocatorResult constructed without the new field still loads safely.
+
+    Resume-state payloads from before Step 5.1 don't carry the new
+    ``correction_rejected_as_replacement`` field; the dataclass default
+    keeps them loading cleanly.
+    """
+    from src.editing.edit_locator import EditLocation, LocatorResult
+
+    finding = _finding("foo", replacement="bar")
+    mapping = _mapping("foo", idx=0)
+    location = EditLocation(
+        mapping=mapping,
+        match_start=0,
+        match_end=3,
+        matched_text="foo",
+        match_confidence=1.0,
+        match_method="exact",
+    )
+    result = LocatorResult(
+        finding=finding,
+        status="matched",
+        locations=[location],
+        replacement_text="bar",
+        action_type="EDIT",
+        warning=None,
+    )
+    assert result.correction_rejected_as_replacement is False
+
+
+def test_correction_rejection_counted_into_diagnostics(tmp_path):
+    """End-to-end: a paragraph-length correction is rejected and counted.
+
+    Pins the wiring from
+    ``LocatorResult.correction_rejected_as_replacement`` through
+    ``apply_edits.execute_edit_plan`` and into
+    ``DiagnosticsReport.verifier_correction_rejected_as_replacement_count``.
+    """
+    from docx import Document
+
+    from src.editing.apply_edits import execute_edit_plan
+    from src.input.extractor import extract_text_from_docx
+    from src.orchestration.diagnostics import DiagnosticsReport
+
+    source = tmp_path / "spec.docx"
+    doc = Document()
+    doc.add_paragraph("Use ASCE 7-16 for seismic design.")
+    doc.save(source)
+
+    spec = extract_text_from_docx(source)
+    spec.filename = "spec.docx"
+
+    finding = Finding(
+        severity="HIGH",
+        fileName="spec.docx",
+        section="1.0",
+        issue="Cite the current edition of ASCE 7.",
+        actionType="EDIT",
+        existingText="ASCE 7-16",
+        replacementText="ASCE 7-22",
+        codeReference="ASCE 7",
+        confidence=0.9,
+    )
+    finding.verification = VerificationResult(
+        verdict="CORRECTED",
+        correction=(
+            "The applicable standard is ASCE 7-22 because the 2025 "
+            "California Building Code adopted that revision through Title "
+            "24 Part 2, and the 7-16 reference is obsolete for projects "
+            "permitted after January 1 2026."
+        ),
+        explanation="",
+        sources=["https://example.com/asce-7-22"],
+    )
+
+    diagnostics = DiagnosticsReport()
+    reports = execute_edit_plan(
+        selected_finding_indices=[0],
+        all_findings=[finding],
+        cross_check_findings=[],
+        extracted_specs=[spec],
+        source_paths=[source],
+        output_dir=tmp_path / "out",
+        diagnostics=diagnostics,
+    )
+
+    assert len(reports) == 1
+    # The edit still applied — we kept the CORRECTED verdict — but with
+    # the model's original replacement text, not the verifier's paragraph.
+    assert reports[0].edits_applied == 1
+    saved_text = (
+        Document(reports[0].output_path).paragraphs[0].text
+    )
+    assert "ASCE 7-22" in saved_text
+    # The applied replacement did NOT include the verifier's explanatory
+    # paragraph.
+    assert "California Building Code adopted" not in saved_text
+
+    # Counter rolled up at both layers.
+    assert reports[0].verifier_correction_rejected_as_replacement_count == 1
+    assert diagnostics.verifier_correction_rejected_as_replacement_count == 1
+    # And the AUTO-APPLY QUALITY rollup surfaces it.
+    text = diagnostics.to_text()
+    assert "AUTO-APPLY QUALITY" in text
+    assert "Verifier correction rejected as replacement" in text
