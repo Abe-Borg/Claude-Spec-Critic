@@ -24,6 +24,12 @@ from .edit_candidates import (
     SAFETY_REPORT_ONLY,
 )
 from .edit_locator import EditLocation, LocatorResult
+from .replacement_style import (
+    DocumentStyleProfile,
+    normalize_replacement_style_enabled,
+    normalize_replacement_text,
+    profile_document_style,
+)
 
 
 _WHITESPACE_RE = re.compile(r"[\s\u00A0]+")
@@ -157,6 +163,17 @@ class EditReport:
     # written because at least one auto-edit failed under the configured
     # all-or-none transactional policy.
     aborted_transactional: bool = False
+    # Phase 1 / Step 1.1: count of replacements whose text was rewritten
+    # to match the source document's typographic conventions (curly vs
+    # straight quotes, em-dash vs hyphen, etc.) before being applied.
+    # The counter is per-spec; ``apply_edits.execute_edit_plan`` rolls
+    # it up into the run-level :class:`DiagnosticsReport`.
+    replacement_normalized_count: int = 0
+    # Phase 1 / Step 1.2: count of replacements whose trailing
+    # punctuation was repaired so the applied edit does not silently
+    # drop a sentence-terminating period/comma or double-stamp one
+    # already present in the live paragraph.
+    punctuation_boundary_fixed_count: int = 0
 
 
 def _build_run_offset_map(paragraph: Paragraph) -> list[tuple[int, int, int]]:
@@ -359,6 +376,113 @@ def _env_flag_disabled(name: str) -> bool:
     return raw.strip().lower() in _DISABLE_TOKENS
 
 
+def _punctuation_boundary_fix_enabled() -> bool:
+    """Whether the trailing-punctuation boundary fix runs.
+
+    Phase 1 / Step 1.2. Default enabled. Set
+    ``SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX=0`` (or false/no/off,
+    case-insensitive) to skip the post-locate punctuation reconciliation
+    pass and write the model's ``replacement_text`` verbatim.
+    """
+    return not _env_flag_disabled("SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX")
+
+
+# Punctuation characters the boundary fix is allowed to add or strip.
+# Brackets, quotes, and multi-character sequences (...) are intentionally
+# excluded — pairing them safely requires more context than the
+# substring-level fix has and a wrong pairing produces a more visible
+# defect than the original drop / double.
+_BOUNDARY_PUNCT = frozenset(".,;:")
+
+
+def _punctuation_boundary_repair(
+    *,
+    existing_text: str,
+    replacement_text: str,
+    paragraph_text: str,
+    match_end: int,
+) -> tuple[str, bool]:
+    """Reconcile trailing punctuation between ``existing`` and ``replacement``.
+
+    Returns ``(adjusted_replacement, fixed)``. ``fixed`` is True iff the
+    replacement was rewritten — callers bump
+    :attr:`EditReport.punctuation_boundary_fixed_count` when it flips.
+
+    Two cases are handled, both conservatively (only ``.,;:`` qualify):
+
+    * **Drop avoidance.** ``existing`` ends with a single punctuation
+      character that ``replacement`` lacks, AND the character
+      immediately after the match in the live paragraph is whitespace
+      or end-of-paragraph. Without the fix, applying the edit drops
+      the sentence-terminator and the next word runs into this one.
+    * **Doubling prevention.** ``existing`` and ``replacement`` both
+      end with the same punctuation, AND the character immediately
+      after the match in the live paragraph is that same punctuation.
+      Without the fix, the user sees ``..`` / ``,,``.
+
+    Other shapes (leading punctuation, paired delimiters, multi-char
+    sequences like ``...``) are intentionally left alone — they need
+    richer context than this helper has.
+    """
+    if not existing_text or not replacement_text:
+        return replacement_text, False
+    existing_tail = existing_text[-1]
+    replacement_tail = replacement_text[-1]
+    next_char = paragraph_text[match_end] if 0 <= match_end < len(paragraph_text) else ""
+
+    # Drop avoidance: existing carried punctuation that replacement
+    # does not, AND the live char right after the match is whitespace
+    # or end-of-paragraph (so there is no inherited punctuation to
+    # absorb the original mark).
+    if (
+        existing_tail in _BOUNDARY_PUNCT
+        and replacement_tail != existing_tail
+        and (not next_char or next_char.isspace())
+    ):
+        return replacement_text + existing_tail, True
+
+    # Doubling prevention: replacement ends with a punctuation
+    # character AND the live char immediately after the match is the
+    # same punctuation. Catches the common shape "model included the
+    # period in replacement but existingText did not, so the live
+    # paragraph still owns one" — applying naively would write "..".
+    if (
+        replacement_tail in _BOUNDARY_PUNCT
+        and next_char == replacement_tail
+    ):
+        return replacement_text[:-1], True
+
+    return replacement_text, False
+
+
+def _maybe_punctuation_repair(
+    *,
+    action: EditAction,
+    replacement: str,
+    paragraph_text: str,
+    match_end: int,
+) -> tuple[str, bool]:
+    """Run the boundary repair gated by the env-var kill switch.
+
+    Pulls the original ``existingText`` off the action's locator-result
+    finding so the helper compares against the model's quoted span
+    rather than ``location.matched_text`` (which may carry case /
+    whitespace normalization from the locator).
+    """
+    if not _punctuation_boundary_fix_enabled() or not replacement:
+        return replacement, False
+    finding = action.locator_result.finding
+    existing = (getattr(finding, "existingText", "") or "").strip()
+    if not existing:
+        return replacement, False
+    return _punctuation_boundary_repair(
+        existing_text=existing,
+        replacement_text=replacement,
+        paragraph_text=paragraph_text,
+        match_end=match_end,
+    )
+
+
 def _table_cell_auto_edit_enabled() -> bool:
     """Whether table-cell auto-edits are allowed.
 
@@ -383,6 +507,54 @@ def _edit_transactional_enabled() -> bool:
     corresponding ``EditReport.warnings`` entry.
     """
     return not _env_flag_disabled("SPEC_CRITIC_EDIT_TRANSACTIONAL")
+
+
+def _iter_document_texts(doc) -> list[str]:
+    """Yield every text-bearing element's text from a python-docx document.
+
+    Used by :func:`apply_edits_to_spec` to build a
+    :class:`DocumentStyleProfile` when the caller did not supply one.
+    Walks body paragraphs, table cells, headers, and footers — every
+    surface the profiler needs to see to vote on quote/dash/apostrophe
+    preference. Returns a list rather than a generator so the caller can
+    pass it through ``profile_document_style`` without worrying about
+    iterator exhaustion.
+    """
+    texts: list[str] = []
+    body = doc.element.body
+    for element in body.iter():
+        tag = element.tag
+        if tag.endswith("}t"):
+            if element.text:
+                texts.append(element.text)
+    for section in doc.sections:
+        for container in (section.header, section.footer):
+            for paragraph in container.paragraphs:
+                if paragraph.text:
+                    texts.append(paragraph.text)
+    return texts
+
+
+def _maybe_normalize_replacement(
+    replacement: str | None,
+    profile: DocumentStyleProfile | None,
+) -> tuple[str | None, bool]:
+    """Run replacement text through the document style normalizer.
+
+    Returns ``(replacement, normalized)``. ``normalized`` is True iff
+    the normalizer actually changed the text — callers use it to
+    increment :attr:`EditReport.replacement_normalized_count`.
+
+    The normalizer is a no-op when the env-var kill switch is set, the
+    profile is ``None``, or the input is empty/None. The returned
+    string is the same type as the input (``None`` stays ``None``).
+    """
+    if replacement is None or not replacement:
+        return replacement, False
+    if profile is None or not normalize_replacement_style_enabled():
+        return replacement, False
+    normalized, changed = normalize_replacement_text(replacement, profile)
+    return normalized, changed
 
 
 def _refuse_unsafe_outcome(
@@ -851,7 +1023,17 @@ def _apply_add_action(
     doc: Document,
     *,
     original_body_children: list | None = None,
-) -> EditOutcome:
+    style_profile: DocumentStyleProfile | None = None,
+) -> tuple[EditOutcome, bool]:
+    """Apply an ADD action and report whether replacement text was normalized.
+
+    Returns ``(outcome, normalized)`` — the second element is True only
+    when :func:`_maybe_normalize_replacement` actually rewrote the
+    replacement text to match the document's style profile. ADD paths
+    that short-circuit before mutating (no proposal, unsafe markup,
+    empty replacement) return ``normalized=False``.
+    """
+    normalized = False
     mapping = action.location.mapping
     if mapping.element_type != "paragraph":
         return EditOutcome(
@@ -860,7 +1042,7 @@ def _apply_add_action(
             detail="ADD actions are only supported for paragraph mappings.",
             original_text=action.location.matched_text,
             new_text=None,
-        )
+        ), normalized
 
     # Use the pre-mutation snapshot so DELETE actions earlier in the same
     # apply pass do not shift the body_index used by ADD (audit Issue 6).
@@ -876,7 +1058,7 @@ def _apply_add_action(
             detail="Body index is out of range in current document.",
             original_text=action.location.matched_text,
             new_text=None,
-        )
+        ), normalized
 
     anchor_element = body_children[mapping.body_index]
     if not anchor_element.tag.endswith("}p"):
@@ -886,7 +1068,7 @@ def _apply_add_action(
             detail="ADD mapping expected paragraph but body element was not paragraph.",
             original_text=action.location.matched_text,
             new_text=None,
-        )
+        ), normalized
 
     # If the anchor was already removed by a DELETE earlier in this run,
     # there is no longer a parent to insert beside. Fail safely instead of
@@ -898,7 +1080,7 @@ def _apply_add_action(
             detail="ADD anchor paragraph was deleted earlier in this edit pass; skip.",
             original_text=action.location.matched_text,
             new_text=None,
-        )
+        ), normalized
 
     anchor_paragraph = Paragraph(anchor_element, doc)
 
@@ -917,7 +1099,7 @@ def _apply_add_action(
             original_text=anchor_paragraph.text,
             new_text=None,
             refused_unsafe_markup=True,
-        )
+        ), normalized
 
     # Revalidate anchor before mutating. If a prior edit changed the
     # anchor paragraph text in a way that no longer matches the recorded
@@ -933,7 +1115,7 @@ def _apply_add_action(
             detail=anchor_detail,
             original_text=anchor_paragraph.text,
             new_text=None,
-        )
+        ), normalized
 
     replacement = (action.replacement_text or "").strip()
     if not replacement:
@@ -943,7 +1125,15 @@ def _apply_add_action(
             detail="ADD action had empty replacement text; nothing to insert.",
             original_text=anchor_paragraph.text,
             new_text=None,
-        )
+        ), normalized
+
+    # Normalize replacement to match the document's typographic
+    # conventions before any of the position-heuristic / split logic
+    # runs. The normalized text is what actually lands in the file.
+    replacement, normalized = _maybe_normalize_replacement(
+        replacement, style_profile
+    )
+    replacement = replacement or ""
 
     anchor_text = action.location.matched_text or anchor_paragraph.text
     replacement_norm = _normalize_text_for_add(replacement)
@@ -985,7 +1175,7 @@ def _apply_add_action(
             detail=f"ADD fallback to replace: {detail}",
             original_text=anchor_text,
             new_text=anchor_paragraph.text if ok else None,
-        )
+        ), normalized
 
     paragraphs = _split_insert_paragraphs(new_content)
     if not paragraphs:
@@ -995,7 +1185,7 @@ def _apply_add_action(
             detail="ADD replacement contained no additional content beyond anchor.",
             original_text=anchor_paragraph.text,
             new_text=None,
-        )
+        ), normalized
 
     style_id = _reference_style_for_text(mapping.body_index, body_children, paragraphs[0])
     inserted_count = (
@@ -1009,10 +1199,16 @@ def _apply_add_action(
         detail=f"Inserted {inserted_count} paragraph(s) {position} anchor paragraph.",
         original_text=anchor_paragraph.text,
         new_text="\n\n".join(paragraphs),
-    )
+    ), normalized
 
 
-def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list[EditAction]) -> EditReport:
+def apply_edits_to_spec(
+    source_path: Path,
+    output_path: Path,
+    edit_actions: list[EditAction],
+    *,
+    style_profile: DocumentStyleProfile | None = None,
+) -> EditReport:
     source_path = Path(source_path)
     output_path = Path(output_path)
 
@@ -1020,9 +1216,20 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         raise ValueError("output_path must differ from source_path; refusing to overwrite source document.")
 
     doc = Document(source_path)
+    # Phase 1 / Step 1.1: profile the source document's typographic
+    # conventions once so every replacement applied below renders with
+    # the same quote/dash/apostrophe style the rest of the spec uses.
+    # ``style_profile`` may be passed in by the caller (the upstream
+    # ``execute_edit_plan`` computes one per spec from the cached
+    # paragraph_map); when not supplied we build it inline from the
+    # freshly-opened doc.
+    if style_profile is None and normalize_replacement_style_enabled():
+        style_profile = profile_document_style(_iter_document_texts(doc))
     actions_to_apply, pre_skipped = _detect_and_resolve_conflicts(edit_actions)
     outcomes: list[EditOutcome] = list(pre_skipped)
     warnings: list[str] = []
+    normalized_count = 0
+    punctuation_fixed_count = 0
 
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
@@ -1127,6 +1334,19 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 continue
 
             replacement = action.replacement_text or ""
+            replacement, was_normalized = _maybe_normalize_replacement(
+                replacement, style_profile
+            )
+            if was_normalized:
+                normalized_count += 1
+            replacement, was_punct_fixed = _maybe_punctuation_repair(
+                action=action,
+                replacement=replacement,
+                paragraph_text=paragraph.text,
+                match_end=precondition.match_end,
+            )
+            if was_punct_fixed:
+                punctuation_fixed_count += 1
             ok, detail = _replace_in_paragraph(
                 paragraph,
                 precondition.match_start,
@@ -1252,6 +1472,32 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             cell_end = precondition.match_end
 
             if action.action_type == "DELETE" and cell_start == 0 and cell_end == len(paragraph_before):
+                # Phase 1 / Step 1.3: a DELETE that covers the entire
+                # cell paragraph used to fall through to the substring
+                # path, which left an empty <w:p> in the cell and Word
+                # rendered it as a blank line. When the cell has more
+                # than one paragraph, remove the paragraph element
+                # outright; when it has only one, fall back to clearing
+                # the text so Word's "every cell needs >=1 paragraph"
+                # invariant holds.
+                cell_para_count = len(cell_element.findall(qn("w:p")))
+                if cell_para_count > 1:
+                    ok = _delete_paragraph(target_paragraph)
+                    detail = (
+                        "Deleted whole-paragraph from table cell."
+                        if ok
+                        else "Failed to delete paragraph element from table cell."
+                    )
+                    outcomes.append(
+                        EditOutcome(
+                            action=action,
+                            status="applied" if ok else "failed",
+                            detail=detail,
+                            original_text=paragraph_before,
+                            new_text="" if ok else None,
+                        )
+                    )
+                    continue
                 ok, replace_detail = _replace_in_paragraph(target_paragraph, cell_start, cell_end, "")
                 outcomes.append(
                     EditOutcome(
@@ -1265,6 +1511,19 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
                 continue
 
             replacement = action.replacement_text or ""
+            replacement, was_normalized = _maybe_normalize_replacement(
+                replacement, style_profile
+            )
+            if was_normalized:
+                normalized_count += 1
+            replacement, was_punct_fixed = _maybe_punctuation_repair(
+                action=action,
+                replacement=replacement,
+                paragraph_text=target_paragraph.text,
+                match_end=cell_end,
+            )
+            if was_punct_fixed:
+                punctuation_fixed_count += 1
             ok, replace_detail = _replace_in_paragraph(target_paragraph, cell_start, cell_end, replacement)
             outcomes.append(
                 EditOutcome(
@@ -1288,9 +1547,15 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         )
 
     for action in add_actions:
-        outcomes.append(
-            _apply_add_action(action, doc, original_body_children=body_children)
+        add_outcome, add_normalized = _apply_add_action(
+            action,
+            doc,
+            original_body_children=body_children,
+            style_profile=style_profile,
         )
+        outcomes.append(add_outcome)
+        if add_normalized:
+            normalized_count += 1
 
     # Whole-paragraph DELETEs run last. Descending body order keeps the
     # snapshot indices stable and avoids any chance that a remove()
@@ -1410,6 +1675,8 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             outcomes=failed_outcomes,
             warnings=warnings + [f"Serialization check failed: {exc}"],
             aborted_transactional=True,
+            replacement_normalized_count=normalized_count,
+            punctuation_boundary_fixed_count=punctuation_fixed_count,
         )
 
     # Validate the buffer reopens cleanly so we never write a file Word
@@ -1449,6 +1716,8 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             ],
             warnings=warnings,
             aborted_transactional=True,
+            replacement_normalized_count=normalized_count,
+            punctuation_boundary_fixed_count=punctuation_fixed_count,
         )
 
     failed_count = sum(1 for outcome in outcomes if outcome.status == "failed")
@@ -1494,6 +1763,8 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
             outcomes=rewritten,
             warnings=warnings,
             aborted_transactional=True,
+            replacement_normalized_count=normalized_count,
+            punctuation_boundary_fixed_count=punctuation_fixed_count,
         )
 
     # Either the all-or-none policy passed (no failures) or the operator
@@ -1515,6 +1786,8 @@ def apply_edits_to_spec(source_path: Path, output_path: Path, edit_actions: list
         outcomes=outcomes,
         warnings=warnings,
         aborted_transactional=False,
+        replacement_normalized_count=normalized_count,
+        punctuation_boundary_fixed_count=punctuation_fixed_count,
     )
 
 

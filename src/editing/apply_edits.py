@@ -238,6 +238,18 @@ def execute_edit_plan(
                     f"[{filename}] Edit output suppressed under all-or-none "
                     f"policy; see EditReport.warnings for details."
                 )
+            # Phase 1 / Step 1.1: roll the per-spec "replacement
+            # normalized" counter into the run-level diagnostics so the
+            # report's Auto-Apply Quality block surfaces how often the
+            # style normalizer fired.
+            normalized = getattr(report, "replacement_normalized_count", 0)
+            if normalized and diagnostics is not None:
+                diagnostics.replacement_text_normalized_count += normalized
+            # Phase 1 / Step 1.2: same pattern for the punctuation
+            # boundary repair counter.
+            punct_fixed = getattr(report, "punctuation_boundary_fixed_count", 0)
+            if punct_fixed and diagnostics is not None:
+                diagnostics.punctuation_boundary_fixed_count += punct_fixed
         except Exception as exc:
             warning = f"Failed to apply edits: {exc}"
             log(f"[{filename}] {warning}")

@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from src.editing import spec_editor
+from src.editing import replacement_style
 from src.verification import verification_cache
 from src.review import prompt_serialization
 
@@ -177,3 +178,43 @@ def test_cache_save_and_load_respect_path_override(
     fresh = verification_cache.VerificationCache()
     loaded = fresh.load_from_disk()
     assert loaded == 0
+
+
+# ---------------------------------------------------------------------------
+# SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_replacement_style_enabled_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE", raising=False)
+    assert replacement_style.normalize_replacement_style_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "No", "OFF"])
+def test_normalize_replacement_style_disabled_via_env(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE", value)
+    assert replacement_style.normalize_replacement_style_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX
+# ---------------------------------------------------------------------------
+
+
+def test_punctuation_boundary_fix_enabled_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX", raising=False)
+    assert spec_editor._punctuation_boundary_fix_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "No", "OFF"])
+def test_punctuation_boundary_fix_disabled_via_env(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX", value)
+    assert spec_editor._punctuation_boundary_fix_enabled() is False
