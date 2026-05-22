@@ -14,67 +14,80 @@ Real-time and batch share identical prompts, models, tool schemas, output caps, 
 
 ```
 src/
-# UI
-├── gui.py                  # CustomTkinter app shell
-├── widgets.py              # Reusable UI components
-├── about_usage_dialogs.py  # About / API-usage dialogs
-├── *_controller.py         # 8 thin bridges between widgets and pipeline
-                            # (batch, context, diagnostics, edit_workflow,
-                            #  file_selection, report, review_run, token_analysis)
+├── __init__.py             # Package version (2.11.0)
 
-# Orchestration / config
-├── pipeline.py             # Core orchestration + FindingGroup/FindingOccurrence
-├── api_config.py           # Models / output caps / feature-flag config
-├── structured_schemas.py   # Tool-use schemas for review/cross-check/verification
-├── prompts.py              # System + user prompt builders
-├── prompt_serialization.py # Escape/wrap helpers for prompt boundaries
+# Core config
+├── core/
+│   ├── api_config.py           # Models / output caps / feature-flag config
+│   ├── api_key_store.py        # API key loading and persistence
+│   ├── app_paths.py            # Platform config/state directories
+│   ├── code_cycles.py          # California code cycle definitions
+│   └── tokenizer.py            # Local + Anthropic token counting
+
+# UI
+├── gui/
+│   ├── gui.py                  # CustomTkinter app shell
+│   ├── widgets.py              # Reusable UI components
+│   ├── about_usage_dialogs.py  # About / API-usage dialogs
+│   └── *_controller.py         # 8 thin bridges between widgets and pipeline
+│                               # (batch, context, diagnostics, edit_workflow,
+│                               #  file_selection, report, review_run, token_analysis)
+
+# Orchestration / state
+├── orchestration/
+│   ├── pipeline.py             # Core orchestration + FindingGroup/FindingOccurrence
+│   ├── resume_state.py         # Durable resume state (with file-hash validation)
+│   ├── diagnostics.py          # In-memory diagnostics report
+│   └── cost_estimator.py       # USD cost estimator
 
 # Review
-├── reviewer.py             # Anthropic API client (streaming + tool-use parsing)
-├── review_request_builder.py # Central review request shape builder
-├── cross_checker.py        # Cross-spec coordination (chunked by CSI division)
+├── review/
+│   ├── reviewer.py             # Anthropic API client (streaming + tool-use parsing)
+│   ├── review_request_builder.py # Central review request shape builder
+│   ├── structured_schemas.py   # Tool-use schemas for review/cross-check/verification
+│   ├── prompts.py              # System + user prompt builders
+│   └── prompt_serialization.py # Escape/wrap helpers for prompt boundaries
+
+# Cross-spec coordination
+├── cross_check/
+│   └── cross_checker.py        # Cross-spec coordination (chunked by CSI division)
 
 # Verification
-├── verifier.py             # Real-time + batch verification orchestrator
-├── verification_router.py  # Local pre-classification (local_skip / web_required)
-├── verification_cache.py   # Persistent claim-keyed verdict cache (JSON on disk)
-├── verification_profiles.py # Profile classifier + severity-based search budget
-├── verification_modes.py   # Verification modes + per-mode policy
-├── verification_routing.py # Unified routing decision + request builder
-├── source_grounding.py     # URL normalization + cited-source validation
-├── retry_policy.py         # Retry, continuation, and batch-failure taxonomy
-├── triage.py               # Haiku-based verification triage (opt-in)
+├── verification/
+│   ├── verifier.py             # Real-time + batch verification orchestrator
+│   ├── verification_router.py  # Local pre-classification (local_skip / web_required)
+│   ├── verification_cache.py   # Persistent claim-keyed verdict cache (JSON on disk)
+│   ├── verification_profiles.py # Profile classifier + severity-based search budget
+│   ├── verification_modes.py   # Verification modes + per-mode policy
+│   ├── verification_routing.py # Unified routing decision + request builder
+│   ├── source_grounding.py     # URL normalization + cited-source validation
+│   ├── retry_policy.py         # Retry, continuation, and batch-failure taxonomy
+│   └── triage.py               # Haiku-based verification triage (opt-in)
 
 # Batch
-├── batch.py                # Anthropic Message Batches API wrapper
-├── batch_runtime.py        # Bounded polling with progressive backoff
-├── batch_state_store.py    # Atomic JSON state store for batch resume
+├── batch/
+│   ├── batch.py                # Anthropic Message Batches API wrapper
+│   ├── batch_runtime.py        # Bounded polling with progressive backoff
+│   └── batch_state_store.py    # Atomic JSON state store for batch resume
 
 # Spec input
-├── extractor.py            # DOCX text extraction (parallelized)
-├── extraction_cache.py     # LRU caches for extraction + API token counts
-├── preprocessor.py         # Deterministic local detectors
-├── tokenizer.py            # Local + Anthropic token counting
+├── input/
+│   ├── extractor.py            # DOCX text extraction (parallelized)
+│   ├── extraction_cache.py     # LRU caches for extraction + API token counts
+│   └── preprocessor.py         # Deterministic local detectors
 
 # Edits
-├── edit_locator.py         # Exact / normalized / fuzzy / id-anchored matching
-├── edit_candidates.py      # Edit safety categories
-├── spec_editor.py          # Surgical DOCX edits (transactional)
-├── replacement_style.py    # Per-document typographic profile + replacement normalizer
-├── apply_edits.py          # locate → action build → apply
+├── editing/
+│   ├── edit_locator.py         # Exact / normalized / fuzzy / id-anchored matching
+│   ├── edit_candidates.py      # Edit safety categories
+│   ├── spec_editor.py          # Surgical DOCX edits (transactional)
+│   ├── replacement_style.py    # Per-document typographic profile + replacement normalizer
+│   └── apply_edits.py          # locate → action build → apply
 
-# Output / state
-├── report_exporter.py      # Word (.docx) report generation
-├── report_status.py        # ReportStatus / EditActionLabel + classifiers
-├── resume_state.py         # Durable resume state (with file-hash validation)
-├── diagnostics.py          # In-memory diagnostics report
-├── cost_estimator.py       # USD cost estimator
-
-# Misc
-├── __init__.py             # Package version (2.11.0)
-├── api_key_store.py        # API key loading and persistence
-├── app_paths.py            # Platform config/state directories
-└── code_cycles.py          # California code cycle definitions
+# Output
+└── output/
+    ├── report_exporter.py      # Word (.docx) report generation
+    └── report_status.py        # ReportStatus / EditActionLabel + classifiers
 ```
 
 ## High-level flow
@@ -294,6 +307,7 @@ Model-id overrides plus a handful of operator switches for rollback / cache cont
 | `SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE` | on | Disable to skip per-document typographic normalization of replacement text (quotes / dashes / NBSP) before edits are applied |
 | `SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX` | on | Disable to skip the trailing-`.,;:` boundary repair (drop avoidance / doubling prevention) on EDIT replacements |
 | `SPEC_CRITIC_ADD_INHERITS_LIST_NUMBERING` | off | Enable to revert ADD-inserted paragraphs to legacy verbatim deepcopy of the anchor's `<w:pPr>` (keeps `<w:numPr>`, `<w:outlineLvl>`, `<w:pBdr>`, `<w:ind>`) instead of stripping them |
+| `SPEC_CRITIC_RESTORE_KNOWN_FORMATTING` | off | Enable to re-apply bold formatting to recognized standards/code references (`NFPA 13`, `ASCE 7-22`, `CBC 2025`, etc.) inside replacement text after a partial EDIT collapses cross-run formatting. Default-off because a wrong match could incorrectly bold content; validate the registry in `src/editing/replacement_style.py:KNOWN_BOLD_PATTERNS` before enabling. Counter: `DiagnosticsReport.known_pattern_formatting_restored_count`. |
 | `SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT` | off | Enable to skip the replaceability sanity check on `verification.correction` and use it verbatim as the applied edit's replacement text (legacy behavior). When off (default), the locator falls back to the model's `replacement_text` whenever the correction looks explanatory (parenthetical citations, URLs, paragraph-length expansions, `current`/`latest`/`as of <year>` qualifiers not in the original). |
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `0` (no expiry) | Age-based pruning on cache load; non-integer/negative values fall back to 0 |
