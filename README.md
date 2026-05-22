@@ -4,7 +4,7 @@
 
 Spec Critic reviews mechanical and plumbing CSI-format `.docx` specifications against California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) using Claude. It produces structured findings with severity classifications, confidence scores, web-search-backed verification verdicts, optional cross-spec coordination analysis, and either inline edits or yellow-highlighted suggestion annotations on a copy of each spec.
 
-Configured for the **California 2025 code cycle** by default (`src/code_cycles.py`).
+Configured for the **California 2025 code cycle** by default (`src/core/code_cycles.py`).
 
 ## Design Emphasis
 
