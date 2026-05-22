@@ -9,7 +9,6 @@ from io import BytesIO
 from pathlib import Path
 import os
 import re
-import unicodedata
 
 from docx import Document
 from docx.oxml import OxmlElement
@@ -32,7 +31,6 @@ from .replacement_style import (
 )
 
 
-_WHITESPACE_RE = re.compile(r"[\s\u00A0]+")
 _HEADING_HINT_RE = re.compile(r"^\s*(PART\s+\d+|SECTION\s+\d+(\.\d+)*)\b", flags=re.IGNORECASE)
 
 # Phase 2 / Step 2.1: list-prefix detector for ADD-insertion content.
@@ -44,12 +42,6 @@ _HEADING_HINT_RE = re.compile(r"^\s*(PART\s+\d+|SECTION\s+\d+(\.\d+)*)\b", flags
 # anchor's indentation when the inserted text itself reads as a list
 # item. Step 2.3 reuses the same regex for paragraph-split decisions.
 _LIST_PREFIX_RE = re.compile(r"^\s*(?:[A-Z]\.|\d+\.|\d+\)|\u2022|\u2013|-)(?:\s|$)")
-
-
-def _normalize_text_for_add(text: str) -> str:
-    normalized = unicodedata.normalize("NFC", text)
-    normalized = _WHITESPACE_RE.sub(" ", normalized)
-    return normalized.strip().casefold()
 
 
 def _looks_list_prefix(line: str) -> bool:
@@ -236,6 +228,16 @@ class EditOutcome:
     # refused due to unsafe Word markup" rather than burying it in a
     # generic skip reason.
     refused_unsafe_markup: bool = False
+    # Phase 2 / Step 2.2: tag ADD outcomes that were refused at apply
+    # time because the recorded ``insertPosition`` was missing or
+    # invalid. The parser normally demotes these at parse time via
+    # :func:`validate_edit_shape`, so reaching the apply layer with this
+    # flag set implies a legacy resume payload or a directly-constructed
+    # Finding that bypassed the parser. Status stays ``"skipped"``; the
+    # flag is a typed signal for the diagnostics rollup so the run
+    # summary can show how often the defensive refusal fired without
+    # pattern-matching on detail strings.
+    add_demoted_missing_position: bool = False
 
 
 @dataclass
@@ -263,6 +265,17 @@ class EditReport:
     # drop a sentence-terminating period/comma or double-stamp one
     # already present in the live paragraph.
     punctuation_boundary_fixed_count: int = 0
+    # Phase 2 / Step 2.2: count of ADD actions skipped at apply time
+    # because the recorded ``insertPosition`` was missing or invalid
+    # ("before" / "after" are the only acceptable values). The
+    # legacy heuristic guessed and produced visibly-broken inserted
+    # paragraphs when anchor / replacement differed in whitespace,
+    # quoting, or case; the defensive refusal routes those findings
+    # to manual review instead. The parser already demotes such ADDs
+    # at parse time via :func:`validate_edit_shape`, so this counter
+    # is typically 0 in normal flow and non-zero only for legacy
+    # resume payloads or test fixtures that bypass parsing.
+    add_demoted_missing_position_count: int = 0
 
 
 def _build_run_offset_map(paragraph: Paragraph) -> list[tuple[int, int, int]]:
@@ -1140,16 +1153,26 @@ def _apply_add_action(
     *,
     original_body_children: list | None = None,
     style_profile: DocumentStyleProfile | None = None,
-) -> tuple[EditOutcome, bool]:
-    """Apply an ADD action and report whether replacement text was normalized.
+) -> tuple[EditOutcome, bool, bool]:
+    """Apply an ADD action and report counter signals for the caller.
 
-    Returns ``(outcome, normalized)`` — the second element is True only
-    when :func:`_maybe_normalize_replacement` actually rewrote the
-    replacement text to match the document's style profile. ADD paths
-    that short-circuit before mutating (no proposal, unsafe markup,
-    empty replacement) return ``normalized=False``.
+    Returns ``(outcome, normalized, position_missing)``:
+
+    * ``normalized`` — True iff :func:`_maybe_normalize_replacement`
+      actually rewrote the replacement text to match the document's
+      style profile.
+    * ``position_missing`` — True iff the action was refused because
+      its ``insertPosition`` was missing or invalid. Phase 2 / Step 2.2
+      added this signal so the diagnostics rollup can show how often
+      the defensive refusal fired without pattern-matching on detail
+      strings.
+
+    Short-circuit paths (mapping-type mismatch, body-index out of
+    range, deleted anchor, unsafe markup, empty replacement) return
+    both bools as False.
     """
     normalized = False
+    position_missing = False
     mapping = action.location.mapping
     if mapping.element_type != "paragraph":
         return EditOutcome(
@@ -1158,7 +1181,7 @@ def _apply_add_action(
             detail="ADD actions are only supported for paragraph mappings.",
             original_text=action.location.matched_text,
             new_text=None,
-        ), normalized
+        ), normalized, position_missing
 
     # Use the pre-mutation snapshot so DELETE actions earlier in the same
     # apply pass do not shift the body_index used by ADD (audit Issue 6).
@@ -1174,7 +1197,7 @@ def _apply_add_action(
             detail="Body index is out of range in current document.",
             original_text=action.location.matched_text,
             new_text=None,
-        ), normalized
+        ), normalized, position_missing
 
     anchor_element = body_children[mapping.body_index]
     if not anchor_element.tag.endswith("}p"):
@@ -1184,7 +1207,7 @@ def _apply_add_action(
             detail="ADD mapping expected paragraph but body element was not paragraph.",
             original_text=action.location.matched_text,
             new_text=None,
-        ), normalized
+        ), normalized, position_missing
 
     # If the anchor was already removed by a DELETE earlier in this run,
     # there is no longer a parent to insert beside. Fail safely instead of
@@ -1196,7 +1219,7 @@ def _apply_add_action(
             detail="ADD anchor paragraph was deleted earlier in this edit pass; skip.",
             original_text=action.location.matched_text,
             new_text=None,
-        ), normalized
+        ), normalized, position_missing
 
     anchor_paragraph = Paragraph(anchor_element, doc)
 
@@ -1215,7 +1238,36 @@ def _apply_add_action(
             original_text=anchor_paragraph.text,
             new_text=None,
             refused_unsafe_markup=True,
-        ), normalized
+        ), normalized, position_missing
+
+    # Phase 2 / Step 2.2: refuse to guess when insertPosition is
+    # missing or invalid. The parser normally demotes ADDs without a
+    # usable insertPosition at parse time via
+    # :func:`validate_edit_shape`, so reaching this branch implies a
+    # legacy resume payload, a directly-constructed Finding, or a
+    # LocatorResult built outside of :func:`locate_edit` (the common
+    # test-fixture path). The legacy heuristic compared normalized
+    # text but sliced raw bytes, producing inserted paragraphs that
+    # contained a chopped fragment of the anchor at their start when
+    # anchor / replacement differed in whitespace, dash style, or
+    # case. Routing to manual review is the only safe option.
+    explicit_position = (
+        getattr(action.locator_result.finding, "insertPosition", None) or ""
+    ).strip().lower()
+    if explicit_position not in {"before", "after"}:
+        position_missing = True
+        return EditOutcome(
+            action=action,
+            status="skipped",
+            detail=(
+                "ADD action lacks explicit insertPosition; cannot determine "
+                "whether new content goes before or after the anchor. "
+                "Routed to manual review."
+            ),
+            original_text=anchor_paragraph.text,
+            new_text=None,
+            add_demoted_missing_position=True,
+        ), normalized, position_missing
 
     # Revalidate anchor before mutating. If a prior edit changed the
     # anchor paragraph text in a way that no longer matches the recorded
@@ -1231,7 +1283,7 @@ def _apply_add_action(
             detail=anchor_detail,
             original_text=anchor_paragraph.text,
             new_text=None,
-        ), normalized
+        ), normalized, position_missing
 
     replacement = (action.replacement_text or "").strip()
     if not replacement:
@@ -1241,57 +1293,18 @@ def _apply_add_action(
             detail="ADD action had empty replacement text; nothing to insert.",
             original_text=anchor_paragraph.text,
             new_text=None,
-        ), normalized
+        ), normalized, position_missing
 
     # Normalize replacement to match the document's typographic
-    # conventions before any of the position-heuristic / split logic
-    # runs. The normalized text is what actually lands in the file.
+    # conventions before the split logic runs. The normalized text is
+    # what actually lands in the file.
     replacement, normalized = _maybe_normalize_replacement(
         replacement, style_profile
     )
     replacement = replacement or ""
 
-    anchor_text = action.location.matched_text or anchor_paragraph.text
-    replacement_norm = _normalize_text_for_add(replacement)
-    anchor_norm = _normalize_text_for_add(anchor_text)
-
-    # If the model provided an explicit insertPosition, trust it instead of
-    # guessing from text overlap (audit Issue 5). This makes ADD edits
-    # deterministic when the prompt produced the structured anchor model.
-    explicit_position = (
-        getattr(action.locator_result.finding, "insertPosition", None) or ""
-    ).strip().lower()
-
-    if explicit_position in {"before", "after"}:
-        position = explicit_position
-        new_content = replacement
-    else:
-        position = "replace"
-        new_content = replacement
-        if anchor_norm and replacement_norm.startswith(anchor_norm):
-            position = "after"
-            new_content = replacement[len(anchor_text):].strip()
-        elif anchor_norm and replacement_norm.endswith(anchor_norm):
-            position = "before"
-            new_content = replacement[: max(0, len(replacement) - len(anchor_text))].strip()
-        elif anchor_norm and anchor_norm not in replacement_norm:
-            position = "after"
-            new_content = replacement
-
-    if position == "replace":
-        ok, detail = _replace_in_paragraph(
-            anchor_paragraph,
-            action.location.match_start,
-            action.location.match_end,
-            replacement,
-        )
-        return EditOutcome(
-            action=action,
-            status="applied" if ok else "failed",
-            detail=f"ADD fallback to replace: {detail}",
-            original_text=anchor_text,
-            new_text=anchor_paragraph.text if ok else None,
-        ), normalized
+    position = explicit_position
+    new_content = replacement
 
     paragraphs = _split_insert_paragraphs(new_content)
     if not paragraphs:
@@ -1301,7 +1314,7 @@ def _apply_add_action(
             detail="ADD replacement contained no additional content beyond anchor.",
             original_text=anchor_paragraph.text,
             new_text=None,
-        ), normalized
+        ), normalized, position_missing
 
     style_id = _reference_style_for_text(mapping.body_index, body_children, paragraphs[0])
     inserted_count = (
@@ -1315,7 +1328,7 @@ def _apply_add_action(
         detail=f"Inserted {inserted_count} paragraph(s) {position} anchor paragraph.",
         original_text=anchor_paragraph.text,
         new_text="\n\n".join(paragraphs),
-    ), normalized
+    ), normalized, position_missing
 
 
 def apply_edits_to_spec(
@@ -1346,6 +1359,7 @@ def apply_edits_to_spec(
     warnings: list[str] = []
     normalized_count = 0
     punctuation_fixed_count = 0
+    add_demoted_missing_position_count = 0
 
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
@@ -1663,7 +1677,7 @@ def apply_edits_to_spec(
         )
 
     for action in add_actions:
-        add_outcome, add_normalized = _apply_add_action(
+        add_outcome, add_normalized, add_position_missing = _apply_add_action(
             action,
             doc,
             original_body_children=body_children,
@@ -1672,6 +1686,8 @@ def apply_edits_to_spec(
         outcomes.append(add_outcome)
         if add_normalized:
             normalized_count += 1
+        if add_position_missing:
+            add_demoted_missing_position_count += 1
 
     # Whole-paragraph DELETEs run last. Descending body order keeps the
     # snapshot indices stable and avoids any chance that a remove()
@@ -1793,6 +1809,7 @@ def apply_edits_to_spec(
             aborted_transactional=True,
             replacement_normalized_count=normalized_count,
             punctuation_boundary_fixed_count=punctuation_fixed_count,
+            add_demoted_missing_position_count=add_demoted_missing_position_count,
         )
 
     # Validate the buffer reopens cleanly so we never write a file Word
@@ -1834,6 +1851,7 @@ def apply_edits_to_spec(
             aborted_transactional=True,
             replacement_normalized_count=normalized_count,
             punctuation_boundary_fixed_count=punctuation_fixed_count,
+            add_demoted_missing_position_count=add_demoted_missing_position_count,
         )
 
     failed_count = sum(1 for outcome in outcomes if outcome.status == "failed")
@@ -1881,6 +1899,7 @@ def apply_edits_to_spec(
             aborted_transactional=True,
             replacement_normalized_count=normalized_count,
             punctuation_boundary_fixed_count=punctuation_fixed_count,
+            add_demoted_missing_position_count=add_demoted_missing_position_count,
         )
 
     # Either the all-or-none policy passed (no failures) or the operator
@@ -1904,6 +1923,7 @@ def apply_edits_to_spec(
         aborted_transactional=False,
         replacement_normalized_count=normalized_count,
         punctuation_boundary_fixed_count=punctuation_fixed_count,
+        add_demoted_missing_position_count=add_demoted_missing_position_count,
     )
 
 

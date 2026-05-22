@@ -65,6 +65,16 @@ document reads consistently with the source:
   font, size, and alignment from its anchor. Kill switch:
   `SPEC_CRITIC_ADD_INHERITS_LIST_NUMBERING=1` reverts to the legacy
   verbatim-deepcopy behavior.
+- **ADD without explicit insertPosition is refused.** ADD findings
+  whose `insertPosition` is missing or invalid ("before"/"after" are
+  the only acceptable values) are demoted to REPORT_ONLY at parse
+  time. The auto-apply layer also refuses defensively when a legacy
+  resume payload or test fixture sneaks an ADD without a usable
+  position past parsing. The buggy heuristic that previously guessed
+  position by comparing normalized text but slicing raw bytes — which
+  produced inserted paragraphs containing chopped fragments of the
+  anchor — has been removed. Counter:
+  `DiagnosticsReport.add_demoted_missing_position_count`.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

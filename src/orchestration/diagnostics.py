@@ -258,6 +258,16 @@ class DiagnosticsReport:
     # ``EditReport.punctuation_boundary_fixed_count`` by
     # :func:`apply_edits.execute_edit_plan`.
     punctuation_boundary_fixed_count: int = 0
+    # Phase 2 / Step 2.2: count of ADD findings that the auto-apply
+    # pipeline refused at apply time because the recorded
+    # ``insertPosition`` was missing or invalid ("before" / "after" are
+    # the only acceptable values). The parser normally demotes such
+    # ADDs at parse time via :func:`validate_edit_shape`; the
+    # apply-layer counter is a defensive net for legacy resume payloads
+    # or directly-constructed Findings that bypass parsing. Aggregated
+    # from ``EditReport.add_demoted_missing_position_count`` by
+    # :func:`apply_edits.execute_edit_plan`.
+    add_demoted_missing_position_count: int = 0
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
     # Diagnostic byte caps. Prevent a single event from blowing up
@@ -372,6 +382,10 @@ class DiagnosticsReport:
         rows: list[tuple[str, int]] = [
             ("Replacement text normalized", self.replacement_text_normalized_count),
             ("Punctuation boundary fixed", self.punctuation_boundary_fixed_count),
+            (
+                "ADD demoted (missing insertPosition)",
+                self.add_demoted_missing_position_count,
+            ),
         ]
         active = [(label, count) for label, count in rows if count]
         if not active:

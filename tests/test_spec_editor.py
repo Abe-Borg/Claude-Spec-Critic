@@ -1024,3 +1024,174 @@ def test_add_inserted_paragraph_inherits_style_id(tmp_path: Path):
     assert "pStyle" in children
     pstyle_el = inserted._element.find(qn("w:pPr")).find(qn("w:pStyle"))
     assert pstyle_el.get(qn("w:val")) == "BodyText"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 / Step 2.2 — Refuse to guess ADD position
+#
+# When an ADD's ``insertPosition`` is not explicitly "before" or "after",
+# the legacy heuristic compared normalized text but sliced raw bytes,
+# producing inserted paragraphs that contained a chopped fragment of
+# the anchor at their start when anchor/replacement differed in
+# whitespace, dash style, or case. The parser already demotes ADD
+# findings without a usable insertPosition at parse time (Chunk 7), so
+# reaching the apply layer implies a legacy resume payload or a
+# directly-constructed Finding bypassing the parser. The defensive
+# refusal in ``_apply_add_action`` keeps the visual bug out of the
+# output document either way.
+# ---------------------------------------------------------------------------
+
+
+def test_add_without_explicit_insert_position_is_skipped(tmp_path: Path):
+    """ADD finding reaching apply layer without insertPosition is refused."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    doc.add_paragraph("Anchor paragraph for ADD.")
+    doc.save(source)
+
+    anchor_text = "Anchor paragraph for ADD."
+    # No insert_position passed — defaults to None in the helper, which
+    # mirrors a legacy resume payload that bypassed the parser.
+    result = _locator_result(
+        action="ADD",
+        body_index=1,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        replacement_text="Anchor paragraph for ADD. Plus appended text.",
+        anchor_text=anchor_text,
+        insert_position=None,
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    # No edit applied; finding routed to manual review with an
+    # explanatory skip detail.
+    assert report.edits_applied == 0
+    assert report.edits_skipped == 1
+    assert len(saved.paragraphs) == 2  # nothing inserted
+    outcome = report.outcomes[0]
+    assert outcome.status == "skipped"
+    assert "insertPosition" in outcome.detail
+    assert "manual review" in outcome.detail.lower()
+    assert outcome.add_demoted_missing_position is True
+    assert report.add_demoted_missing_position_count == 1
+
+
+def test_add_with_explicit_after_inserts_correctly(tmp_path: Path):
+    """ADD with explicit insert_position='after' inserts new paragraph after anchor."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    doc.add_paragraph("Anchor paragraph.")
+    doc.add_paragraph("Trailing paragraph.")
+    doc.save(source)
+
+    anchor_text = "Anchor paragraph."
+    result = _locator_result(
+        action="ADD",
+        body_index=1,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        replacement_text="New paragraph between anchor and trailing.",
+        anchor_text=anchor_text,
+        insert_position="after",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    assert [p.text for p in saved.paragraphs] == [
+        "PART 2 PRODUCTS",
+        "Anchor paragraph.",
+        "New paragraph between anchor and trailing.",
+        "Trailing paragraph.",
+    ]
+    assert report.add_demoted_missing_position_count == 0
+
+
+def test_add_with_explicit_before_inserts_correctly(tmp_path: Path):
+    """ADD with explicit insert_position='before' inserts new paragraph before anchor."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    doc.add_paragraph("Anchor paragraph.")
+    doc.save(source)
+
+    anchor_text = "Anchor paragraph."
+    result = _locator_result(
+        action="ADD",
+        body_index=1,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        replacement_text="New paragraph before anchor.",
+        anchor_text=anchor_text,
+        insert_position="before",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    assert [p.text for p in saved.paragraphs] == [
+        "PART 2 PRODUCTS",
+        "New paragraph before anchor.",
+        "Anchor paragraph.",
+    ]
+
+
+def test_add_skipped_count_aggregates_into_diagnostics(tmp_path: Path):
+    """The per-spec EditReport counter rolls up into DiagnosticsReport.
+
+    The defensive refusal in ``_apply_add_action`` is only reachable
+    when a LocatorResult is constructed without going through
+    ``locate_edit`` (which short-circuits at ``Finding.as_edit_proposal``
+    via parse-time validation). Build the EditAction by hand, run the
+    per-spec edit pass, then simulate the
+    ``apply_edits.execute_edit_plan`` aggregation pattern so we know
+    the rollup line landed.
+    """
+    from src.orchestration.diagnostics import DiagnosticsReport
+
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    doc.add_paragraph("Anchor paragraph for ADD.")
+    doc.save(source)
+
+    anchor_text = "Anchor paragraph for ADD."
+    result = _locator_result(
+        action="ADD",
+        body_index=1,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        replacement_text="Anchor paragraph for ADD. Plus appended text.",
+        anchor_text=anchor_text,
+        insert_position=None,
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    assert report.add_demoted_missing_position_count == 1
+
+    diag = DiagnosticsReport()
+    diag.add_demoted_missing_position_count += (
+        report.add_demoted_missing_position_count
+    )
+    assert diag.add_demoted_missing_position_count == 1
