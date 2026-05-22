@@ -449,94 +449,6 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
 
 
 # ---------------------------------------------------------------------------
-# Estimated API cost (Chunk 10)
-# ---------------------------------------------------------------------------
-
-def _write_estimated_cost(doc: Document, estimated_cost: dict | None) -> None:
-    """Render the conservative API-cost estimate for the run.
-
-    Chunk 10 — users see "Estimated API Cost" alongside the severity
-    table so they can size future runs without having to interpret
-    raw token counts. The wording is intentionally conservative: this
-    is the planning estimate, not the invoiced amount, and the
-    disclaimer is rendered as italic gray context so the reader
-    understands it is advisory.
-    """
-    if not estimated_cost:
-        return
-
-    from ..orchestration.cost_estimator import format_usd
-
-    doc.add_heading("Estimated API Cost", level=1)
-    if not estimated_cost.get("available"):
-        para = doc.add_paragraph()
-        run = para.add_run(
-            "Estimated API cost is unavailable for this run — pricing data "
-            "could not be matched to the models that were called."
-        )
-        run.font.size = Pt(10)
-        run.font.italic = True
-        missing = estimated_cost.get("missing_pricing_models") or []
-        if missing:
-            line = doc.add_paragraph()
-            r = line.add_run("Models without pricing: " + ", ".join(missing))
-            r.font.size = Pt(10)
-            r.font.italic = True
-            r.font.color.rgb = RGBColor(100, 100, 100)
-        return
-
-    total_para = doc.add_paragraph()
-    label_run = total_para.add_run("Total Estimate: ")
-    label_run.bold = True
-    total_run = total_para.add_run(format_usd(estimated_cost.get("total_usd", 0.0)))
-    total_run.bold = True
-    total_run.font.size = Pt(14)
-
-    disclaimer = doc.add_paragraph()
-    d_run = disclaimer.add_run(
-        f"Estimated API cost only — Anthropic's invoiced amount may differ. "
-        f"Pricing snapshot: {estimated_cost.get('pricing_as_of', '')}."
-    )
-    d_run.font.size = Pt(9)
-    d_run.font.italic = True
-    d_run.font.color.rgb = RGBColor(100, 100, 100)
-
-    by_phase = estimated_cost.get("by_phase") or {}
-    if by_phase:
-        sub = doc.add_paragraph()
-        sub.add_run("By phase:").bold = True
-        for phase_name, bucket in by_phase.items():
-            line = doc.add_paragraph(style="List Bullet")
-            line.add_run(f"{phase_name}: ").bold = True
-            parts = [f"total {format_usd(bucket.get('total_usd', 0.0))}"]
-            parts.append(f"input {format_usd(bucket.get('input_usd', 0.0))}")
-            parts.append(f"output {format_usd(bucket.get('output_usd', 0.0))}")
-            if bucket.get("cache_write_usd") or bucket.get("cache_read_usd"):
-                parts.append(
-                    "cache write "
-                    f"{format_usd(bucket.get('cache_write_usd', 0.0))} / "
-                    f"read {format_usd(bucket.get('cache_read_usd', 0.0))}"
-                )
-            if bucket.get("web_search_usd"):
-                parts.append(
-                    f"web search {format_usd(bucket.get('web_search_usd', 0.0))}"
-                )
-            line.add_run(" • ".join(parts))
-
-    if estimated_cost.get("missing_pricing_calls"):
-        warn = doc.add_paragraph()
-        wrun = warn.add_run(
-            f"Note: {estimated_cost['missing_pricing_calls']} call(s) on "
-            f"unknown model(s) "
-            f"({', '.join(estimated_cost.get('missing_pricing_models') or [])}) "
-            f"are not included in the total above."
-        )
-        wrun.font.size = Pt(9)
-        wrun.font.italic = True
-        wrun.font.color.rgb = RGBColor(150, 100, 0)
-
-
-# ---------------------------------------------------------------------------
 # Trust-model summary (Chunk N)
 # ---------------------------------------------------------------------------
 
@@ -1326,8 +1238,6 @@ def _write_narrative_text(doc: Document, text: str) -> None:
 def export_report(
     pipeline_result,
     output_path: Path,
-    *,
-    estimated_cost: dict | None = None,
 ) -> Path:
     """Export a complete review report to a Word document.
 
@@ -1340,13 +1250,6 @@ def export_report(
     Args:
         pipeline_result: PipelineResult from the review pipeline
         output_path: Path where the .docx file should be saved
-        estimated_cost: Chunk 10 — when supplied, render the
-            "Estimated API Cost" section after the summary table.
-            Pass the ``estimated_cost`` value from
-            :meth:`DiagnosticsReport.summary`. Omit (or pass ``None``)
-            to skip the section gracefully — useful for legacy callers
-            and tests that build a stub result without a diagnostics
-            report.
 
     Returns:
         The output_path (for convenience / confirmation)
@@ -1426,12 +1329,6 @@ def export_report(
         cross_check,
         total_elapsed_seconds=getattr(pipeline_result, "total_elapsed_seconds", None),
     )
-
-    # Chunk 10 — estimated cost. Rendered immediately after the severity
-    # table so the reader sees "what did this run cost?" alongside the
-    # severity totals, before drilling into individual findings. Silently
-    # skipped when no estimate was supplied (legacy callers, test stubs).
-    _write_estimated_cost(doc, estimated_cost)
 
     # Chunk N — trust-model histogram. Renders right after the severity
     # summary so the reader sees "how many issues are critical?" and

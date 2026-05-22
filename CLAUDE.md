@@ -37,8 +37,7 @@ src/
 ├── orchestration/
 │   ├── pipeline.py             # Core orchestration + FindingGroup/FindingOccurrence
 │   ├── resume_state.py         # Durable resume state (with file-hash validation)
-│   ├── diagnostics.py          # In-memory diagnostics report
-│   └── cost_estimator.py       # USD cost estimator
+│   └── diagnostics.py          # In-memory diagnostics report
 
 # Review
 ├── review/

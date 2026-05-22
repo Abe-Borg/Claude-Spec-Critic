@@ -16,7 +16,6 @@ Metric coverage (one row per Chunk 12 plan bullet):
 * ``unsafe_edit_refusal_rate``     — detect_unsafe_markup said unsafe.
 * ``citation_acceptance_rate``     — accepted / total cited URLs.
 * ``sourceless_confirmed_rate``    — CONFIRMED that survived without a citation.
-* ``cost_estimate_available``      — at least one priced call across fixtures.
 
 Each metric is reported as a numerator/denominator pair (counts) so the
 runner can render rate and absolute numbers without losing the underlying
@@ -30,19 +29,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from src.orchestration import cost_estimator, diagnostics
 from src.editing import edit_locator, spec_editor
 from src.output import report_status
 from src.verification import source_grounding, verifier
 from src.input import extractor, preprocessor
 from src.review import reviewer
-from src.core.api_config import (
-    MODEL_HAIKU_45,
-    MODEL_OPUS_47,
-    MODEL_SONNET_46,
-    PHASE_REVIEW,
-    PHASE_VERIFICATION,
-)
+from src.core.api_config import MODEL_SONNET_46
 from src.core.code_cycles import CALIFORNIA_2025
 
 from .fixtures import (
@@ -376,58 +368,6 @@ def _run_verification_fixture(fixture: GoldenFixture, fr: FixtureResult) -> None
 
 
 # ---------------------------------------------------------------------------
-# Cost estimator — covers metric #10 (cost estimate availability)
-# ---------------------------------------------------------------------------
-
-
-def _exercise_cost_estimator() -> dict[str, Any]:
-    """Run a synthetic diagnostics report through the cost estimator.
-
-    The check is intentionally simple: feed one priced event per
-    representative phase/model and confirm that the estimator returns
-    ``available=True`` with a non-zero total. The harness records the
-    summary (rather than a derived rate) so the runner can render a
-    user-facing cost line in its summary table.
-    """
-    report = diagnostics.DiagnosticsReport()
-    report.record_api_call(
-        phase=PHASE_REVIEW,
-        model=MODEL_OPUS_47,
-        input_tokens=12_000,
-        output_tokens=2_500,
-        cache_creation_input_tokens=0,
-        cache_read_input_tokens=8_000,
-        web_search_requests=0,
-        max_output_tokens=128_000,
-        stop_reason="end_turn",
-        mode="realtime",
-        retry_status=None,
-    )
-    report.record_api_call(
-        phase=PHASE_VERIFICATION,
-        model=MODEL_SONNET_46,
-        input_tokens=1_400,
-        output_tokens=400,
-        cache_creation_input_tokens=0,
-        cache_read_input_tokens=0,
-        web_search_requests=3,
-        max_output_tokens=16_000,
-        stop_reason="end_turn",
-        mode="realtime",
-        retry_status=None,
-    )
-    summary = report.summary().get("estimated_cost") or {}
-    return {
-        "available": bool(summary.get("available")),
-        "total_usd": float(summary.get("total_usd") or 0.0),
-        "currency": summary.get("currency", "USD"),
-        "pricing_as_of": summary.get("pricing_as_of", cost_estimator.PRICING_AS_OF),
-        "phases": sorted((summary.get("by_phase") or {}).keys()),
-        "models": sorted((summary.get("by_model") or {}).keys()),
-    }
-
-
-# ---------------------------------------------------------------------------
 # Top-level orchestrator
 # ---------------------------------------------------------------------------
 
@@ -459,7 +399,6 @@ def run_harness(*, tmp_dir: Path | None = None) -> HarnessResult:
         fixture_results.append(fr)
 
     metrics = _aggregate_metrics(fixture_results)
-    metrics["cost_estimate"] = _exercise_cost_estimator()
     return HarnessResult(fixtures=fixture_results, metrics=metrics)
 
 
