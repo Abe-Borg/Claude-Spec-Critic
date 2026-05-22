@@ -83,6 +83,37 @@ document reads consistently with the source:
   single-newline-separated lines are treated as soft breaks inside one
   paragraph and collapsed to single-space separators. Word renders the
   result correctly instead of leaving embedded line breaks visible.
+- **Span-aware formatting-loss detection.** The extractor records a
+  per-run `(start_offset, end_offset, format_signature)` map on every
+  body paragraph (`ParagraphMapping.run_format_map`, in stripped-text
+  coordinates). The locator's downgrade pass walks that map to decide
+  whether a partial replacement actually crosses runs with distinct
+  formatting — an EDIT that lands entirely inside one uniformly-
+  formatted region of an otherwise richly-formatted paragraph stays
+  `AUTO_SAFE`, while an EDIT that crosses bold/italic/font boundaries
+  downgrades to `AUTO_WITH_CAUTION`. Whole-paragraph EDITs on a
+  multi-format paragraph still route to `MANUAL_REVIEW` because the
+  full replacement would erase every inline emphasis the paragraph
+  carried. Legacy resume-state payloads without a per-run map fall
+  back to the coarser paragraph-level check, so the new behavior is
+  opt-in by extraction.
+- **Known-pattern formatting restoration (opt-in).** When a partial
+  EDIT crosses runs with distinct character formatting,
+  `_replace_in_paragraph` collapses the affected runs into the first
+  run's formatting and silently drops bold/italic markup on tokens
+  inside the replacement span. After the mutation, the auto-apply
+  pipeline can scan the new replacement text for tokens matching a
+  small registry of recognized standards / code references
+  (`NFPA 13`, `ASCE 7-22`, `CBC 2025`, `Section 23 21 13`, …) and
+  re-apply bold formatting to each match by splitting the containing
+  run. The feature is **default off** because a wrong match could
+  bold something that shouldn't be bold; flip
+  `SPEC_CRITIC_RESTORE_KNOWN_FORMATTING=1` once your workflow has
+  validated the registry. Counter:
+  `DiagnosticsReport.known_pattern_formatting_restored_count`. The
+  registry lives in `src/editing/replacement_style.py:KNOWN_BOLD_PATTERNS`
+  — add new entries when a real workflow proves the new pattern is
+  unambiguous in spec documents.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

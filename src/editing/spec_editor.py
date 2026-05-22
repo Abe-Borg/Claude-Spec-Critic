@@ -25,9 +25,11 @@ from .edit_candidates import (
 from .edit_locator import EditLocation, LocatorResult
 from .replacement_style import (
     DocumentStyleProfile,
+    known_pattern_spans,
     normalize_replacement_style_enabled,
     normalize_replacement_text,
     profile_document_style,
+    restore_known_formatting_enabled,
 )
 
 
@@ -305,6 +307,15 @@ class EditReport:
     # is typically 0 in normal flow and non-zero only for legacy
     # resume payloads or test fixtures that bypass parsing.
     add_demoted_missing_position_count: int = 0
+    # Phase 3 / Step 3.2: count of post-mutation runs that had bold
+    # formatting re-applied to recognized standards / code references
+    # (``NFPA 13``, ``CBC 2025``, ``Section 23 21 13``, …). The
+    # restoration is gated behind
+    # ``SPEC_CRITIC_RESTORE_KNOWN_FORMATTING=1`` and only fires when a
+    # partial replacement crossed runs with distinct formatting in the
+    # original paragraph, so this counter is 0 unless an operator
+    # opted into the feature.
+    known_pattern_formatting_restored_count: int = 0
 
 
 def _build_run_offset_map(paragraph: Paragraph) -> list[tuple[int, int, int]]:
@@ -378,6 +389,196 @@ def _delete_paragraph(paragraph: Paragraph) -> bool:
         return False
     parent.remove(element)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 / Step 3.2 — known-pattern formatting restoration.
+#
+# After a partial replacement crosses runs with distinct character
+# formatting, ``_replace_in_paragraph`` collapses the affected runs
+# into the first run's formatting and silently destroys inline emphasis
+# on tokens inside the replacement. The classic shape is a standards
+# reference rendered as bold ``NFPA 13`` inside otherwise-normal text —
+# after a sentence rewrite the bold token reads as plain prose.
+#
+# The restoration helper takes the post-mutation paragraph plus the
+# offsets of the replacement span (in stripped-text coordinates, which
+# is how the locator records ``EditLocation.match_start`` /
+# ``match_end``) and:
+#
+# 1. scans the replacement text for tokens matching the conservative
+#    registry in :data:`replacement_style.KNOWN_BOLD_PATTERNS`;
+# 2. finds the python-docx run that holds the entire replacement (this
+#    is always the single run that ``_replace_in_paragraph`` wrote the
+#    replacement into — in the multi-run case the middle / trailing
+#    affected runs are empty after the call);
+# 3. splits that run at the pattern boundaries via raw lxml so the
+#    matched substrings can carry ``<w:b/>`` in their ``<w:rPr>``.
+#
+# The helper is gated by ``SPEC_CRITIC_RESTORE_KNOWN_FORMATTING=1`` and
+# is a no-op when the containing run is already bold (whole-token bold
+# already inherited from the original first run).
+# ---------------------------------------------------------------------------
+
+
+def _ensure_run_bold(rpr_element) -> None:
+    """Make sure the cloned ``<w:rPr>`` carries a single ``<w:b/>`` child."""
+    for existing in rpr_element.findall(qn("w:b")):
+        rpr_element.remove(existing)
+    bold = OxmlElement("w:b")
+    rpr_element.append(bold)
+
+
+def _build_split_run(template_rpr, text: str, *, bold: bool):
+    """Build a new ``<w:r>`` element copying ``template_rpr`` and overriding bold.
+
+    The cloned rPr keeps font name / size / color / underline /
+    italic so neighboring non-bold pieces of the split keep their
+    original formatting; only the ``<w:b/>`` toggle changes. Empty
+    ``text`` is allowed but the caller should filter so we never write
+    a zero-width run.
+    """
+    new_run = OxmlElement("w:r")
+    if template_rpr is not None:
+        cloned = deepcopy(template_rpr)
+        if bold:
+            _ensure_run_bold(cloned)
+        else:
+            for existing in cloned.findall(qn("w:b")):
+                cloned.remove(existing)
+        new_run.append(cloned)
+    elif bold:
+        new_rpr = OxmlElement("w:rPr")
+        new_rpr.append(OxmlElement("w:b"))
+        new_run.append(new_rpr)
+    text_el = OxmlElement("w:t")
+    text_el.text = text
+    text_el.set(qn("xml:space"), "preserve")
+    new_run.append(text_el)
+    return new_run
+
+
+def _restore_known_pattern_formatting(
+    paragraph: Paragraph,
+    *,
+    replacement_start: int,
+    replacement_end: int,
+) -> int:
+    """Re-apply bold to known patterns inside the replacement span.
+
+    Returns the number of pattern spans that got bolded. Returns 0 when
+    the env-var kill switch is off, the replacement is empty, no
+    pattern matches, the containing run is already bold (token would
+    inherit), or the replacement somehow spans multiple runs (which
+    ``_replace_in_paragraph`` does not produce — the helper bails out
+    rather than guessing how to split across run boundaries).
+    """
+    if not restore_known_formatting_enabled():
+        return 0
+    if replacement_end <= replacement_start:
+        return 0
+
+    paragraph_text = paragraph.text
+    if replacement_end > len(paragraph_text):
+        return 0
+
+    replacement_text = paragraph_text[replacement_start:replacement_end]
+    pattern_spans = known_pattern_spans(replacement_text)
+    if not pattern_spans:
+        return 0
+
+    # Find the run that fully contains the replacement. After
+    # ``_replace_in_paragraph`` runs in the multi-run case, the
+    # replacement lives entirely inside the first affected run; the
+    # middle runs are empty and the last run holds only the trailing
+    # suffix (outside our span). A run that fully contains
+    # [replacement_start, replacement_end) is the canonical case here.
+    run_map = _build_run_offset_map(paragraph)
+    container = next(
+        (
+            entry
+            for entry in run_map
+            if entry[1] <= replacement_start and entry[2] >= replacement_end
+        ),
+        None,
+    )
+    if container is None:
+        return 0
+    run_idx, run_start, run_end = container
+    run = paragraph.runs[run_idx]
+    if run.bold:
+        # The whole token is already bold via the inherited rPr; no
+        # restoration needed (and splitting would only add cosmetic
+        # noise).
+        return 0
+
+    # Translate the replacement-relative spans to run-local offsets and
+    # build a list of (start, end, bold) pieces covering the full run.
+    local_offset = replacement_start - run_start
+    pieces: list[tuple[int, int, bool]] = []
+    cursor = 0
+    for span_start, span_end in pattern_spans:
+        match_start = local_offset + span_start
+        match_end = local_offset + span_end
+        if match_start < cursor:
+            # Shouldn't happen because known_pattern_spans returns
+            # non-overlapping sorted ranges, but guard against it
+            # rather than emit malformed XML.
+            continue
+        if cursor < match_start:
+            pieces.append((cursor, match_start, False))
+        pieces.append((match_start, match_end, True))
+        cursor = match_end
+    if cursor < len(run.text):
+        pieces.append((cursor, len(run.text), False))
+
+    if not any(is_bold for _, _, is_bold in pieces):
+        return 0
+
+    run_element = run._element
+    parent = run_element.getparent()
+    if parent is None:
+        return 0
+    insertion_index = list(parent).index(run_element)
+    template_rpr = run_element.find(qn("w:rPr"))
+
+    new_runs = []
+    for piece_start, piece_end, is_bold in pieces:
+        piece_text = run.text[piece_start:piece_end]
+        if not piece_text:
+            continue
+        new_runs.append(
+            _build_split_run(template_rpr, piece_text, bold=is_bold)
+        )
+
+    if not new_runs:
+        return 0
+
+    parent.remove(run_element)
+    for offset, new_run in enumerate(new_runs):
+        parent.insert(insertion_index + offset, new_run)
+
+    return sum(1 for _, _, is_bold in pieces if is_bold)
+
+
+def _span_crossed_multi_format_runs(mapping, match_start: int, match_end: int) -> bool:
+    """Return True iff the recorded ``run_format_map`` shows the span crossing 2+ signatures.
+
+    Mirrors the span-aware check in :func:`edit_locator._formatting_downgrade`.
+    Used here to decide whether the post-mutation restoration pass has
+    any work to do — when the original paragraph was uniformly
+    formatted across the span, there was no inline emphasis to lose
+    and we skip the scan.
+    """
+    run_format_map = getattr(mapping, "run_format_map", None)
+    if not run_format_map:
+        return False
+    signatures_in_span = {
+        signature
+        for start, end, signature in run_format_map
+        if start < match_end and end > match_start
+    }
+    return len(signatures_in_span) >= 2
 
 
 def _is_whole_paragraph_delete(action: EditAction) -> bool:
@@ -1389,6 +1590,7 @@ def apply_edits_to_spec(
     normalized_count = 0
     punctuation_fixed_count = 0
     add_demoted_missing_position_count = 0
+    known_pattern_restored_count = 0
 
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
@@ -1512,6 +1714,29 @@ def apply_edits_to_spec(
                 precondition.match_end,
                 replacement,
             )
+            # Phase 3 / Step 3.2: if the original paragraph had runs
+            # with distinct formatting *and* the replacement landed
+            # successfully, scan the new text for known patterns
+            # (NFPA 13, CBC 2025, Section 23 21 13, …) and re-apply
+            # bold formatting that the run-collapse step erased. The
+            # multi-format check uses the *locator's original*
+            # offsets because ``mapping.run_format_map`` is in
+            # original-document coordinates; the restoration itself
+            # uses the precondition-corrected offsets because the
+            # replacement lives at those live-document offsets after
+            # any prior edit in this pass shifted the paragraph. The
+            # helper is itself gated by the env-var kill switch and
+            # is a no-op when nothing matches.
+            if ok and _span_crossed_multi_format_runs(
+                mapping,
+                action.location.match_start,
+                action.location.match_end,
+            ):
+                known_pattern_restored_count += _restore_known_pattern_formatting(
+                    paragraph,
+                    replacement_start=precondition.match_start,
+                    replacement_end=precondition.match_start + len(replacement),
+                )
             outcomes.append(
                 EditOutcome(
                     action=action,
@@ -1839,6 +2064,7 @@ def apply_edits_to_spec(
             replacement_normalized_count=normalized_count,
             punctuation_boundary_fixed_count=punctuation_fixed_count,
             add_demoted_missing_position_count=add_demoted_missing_position_count,
+            known_pattern_formatting_restored_count=known_pattern_restored_count,
         )
 
     # Validate the buffer reopens cleanly so we never write a file Word
@@ -1881,6 +2107,7 @@ def apply_edits_to_spec(
             replacement_normalized_count=normalized_count,
             punctuation_boundary_fixed_count=punctuation_fixed_count,
             add_demoted_missing_position_count=add_demoted_missing_position_count,
+            known_pattern_formatting_restored_count=known_pattern_restored_count,
         )
 
     failed_count = sum(1 for outcome in outcomes if outcome.status == "failed")
@@ -1929,6 +2156,7 @@ def apply_edits_to_spec(
             replacement_normalized_count=normalized_count,
             punctuation_boundary_fixed_count=punctuation_fixed_count,
             add_demoted_missing_position_count=add_demoted_missing_position_count,
+            known_pattern_formatting_restored_count=known_pattern_restored_count,
         )
 
     # Either the all-or-none policy passed (no failures) or the operator
@@ -1953,6 +2181,7 @@ def apply_edits_to_spec(
         replacement_normalized_count=normalized_count,
         punctuation_boundary_fixed_count=punctuation_fixed_count,
         add_demoted_missing_position_count=add_demoted_missing_position_count,
+        known_pattern_formatting_restored_count=known_pattern_restored_count,
     )
 
 

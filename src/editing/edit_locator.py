@@ -89,6 +89,17 @@ def _formatting_downgrade(
       are demoted to MANUAL_REVIEW.
     - Partial-run replacements that span multiple distinct-format runs are
       demoted to AUTO_WITH_CAUTION.
+
+    Phase 3 / Step 3.1: when the mapping carries a fine-grained
+    ``run_format_map`` (per-run ``(start, end, signature)`` triples in
+    stripped-text coordinates), the partial-replacement check looks
+    only at the runs the span actually crosses — an EDIT that lands
+    entirely inside one uniformly-formatted region of a richly-
+    formatted paragraph no longer downgrades, because the inline
+    emphasis elsewhere in the paragraph is preserved. Legacy mappings
+    without a per-run map (resume-state payloads from before Step 3.1,
+    or non-extractor-built mappings used by tests) fall back to the
+    coarse paragraph-level check.
     """
     if action_type not in {"EDIT", "DELETE"}:
         return base_category
@@ -101,6 +112,25 @@ def _formatting_downgrade(
 
     if _is_whole_paragraph_match(location):
         return SAFETY_MANUAL_REVIEW
+
+    # Phase 3 / Step 3.1: span-aware check. When the per-run map is
+    # available, look only at the runs the replacement span actually
+    # crosses. If the span is entirely inside one uniformly-formatted
+    # region, no inline emphasis is destroyed and we keep
+    # ``base_category``. Empty / missing maps fall through to the
+    # coarse paragraph-level downgrade so resume-state payloads from
+    # before Step 3.1 stay conservative.
+    run_format_map = getattr(mapping, "run_format_map", None)
+    if run_format_map:
+        runs_in_span = [
+            (start, end, signature)
+            for start, end, signature in run_format_map
+            if start < location.match_end and end > location.match_start
+        ]
+        if runs_in_span:
+            distinct_in_span = len({signature for _, _, signature in runs_in_span})
+            if distinct_in_span < 2:
+                return base_category
 
     # Partial replacement on a multi-format paragraph — caller must review.
     if base_category == SAFETY_AUTO_SAFE:
