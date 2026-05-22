@@ -97,6 +97,23 @@ document reads consistently with the source:
   carried. Legacy resume-state payloads without a per-run map fall
   back to the coarser paragraph-level check, so the new behavior is
   opt-in by extraction.
+- **Known-pattern formatting restoration (opt-in).** When a partial
+  EDIT crosses runs with distinct character formatting,
+  `_replace_in_paragraph` collapses the affected runs into the first
+  run's formatting and silently drops bold/italic markup on tokens
+  inside the replacement span. After the mutation, the auto-apply
+  pipeline can scan the new replacement text for tokens matching a
+  small registry of recognized standards / code references
+  (`NFPA 13`, `ASCE 7-22`, `CBC 2025`, `Section 23 21 13`, …) and
+  re-apply bold formatting to each match by splitting the containing
+  run. The feature is **default off** because a wrong match could
+  bold something that shouldn't be bold; flip
+  `SPEC_CRITIC_RESTORE_KNOWN_FORMATTING=1` once your workflow has
+  validated the registry. Counter:
+  `DiagnosticsReport.known_pattern_formatting_restored_count`. The
+  registry lives in `src/editing/replacement_style.py:KNOWN_BOLD_PATTERNS`
+  — add new entries when a real workflow proves the new pattern is
+  unambiguous in spec documents.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

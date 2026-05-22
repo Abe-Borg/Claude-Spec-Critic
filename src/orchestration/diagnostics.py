@@ -268,6 +268,15 @@ class DiagnosticsReport:
     # from ``EditReport.add_demoted_missing_position_count`` by
     # :func:`apply_edits.execute_edit_plan`.
     add_demoted_missing_position_count: int = 0
+    # Phase 3 / Step 3.2: count of token spans that the auto-apply
+    # pipeline re-bolded after a partial replacement crossed runs with
+    # distinct formatting. Default-off via
+    # ``SPEC_CRITIC_RESTORE_KNOWN_FORMATTING``; non-zero only when an
+    # operator opted in and a recognized standards / code token
+    # (``NFPA 13``, ``CBC 2025``, ``Section 23 21 13``, …) landed
+    # inside the replacement span of a paragraph whose original runs
+    # carried inline emphasis.
+    known_pattern_formatting_restored_count: int = 0
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
     # Diagnostic byte caps. Prevent a single event from blowing up
@@ -385,6 +394,10 @@ class DiagnosticsReport:
             (
                 "ADD demoted (missing insertPosition)",
                 self.add_demoted_missing_position_count,
+            ),
+            (
+                "Known-pattern formatting restored",
+                self.known_pattern_formatting_restored_count,
             ),
         ]
         active = [(label, count) for label, count in rows if count]

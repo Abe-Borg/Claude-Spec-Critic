@@ -261,6 +261,20 @@ def execute_edit_plan(
             )
             if add_pos_missing and diagnostics is not None:
                 diagnostics.add_demoted_missing_position_count += add_pos_missing
+            # Phase 3 / Step 3.2: roll up the known-pattern bold
+            # restoration counter. 0 in default-off runs; non-zero
+            # only when operators have enabled
+            # ``SPEC_CRITIC_RESTORE_KNOWN_FORMATTING`` AND a partial
+            # replacement actually crossed multi-format runs in a
+            # paragraph that contained a recognized standards / code
+            # token.
+            known_pattern_restored = getattr(
+                report, "known_pattern_formatting_restored_count", 0
+            )
+            if known_pattern_restored and diagnostics is not None:
+                diagnostics.known_pattern_formatting_restored_count += (
+                    known_pattern_restored
+                )
         except Exception as exc:
             warning = f"Failed to apply edits: {exc}"
             log(f"[{filename}] {warning}")

@@ -60,6 +60,23 @@ def normalize_replacement_style_enabled() -> bool:
     return raw.strip().lower() not in _DISABLE_TOKENS
 
 
+def restore_known_formatting_enabled() -> bool:
+    """Whether known-pattern bold restoration runs after a partial EDIT.
+
+    Phase 3 / Step 3.2. Default **off** so the feature ships dormant —
+    a wrong match could bold something that shouldn't be bold (e.g.,
+    a token that happens to look like a standards reference but
+    appears inside an ordinary sentence), and the cost of that is
+    visibly off output. Operators flip
+    ``SPEC_CRITIC_RESTORE_KNOWN_FORMATTING=1`` once they've validated
+    the pattern registry against their workflow.
+    """
+    raw = os.environ.get("SPEC_CRITIC_RESTORE_KNOWN_FORMATTING")
+    if raw is None:
+        return False
+    return raw.strip().lower() not in _DISABLE_TOKENS
+
+
 # ---------------------------------------------------------------------------
 # Profile
 # ---------------------------------------------------------------------------
@@ -262,3 +279,79 @@ def normalize_replacement_text(
         out = _insert_nbsp_in_measurements(out)
 
     return out, out != text
+
+
+# ---------------------------------------------------------------------------
+# Known-pattern formatting restoration (Phase 3 / Step 3.2)
+# ---------------------------------------------------------------------------
+#
+# When a partial-replacement EDIT crosses runs with distinct formatting,
+# ``spec_editor._replace_in_paragraph`` collapses the affected runs into
+# the first run's formatting. Bold/italic markup on tokens inside the
+# replacement span is silently lost. The classic shape is a standards
+# reference rendered as bold ``NFPA 13`` inside otherwise-normal text —
+# after a sentence rewrite the bold token reads as plain prose.
+#
+# The restoration pass scans the post-mutation replacement span for
+# tokens matching a small registry of recognized references and re-
+# applies bold formatting to each match. The registry intentionally
+# stays conservative: every pattern requires a literal organization /
+# code identifier plus a number, so an arbitrary "Section 5" in prose
+# does not over-trigger. Add new entries here when a real workflow
+# proves the new pattern is unambiguous in spec documents.
+
+# Patterns are compiled with ``re.IGNORECASE`` so ``CBC 2025`` /
+# ``cbc 2025`` / ``Cbc 2025`` all match. Word boundaries (``\b``) keep
+# substrings inside larger tokens from triggering.
+KNOWN_BOLD_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Standards organizations followed by a numeric code and optional
+    # suffix (``NFPA 13``, ``ASCE 7-22``, ``ASTM A53-22``,
+    # ``IAPMO PS 117``, ``UL 1479``). The trailing ``(?:-[\w\d]+)?``
+    # captures the year/revision suffix common in spec references.
+    re.compile(
+        r"\b(?:NFPA|ASCE|ASHRAE|IAPMO|ASTM|ANSI|UL|API|AWWA|AISC|ICC)"
+        r"\s+(?:[A-Z]\s+)?\d+(?:[-\.]\w+)*\b",
+        flags=re.IGNORECASE,
+    ),
+    # California codes plus year (``CBC 2025``, ``CMC 2025``,
+    # ``CalGreen 2025``) or section reference (``CBC § 5.7.2``,
+    # ``CMC 1003.2``). Section pattern requires either ``§`` or a
+    # dotted decimal so bare ``CBC code`` does not match.
+    re.compile(
+        r"\b(?:CBC|CMC|CPC|CEC|CFC|CALGREEN)\s+"
+        r"(?:\d{4}|§\s*[\d\.]+|\d+(?:\.\d+)+)\b",
+        flags=re.IGNORECASE,
+    ),
+    # CSI section number (``Section 23 21 13`` — three two-digit
+    # groups). Always six digits, always grouped in pairs.
+    re.compile(r"\bSection\s+\d{2}\s+\d{2}\s+\d{2}\b", flags=re.IGNORECASE),
+)
+
+
+def known_pattern_spans(text: str) -> list[tuple[int, int]]:
+    """Return non-overlapping ``(start, end)`` ranges of recognized references.
+
+    Walks every compiled pattern in :data:`KNOWN_BOLD_PATTERNS`,
+    collects ``(start, end)`` for each match, then sorts and merges
+    overlapping / adjacent ranges so the caller never has to handle
+    two patterns reporting the same token. Returns ``[]`` for empty
+    input.
+    """
+    if not text:
+        return []
+    raw: list[tuple[int, int]] = []
+    for pattern in KNOWN_BOLD_PATTERNS:
+        for match in pattern.finditer(text):
+            span = match.span()
+            if span[1] > span[0]:
+                raw.append(span)
+    if not raw:
+        return []
+    raw.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in raw:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
