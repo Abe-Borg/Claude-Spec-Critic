@@ -48,6 +48,12 @@ document reads consistently with the source:
   live paragraph. Counter:
   `DiagnosticsReport.punctuation_boundary_fixed_count`. Kill switch:
   `SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX=0`.
+- **Whole-paragraph DELETE inside table cells.** A DELETE that covers
+  the entire matched paragraph inside a table cell now removes the
+  `<w:p>` element (when the cell has additional paragraphs) instead of
+  clearing its text and leaving a blank line in the cell. When the
+  paragraph is the cell's only one, its text is cleared in place so
+  Word's "every cell needs at least one paragraph" rule still holds.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

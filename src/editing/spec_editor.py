@@ -1472,6 +1472,32 @@ def apply_edits_to_spec(
             cell_end = precondition.match_end
 
             if action.action_type == "DELETE" and cell_start == 0 and cell_end == len(paragraph_before):
+                # Phase 1 / Step 1.3: a DELETE that covers the entire
+                # cell paragraph used to fall through to the substring
+                # path, which left an empty <w:p> in the cell and Word
+                # rendered it as a blank line. When the cell has more
+                # than one paragraph, remove the paragraph element
+                # outright; when it has only one, fall back to clearing
+                # the text so Word's "every cell needs >=1 paragraph"
+                # invariant holds.
+                cell_para_count = len(cell_element.findall(qn("w:p")))
+                if cell_para_count > 1:
+                    ok = _delete_paragraph(target_paragraph)
+                    detail = (
+                        "Deleted whole-paragraph from table cell."
+                        if ok
+                        else "Failed to delete paragraph element from table cell."
+                    )
+                    outcomes.append(
+                        EditOutcome(
+                            action=action,
+                            status="applied" if ok else "failed",
+                            detail=detail,
+                            original_text=paragraph_before,
+                            new_text="" if ok else None,
+                        )
+                    )
+                    continue
                 ok, replace_detail = _replace_in_paragraph(target_paragraph, cell_start, cell_end, "")
                 outcomes.append(
                     EditOutcome(

@@ -644,3 +644,144 @@ def test_punctuation_boundary_fix_disabled_via_env(
     # With the fix off, the terminal period is lost.
     assert saved.paragraphs[0].text == "Provide seismic bracing per ASCE 7-22"
     assert report.punctuation_boundary_fixed_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 / Step 1.3 — Whole-paragraph DELETE for table cells
+#
+# _is_whole_paragraph_delete used to require element_type=="paragraph",
+# so a DELETE covering the entire matched paragraph inside a table cell
+# fell through to substring deletion. The substring deletion clears the
+# paragraph's text but leaves the empty <w:p> in the cell, which Word
+# renders as a blank line. The fix removes the paragraph element from
+# its cell when (a) the cell has more than one paragraph, or leaves it
+# empty when removing it would violate Word's "every cell needs at
+# least one paragraph" rule.
+# ---------------------------------------------------------------------------
+
+
+def _make_table_with_two_para_cell(tmp_path: Path) -> Path:
+    """One-row table whose only cell contains two paragraphs."""
+    source = tmp_path / "two_para_cell.docx"
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    # Use python-docx's first auto-paragraph for the first line so we
+    # control the paragraph ordering deterministically.
+    cell.paragraphs[0].text = "Delete this header line"
+    cell.add_paragraph("Keep this body line")
+    doc.save(source)
+    return source
+
+
+def test_table_cell_whole_paragraph_delete_removes_paragraph_element(
+    tmp_path: Path,
+):
+    """Whole-paragraph DELETE on a cell with multiple paragraphs removes the element."""
+    source = _make_table_with_two_para_cell(tmp_path)
+    output = tmp_path / "output.docx"
+
+    target = "Delete this header line"
+    # Match position 0 of the cell paragraph; the locator-supplied
+    # match_start/match_end span the whole paragraph text.
+    result = _locator_result(
+        action="DELETE",
+        element_type="table_cell",
+        body_index=1,
+        row_index=0,
+        text=f"{target} | ",  # unused for the resolver, see _resolve_cell_and_offsets
+        match_start=0,
+        match_end=len(target),
+        matched_text=target,
+        replacement_text=None,
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    cell_paragraphs = saved.tables[0].cell(0, 0).paragraphs
+    cell_texts = [p.text for p in cell_paragraphs]
+    # Cell now has exactly ONE paragraph (the body line). No empty
+    # placeholder paragraph above it.
+    assert cell_texts == ["Keep this body line"]
+
+
+def test_table_cell_whole_paragraph_delete_when_only_paragraph_keeps_empty_para(
+    tmp_path: Path,
+):
+    """Whole-paragraph DELETE on a cell with one paragraph leaves an empty one.
+
+    Word requires every cell to contain at least one paragraph; removing
+    the only one would produce an invalid <w:tc> element. The fix is to
+    clear the paragraph's text via the existing substring path when the
+    cell has just one paragraph left.
+    """
+    source = tmp_path / "single_para_cell.docx"
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    cell.paragraphs[0].text = "Delete me entirely"
+    doc.save(source)
+
+    output = tmp_path / "output.docx"
+    target = "Delete me entirely"
+    result = _locator_result(
+        action="DELETE",
+        element_type="table_cell",
+        body_index=1,
+        row_index=0,
+        text=f"{target}",
+        match_start=0,
+        match_end=len(target),
+        matched_text=target,
+        replacement_text=None,
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    cell_paragraphs = saved.tables[0].cell(0, 0).paragraphs
+    # Exactly one paragraph remains; its text is empty. Word treats this
+    # as a valid (empty) cell, not as a missing structural element.
+    assert len(cell_paragraphs) == 1
+    assert cell_paragraphs[0].text == ""
+
+
+def test_table_cell_partial_delete_still_uses_substring_path(tmp_path: Path):
+    """Partial DELETE (not whole paragraph) is unchanged — substring removal still applies."""
+    source = tmp_path / "partial_delete.docx"
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    cell.paragraphs[0].text = "Keep prefix and delete this suffix"
+    doc.save(source)
+
+    output = tmp_path / "output.docx"
+    target = " and delete this suffix"
+    full = "Keep prefix and delete this suffix"
+    start = full.index(target)
+    result = _locator_result(
+        action="DELETE",
+        element_type="table_cell",
+        body_index=1,
+        row_index=0,
+        text=full,
+        match_start=start,
+        match_end=start + len(target),
+        matched_text=target,
+        replacement_text=None,
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    cell_paragraphs = saved.tables[0].cell(0, 0).paragraphs
+    # Paragraph survives, just with the suffix gone.
+    assert len(cell_paragraphs) == 1
+    assert cell_paragraphs[0].text == "Keep prefix"
