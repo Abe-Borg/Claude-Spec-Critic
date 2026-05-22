@@ -83,6 +83,20 @@ document reads consistently with the source:
   single-newline-separated lines are treated as soft breaks inside one
   paragraph and collapsed to single-space separators. Word renders the
   result correctly instead of leaving embedded line breaks visible.
+- **Span-aware formatting-loss detection.** The extractor records a
+  per-run `(start_offset, end_offset, format_signature)` map on every
+  body paragraph (`ParagraphMapping.run_format_map`, in stripped-text
+  coordinates). The locator's downgrade pass walks that map to decide
+  whether a partial replacement actually crosses runs with distinct
+  formatting — an EDIT that lands entirely inside one uniformly-
+  formatted region of an otherwise richly-formatted paragraph stays
+  `AUTO_SAFE`, while an EDIT that crosses bold/italic/font boundaries
+  downgrades to `AUTO_WITH_CAUTION`. Whole-paragraph EDITs on a
+  multi-format paragraph still route to `MANUAL_REVIEW` because the
+  full replacement would erase every inline emphasis the paragraph
+  carried. Legacy resume-state payloads without a per-run map fall
+  back to the coarser paragraph-level check, so the new behavior is
+  opt-in by extraction.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality
