@@ -183,6 +183,16 @@ def execute_edit_plan(
                 log(f"[{filename}] Finding #{original_index} not found in document text.")
             elif locator_result.status == "ambiguous":
                 log(f"[{filename}] Finding #{original_index} matched multiple locations; skipped — review and apply manually.")
+                # Phase 4 / Step 4.3: distinguish the cross-paragraph
+                # multi-window subset from regular single-paragraph
+                # ambiguous matches so the diagnostics rollup can show
+                # how often the model emitted a repeated multi-paragraph
+                # quote.
+                if (
+                    diagnostics is not None
+                    and getattr(locator_result, "cross_paragraph_ambiguous", False)
+                ):
+                    diagnostics.cross_paragraph_ambiguity_routed_to_manual_count += 1
             if locator_result.warning:
                 log(f"[{filename}] Finding #{original_index} warning: {locator_result.warning}")
             # Chunk K5: record locator-method telemetry and surface a

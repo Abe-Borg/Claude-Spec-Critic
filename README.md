@@ -142,6 +142,19 @@ document reads consistently with the source:
   locator matching — so the case-only collision does not break either
   file's edit. This invariant is now locked in by regression tests in
   `tests/test_chunk_8_dedup_edit_identity.py`.
+- **Cross-paragraph multi-window matches route to manual review.**
+  All cross-paragraph window matches carry the same flat 0.88
+  confidence, so the previous behavior — `max(filtered_spans, ...)`
+  picking the first window by insertion order when multiple windows
+  matched identically — was a coin flip on which paragraph actually
+  got edited. The locator now sets
+  `LocatorResult.cross_paragraph_ambiguous=True` on the multi-window
+  case, sets `safety_category=SAFETY_MANUAL_REVIEW` explicitly, and
+  emits a warning that names the multi-window cause. The
+  single-window cross-paragraph match (one valid window of N
+  paragraphs) keeps its previous behavior (`status="matched"`,
+  AUTO_WITH_CAUTION). Counter:
+  `DiagnosticsReport.cross_paragraph_ambiguity_routed_to_manual_count`.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

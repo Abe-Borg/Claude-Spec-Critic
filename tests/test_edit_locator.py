@@ -155,6 +155,177 @@ def test_cross_paragraph_match_returns_multiple_locations_with_warning():
     assert result.warning is not None
 
 
+def test_cross_paragraph_multiple_windows_route_to_manual_review():
+    """Step 4.3: when more than one window matches a cross-paragraph
+    existingText exactly, the locator refuses to guess and routes the
+    finding to manual review.
+
+    The model emitted a 2-paragraph existingText that appears in the
+    document in two places (e.g., the same boilerplate ASCE 7
+    cross-reference reused in two sections). All cross-paragraph
+    matches carry the same flat 0.88 confidence, so the previous
+    behavior of picking the first by insertion order would have
+    silently chosen one of the two — a coin flip on which paragraph
+    actually gets edited. The fix: status="ambiguous",
+    safety_category=SAFETY_MANUAL_REVIEW, warning specifically calls
+    out the cross-paragraph multi-window case.
+    """
+    from src.editing.edit_candidates import SAFETY_MANUAL_REVIEW
+
+    paragraph_map = [
+        _mapping("PART 1 - GENERAL", idx=0),
+        _mapping("Provide submittals within ten days.", idx=1),
+        _mapping("Submit operation and maintenance manuals.", idx=2),
+        _mapping("PART 2 - PRODUCTS", idx=3),
+        # Same 2-paragraph window repeated verbatim — a second valid
+        # match site.
+        _mapping("Provide submittals within ten days.", idx=4),
+        _mapping("Submit operation and maintenance manuals.", idx=5),
+    ]
+    finding = _finding(
+        "Provide submittals within ten days.\n\nSubmit operation and maintenance manuals."
+    )
+
+    result = locate_edit(finding, paragraph_map)
+
+    assert result.status == "ambiguous"
+    assert result.safety_category == SAFETY_MANUAL_REVIEW
+    # Warning text must distinguish "cross-paragraph multiple matches"
+    # from the single-match case so users / diagnostics readers
+    # immediately understand why this needs manual review.
+    assert result.warning is not None
+    lower = result.warning.lower()
+    assert "cross-paragraph" in lower or "multiple" in lower
+    assert "manual review" in lower
+
+
+def test_cross_paragraph_single_window_still_matches():
+    """Step 4.3: when exactly one cross-paragraph window matches, the
+    locator behavior is unchanged — status="matched" and the edit can
+    proceed under AUTO_WITH_CAUTION (existing safety category).
+    """
+    paragraph_map = [
+        _mapping("PART 1 - GENERAL", idx=0),
+        _mapping("Provide submittals within ten days.", idx=1),
+        _mapping("Submit operation and maintenance manuals.", idx=2),
+    ]
+    finding = _finding(
+        "Provide submittals within ten days.\n\nSubmit operation and maintenance manuals."
+    )
+
+    result = locate_edit(finding, paragraph_map)
+
+    # Single window match — unchanged behavior.
+    assert result.status == "matched"
+    assert len(result.locations) == 2
+    assert result.warning is not None
+    # The cross_paragraph_ambiguous flag stays False on the single-window
+    # path so the diagnostics counter only counts the truly ambiguous
+    # multi-window subset.
+    assert result.cross_paragraph_ambiguous is False
+
+
+def test_cross_paragraph_multiple_windows_flag_set():
+    """Step 4.3: the new ``cross_paragraph_ambiguous`` flag is True on
+    multi-window matches so apply_edits.execute_edit_plan can count
+    them into the diagnostics rollup.
+    """
+    paragraph_map = [
+        _mapping("PART 1 - GENERAL", idx=0),
+        _mapping("Provide submittals within ten days.", idx=1),
+        _mapping("Submit operation and maintenance manuals.", idx=2),
+        _mapping("PART 2 - PRODUCTS", idx=3),
+        _mapping("Provide submittals within ten days.", idx=4),
+        _mapping("Submit operation and maintenance manuals.", idx=5),
+    ]
+    finding = _finding(
+        "Provide submittals within ten days.\n\nSubmit operation and maintenance manuals."
+    )
+
+    result = locate_edit(finding, paragraph_map)
+
+    assert result.status == "ambiguous"
+    assert result.cross_paragraph_ambiguous is True
+    # No edit action should be produced from build_edit_actions.
+    from src.editing.spec_editor import build_edit_actions
+
+    actions = build_edit_actions([result])
+    assert actions == []
+
+
+def test_cross_paragraph_ambiguity_counted_into_diagnostics(tmp_path):
+    """Step 4.3 wiring: ``apply_edits.execute_edit_plan`` increments
+    ``DiagnosticsReport.cross_paragraph_ambiguity_routed_to_manual_count``
+    once per cross-paragraph multi-window ambiguous finding, and the
+    "AUTO-APPLY QUALITY" section of ``to_text()`` surfaces the count.
+    """
+    from docx import Document
+
+    from src.editing.apply_edits import execute_edit_plan
+    from src.input.extractor import extract_text_from_docx
+    from src.orchestration.diagnostics import DiagnosticsReport
+    from src.review.reviewer import Finding
+
+    # Build a docx with two identical 2-paragraph windows so the
+    # cross-paragraph match returns 2 windows and the locator routes
+    # to manual review.
+    source = tmp_path / "spec.docx"
+    doc = Document()
+    doc.add_paragraph("PART 1 - GENERAL")
+    doc.add_paragraph("Provide submittals within ten days.")
+    doc.add_paragraph("Submit operation and maintenance manuals.")
+    doc.add_paragraph("PART 2 - PRODUCTS")
+    doc.add_paragraph("Provide submittals within ten days.")
+    doc.add_paragraph("Submit operation and maintenance manuals.")
+    doc.save(source)
+
+    spec = extract_text_from_docx(source)
+    spec.filename = "spec.docx"
+
+    finding = Finding(
+        severity="MEDIUM",
+        fileName="spec.docx",
+        section="1.0",
+        issue="Update boilerplate",
+        actionType="EDIT",
+        existingText=(
+            "Provide submittals within ten days.\n\n"
+            "Submit operation and maintenance manuals."
+        ),
+        replacementText=(
+            "Provide submittals within fourteen days.\n\n"
+            "Submit operation and maintenance manuals."
+        ),
+        codeReference="CBC 2025",
+        confidence=0.9,
+    )
+
+    diagnostics = DiagnosticsReport()
+    reports = execute_edit_plan(
+        selected_finding_indices=[0],
+        all_findings=[finding],
+        cross_check_findings=[],
+        extracted_specs=[spec],
+        source_paths=[source],
+        output_dir=tmp_path / "out",
+        diagnostics=diagnostics,
+    )
+
+    # The locator routed to manual review, so no edit was applied — the
+    # report's outcomes are empty (no actions were built) but the
+    # diagnostics counter ticked up.
+    assert diagnostics.cross_paragraph_ambiguity_routed_to_manual_count == 1
+    text = diagnostics.to_text()
+    assert "AUTO-APPLY QUALITY" in text
+    assert "Cross-paragraph ambiguity routed to manual" in text
+    # Sanity: no edit landed (every applied count is zero or the
+    # finding turned into a write-the-doc-unchanged copy — either way
+    # the multi-window window cannot have been auto-applied).
+    if reports:
+        for r in reports:
+            assert r.edits_applied == 0
+
+
 def test_table_row_matching_supports_individual_cell_lookup():
     paragraph_map = [_mapping("R1C1 | Allowance Amount | $10,000", idx=0, element_type="table_cell")]
     result = locate_edit(_finding("Allowance Amount"), paragraph_map)
