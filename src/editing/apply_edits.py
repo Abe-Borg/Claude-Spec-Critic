@@ -183,6 +183,16 @@ def execute_edit_plan(
                 log(f"[{filename}] Finding #{original_index} not found in document text.")
             elif locator_result.status == "ambiguous":
                 log(f"[{filename}] Finding #{original_index} matched multiple locations; skipped — review and apply manually.")
+                # Phase 4 / Step 4.3: distinguish the cross-paragraph
+                # multi-window subset from regular single-paragraph
+                # ambiguous matches so the diagnostics rollup can show
+                # how often the model emitted a repeated multi-paragraph
+                # quote.
+                if (
+                    diagnostics is not None
+                    and getattr(locator_result, "cross_paragraph_ambiguous", False)
+                ):
+                    diagnostics.cross_paragraph_ambiguity_routed_to_manual_count += 1
             if locator_result.warning:
                 log(f"[{filename}] Finding #{original_index} warning: {locator_result.warning}")
             # Chunk K5: record locator-method telemetry and surface a
@@ -274,6 +284,21 @@ def execute_edit_plan(
             if known_pattern_restored and diagnostics is not None:
                 diagnostics.known_pattern_formatting_restored_count += (
                     known_pattern_restored
+                )
+            # Phase 4 / Step 4.1: roll up the count of narrower edits
+            # whose intent was lost to a broader containing edit's
+            # replacement. The broader edit applies; the narrower one
+            # is recorded on ``EditReport.outcomes`` with
+            # ``contained_edit_lost_intent=True`` so the per-spec
+            # report still surfaces "you probably want to revisit
+            # these manually". The run-level counter aggregates the
+            # frequency for the diagnostics quality block.
+            contained_lost_intent = getattr(
+                report, "contained_edits_lost_intent_count", 0
+            )
+            if contained_lost_intent and diagnostics is not None:
+                diagnostics.contained_edits_lost_intent_count += (
+                    contained_lost_intent
                 )
         except Exception as exc:
             warning = f"Failed to apply edits: {exc}"

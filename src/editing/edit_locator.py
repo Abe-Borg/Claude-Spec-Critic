@@ -52,6 +52,17 @@ class LocatorResult:
     # locate_edit also passes an explicit value when it has cross-paragraph
     # context that __post_init__ can't see.
     safety_category: str | None = None
+    # Phase 4 / Step 4.3: True when ``status == "ambiguous"`` because a
+    # cross-paragraph existingText matched more than one valid window in
+    # the document (vs. the regular single-paragraph ambiguous case
+    # where multiple individual paragraph candidates matched). Both
+    # cases route to manual review; the distinction lets the
+    # diagnostics rollup count the cross-paragraph subset separately so
+    # the run summary can show how often the model emitted a repeated
+    # multi-paragraph quote. Default False keeps the regular ambiguous
+    # path and every non-ambiguous result unchanged, and old resume
+    # payloads load cleanly.
+    cross_paragraph_ambiguous: bool = False
 
     def __post_init__(self) -> None:
         if self.safety_category is None:
@@ -731,9 +742,37 @@ def locate_edit(
         cross_matches = _cross_paragraph_exact(existing_text, paragraph_map, short_text=short_text)
         filtered_spans = [span for span in cross_matches if span and span[0].match_confidence >= min_confidence]
         if filtered_spans:
-            warning = "Matched text spans multiple paragraphs; review before auto-applying edit."
             best_span = max(filtered_spans, key=lambda span: span[0].match_confidence)
-            cross_status = "matched" if len(filtered_spans) == 1 else "ambiguous"
+            multi_window = len(filtered_spans) > 1
+            cross_status = "matched" if not multi_window else "ambiguous"
+            # Phase 4 / Step 4.3: distinguish the multi-window
+            # cross-paragraph ambiguous case from the single-window
+            # cross-paragraph matched case in the warning text. All
+            # cross-paragraph windows carry the same flat 0.88
+            # confidence, so picking ``best_span`` here would be
+            # equivalent to insertion-order if we silently applied it.
+            # Explicit safety_category=SAFETY_MANUAL_REVIEW + a clear
+            # warning makes the manual-review requirement visible to
+            # the user.
+            if multi_window:
+                warning = (
+                    "Cross-paragraph existingText matched multiple "
+                    f"identical {len(filtered_spans)}-paragraph windows in "
+                    "the document; manual review required to disambiguate."
+                )
+                safety_category = SAFETY_MANUAL_REVIEW
+            else:
+                warning = (
+                    "Matched text spans multiple paragraphs; review "
+                    "before auto-applying edit."
+                )
+                safety_category = _classify_locator_safety(
+                    status=cross_status,
+                    action_type=action_type,
+                    locations=best_span,
+                    replacement_text=replacement,
+                    cross_paragraph=True,
+                )
             return LocatorResult(
                 finding=finding,
                 status=cross_status,
@@ -741,13 +780,8 @@ def locate_edit(
                 replacement_text=replacement,
                 action_type=action_type,
                 warning=warning,
-                safety_category=_classify_locator_safety(
-                    status=cross_status,
-                    action_type=action_type,
-                    locations=best_span,
-                    replacement_text=replacement,
-                    cross_paragraph=True,
-                ),
+                safety_category=safety_category,
+                cross_paragraph_ambiguous=multi_window,
             )
         return LocatorResult(
             finding=finding,

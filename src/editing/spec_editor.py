@@ -269,6 +269,15 @@ class EditOutcome:
     # summary can show how often the defensive refusal fired without
     # pattern-matching on detail strings.
     add_demoted_missing_position: bool = False
+    # Phase 4 / Step 4.1: tag skipped outcomes where a narrower edit was
+    # subsumed by a broader containing edit whose replacement text did
+    # NOT preserve the narrower's correction. The broader edit still
+    # wins (more agency to the user), but flagging the intent loss lets
+    # the report surface it explicitly and the diagnostics counter
+    # surface the run-wide frequency. Status stays ``"skipped"``; the
+    # flag is False on the preserved-intent case so the existing
+    # "contained, no review needed" outcome is not pessimized.
+    contained_edit_lost_intent: bool = False
 
 
 @dataclass
@@ -316,6 +325,14 @@ class EditReport:
     # original paragraph, so this counter is 0 unless an operator
     # opted into the feature.
     known_pattern_formatting_restored_count: int = 0
+    # Phase 4 / Step 4.1: count of narrower edits whose intent was lost
+    # to a broader containing edit's replacement text. Non-zero only
+    # when the conflict resolver chose a broader edit whose replacement
+    # did not include the narrower edit's correction (case-insensitive,
+    # whitespace-normalized substring check). The broader edit still
+    # applies — this counter surfaces "you probably want to revisit
+    # these manually" rather than gating the auto-apply.
+    contained_edits_lost_intent_count: int = 0
 
 
 def _build_run_offset_map(paragraph: Paragraph) -> list[tuple[int, int, int]]:
@@ -1061,6 +1078,92 @@ def _severity_rank(action: EditAction) -> int:
     return {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}.get(severity, 99)
 
 
+def _is_strict_containment(winner: EditAction, loser: EditAction) -> bool:
+    """True iff the winner's span strictly contains the loser's span.
+
+    Strict containment means the loser's span is fully inside the winner's
+    span AND the two spans are not identical. The conflict resolver in
+    :func:`_resolve_overlap_winner` only returns a non-``None`` winner for
+    three relations (identical span, ``a_contains_b``, ``b_contains_a``);
+    partial overlap returns ``None``. This helper distinguishes the
+    strict-containment branch from the identical-span branch so the
+    intent-preservation check fires only when a broader edit is about to
+    silently consume a narrower one.
+    """
+    w_start, w_end = winner.location.match_start, winner.location.match_end
+    l_start, l_end = loser.location.match_start, loser.location.match_end
+    return (
+        w_start <= l_start
+        and w_end >= l_end
+        and (w_start, w_end) != (l_start, l_end)
+    )
+
+
+def _containment_skip_detail(
+    winner: EditAction, loser: EditAction
+) -> tuple[str, bool]:
+    """Build the skipped-outcome detail + intent-loss flag for an overlap loser.
+
+    Three shapes produce a winner from :func:`_resolve_overlap_winner`:
+
+    1. Identical span — duplicate findings; the existing detail message
+       is correct ("broader/higher-priority"). No intent loss possible
+       since both edits had the same span.
+    2. Strict containment, broader's replacement preserves narrower's
+       correction — the narrower fix is carried by the broader, so the
+       skip is benign. Detail explicitly says "intent preserved".
+    3. Strict containment, broader's replacement does NOT preserve the
+       narrower's correction — the GRIPES typo nested inside a MEDIUM
+       rewrite gets silently discarded. Detail says "manual review
+       recommended" and the flag is set so the report and diagnostics
+       can surface the intent loss.
+    """
+    if not _is_strict_containment(winner, loser):
+        return (
+            "Skipped due to overlapping conflict with broader/higher-priority edit.",
+            False,
+        )
+    intent_preserved = _narrower_intent_preserved(
+        winner.replacement_text, loser.replacement_text
+    )
+    if intent_preserved:
+        return (
+            "Skipped: contained by broader edit (intent preserved by broader edit's replacement).",
+            False,
+        )
+    return (
+        "Skipped: contained by broader edit but the narrower correction is "
+        "not preserved in the broader edit's replacement; manual review "
+        "recommended.",
+        True,
+    )
+
+
+def _narrower_intent_preserved(
+    broader_replacement: str | None,
+    narrower_replacement: str | None,
+) -> bool:
+    """True iff the narrower edit's correction survives inside the broader's.
+
+    Phase 4 / Step 4.1: a GRIPES typo fix nested inside a MEDIUM rewrite
+    only "loses" its intent when the broader edit's replacement does not
+    carry the typo fix forward. The comparison is whitespace-normalized
+    and case-insensitive so cosmetic differences ("R-454B" vs
+    "r-454b\\n") still count as preserved.
+
+    Empty/whitespace-only narrower replacements (DELETE actions, or
+    REPORT_ONLY findings that surfaced as edit actions through some odd
+    path) are treated as preserved — there is no correction to lose.
+    """
+    if not narrower_replacement or not narrower_replacement.strip():
+        return True
+    if not broader_replacement:
+        return False
+    narrow_norm = re.sub(r"\s+", " ", narrower_replacement).strip().casefold()
+    broad_norm = re.sub(r"\s+", " ", broader_replacement).strip().casefold()
+    return narrow_norm in broad_norm
+
+
 def _resolve_overlap_winner(action_a: EditAction, action_b: EditAction) -> EditAction | None:
     """Pick a clear winner for two overlapping edits, or return None if ambiguous.
 
@@ -1256,24 +1359,28 @@ def _detect_and_resolve_conflicts(actions: list[EditAction]) -> tuple[list[EditA
 
             if winner is action:
                 accepted.remove(overlap)
+                detail, lost_intent = _containment_skip_detail(action, overlap)
                 skipped.append(
                     EditOutcome(
                         action=overlap,
                         status="skipped",
-                        detail="Skipped due to overlapping conflict with broader/higher-priority edit.",
+                        detail=detail,
                         original_text=overlap.location.matched_text,
                         new_text=None,
+                        contained_edit_lost_intent=lost_intent,
                     )
                 )
                 accepted.append(action)
             else:
+                detail, lost_intent = _containment_skip_detail(overlap, action)
                 skipped.append(
                     EditOutcome(
                         action=action,
                         status="skipped",
-                        detail="Skipped due to overlapping conflict with broader/higher-priority edit.",
+                        detail=detail,
                         original_text=action.location.matched_text,
                         new_text=None,
+                        contained_edit_lost_intent=lost_intent,
                     )
                 )
 
@@ -1591,6 +1698,13 @@ def apply_edits_to_spec(
     punctuation_fixed_count = 0
     add_demoted_missing_position_count = 0
     known_pattern_restored_count = 0
+    # Phase 4 / Step 4.1: pre-skipped outcomes from conflict resolution
+    # are the only place ``contained_edit_lost_intent`` gets set, so we
+    # can count it here once before the apply loop runs. The apply loop
+    # itself never produces new conflict-loser outcomes.
+    contained_edits_lost_intent_count = sum(
+        1 for o in pre_skipped if o.contained_edit_lost_intent
+    )
 
     for skipped in pre_skipped:
         warnings.append(skipped.detail)
@@ -2065,6 +2179,7 @@ def apply_edits_to_spec(
             punctuation_boundary_fixed_count=punctuation_fixed_count,
             add_demoted_missing_position_count=add_demoted_missing_position_count,
             known_pattern_formatting_restored_count=known_pattern_restored_count,
+            contained_edits_lost_intent_count=contained_edits_lost_intent_count,
         )
 
     # Validate the buffer reopens cleanly so we never write a file Word
@@ -2108,6 +2223,7 @@ def apply_edits_to_spec(
             punctuation_boundary_fixed_count=punctuation_fixed_count,
             add_demoted_missing_position_count=add_demoted_missing_position_count,
             known_pattern_formatting_restored_count=known_pattern_restored_count,
+            contained_edits_lost_intent_count=contained_edits_lost_intent_count,
         )
 
     failed_count = sum(1 for outcome in outcomes if outcome.status == "failed")
@@ -2157,6 +2273,7 @@ def apply_edits_to_spec(
             punctuation_boundary_fixed_count=punctuation_fixed_count,
             add_demoted_missing_position_count=add_demoted_missing_position_count,
             known_pattern_formatting_restored_count=known_pattern_restored_count,
+            contained_edits_lost_intent_count=contained_edits_lost_intent_count,
         )
 
     # Either the all-or-none policy passed (no failures) or the operator
@@ -2182,6 +2299,7 @@ def apply_edits_to_spec(
         punctuation_boundary_fixed_count=punctuation_fixed_count,
         add_demoted_missing_position_count=add_demoted_missing_position_count,
         known_pattern_formatting_restored_count=known_pattern_restored_count,
+        contained_edits_lost_intent_count=contained_edits_lost_intent_count,
     )
 
 

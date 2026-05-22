@@ -114,6 +114,47 @@ document reads consistently with the source:
   registry lives in `src/editing/replacement_style.py:KNOWN_BOLD_PATTERNS`
   — add new entries when a real workflow proves the new pattern is
   unambiguous in spec documents.
+- **Conflict resolver surfaces lost narrower-edit intent.** When two
+  edits in the same paragraph have strict containment (broader fully
+  contains narrower, spans not identical), the broader edit still
+  wins — but the conflict resolver now checks whether the narrower
+  edit's correction is preserved in the broader's `replacement_text`
+  (whitespace-normalized, case-insensitive substring). When the
+  narrower's correction is preserved, the skipped outcome's detail
+  reads "intent preserved by broader edit's replacement" and the new
+  `EditOutcome.contained_edit_lost_intent` flag stays False. When the
+  narrower's correction is NOT preserved (a GRIPES typo nested inside
+  a MEDIUM rewrite that picks different text), the broader still
+  applies (preserving user agency), but the flag is set so the report
+  surfaces the loss and the diagnostics counter
+  `DiagnosticsReport.contained_edits_lost_intent_count` aggregates the
+  run-wide frequency. Identical-span duplicates still resolve via the
+  severity / confidence tie-break with no change.
+- **Per-file edit originals survive case/whitespace-only dedup
+  collisions.** `_deduplicate_findings` keys on a digest of normalized
+  (lowercase + whitespace-stripped) issue / existing / replacement
+  text, so two findings whose `existingText` differs only in case or
+  trailing whitespace collapse to one representative. The merged
+  representative's `occurrence_originals` lists every group member as
+  the original `Finding` object, which still carries its
+  pre-normalization text. Edit execution looks up each affected file's
+  original by `fileName` and uses that file's actual `existingText` for
+  locator matching — so the case-only collision does not break either
+  file's edit. This invariant is now locked in by regression tests in
+  `tests/test_chunk_8_dedup_edit_identity.py`.
+- **Cross-paragraph multi-window matches route to manual review.**
+  All cross-paragraph window matches carry the same flat 0.88
+  confidence, so the previous behavior — `max(filtered_spans, ...)`
+  picking the first window by insertion order when multiple windows
+  matched identically — was a coin flip on which paragraph actually
+  got edited. The locator now sets
+  `LocatorResult.cross_paragraph_ambiguous=True` on the multi-window
+  case, sets `safety_category=SAFETY_MANUAL_REVIEW` explicitly, and
+  emits a warning that names the multi-window cause. The
+  single-window cross-paragraph match (one valid window of N
+  paragraphs) keeps its previous behavior (`status="matched"`,
+  AUTO_WITH_CAUTION). Counter:
+  `DiagnosticsReport.cross_paragraph_ambiguity_routed_to_manual_count`.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

@@ -272,7 +272,169 @@ def test_conflict_resolution_prefers_broader_subsuming_edit(tmp_path: Path):
     assert saved.paragraphs[0].text.startswith("Pipe markers shall separate refrigerant piping")
     assert report.edits_applied == 1
     assert report.edits_skipped == 1
-    assert any("broader/higher-priority" in outcome.detail for outcome in report.outcomes if outcome.status == "skipped")
+    # Step 4.1 refined the skipped detail to make the containment relation
+    # explicit. The narrower's "R-454B" is in the broader's replacement, so
+    # the new detail reads "intent preserved" instead of the previous
+    # generic "broader/higher-priority" wording.
+    skipped_details = [
+        o.detail for o in report.outcomes if o.status == "skipped"
+    ]
+    assert any("intent preserved" in d.lower() for d in skipped_details)
+
+
+def test_strict_containment_preserves_narrower_intent_in_broader_replacement(tmp_path: Path):
+    """Step 4.1: narrower edit's replacement appears in broader's → 'intent preserved'.
+
+    A GRIPES typo fix nested inside a MEDIUM paragraph rewrite. The broader
+    edit's replacement text contains the narrower's correction verbatim, so
+    the narrower's intent is preserved by the broader's application and the
+    skipped outcome should note that. ``contained_edit_lost_intent`` stays
+    False.
+    """
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    text = "Pipe markers include refrigerant piping and condensate piping using R454B notation."
+    doc = Document()
+    doc.add_paragraph(text)
+    doc.save(source)
+
+    gripe = _locator_result(
+        text=text,
+        match_start=text.index("R454B"),
+        match_end=text.index("R454B") + len("R454B"),
+        matched_text="R454B",
+        replacement_text="R-454B",
+        confidence=1.0,
+        severity="GRIPES",
+    )
+    medium = _locator_result(
+        text=text,
+        match_start=0,
+        match_end=len(text),
+        matched_text=text,
+        replacement_text="Pipe markers shall separate refrigerant piping from condensate piping and use R-454B notation.",
+        confidence=1.0,
+        severity="MEDIUM",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([gripe, medium]))
+
+    # Broader wins, narrower is skipped. The narrower's correction
+    # ("R-454B") appears in the broader's replacement, so intent is
+    # preserved. No diagnostics escalation.
+    assert report.edits_applied == 1
+    assert report.edits_skipped == 1
+    assert report.contained_edits_lost_intent_count == 0
+    skipped = [o for o in report.outcomes if o.status == "skipped"]
+    assert len(skipped) == 1
+    assert skipped[0].contained_edit_lost_intent is False
+    assert "intent preserved" in skipped[0].detail.lower()
+
+
+def test_strict_containment_loses_narrower_intent_when_broader_replaces_it(tmp_path: Path):
+    """Step 4.1: narrower edit's replacement NOT in broader's → 'manual review recommended'.
+
+    A GRIPES typo fix nested inside a MEDIUM paragraph rewrite where the
+    broader edit's replacement text discards the narrower's correction. The
+    narrower's intent is lost — the broader still wins (more agency to the
+    user) but the skipped outcome must flag the loss so it shows up in the
+    report and diagnostics.
+    """
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    text = "Pipe markers include refrigerant piping and condensate piping using R454B notation."
+    doc = Document()
+    doc.add_paragraph(text)
+    doc.save(source)
+
+    # Narrower: typo fix R454B → R-454B
+    gripe = _locator_result(
+        text=text,
+        match_start=text.index("R454B"),
+        match_end=text.index("R454B") + len("R454B"),
+        matched_text="R454B",
+        replacement_text="R-454B",
+        confidence=1.0,
+        severity="GRIPES",
+    )
+    # Broader: rewrites the whole sentence but uses a different refrigerant.
+    # The narrower's "R-454B" is not preserved here — broader picked
+    # R-32 instead, so the GRIPES typo fix is silently discarded by
+    # the broader edit.
+    medium = _locator_result(
+        text=text,
+        match_start=0,
+        match_end=len(text),
+        matched_text=text,
+        replacement_text="Pipe markers shall separate refrigerant piping from condensate piping and use R-32 notation.",
+        confidence=1.0,
+        severity="MEDIUM",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([gripe, medium]))
+
+    assert report.edits_applied == 1
+    assert report.edits_skipped == 1
+    assert report.contained_edits_lost_intent_count == 1
+    skipped = [o for o in report.outcomes if o.status == "skipped"]
+    assert len(skipped) == 1
+    assert skipped[0].contained_edit_lost_intent is True
+    detail = skipped[0].detail.lower()
+    assert "not preserved" in detail or "manual review" in detail
+
+
+def test_strict_containment_narrower_action_loses_when_broader_processed_later(tmp_path: Path):
+    """Step 4.1: same logic when the narrower edit is the one in `accepted`.
+
+    The conflict resolver processes actions in descending-start-offset
+    order. When the narrower edit is processed first and the broader
+    arrives second, the broader still wins; the narrower already in
+    `accepted` is the one that gets skipped. This test exercises the other
+    branch (winner is `action`, `overlap` is the loser) of the resolver.
+    """
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    # Construct the text so the narrower edit has a higher start offset than
+    # the broader edit. Reverse-sort processes the narrower first.
+    text = "Comply with NFPA 13 and other applicable standards in Section 21 13 13."
+    doc = Document()
+    doc.add_paragraph(text)
+    doc.save(source)
+
+    # Narrower edit (higher start offset, processed first by reverse-sort):
+    # typo fix on the section number.
+    gripe = _locator_result(
+        text=text,
+        match_start=text.index("Section 21 13 13"),
+        match_end=text.index("Section 21 13 13") + len("Section 21 13 13"),
+        matched_text="Section 21 13 13",
+        replacement_text="Section 21 13 16",
+        confidence=1.0,
+        severity="GRIPES",
+    )
+    # Broader edit (covers the whole paragraph, processed second).
+    # Replacement removes the section reference entirely.
+    medium = _locator_result(
+        text=text,
+        match_start=0,
+        match_end=len(text),
+        matched_text=text,
+        replacement_text="Comply with NFPA 13 and other applicable industry standards.",
+        confidence=1.0,
+        severity="MEDIUM",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([gripe, medium]))
+
+    assert report.edits_applied == 1
+    assert report.edits_skipped == 1
+    assert report.contained_edits_lost_intent_count == 1
+    skipped = [o for o in report.outcomes if o.status == "skipped"]
+    assert len(skipped) == 1
+    assert skipped[0].contained_edit_lost_intent is True
 
 
 def test_table_cell_edit_updates_target_only(tmp_path: Path):

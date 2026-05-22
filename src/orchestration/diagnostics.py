@@ -277,6 +277,27 @@ class DiagnosticsReport:
     # inside the replacement span of a paragraph whose original runs
     # carried inline emphasis.
     known_pattern_formatting_restored_count: int = 0
+    # Phase 4 / Step 4.1: count of narrower edits whose correction was
+    # silently discarded by a broader containing edit whose replacement
+    # did NOT carry the narrower's text forward. The broader edit still
+    # applies (preserving user agency); this counter surfaces "you
+    # probably want to revisit these manually" at the run level so the
+    # report and diagnostics can flag the loss. Aggregated from
+    # ``EditReport.contained_edits_lost_intent_count`` by
+    # :func:`apply_edits.execute_edit_plan`.
+    contained_edits_lost_intent_count: int = 0
+    # Phase 4 / Step 4.3: count of findings whose cross-paragraph
+    # ``existingText`` matched more than one identical window in the
+    # document, so the locator refused to guess which one to edit and
+    # routed the finding to manual review. Separate from the general
+    # ``ambiguous_locator_count`` because cross-paragraph multi-window
+    # ambiguity is a distinct signal (the model emitted a repeated
+    # multi-paragraph quote) that operators may want to act on
+    # differently than ordinary single-paragraph ambiguity.
+    # Aggregated from
+    # ``LocatorResult.cross_paragraph_ambiguous`` by
+    # :func:`apply_edits.execute_edit_plan`.
+    cross_paragraph_ambiguity_routed_to_manual_count: int = 0
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
     # Diagnostic byte caps. Prevent a single event from blowing up
@@ -398,6 +419,14 @@ class DiagnosticsReport:
             (
                 "Known-pattern formatting restored",
                 self.known_pattern_formatting_restored_count,
+            ),
+            (
+                "Contained-edit intent loss",
+                self.contained_edits_lost_intent_count,
+            ),
+            (
+                "Cross-paragraph ambiguity routed to manual",
+                self.cross_paragraph_ambiguity_routed_to_manual_count,
             ),
         ]
         active = [(label, count) for label, count in rows if count]
