@@ -348,3 +348,291 @@ def test_execute_edit_plan_aggregates_normalize_count_into_diagnostics(
     text = diagnostics.to_text()
     assert "AUTO-APPLY QUALITY" in text
     assert "Replacement text normalized" in text
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 / Step 5.1 — Verifier correction replaceability sanity check.
+#
+# The verifier prompt asks for "1-2 sentences explaining the verdict and the
+# corrected reference text" — that is NOT the same as "clean replacement text
+# suitable for direct substitution into a spec paragraph." Corrections often
+# contain explanatory parentheticals, source citations, URLs, or restated
+# context. ``edit_locator._resolve_replacement_text`` previously used
+# ``verification.correction`` verbatim as the replacement text whenever the
+# verdict was ``CORRECTED``; the sanity check below decides whether the
+# correction looks replaceable, and the locator falls back to the model's
+# original ``replacement_text`` when it does not.
+# ---------------------------------------------------------------------------
+
+
+from src.editing.replacement_style import (
+    correction_looks_replaceable,
+    use_verifier_correction_as_replacement_enabled,
+)
+
+
+class TestCorrectionLooksReplaceable:
+    def test_clean_short_correction_passes(self):
+        """Short, prose-only correction matching the original's length is fine."""
+        assert (
+            correction_looks_replaceable(
+                "Comply with ASCE 7-22 for seismic design.",
+                "Comply with ASCE 7-16 for seismic design.",
+            )
+            is True
+        )
+
+    def test_clean_correction_passes_when_original_replacement_is_none(self):
+        """A clean correction is replaceable even when no original was supplied."""
+        # An EDIT proposal would always have a replacement; in legacy paths a
+        # bare CORRECTED verdict can still arrive without one. Treat that as
+        # the corrected-text path having no length baseline — only the
+        # structural checks (URLs, parentheticals) apply.
+        assert (
+            correction_looks_replaceable(
+                "Comply with ASCE 7-22 for seismic design.", None
+            )
+            is True
+        )
+
+    def test_paragraph_length_correction_against_short_original_fails(self):
+        """When the correction is ~3× longer than the original, reject it.
+
+        A clean replacement should be roughly the same shape as the model's
+        original attempt. A 5-word original answered by a paragraph signals
+        the verifier emitted explanation rather than substitution text.
+        """
+        original = "Use ASCE 7-22."
+        correction = (
+            "The applicable standard is ASCE 7-22 because the 2025 California "
+            "Building Code adopted that revision through Title 24 Part 2, and "
+            "the 7-16 reference is obsolete for projects permitted after "
+            "January 1 2026."
+        )
+        assert correction_looks_replaceable(correction, original) is False
+
+    def test_parenthetical_citation_rejected_when_original_had_none(self):
+        """A correction adding ``(per Section X.Y)`` is explanatory, not replacement text."""
+        assert (
+            correction_looks_replaceable(
+                "Comply with ASCE 7-22 (per CBC § 1613.1) for seismic design.",
+                "Comply with ASCE 7-16 for seismic design.",
+            )
+            is False
+        )
+
+    def test_parenthetical_citation_allowed_when_original_had_one(self):
+        """If the original already used a parenthetical, the correction can keep one."""
+        assert (
+            correction_looks_replaceable(
+                "Comply with ASCE 7-22 (latest revision) for seismic design.",
+                "Comply with ASCE 7-16 (current revision) for seismic design.",
+            )
+            is True
+        )
+
+    def test_url_rejected(self):
+        """URLs in the correction are a smoking gun — never replacement text."""
+        assert (
+            correction_looks_replaceable(
+                "See https://www.iccsafe.org/asce-7-22 for details.",
+                "See ASCE 7-22 for details.",
+            )
+            is False
+        )
+
+    def test_url_rejected_even_when_original_had_one(self):
+        """URLs in body text don't belong in spec paragraphs; reject either way."""
+        # Conservative: even if the original somehow had a URL, we'd rather
+        # use the original than risk landing a verifier-cited URL.
+        assert (
+            correction_looks_replaceable(
+                "See https://example.com for details.",
+                "See https://other.example.com for details.",
+            )
+            is False
+        )
+
+    def test_current_qualifier_rejected_when_original_had_none(self):
+        """``current`` / ``latest`` / ``as of [year]`` are explanatory qualifiers."""
+        assert (
+            correction_looks_replaceable(
+                "Comply with the current ASCE 7-22 for seismic design.",
+                "Comply with ASCE 7-16 for seismic design.",
+            )
+            is False
+        )
+
+    def test_latest_qualifier_rejected(self):
+        assert (
+            correction_looks_replaceable(
+                "Comply with the latest ASCE 7-22 for seismic design.",
+                "Comply with ASCE 7-16 for seismic design.",
+            )
+            is False
+        )
+
+    def test_as_of_year_qualifier_rejected(self):
+        assert (
+            correction_looks_replaceable(
+                "Comply with ASCE 7-22 as of 2024 for seismic design.",
+                "Comply with ASCE 7-16 for seismic design.",
+            )
+            is False
+        )
+
+    def test_current_qualifier_allowed_when_original_had_one(self):
+        """If the model's own replacement already used the qualifier, it's fine."""
+        assert (
+            correction_looks_replaceable(
+                "Comply with the current ASCE 7-22 standard.",
+                "Comply with the current ASCE 7-16 standard.",
+            )
+            is True
+        )
+
+    def test_empty_correction_is_not_replaceable(self):
+        """An empty correction is by definition not replaceable."""
+        assert correction_looks_replaceable("", "Comply with ASCE 7-16.") is False
+
+    def test_whitespace_only_correction_is_not_replaceable(self):
+        assert (
+            correction_looks_replaceable("   \n  ", "Comply with ASCE 7-16.")
+            is False
+        )
+
+
+class TestUseVerifierCorrectionAsReplacementEnabled:
+    def test_default_disabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Default behavior is the new path: do NOT trust the correction verbatim."""
+        monkeypatch.delenv(
+            "SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT", raising=False
+        )
+        assert use_verifier_correction_as_replacement_enabled() is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "on", "TRUE", "On"])
+    def test_enabled_via_env(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ):
+        monkeypatch.setenv(
+            "SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT", value
+        )
+        assert use_verifier_correction_as_replacement_enabled() is True
+
+    @pytest.mark.parametrize(
+        "value", ["0", "false", "no", "off", "FALSE", " 0 ", ""]
+    )
+    def test_disabled_via_env(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ):
+        monkeypatch.setenv(
+            "SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT", value
+        )
+        assert use_verifier_correction_as_replacement_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# edit_candidates wiring: the candidate UI uses the same sanity check.
+#
+# The candidate UI surfaces the resolved replacement text so the user can
+# preview what the auto-apply path will land in the document. If the UI
+# kept showing the verifier's parenthetical-citation correction while the
+# locator silently swapped in ``replacement_text``, the user would see a
+# different preview than the actual applied edit — defeating the point of
+# the preview.
+# ---------------------------------------------------------------------------
+
+
+class TestEditCandidateRespectsCorrectionSanityCheck:
+    def test_clean_correction_still_surfaces_in_candidate(self):
+        """A clean CORRECTED.correction surfaces to the candidate UI verbatim."""
+        from src.editing.edit_candidates import classify_edit_candidates
+        from src.review.reviewer import Finding
+        from src.verification.verifier import VerificationResult
+
+        finding = Finding(
+            severity="HIGH",
+            fileName="spec.docx",
+            section="2.1",
+            issue="Cite the correct edition.",
+            actionType="EDIT",
+            existingText="ASCE 7-16",
+            replacementText="ASCE 7-22",
+            codeReference="ASCE 7",
+            confidence=0.9,
+        )
+        finding.verification = VerificationResult(
+            verdict="CORRECTED",
+            correction="ASCE 7-22",
+            explanation="Verified",
+            sources=["https://example.com/asce-7-22"],
+        )
+
+        candidates = classify_edit_candidates([finding])
+        # The candidate UI should preview the verifier's clean correction.
+        assert candidates[0].replacement_text == "ASCE 7-22"
+
+    def test_parenthetical_correction_falls_back_in_candidate(self):
+        """An explanatory parenthetical correction falls back to replacement_text."""
+        from src.editing.edit_candidates import classify_edit_candidates
+        from src.review.reviewer import Finding
+        from src.verification.verifier import VerificationResult
+
+        finding = Finding(
+            severity="HIGH",
+            fileName="spec.docx",
+            section="2.1",
+            issue="Cite the correct edition.",
+            actionType="EDIT",
+            existingText="ASCE 7-16",
+            replacementText="ASCE 7-22",
+            codeReference="ASCE 7",
+            confidence=0.9,
+        )
+        finding.verification = VerificationResult(
+            verdict="CORRECTED",
+            correction="ASCE 7-22 (per CBC § 1613.1).",
+            explanation="Verified",
+            sources=["https://example.com/asce-7-22"],
+        )
+
+        candidates = classify_edit_candidates([finding])
+        # The UI should preview the model's clean replacement, not the
+        # verifier's parenthetical citation. The locator will do the
+        # same swap at apply time, so preview matches reality.
+        assert candidates[0].replacement_text == "ASCE 7-22"
+
+    def test_env_var_restores_legacy_candidate_preview(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT=1`` skips the check."""
+        monkeypatch.setenv(
+            "SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT", "1"
+        )
+        from src.editing.edit_candidates import classify_edit_candidates
+        from src.review.reviewer import Finding
+        from src.verification.verifier import VerificationResult
+
+        finding = Finding(
+            severity="HIGH",
+            fileName="spec.docx",
+            section="2.1",
+            issue="Cite the correct edition.",
+            actionType="EDIT",
+            existingText="ASCE 7-16",
+            replacementText="ASCE 7-22",
+            codeReference="ASCE 7",
+            confidence=0.9,
+        )
+        finding.verification = VerificationResult(
+            verdict="CORRECTED",
+            correction="ASCE 7-22 (per CBC § 1613.1).",
+            explanation="Verified",
+            sources=["https://example.com/asce-7-22"],
+        )
+
+        candidates = classify_edit_candidates([finding])
+        # Env-on → legacy verbatim preview.
+        assert (
+            candidates[0].replacement_text == "ASCE 7-22 (per CBC § 1613.1)."
+        )

@@ -298,6 +298,18 @@ class DiagnosticsReport:
     # ``LocatorResult.cross_paragraph_ambiguous`` by
     # :func:`apply_edits.execute_edit_plan`.
     cross_paragraph_ambiguity_routed_to_manual_count: int = 0
+    # Phase 5 / Step 5.1: count of CORRECTED findings whose
+    # ``verification.correction`` failed the replaceability sanity
+    # check (``correction_looks_replaceable``), so the applied edit
+    # used the model's original ``replacement_text`` instead of the
+    # verifier's correction. The verifier's correction is still
+    # preserved on the result for the report — only the *applied* edit
+    # text changes. Non-zero values are a useful "the verifier emitted
+    # explanation, not clean replacement text" signal so operators can
+    # revisit those findings manually. Aggregated from
+    # ``EditReport.verifier_correction_rejected_as_replacement_count``
+    # by :func:`apply_edits.execute_edit_plan`.
+    verifier_correction_rejected_as_replacement_count: int = 0
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
     # Diagnostic byte caps. Prevent a single event from blowing up
@@ -427,6 +439,10 @@ class DiagnosticsReport:
             (
                 "Cross-paragraph ambiguity routed to manual",
                 self.cross_paragraph_ambiguity_routed_to_manual_count,
+            ),
+            (
+                "Verifier correction rejected as replacement",
+                self.verifier_correction_rejected_as_replacement_count,
             ),
         ]
         active = [(label, count) for label, count in rows if count]

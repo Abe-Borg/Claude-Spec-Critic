@@ -333,6 +333,20 @@ class EditReport:
     # applies — this counter surfaces "you probably want to revisit
     # these manually" rather than gating the auto-apply.
     contained_edits_lost_intent_count: int = 0
+    # Phase 5 / Step 5.1: count of CORRECTED findings whose
+    # ``verification.correction`` failed the
+    # :func:`replacement_style.correction_looks_replaceable` sanity
+    # check, so the applied edit used the model's original
+    # ``replacement_text`` instead of the verifier's correction. The
+    # verifier's correction is still preserved on
+    # ``Finding.verification.correction`` for the report; this counter
+    # only reflects what landed in the document. Non-zero values are a
+    # useful "verifier emitted explanation, not replacement text"
+    # signal — operators may want to revisit those findings manually.
+    # ``apply_edits.execute_edit_plan`` sets this field from the
+    # locator-level ``LocatorResult.correction_rejected_as_replacement``
+    # flags after :func:`apply_edits_to_spec` returns.
+    verifier_correction_rejected_as_replacement_count: int = 0
 
 
 def _build_run_offset_map(paragraph: Paragraph) -> list[tuple[int, int, int]]:

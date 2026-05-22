@@ -177,6 +177,18 @@ def execute_edit_plan(
         # file gets its own original's text.
         findings_for_locator = [executable for _, _, executable in indexed_findings]
         locator_results = locate_edits(findings_for_locator, paragraph_map)
+        # Phase 5 / Step 5.1: tally the per-spec count of CORRECTED
+        # findings whose ``verification.correction`` failed the
+        # replaceability sanity check (``correction_looks_replaceable``).
+        # The locator already swapped in the model's original
+        # ``replacement_text`` for those findings; this counter just
+        # surfaces the swap to operators via per-spec EditReport and
+        # the run-level diagnostics block.
+        correction_rejected_per_spec = sum(
+            1
+            for result in locator_results
+            if getattr(result, "correction_rejected_as_replacement", False)
+        )
         for pair, locator_result in zip(indexed_findings, locator_results):
             original_index, _, _ = pair
             if locator_result.status == "not_found":
@@ -229,12 +241,33 @@ def execute_edit_plan(
                     edits_failed=0,
                     outcomes=[],
                     warnings=[warning],
+                    # Even when no edit landed, the locator may have
+                    # rejected a CORRECTED-with-explanatory-correction
+                    # finding. Carry that count through so the report
+                    # still surfaces "the verifier emitted explanation,
+                    # not replacement text" at the spec level.
+                    verifier_correction_rejected_as_replacement_count=(
+                        correction_rejected_per_spec
+                    ),
                 )
             )
+            if correction_rejected_per_spec and diagnostics is not None:
+                diagnostics.verifier_correction_rejected_as_replacement_count += (
+                    correction_rejected_per_spec
+                )
             continue
 
         try:
             report = apply_edits_to_spec(source_path, output_path, actions)
+            # Phase 5 / Step 5.1: stamp the locator-derived rejection
+            # count onto the per-spec report. ``apply_edits_to_spec``
+            # only sees ``EditAction`` objects and cannot compute this
+            # from the actions alone (the rejection happened upstream
+            # in ``_resolve_replacement_text``), so we set it here from
+            # the locator results that produced the actions.
+            report.verifier_correction_rejected_as_replacement_count = (
+                correction_rejected_per_spec
+            )
             reports.append(report)
             # Chunk 9: surface unsafe-markup refusals in the run log so users
             # know an auto-edit was deliberately not applied because of Word
@@ -300,17 +333,44 @@ def execute_edit_plan(
                 diagnostics.contained_edits_lost_intent_count += (
                     contained_lost_intent
                 )
+            # Phase 5 / Step 5.1: roll up the count of CORRECTED
+            # findings whose ``verification.correction`` was rejected
+            # by the replaceability sanity check. The applied edit
+            # used the model's original ``replacement_text``; the
+            # verifier's correction stays on the result for the
+            # report. Non-zero values are a "verifier emitted
+            # explanation, not replacement text" signal that
+            # operators may want to revisit manually.
+            verifier_correction_rejected = getattr(
+                report,
+                "verifier_correction_rejected_as_replacement_count",
+                0,
+            )
+            if verifier_correction_rejected and diagnostics is not None:
+                diagnostics.verifier_correction_rejected_as_replacement_count += (
+                    verifier_correction_rejected
+                )
         except Exception as exc:
             warning = f"Failed to apply edits: {exc}"
             log(f"[{filename}] {warning}")
-            reports.append(
-                _build_failure_report(
-                    source_path=source_path,
-                    output_path=output_path,
-                    actions=actions,
-                    warning=warning,
-                )
+            failure_report = _build_failure_report(
+                source_path=source_path,
+                output_path=output_path,
+                actions=actions,
+                warning=warning,
             )
+            # Phase 5 / Step 5.1: even when the apply step blew up, the
+            # locator's rejection decision still happened — surface the
+            # count so the per-spec report and the diagnostics rollup
+            # reflect reality.
+            failure_report.verifier_correction_rejected_as_replacement_count = (
+                correction_rejected_per_spec
+            )
+            if correction_rejected_per_spec and diagnostics is not None:
+                diagnostics.verifier_correction_rejected_as_replacement_count += (
+                    correction_rejected_per_spec
+                )
+            reports.append(failure_report)
 
     # Chunk 8: emit a no-output report for affected files where the per-file
     # edit original was missing. The user sees that the file was affected,

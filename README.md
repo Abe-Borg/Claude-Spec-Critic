@@ -155,6 +155,30 @@ document reads consistently with the source:
   paragraphs) keeps its previous behavior (`status="matched"`,
   AUTO_WITH_CAUTION). Counter:
   `DiagnosticsReport.cross_paragraph_ambiguity_routed_to_manual_count`.
+- **Verifier correction is sanity-checked before being used as
+  replacement text.** When the verifier returns `CORRECTED` with a
+  non-empty `verification.correction`, the locator previously used
+  the correction string verbatim as the applied edit's replacement.
+  The verifier's prompt is optimized for explanation — corrections
+  often carry parenthetical citations (`(per CBC § 1613.1)`), URLs,
+  paragraph-length expansions, or temporal qualifiers (`current`,
+  `latest`, `as of <year>`) that don't belong in spec body text.
+  `replacement_style.correction_looks_replaceable(correction,
+  original_replacement)` now gates the swap: when it returns False,
+  the locator falls back to the model's original `replacement_text`
+  for the applied edit and sets
+  `LocatorResult.correction_rejected_as_replacement=True`. The
+  verifier's correction stays on `Finding.verification.correction`
+  for the report (so the user still sees the verifier's
+  explanation) — only the *applied* edit text changes. The same
+  sanity check runs in the candidate UI so the preview matches what
+  the apply path will actually land. Counter:
+  `DiagnosticsReport.verifier_correction_rejected_as_replacement_count`.
+  Kill switch: `SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT=1`
+  reverts to the legacy verbatim path. Unlike the other Phase-1 flags
+  this one defaults *off* (the new sanity-checked behavior); set it
+  to an enable token (`1`/`true`/`yes`/`on`) to restore the legacy
+  verbatim path.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality
