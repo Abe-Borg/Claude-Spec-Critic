@@ -1195,3 +1195,171 @@ def test_add_skipped_count_aggregates_into_diagnostics(tmp_path: Path):
         report.add_demoted_missing_position_count
     )
     assert diag.add_demoted_missing_position_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 / Step 2.3 — Smarter paragraph splitting for inserted content
+#
+# Legacy ``_split_insert_paragraphs`` split only on blank-line separators
+# (``\n\s*\n+``). Content with single newlines between items collapsed
+# into one paragraph, which Word rendered as a single paragraph with
+# embedded soft breaks. The fix distinguishes three shapes:
+#   1. Double-newline separators -> definitely separate paragraphs.
+#   2. Single-newline-separated lines that all read as list items
+#      (A./1./•/–/-) -> separate paragraphs.
+#   3. Otherwise -> soft breaks inside one paragraph; collapse internal
+#      whitespace to a single space.
+# ---------------------------------------------------------------------------
+
+
+def test_split_insert_paragraphs_unchanged_on_double_newline():
+    from src.editing.spec_editor import _split_insert_paragraphs
+
+    text = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."
+    assert _split_insert_paragraphs(text) == [
+        "First paragraph.",
+        "Second paragraph.",
+        "Third paragraph.",
+    ]
+
+
+def test_split_insert_paragraphs_splits_list_with_single_newlines():
+    """Single newlines between items that all carry list prefixes -> split."""
+    from src.editing.spec_editor import _split_insert_paragraphs
+
+    text = "A. First item of the list.\nB. Second item.\nC. Third item."
+    assert _split_insert_paragraphs(text) == [
+        "A. First item of the list.",
+        "B. Second item.",
+        "C. Third item.",
+    ]
+
+
+def test_split_insert_paragraphs_joins_prose_with_single_newlines():
+    """Single newlines inside prose collapse to a single space."""
+    from src.editing.spec_editor import _split_insert_paragraphs
+
+    text = (
+        "This is a long sentence that\n"
+        "the model split across\n"
+        "three soft breaks."
+    )
+    assert _split_insert_paragraphs(text) == [
+        "This is a long sentence that the model split across three soft breaks."
+    ]
+
+
+def test_split_insert_paragraphs_mixed_chunks():
+    """Double-newline chunks delimit paragraphs; each chunk is then
+    classified (list vs prose) independently."""
+    from src.editing.spec_editor import _split_insert_paragraphs
+
+    text = (
+        "Intro prose split\nacross two soft lines.\n\n"
+        "1. First numbered item.\n2. Second numbered item.\n\n"
+        "Trailing prose paragraph."
+    )
+    assert _split_insert_paragraphs(text) == [
+        "Intro prose split across two soft lines.",
+        "1. First numbered item.",
+        "2. Second numbered item.",
+        "Trailing prose paragraph.",
+    ]
+
+
+def test_split_insert_paragraphs_single_line_unchanged():
+    from src.editing.spec_editor import _split_insert_paragraphs
+
+    assert _split_insert_paragraphs("Lone paragraph text.") == [
+        "Lone paragraph text."
+    ]
+
+
+def test_split_insert_paragraphs_bullet_list_with_single_newlines():
+    from src.editing.spec_editor import _split_insert_paragraphs
+
+    text = "• First bullet.\n• Second bullet.\n• Third bullet."
+    assert _split_insert_paragraphs(text) == [
+        "• First bullet.",
+        "• Second bullet.",
+        "• Third bullet.",
+    ]
+
+
+def test_add_inserts_three_list_items_from_single_newline_text(tmp_path: Path):
+    """End-to-end: ADD with single-newline-separated list items writes
+    three paragraphs, not one with soft breaks."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    doc.add_paragraph("Anchor before list.")
+    doc.save(source)
+
+    anchor_text = "Anchor before list."
+    result = _locator_result(
+        action="ADD",
+        body_index=1,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        replacement_text=(
+            "A. First inserted item.\n"
+            "B. Second inserted item.\n"
+            "C. Third inserted item."
+        ),
+        anchor_text=anchor_text,
+        insert_position="after",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    assert [p.text for p in saved.paragraphs] == [
+        "PART 2 PRODUCTS",
+        "Anchor before list.",
+        "A. First inserted item.",
+        "B. Second inserted item.",
+        "C. Third inserted item.",
+    ]
+
+
+def test_add_collapses_soft_break_prose_to_single_paragraph(tmp_path: Path):
+    """Prose with single newlines lands as one paragraph with single spaces."""
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    doc = Document()
+    doc.add_paragraph("PART 2 PRODUCTS")
+    doc.add_paragraph("Anchor before prose.")
+    doc.save(source)
+
+    anchor_text = "Anchor before prose."
+    result = _locator_result(
+        action="ADD",
+        body_index=1,
+        text=anchor_text,
+        match_start=0,
+        match_end=len(anchor_text),
+        matched_text=anchor_text,
+        replacement_text=(
+            "This explanatory paragraph spans\n"
+            "what the model wrote as three\n"
+            "soft-broken lines."
+        ),
+        anchor_text=anchor_text,
+        insert_position="after",
+    )
+
+    report = apply_edits_to_spec(source, output, build_edit_actions([result]))
+    saved = Document(output)
+
+    assert report.edits_applied == 1
+    assert [p.text for p in saved.paragraphs] == [
+        "PART 2 PRODUCTS",
+        "Anchor before prose.",
+        "This explanatory paragraph spans what the model wrote as three soft-broken lines.",
+    ]

@@ -75,6 +75,14 @@ document reads consistently with the source:
   produced inserted paragraphs containing chopped fragments of the
   anchor — has been removed. Counter:
   `DiagnosticsReport.add_demoted_missing_position_count`.
+- **Smarter paragraph splitting for inserted content.** ADD
+  replacement text is split into paragraphs as follows: double-newline
+  (`\n\s*\n+`) separators always produce paragraph breaks; chunks
+  whose every non-empty line starts with a list prefix (`A.` / `1.` /
+  `•` / `–` / `-`) are split into one paragraph per item; otherwise
+  single-newline-separated lines are treated as soft breaks inside one
+  paragraph and collapsed to single-space separators. Word renders the
+  result correctly instead of leaving embedded line breaks visible.
 
 Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality

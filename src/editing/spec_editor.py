@@ -69,7 +69,36 @@ def _looks_list_shaped(text: str) -> bool:
 
 
 def _split_insert_paragraphs(text: str) -> list[str]:
-    return [chunk.strip() for chunk in re.split(r"\n\s*\n+", text) if chunk.strip()]
+    """Split inserted content into one paragraph per element.
+
+    Phase 2 / Step 2.3. Three cases:
+
+    1. Double-newline separators (``\\n\\s*\\n+``) — unambiguous
+       paragraph breaks. Always split.
+    2. Single-newline-separated lines where *every* non-empty line
+       starts with a recognized list prefix (``A.``, ``1.``, ``•``,
+       ``–``, ``-``). Treat each as its own paragraph.
+    3. Single-newline-separated lines otherwise — collapse into one
+       paragraph with single-space separators. The model emits these
+       when it wraps a multi-line sentence; rendering them as a single
+       Word paragraph reads correctly, while the legacy single-paragraph
+       behavior left embedded line breaks visible as soft breaks.
+    """
+    chunks = re.split(r"\n\s*\n+", text)
+    out: list[str] = []
+    for chunk in chunks:
+        stripped_chunk = chunk.strip()
+        if not stripped_chunk:
+            continue
+        # Split on raw '\n' so the list-prefix check sees the actual
+        # leading content of each line; trailing whitespace per line is
+        # stripped before either path below.
+        lines = [line for line in stripped_chunk.split("\n") if line.strip()]
+        if len(lines) > 1 and all(_looks_list_prefix(line) for line in lines):
+            out.extend(line.strip() for line in lines)
+        else:
+            out.append(" ".join(line.strip() for line in lines))
+    return out
 
 
 def _paragraph_style_id(paragraph_element) -> str | None:
