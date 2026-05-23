@@ -565,6 +565,50 @@ def build_verification_tools_from_decision(
     return out
 
 
+@dataclass(frozen=True)
+class VerificationRequest:
+    """A built verification request split by transport responsibility.
+
+    ``params`` is the Messages API body — model / messages / system /
+    tools / thinking / output_config / service_tier — i.e. the exact
+    shape the per-request ``params`` field of a batch item accepts.
+
+    ``extra_headers`` is the SDK transport kwarg (HTTP headers). It is
+    NOT a Messages API field, so it must NOT be embedded inside the
+    batch ``params`` body — the batch API rejects unknown keys there.
+    It is forwarded to ``client.messages.stream(extra_headers=...)`` on
+    the real-time path and to
+    ``client.messages.batches.create(extra_headers=...)`` on the batch
+    path (at the batch level, so it applies to every sub-request in the
+    batch).
+    """
+
+    params: dict[str, Any]
+    extra_headers: dict[str, str]
+
+
+def merge_extra_headers(headers_seq) -> dict[str, str]:
+    """Union a sequence of ``extra_headers`` dicts.
+
+    Used by batch submitters that build N per-item requests and need a
+    single batch-level header set. Asserts that duplicate keys carry
+    matching values so a future second beta header cannot silently
+    overwrite an earlier one. Today the only key is ``anthropic-beta``
+    with a single possible value, so the merge is trivial; the
+    assertion is defense-in-depth.
+    """
+    out: dict[str, str] = {}
+    for headers in headers_seq:
+        for key, value in (headers or {}).items():
+            if key in out and out[key] != value:
+                raise ValueError(
+                    f"Conflicting extra_headers values for {key!r}: "
+                    f"{out[key]!r} vs {value!r}"
+                )
+            out[key] = value
+    return out
+
+
 def build_verification_request(
     decision: VerificationRoutingDecision,
     *,
@@ -572,14 +616,22 @@ def build_verification_request(
     system_prompt: str,
     assistant_content: list | None = None,
     include_service_tier: bool = False,
-) -> dict[str, Any]:
-    """Build the kwargs dict for a single verification request.
+) -> VerificationRequest:
+    """Build a verification request split into API body + transport headers.
 
     Chunk 4 invariant: every verification request (real-time initial,
     batch initial, batch retry, batch continuation) routes through this
     function. The decision encodes the policy; the rendered ``prompt``
     and ``system_prompt`` flow in from the caller (the verifier already
     has the per-finding prompt builder and the system-prompt builder).
+
+    The return value separates the Messages API body (``params``) from
+    SDK transport kwargs (``extra_headers``). ``extra_headers`` is NOT
+    a Messages API field — the batch API rejects unknown keys inside
+    per-request ``params``, so the two halves must be plumbed
+    separately. Real-time callers forward ``extra_headers`` to
+    ``stream(...)``; batch callers union them across items and forward
+    to ``batches.create(...)`` at the batch level.
 
     Parameters
     ----------
@@ -640,24 +692,23 @@ def build_verification_request(
     apply_effort_config(params, model=decision.model, phase=decision.cache_phase)
 
     # Chunk 11 / Trust Upgrade: when the request includes the web_fetch
-    # tool (STANDARD_REASONING / DEEP_REASONING), attach the beta header
-    # via ``extra_headers`` so the SDK forwards it on streaming requests.
-    # Carries no effect when the API treats web_fetch as generally
-    # available, so leaving it on is safe; required when the tool is
-    # still gated behind the beta. Detection reads the tool list rather
-    # than the mode so a future mode that opts into fetch also gets the
-    # header automatically.
+    # tool (STANDARD_REASONING / DEEP_REASONING), attach the beta header.
+    # Returned separately from ``params`` because ``extra_headers`` is an
+    # SDK transport kwarg, not a Messages API field — embedding it inside
+    # the batch per-item ``params`` body triggers
+    # ``invalid_request_error: Extra inputs are not permitted``. Detection
+    # reads the tool list rather than the mode so a future mode that opts
+    # into fetch also gets the header automatically.
+    extra_headers: dict[str, str] = {}
     if _tools_include_web_fetch(tools_payload):
-        existing_headers = dict(params.get("extra_headers") or {})
-        existing_headers["anthropic-beta"] = WEB_FETCH_BETA_HEADER
-        params["extra_headers"] = existing_headers
+        extra_headers["anthropic-beta"] = WEB_FETCH_BETA_HEADER
 
     if include_service_tier:
         tier = batch_service_tier()
         if tier:
             params["service_tier"] = tier
 
-    return params
+    return VerificationRequest(params=params, extra_headers=extra_headers)
 
 
 def _tools_include_web_fetch(tools: list[dict]) -> bool:
@@ -720,9 +771,11 @@ __all__ = [
     "TRACE_GRIPES_STRICT",
     "TRACE_INTERNAL_COORD_STRICT",
     "TRACE_DEFAULT_STANDARD",
+    "VerificationRequest",
     "VerificationRoutingDecision",
     "select_routing",
     "build_verification_request",
     "build_verification_tools_from_decision",
     "apply_routing_to_result",
+    "merge_extra_headers",
 ]
