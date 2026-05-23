@@ -1303,7 +1303,14 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
             verify_log(f"Verification failed: {e}. Returning results without verification.", level="error")
             for f in findings:
                 if f.verification is None:
-                    f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
+                    # Chunk 3: the entire verification phase crashed before
+                    # this finding got a verdict — operational, route to
+                    # VERIFICATION_FAILED.
+                    f.verification = VerificationResult(
+                        verdict="UNVERIFIED",
+                        explanation=f"Verification unavailable: {e}",
+                        verification_failed=True,
+                    )
     if cross_check:
         dedup_for_cross = [f for f in findings if not (f.verification and f.verification.verdict == "DISPUTED")]
         disputed_excluded = len(findings) - len(dedup_for_cross)
@@ -1324,7 +1331,13 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
                 verify_log(f"Cross-check verification failed: {e}.", level="error")
                 for f in cross.findings:
                     if f.verification is None:
-                        f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification unavailable: {e}")
+                        # Chunk 3: cross-check verification phase crash —
+                        # same treatment as the primary verification phase.
+                        f.verification = VerificationResult(
+                            verdict="UNVERIFIED",
+                            explanation=f"Verification unavailable: {e}",
+                            verification_failed=True,
+                        )
 
     combined = ReviewResult(findings=findings, thinking="\n\n".join(thinking), model=model, input_tokens=in_tok, output_tokens=out_tok, elapsed_seconds=time.time() - start)
     if errors:

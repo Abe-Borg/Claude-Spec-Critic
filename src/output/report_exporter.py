@@ -103,6 +103,13 @@ STATUS_COLORS: dict[ReportStatus, RGBColor] = {
     ReportStatus.LOCALLY_CLASSIFIED: RGBColor(59, 130, 246),       # Blue
     ReportStatus.NOT_CHECKED: RGBColor(100, 100, 100),             # Dark gray
     ReportStatus.MANUAL_REVIEW_REQUIRED: RGBColor(255, 102, 0),    # Orange
+    # Chunk 3 / Trust Upgrade: dark red-orange, distinct from the red
+    # used for DISPUTED (C00000) and the orange used for
+    # MANUAL_REVIEW_REQUIRED (FF6600). Operational failures need a
+    # visually distinct treatment so a quick scroll of the report shows
+    # which findings need re-verification vs. those the verifier ran
+    # cleanly on.
+    ReportStatus.VERIFICATION_FAILED: RGBColor(178, 34, 34),       # Firebrick / dark red-orange
 }
 
 STATUS_SHADING: dict[ReportStatus, str] = {
@@ -113,6 +120,7 @@ STATUS_SHADING: dict[ReportStatus, str] = {
     ReportStatus.LOCALLY_CLASSIFIED: "3B82F6",
     ReportStatus.NOT_CHECKED: "646464",
     ReportStatus.MANUAL_REVIEW_REQUIRED: "FF6600",
+    ReportStatus.VERIFICATION_FAILED: "B22222",
 }
 
 EDIT_ACTION_COLORS: dict[EditActionLabel, RGBColor] = {

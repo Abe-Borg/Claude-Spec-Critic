@@ -197,6 +197,17 @@ class VerificationResult:
     # underlying supporting quote, and for legacy/cache entries that
     # predate Chunk 2's schema bump.
     source_quote: str = ""
+    # ----- Operational-failure sentinel -----------------------------------
+    # True when the UNVERIFIED verdict came from a transient operational
+    # failure (rate limit, server error, network error, INVALID_REQUEST,
+    # BATCH_CANCELED, parse failure, real-time fallback exception) rather
+    # than a clean verifier run that simply could not ground a claim.
+    # The distinction matters because (a) the report renders these under
+    # a dedicated VERIFICATION_FAILED status with a warning glyph so
+    # operators can tell "the verifier broke" apart from "the verifier
+    # ran but found nothing", and (b) the cache refuses to persist these
+    # results — they are transient signals, not durable verdicts.
+    verification_failed: bool = False
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -1143,7 +1154,14 @@ def _run_verification_call(
     profile = decision.profile
     mode = decision.mode
 
-    def _make_unverified(explanation: str, *, search_requests: int = 0, search_errors: int = 0, search_successes: int = 0) -> VerificationResult:
+    def _make_unverified(
+        explanation: str,
+        *,
+        search_requests: int = 0,
+        search_errors: int = 0,
+        search_successes: int = 0,
+        failed: bool = False,
+    ) -> VerificationResult:
         return _enforce_grounding_invariant(VerificationResult(
             verdict="UNVERIFIED",
             explanation=explanation,
@@ -1156,6 +1174,7 @@ def _run_verification_call(
             search_error_count=search_errors,
             verification_profile=profile.value,
             verification_mode=mode.value,
+            verification_failed=failed,
         ))
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -1354,17 +1373,23 @@ def _run_verification_call(
             # INVALID_REQUEST and UNKNOWN are non-retryable and surface the
             # original error message visibly so the operator sees what
             # went wrong.
+            #
+            # Chunk 3: every UNVERIFIED that exits through this exception
+            # block is an operational failure (rate limit, server error,
+            # network error, INVALID_REQUEST, unexpected exception). The
+            # ``failed=True`` flag routes them to the VERIFICATION_FAILED
+            # report status and keeps them out of the verification cache.
             failure_class = classify_exception(e)
             if not is_retryable_failure_class(failure_class):
                 if failure_class is FailureClass.INVALID_REQUEST:
-                    return _make_unverified(f"API error during verification: {e}")
-                return _make_unverified(f"Unexpected error during verification: {e}")
+                    return _make_unverified(f"API error during verification: {e}", failed=True)
+                return _make_unverified(f"Unexpected error during verification: {e}", failed=True)
             if is_last_attempt:
                 if failure_class is FailureClass.RATE_LIMIT:
-                    return _make_unverified("Rate limited during verification.")
+                    return _make_unverified("Rate limited during verification.", failed=True)
                 if failure_class is FailureClass.SERVER_ERROR:
-                    return _make_unverified(f"Server overloaded during verification: {e}")
-                return _make_unverified(f"API error during verification: {e}")
+                    return _make_unverified(f"Server overloaded during verification: {e}", failed=True)
+                return _make_unverified(f"API error during verification: {e}", failed=True)
             time.sleep(
                 compute_backoff_seconds(
                     policy, attempt=attempt, failure_class=failure_class
@@ -1460,7 +1485,16 @@ def verify_findings(findings: list[Finding], *, progress: VerifyProgressFn = _no
             try:
                 f.verification = future.result()
             except Exception as e:
-                f.verification = VerificationResult(verdict="UNVERIFIED", explanation=f"Verification crashed: {e}")
+                # Chunk 3: a crash escaping the worker is operational — the
+                # verifier could not produce a verdict. Mark as failed so
+                # the report shows VERIFICATION_FAILED instead of
+                # INSUFFICIENT_EVIDENCE, and so the cache does not persist
+                # this transient state.
+                f.verification = VerificationResult(
+                    verdict="UNVERIFIED",
+                    explanation=f"Verification crashed: {e}",
+                    verification_failed=True,
+                )
             progress(completed, total, f.fileName or "Unknown")
     return findings
 
@@ -2036,6 +2070,11 @@ def collect_verification_batch_results(
                             terminal_reason=terminal_reason_str,
                             continuation_count=continuation_counts.get(stable_key, 0),
                         ),
+                        # Chunk 3: INVALID_REQUEST and BATCH_CANCELED both
+                        # land here — both are operational failures (bad
+                        # request shape or platform cancellation) rather
+                        # than verifier-said-nothing outcomes.
+                        verification_failed=True,
                     )
                     request_contexts[outcome.original_custom_id]["resolved"] = True
                     terminal_unverified += 1
@@ -2097,6 +2136,15 @@ def collect_verification_batch_results(
             else:
                 if outcome.failure_class is not None:
                     failure_tracker.record(stable_key, outcome.failure_class)
+                # Chunk 3: ``terminal_unverified`` outcomes carry a
+                # FailureClass when they originated from an operational
+                # problem (PARSE_ERROR on incomplete/empty/malformed
+                # responses, INVALID_REQUEST/BATCH_CANCELED on batch
+                # failures). Mark these as verification_failed so the
+                # report distinguishes them from cleanly-UNVERIFIED
+                # verdicts. A missing failure_class would mean the
+                # parser couldn't attribute the cause; treat as failed
+                # too since this branch only fires on non-success.
                 finding.verification = VerificationResult(
                     verdict="UNVERIFIED",
                     explanation=outcome.unverified_reason or "Verification failed.",
@@ -2106,6 +2154,7 @@ def collect_verification_batch_results(
                         terminal_reason=outcome.classification,
                         continuation_count=continuation_counts.get(stable_key, 0),
                     ),
+                    verification_failed=True,
                 )
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 terminal_unverified += 1
@@ -2156,9 +2205,12 @@ def collect_verification_batch_results(
                         try:
                             f.verification = future.result()
                         except Exception as e:
+                            # Chunk 3: fallback worker crashed — operational
+                            # failure, route to VERIFICATION_FAILED.
                             f.verification = VerificationResult(
                                 verdict="UNVERIFIED",
                                 explanation=f"Real-time fallback verification failed: {e}",
+                                verification_failed=True,
                             )
                 break
             for outcome in unresolved:
@@ -2171,6 +2223,14 @@ def collect_verification_batch_results(
                     .get("original_custom_id")
                     or outcome.original_custom_id
                 )
+                # Chunk 3: a finding that ran out of batch waves with a
+                # failure_class set is an operational failure (repeated
+                # transport errors that the wave tracker never resolved).
+                # When the failure_class is PAUSE_TURN, the model failed
+                # to converge on a verdict rather than the platform
+                # failing — treat that as a regular UNVERIFIED.
+                fc = outcome.failure_class
+                op_failed = fc is not None and fc is not FailureClass.PAUSE_TURN
                 finding.verification = VerificationResult(
                     verdict="UNVERIFIED",
                     explanation=(
@@ -2183,6 +2243,7 @@ def collect_verification_batch_results(
                         terminal_reason=f"unresolved after {max_waves} waves",
                         continuation_count=continuation_counts.get(stable_key, 0),
                     ),
+                    verification_failed=op_failed,
                 )
             break
         next_requests = []
@@ -2308,6 +2369,10 @@ def collect_verification_batch_results(
                     .get("original_custom_id")
                     or outcome.original_custom_id
                 )
+                # Chunk 3: tracker_terminated means repeated same-class
+                # failures across waves — operational by definition.
+                fc = outcome.failure_class
+                op_failed = fc is not None and fc is not FailureClass.PAUSE_TURN
                 finding.verification = VerificationResult(
                     verdict="UNVERIFIED",
                     explanation=outcome.unverified_reason or "Verification failed.",
@@ -2317,6 +2382,7 @@ def collect_verification_batch_results(
                         terminal_reason="batch-terminated by wave tracker",
                         continuation_count=continuation_counts.get(stable_key, 0),
                     ),
+                    verification_failed=op_failed,
                 )
             break
         current_job = submit_verification_followup_wave(next_requests, next_request_map)
