@@ -1,0 +1,57 @@
+{
+  "fixture_id": "tp_confirmed_nfpa13",
+  "category": "code_standard",
+  "severity": "MEDIUM",
+  "description": "Spec cites NFPA 13 for sprinkler installation; verifier correctly confirmed with grounded NFPA citation.",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "21 13 13 - Wet Pipe Sprinkler.docx",
+    "section": "2.01",
+    "issue": "Specification cites NFPA 13 for sprinkler system design and installation requirements.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": "NFPA 13",
+    "confidence": 0.8,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p7"
+  },
+  "spec_context": {
+    "filename": "21 13 13 - Wet Pipe Sprinkler.docx",
+    "cycle_label": "California 2025",
+    "paragraph_map_slice": [
+      {"index": 5, "id": "p5", "text": "PART 2 PRODUCTS"},
+      {"index": 6, "id": "p6", "text": "2.01 GENERAL"},
+      {"index": 7, "id": "p7", "text": "A. Design and install wet pipe sprinkler systems per NFPA 13."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "NFPA 13 'Standard for the Installation of Sprinkler Systems' is the authoritative reference for sprinkler system installation. The current edition adopted under California Fire Code is 2022 with state amendments.",
+    "sources": [
+      "https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=13"
+    ],
+    "correction": null,
+    "confidence": 0.9,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 2,
+    "successful_source_count": 2,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=13",
+      "https://codes.iccsafe.org/content/CFC2022"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CONFIRMED",
+    "correct_correction_text": null,
+    "expected_status": "VERIFIED_SUPPORTED",
+    "expected_edit_action": "REPORT_ONLY",
+    "notes": "NFPA 13 is the correct standard for sprinkler system installation."
+  }
+}

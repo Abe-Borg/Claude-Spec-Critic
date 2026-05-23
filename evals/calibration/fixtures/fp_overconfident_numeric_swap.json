@@ -1,0 +1,56 @@
+{
+  "fixture_id": "fp_overconfident_numeric_swap",
+  "category": "code_standard",
+  "severity": "HIGH",
+  "description": "Verifier confidently CORRECTED a sprinkler spacing value from 12 ft to 15 ft, citing a grounded source. The ground truth is that the original 12 ft was correct for the spec's hazard classification.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "21 13 13 - Wet Pipe Sprinkler.docx",
+    "section": "3.04",
+    "issue": "Spec specifies 12 ft maximum spacing between sprinkler heads for the office area.",
+    "actionType": "EDIT",
+    "existingText": "12 ft",
+    "replacementText": "15 ft",
+    "codeReference": "NFPA 13",
+    "confidence": 0.9,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p10"
+  },
+  "spec_context": {
+    "filename": "21 13 13 - Wet Pipe Sprinkler.docx",
+    "cycle_label": "California 2025",
+    "paragraph_map_slice": [
+      {"index": 8, "id": "p8", "text": "3.04 INSTALLATION"},
+      {"index": 9, "id": "p9", "text": "A. Hazard classification: Light Hazard (office occupancy)."},
+      {"index": 10, "id": "p10", "text": "B. Maximum sprinkler spacing: 12 ft on center, both directions."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "NFPA 13 allows up to 15 ft maximum spacing for light hazard occupancy in standard-spray sprinklers (NFPA 13 8.6.2.2.1, 2022 edition).",
+    "sources": ["https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=13"],
+    "correction": "15 ft",
+    "confidence": 0.92,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 3,
+    "successful_source_count": 3,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=13",
+      "https://en.wikipedia.org/wiki/Fire_sprinkler_system",
+      "https://www.iccsafe.org/products-and-services/i-codes/2024-i-codes/cfc/"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CONFIRMED",
+    "correct_correction_text": null,
+    "expected_status": "VERIFIED_SUPPORTED",
+    "expected_edit_action": "REPORT_ONLY",
+    "notes": "Although NFPA 13 allows up to 15 ft maximum for light hazard, the 12 ft spec value is the project-specified design value (often constrained by sprinkler coverage area, listing, or local AHJ amendment). The model overgeneralized the code allowance into a 'must replace' edit. This is the canonical 'overconfident numeric swap' false positive Chunk 1 is meant to surface."
+  }
+}

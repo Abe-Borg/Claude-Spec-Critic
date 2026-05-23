@@ -1,27 +1,26 @@
-"""Chunk 12 — golden-set evaluation harness.
+"""Spec Critic eval harnesses.
 
-This package owns the small, repeatable regression suite for Spec Critic.
-The goal is to make future prompt/routing/parser changes measurable rather
-than judged by vibes:
+Two complementary harnesses live under this package:
 
-- :mod:`evals.fixtures` defines the 10-case fixture taxonomy called out
-  in the Chunk 12 plan (clean spec, stale code-cycle, placeholder, internal
-  contradiction, coordination, valid edit, invalid edit, unsafe DOCX,
-  verification-with-source, source-less CONFIRMED).
-- :mod:`evals.harness` runs each fixture through production parsers,
-  validators, locators, unsafe-markup detectors, and the cost estimator,
-  and collects a set of metrics described in the plan (recall, false
-  positives, parse failure, edit validity, locator success, unsafe-edit
-  refusal, citation acceptance, source-less CONFIRMED, cost availability).
-- :mod:`evals.runner` is the CLI entrypoint (``python -m evals.runner``)
-  and prints a summary table + per-fixture diff against the checked-in
-  baseline in :data:`evals.BASELINE_PATH`.
+- :mod:`evals.runner` (Chunk 12) — the **regression** harness. Walks the
+  fixture taxonomy in :mod:`evals.fixtures` through the production
+  parsers, locators, unsafe-markup detectors, and source-grounding
+  helpers. The metric story is "did the parser / locator / detector
+  keep doing what it used to do?" — drift signals a regression.
 
-The harness is intentionally hermetic. Stubbed Anthropic responses from
-``tests/fixtures/fake_anthropic.py`` exercise the production parsers
-without touching the network; DOCX fixtures are built on the fly in a
-caller-supplied tmp directory. A real-network smoke evaluation can be
-added later behind a separate flag, but the default suite is offline.
+- :mod:`evals.calibration` (Chunk 1) — the **calibration** harness.
+  Replays hand-labeled JSON fixtures through the production grounding
+  + classification helpers and scores the pipeline's verdicts /
+  statuses / edit-actions against ground-truth labels. The metric
+  story is "is the pipeline *correct*?" Drift here is intentional —
+  later tuning chunks should push numbers in a better direction.
+
+Both harnesses are hermetic. The Chunk 12 runner uses stubbed Anthropic
+responses from :mod:`tests.fixtures.fake_anthropic` and DOCX fixtures
+built on the fly. The Chunk 1 runner replays captured verifier
+responses — fixtures carry the verdict the verifier returned, and the
+harness re-runs grounding + classification without touching the
+network.
 """
 from __future__ import annotations
 

@@ -1,0 +1,60 @@
+{
+  "fixture_id": "tp_critical_corrected_dsa",
+  "category": "california_ahj",
+  "severity": "CRITICAL",
+  "description": "CRITICAL California AHJ finding: spec cites the wrong DSA submittal review pathway. Verifier escalated to Opus and CORRECTED with grounded DSA citation.",
+  "finding": {
+    "severity": "CRITICAL",
+    "fileName": "23 00 00 - HVAC General.docx",
+    "section": "1.05",
+    "issue": "Spec directs the contractor to submit HVAC equipment to OSHPD; K-12 projects route through DSA, not OSHPD.",
+    "actionType": "EDIT",
+    "existingText": "submit to OSHPD for review",
+    "replacementText": "submit to DSA for review",
+    "codeReference": "DSA IR A-22",
+    "confidence": 0.95,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p4"
+  },
+  "spec_context": {
+    "filename": "23 00 00 - HVAC General.docx",
+    "cycle_label": "California 2025",
+    "paragraph_map_slice": [
+      {"index": 3, "id": "p3", "text": "1.05 SUBMITTALS"},
+      {"index": 4, "id": "p4", "text": "A. Submit HVAC equipment cut sheets to OSHPD for review."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "OSHPD (now HCAI) reviews hospitals and skilled nursing facilities, not K-12 public schools. DSA is the AHJ for K-12 projects per Education Code 17280-17317. The submittal pathway must be corrected.",
+    "sources": [
+      "https://www.dgs.ca.gov/DSA/Resources/Page-Content/Resources-List-Folder/About-DSA",
+      "https://hcai.ca.gov/facility-finance/facilities-development"
+    ],
+    "correction": "submit to DSA for review",
+    "confidence": 0.97,
+    "model_used": "claude-opus-4-7",
+    "verification_mode": "deep_reasoning",
+    "verification_profile": "california_ahj",
+    "web_search_requests": 5,
+    "successful_source_count": 5,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.dgs.ca.gov/DSA/Resources/Page-Content/Resources-List-Folder/About-DSA",
+      "https://hcai.ca.gov/facility-finance/facilities-development",
+      "https://www.dgs.ca.gov/DSA",
+      "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=EDC&sectionNum=17280",
+      "https://www.cde.ca.gov/ls/fa/sf"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "correct_correction_text": "submit to DSA for review",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "expected_edit_action": "AUTO_EDIT_CANDIDATE",
+    "notes": "DSA is the correct AHJ for K-12 public school construction. OSHPD/HCAI handles hospitals."
+  }
+}

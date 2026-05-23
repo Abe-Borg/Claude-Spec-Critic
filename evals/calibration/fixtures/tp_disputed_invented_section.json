@@ -1,0 +1,56 @@
+{
+  "fixture_id": "tp_disputed_invented_section",
+  "category": "code_standard",
+  "severity": "HIGH",
+  "description": "Spec references a non-existent code section; verifier correctly DISPUTED with grounded evidence that the cited section does not exist.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "23 05 19 - Meters and Gauges.docx",
+    "section": "1.03",
+    "issue": "Specification cites CBC 2025 Section 1108.7 as the basis for pressure gauge accessibility requirements; CBC 2025 has no such section.",
+    "actionType": "EDIT",
+    "existingText": "CBC 2025 Section 1108.7",
+    "replacementText": "CBC 2025 Chapter 11A (Housing Accessibility)",
+    "codeReference": "CBC 2025 Section 1108.7",
+    "confidence": 0.7,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p5"
+  },
+  "spec_context": {
+    "filename": "23 05 19 - Meters and Gauges.docx",
+    "cycle_label": "California 2025",
+    "paragraph_map_slice": [
+      {"index": 4, "id": "p4", "text": "1.03 REFERENCES"},
+      {"index": 5, "id": "p5", "text": "A. Comply with CBC 2025 Section 1108.7 for pressure gauge accessibility."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "DISPUTED",
+    "explanation": "CBC 2025 Chapter 11 covers accessibility but Section 1108.7 specifically does not exist in the published code. The replacement text (Chapter 11A) is also incorrect — the relevant accessibility provisions are in Chapter 11B for public buildings.",
+    "sources": ["https://codes.iccsafe.org/content/CBC2022P1"],
+    "correction": null,
+    "confidence": 0.8,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 4,
+    "successful_source_count": 4,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://codes.iccsafe.org/content/CBC2022P1",
+      "https://codes.iccsafe.org/content/CBC2022P2",
+      "https://www.dgs.ca.gov/DSA",
+      "https://www.bsc.ca.gov"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "DISPUTED",
+    "correct_correction_text": null,
+    "expected_status": "DISPUTED",
+    "expected_edit_action": "MANUAL_EDIT_CANDIDATE",
+    "notes": "CBC 1108.7 does not exist; the model's proposed replacement is also wrong. Manual reviewer should pick the right section."
+  }
+}
