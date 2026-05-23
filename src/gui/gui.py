@@ -360,6 +360,42 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
+        # --- Row 5: Agent tracing ---
+        ctk.CTkLabel(self.inputs_content, text="Tracing", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
+        tracing_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        tracing_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
+        self._trace_var = ctk.BooleanVar(value=True)
+        self._trace_cb = ctk.CTkCheckBox(
+            tracing_frame, text="Record agent trace", variable=self._trace_var,
+            command=self._on_trace_toggle,
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
+            checkmark_color=COLORS["text_primary"], text_color=COLORS["text_secondary"],
+            checkbox_width=20, checkbox_height=20,
+        )
+        self._trace_cb.pack(side="left")
+        self._trace_deep_var = ctk.BooleanVar(value=False)
+        self._trace_deep_cb = ctk.CTkCheckBox(
+            tracing_frame, text="Deep mode", variable=self._trace_deep_var,
+            command=self._on_trace_toggle,
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
+            checkmark_color=COLORS["text_primary"], text_color=COLORS["text_secondary"],
+            checkbox_width=20, checkbox_height=20,
+        )
+        self._trace_deep_cb.pack(side="left", padx=(12, 0))
+        self._trace_show_btn = ctk.CTkButton(
+            tracing_frame, text="Show folder", width=110,
+            command=self._on_show_trace_folder,
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+            fg_color=COLORS["border"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text_primary"],
+        )
+        self._trace_show_btn.pack(side="left", padx=(12, 0))
+        # Apply initial state to env vars so the recorder picks them up
+        # on the first run without needing to toggle first.
+        self._on_trace_toggle()
+
         # (Accessibility row is now in the header area, not inside the inputs card)
 
         self.inputs_content.columnconfigure(1, weight=1)
@@ -368,6 +404,36 @@ class SpecReviewApp(_CTkDnDRoot):
         scale = _FONT_SCALE_OPTIONS.get(value, 1.0)
         ctk.set_widget_scaling(scale)
         self._font_scale_label = value
+
+    def _on_trace_toggle(self) -> None:
+        """Translate the checkboxes into env vars the recorder reads.
+
+        ``SPEC_CRITIC_TRACE`` is the main switch; ``SPEC_CRITIC_TRACE_DEEP``
+        opts into deep mode. Both are read at recorder construction time
+        (next run start), so toggling between runs takes effect without a
+        process restart.
+        """
+        import os
+        os.environ["SPEC_CRITIC_TRACE"] = "1" if self._trace_var.get() else "0"
+        os.environ["SPEC_CRITIC_TRACE_DEEP"] = "1" if self._trace_deep_var.get() else "0"
+
+    def _on_show_trace_folder(self) -> None:
+        """Open ~/.spec_critic/traces in the OS file explorer."""
+        import os
+        import platform
+        import subprocess
+        from ..tracing import default_trace_root
+        path = default_trace_root()
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            if platform.system() == "Windows":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif platform.system() == "Darwin":
+                subprocess.run(["open", str(path)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception as exc:
+            self.log.log_warning(f"Could not open trace folder ({exc}). Path: {path}")
 
     # --- Project context placeholder helpers ---
 

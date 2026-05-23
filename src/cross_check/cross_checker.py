@@ -42,6 +42,7 @@ from ..verification.retry_policy import (
     compute_backoff_seconds,
     is_retryable_failure_class,
 )
+from ..tracing import capture_hooks as _trace
 from ..review.structured_schemas import (
     CROSS_CHECK_TOOL_NAME,
     cross_check_findings_tool,
@@ -219,15 +220,33 @@ def _get_cross_check_user_message(spec_input: str, file_count: int, project_cont
     return f"Review the following {file_count} specs for cross-spec coordination only.\n{ctx}\n{spec_input}"
 
 
-def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, verbose: bool = False, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT) -> ReviewResult:
+def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, verbose: bool = False, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None) -> ReviewResult:
+    """Single-pass cross-check.
+
+    ``_trace_parent``: when set (by ``run_chunked_cross_check``), the
+    function does NOT open its own ``cross_check`` span — it emits its
+    api_call under the caller's chunk span instead. When ``None`` (direct
+    callers, tests), opens a fresh ``cross_check`` span.
+    """
+    # Tracing: open the outer cross_check span only when not nested under
+    # a chunk span. The "skipped — fewer than 2 specs" early return still
+    # closes the span via the finally guard.
+    own_cross_check_span = None
+    if _trace_parent is None:
+        own_cross_check_span = _trace.capture_cross_check_start(spec_count=len(specs), chunked=False)
+    trace_anchor = _trace_parent if _trace_parent is not None else own_cross_check_span
     if len(specs) < 2:
-        return ReviewResult(findings=[], thinking="Need at least 2 specs.", model=model, cross_check_status="skipped")
+        result = ReviewResult(findings=[], thinking="Need at least 2 specs.", model=model, cross_check_status="skipped")
+        _trace.capture_cross_check_end(own_cross_check_span, finding_count=0, status="skipped")
+        return result
 
     system_prompt = _cross_system_prompt(cycle)
     user_message = _get_cross_check_user_message(_build_cross_check_input(specs, existing_findings), len(specs), project_context=project_context)
     total_input_tokens = count_tokens(system_prompt) + count_tokens(user_message)
     if total_input_tokens > CROSS_CHECK_RECOMMENDED_MAX:
-        return ReviewResult(findings=[], thinking=f"Combined input ({total_input_tokens:,}) exceeds cross-check limit ({CROSS_CHECK_RECOMMENDED_MAX:,}).", model=model, cross_check_status="skipped")
+        result = ReviewResult(findings=[], thinking=f"Combined input ({total_input_tokens:,}) exceeds cross-check limit ({CROSS_CHECK_RECOMMENDED_MAX:,}).", model=model, cross_check_status="skipped")
+        _trace.capture_cross_check_end(own_cross_check_span, finding_count=0, status="skipped")
+        return result
 
     client = _get_client()
     start = time.time()
@@ -264,6 +283,21 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     last_failure_class: FailureClass | None = None
     for attempt in range(attempts_planned):
         is_last_attempt = attempt == attempts_planned - 1
+        # Open one api_call span per attempt under whichever cross_check
+        # anchor we're using (own span or caller-provided chunk span).
+        trace_api = None
+        recorder = _trace._get()
+        if recorder is not None and trace_anchor is not None:
+            try:
+                from ..tracing.spans import KIND_API_CALL
+                trace_api = recorder.open_span(
+                    KIND_API_CALL,
+                    f"api_call: cross_check (attempt {attempt + 1})",
+                    parent=trace_anchor,
+                    inputs={"phase": "cross_check", "model": model, "attempt": attempt + 1},
+                )
+            except Exception:
+                trace_api = None
         try:
             with client.messages.stream(**request_kwargs) as stream:
                 chunks: list[str] = []
@@ -272,6 +306,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                     if stream_callback:
                         try: stream_callback(text)
                         except Exception: pass
+                    _trace.capture_stream_chunk(trace_api, text)
                 resp = stream.get_final_message()
 
             result.raw_response = "".join(chunks)
@@ -284,11 +319,18 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 result.cache_creation_input_tokens = cache["cache_creation_input_tokens"]
                 result.cache_read_input_tokens = cache["cache_read_input_tokens"]
 
+            _trace.capture_response_content_blocks(trace_api, resp)
+
             if result.stop_reason not in ("end_turn", "tool_use"):
                 result.parse_status = "incomplete"
                 result.error = f"Response incomplete (stop_reason: {result.stop_reason})."
                 result.cross_check_status = "failed"
                 result.elapsed_seconds = time.time() - start
+                _close_cross_api_span(trace_api, result, source="incomplete", status="error")
+                _trace.capture_cross_check_end(
+                    own_cross_check_span, finding_count=0, status="failed",
+                    error=result.error,
+                )
                 return result
 
             payload = extract_tool_use_block(resp, CROSS_CHECK_TOOL_NAME) if use_structured_tool else None
@@ -296,9 +338,11 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 data = payload.get("findings") or []
                 thinking = _sanitize_narrative(str(payload.get("coordination_summary") or ""))
                 result.structured_payload = payload
+                _trace.capture_parse_attempt(trace_api, status="ok", source="structured")
             else:
                 data, thinking = _extract_json_array(result.raw_response, stop_reason=result.stop_reason)
                 thinking = _sanitize_narrative(thinking)
+                _trace.capture_parse_attempt(trace_api, status="ok", source="text_json")
             if not isinstance(data, list):
                 data = []
             result.findings = _parse_findings(data)
@@ -306,10 +350,14 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             result.parse_status = "ok"
             result.cross_check_status = "completed"
             result.elapsed_seconds = time.time() - start
+            _close_cross_api_span(trace_api, result, source="ok")
+            _trace.capture_cross_check_end(
+                own_cross_check_span, finding_count=len(result.findings),
+                status="completed",
+            )
             return result
         except (KeyboardInterrupt, SystemExit):
-            # Control-flow exceptions must escape so Ctrl-C / interpreter
-            # shutdown work as the user expects.
+            _close_cross_api_span(trace_api, result, source="interrupt", status="error", error="interrupted")
             raise
         except Exception as e:
             failure_class = classify_exception(e)
@@ -322,15 +370,24 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                     result.parse_status = "parse_error"
                 result.cross_check_status = "failed"
                 result.elapsed_seconds = time.time() - start
+                _close_cross_api_span(trace_api, result, source="non_retryable", status="error", error=str(e))
+                _trace.capture_cross_check_end(
+                    own_cross_check_span, finding_count=0, status="failed",
+                    error=result.error,
+                )
                 return result
+            _close_cross_api_span(trace_api, result, source="will_retry", status="error", error=str(e))
             if is_last_attempt:
                 # Fall through to the after-loop "failed after N" message.
                 continue
-            time.sleep(
-                compute_backoff_seconds(
-                    policy, attempt=attempt, failure_class=failure_class
-                )
+            backoff = compute_backoff_seconds(
+                policy, attempt=attempt, failure_class=failure_class
             )
+            _trace.capture_retry(
+                trace_anchor, attempt=attempt + 1,
+                failure_class=failure_class.value, backoff_seconds=backoff,
+            )
+            time.sleep(backoff)
 
     suffix = (
         f" (class={last_failure_class.value})"
@@ -340,7 +397,35 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     result.error = f"Failed after {attempts_planned} attempts{suffix}."
     result.cross_check_status = "failed"
     result.elapsed_seconds = time.time() - start
+    _trace.capture_cross_check_end(
+        own_cross_check_span, finding_count=0, status="failed",
+        error=result.error,
+    )
     return result
+
+
+def _close_cross_api_span(handle, result, *, source: str, status: str = "ok", error: str | None = None) -> None:
+    if handle is None:
+        return
+    recorder = _trace._get()
+    if recorder is None:
+        return
+    try:
+        recorder.close_span(
+            handle,
+            outputs={
+                "parse_status": result.parse_status,
+                "stop_reason": result.stop_reason,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "finding_count": len(result.findings),
+                "source": source,
+            },
+            status=status,
+            error=error,
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +663,11 @@ def run_chunked_cross_check(
         level="info",
     )
 
+    # Tracing: open the cross_check parent span here so per-chunk spans
+    # nest underneath it. Chunked is the common path for large projects;
+    # the alternative (delegating to run_cross_check) has its own span
+    # opened inside that function.
+    trace_cross = _trace.capture_cross_check_start(spec_count=len(specs), chunked=True)
     chunk_results: list[tuple[str, ReviewResult]] = []
     aggregate_in = aggregate_out = 0
     started = time.time()
@@ -589,6 +679,10 @@ def run_chunked_cross_check(
             f"Cross-check chunk: {label} ({len(chunk_specs)} spec(s)).",
             level="step",
         )
+        trace_chunk = _trace.capture_cross_check_chunk_start(
+            chunk_name=chunk_id, spec_count=len(chunk_specs),
+            finding_count=len(scoped_findings), parent=trace_cross,
+        )
         chunk_result = run_cross_check(
             chunk_specs,
             scoped_findings,
@@ -598,6 +692,12 @@ def run_chunked_cross_check(
             stream_callback=stream_callback,
             cycle=cycle,
             model=model,
+            _trace_parent=trace_chunk,
+        )
+        _trace.capture_cross_check_end(
+            trace_chunk, finding_count=len(chunk_result.findings),
+            status=chunk_result.cross_check_status or "completed",
+            error=chunk_result.error,
         )
         chunk_results.append((chunk_id, chunk_result))
         aggregate_in += chunk_result.input_tokens
@@ -614,5 +714,8 @@ def run_chunked_cross_check(
         output_tokens=aggregate_out,
         elapsed_seconds=time.time() - started,
         cross_check_status=status,
+    )
+    _trace.capture_cross_check_end(
+        trace_cross, finding_count=len(findings), status=status,
     )
     return combined

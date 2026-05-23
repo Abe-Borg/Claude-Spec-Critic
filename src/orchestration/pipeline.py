@@ -47,6 +47,7 @@ from ..verification.verifier import (
 from ..verification.verification_cache import VerificationCache, cache_persist_enabled
 from ..cross_check.cross_checker import run_cross_check, run_chunked_cross_check
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
+from ..tracing import capture_hooks as _trace
 
 # Log/progress callbacks accept explicit ``level`` and ``phase`` keywords
 # so pipeline code can categorize messages (info / success / warning /
@@ -178,6 +179,11 @@ class CollectedBatchState:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Tracing: the pipeline span_id carries the batch-mode root span across
+    # the separate function calls (submit, poll, collect, cross-check,
+    # verify, finalize). Default empty string when tracing was disabled at
+    # submit time.
+    trace_span_id: str = ""
 
 
 def _get_spec_files(input_dir: Path) -> list[Path]:
@@ -757,10 +763,28 @@ class BatchSubmission:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Tracing: pipeline span_id carried from start_batch_review through to
+    # finalize_batch_result so the batch-mode root span can be closed at
+    # the end of the run. Empty string when tracing was disabled.
+    trace_span_id: str = ""
 
 
 def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False) -> BatchSubmission:
+    trace_pipeline = _trace.capture_pipeline_start(
+        mode="batch",
+        model=model,
+        cycle_label=cycle.label,
+        files=[str(f) for f in (files or [])],
+    )
     prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, model=model)
+    _trace.capture_note(
+        trace_pipeline,
+        "specs prepared",
+        spec_count=len(prepared.specs),
+        leed_alerts=len(prepared.leed_alerts),
+        placeholder_alerts=len(prepared.placeholder_alerts),
+        cross_check_enabled=cross_check_enabled,
+    )
     job = submit_review_batch(
         prepared.specs,
         project_context=project_context,
@@ -770,6 +794,12 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         # the model is told what local rules already detected and skips
         # duplicating those items as new findings.
         pre_detected_alerts=prepared.pre_detected_by_filename,
+    )
+    _trace.capture_note(
+        trace_pipeline,
+        "review batch submitted",
+        batch_id=job.batch_id,
+        request_count=len(job.request_map),
     )
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
     return BatchSubmission(
@@ -789,6 +819,7 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         template_marker_alerts=prepared.template_marker_alerts,
         invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
         duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+        trace_span_id=(trace_pipeline.span_id if trace_pipeline is not None else ""),
     )
 
 
@@ -1122,6 +1153,9 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         template_marker_alerts=list(submission.template_marker_alerts),
         invalid_code_cycle_alerts=list(submission.invalid_code_cycle_alerts),
         duplicate_paragraph_alerts=list(submission.duplicate_paragraph_alerts),
+        # Carry the pipeline span_id through so finalize_batch_result can
+        # close the root span at the end of the batch lifecycle.
+        trace_span_id=submission.trace_span_id,
     )
 
 
@@ -1237,15 +1271,32 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
     # truthiness on prepared_specs because the recovery path may have
     # nulled it.
     prepared_specs = state.submission.prepared_specs or []
-    if prepared_specs:
+    all_findings: list[Finding] = []
+    if state.review_result and state.review_result.findings:
+        all_findings.extend(state.review_result.findings)
+    if state.cross_check_result and state.cross_check_result.findings:
+        all_findings.extend(state.cross_check_result.findings)
+    if prepared_specs and all_findings:
         from ..editing.apply_edits import populate_locator_evidence
-        all_findings: list[Finding] = []
-        if state.review_result and state.review_result.findings:
-            all_findings.extend(state.review_result.findings)
-        if state.cross_check_result and state.cross_check_result.findings:
-            all_findings.extend(state.cross_check_result.findings)
-        if all_findings:
-            populate_locator_evidence(all_findings, prepared_specs)
+        populate_locator_evidence(all_findings, prepared_specs)
+    # Tracing: snapshot every finding's terminal state and close the
+    # batch-mode pipeline span. Done after locator-evidence population so
+    # findings.jsonl includes the locator data.
+    for _f in all_findings:
+        _trace.capture_finding_terminal(_f)
+    if state.trace_span_id:
+        _trace.capture_pipeline_end_by_id(
+            state.trace_span_id,
+            success=True,
+            summary={
+                "finding_count": len(all_findings),
+                "review_finding_count": len(state.review_result.findings) if state.review_result else 0,
+                "cross_check_finding_count": (
+                    len(state.cross_check_result.findings) if state.cross_check_result else 0
+                ),
+                "truncated_specs": list(state.truncated_specs),
+            },
+        )
     return PipelineResult(
         review_result=state.review_result,
         files_reviewed=state.files_reviewed,
@@ -1272,142 +1323,174 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
 
 def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, verify: bool = True, cross_check: bool = False, dry_run: bool = False, verbose: bool = False, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, stream_callback: Optional[StreamCallback] = None, cycle: CodeCycle = DEFAULT_CYCLE) -> PipelineResult:
     start = time.time()
-    prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, model=model)
-    specs = prepared.specs
-    if dry_run:
+    trace_pipeline = _trace.capture_pipeline_start(
+        mode="realtime",
+        model=model,
+        cycle_label=cycle.label,
+        files=[str(f) for f in (files or [])],
+    )
+    trace_success = False
+    try:
+        prepared = _prepare_specs(input_dir=Path(input_dir), files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, model=model)
+        specs = prepared.specs
+        _trace.capture_note(
+            trace_pipeline,
+            "specs prepared",
+            spec_count=len(specs),
+            leed_alerts=len(prepared.leed_alerts),
+            placeholder_alerts=len(prepared.placeholder_alerts),
+            code_cycle_alerts=len(prepared.code_cycle_alerts),
+        )
+        if dry_run:
+            result = PipelineResult(
+                review_result=ReviewResult(findings=[], model=model),
+                files_reviewed=[s.filename for s in specs],
+                leed_alerts=prepared.leed_alerts,
+                placeholder_alerts=prepared.placeholder_alerts,
+                cycle_label=cycle.label,
+                total_elapsed_seconds=time.time() - start,
+                code_cycle_alerts=prepared.code_cycle_alerts,
+                structural_alerts=prepared.structural_alerts,
+                naming_alerts=prepared.naming_alerts,
+                template_marker_alerts=prepared.template_marker_alerts,
+                invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
+                duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+                # Chunk 10: preserve the extracted specs even on dry-run so a
+                # reviewer eyeballing the dry-run report still sees extraction
+                # warnings for drawing-heavy specs.
+                extracted_specs=list(specs),
+            )
+            trace_success = True
+            return result
+
+        findings: list[Finding] = []
+        thinking: list[str] = []
+        in_tok = out_tok = 0
+        errors: list[str] = []
+        for i, spec in enumerate(specs, start=1):
+            progress(25.0 + ((i - 1) / len(specs)) * 25.0, f"Reviewing {spec.filename} ({i}/{len(specs)})...")
+            rr = review_single_spec(
+                spec.content,
+                spec.filename,
+                project_context=project_context,
+                model=model,
+                verbose=verbose,
+                stream_callback=stream_callback,
+                cycle=cycle,
+                # Forward the paragraph map so the prompt builder can render
+                # id-tagged elements and the model can cite ids.
+                paragraph_map=spec.paragraph_map,
+                # Forward the per-spec deterministic alerts so the model is
+                # told what local rules already detected and skips duplicating
+                # them as new findings.
+                pre_detected_alerts=prepared.pre_detected_by_filename.get(spec.filename),
+            )
+            if rr.parse_status == "incomplete":
+                log(f"  {spec.filename}: Response incomplete — model ran out of output tokens. No findings extracted.", level="warning")
+            if rr.error:
+                errors.append(f"{spec.filename}: {rr.error}")
+                continue
+            findings.extend(rr.findings)
+            if rr.thinking:
+                thinking.append(f"--- {spec.filename} ---\n{rr.thinking}")
+            in_tok += rr.input_tokens
+            out_tok += rr.output_tokens
+
+        findings = _deduplicate_findings(findings)
+        cross = None
+        cache = _make_verification_cache(log=log)
+        verify_progress = _phase_tagged_progress(progress, "verification")
+        verify_log = _phase_tagged_log(log, "verification")
+        if verify and findings:
+            try:
+                verify_findings(findings, progress=lambda c, t, fn: verify_progress(50.0 + (c / max(t, 1)) * 25.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
+            except Exception as e:
+                verify_log(f"Verification failed: {e}. Returning results without verification.", level="error")
+                for f in findings:
+                    if f.verification is None:
+                        # Chunk 3: the entire verification phase crashed before
+                        # this finding got a verdict — operational, route to
+                        # VERIFICATION_FAILED.
+                        f.verification = VerificationResult(
+                            verdict="UNVERIFIED",
+                            explanation=f"Verification unavailable: {e}",
+                            verification_failed=True,
+                        )
+        if cross_check:
+            dedup_for_cross = [f for f in findings if not (f.verification and f.verification.verdict == "DISPUTED")]
+            disputed_excluded = len(findings) - len(dedup_for_cross)
+            if disputed_excluded:
+                _phase_tagged_log(log, "cross_check")(
+                    f"Cross-check input: excluding {disputed_excluded} DISPUTED "
+                    "review finding(s) from the 'already identified' context. "
+                    "They remain on the final result; only the cross-check input is filtered.",
+                    level="info",
+                )
+            progress(75.0, "Running cross-check with dedup context...", phase="cross_check")
+            cross = run_chunked_cross_check(specs, dedup_for_cross, project_context=project_context, verbose=verbose, cycle=cycle, log=_phase_tagged_log(log, "cross_check"))
+            _log_cross_check_status(log, cross)
+            if verify and cross and cross.findings:
+                try:
+                    verify_findings(cross.findings, progress=lambda c, t, fn: verify_progress(90.0 + (c / max(t, 1)) * 5.0, f"Verifying cross-check {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
+                except Exception as e:
+                    verify_log(f"Cross-check verification failed: {e}.", level="error")
+                    for f in cross.findings:
+                        if f.verification is None:
+                            # Chunk 3: cross-check verification phase crash —
+                            # same treatment as the primary verification phase.
+                            f.verification = VerificationResult(
+                                verdict="UNVERIFIED",
+                                explanation=f"Verification unavailable: {e}",
+                                verification_failed=True,
+                            )
+
+        combined = ReviewResult(findings=findings, thinking="\n\n".join(thinking), model=model, input_tokens=in_tok, output_tokens=out_tok, elapsed_seconds=time.time() - start)
+        if errors:
+            combined.thinking += "\n\n--- Review Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
+            # --- FIX 2b: Surface per-spec errors on combined result ---
+            combined.error = f"{len(errors)} spec(s) had errors: " + "; ".join(errors)
+        _persist_verification_cache(cache, log=log)
+        # Chunk 4 / Trust Upgrade: stamp locator evidence on findings with
+        # edit proposals so the report's "Edit Target Evidence" panel has
+        # data before the user reaches the apply step.
+        if specs:
+            from ..editing.apply_edits import populate_locator_evidence
+            all_findings: list[Finding] = list(combined.findings)
+            if cross and cross.findings:
+                all_findings.extend(cross.findings)
+            if all_findings:
+                populate_locator_evidence(all_findings, specs)
+        # Tracing: snapshot every finding's terminal state before returning
+        # so the trace's findings.jsonl carries the post-verification view
+        # alongside the spans + events. Includes cross-check findings.
+        for _f in combined.findings:
+            _trace.capture_finding_terminal(_f)
+        if cross and cross.findings:
+            for _f in cross.findings:
+                _trace.capture_finding_terminal(_f)
+        progress(100.0, "Done.")
+        trace_success = True
         return PipelineResult(
-            review_result=ReviewResult(findings=[], model=model),
+            review_result=combined,
             files_reviewed=[s.filename for s in specs],
             leed_alerts=prepared.leed_alerts,
             placeholder_alerts=prepared.placeholder_alerts,
+            cross_check_result=cross,
             cycle_label=cycle.label,
-            total_elapsed_seconds=time.time() - start,
+            total_elapsed_seconds=combined.elapsed_seconds,
             code_cycle_alerts=prepared.code_cycle_alerts,
             structural_alerts=prepared.structural_alerts,
             naming_alerts=prepared.naming_alerts,
             template_marker_alerts=prepared.template_marker_alerts,
             invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
             duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
-            # Chunk 10: preserve the extracted specs even on dry-run so a
-            # reviewer eyeballing the dry-run report still sees extraction
-            # warnings for drawing-heavy specs.
+            # Chunk 10 / Trust Upgrade: ride the extracted specs through so
+            # the report banner can surface extraction warnings (drawing-
+            # heavy documents whose text extraction may have missed content).
             extracted_specs=list(specs),
         )
-
-    findings: list[Finding] = []
-    thinking: list[str] = []
-    in_tok = out_tok = 0
-    errors: list[str] = []
-    for i, spec in enumerate(specs, start=1):
-        progress(25.0 + ((i - 1) / len(specs)) * 25.0, f"Reviewing {spec.filename} ({i}/{len(specs)})...")
-        rr = review_single_spec(
-            spec.content,
-            spec.filename,
-            project_context=project_context,
-            model=model,
-            verbose=verbose,
-            stream_callback=stream_callback,
-            cycle=cycle,
-            # Forward the paragraph map so the prompt builder can render
-            # id-tagged elements and the model can cite ids.
-            paragraph_map=spec.paragraph_map,
-            # Forward the per-spec deterministic alerts so the model is
-            # told what local rules already detected and skips duplicating
-            # them as new findings.
-            pre_detected_alerts=prepared.pre_detected_by_filename.get(spec.filename),
-        )
-        if rr.parse_status == "incomplete":
-            log(f"  {spec.filename}: Response incomplete — model ran out of output tokens. No findings extracted.", level="warning")
-        if rr.error:
-            errors.append(f"{spec.filename}: {rr.error}")
-            continue
-        findings.extend(rr.findings)
-        if rr.thinking:
-            thinking.append(f"--- {spec.filename} ---\n{rr.thinking}")
-        in_tok += rr.input_tokens
-        out_tok += rr.output_tokens
-
-    findings = _deduplicate_findings(findings)
-    cross = None
-    cache = _make_verification_cache(log=log)
-    verify_progress = _phase_tagged_progress(progress, "verification")
-    verify_log = _phase_tagged_log(log, "verification")
-    if verify and findings:
-        try:
-            verify_findings(findings, progress=lambda c, t, fn: verify_progress(50.0 + (c / max(t, 1)) * 25.0, f"Verifying {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
-        except Exception as e:
-            verify_log(f"Verification failed: {e}. Returning results without verification.", level="error")
-            for f in findings:
-                if f.verification is None:
-                    # Chunk 3: the entire verification phase crashed before
-                    # this finding got a verdict — operational, route to
-                    # VERIFICATION_FAILED.
-                    f.verification = VerificationResult(
-                        verdict="UNVERIFIED",
-                        explanation=f"Verification unavailable: {e}",
-                        verification_failed=True,
-                    )
-    if cross_check:
-        dedup_for_cross = [f for f in findings if not (f.verification and f.verification.verdict == "DISPUTED")]
-        disputed_excluded = len(findings) - len(dedup_for_cross)
-        if disputed_excluded:
-            _phase_tagged_log(log, "cross_check")(
-                f"Cross-check input: excluding {disputed_excluded} DISPUTED "
-                "review finding(s) from the 'already identified' context. "
-                "They remain on the final result; only the cross-check input is filtered.",
-                level="info",
-            )
-        progress(75.0, "Running cross-check with dedup context...", phase="cross_check")
-        cross = run_chunked_cross_check(specs, dedup_for_cross, project_context=project_context, verbose=verbose, cycle=cycle, log=_phase_tagged_log(log, "cross_check"))
-        _log_cross_check_status(log, cross)
-        if verify and cross and cross.findings:
-            try:
-                verify_findings(cross.findings, progress=lambda c, t, fn: verify_progress(90.0 + (c / max(t, 1)) * 5.0, f"Verifying cross-check {c}/{t} ({fn})..."), cycle=cycle, cache=cache)
-            except Exception as e:
-                verify_log(f"Cross-check verification failed: {e}.", level="error")
-                for f in cross.findings:
-                    if f.verification is None:
-                        # Chunk 3: cross-check verification phase crash —
-                        # same treatment as the primary verification phase.
-                        f.verification = VerificationResult(
-                            verdict="UNVERIFIED",
-                            explanation=f"Verification unavailable: {e}",
-                            verification_failed=True,
-                        )
-
-    combined = ReviewResult(findings=findings, thinking="\n\n".join(thinking), model=model, input_tokens=in_tok, output_tokens=out_tok, elapsed_seconds=time.time() - start)
-    if errors:
-        combined.thinking += "\n\n--- Review Errors ---\n" + "\n".join(f"  - {e}" for e in errors)
-        # --- FIX 2b: Surface per-spec errors on combined result ---
-        combined.error = f"{len(errors)} spec(s) had errors: " + "; ".join(errors)
-    _persist_verification_cache(cache, log=log)
-    # Chunk 4 / Trust Upgrade: stamp locator evidence on findings with
-    # edit proposals so the report's "Edit Target Evidence" panel has
-    # data before the user reaches the apply step.
-    if specs:
-        from ..editing.apply_edits import populate_locator_evidence
-        all_findings: list[Finding] = list(combined.findings)
-        if cross and cross.findings:
-            all_findings.extend(cross.findings)
-        if all_findings:
-            populate_locator_evidence(all_findings, specs)
-    progress(100.0, "Done.")
-    return PipelineResult(
-        review_result=combined,
-        files_reviewed=[s.filename for s in specs],
-        leed_alerts=prepared.leed_alerts,
-        placeholder_alerts=prepared.placeholder_alerts,
-        cross_check_result=cross,
-        cycle_label=cycle.label,
-        total_elapsed_seconds=combined.elapsed_seconds,
-        code_cycle_alerts=prepared.code_cycle_alerts,
-        structural_alerts=prepared.structural_alerts,
-        naming_alerts=prepared.naming_alerts,
-        template_marker_alerts=prepared.template_marker_alerts,
-        invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
-        duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
-        # Chunk 10 / Trust Upgrade: ride the extracted specs through so
-        # the report banner can surface extraction warnings (drawing-
-        # heavy documents whose text extraction may have missed content).
-        extracted_specs=list(specs),
-    )
+    finally:
+        # Close the pipeline span no matter how we exit. capture_pipeline_end
+        # is a no-op when trace_pipeline is None (recorder not installed) so
+        # the guard is built in.
+        _trace.capture_pipeline_end(trace_pipeline, success=trace_success)

@@ -36,6 +36,8 @@ from .structured_schemas import (
     extract_tool_use_block,
     structured_tool_output_enabled,
 )
+from ..tracing import capture_hooks as _trace
+from ..tracing.spans import KIND_API_CALL
 
 StreamCallback = Callable[[str], None]
 
@@ -564,7 +566,67 @@ def _parse_findings(data: list) -> list[Finding]:
     return findings
 
 
-def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = REVIEW_MODEL_DEFAULT, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None) -> ReviewResult:
+def _open_api_span(parent, *, phase: str, model: str, attempt: int, max_retries: int):
+    """Open an api_call span under ``parent`` (when tracing is on).
+
+    Returns the SpanHandle or None. Inlined into reviewer/cross-checker/
+    verifier so each call site can attach phase-specific inputs without
+    a generic helper getting unwieldy.
+    """
+    if parent is None:
+        return None
+    recorder = _trace._get()
+    if recorder is None:
+        return None
+    try:
+        return recorder.open_span(
+            KIND_API_CALL,
+            f"api_call: {phase} (attempt {attempt})",
+            parent=parent,
+            inputs={
+                "phase": phase,
+                "model": model,
+                "attempt": attempt,
+                "max_retries": max_retries,
+            },
+        )
+    except Exception:
+        return None
+
+
+def _close_api_span(handle, result, *, source: str, status: str = "ok", error: str | None = None) -> None:
+    """Close an api_call span with a ReviewResult-derived output payload."""
+    if handle is None:
+        return
+    recorder = _trace._get()
+    if recorder is None:
+        return
+    try:
+        recorder.close_span(
+            handle,
+            outputs={
+                "parse_status": result.parse_status,
+                "stop_reason": result.stop_reason,
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "finding_count": len(result.findings),
+                "source": source,
+            },
+            status=status,
+            error=error,
+        )
+    except Exception:
+        pass
+
+
+def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, model: str = REVIEW_MODEL_DEFAULT, max_retries: int = 3, verbose: bool = False, stream_callback: Optional[StreamCallback] = None, trace_parent=None) -> ReviewResult:
+    """Internal streaming wrapper.
+
+    ``trace_parent`` is an optional SpanHandle passed by callers that have
+    already opened a higher-level review span; ``_stream_review`` opens
+    one ``api_call`` child span per attempt under it, plus retry events
+    on the parent. ``None`` keeps tracing off for this call.
+    """
     start_time = time.time()
     result = ReviewResult(model=model)
     # Chunk 3: request kwargs come from the central review request builder
@@ -593,6 +655,13 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
     last_failure_class: FailureClass | None = None
     for attempt in range(attempts_planned):
         is_last_attempt = attempt == attempts_planned - 1
+        trace_api = _open_api_span(
+            trace_parent,
+            phase="review",
+            model=model,
+            attempt=attempt + 1,
+            max_retries=attempts_planned,
+        )
         try:
             if verbose:
                 print(f"Calling Claude {model} (attempt {attempt + 1}/{attempts_planned})...")
@@ -603,6 +672,7 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
                     if stream_callback:
                         try: stream_callback(text)
                         except Exception: pass
+                    _trace.capture_stream_chunk(trace_api, text)
                 resp = stream.get_final_message()
             response_text = "".join(chunks)
             result.raw_response = response_text
@@ -615,28 +685,38 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
                 result.cache_creation_input_tokens = cache["cache_creation_input_tokens"]
                 result.cache_read_input_tokens = cache["cache_read_input_tokens"]
 
+            # Walk the response's content blocks and emit trace events
+            # for each (thinking, tool_use, web_search, web_fetch). Safe
+            # to call when trace_api is None; the helper bails early.
+            _trace.capture_response_content_blocks(trace_api, resp)
+
             # Tool-use stops report stop_reason="tool_use", which is the
             # success path when the model invoked the custom tool.
             if result.stop_reason not in ("end_turn", "tool_use"):
                 result.parse_status = "incomplete"
                 result.error = f"Response incomplete (stop_reason: {result.stop_reason}). The model likely ran out of output tokens. Partial response preserved in raw_response."
                 result.elapsed_seconds = time.time() - start_time
+                _close_api_span(trace_api, result, source="stream_incomplete")
                 return result
 
             structured = _extract_structured_findings(resp) if use_structured_tool else None
             if structured is not None:
                 data, thinking, structured_payload = structured
                 result.structured_payload = structured_payload
+                _trace.capture_parse_attempt(trace_api, status="ok", source="structured")
             else:
                 data, thinking = _extract_json_array(response_text, stop_reason=result.stop_reason)
+                _trace.capture_parse_attempt(trace_api, status="ok", source="text_json")
             result.findings = _parse_findings(data)
             result.thinking = thinking
             result.parse_status = "ok"
             result.elapsed_seconds = time.time() - start_time
+            _close_api_span(trace_api, result, source="ok")
             return result
         except (KeyboardInterrupt, SystemExit):
             # Control-flow exceptions must escape the retry loop so Ctrl-C
             # / interpreter shutdown work as the user expects.
+            _close_api_span(trace_api, result, source="interrupt", status="error", error="interrupted")
             raise
         except Exception as e:
             # Route every other exception through the central classifier
@@ -655,9 +735,17 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
                     result.error = f"Error: {e}"
                     result.parse_status = "parse_error"
                 result.elapsed_seconds = time.time() - start_time
+                _close_api_span(
+                    trace_api, result, source="non_retryable",
+                    status="error", error=str(e),
+                )
                 return result
             last_exception = e
             if is_last_attempt:
+                _close_api_span(
+                    trace_api, result, source="retries_exhausted",
+                    status="error", error=str(e),
+                )
                 break
             backoff = compute_backoff_seconds(
                 policy, attempt=attempt, failure_class=failure_class
@@ -668,6 +756,14 @@ def _stream_review(client: Anthropic, system_prompt: str, user_message: str, *, 
                     f"(attempt {attempt + 1}/{attempts_planned}): {e}. "
                     f"Retrying in {backoff:.0f}s..."
                 )
+            _close_api_span(
+                trace_api, result, source="will_retry",
+                status="error", error=str(e),
+            )
+            _trace.capture_retry(
+                trace_parent, attempt=attempt + 1,
+                failure_class=failure_class.value, backoff_seconds=backoff,
+            )
             time.sleep(backoff)
     if last_exception is not None:
         suffix = (
@@ -731,12 +827,53 @@ def review_single_spec(
         batch=False,
     )
     built = build_review_request(request_spec)
-    return _stream_review(
-        _get_client(),
-        built.system_prompt,
-        built.user_message,
+    trace_review = _trace.capture_review_call(
+        filename=filename,
         model=model,
-        max_retries=max_retries,
-        verbose=verbose,
-        stream_callback=stream_callback,
+        cycle_label=cycle.label,
+        system_prompt=built.system_prompt,
+        user_message=built.user_message,
+        paragraph_map_summary=(
+            {"element_count": len(paragraph_map.elements), "has_ids": True}
+            if paragraph_map is not None and hasattr(paragraph_map, "elements")
+            else {"element_count": 0, "has_ids": False}
+        ),
+        pre_detected_alerts_count=len(pre_detected_alerts) if pre_detected_alerts else 0,
     )
+    try:
+        result = _stream_review(
+            _get_client(),
+            built.system_prompt,
+            built.user_message,
+            model=model,
+            max_retries=max_retries,
+            verbose=verbose,
+            stream_callback=stream_callback,
+            trace_parent=trace_review,
+        )
+    except Exception:
+        _trace.capture_review_end(
+            trace_review, finding_count=0, parse_status="exception",
+            stop_reason=None, error="unhandled exception",
+        )
+        raise
+    _trace.capture_review_end(
+        trace_review,
+        finding_count=len(result.findings),
+        parse_status=result.parse_status,
+        stop_reason=result.stop_reason,
+        structured_payload=result.structured_payload,
+        raw_response=result.raw_response,
+        thinking_text=result.thinking,
+        findings_summary=[
+            {
+                "severity": getattr(f, "severity", ""),
+                "section": getattr(f, "section", ""),
+                "actionType": getattr(f, "actionType", ""),
+                "issue_preview": (getattr(f, "issue", "") or "")[:200],
+            }
+            for f in result.findings
+        ],
+        error=result.error,
+    )
+    return result
