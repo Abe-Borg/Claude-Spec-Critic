@@ -208,6 +208,16 @@ class VerificationResult:
     # ran but found nothing", and (b) the cache refuses to persist these
     # results — they are transient signals, not durable verdicts.
     verification_failed: bool = False
+    # ----- Cache-entry age telemetry --------------------------------------
+    # Chunk 5 / Trust Upgrade: epoch seconds when the cache entry behind a
+    # ``cache_status="hit"`` result was originally stored. Default 0.0 means
+    # "not from a cache hit" (the verifier produced this result fresh).
+    # Stamped by :func:`verification_cache._clone_for_hit` so the report
+    # can render a "Cache replay — Nd old" badge and color-code by age
+    # (amber <30d, orange 30-90d, red >90d) without re-reading the cache
+    # file. Round-trips through resume state so a resumed report keeps the
+    # original entry age.
+    cache_entry_created_ts: float = 0.0
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
