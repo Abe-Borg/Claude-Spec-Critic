@@ -441,6 +441,13 @@ class TestResumeStateRoundTrip:
 
 
 class TestReportBadgeRendering:
+    # Chunk 6 / Trust Upgrade: the badge format is "Cache replay — Nd
+    # old" (em-dash, age suffix). The Run Diagnostics banner introduced
+    # in Chunk 6 also surfaces a "Cache replays" row, so assertions key
+    # off the em-dash + age form rather than the bare "Cache replay"
+    # substring to avoid colliding with the banner label.
+    _BADGE_PREFIX = "Cache replay — "
+
     def test_fresh_cache_hit_renders_badge(self, tmp_path: Path):
         f = _finding(verification=_cache_hit_result(age_days=10))
         out = tmp_path / "report.docx"
@@ -448,7 +455,7 @@ class TestReportBadgeRendering:
             _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
         )
         text = _all_text_from(Document(str(out)))
-        assert "Cache replay" in text
+        assert self._BADGE_PREFIX in text
         assert "10d old" in text
 
     def test_stale_cache_hit_renders_badge_with_age(self, tmp_path: Path):
@@ -458,7 +465,7 @@ class TestReportBadgeRendering:
             _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
         )
         text = _all_text_from(Document(str(out)))
-        assert "Cache replay" in text
+        assert self._BADGE_PREFIX in text
         assert "45d old" in text
 
     def test_very_stale_cache_hit_renders_badge_with_age(self, tmp_path: Path):
@@ -468,7 +475,7 @@ class TestReportBadgeRendering:
             _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
         )
         text = _all_text_from(Document(str(out)))
-        assert "Cache replay" in text
+        assert self._BADGE_PREFIX in text
         assert "120d old" in text
 
     def test_miss_does_not_render_badge(self, tmp_path: Path):
@@ -487,7 +494,7 @@ class TestReportBadgeRendering:
             _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
         )
         text = _all_text_from(Document(str(out)))
-        assert "Cache replay" not in text
+        assert self._BADGE_PREFIX not in text
 
     def test_local_skip_does_not_render_badge(self, tmp_path: Path):
         vr = VerificationResult(
@@ -501,7 +508,7 @@ class TestReportBadgeRendering:
             _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
         )
         text = _all_text_from(Document(str(out)))
-        assert "Cache replay" not in text
+        assert self._BADGE_PREFIX not in text
 
     def test_legacy_cache_hit_without_timestamp_does_not_render_badge(
         self, tmp_path: Path
@@ -525,7 +532,7 @@ class TestReportBadgeRendering:
             _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
         )
         text = _all_text_from(Document(str(out)))
-        assert "Cache replay" not in text
+        assert self._BADGE_PREFIX not in text
 
 
 # ---------------------------------------------------------------------------

@@ -351,6 +351,294 @@ def _write_files_reviewed(doc: Document, files_reviewed: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Run Diagnostics banner (Chunk 6 / Trust Upgrade)
+# ---------------------------------------------------------------------------
+
+def _summarize_run_diagnostics(
+    *,
+    findings: list,
+    status_counts: dict,
+    edit_action_counts: dict,
+    cross_check_result,
+    pipeline_result=None,
+) -> dict:
+    """Roll up operational counts for the Run Diagnostics banner.
+
+    Chunk 6 / Trust Upgrade. Surfaces at-a-glance operational health:
+    edit-action histogram, cache-replay count + oldest age, verification
+    failures, parse-time REPORT_ONLY demotions, extraction warnings (slot
+    reserved for Chunk 10), and cross-check status. Every value is
+    derived from data already present on the findings / status counts /
+    pipeline result; no new persistence is needed.
+
+    Args:
+        findings: All findings included in the report (review + cross-
+            check kept + cross-check suppressed). Used to count cache
+            replays, find the oldest cache entry age, and count parse-
+            time edit-shape demotions.
+        status_counts: Pre-computed ``ReportStatus`` histogram from
+            :func:`summarize_statuses` over the same finding list.
+        edit_action_counts: Pre-computed ``EditActionLabel`` histogram.
+        cross_check_result: The cross-check ``ReviewResult`` or ``None``
+            when cross-check was disabled / never ran.
+        pipeline_result: The pipeline result, queried opportunistically
+            for ``extracted_specs`` so the extraction-warning slot can
+            be populated when Chunk 10 lands. ``getattr`` with default
+            so legacy callers and test doubles work.
+
+    Returns a dict with the rolled-up values the renderer consumes.
+    """
+    auto_edit = int(edit_action_counts.get(EditActionLabel.AUTO_EDIT_CANDIDATE, 0) or 0)
+    manual_edit = int(edit_action_counts.get(EditActionLabel.MANUAL_EDIT_CANDIDATE, 0) or 0)
+    report_only = int(edit_action_counts.get(EditActionLabel.REPORT_ONLY, 0) or 0)
+    suppressed = int(edit_action_counts.get(EditActionLabel.SUPPRESSED, 0) or 0)
+    verification_failed = int(status_counts.get(ReportStatus.VERIFICATION_FAILED, 0) or 0)
+
+    # Cache replays: count findings whose verification carries a cache
+    # hit. Track the oldest age so a reviewer can see "the staleness
+    # picture" without expanding individual findings. Legacy resume
+    # payloads predating Chunk 5 produce ``None`` from
+    # :func:`_cache_entry_age_days` — they count toward the total but
+    # cannot contribute to the oldest-age display.
+    cache_replay_count = 0
+    oldest_age_days: int | None = None
+    for finding in findings:
+        vr = getattr(finding, "verification", None)
+        if vr is None:
+            continue
+        if (getattr(vr, "cache_status", "") or "") != "hit":
+            continue
+        cache_replay_count += 1
+        age = _cache_entry_age_days(vr)
+        if age is not None and (oldest_age_days is None or age > oldest_age_days):
+            oldest_age_days = age
+
+    # Parse-time REPORT_ONLY demotions: findings stamped with a
+    # ``demotion_reason`` are EDIT/ADD/DELETE proposals that were
+    # rejected by :func:`validate_edit_shape` at parse time and routed
+    # to REPORT_ONLY. Surfaced separately from the general REPORT_ONLY
+    # count because they signal model-output shape issues (a
+    # potentially-actionable finding that the model emitted with
+    # missing fields), not a deliberate coordination/interpretation
+    # finding.
+    demotion_count = sum(
+        1
+        for finding in findings
+        if (getattr(finding, "demotion_reason", None) or "").strip()
+    )
+
+    # Extraction warnings: reserved slot for Chunk 10. Looks for an
+    # ``extracted_specs`` attribute on the pipeline result with per-spec
+    # ``extraction_warnings`` lists. Until Chunk 10 lands, this resolves
+    # to 0 for every run — the row still renders so the banner shape
+    # stays stable across the rollout.
+    extraction_warning_count = 0
+    extracted_specs = getattr(pipeline_result, "extracted_specs", None) or []
+    for spec in extracted_specs:
+        warnings = getattr(spec, "extraction_warnings", None) or []
+        if warnings:
+            extraction_warning_count += 1
+
+    # Cross-check state: None means cross-check was not requested (or
+    # disabled); otherwise the status string is "completed" / "skipped" /
+    # "failed". The renderer treats "skipped" / "failed" as the actionable
+    # signals the plan calls out.
+    cross_check_state: dict | None = None
+    if cross_check_result is not None:
+        cc_status = (
+            getattr(cross_check_result, "cross_check_status", None) or "completed"
+        )
+        cross_check_state = {
+            "status": cc_status,
+            "finding_count": len(getattr(cross_check_result, "findings", []) or []),
+            "reason": (
+                getattr(cross_check_result, "thinking", "")
+                if cc_status == "skipped"
+                else (
+                    getattr(cross_check_result, "error", "")
+                    if cc_status == "failed"
+                    else ""
+                )
+            ),
+        }
+
+    return {
+        "auto_edit": auto_edit,
+        "manual_edit": manual_edit,
+        "report_only": report_only,
+        "suppressed": suppressed,
+        "verification_failed": verification_failed,
+        "cache_replay_count": cache_replay_count,
+        "oldest_cache_age_days": oldest_age_days,
+        "demotion_count": demotion_count,
+        "extraction_warning_count": extraction_warning_count,
+        "cross_check": cross_check_state,
+    }
+
+
+def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
+    """Render the Run Diagnostics banner (Chunk 6 / Trust Upgrade).
+
+    A styled table that surfaces operational health right after the
+    title block. Reviewers can scan the banner to answer "did anything
+    operationally bad happen on this run?" without scrolling through
+    every finding. The table layout (label | value) makes label/value
+    pairs greppable in the resulting .docx and keeps the visual style
+    consistent with the existing severity / trust-model tables above.
+
+    The banner highlights verification-failure and extraction-warning
+    rows in red whenever the count is non-zero (the plan's only hard
+    highlight requirement); skipped/failed cross-check status also
+    renders in red so a reviewer can spot "the coordination pass did
+    not run" at a glance. All other rows render neutral.
+
+    A failure recovery hint paragraph appears below the table when
+    verification-failure count > 0, pointing the reviewer at the
+    workflow for re-running the failed findings. The actual re-run-
+    failed-only mechanism is deferred to Chunk 12; this chunk only
+    surfaces the visibility.
+    """
+    doc.add_heading("Run Diagnostics", level=1)
+
+    intro = doc.add_paragraph()
+    intro_run = intro.add_run(
+        "Operational summary of this run. Use this section to spot at a "
+        "glance whether any findings failed verification, were replayed "
+        "from a stale cache, or had model-output shape issues that "
+        "needed parse-time demotion."
+    )
+    intro_run.font.size = Pt(10)
+    intro_run.font.italic = True
+    intro_run.font.color.rgb = RGBColor(100, 100, 100)
+    intro.paragraph_format.space_after = Pt(6)
+
+    verification_failed = int(summary.get("verification_failed", 0) or 0)
+    extraction_warnings = int(summary.get("extraction_warning_count", 0) or 0)
+    cache_count = int(summary.get("cache_replay_count", 0) or 0)
+    oldest_age = summary.get("oldest_cache_age_days")
+    cross_check = summary.get("cross_check")
+
+    # Build row tuples: (label, value, highlight). ``highlight=True``
+    # paints the value cell with light-red shading + dark-red text so
+    # the row pops from the surrounding neutral grid.
+    rows: list[tuple[str, str, bool]] = [
+        ("Auto-edit eligible", str(summary.get("auto_edit", 0)), False),
+        ("Manual edit required", str(summary.get("manual_edit", 0)), False),
+        ("Report-only", str(summary.get("report_only", 0)), False),
+        ("Suppressed (cross-check filter)", str(summary.get("suppressed", 0)), False),
+    ]
+
+    # Cache replays: when there are any, show oldest age too so a
+    # reviewer doesn't have to expand each Sources panel to find the
+    # staleness picture.
+    if cache_count > 0 and oldest_age is not None:
+        cache_text = f"{cache_count} (oldest {oldest_age}d old)"
+    else:
+        cache_text = str(cache_count)
+    rows.append(("Cache replays", cache_text, False))
+
+    # Verification failures: only row the plan mandates highlight on
+    # when > 0. Distinct from INSUFFICIENT_EVIDENCE — these are
+    # operational errors that re-running can fix.
+    rows.append(
+        (
+            "Verification failures (operational)",
+            str(verification_failed),
+            verification_failed > 0,
+        )
+    )
+
+    rows.append(
+        (
+            "REPORT_ONLY demotions at parse time",
+            str(summary.get("demotion_count", 0)),
+            False,
+        )
+    )
+
+    # Spec content extraction warnings: reserved slot for Chunk 10.
+    # Highlight in red when > 0 so a drawing-heavy spec that may have
+    # lost text content stands out. Currently always 0 until Chunk 10
+    # populates ExtractedSpec.extraction_warnings.
+    rows.append(
+        (
+            "Spec content extraction warnings",
+            str(extraction_warnings),
+            extraction_warnings > 0,
+        )
+    )
+
+    # Cross-spec coordination: surface when the pass ran (or didn't).
+    # "skipped" / "failed" are the actionable signals the plan calls out;
+    # "completed" is also rendered for transparency so a reader sees
+    # "yes, the pass ran" without parsing the trust-model table.
+    if cross_check is not None:
+        cc_status = str(cross_check.get("status", "completed") or "completed")
+        cc_count = int(cross_check.get("finding_count", 0) or 0)
+        if cc_status == "skipped":
+            cc_value = "skipped"
+            cc_highlight = True
+        elif cc_status == "failed":
+            cc_value = "failed"
+            cc_highlight = True
+        else:
+            cc_value = f"{cc_count} finding{'s' if cc_count != 1 else ''}"
+            cc_highlight = False
+        rows.append(("Cross-spec coordination", cc_value, cc_highlight))
+
+    # Render as a 2-column table. Label cells get a light-gray
+    # shading so the visual rhythm matches the existing summary table
+    # above; value cells get red shading when ``highlight=True``.
+    table = doc.add_table(rows=len(rows), cols=2)
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.LEFT
+
+    for row_idx, (label, value, highlight) in enumerate(rows):
+        label_cell = table.rows[row_idx].cells[0]
+        _set_cell_shading(label_cell, "F0F0F0")
+        label_cell.text = ""
+        p = label_cell.paragraphs[0]
+        label_run = p.add_run(label)
+        label_run.bold = True
+        label_run.font.size = Pt(10)
+
+        value_cell = table.rows[row_idx].cells[1]
+        if highlight:
+            _set_cell_shading(value_cell, "FFE5E5")
+        value_cell.text = ""
+        p = value_cell.paragraphs[0]
+        value_run = p.add_run(value)
+        value_run.bold = True
+        value_run.font.size = Pt(10)
+        if highlight:
+            value_run.font.color.rgb = RGBColor(192, 0, 0)
+
+    # --- Failure recovery hint (Chunk 6 / 6b) ---
+    # The re-run-failed-only mechanism is Chunk 12; for now we just
+    # describe what re-running will do. The ⚠ glyph match is the same
+    # one stamped on individual VERIFICATION_FAILED findings (see
+    # STATUS_GLYPHS in report_status.py) so a reviewer can grep for it.
+    if verification_failed > 0:
+        hint_para = doc.add_paragraph()
+        hint_para.paragraph_format.space_before = Pt(6)
+        hint_para.paragraph_format.space_after = Pt(8)
+        hint_run = hint_para.add_run(
+            f"{verification_failed} finding"
+            f"{'s' if verification_failed != 1 else ''} failed verification "
+            "due to operational errors (network, rate limit, parse failures). "
+            "These are visually marked with the ⚠ glyph in the findings "
+            "below. Re-running the review will re-attempt verification for "
+            "these findings; the cache does not persist operational-failure "
+            "results so a re-run sees them fresh."
+        )
+        hint_run.font.size = Pt(10)
+        hint_run.font.italic = True
+        hint_run.font.color.rgb = RGBColor(178, 34, 34)
+
+    doc.add_paragraph()  # Spacer between banner and the next section.
+
+
+# ---------------------------------------------------------------------------
 # Methodology note
 # ---------------------------------------------------------------------------
 
@@ -1727,7 +2015,22 @@ def export_report(
         pipeline_result.files_reviewed,
         cycle_label=cycle_label,
     )
-    
+
+    # Chunk 6 / Trust Upgrade — Run Diagnostics banner. Renders right
+    # after the title block so the operational picture (auto-edit
+    # eligibility, cache replays, verification failures, parse-time
+    # demotions, cross-check status) is the first thing a reviewer
+    # sees. Derived from data already on the findings + verification
+    # stats; no resume state or persistence changes needed.
+    run_diagnostics = _summarize_run_diagnostics(
+        findings=all_findings,
+        status_counts=verification_stats.get("status_counts", {}),
+        edit_action_counts=verification_stats.get("edit_action_counts", {}),
+        cross_check_result=cross_check,
+        pipeline_result=pipeline_result,
+    )
+    _write_run_diagnostics_banner(doc, run_diagnostics)
+
     _write_files_reviewed(doc, pipeline_result.files_reviewed)
     cross_check_status = getattr(cross_check, "cross_check_status", None) if cross_check else None
     cross_check_reason = ""
