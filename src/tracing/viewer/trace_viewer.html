@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Spec Critic — Agent Trace Viewer</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  /* Monospace for IDs / payloads; keep the chrome in a system sans. */
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .tree-row:hover { background: rgba(59,130,246,0.08); }
+  .tree-row.selected { background: rgba(59,130,246,0.18); }
+  pre.payload { white-space: pre-wrap; word-break: break-word; }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▶ "; font-size: 0.7em; color: #888; }
+  details[open] > summary::before { content: "▼ "; }
+  .scroll-y { overflow-y: auto; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800 h-screen flex flex-col overflow-hidden">
+
+<!-- Header / loader -->
+<header class="bg-slate-800 text-white px-4 py-2 flex items-center gap-4 shrink-0">
+  <h1 class="text-lg font-semibold">Spec Critic — Agent Trace Viewer</h1>
+  <label class="bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded text-sm cursor-pointer">
+    Open trace folder…
+    <input id="dirInput" type="file" webkitdirectory directory multiple class="hidden" />
+  </label>
+  <span id="runSummary" class="text-sm text-slate-300"></span>
+  <span id="loadError" class="text-sm text-red-300"></span>
+</header>
+
+<!-- Tabs -->
+<nav id="tabs" class="bg-white border-b border-slate-200 px-4 flex gap-1 shrink-0 hidden">
+  <button data-tab="finding"  class="tab px-4 py-2 text-sm border-b-2 border-transparent">By Finding</button>
+  <button data-tab="span"     class="tab px-4 py-2 text-sm border-b-2 border-transparent">By Span</button>
+  <button data-tab="timeline" class="tab px-4 py-2 text-sm border-b-2 border-transparent">Timeline</button>
+  <button data-tab="grounding" class="tab px-4 py-2 text-sm border-b-2 border-transparent">Search / Grounding</button>
+</nav>
+
+<!-- Empty state -->
+<div id="emptyState" class="flex-1 flex items-center justify-center text-slate-400 text-center px-8">
+  <div>
+    <p class="text-xl mb-2">No trace loaded</p>
+    <p class="text-sm">Click <span class="font-semibold">Open trace folder…</span> and select a
+    <span class="mono">~/.spec_critic/traces/&lt;run_id&gt;/</span> directory.</p>
+    <p class="text-xs mt-4 text-slate-500">All parsing happens locally in your browser. Nothing is uploaded.</p>
+  </div>
+</div>
+
+<!-- Main 3-pane layout -->
+<main id="main" class="flex-1 hidden overflow-hidden">
+  <div class="h-full grid" style="grid-template-columns: 28% 36% 36%;">
+    <!-- Left: tree -->
+    <section class="border-r border-slate-200 bg-white scroll-y h-full">
+      <div id="leftPane" class="text-sm"></div>
+    </section>
+    <!-- Middle: span / finding detail -->
+    <section class="border-r border-slate-200 bg-white scroll-y h-full">
+      <div id="middlePane" class="p-3 text-sm"></div>
+    </section>
+    <!-- Right: event / payload detail -->
+    <section class="bg-white scroll-y h-full">
+      <div id="rightPane" class="p-3 text-sm"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+// ---- Color / glyph conventions (mirrors report_status.py / report_exporter.py) ----
+const STATUS_COLORS = {
+  VERIFIED_SUPPORTED:   "#008000",
+  VERIFIED_CONTRADICTED:"#CC8400",
+  DISPUTED:             "#C00000",
+  INSUFFICIENT_EVIDENCE:"#808080",
+  LOCALLY_CLASSIFIED:   "#3B82F6",
+  NOT_CHECKED:          "#646464",
+  MANUAL_REVIEW_REQUIRED:"#FF6600",
+  VERIFICATION_FAILED:  "#B22222",
+  VERIFIED_CONTESTED:   "#800080",
+};
+const STATUS_GLYPHS = {
+  VERIFIED_SUPPORTED:   "✓",
+  VERIFIED_CONTRADICTED:"✎",
+  DISPUTED:             "✗",
+  INSUFFICIENT_EVIDENCE:"?",
+  LOCALLY_CLASSIFIED:   "◆",
+  NOT_CHECKED:          "—",
+  MANUAL_REVIEW_REQUIRED:"!",
+  VERIFICATION_FAILED:  "⚠",
+  VERIFIED_CONTESTED:   "⚡",
+};
+const STATUS_LABELS = {
+  VERIFIED_SUPPORTED:   "Verified — supported",
+  VERIFIED_CONTRADICTED:"Verified — contradicted",
+  DISPUTED:             "Disputed",
+  INSUFFICIENT_EVIDENCE:"Insufficient evidence",
+  LOCALLY_CLASSIFIED:   "Locally classified",
+  NOT_CHECKED:          "Not checked",
+  MANUAL_REVIEW_REQUIRED:"Manual review required",
+  VERIFICATION_FAILED:  "Verification failed",
+  VERIFIED_CONTESTED:   "Verified — models disagreed",
+};
+const SEVERITY_COLORS = {
+  CRITICAL: "#C00000", HIGH: "#FF6600", MEDIUM: "#C09800", GRIPES: "#800080",
+};
+const KIND_COLORS = {
+  pipeline: "#1e293b", extraction: "#0891b2", review: "#2563eb",
+  cross_check: "#7c3aed", cross_check_chunk: "#8b5cf6", triage: "#0d9488",
+  verification_initial: "#ca8a04", verification_escalation: "#b45309",
+  verification_continuation: "#a16207", verification_retry: "#a16207",
+  api_call: "#475569", web_search: "#16a34a", parse: "#64748b",
+  cache_lookup: "#0284c7", local_skip: "#94a3b8", routing_decision: "#64748b",
+};
+
+// ---- Replicates report_status.classify_status (JS port) ----
+function classifyStatus(finding) {
+  if (finding && finding.suppression_reason) return "MANUAL_REVIEW_REQUIRED";
+  const v = finding ? finding.verification : null;
+  if (!v) return "NOT_CHECKED";
+  if (v.verification_failed) return "VERIFICATION_FAILED";
+  if (v.models_disagreed) return "VERIFIED_CONTESTED";
+  if (v.cache_status === "local_skip") return "LOCALLY_CLASSIFIED";
+  const verdict = (v.verdict || "").trim().toUpperCase();
+  const grounded = !!v.grounded;
+  const hasAccepted = (v.accepted_sources && v.accepted_sources.length) || (v.sources && v.sources.length);
+  if (verdict === "CONFIRMED" && grounded && hasAccepted) return "VERIFIED_SUPPORTED";
+  if (verdict === "CORRECTED" && grounded && hasAccepted) return "VERIFIED_CONTRADICTED";
+  if (verdict === "DISPUTED") return "DISPUTED";
+  return "INSUFFICIENT_EVIDENCE";
+}
+
+// ---- Global state ----
+const STATE = {
+  run: null,
+  spans: [],
+  events: [],
+  prompts: {},      // hash -> {kind, text}
+  findings: [],
+  spansById: {},
+  childrenByParent: {},   // parent_span_id -> [span]
+  eventsBySpan: {},       // span_id -> [event]
+  findingsById: {},
+  roots: [],
+  activeTab: "finding",
+  selectedSpanId: null,
+  selectedFindingId: null,
+};
+
+// ---- File loading ----
+document.getElementById("dirInput").addEventListener("change", async (e) => {
+  const files = Array.from(e.target.files || []);
+  document.getElementById("loadError").textContent = "";
+  if (!files.length) return;
+  try {
+    await loadTraceFiles(files);
+    buildIndexes();
+    showLoaded();
+  } catch (err) {
+    document.getElementById("loadError").textContent = "Load error: " + err.message;
+    console.error(err);
+  }
+});
+
+function findFile(files, name) {
+  return files.find(f => f.name === name || (f.webkitRelativePath || "").endsWith("/" + name));
+}
+
+async function readText(file) {
+  return file ? await file.text() : "";
+}
+
+function parseJsonl(text) {
+  const out = [];
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    try { out.push(JSON.parse(t)); } catch (e) { /* skip torn line */ }
+  }
+  return out;
+}
+
+async function loadTraceFiles(files) {
+  const runFile = findFile(files, "run.json");
+  if (!runFile) throw new Error("run.json not found in the selected folder.");
+  STATE.run = JSON.parse(await readText(runFile));
+  STATE.spans = parseJsonl(await readText(findFile(files, "spans.jsonl")));
+  STATE.events = parseJsonl(await readText(findFile(files, "events.jsonl")));
+  STATE.findings = parseJsonl(await readText(findFile(files, "findings.jsonl")));
+  const prompts = parseJsonl(await readText(findFile(files, "prompts.jsonl")));
+  STATE.prompts = {};
+  for (const p of prompts) STATE.prompts[p.hash] = p;
+}
+
+function buildIndexes() {
+  STATE.spansById = {};
+  STATE.childrenByParent = {};
+  STATE.eventsBySpan = {};
+  STATE.findingsById = {};
+  STATE.roots = [];
+  for (const s of STATE.spans) {
+    STATE.spansById[s.span_id] = s;
+  }
+  // De-dupe spans by span_id (batch resume may re-emit) — keep the last.
+  for (const s of STATE.spans) {
+    const pid = s.parent_span_id || "__root__";
+    (STATE.childrenByParent[pid] = STATE.childrenByParent[pid] || []).push(s);
+  }
+  for (const ev of STATE.events) {
+    const sid = ev.span_id || "__run__";
+    (STATE.eventsBySpan[sid] = STATE.eventsBySpan[sid] || []).push(ev);
+  }
+  for (const f of STATE.findings) {
+    if (f.finding_id) STATE.findingsById[f.finding_id] = f;
+  }
+  STATE.roots = STATE.childrenByParent["__root__"] || [];
+  // Sort children by start time so the tree reads chronologically.
+  for (const pid in STATE.childrenByParent) {
+    STATE.childrenByParent[pid].sort((a, b) => (a.started_at || 0) - (b.started_at || 0));
+  }
+  STATE.events.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+
+function showLoaded() {
+  document.getElementById("emptyState").classList.add("hidden");
+  document.getElementById("main").classList.remove("hidden");
+  document.getElementById("tabs").classList.remove("hidden");
+  const r = STATE.run;
+  const dur = (r.ended_at && r.started_at) ? ((r.ended_at - r.started_at).toFixed(1) + "s") : "running";
+  document.getElementById("runSummary").textContent =
+    `${r.run_id} • ${r.mode} • ${r.model} • ${r.cycle_label} • ${(r.files_reviewed||[]).length} files • ${r.capture_level} • ${dur}`;
+  selectTab(STATE.activeTab);
+}
+
+// ---- Tab handling ----
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.addEventListener("click", () => selectTab(btn.dataset.tab));
+});
+function selectTab(tab) {
+  STATE.activeTab = tab;
+  document.querySelectorAll(".tab").forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle("border-blue-600", on);
+    b.classList.toggle("text-blue-600", on);
+    b.classList.toggle("font-semibold", on);
+    b.classList.toggle("text-slate-500", !on);
+  });
+  if (tab === "finding") renderFindingTab();
+  else if (tab === "span") renderSpanTab();
+  else if (tab === "timeline") renderTimelineTab();
+  else if (tab === "grounding") renderGroundingTab();
+}
+
+// ---- Utility renderers ----
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function fmtTs(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString() + "." + String(d.getMilliseconds()).padStart(3, "0");
+}
+function durMs(span) {
+  if (!span.ended_at || !span.started_at) return "";
+  return ((span.ended_at - span.started_at) * 1000).toFixed(0) + "ms";
+}
+function kindBadge(kind) {
+  const c = KIND_COLORS[kind] || "#64748b";
+  return `<span class="mono text-xs px-1.5 py-0.5 rounded text-white" style="background:${c}">${esc(kind)}</span>`;
+}
+function statusBadge(status) {
+  const c = STATUS_COLORS[status] || "#64748b";
+  const g = STATUS_GLYPHS[status] || "";
+  return `<span class="text-xs px-1.5 py-0.5 rounded text-white" style="background:${c}">${g} ${esc(STATUS_LABELS[status] || status)}</span>`;
+}
+function severityBadge(sev) {
+  const c = SEVERITY_COLORS[(sev||"").toUpperCase()] || "#64748b";
+  return `<span class="text-xs px-1.5 py-0.5 rounded text-white" style="background:${c}">${esc(sev||"?")}</span>`;
+}
+function spanStatusDot(span) {
+  const map = { ok: "#16a34a", error: "#dc2626", running: "#f59e0b", skipped: "#94a3b8" };
+  return `<span style="color:${map[span.status]||"#94a3b8"}">●</span>`;
+}
+function jsonBlock(obj, label) {
+  if (obj == null || (typeof obj === "object" && Object.keys(obj).length === 0)) return "";
+  const text = JSON.stringify(obj, null, 2);
+  return `<details class="mt-2"><summary class="text-slate-600 font-medium">${esc(label)}</summary>
+    <pre class="payload mono text-xs bg-slate-50 border border-slate-200 rounded p-2 mt-1">${esc(text)}</pre></details>`;
+}
+function resolvePrompt(ref) {
+  // ref is {ref: hash, kind} or {inline: text}
+  if (!ref) return "";
+  if (ref.inline != null) return ref.inline;
+  if (ref.ref && STATE.prompts[ref.ref]) return STATE.prompts[ref.ref].text;
+  if (ref.ref) return "(prompt hash " + ref.ref + " — not found in prompts.jsonl)";
+  return "";
+}
+
+// =====================================================================
+// By Span tab
+// =====================================================================
+function renderSpanTab() {
+  const left = document.getElementById("leftPane");
+  left.innerHTML = `<div class="p-2 font-semibold text-slate-500 text-xs uppercase tracking-wide">Span tree</div>`;
+  const container = document.createElement("div");
+  for (const root of STATE.roots) renderSpanNode(root, 0, container);
+  left.appendChild(container);
+  if (STATE.selectedSpanId) renderSpanDetail(STATE.selectedSpanId);
+  else { document.getElementById("middlePane").innerHTML = hint("Select a span"); document.getElementById("rightPane").innerHTML = ""; }
+}
+function renderSpanNode(span, depth, container) {
+  const row = document.createElement("div");
+  row.className = "tree-row px-2 py-1 cursor-pointer flex items-center gap-1.5";
+  row.style.paddingLeft = (8 + depth * 16) + "px";
+  if (span.span_id === STATE.selectedSpanId) row.classList.add("selected");
+  row.innerHTML = `${spanStatusDot(span)} ${kindBadge(span.kind)}
+    <span class="truncate flex-1" title="${esc(span.name)}">${esc(span.name)}</span>
+    <span class="text-xs text-slate-400 mono">${durMs(span)}</span>`;
+  row.addEventListener("click", () => { STATE.selectedSpanId = span.span_id; renderSpanTab(); });
+  container.appendChild(row);
+  const children = STATE.childrenByParent[span.span_id] || [];
+  for (const c of children) renderSpanNode(c, depth + 1, container);
+}
+function renderSpanDetail(spanId) {
+  const span = STATE.spansById[spanId];
+  const mid = document.getElementById("middlePane");
+  if (!span) { mid.innerHTML = hint("Span not found"); return; }
+  let html = `<div class="flex items-center gap-2 mb-2">${kindBadge(span.kind)} ${spanStatusDot(span)}
+    <span class="text-xs text-slate-400">${esc(span.status)}</span></div>
+    <h2 class="font-semibold mb-1">${esc(span.name)}</h2>
+    <div class="text-xs text-slate-500 mono mb-2">
+      span ${esc(span.span_id)}${span.parent_span_id ? " · parent " + esc(span.parent_span_id) : ""}<br/>
+      ${fmtTs(span.started_at)} → ${fmtTs(span.ended_at)} (${durMs(span)})
+    </div>`;
+  if (span.error) html += `<div class="bg-red-50 border border-red-200 text-red-700 rounded p-2 text-xs mb-2">${esc(span.error)}</div>`;
+
+  // Inputs — resolve prompt refs inline.
+  const inputs = Object.assign({}, span.inputs || {});
+  for (const k of ["system_prompt", "user_message", "prompt"]) {
+    if (inputs[k] && (inputs[k].ref || inputs[k].inline != null)) {
+      const text = resolvePrompt(inputs[k]);
+      html += `<details class="mt-2"><summary class="text-slate-600 font-medium">${esc(k)} (${inputs[k].ref ? "ref " + inputs[k].ref.slice(0,8) : "inline"})</summary>
+        <pre class="payload mono text-xs bg-slate-50 border border-slate-200 rounded p-2 mt-1">${esc(text)}</pre></details>`;
+      delete inputs[k];
+    }
+  }
+  html += jsonBlock(inputs, "inputs");
+  html += jsonBlock(span.outputs, "outputs");
+  html += jsonBlock(span.metadata, "metadata");
+
+  // Events for this span
+  const evs = STATE.eventsBySpan[spanId] || [];
+  html += `<div class="mt-3 font-semibold text-slate-500 text-xs uppercase tracking-wide">Events (${evs.length})</div>`;
+  mid.innerHTML = html;
+  const evList = document.createElement("div");
+  evList.className = "mt-1";
+  evs.forEach((ev, i) => {
+    const r = document.createElement("div");
+    r.className = "tree-row px-2 py-1 cursor-pointer flex items-center gap-2 text-xs border-b border-slate-100";
+    r.innerHTML = `<span class="text-slate-400 mono">${fmtTs(ev.ts)}</span>
+      <span class="font-medium" style="color:${eventColor(ev.type)}">${esc(ev.type)}</span>
+      <span class="text-slate-500 truncate flex-1">${esc(eventSummary(ev))}</span>`;
+    r.addEventListener("click", () => renderEventDetail(ev));
+    evList.appendChild(r);
+  });
+  mid.appendChild(evList);
+  document.getElementById("rightPane").innerHTML = hint("Select an event to see its payload");
+}
+function eventColor(type) {
+  if (type.startsWith("web_search")) return "#16a34a";
+  if (type.startsWith("web_fetch")) return "#0891b2";
+  if (type === "thinking_block") return "#7c3aed";
+  if (type === "tool_use" || type === "tool_result") return "#475569";
+  if (type === "grounding_outcome") return "#ca8a04";
+  if (type === "escalation_decision") return "#b45309";
+  if (type === "budget_exhausted_marker") return "#B22222";
+  if (type === "retry" || type === "pause_turn") return "#dc2626";
+  return "#64748b";
+}
+function eventSummary(ev) {
+  switch (ev.type) {
+    case "web_search_query": return ev.query || "";
+    case "web_search_result": return (ev.urls_with_titles||[]).length + " result(s)";
+    case "web_fetch_request": return ev.url || "";
+    case "web_fetch_result": return ev.url || "";
+    case "thinking_block": return (ev.text||"").slice(0, 120);
+    case "tool_use": return ev.tool_name || "";
+    case "parse_attempt": return `${ev.source} → ${ev.status}`;
+    case "grounding_outcome": return `${(ev.accepted||[]).length} accepted, ${(ev.rejected||[]).length} rejected${ev.downgraded_to_unverified?" · downgraded":""}`;
+    case "escalation_decision": return `${ev.initial_verdict} → ${ev.final_verdict||"?"}${ev.models_disagreed?" · disagreed":""}`;
+    case "note": return ev.message || "";
+    case "retry": return `attempt ${ev.attempt} · ${ev.failure_class}`;
+    case "pause_turn": return `continuation ${ev.continuation_count}`;
+    default: return "";
+  }
+}
+function renderEventDetail(ev) {
+  const right = document.getElementById("rightPane");
+  let html = `<div class="font-medium mb-1" style="color:${eventColor(ev.type)}">${esc(ev.type)}</div>
+    <div class="text-xs text-slate-400 mono mb-2">${fmtTs(ev.ts)} · span ${esc(ev.span_id)}</div>`;
+  // Special-case web_search_result for a readable table.
+  if (ev.type === "web_search_result" && ev.urls_with_titles) {
+    html += `<table class="w-full text-xs"><thead><tr class="text-left text-slate-500">
+      <th class="py-1">Title</th><th>URL</th></tr></thead><tbody>`;
+    for (const u of ev.urls_with_titles) {
+      html += `<tr class="border-t border-slate-100"><td class="py-1 pr-2">${esc(u.title||"")}</td>
+        <td class="mono text-blue-600 break-all">${esc(u.url||"")}</td></tr>`;
+      if (u.snippet_preview) html += `<tr><td colspan="2" class="text-slate-500 italic pb-1">${esc(u.snippet_preview)}</td></tr>`;
+    }
+    html += `</tbody></table>`;
+  } else {
+    const payload = Object.assign({}, ev);
+    delete payload.ts; delete payload.span_id; delete payload.type;
+    html += `<pre class="payload mono text-xs bg-slate-50 border border-slate-200 rounded p-2">${esc(JSON.stringify(payload, null, 2))}</pre>`;
+  }
+  right.innerHTML = html;
+}
+
+// =====================================================================
+// By Finding tab
+// =====================================================================
+function renderFindingTab() {
+  const left = document.getElementById("leftPane");
+  left.innerHTML = `<div class="p-2 font-semibold text-slate-500 text-xs uppercase tracking-wide">Findings (${STATE.findings.length})</div>`;
+  if (!STATE.findings.length) {
+    left.innerHTML += `<div class="p-3 text-slate-400 text-xs">No findings.jsonl records. Findings are snapshotted at run end — an incomplete run may have none.</div>`;
+  }
+  const container = document.createElement("div");
+  for (const f of STATE.findings) {
+    const status = classifyStatus(f);
+    const row = document.createElement("div");
+    row.className = "tree-row px-2 py-2 cursor-pointer border-b border-slate-100";
+    if (f.finding_id === STATE.selectedFindingId) row.classList.add("selected");
+    row.innerHTML = `<div class="flex items-center gap-1.5 mb-1">${severityBadge(f.severity)}
+      <span class="text-xs text-slate-400 mono truncate">${esc(f.section||"")}</span></div>
+      <div class="text-xs text-slate-700 mb-1">${esc((f.issue||"").slice(0,90))}</div>
+      <div>${statusBadge(status)}</div>`;
+    row.addEventListener("click", () => { STATE.selectedFindingId = f.finding_id; renderFindingTab(); });
+    container.appendChild(row);
+  }
+  left.appendChild(container);
+  if (STATE.selectedFindingId) renderFindingDetail(STATE.selectedFindingId);
+  else { document.getElementById("middlePane").innerHTML = hint("Select a finding to trace its lifecycle"); document.getElementById("rightPane").innerHTML = ""; }
+}
+
+function spansForFinding(findingId) {
+  // Verification spans carry metadata.finding_id; review spans carry the
+  // finding in outputs.findings[].finding_id.
+  const verif = STATE.spans.filter(s =>
+    (s.metadata && s.metadata.finding_id === findingId) ||
+    (s.inputs && s.inputs.finding_id === findingId));
+  const review = STATE.spans.filter(s =>
+    s.kind === "review" && s.outputs && Array.isArray(s.outputs.findings) &&
+    s.outputs.findings.some(ff => ff.finding_id === findingId));
+  return { verif, review };
+}
+
+function renderFindingDetail(findingId) {
+  const f = STATE.findingsById[findingId];
+  const mid = document.getElementById("middlePane");
+  if (!f) { mid.innerHTML = hint("Finding not found"); return; }
+  const status = classifyStatus(f);
+  const v = f.verification || {};
+  let html = `<div class="mb-2">${severityBadge(f.severity)} ${statusBadge(status)}</div>
+    <div class="text-xs text-slate-400 mono mb-2">${esc(f.finding_id||"")} · ${esc(f.section||"")} · ${esc(f.actionType||"")}</div>
+    <h2 class="font-semibold mb-1">Issue</h2>
+    <p class="text-sm mb-2">${esc(f.issue||"")}</p>`;
+  if (f.codeReference) html += `<div class="text-xs mb-2"><span class="text-slate-500">Code ref:</span> <span class="mono">${esc(f.codeReference)}</span></div>`;
+
+  // Lifecycle timeline: review → verification → grounding → verdict.
+  const { verif, review } = spansForFinding(findingId);
+  html += `<h2 class="font-semibold mt-3 mb-1">Lifecycle</h2><div class="space-y-1">`;
+  for (const s of review) html += lifecycleRow(s, "Produced by review");
+  for (const s of verif.sort((a,b)=>(a.started_at||0)-(b.started_at||0))) html += lifecycleRow(s, "");
+  html += `</div>`;
+
+  // Verdict / verification summary with Chunk 11-13 fields.
+  html += `<h2 class="font-semibold mt-3 mb-1">Verification</h2>
+    <table class="w-full text-xs"><tbody>
+    ${vRow("Verdict", v.verdict)}
+    ${vRow("Grounded", v.grounded)}
+    ${vRow("Model used", v.model_used)}
+    ${vRow("Searches", v.web_search_requests)}
+    ${vRow("Full-page fetches (Chunk 11)", v.web_fetch_requests)}
+    ${vRow("Models disagreed (Chunk 12)", v.models_disagreed)}
+    ${vRow("Budget exhausted (Chunk 13)", v.budget_exhausted)}
+    ${vRow("Verification failed", v.verification_failed)}
+    ${vRow("Cache status", v.cache_status)}
+    </tbody></table>`;
+  if (v.source_quote) html += `<div class="mt-2 text-xs"><span class="text-slate-500">Source quote:</span>
+    <span class="italic">“${esc(v.source_quote)}”</span></div>`;
+  html += sourcesBlock("Accepted sources", v.accepted_sources || v.sources);
+  html += sourcesBlock("Initial verifier sources (Chunk 12)", v.initial_sources);
+  html += sourcesBlock("Full-text fetched (Chunk 11)", v.fetched_sources);
+  html += jsonBlock(v.structured_payload, "structured payload");
+  mid.innerHTML = html;
+  document.getElementById("rightPane").innerHTML = hint("Select a lifecycle span to inspect its spans / events");
+}
+function lifecycleRow(span, prefix) {
+  const div = `<div class="tree-row px-2 py-1 cursor-pointer flex items-center gap-1.5 border border-slate-100 rounded"
+      onclick="window.__selectSpanFromFinding('${span.span_id}')">
+      ${kindBadge(span.kind)} ${spanStatusDot(span)}
+      <span class="text-xs flex-1 truncate">${esc(prefix || span.name)}</span>
+      <span class="text-xs text-slate-400 mono">${durMs(span)}</span></div>`;
+  return div;
+}
+window.__selectSpanFromFinding = function(spanId) {
+  STATE.selectedSpanId = spanId;
+  // Render the span detail into the RIGHT pane (middle keeps the finding).
+  const right = document.getElementById("rightPane");
+  const span = STATE.spansById[spanId];
+  if (!span) { right.innerHTML = hint("Span not found"); return; }
+  let html = `<div class="flex items-center gap-2 mb-2">${kindBadge(span.kind)} ${spanStatusDot(span)}</div>
+    <div class="text-xs text-slate-400 mono mb-2">${esc(span.name)}<br/>${fmtTs(span.started_at)} → ${fmtTs(span.ended_at)} (${durMs(span)})</div>`;
+  html += jsonBlock(span.inputs, "inputs");
+  html += jsonBlock(span.outputs, "outputs");
+  const evs = STATE.eventsBySpan[spanId] || [];
+  html += `<div class="mt-2 font-semibold text-slate-500 text-xs uppercase">Events (${evs.length})</div>`;
+  for (const ev of evs) {
+    html += `<div class="text-xs border-b border-slate-100 py-1">
+      <span class="font-medium" style="color:${eventColor(ev.type)}">${esc(ev.type)}</span>
+      <span class="text-slate-500">${esc(eventSummary(ev))}</span></div>`;
+  }
+  right.innerHTML = html;
+};
+function vRow(k, val) {
+  if (val === undefined || val === null || val === "") return "";
+  let disp = val;
+  if (typeof val === "boolean") disp = val ? "yes" : "no";
+  return `<tr class="border-t border-slate-100"><td class="py-1 text-slate-500 pr-2">${esc(k)}</td><td class="mono">${esc(disp)}</td></tr>`;
+}
+function sourcesBlock(label, arr) {
+  if (!arr || !arr.length) return "";
+  let html = `<details class="mt-2"><summary class="text-slate-600 font-medium">${esc(label)} (${arr.length})</summary><ul class="mt-1">`;
+  for (const u of arr) html += `<li class="mono text-xs text-blue-600 break-all py-0.5">${esc(typeof u === "string" ? u : (u.url||JSON.stringify(u)))}</li>`;
+  html += `</ul></details>`;
+  return html;
+}
+
+// =====================================================================
+// Timeline tab
+// =====================================================================
+function renderTimelineTab() {
+  const left = document.getElementById("leftPane");
+  const types = Array.from(new Set(STATE.events.map(e => e.type))).sort();
+  left.innerHTML = `<div class="p-2 font-semibold text-slate-500 text-xs uppercase tracking-wide">Filter by type</div>`;
+  const all = document.createElement("div");
+  all.className = "tree-row px-2 py-1 cursor-pointer text-xs font-medium";
+  all.textContent = `All (${STATE.events.length})`;
+  all.addEventListener("click", () => renderTimelineList(null));
+  left.appendChild(all);
+  for (const t of types) {
+    const n = STATE.events.filter(e => e.type === t).length;
+    const row = document.createElement("div");
+    row.className = "tree-row px-2 py-1 cursor-pointer text-xs flex items-center gap-2";
+    row.innerHTML = `<span style="color:${eventColor(t)}">●</span> ${esc(t)} <span class="text-slate-400">(${n})</span>`;
+    row.addEventListener("click", () => renderTimelineList(t));
+    left.appendChild(row);
+  }
+  renderTimelineList(null);
+  document.getElementById("rightPane").innerHTML = hint("Select an event");
+}
+function renderTimelineList(filterType) {
+  const mid = document.getElementById("middlePane");
+  const evs = filterType ? STATE.events.filter(e => e.type === filterType) : STATE.events;
+  mid.innerHTML = `<div class="font-semibold text-slate-500 text-xs uppercase tracking-wide mb-2">${filterType||"All events"} (${evs.length})</div>`;
+  const list = document.createElement("div");
+  for (const ev of evs) {
+    const span = STATE.spansById[ev.span_id];
+    const r = document.createElement("div");
+    r.className = "tree-row px-2 py-1 cursor-pointer text-xs border-b border-slate-100 flex items-center gap-2";
+    r.innerHTML = `<span class="text-slate-400 mono">${fmtTs(ev.ts)}</span>
+      <span class="font-medium" style="color:${eventColor(ev.type)}">${esc(ev.type)}</span>
+      ${span ? kindBadge(span.kind) : ""}
+      <span class="text-slate-500 truncate flex-1">${esc(eventSummary(ev))}</span>`;
+    r.addEventListener("click", () => renderEventDetail(ev));
+    list.appendChild(r);
+  }
+  mid.appendChild(list);
+}
+
+// =====================================================================
+// Search / Grounding tab
+// =====================================================================
+function renderGroundingTab() {
+  document.getElementById("leftPane").innerHTML =
+    `<div class="p-2 font-semibold text-slate-500 text-xs uppercase tracking-wide">Search &amp; grounding</div>
+     <div class="p-2 text-xs text-slate-500">Every web_search query and result across the run, plus per-finding grounding outcomes.</div>`;
+  const mid = document.getElementById("middlePane");
+  const queries = STATE.events.filter(e => e.type === "web_search_query");
+  const results = STATE.events.filter(e => e.type === "web_search_result");
+  const grounding = STATE.events.filter(e => e.type === "grounding_outcome");
+
+  let html = `<h2 class="font-semibold mb-1">Web searches (${queries.length})</h2>`;
+  for (const q of queries) {
+    const span = STATE.spansById[q.span_id];
+    html += `<div class="border border-slate-100 rounded p-2 mb-1 text-xs">
+      <div class="flex items-center gap-2 mb-1">${span?kindBadge(span.kind):""}<span class="text-slate-400 mono">${fmtTs(q.ts)}</span></div>
+      <div class="font-medium text-green-700">🔍 ${esc(q.query||"(no query)")}</div></div>`;
+  }
+  html += `<h2 class="font-semibold mt-3 mb-1">Grounding outcomes (${grounding.length})</h2>`;
+  for (const g of grounding) {
+    html += `<div class="border border-slate-100 rounded p-2 mb-1 text-xs">
+      <span class="text-green-700">${(g.accepted||[]).length} accepted</span> ·
+      <span class="text-red-600">${(g.rejected||[]).length} rejected</span>
+      ${g.downgraded_to_unverified?'<span class="text-orange-600"> · downgraded to UNVERIFIED</span>':''}
+      ${g.budget_exhausted?'<span style="color:#B22222"> · budget exhausted</span>':''}
+      ${(g.accepted||[]).map(u=>`<div class="mono text-blue-600 break-all">✓ ${esc(u)}</div>`).join("")}
+      ${(g.rejected||[]).map(u=>`<div class="mono text-red-500 break-all">✗ ${esc(u)}</div>`).join("")}
+    </div>`;
+  }
+  mid.innerHTML = html;
+  // Right pane: aggregate every result URL.
+  let rhtml = `<h2 class="font-semibold mb-1">All retrieved URLs</h2>`;
+  const seen = new Set();
+  for (const res of results) for (const u of (res.urls_with_titles||[])) {
+    if (seen.has(u.url)) continue; seen.add(u.url);
+    rhtml += `<div class="text-xs border-b border-slate-100 py-1">
+      <div>${esc(u.title||"")}</div><div class="mono text-blue-600 break-all">${esc(u.url||"")}</div></div>`;
+  }
+  if (!seen.size) rhtml += `<div class="text-slate-400 text-xs">No web_search results recorded.</div>`;
+  document.getElementById("rightPane").innerHTML = rhtml;
+}
+
+function hint(text) {
+  return `<div class="text-slate-400 text-sm p-4">${esc(text)}</div>`;
+}
+</script>
+</body>
+</html>
