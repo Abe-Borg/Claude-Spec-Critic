@@ -748,3 +748,214 @@ def test_viewer_status_colors_match_report() -> None:
     failed = STATUS_SHADING[ReportStatus.VERIFICATION_FAILED]    # B22222
     assert f"#{contested}".upper() in html.upper()
     assert f"#{failed}".upper() in html.upper()
+
+
+# ---- CLI -------------------------------------------------------------
+def _write_run(root: Path, run_id: str, *, started_at: float, findings: list[dict] | None = None,
+               mode: str = "realtime") -> Path:
+    d = root / run_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "run.json").write_text(json.dumps({
+        "run_id": run_id, "mode": mode, "model": "claude-opus-4-7",
+        "cycle_label": "California 2025", "files_reviewed": ["a.docx"],
+        "started_at": started_at, "ended_at": started_at + 5, "capture_level": "default",
+    }))
+    (d / "spans.jsonl").write_text(
+        json.dumps({"span_id": "s1", "parent_span_id": None, "kind": "pipeline",
+                    "name": "p", "status": "ok"}) + "\n")
+    (d / "events.jsonl").write_text("")
+    lines = "".join(json.dumps(f) + "\n" for f in (findings or []))
+    (d / "findings.jsonl").write_text(lines)
+    return d
+
+
+def test_cli_list_and_show(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    from src.tracing import cli
+    import time as _t
+    _write_run(tmp_path, "run_a", started_at=_t.time(), findings=[
+        {"finding_id": "f1", "severity": "HIGH", "section": "2.2.A", "issue": "edition drift",
+         "verification": {"verdict": "CONFIRMED", "grounded": True, "sources": ["http://x"],
+                          "models_disagreed": True, "web_fetch_requests": 2}},
+        {"finding_id": "f2", "severity": "MEDIUM", "section": "3.1.B", "issue": "placeholder",
+         "verification": {"verdict": "UNVERIFIED", "cache_status": "local_skip"}},
+    ])
+    assert cli.main(["--trace-dir", str(tmp_path), "list"]) == 0
+    out = capsys.readouterr().out
+    assert "run_a" in out
+
+    assert cli.main(["--trace-dir", str(tmp_path), "show", "run_a"]) == 0
+    out = capsys.readouterr().out
+    assert "VERIFIED_CONTESTED" in out  # f1 (models_disagreed)
+    assert "LOCALLY_CLASSIFIED" in out  # f2 (local_skip)
+    assert "models_disagreed" in out
+    assert "fetches=2" in out
+
+
+def test_cli_show_missing_run(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    from src.tracing import cli
+    assert cli.main(["--trace-dir", str(tmp_path), "show", "nope"]) == 1
+
+
+def test_cli_show_resolves_by_embedded_run_id(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """A renamed trace folder still resolves by the run_id in run.json."""
+    from src.tracing import cli
+    import time as _t
+    d = _write_run(tmp_path, "weird_dir_name", started_at=_t.time())
+    # Embedded run_id differs from the dir name.
+    meta = json.loads((d / "run.json").read_text())
+    meta["run_id"] = "the_real_id"
+    (d / "run.json").write_text(json.dumps(meta))
+    assert cli.main(["--trace-dir", str(tmp_path), "show", "the_real_id"]) == 0
+
+
+def test_cli_prune_older_than(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    from src.tracing import cli
+    import time as _t
+    now = _t.time()
+    _write_run(tmp_path, "fresh", started_at=now - 1 * 86400)
+    _write_run(tmp_path, "stale", started_at=now - 50 * 86400)
+    assert cli.main(["--trace-dir", str(tmp_path), "prune", "--older-than", "30d", "--yes"]) == 0
+    assert (tmp_path / "fresh").exists()
+    assert not (tmp_path / "stale").exists()
+
+
+def test_cli_prune_keep_last(tmp_path: Path) -> None:
+    from src.tracing import cli
+    import time as _t
+    now = _t.time()
+    for i in range(4):
+        _write_run(tmp_path, f"r{i}", started_at=now - i * 86400)
+    assert cli.main(["--trace-dir", str(tmp_path), "prune", "--keep-last", "2", "--yes"]) == 0
+    remaining = sorted(d.name for d in tmp_path.iterdir() if d.is_dir())
+    assert remaining == ["r0", "r1"]  # two most recent kept
+
+
+def test_cli_parse_duration() -> None:
+    from src.tracing.cli import _parse_duration
+    assert _parse_duration("30d") == 30 * 86400
+    assert _parse_duration("12h") == 12 * 3600
+    assert _parse_duration("90m") == 90 * 60
+    assert _parse_duration("7") == 7 * 86400  # bare number → days
+
+
+# ---- Resume-state trace continuity ------------------------------------
+def _minimal_submission(trace_span_id: str = ""):
+    from src.orchestration.pipeline import BatchSubmission
+    from src.batch.batch import BatchJob
+    job = BatchJob(
+        batch_id="msgbatch_test123",
+        job_type="review",
+        request_map={"review__a__0": {"filename": "a.docx", "index": 0, "type": "review"}},
+        created_at=1000.0,
+    )
+    return BatchSubmission(
+        job=job,
+        files_reviewed=["a.docx"],
+        review_request_ids=["review__a__0"],
+        trace_span_id=trace_span_id,
+    )
+
+
+def test_resume_state_persists_trace_block(trace_dir: Path, clean_env: None) -> None:
+    """build_resume_state includes a trace block when a recorder is active,
+    and deserialize_resume_state surfaces it for reattachment."""
+    from src.orchestration.resume_state import build_resume_state, deserialize_resume_state, PHASE_REVIEW_POLL
+
+    rec = TraceRecorder(run_id="resume_rt", trace_dir=trace_dir, capture_level=LEVEL_DEFAULT)
+    rec.start(mode="batch")
+    set_recorder(rec)
+    try:
+        submission = _minimal_submission(trace_span_id="abc123span")
+        state = build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission)
+    finally:
+        rec.stop()
+        set_recorder(None)
+
+    assert state["trace"]["run_id"] == "resume_rt"
+    assert state["trace"]["capture_level"] == LEVEL_DEFAULT
+    assert str(trace_dir) in state["trace"]["trace_dir"]
+    assert state["submission"]["trace_span_id"] == "abc123span"
+
+    # Round-trip back out.
+    restored = deserialize_resume_state(state)
+    assert restored["trace"]["run_id"] == "resume_rt"
+    assert restored["submission"].trace_span_id == "abc123span"
+
+
+def test_resume_state_no_trace_block_when_recorder_off(clean_env: None) -> None:
+    """No recorder installed → no trace block (and no crash)."""
+    from src.orchestration.resume_state import build_resume_state, deserialize_resume_state, PHASE_REVIEW_POLL
+
+    set_recorder(None)
+    submission = _minimal_submission()
+    state = build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission)
+    assert "trace" not in state
+    # Legacy/no-trace payload deserializes cleanly with no trace key.
+    restored = deserialize_resume_state(state)
+    assert "trace" not in restored
+    assert restored["submission"].trace_span_id == ""
+
+
+def test_reattach_recorder_appends_to_existing_dir(trace_dir: Path, clean_env: None) -> None:
+    """reattach_run_recorder reopens the same dir; a span written after
+    reattach lands alongside the original spans (append, not truncate)."""
+    from src.tracing.session import reattach_run_recorder as _reattach_recorder, stop_run_recorder as _stop_recorder
+
+    # First session: write one span.
+    rec1 = TraceRecorder(run_id="reattach1", trace_dir=trace_dir, capture_level=LEVEL_DEFAULT)
+    rec1.start(mode="batch")
+    set_recorder(rec1)
+    with rec1.span(KIND_PIPELINE, "first session"):
+        pass
+    rec1.stop()
+    set_recorder(None)
+    first_count = len((trace_dir / FILE_SPANS).read_text().strip().split("\n"))
+
+    # Reattach (simulating app-restart resume) and write another span.
+    rec2 = _reattach_recorder({"run_id": "reattach1", "trace_dir": str(trace_dir), "capture_level": LEVEL_DEFAULT})
+    assert rec2 is not None
+    assert get_recorder() is rec2
+    with rec2.span(KIND_REVIEW, "resumed session"):
+        pass
+    _stop_recorder(rec2)
+    assert get_recorder() is None
+
+    second_count = len((trace_dir / FILE_SPANS).read_text().strip().split("\n"))
+    assert second_count == first_count + 1
+
+
+def test_reattach_recorder_none_when_no_trace_meta(clean_env: None) -> None:
+    from src.tracing.session import reattach_run_recorder as _reattach_recorder
+    assert _reattach_recorder(None) is None
+    assert _reattach_recorder({}) is None
+    assert _reattach_recorder({"trace_dir": "/tmp/x"}) is None  # missing run_id
+
+
+# ---- Batch verification spans -----------------------------------------
+def test_batch_verification_span_emitted_for_web_verified(recorder: TraceRecorder, trace_dir: Path) -> None:
+    v = _FakeVerification(verdict="CONFIRMED", grounded=True, cache_status="miss",
+                          web_fetch_requests=1, models_disagreed=True)
+    capture_hooks.capture_batch_verification_span(finding_id="rf-9", verification_result=v)
+    recorder.stop()
+    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
+    vspans = [s for s in spans if s["kind"] == "verification_initial"]
+    assert len(vspans) == 1
+    assert vspans[0]["metadata"]["finding_id"] == "rf-9"
+    assert vspans[0]["metadata"]["source"] == "batch"
+    assert vspans[0]["outputs"]["web_fetch_requests"] == 1
+    assert vspans[0]["outputs"]["models_disagreed"] is True
+
+
+def test_batch_verification_span_skips_local_skip_and_cache_hit(recorder: TraceRecorder, trace_dir: Path) -> None:
+    """Local-skip / cache-hit results never went through web verification,
+    so they don't get a batch verification span (already represented by
+    cache_lookup / local_skip events)."""
+    capture_hooks.capture_batch_verification_span(
+        finding_id="rf-local", verification_result=_FakeVerification(cache_status="local_skip"))
+    capture_hooks.capture_batch_verification_span(
+        finding_id="rf-cached", verification_result=_FakeVerification(cache_status="hit"))
+    recorder.stop()
+    spans_path = trace_dir / FILE_SPANS
+    spans = [json.loads(line) for line in spans_path.read_text().strip().split("\n")] if spans_path.read_text().strip() else []
+    vspans = [s for s in spans if s["kind"] == "verification_initial"]
+    assert len(vspans) == 0

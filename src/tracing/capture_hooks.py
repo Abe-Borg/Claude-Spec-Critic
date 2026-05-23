@@ -755,6 +755,56 @@ def capture_finding_terminal(finding: Any) -> None:
     recorder.record_finding_snapshot(finding)
 
 
+@_safe
+def capture_batch_verification_span(
+    *,
+    finding_id: str,
+    verification_result: Any,
+    parent: SpanHandle | None = None,
+) -> None:
+    """Emit a post-hoc verification span for a batch-verified finding.
+
+    Batch verification runs on Anthropic's servers, so there's no live
+    span lifecycle to wrap (unlike the real-time path). After the wave
+    loop assigns the final VerificationResult, this opens-and-immediately-
+    closes a ``verification_initial`` span carrying that result so the
+    viewer's By-Finding view shows a verification node for batch findings
+    too. Correlation is by ``metadata.finding_id`` (the viewer matches on
+    it regardless of tree position, so a root-parented span still appears
+    in the finding's lifecycle). Skips local-skip / cache-hit results —
+    those never went through web verification and are already represented
+    by the cache_lookup / local_skip events.
+    """
+    recorder = _get()
+    if recorder is None or verification_result is None:
+        return
+    cache_status = getattr(verification_result, "cache_status", "")
+    if cache_status in ("local_skip", "hit"):
+        return
+    mode = getattr(verification_result, "verification_mode", "") or ""
+    profile = getattr(verification_result, "verification_profile", "") or ""
+    handle = recorder.open_span(
+        KIND_VERIFICATION_INITIAL,
+        f"verify (batch): {finding_id}",
+        parent=parent,
+        inputs={
+            "finding_id": finding_id,
+            "routing_decision": {
+                "mode": mode,
+                "profile": profile,
+                "model": getattr(verification_result, "model_used", "") or "",
+                "source": "batch",
+            },
+        },
+        metadata={"finding_id": finding_id, "mode": mode, "source": "batch"},
+    )
+    recorder.close_span(
+        handle,
+        outputs=_verification_outputs(verification_result, deep=recorder.is_deep),
+        status=STATUS_OK,
+    )
+
+
 # ---- Response content-block walker ------------------------------------
 def _block_attr(block: Any, name: str) -> Any:
     """Tolerant attribute lookup — Anthropic SDK objects expose attrs;
