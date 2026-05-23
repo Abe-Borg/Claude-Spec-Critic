@@ -268,7 +268,7 @@ TRIAGE_CLASSIFICATIONS_SCHEMA: dict[str, Any] = {
 VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["verdict", "explanation", "sources", "correction"],
+    "required": ["verdict", "explanation", "sources", "correction", "source_quote"],
     "properties": {
         "verdict": {
             "type": "string",
@@ -287,6 +287,24 @@ VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
         "correction": {
             "type": ["string", "null"],
             "description": "For CORRECTED verdicts only: the corrected reference text.",
+        },
+        # Chunk 2 / Trust Upgrade: every grounded verdict must carry a
+        # verbatim snippet from the search result that the model actually
+        # read. CONFIRMED/CORRECTED with an empty source_quote is demoted
+        # to UNVERIFIED at parse time — see ``_verdict_from_tool_use`` and
+        # the text fallback parser. Nullable so UNVERIFIED/DISPUTED
+        # verdicts (which have no supporting quote) still satisfy
+        # strict-mode constrained sampling.
+        "source_quote": {
+            "type": ["string", "null"],
+            "description": (
+                "Verbatim text from a web_search result snippet that supports "
+                "this verdict — the evidence you actually read, not a "
+                "paraphrase. REQUIRED non-empty for CONFIRMED and CORRECTED "
+                "verdicts; optional/null for UNVERIFIED and DISPUTED. If no "
+                "snippet supports the verdict, you do not have grounded "
+                "evidence — return UNVERIFIED."
+            ),
         },
     },
 }

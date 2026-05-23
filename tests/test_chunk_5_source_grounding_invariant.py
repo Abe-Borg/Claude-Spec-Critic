@@ -346,10 +346,11 @@ class TestLocalSkipExempt:
 
 
 class TestVerificationCacheInvariant:
-    def test_schema_version_is_v2(self):
+    def test_schema_version_is_at_least_v2(self):
         """The bump invalidates pre-Chunk-5 entries that may have stored
-        source-less CONFIRMED results."""
-        assert _CACHE_SCHEMA_VERSION == 2
+        source-less CONFIRMED results. Subsequent bumps (Chunk 2 →
+        v3 for source_quote) only tighten the invariant further."""
+        assert _CACHE_SCHEMA_VERSION >= 2
 
     def test_cache_put_refuses_source_less_confirmed(self):
         cache = VerificationCache()
@@ -439,19 +440,21 @@ class TestVerificationCacheInvariant:
         assert loaded == 0
         assert cache.stats()["size"] == 0
 
-    def test_cache_load_rejects_source_less_v2_entry(
+    def test_cache_load_rejects_source_less_current_version_entry(
         self, tmp_path: Path, monkeypatch
     ):
-        """Even a v2 entry that violates the invariant must be rejected.
+        """Even a current-schema entry that violates the invariant must be rejected.
 
-        Belt-and-suspenders: if some path manages to write a v2 entry
-        that violates the invariant (e.g. a future bug), the load-time
-        check refuses to resurrect it. Production never produces such
-        entries because the verifier downgrades them before write.
+        Belt-and-suspenders: if some path manages to write a
+        current-schema entry that violates the invariant (e.g. a future
+        bug), the load-time check refuses to resurrect it. Production
+        never produces such entries because the verifier downgrades them
+        before write. The test uses ``_CACHE_SCHEMA_VERSION`` so future
+        bumps (e.g. Chunk 2 → v3 for source_quote) don't break it.
         """
         cache_path = tmp_path / "cache.json"
-        bad_v2 = {
-            "version": 2,
+        bad = {
+            "version": _CACHE_SCHEMA_VERSION,
             "saved_at": time.time(),
             "entries": {
                 "bad_key": {
@@ -468,6 +471,7 @@ class TestVerificationCacheInvariant:
                         "successful_source_count": 1,
                         "search_error_count": 0,
                         "correction": None,
+                        "source_quote": "snippet text",
                     },
                 },
                 "good_key": {
@@ -484,11 +488,12 @@ class TestVerificationCacheInvariant:
                         "successful_source_count": 1,
                         "search_error_count": 0,
                         "correction": None,
+                        "source_quote": "snippet text",
                     },
                 },
             },
         }
-        cache_path.write_text(json.dumps(bad_v2), encoding="utf-8")
+        cache_path.write_text(json.dumps(bad), encoding="utf-8")
         cache = VerificationCache()
         loaded = cache.load_from_disk(path=cache_path)
         # Only the good entry survives.
