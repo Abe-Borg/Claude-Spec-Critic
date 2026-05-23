@@ -1,9 +1,10 @@
 """Text extraction module for Spec Critic (DOCX-only)."""
 
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
+from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph
 
@@ -75,6 +76,15 @@ class ExtractedSpec:
     # document, so the locator pairs ``(document_id, element_id)`` when it
     # disambiguates findings that cite an id.
     document_id: str = ""
+    # Chunk 10 / Trust Upgrade: warnings emitted during text extraction
+    # that the report banner surfaces so reviewers can spot specs where
+    # text content may not have been fully captured (drawing-heavy
+    # documents, embedded objects, etc.). Empty list by default; populated
+    # only when the extractor's heuristics fire. Listed per spec — the
+    # run-diagnostics banner counts the number of specs with any warnings,
+    # not the total warning count, so a single spec with multiple
+    # warnings still counts as one affected file.
+    extraction_warnings: list[str] = field(default_factory=list)
 
 
 def _derive_document_id(filename: str) -> str:
@@ -178,6 +188,75 @@ def _summarize_paragraph_formatting(
         if end_stripped > start_stripped:
             run_format_map.append((start_stripped, end_stripped, signature))
     return non_empty, len(signatures), run_format_map
+
+
+# Chunk 10 / Trust Upgrade: threshold above which a spec is flagged as
+# drawing-heavy. The pipeline writes the raw count and the proportion into
+# the warning message so reviewers can see why the spec was flagged
+# (drawings, embedded pictures, OLE objects). 20% is conservative; a
+# typical drawing-supplemented spec carries figures inline at ~10% of body
+# elements. Above that proportion the assumption that text extraction
+# captures the reviewable content stops holding and the warning prompts
+# a manual visual check.
+_CONTENT_LOSS_WARNING_THRESHOLD = 0.20
+
+
+def _detect_content_loss_warning(body) -> str | None:
+    """Return a content-loss warning string for ``body`` or ``None`` if clean.
+
+    Chunk 10 / Trust Upgrade: counts how many direct children of
+    ``<w:body>`` (paragraphs and tables) contain at least one descendant
+    ``<w:drawing>``, ``<w:pict>``, or ``<w:object>`` element. When that
+    proportion exceeds :data:`_CONTENT_LOSS_WARNING_THRESHOLD`, the spec
+    is likely drawing-heavy and text-only extraction cannot capture the
+    reviewable content. The returned string is appended to
+    ``ExtractedSpec.extraction_warnings`` so the report banner surfaces a
+    visible count (per-spec, not per-drawing) and the operator knows to
+    verify the spec visually.
+
+    The ``<w:sectPr>`` body child (section properties) is metadata and
+    not counted as a content element. Returns ``None`` when there are no
+    body children, no embedded objects, or the proportion is below the
+    threshold so the caller can keep ``extraction_warnings`` empty for
+    the common case.
+    """
+    drawing_qn = qn("w:drawing")
+    pict_qn = qn("w:pict")
+    object_qn = qn("w:object")
+    sect_pr_qn = qn("w:sectPr")
+
+    total_body_elements = 0
+    non_text_elements = 0
+    drawings = 0
+    pictures = 0
+    objects = 0
+    for child in body:
+        if child.tag == sect_pr_qn:
+            continue
+        total_body_elements += 1
+        child_drawings = len(child.findall(".//" + drawing_qn))
+        child_pictures = len(child.findall(".//" + pict_qn))
+        child_objects = len(child.findall(".//" + object_qn))
+        if child_drawings or child_pictures or child_objects:
+            non_text_elements += 1
+        drawings += child_drawings
+        pictures += child_pictures
+        objects += child_objects
+
+    if total_body_elements == 0:
+        return None
+    if non_text_elements == 0:
+        return None
+    proportion = non_text_elements / total_body_elements
+    if proportion <= _CONTENT_LOSS_WARNING_THRESHOLD:
+        return None
+
+    percent = round(proportion * 100)
+    return (
+        f"Spec contains {percent}% non-text elements "
+        f"({drawings} drawings, {pictures} pictures, {objects} OLE objects). "
+        "Some content may not have been extracted for review. Verify visually."
+    )
 
 
 def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
@@ -300,6 +379,17 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             f"(map_chars={len(reconstructed)}, content_chars={len(content)})."
         )
 
+    # Chunk 10 / Trust Upgrade: scan the body for embedded drawings /
+    # pictures / objects. When the proportion of non-text elements
+    # exceeds the threshold, the spec is likely drawing-heavy and text-
+    # only extraction may have missed reviewable content. The warning
+    # rides on ``extraction_warnings`` so the run-diagnostics banner can
+    # count affected specs and surface the count to the reviewer.
+    extraction_warnings: list[str] = []
+    content_loss_warning = _detect_content_loss_warning(doc.element.body)
+    if content_loss_warning is not None:
+        extraction_warnings.append(content_loss_warning)
+
     return ExtractedSpec(
         filename=filepath.name,
         content=content,
@@ -308,6 +398,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         source_format="docx",
         paragraph_map=paragraph_map,
         document_id=_derive_document_id(filepath.name),
+        extraction_warnings=extraction_warnings,
     )
 
 

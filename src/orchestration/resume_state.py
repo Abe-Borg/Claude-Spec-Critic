@@ -113,16 +113,28 @@ def serialize_extracted_spec(spec: ExtractedSpec) -> dict[str, Any]:
         "source_format": spec.source_format,
         "content_sha256": _content_digest(spec.content),
         "source_sha256": _source_file_digest(spec.source_path),
+        # Chunk 10 / Trust Upgrade: the extraction warning list survives
+        # resume so a resumed run keeps the banner accurate without
+        # re-reading the source DOCX (the source file may have changed
+        # on disk; the saved warning is the one the original extraction
+        # produced).
+        "extraction_warnings": list(spec.extraction_warnings),
     }
 
 
 def deserialize_extracted_spec(payload: dict[str, Any]) -> ExtractedSpec:
+    raw_warnings = payload.get("extraction_warnings", []) or []
     spec = ExtractedSpec(
         filename=str(payload["filename"]),
         content=str(payload.get("content", "")),
         word_count=int(payload.get("word_count", 0)),
         source_path=str(payload.get("source_path", "")),
         source_format=str(payload.get("source_format", "unknown")),
+        # Chunk 10 / Trust Upgrade: defaults to an empty list for legacy
+        # state files written before the field existed (those payloads
+        # predate the content-loss warning — leaving the list empty is
+        # the safe fallback that preserves the original banner shape).
+        extraction_warnings=[str(w) for w in raw_warnings if w],
     )
     # Warn when the on-disk file no longer matches the saved digest. Resume
     # continues — the saved content is still authoritative for the in-flight
@@ -182,6 +194,13 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         # "Cache replay — Nd old" badge the original run would have
         # shown. Stored as epoch seconds.
         "cache_entry_created_ts": float(result.cache_entry_created_ts),
+        # Chunk 10 / Trust Upgrade: the elevated-confidence flag is
+        # router-derived runtime telemetry, but it must survive resume
+        # so a resumed report applies the same composite-confidence
+        # multiplier the original run would have used. Local-skip
+        # results never reach the verification cache (they aren't
+        # grounded), so no cache schema bump is needed — just resume.
+        "requires_elevated_confidence": bool(result.requires_elevated_confidence),
     }
 
 
@@ -228,6 +247,12 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         # the cache-age badge — rendering "Cache replay (age unknown)" is
         # the safe fallback when the original timestamp was never stored).
         cache_entry_created_ts=float(payload.get("cache_entry_created_ts", 0.0) or 0.0),
+        # Chunk 10 / Trust Upgrade: defaults to False for legacy state
+        # files written before the field existed (those payloads predate
+        # the elevated-confidence multiplier — leaving the multiplier
+        # neutral at 1.0 is the safe fallback that preserves the
+        # original auto-edit gating decision).
+        requires_elevated_confidence=bool(payload.get("requires_elevated_confidence", False)),
     )
 
 

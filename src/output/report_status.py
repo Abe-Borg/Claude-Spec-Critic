@@ -210,6 +210,18 @@ def composite_edit_confidence(finding) -> float:
       the helper is called for display (e.g. the evidence panel
       shows the composite even on findings that won't auto-apply).
 
+    Chunk 10 / Trust Upgrade adds one more multiplicative gate:
+
+    - Elevated-confidence multiplier: 0.85 when
+      ``verification.requires_elevated_confidence`` is True, else 1.0.
+      Local-skip findings that matched only the "residual risk" keyword
+      list (``"leed"`` / ``"internal contradiction"``) carry this flag
+      so the composite drops further than a plain LOCALLY_CLASSIFIED.
+      The default-LOCALLY_CLASSIFIED composite of 0.425 (= 1.0 * 1.0 *
+      0.5 * 0.85) drops to 0.36 (multiplied by 0.85) for elevated-
+      confidence local skips, keeping them well below the 0.7 auto-edit
+      floor even when ``edit_confidence`` is 1.0.
+
     Returns the product. When the finding has no edit proposal at all
     the composite is 0.0 — there's nothing to apply, so the number is
     not meaningful but the helper still returns a finite value rather
@@ -252,11 +264,21 @@ def composite_edit_confidence(finding) -> float:
     else:
         status_multiplier = 0.6
 
+    # Chunk 10 / Trust Upgrade: additional 0.85 factor for local-skip
+    # findings tagged with ``requires_elevated_confidence``. Reads the
+    # flag defensively so legacy verification results (resume payloads
+    # written before the field existed) get the neutral 1.0 multiplier.
+    if bool(getattr(verification, "requires_elevated_confidence", False)):
+        elevated_multiplier = 0.85
+    else:
+        elevated_multiplier = 1.0
+
     return (
         edit_confidence
         * locator_confidence
         * grounded_multiplier
         * status_multiplier
+        * elevated_multiplier
     )
 
 
