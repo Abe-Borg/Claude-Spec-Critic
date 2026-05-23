@@ -586,6 +586,10 @@ def serialize_submission(submission: BatchSubmission) -> dict[str, Any]:
         "template_marker_alerts": list(submission.template_marker_alerts),
         "invalid_code_cycle_alerts": list(submission.invalid_code_cycle_alerts),
         "duplicate_paragraph_alerts": list(submission.duplicate_paragraph_alerts),
+        # Tracing: carry the batch-mode pipeline span_id so a resumed run
+        # can close the same root span. Empty string when tracing was off
+        # at submit time; legacy payloads (no key) deserialize to "".
+        "trace_span_id": getattr(submission, "trace_span_id", "") or "",
     }
 
 
@@ -609,6 +613,7 @@ def deserialize_submission(payload: dict[str, Any]) -> BatchSubmission:
         template_marker_alerts=list(payload.get("template_marker_alerts", [])),
         invalid_code_cycle_alerts=list(payload.get("invalid_code_cycle_alerts", [])),
         duplicate_paragraph_alerts=list(payload.get("duplicate_paragraph_alerts", [])),
+        trace_span_id=str(payload.get("trace_span_id", "") or ""),
     )
 
 
@@ -673,6 +678,21 @@ def build_resume_state(*, phase: str, submission: BatchSubmission, review_state:
         state["review_findings_payload"] = serialize_collected_batch_state(review_state)
     if verification_batch is not None:
         state["verification_batch"] = serialize_batch_job(verification_batch)
+    # Tracing: persist enough to reopen the SAME trace directory on an
+    # app-restart resume so the whole batch run lands in one trace. Read
+    # from the active recorder (global singleton); absent when tracing is
+    # off. Purely additive — legacy loaders ignore unknown keys.
+    try:
+        from ..tracing import get_recorder as _get_recorder
+        _rec = _get_recorder()
+        if _rec is not None:
+            state["trace"] = {
+                "run_id": _rec.run_id,
+                "trace_dir": str(_rec.trace_dir),
+                "capture_level": _rec.capture_level,
+            }
+    except Exception:
+        pass
     return state
 
 
@@ -759,4 +779,15 @@ def deserialize_resume_state(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("verification_batch must be a dict")
         _validate_batch_id(verification_payload.get("batch_id"))
         out["verification_batch"] = deserialize_batch_job(verification_payload)
+    # Tracing reattach info (optional — absent on legacy payloads / runs
+    # where tracing was disabled). The GUI resume path uses this to
+    # reopen the same trace directory so an app-restart resume appends to
+    # the original run rather than starting a fresh trace.
+    trace_meta = payload.get("trace")
+    if isinstance(trace_meta, dict) and trace_meta.get("run_id"):
+        out["trace"] = {
+            "run_id": str(trace_meta.get("run_id")),
+            "trace_dir": str(trace_meta.get("trace_dir", "")),
+            "capture_level": str(trace_meta.get("capture_level", "default")),
+        }
     return out

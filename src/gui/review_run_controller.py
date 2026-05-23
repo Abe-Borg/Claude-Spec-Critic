@@ -27,48 +27,20 @@ from ..orchestration.diagnostics import DiagnosticsReport
 from ..orchestration.pipeline import run_review
 from ..review.reviewer import MODEL_OPUS_47
 from ..core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
-from ..tracing import (
-    TraceRecorder,
-    current_capture_level,
-    get_recorder,
-    set_recorder,
-    trace_dir_for_run,
-    trace_enabled,
+from ..tracing.session import (
+    reattach_run_recorder as _reattach_recorder,
+    start_run_recorder,
+    stop_run_recorder as _stop_recorder,
 )
 from .widgets import COLORS
 
 
-def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list) -> TraceRecorder | None:
-    """Spin up a TraceRecorder for the run, gated on the env-var.
-
-    Reads ``current_capture_level()`` so a GUI toggle that just flipped
-    ``SPEC_CRITIC_TRACE`` (or _DEEP) takes effect on the next run without
-    a process restart. Returns ``None`` when tracing is disabled.
-    """
-    if not trace_enabled():
-        return None
-    from .. import __version__ as _spec_critic_version
-    rec = TraceRecorder(
-        run_id=run_id,
-        trace_dir=trace_dir_for_run(run_id),
-        capture_level=current_capture_level(),
-        spec_critic_version=_spec_critic_version,
+def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list):
+    """Thin wrapper over ``tracing.session.start_run_recorder`` (kept for
+    the existing call sites / signature)."""
+    return start_run_recorder(
+        run_id=run_id, mode=mode, model=model, cycle_label=cycle_label, files=files
     )
-    rec.start(
-        mode=mode, model=model, cycle_label=cycle_label,
-        files_reviewed=[p.name if hasattr(p, "name") else str(p) for p in files],
-    )
-    set_recorder(rec)
-    return rec
-
-
-def _stop_recorder(recorder: TraceRecorder | None) -> None:
-    if recorder is None:
-        return
-    try:
-        recorder.stop()
-    finally:
-        set_recorder(None)
 
 _UI_FONT_SIZE = 12
 _BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
@@ -491,3 +463,9 @@ def reset_ui(app) -> None:
     app.progress_bar.pack_forget()
     app.is_processing = False
     app._batch_submission = None
+    # Stop a reattached trace recorder if a resume bailed out early (e.g.
+    # invalid resume state) before any terminal path could stop it.
+    # Idempotent — the normal completion paths stop it in their own
+    # finally blocks, so a double-stop here is a no-op.
+    _stop_recorder(getattr(app, "_trace_recorder", None))
+    app._trace_recorder = None

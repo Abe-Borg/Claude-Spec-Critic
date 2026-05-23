@@ -1306,6 +1306,7 @@ def verify_finding(
     model: str | None = None,
     cache: VerificationCache | None = None,
     escalated: bool = False,
+    _trace_parent=None,
 ) -> VerificationResult:
     """Verify a single finding using Claude with web search.
 
@@ -1361,6 +1362,7 @@ def verify_finding(
         finding_id=finding_id,
         routing_decision=_routing_decision_to_dict(initial_decision),
         escalation=escalated,
+        parent=_trace_parent,
     )
     try:
         result = _run_verification_call(
@@ -1420,6 +1422,7 @@ def verify_finding(
                 finding_id=finding_id,
                 routing_decision=_routing_decision_to_dict(escalation_decision),
                 escalation=True,
+                parent=_trace_parent,
             )
             try:
                 esc_result = _run_verification_call(
@@ -1988,9 +1991,16 @@ def verify_findings(findings: list[Finding], *, progress: VerifyProgressFn = _no
     total = len(remaining)
     if total == 0:
         return findings
+    # Snapshot the active pipeline span on THIS thread before submitting to
+    # the pool. ThreadPoolExecutor workers do not inherit the parent's
+    # contextvar / thread-local span, so without passing it explicitly the
+    # per-finding verification spans would orphan (parent_span_id=None)
+    # instead of nesting under the pipeline span.
+    from ..tracing import current_span as _current_span
+    trace_parent = _current_span()
     max_workers = min(5, total)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(verify_finding, f, cycle=cycle, cache=cache): f for f in remaining}
+        futures = {pool.submit(verify_finding, f, cycle=cycle, cache=cache, _trace_parent=trace_parent): f for f in remaining}
         completed = 0
         for future in as_completed(futures):
             f = futures[future]
@@ -2951,9 +2961,22 @@ def collect_verification_batch_results(
         )
         request_contexts = next_contexts
     counts = {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0}
+    # Tracing: batch verification runs server-side, so there's no live span
+    # to wrap. Emit a post-hoc verification span per web-verified finding
+    # carrying the final result, so the viewer's By-Finding view shows a
+    # verification node for batch findings (parity with the real-time
+    # path). Parent is the current span when available (pipeline span on
+    # the same thread); otherwise the span correlates by finding_id.
+    from ..tracing import current_span as _current_span
+    _trace_parent = _current_span()
     for finding in findings:
         if finding.verification is None:
             finding.verification = VerificationResult(verdict="UNVERIFIED", explanation="No verification result after all batch waves.")
+        _trace.capture_batch_verification_span(
+            finding_id=getattr(finding, "finding_id", "") or "unknown",
+            verification_result=finding.verification,
+            parent=_trace_parent,
+        )
         counts[finding.verification.verdict] = counts.get(finding.verification.verdict, 0) + 1
     log(
         "Verification complete: "

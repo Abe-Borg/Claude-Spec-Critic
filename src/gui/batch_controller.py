@@ -70,7 +70,7 @@ from ..orchestration.resume_state import (
     build_resume_state,
 )
 from ..review.reviewer import MODEL_OPUS_47
-from .review_run_controller import _maybe_start_recorder, _stop_recorder
+from .review_run_controller import _maybe_start_recorder, _reattach_recorder, _stop_recorder
 from .widgets import COLORS
 
 _UI_FONT_SIZE = 12
@@ -568,6 +568,12 @@ def resume_batch(app, loaded_state: dict) -> None:
 
     os.environ["ANTHROPIC_API_KEY"] = api_key
     app._batch_submission = submission
+    # Tracing: reopen the original run's trace directory (if the saved
+    # state carried trace info and tracing is still desired). A second
+    # recorder.start() against the same dir appends, so the resumed work
+    # joins the original trace rather than starting a fresh one. Stored on
+    # app so each resume terminal path can stop it.
+    app._trace_recorder = _reattach_recorder(loaded_state.get("trace"))
     app._cross_check_for_review = getattr(submission, "cross_check_enabled", False)
     cross_check_skipped = False
     if app._cross_check_for_review and not getattr(submission, "prepared_specs", None):
@@ -619,8 +625,12 @@ def resume_batch(app, loaded_state: dict) -> None:
             return
         if cross_check_skipped:
             review_state.cross_check_skipped_due_to_missing_specs = True
-        result = finalize_batch_result(review_state)
-        app._on_review_complete(result)
+        try:
+            result = finalize_batch_result(review_state)
+            app._on_review_complete(result)
+        finally:
+            _stop_recorder(getattr(app, "_trace_recorder", None))
+            app._trace_recorder = None
         return
     if phase == PHASE_CROSS_CHECK:
         review_state2: CollectedBatchState | None = loaded_state.get("review_state")
@@ -681,6 +691,9 @@ def resume_batch(app, loaded_state: dict) -> None:
                 import traceback
                 err = f"{e}\n{traceback.format_exc()}"
                 app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
+            finally:
+                _stop_recorder(getattr(app, "_trace_recorder", None))
+                app._trace_recorder = None
 
         threading.Thread(target=_do_resume_cross_check, daemon=True).start()
         return
@@ -758,6 +771,9 @@ def resume_verification_poll(app, loaded_state: dict) -> None:
             import traceback
             err = f"{e}\n{traceback.format_exc()}"
             app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
+        finally:
+            _stop_recorder(getattr(app, "_trace_recorder", None))
+            app._trace_recorder = None
 
     threading.Thread(target=_do_resume_verification, daemon=True).start()
 
@@ -801,5 +817,8 @@ def resume_cross_check_verification_poll(app, loaded_state: dict) -> None:
             import traceback
             err = f"{e}\n{traceback.format_exc()}"
             app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
+        finally:
+            _stop_recorder(getattr(app, "_trace_recorder", None))
+            app._trace_recorder = None
 
     threading.Thread(target=_do_resume_cross_check_verification, daemon=True).start()

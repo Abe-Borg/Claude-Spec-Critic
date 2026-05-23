@@ -319,7 +319,26 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 
 ### GUI
 
-The GUI's Tracing row exposes two checkboxes ("Record agent trace", "Deep mode") and a "Show folder" button that opens the trace root in the OS file explorer. The checkboxes set the env vars at run start, so toggling between runs takes effect without a process restart. The default is "Record agent trace" on, "Deep mode" off.
+The GUI's Tracing row exposes two checkboxes ("Record agent trace", "Deep mode"), a "Show folder" button that opens the trace root in the OS file explorer, and an "Open viewer" button that opens the bundled HTML viewer in the default browser. The checkboxes set the env vars at run start, so toggling between runs takes effect without a process restart. The default is "Record agent trace" on, "Deep mode" off.
+
+### HTML viewer
+
+`src/tracing/viewer/trace_viewer.html` is a single-file, zero-build replay tool (open it in any browser, then pick a trace folder). Four views: **By Finding** (finding → review → verification → grounding → verdict), **By Span** (raw tree + prompt resolution), **Timeline** (filterable events), **Search / Grounding** (queries + accepted/rejected URLs). Colors and glyphs mirror the Word report.
+
+### CLI
+
+```
+python -m src.tracing list                          # enumerate runs
+python -m src.tracing show <run_id>                 # finding-by-finding summary
+python -m src.tracing prune --keep-last 20          # keep the 20 newest
+python -m src.tracing prune --older-than 30d --yes  # delete runs older than 30 days
+```
+
+All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` resolves `<run_id>` by directory name or by the `run_id` embedded in `run.json`.
+
+### Batch-resume continuity
+
+A batch run's trace survives an app restart: `start_batch_review` stamps the run's trace `run_id` / `trace_dir` / `capture_level` into the resume state, and the resume path reopens that same trace directory (appending, not truncating) so the whole run lands in one trace.
 
 ### Trace silo guarantees
 
