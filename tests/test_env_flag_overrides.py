@@ -17,6 +17,7 @@ import pytest
 
 from src.editing import spec_editor
 from src.editing import replacement_style
+from src.output import report_status
 from src.verification import verification_cache
 from src.review import prompt_serialization
 
@@ -240,3 +241,62 @@ def test_punctuation_boundary_fix_disabled_via_env(
 ) -> None:
     monkeypatch.setenv("SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX", value)
     assert spec_editor._punctuation_boundary_fix_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR (Chunk 8 / Trust Upgrade)
+# ---------------------------------------------------------------------------
+
+
+def test_auto_edit_confidence_floor_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Chunk 8 / Trust Upgrade: the unset default mirrors the public
+    # ``AUTO_EDIT_CONFIDENCE_FLOOR`` constant (0.7). Operators raise
+    # the bar via the env var without code changes.
+    monkeypatch.delenv(
+        "SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR", raising=False
+    )
+    assert (
+        report_status.auto_edit_confidence_floor()
+        == report_status.AUTO_EDIT_CONFIDENCE_FLOOR
+    )
+
+
+def test_auto_edit_confidence_floor_explicit_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR", "0.85")
+    assert report_status.auto_edit_confidence_floor() == pytest.approx(0.85)
+
+
+def test_auto_edit_confidence_floor_above_one_disables_auto_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Composite confidence is bounded above by 1.0, so any threshold
+    # >= 1.01 is the documented "disable AUTO_EDIT" kill switch. The
+    # parsing helper itself passes the value through verbatim;
+    # classify_edit_action does the routing (covered separately in
+    # tests/test_chunk_n_report_status.py).
+    monkeypatch.setenv("SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR", "1.01")
+    assert report_status.auto_edit_confidence_floor() == pytest.approx(1.01)
+
+
+@pytest.mark.parametrize(
+    "value", ["", "  ", "not-a-number", "junk0.5", "-0.5"]
+)
+def test_auto_edit_confidence_floor_invalid_falls_back(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """Malformed or negative values fall back to the documented default.
+
+    The previous behavior of a hardcoded constant was conservative by
+    default. Falling back to 0.0 on a typo would silently auto-apply
+    every edit — far worse than a stale default. Mirrors the defensive
+    parsing in :func:`verification_cache.cache_ttl_days`.
+    """
+    monkeypatch.setenv("SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR", value)
+    assert (
+        report_status.auto_edit_confidence_floor()
+        == report_status.AUTO_EDIT_CONFIDENCE_FLOOR
+    )

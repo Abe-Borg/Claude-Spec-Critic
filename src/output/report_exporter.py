@@ -51,8 +51,10 @@ from .report_status import (
     EditActionLabel,
     ReportStatus,
     STATUS_DISPLAY_ORDER,
+    auto_edit_confidence_floor,
     classify_edit_action,
     classify_status,
+    composite_edit_confidence,
     edit_action_label,
     status_glyph,
     status_label,
@@ -1481,6 +1483,52 @@ def _write_edit_target_evidence_panel(doc: Document, finding) -> None:
         body = para.add_run(element_id)
         body.font.size = Pt(9)
         body.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(3)
+
+    # --- Composite confidence breakdown (Chunk 8 / Trust Upgrade) ---
+    # Render only for findings that have an edit proposal — the composite
+    # is only meaningful when there's an edit to gate. The line surfaces
+    # the four input numbers so a reviewer can see exactly why a finding
+    # did (or did not) clear the auto-edit floor, plus the effective
+    # threshold so the bar is explicit instead of buried in env state.
+    proposal = (
+        finding.as_edit_proposal()
+        if hasattr(finding, "as_edit_proposal")
+        else None
+    )
+    if proposal is not None:
+        model_confidence = float(
+            getattr(proposal, "edit_confidence", 0.5) or 0.0
+        )
+        composite = composite_edit_confidence(finding)
+        threshold = auto_edit_confidence_floor()
+        passes = composite >= threshold
+
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Confidence: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        # Render the model / locator / composite triple inline so the
+        # reviewer can see which dimension dragged the composite down
+        # without expanding any extra panel. Match-confidence is
+        # repeated here from the line above for readability — the
+        # composite formula only makes sense when all four inputs are
+        # adjacent.
+        body = para.add_run(
+            f"Model {model_confidence:.0%} / "
+            f"Locator {match_confidence:.0%} / "
+            f"Composite {composite:.0%} "
+            f"(threshold: {threshold:.0%})"
+        )
+        body.font.size = Pt(9)
+        # Color the line by whether the composite cleared the bar — green
+        # for pass, amber for fail. The reviewer scanning the report sees
+        # the auto-edit eligibility decision at a glance.
+        body.font.color.rgb = (
+            RGBColor(0, 128, 0) if passes else RGBColor(204, 132, 0)
+        )
         para.paragraph_format.space_after = Pt(3)
 
 
