@@ -124,16 +124,32 @@ def sample_review_findings_payload() -> dict[str, Any]:
 
 
 def sample_verification_verdict_payload(
-    *, verdict: str = "CONFIRMED", grounded_sources: list[str] | None = None
+    *,
+    verdict: str = "CONFIRMED",
+    grounded_sources: list[str] | None = None,
+    source_quote: str | None = None,
 ) -> dict[str, Any]:
-    """Return a structured payload that matches ``VERIFICATION_VERDICT_SCHEMA``."""
+    """Return a structured payload that matches ``VERIFICATION_VERDICT_SCHEMA``.
+
+    Chunk 2 / Trust Upgrade: ``source_quote`` is a required-but-nullable
+    schema field; for CONFIRMED / CORRECTED verdicts the verifier demotes
+    empty quotes to UNVERIFIED at parse time, so this fixture defaults to
+    a non-empty snippet to keep grounded test paths grounded.
+    """
     if grounded_sources is None:
         grounded_sources = ["https://www.dgs.ca.gov/DSA/"]
+    if source_quote is None:
+        source_quote = (
+            "The 2025 California Plumbing Code took effect on January 1, "
+            "2026, per the California Building Standards Commission's "
+            "adoption matrix."
+        )
     return {
         "verdict": verdict,
         "explanation": "The 2025 California Plumbing Code is the current cycle per DSA.",
         "sources": grounded_sources,
         "correction": None,
+        "source_quote": source_quote,
     }
 
 

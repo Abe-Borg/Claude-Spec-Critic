@@ -186,6 +186,17 @@ class VerificationResult:
     # persisted by the verification cache or resume state — it
     # describes runtime behavior, not durable verdict semantics.
     retry_telemetry: dict | None = None
+    # ----- Source-quote evidence -----------------------------------------
+    # Verbatim text from a web_search result snippet that the model said
+    # it relied on to render the verdict. Populated from the structured
+    # ``submit_verification_verdict`` tool input (``source_quote`` field).
+    # CONFIRMED/CORRECTED verdicts that arrive with an empty quote are
+    # demoted to UNVERIFIED at parse time, so this field is non-empty
+    # for every grounded verdict produced by the production paths.
+    # Empty string for UNVERIFIED/DISPUTED verdicts that don't have an
+    # underlying supporting quote, and for legacy/cache entries that
+    # predate Chunk 2's schema bump.
+    source_quote: str = ""
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -482,11 +493,11 @@ def _get_verification_system_prompt(
             "  ``submit_verification_verdict`` (the structured verdict tool).",
             "- Call web_search first, then call submit_verification_verdict exactly",
             "  once as the final step of your turn with verdict, explanation, sources,",
-            "  and (for CORRECTED only) the corrected reference.",
+            "  source_quote, and (for CORRECTED only) the corrected reference.",
             "- Strongly prefer the structured tool over plain text. Fallback only:",
             "  if you cannot call the tool, emit the verdict as a JSON object with",
-            "  the same field names (verdict, explanation, sources, correction) so",
-            "  it can still be parsed.",
+            "  the same field names (verdict, explanation, sources, source_quote,",
+            "  correction) so it can still be parsed.",
             "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
         ]
     else:
@@ -499,11 +510,41 @@ def _get_verification_system_prompt(
             "",
             "- The available tool is ``web_search`` (server-side).",
             "- Call web_search first, then emit your verdict as a JSON object",
-            "  with the fields verdict, explanation, sources, and (for CORRECTED",
-            "  only) correction so it can be parsed.",
+            "  with the fields verdict, explanation, sources, source_quote, and",
+            "  (for CORRECTED only) correction so it can be parsed.",
             "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
         ]
-    return "\n".join(base_lines + tool_lines)
+    # Chunk 2 / Trust Upgrade: every grounded verdict must carry the
+    # verbatim snippet text the model actually read. Without that quote
+    # the report has no audit trail back to a specific search result.
+    # The parser demotes CONFIRMED/CORRECTED with empty source_quote to
+    # UNVERIFIED at parse time (see ``_demote_if_missing_source_quote``).
+    quote_lines = [
+        "",
+        "Source quote (CRITICAL for CONFIRMED / CORRECTED):",
+        "",
+        "- When you render a CONFIRMED or CORRECTED verdict, also extract the",
+        "  verbatim text from the web_search result snippet that supports your",
+        "  verdict. Put it in ``source_quote``. This is the evidence you",
+        "  actually read, not a paraphrase or summary.",
+        "- Quote enough context (a sentence or two) that a reviewer reading",
+        "  the report can recognize the passage without opening the source.",
+        "- If no snippet you retrieved contains text that supports the",
+        "  verdict, you do not have grounded evidence — return UNVERIFIED",
+        "  with source_quote=null. Do not fabricate a quote.",
+        "- For UNVERIFIED / DISPUTED verdicts, source_quote may be null or",
+        "  empty (there is no supporting passage to cite).",
+        "",
+        "Example of a well-formed CONFIRMED verdict (source_quote filled from a snippet):",
+        "{",
+        '  "verdict": "CONFIRMED",',
+        '  "explanation": "NFPA 13 (2022) sets the maximum sprinkler spacing at 15 ft for ordinary hazard occupancies, per the cited section.",',
+        '  "sources": ["https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=13"],',
+        '  "source_quote": "Section 10.2.5.2.1 The maximum distance between sprinklers shall not exceed 15 ft (4.6 m) for ordinary hazard occupancies.",',
+        '  "correction": null',
+        "}",
+    ]
+    return "\n".join(base_lines + tool_lines + quote_lines)
 
 
 def _content_block_to_plain(block) -> dict | None:
@@ -673,6 +714,48 @@ def _normalize_sources(value) -> list[str]:
     return []
 
 
+def _normalize_source_quote(value) -> str:
+    """Coerce a raw ``source_quote`` field to a stripped string.
+
+    Tolerates None, non-string values, and whitespace-only entries — all
+    collapse to empty string so the missing-quote demotion in
+    :func:`_demote_if_missing_source_quote` can treat them uniformly.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _demote_if_missing_source_quote(result: VerificationResult) -> VerificationResult:
+    """Demote CONFIRMED/CORRECTED with an empty ``source_quote`` to UNVERIFIED.
+
+    Chunk 2 invariant: a grounded verdict must carry the verbatim snippet
+    the model said it relied on. Without that quote there is no audit
+    trail back to the actual search result, which is the whole point of
+    the field. Mirrors the structure of :func:`_enforce_grounding_invariant`
+    so the two demotion paths read the same and stack cleanly: this
+    helper fires first (at parse time), and the source-grounding
+    invariant fires later in the pipeline after sources are partitioned.
+    """
+    verdict = (result.verdict or "").strip().upper()
+    if verdict not in ("CONFIRMED", "CORRECTED"):
+        return result
+    if result.source_quote:
+        return result
+    result.verdict = "UNVERIFIED"
+    suffix = " (downgraded: source_quote was empty)"
+    if not result.explanation:
+        result.explanation = (
+            "Verdict downgraded to UNVERIFIED: source_quote was empty "
+            "(grounded verdicts require a verbatim snippet)."
+        )
+    elif suffix not in result.explanation:
+        result.explanation = result.explanation + suffix
+    return result
+
+
 def _parse_verification_response(response_text: str) -> VerificationResult:
     """Fallback verifier-output parser.
 
@@ -709,12 +792,14 @@ def _parse_verification_response(response_text: str) -> VerificationResult:
         return VerificationResult(verdict="UNVERIFIED", explanation="Verification response JSON was not an object.")
 
     correction_raw = data.get("correction")
-    return VerificationResult(
+    parsed = VerificationResult(
         verdict=_normalize_verdict(data.get("verdict")),
         explanation=str(data.get("explanation") or ""),
         sources=_normalize_sources(data.get("sources")),
         correction=(str(correction_raw) if correction_raw not in (None, "") else None),
+        source_quote=_normalize_source_quote(data.get("source_quote")),
     )
+    return _demote_if_missing_source_quote(parsed)
 
 
 def _verdict_from_tool_use(message) -> VerificationResult | None:
@@ -732,13 +817,15 @@ def _verdict_from_tool_use(message) -> VerificationResult | None:
     if not isinstance(payload, dict):
         return None
     correction_raw = payload.get("correction")
-    return VerificationResult(
+    parsed = VerificationResult(
         verdict=_normalize_verdict(payload.get("verdict")),
         explanation=str(payload.get("explanation") or ""),
         sources=_normalize_sources(payload.get("sources")),
         correction=(str(correction_raw) if correction_raw not in (None, "") else None),
+        source_quote=_normalize_source_quote(payload.get("source_quote")),
         structured_payload=payload,
     )
+    return _demote_if_missing_source_quote(parsed)
 
 
 # ---------------------------------------------------------------------------

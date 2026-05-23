@@ -172,6 +172,7 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         "rejected_sources": [dict(r) for r in result.rejected_sources],
         "verification_profile": result.verification_profile,
         "verification_mode": result.verification_mode,
+        "source_quote": result.source_quote,
     }
 
 
@@ -203,6 +204,10 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         rejected_sources=rejected,
         verification_profile=str(payload.get("verification_profile", "")),
         verification_mode=str(payload.get("verification_mode", "")),
+        # Chunk 2 / Trust Upgrade: resume-state schema is unversioned so
+        # missing values default to empty string for backward compatibility
+        # with state files written before the field was added.
+        source_quote=str(payload.get("source_quote", "") or ""),
     )
 
 

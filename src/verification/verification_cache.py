@@ -56,7 +56,14 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # those verdicts, so silently reusing them would let the old behavior
 # leak through. Bumping the version drops every v1 cache file on first
 # load; users get fresh verifications under the new invariant.
-_CACHE_SCHEMA_VERSION = 2
+#
+# v3 — Chunk 2 / Trust Upgrade. Adds ``source_quote`` (the verbatim snippet
+# the model said it read) to every entry. v2 entries don't carry the
+# quote, so silently reusing them would produce CONFIRMED / CORRECTED
+# hits whose report rendering has no source_quote to show — a regression
+# against the new invariant. Bumping the version drops every v2 cache
+# file on first load; users get fresh verifications under the new shape.
+_CACHE_SCHEMA_VERSION = 3
 
 # Cache-key claim digest length (hex chars). 24 hex chars = 96 bits of entropy,
 # enough that two distinct claims colliding is astronomically unlikely even
@@ -333,6 +340,13 @@ class VerificationCache:
                         verification_mode=str(
                             result_payload.get("verification_mode") or ""
                         ),
+                        # Chunk 2 / Trust Upgrade: the verbatim snippet.
+                        # v3 entries always carry it; the schema-version
+                        # gate above already dropped pre-v3 files, so a
+                        # missing value here means a malformed entry —
+                        # default to empty string and let the report
+                        # render without a quote rather than crashing.
+                        source_quote=str(result_payload.get("source_quote") or ""),
                     )
                 except Exception:
                     continue
@@ -425,6 +439,10 @@ def _result_to_dict(result: "VerificationResult") -> dict:
         # entries (without this field) load as empty string; the routing
         # logic treats that as STANDARD_REASONING for backward compatibility.
         "verification_mode": result.verification_mode,
+        # Chunk 2 / Trust Upgrade: persist the verbatim snippet so cache
+        # replays render the same source_quote the original verification
+        # produced. v3 schema bump invalidates v2 entries that lack it.
+        "source_quote": result.source_quote,
     }
 
 
@@ -448,6 +466,7 @@ def _clone_for_store(result: "VerificationResult") -> "VerificationResult":
         rejected_sources=[dict(r) for r in result.rejected_sources],
         verification_profile=result.verification_profile,
         verification_mode=result.verification_mode,
+        source_quote=result.source_quote,
     )
 
 
@@ -471,4 +490,5 @@ def _clone_for_hit(stored: "VerificationResult") -> "VerificationResult":
         rejected_sources=[dict(r) for r in stored.rejected_sources],
         verification_profile=stored.verification_profile,
         verification_mode=stored.verification_mode,
+        source_quote=stored.source_quote,
     )
