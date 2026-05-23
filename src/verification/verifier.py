@@ -439,6 +439,65 @@ def _build_verification_prompt(
     )
 
 
+def _pinned_standards_lines(cycle: CodeCycle) -> list[str]:
+    """Render the "Pinned standards editions" block for the verifier prompt.
+
+    Chunk 7 / Trust Upgrade: the California 2025 cycle pins specific
+    editions of NFPA, ASHRAE, IAPMO, and UL standards. Surfacing these
+    in the verifier system prompt lets the model verify claims against
+    the editions California actually adopted, and flag any drift the
+    spec author may have introduced from a more recent or stale edition.
+
+    Standards with empty edition strings (e.g., a future cycle that
+    hasn't been populated yet) are omitted from the rendered block so
+    the prompt doesn't claim a pinning that isn't there. When every
+    pinned-standards field is empty, the block degrades to an empty
+    list and the prompt skips it entirely.
+    """
+    entries: list[tuple[str, str]] = []
+    if cycle.nfpa13:
+        entries.append(("NFPA 13", cycle.nfpa13))
+    if cycle.nfpa14:
+        entries.append(("NFPA 14", cycle.nfpa14))
+    if cycle.nfpa20:
+        entries.append(("NFPA 20", cycle.nfpa20))
+    if cycle.nfpa24:
+        entries.append(("NFPA 24", cycle.nfpa24))
+    if cycle.nfpa25:
+        entries.append(("NFPA 25", cycle.nfpa25))
+    if cycle.nfpa72:
+        entries.append(("NFPA 72", cycle.nfpa72))
+    if cycle.ashrae_62_1:
+        entries.append(("ASHRAE 62.1", cycle.ashrae_62_1))
+    if cycle.ashrae_90_1:
+        entries.append(("ASHRAE 90.1", cycle.ashrae_90_1))
+    if cycle.ashrae_15:
+        entries.append(("ASHRAE 15", cycle.ashrae_15))
+    if cycle.iapmo_tsc:
+        entries.append(("IAPMO Uniform Plumbing TSC", cycle.iapmo_tsc))
+    for standard, edition in cycle.ul_listing_editions:
+        if edition:
+            entries.append((standard, edition))
+    if not entries:
+        return []
+    lines: list[str] = [
+        "Pinned standards editions for this cycle:",
+        "",
+    ]
+    lines.extend(f"- {standard}: {edition}" for standard, edition in entries)
+    lines.extend(
+        [
+            "",
+            "When verifying claims against any of the standards above, use the",
+            "edition listed here. If a search result shows a different edition,",
+            "flag the difference explicitly in your explanation and treat the",
+            "pinned edition as authoritative for the cycle.",
+            "",
+        ]
+    )
+    return lines
+
+
 def _get_verification_system_prompt(
     cycle: CodeCycle,
     *,
@@ -465,6 +524,7 @@ def _get_verification_system_prompt(
         f"Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc},",
         f"Energy Code {cycle.energy_code}, CALGreen {cycle.calgreen}, ASCE {cycle.asce7}.",
         "",
+        *_pinned_standards_lines(cycle),
         "Search budget:",
         "- Your web_search budget is bounded and varies by severity (high-stakes findings",
         "  get more headroom). The exact ceiling is enforced per call; treat it as scarce.",
