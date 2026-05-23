@@ -1220,6 +1220,23 @@ def collect_batch_verification_results(
 
 
 def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
+    # Chunk 4 / Trust Upgrade: stamp locator evidence on findings with
+    # edit proposals so the first-time exported report can render the
+    # "Edit Target Evidence" panel. Run before constructing
+    # PipelineResult so the side effects on Finding.locator_evidence
+    # propagate through review_result / cross_check_result. Guarded by
+    # truthiness on prepared_specs because the recovery path may have
+    # nulled it.
+    prepared_specs = state.submission.prepared_specs or []
+    if prepared_specs:
+        from ..editing.apply_edits import populate_locator_evidence
+        all_findings: list[Finding] = []
+        if state.review_result and state.review_result.findings:
+            all_findings.extend(state.review_result.findings)
+        if state.cross_check_result and state.cross_check_result.findings:
+            all_findings.extend(state.cross_check_result.findings)
+        if all_findings:
+            populate_locator_evidence(all_findings, prepared_specs)
     return PipelineResult(
         review_result=state.review_result,
         files_reviewed=state.files_reviewed,
@@ -1345,6 +1362,16 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
         # --- FIX 2b: Surface per-spec errors on combined result ---
         combined.error = f"{len(errors)} spec(s) had errors: " + "; ".join(errors)
     _persist_verification_cache(cache, log=log)
+    # Chunk 4 / Trust Upgrade: stamp locator evidence on findings with
+    # edit proposals so the report's "Edit Target Evidence" panel has
+    # data before the user reaches the apply step.
+    if specs:
+        from ..editing.apply_edits import populate_locator_evidence
+        all_findings: list[Finding] = list(combined.findings)
+        if cross and cross.findings:
+            all_findings.extend(cross.findings)
+        if all_findings:
+            populate_locator_evidence(all_findings, specs)
     progress(100.0, "Done.")
     return PipelineResult(
         review_result=combined,

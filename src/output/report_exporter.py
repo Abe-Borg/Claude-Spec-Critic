@@ -42,6 +42,7 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from lxml import etree
 
+from ..core.api_config import web_search_max_uses_for_severity
 from .report_status import (
     EDIT_ACTION_DISPLAY_ORDER,
     EditActionLabel,
@@ -55,6 +56,50 @@ from .report_status import (
     summarize_edit_actions,
     summarize_statuses,
 )
+
+
+# ---------------------------------------------------------------------------
+# Evidence panel labels (Chunk 4 / Trust Upgrade)
+# ---------------------------------------------------------------------------
+
+# Human-readable labels for the verification-mode strings stamped on
+# VerificationResult.verification_mode. Keys match VerificationMode.value
+# (lowercase string form); unknown modes fall back to a Title-cased
+# version of the raw string so a future mode does not render as blank.
+_VERIFICATION_MODE_LABELS: dict[str, str] = {
+    "local_skip": "Local skip",
+    "strict_structured": "Strict structured",
+    "standard_reasoning": "Standard reasoning",
+    "deep_reasoning": "Deep reasoning",
+}
+
+
+def _verification_mode_label(mode: str) -> str:
+    """Map a raw VerificationMode string to a display label."""
+    mode = (mode or "").strip().lower()
+    if not mode:
+        return ""
+    return _VERIFICATION_MODE_LABELS.get(mode, mode.replace("_", " ").title())
+
+
+# Human-readable labels for locator match-method strings stamped on
+# Finding.locator_evidence["match_method"]. Keys match the strings
+# returned by edit_locator's match-method constants.
+_MATCH_METHOD_LABELS: dict[str, str] = {
+    "id": "Id-anchored",
+    "exact": "Exact",
+    "normalized": "Normalized",
+    "section_anchored": "Section-anchored",
+    "section_anchored_fuzzy": "Section-anchored (fuzzy)",
+    "fuzzy": "Fuzzy",
+}
+
+
+def _match_method_label(method: str) -> str:
+    method = (method or "").strip()
+    if not method:
+        return ""
+    return _MATCH_METHOD_LABELS.get(method, method.replace("_", " ").title())
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +731,355 @@ def _write_alerts(
 
 
 # ---------------------------------------------------------------------------
+# Per-finding evidence panel (Chunk 4 / Trust Upgrade)
+# ---------------------------------------------------------------------------
+
+def _write_evidence_panel(doc: Document, finding, vr) -> None:
+    """Render the verifier-evidence panel under the collapsed Sources heading.
+
+    Chunk 4 / Trust Upgrade. Replaces the old URL-only Sources block.
+    For every finding with a verification result, surface enough audit
+    trail that a reviewer can answer "why did the verifier reach this
+    verdict?" without leaving the report:
+
+    - Verifier model (Sonnet 4.6 / Opus 4.7 / local).
+    - Verification mode (LOCAL_SKIP / STRICT_STRUCTURED / STANDARD_REASONING
+      / DEEP_REASONING) in human-readable form.
+    - Search budget used ("N of M searches used") computed from
+      ``web_search_requests`` and the severity-based ceiling.
+    - Source quote (Chunk 2): the verbatim snippet the verifier said
+      it relied on. Rendered as an indented italic blockquote so it is
+      visually distinct from prose paragraphs.
+    - Verifier rationale: the model's explanation. Moved here from
+      its old location above the Sources heading so it sits adjacent
+      to the supporting quote.
+    - Escalation history (when applicable): "Initial verdict … → Final
+      verdict …" so a reviewer can see when the two models disagreed.
+    - Accepted source URLs ("Web/code evidence").
+    - Rejected source URLs.
+
+    The Sources heading is collapsed-by-default — same behavior as
+    before. Every paragraph inside the panel carries
+    ``outlineLvl=8`` so Word's open-time collapse treats them all as
+    part of the heading's zone.
+    """
+    # Locate the dataclass-level fields once with safe defaults so a
+    # legacy resume payload (or a test-stub VerificationResult) can be
+    # rendered without breaking.
+    model_used = (getattr(vr, "model_used", "") or "").strip()
+    mode_label = _verification_mode_label(getattr(vr, "verification_mode", "") or "")
+    web_search_requests = int(getattr(vr, "web_search_requests", 0) or 0)
+    severity_budget = web_search_max_uses_for_severity(
+        getattr(finding, "severity", None)
+    )
+    source_quote = (getattr(vr, "source_quote", "") or "").strip()
+    explanation = (getattr(vr, "explanation", "") or "").strip()
+    escalation_attempted = bool(getattr(vr, "escalation_attempted", False))
+    accepted = list(vr.sources or [])
+    rejected = list(getattr(vr, "rejected_sources", []) or [])
+
+    # The panel is rendered whenever ``finding.verification`` exists.
+    # Even local-skip findings get the panel — they carry
+    # ``verification_mode="local_skip"`` and an explanation, both of
+    # which are auditable signal.
+    sources_heading = doc.add_heading("Sources", level=4)
+    _set_paragraph_collapsed(sources_heading)
+
+    # --- Verifier model ---
+    if model_used:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Verifier model: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        body = para.add_run(model_used)
+        body.font.size = Pt(9)
+        body.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(2)
+
+    # --- Verification mode ---
+    if mode_label:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Verification mode: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        body = para.add_run(mode_label)
+        body.font.size = Pt(9)
+        body.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(2)
+
+    # --- Search budget used ---
+    # Local-skip findings never invoke web_search (budget 0/M), but the
+    # line is still useful — it makes "no external check ran" explicit.
+    # We render the line whenever web_search was at least attempted
+    # (web_search_requests > 0) OR when the verifier ran in a mode that
+    # could have used the search tool. For local_skip we suppress
+    # because "0 of N searches used" is misleading — the mode doesn't
+    # use the search tool by design.
+    mode_raw = (getattr(vr, "verification_mode", "") or "").strip().lower()
+    if mode_raw != "local_skip":
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Search budget used: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        body = para.add_run(
+            f"{web_search_requests} of {severity_budget} searches used"
+        )
+        body.font.size = Pt(9)
+        body.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(2)
+
+    # --- Source quote (Chunk 2) ---
+    if source_quote:
+        label_para = doc.add_paragraph()
+        _set_paragraph_outline_level(label_para, 8)
+        label_run = label_para.add_run("Source quote (verbatim from search result):")
+        label_run.bold = True
+        label_run.font.size = Pt(9)
+        label_run.font.color.rgb = RGBColor(100, 100, 100)
+        label_para.paragraph_format.space_after = Pt(2)
+
+        quote_para = doc.add_paragraph()
+        _set_paragraph_outline_level(quote_para, 8)
+        # Indent the blockquote so it stands apart from the
+        # surrounding labels; italic + slightly smaller font signals
+        # "this is verbatim source content, not commentary".
+        quote_para.paragraph_format.left_indent = Inches(0.35)
+        quote_run = quote_para.add_run(source_quote)
+        quote_run.italic = True
+        quote_run.font.size = Pt(9)
+        quote_run.font.color.rgb = RGBColor(80, 80, 80)
+        quote_para.paragraph_format.space_after = Pt(4)
+
+    # --- Verifier rationale (moved from above) ---
+    # Label kept as "Verification rationale:" so existing report
+    # consumers and the Chunk N label-rename invariants continue to
+    # find the field.
+    if explanation:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Verification rationale: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        body = para.add_run(explanation)
+        body.font.size = Pt(9)
+        body.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(3)
+
+    # --- Escalation history ---
+    if escalation_attempted:
+        initial_verdict = (getattr(vr, "initial_verdict", "") or "").strip()
+        initial_model = (getattr(vr, "initial_model", "") or "").strip()
+        final_verdict = (getattr(vr, "verdict", "") or "").strip()
+        final_model = model_used
+        escalation_reason = (getattr(vr, "escalation_reason", "") or "").strip()
+        changed = bool(getattr(vr, "escalation_changed_verdict", False))
+
+        # Bold inline label.
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Escalation history: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        # Highlight in red-orange when the escalation actually changed
+        # the verdict — that's the "two models disagreed" signal a
+        # reviewer most wants to see.
+        label_color = RGBColor(178, 34, 34) if changed else RGBColor(100, 100, 100)
+        label.font.color.rgb = label_color
+        parts = []
+        if initial_verdict:
+            initial_summary = (
+                f"{initial_verdict} from {initial_model}"
+                if initial_model
+                else initial_verdict
+            )
+            parts.append(f"Initial verdict: {initial_summary}")
+        if final_verdict:
+            final_summary = (
+                f"{final_verdict} from {final_model}"
+                if final_model
+                else final_verdict
+            )
+            parts.append(f"Final verdict: {final_summary}")
+        sentence = " → ".join(parts) if parts else "escalated"
+        if escalation_reason:
+            sentence += f". Reason: {escalation_reason}"
+        if changed:
+            sentence += " (models disagreed)"
+        sentence += "."
+        body = para.add_run(sentence)
+        body.font.size = Pt(9)
+        body.font.color.rgb = label_color
+        para.paragraph_format.space_after = Pt(3)
+
+    # --- Accepted source URLs ("Web/code evidence") ---
+    if accepted:
+        label_para = doc.add_paragraph()
+        _set_paragraph_outline_level(label_para, 8)
+        label_run = label_para.add_run(
+            "Web/code evidence (cited and found in search results):"
+        )
+        label_run.font.size = Pt(9)
+        label_run.bold = True
+        label_run.font.color.rgb = RGBColor(0, 100, 0)
+
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        para.paragraph_format.space_after = Pt(3)
+        for i, url in enumerate(accepted):
+            if i > 0:
+                para.add_run("  •  ")
+            run = para.add_run(url)
+            run.font.size = Pt(9)
+            run.font.color.rgb = RGBColor(59, 130, 246)
+
+    # --- Rejected source URLs ---
+    if rejected:
+        label_para = doc.add_paragraph()
+        _set_paragraph_outline_level(label_para, 8)
+        label_run = label_para.add_run(
+            "Unsupported / rejected sources (cited by the model but not present in web_search results):"
+        )
+        label_run.font.size = Pt(9)
+        label_run.bold = True
+        label_run.font.color.rgb = RGBColor(192, 0, 0)
+
+        rej_para = doc.add_paragraph()
+        _set_paragraph_outline_level(rej_para, 8)
+        rej_para.paragraph_format.space_after = Pt(3)
+        for i, entry in enumerate(rejected):
+            if i > 0:
+                rej_para.add_run("  •  ")
+            url = entry.get("url") if isinstance(entry, dict) else str(entry)
+            reason = entry.get("reason") if isinstance(entry, dict) else ""
+            url_run = rej_para.add_run(url or "(empty)")
+            url_run.font.size = Pt(9)
+            url_run.font.color.rgb = RGBColor(128, 128, 128)
+            url_run.font.italic = True
+            if reason:
+                reason_run = rej_para.add_run(f" [{reason}]")
+                reason_run.font.size = Pt(9)
+                reason_run.font.color.rgb = RGBColor(192, 0, 0)
+
+
+def _write_edit_target_evidence_panel(doc: Document, finding) -> None:
+    """Render the locator-evidence panel for findings with edit proposals.
+
+    Chunk 4 / Trust Upgrade. Parallel sub-section to the Sources panel
+    above. Lives under its own collapsed-by-default Heading 4 so a
+    reader can drill into "why was this picked as the edit target?"
+    without losing the verification-evidence panel.
+
+    Shown only when :attr:`Finding.locator_evidence` is populated —
+    that is, the finding had an edit proposal AND the pipeline had a
+    paragraph map for the file at the time
+    :func:`apply_edits.populate_locator_evidence` ran. Findings
+    without proposals (REPORT_ONLY, coordination-only) skip the panel
+    by construction; legacy resume payloads (pre-Chunk-4) likewise
+    skip cleanly with ``locator_evidence=None``.
+    """
+    evidence = getattr(finding, "locator_evidence", None)
+    if not isinstance(evidence, dict):
+        return
+    status = str(evidence.get("status", "") or "").strip()
+    match_method = str(evidence.get("match_method", "") or "").strip()
+    match_confidence = float(evidence.get("match_confidence", 0.0) or 0.0)
+    safety_category = str(evidence.get("safety_category", "") or "").strip()
+    element_id = str(evidence.get("element_id", "") or "").strip()
+
+    # Sanity check: at least one signal must be present. An evidence
+    # dict with every field blank (the locator never produced anything
+    # useful) renders no panel.
+    if not (status or match_method or safety_category or element_id):
+        return
+
+    heading = doc.add_heading("Edit Target Evidence", level=4)
+    _set_paragraph_collapsed(heading)
+
+    if status:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Locator status: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        body = para.add_run(status)
+        body.font.size = Pt(9)
+        # Highlight unrecoverable outcomes in red so a reader can spot
+        # "the edit target could not be located" while skimming.
+        if status in ("not_found", "ambiguous"):
+            body.font.color.rgb = RGBColor(192, 0, 0)
+        else:
+            body.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(2)
+
+    if match_method:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Match method: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        body = para.add_run(_match_method_label(match_method))
+        body.font.size = Pt(9)
+        body.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(2)
+
+    if match_method:
+        # Match confidence is meaningless without a method, so render
+        # it only when we have one. Colored by tier so a low-confidence
+        # match stands out at a glance.
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Match confidence: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        body = para.add_run(f"{match_confidence:.0%}")
+        body.font.size = Pt(9)
+        body.font.color.rgb = CONFIDENCE_COLORS[_confidence_tier(match_confidence)]
+        para.paragraph_format.space_after = Pt(2)
+
+    if safety_category:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Safety category: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        body = para.add_run(safety_category)
+        body.font.size = Pt(9)
+        # MANUAL_REVIEW and REPORT_ONLY are the "do not auto-apply"
+        # outcomes — highlight in amber so a reviewer scanning by
+        # finding can spot them without reading the label.
+        if safety_category in ("MANUAL_REVIEW", "REPORT_ONLY"):
+            body.font.color.rgb = RGBColor(204, 132, 0)
+        elif safety_category == "AUTO_SAFE":
+            body.font.color.rgb = RGBColor(0, 128, 0)
+        else:
+            body.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(2)
+
+    if element_id:
+        para = doc.add_paragraph()
+        _set_paragraph_outline_level(para, 8)
+        label = para.add_run("Element id: ")
+        label.bold = True
+        label.font.size = Pt(9)
+        label.font.color.rgb = RGBColor(100, 100, 100)
+        body = para.add_run(element_id)
+        body.font.size = Pt(9)
+        body.font.color.rgb = RGBColor(100, 100, 100)
+        para.paragraph_format.space_after = Pt(3)
+
+
+# ---------------------------------------------------------------------------
 # Single finding entry (collapsible via Heading 3)
 # ---------------------------------------------------------------------------
 
@@ -875,7 +1269,7 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         run.font.color.rgb = RGBColor(59, 130, 246)
         para.paragraph_format.space_after = Pt(3)
 
-    # --- Verification verdict + rationale ---
+    # --- Verification verdict + correction ---
     if finding.verification:
         vr = finding.verification
         verdict_color = VERDICT_COLORS.get(vr.verdict, VERDICT_COLORS["UNVERIFIED"])
@@ -887,20 +1281,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         run.font.color.rgb = verdict_color
         para.paragraph_format.space_after = Pt(3)
 
-        # Chunk N Directive 3: the explanation is "Verification rationale"
-        # — distinct from "Spec evidence" (the quoted text) and from the
-        # accepted/rejected source URLs that follow under "Sources".
-        if vr.explanation:
-            para = doc.add_paragraph()
-            label_run = para.add_run("Verification rationale: ")
-            label_run.bold = True
-            label_run.font.size = Pt(10)
-            label_run.font.color.rgb = RGBColor(100, 100, 100)
-            body_run = para.add_run(vr.explanation)
-            body_run.font.size = Pt(10)
-            body_run.font.color.rgb = RGBColor(100, 100, 100)
-            para.paragraph_format.space_after = Pt(3)
-
         if vr.verdict == "CORRECTED" and vr.correction:
             para = doc.add_paragraph()
             para.add_run("Correction: ").bold = True
@@ -908,75 +1288,23 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
             run.font.color.rgb = RGBColor(204, 132, 0)  # Amber
             para.paragraph_format.space_after = Pt(3)
 
-        # --- Verification sources (verbose only) ---
-        # Rendered under a Heading 4 "Sources" sub-heading that is marked
-        # collapsed-by-default, so Word hides the URL list when the document
-        # is first opened. The URL paragraph below carries outlineLvl=8 so
-        # Word's open-time collapse treats it as part of the Sources heading's
-        # zone (plain body paragraphs without an outline level are ignored at
-        # open time). The next Heading 3 (next finding) terminates the zone.
-        #
-        # Chunk H: distinguish accepted (grounded) sources from rejected
-        # (cited-but-not-grounded) sources. ``vr.sources`` already holds the
-        # accepted citations (the verifier replaces it with the validator's
-        # accepted list); ``vr.rejected_sources`` is a list of
-        # ``{"url", "reason"}`` dicts. Both sections live under the same
-        # collapsed-by-default "Sources" heading so the open-time collapse
-        # zone hides everything until the user explicitly expands it.
-        #
-        # Chunk N: the "Accepted sources" label becomes "Web/code evidence"
-        # and "Rejected sources" becomes "Unsupported / rejected sources"
-        # so the four evidence concepts in Directive 3 read naturally.
-        accepted = list(vr.sources or [])
-        rejected = list(getattr(vr, "rejected_sources", []) or [])
-        if accepted or rejected:
-            sources_heading = doc.add_heading("Sources", level=4)
-            _set_paragraph_collapsed(sources_heading)
+        # --- Evidence panel (Chunk 4 / Trust Upgrade) ---
+        # Rendered under the existing collapsed-by-default "Sources" Heading
+        # 4. Order: verifier model → verification mode → search budget →
+        # source quote (blockquote) → verifier rationale → escalation
+        # history → accepted source URLs → rejected source URLs.
+        # All paragraphs in the panel carry outlineLvl=8 so Word's
+        # open-time collapse zone hides them along with the URLs that
+        # used to live alone under this heading.
+        _write_evidence_panel(doc, finding, vr)
 
-            if accepted:
-                label_para = doc.add_paragraph()
-                _set_paragraph_outline_level(label_para, 8)
-                label_run = label_para.add_run("Web/code evidence (cited and found in search results):")
-                label_run.font.size = Pt(9)
-                label_run.bold = True
-                label_run.font.color.rgb = RGBColor(0, 100, 0)
-
-                para = doc.add_paragraph()
-                _set_paragraph_outline_level(para, 8)
-                para.paragraph_format.space_after = Pt(3)
-                for i, url in enumerate(accepted):
-                    if i > 0:
-                        para.add_run("  •  ")
-                    run = para.add_run(url)
-                    run.font.size = Pt(9)
-                    run.font.color.rgb = RGBColor(59, 130, 246)
-
-            if rejected:
-                label_para = doc.add_paragraph()
-                _set_paragraph_outline_level(label_para, 8)
-                label_run = label_para.add_run(
-                    "Unsupported / rejected sources (cited by the model but not present in web_search results):"
-                )
-                label_run.font.size = Pt(9)
-                label_run.bold = True
-                label_run.font.color.rgb = RGBColor(192, 0, 0)
-
-                rej_para = doc.add_paragraph()
-                _set_paragraph_outline_level(rej_para, 8)
-                rej_para.paragraph_format.space_after = Pt(3)
-                for i, entry in enumerate(rejected):
-                    if i > 0:
-                        rej_para.add_run("  •  ")
-                    url = entry.get("url") if isinstance(entry, dict) else str(entry)
-                    reason = entry.get("reason") if isinstance(entry, dict) else ""
-                    url_run = rej_para.add_run(url or "(empty)")
-                    url_run.font.size = Pt(9)
-                    url_run.font.color.rgb = RGBColor(128, 128, 128)
-                    url_run.font.italic = True
-                    if reason:
-                        reason_run = rej_para.add_run(f" [{reason}]")
-                        reason_run.font.size = Pt(9)
-                        reason_run.font.color.rgb = RGBColor(192, 0, 0)
+    # --- Edit Target Evidence panel (Chunk 4 / Trust Upgrade) ---
+    # Independent of verification — a LOCALLY_CLASSIFIED finding still
+    # has a locator-evidence story to tell when the proposal touches
+    # real spec text. Skipped for REPORT_ONLY findings (no edit
+    # proposal → no locator ran) and for findings whose locator never
+    # ran (legacy resume payload, file unavailable at finalize time).
+    _write_edit_target_evidence_panel(doc, finding)
 
 
 # ---------------------------------------------------------------------------
