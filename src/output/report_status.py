@@ -63,6 +63,14 @@ class ReportStatus(str, Enum):
     NOT_CHECKED = "NOT_CHECKED"
     # Cross-check suppression or other manual-review-required path.
     MANUAL_REVIEW_REQUIRED = "MANUAL_REVIEW_REQUIRED"
+    # Chunk 3 / Trust Upgrade: the verifier attempted to run but failed
+    # operationally (rate limit, server error, network failure, parse
+    # error, batch cancellation, INVALID_REQUEST). Distinct from
+    # INSUFFICIENT_EVIDENCE — that status means "verifier ran cleanly
+    # but couldn't ground a claim"; this one means "verifier broke,
+    # nothing was checked." Operators need the distinction so they can
+    # re-run the failures rather than treating them as verifier silence.
+    VERIFICATION_FAILED = "VERIFICATION_FAILED"
 
 
 class EditActionLabel(str, Enum):
@@ -86,6 +94,7 @@ STATUS_LABELS: Final[dict[ReportStatus, str]] = {
     ReportStatus.LOCALLY_CLASSIFIED: "Locally classified (deterministic)",
     ReportStatus.NOT_CHECKED: "Not checked",
     ReportStatus.MANUAL_REVIEW_REQUIRED: "Manual review required",
+    ReportStatus.VERIFICATION_FAILED: "Verification failed (operational)",
 }
 
 # Short single-character glyphs for inline display.
@@ -97,6 +106,7 @@ STATUS_GLYPHS: Final[dict[ReportStatus, str]] = {
     ReportStatus.LOCALLY_CLASSIFIED: "◆",
     ReportStatus.NOT_CHECKED: "—",
     ReportStatus.MANUAL_REVIEW_REQUIRED: "!",
+    ReportStatus.VERIFICATION_FAILED: "⚠",
 }
 
 EDIT_ACTION_LABELS: Final[dict[EditActionLabel, str]] = {
@@ -135,18 +145,23 @@ def classify_status(finding) -> ReportStatus:
        report still renders them in a dedicated section and they should
        not pretend to be supported.
     2. No ``verification`` → ``NOT_CHECKED``.
-    3. ``cache_status == "local_skip"`` → ``LOCALLY_CLASSIFIED``.
-    4. Verdict ``CONFIRMED`` + grounded + accepted citation
+    3. ``verification_failed`` sentinel set → ``VERIFICATION_FAILED``
+       (Chunk 3 / Trust Upgrade). Surfaces operational failures (rate
+       limit, server error, parse error, INVALID_REQUEST, etc.) so
+       reports can show them under a dedicated warning glyph instead of
+       quietly conflating them with cleanly-UNVERIFIED claims.
+    4. ``cache_status == "local_skip"`` → ``LOCALLY_CLASSIFIED``.
+    5. Verdict ``CONFIRMED`` + grounded + accepted citation
        → ``VERIFIED_SUPPORTED``.
-    5. Verdict ``CORRECTED`` + grounded + accepted citation
+    6. Verdict ``CORRECTED`` + grounded + accepted citation
        → ``VERIFIED_CONTRADICTED``.
-    6. Verdict ``DISPUTED`` → ``DISPUTED``.
-    7. Everything else (UNVERIFIED, an ungrounded CONFIRMED/CORRECTED
+    7. Verdict ``DISPUTED`` → ``DISPUTED``.
+    8. Everything else (UNVERIFIED, an ungrounded CONFIRMED/CORRECTED
        that slipped past :func:`_enforce_grounding_invariant`, a
        CONFIRMED/CORRECTED with no accepted citation, unknown verdict
        strings) → ``INSUFFICIENT_EVIDENCE``.
 
-    Chunk 5 — the explicit accepted-citation check on rules 4/5 is
+    Chunk 5 — the explicit accepted-citation check on rules 5/6 is
     belt-and-suspenders for the case where a finding reaches the report
     without going through :func:`src.verifier._enforce_grounding_invariant`
     (e.g. a future call site that bypasses the verifier wrapper, or a
@@ -160,6 +175,13 @@ def classify_status(finding) -> ReportStatus:
     verification = getattr(finding, "verification", None)
     if verification is None:
         return ReportStatus.NOT_CHECKED
+    # Chunk 3: operational-failure sentinel beats the verdict-based
+    # branches below. A finding whose verifier crashed must not be
+    # reported as INSUFFICIENT_EVIDENCE (which implies the verifier ran
+    # and found nothing). The sentinel is only set on transient failures
+    # so it's safe to short-circuit here.
+    if bool(getattr(verification, "verification_failed", False)):
+        return ReportStatus.VERIFICATION_FAILED
     if getattr(verification, "cache_status", "") == _LOCAL_SKIP:
         return ReportStatus.LOCALLY_CLASSIFIED
     verdict = (getattr(verification, "verdict", "") or "").strip().upper()
@@ -260,12 +282,15 @@ def edit_action_label(action: EditActionLabel | str) -> str:
 
 # Stable display order for the summary table. Supportive first, then
 # uncertain, then suppressed — matches the reading order on the report.
+# VERIFICATION_FAILED sits next to NOT_CHECKED / MANUAL_REVIEW_REQUIRED
+# (operational tail) so the supportive block stays compact at the top.
 STATUS_DISPLAY_ORDER: Final[tuple[ReportStatus, ...]] = (
     ReportStatus.VERIFIED_SUPPORTED,
     ReportStatus.VERIFIED_CONTRADICTED,
     ReportStatus.LOCALLY_CLASSIFIED,
     ReportStatus.INSUFFICIENT_EVIDENCE,
     ReportStatus.DISPUTED,
+    ReportStatus.VERIFICATION_FAILED,
     ReportStatus.NOT_CHECKED,
     ReportStatus.MANUAL_REVIEW_REQUIRED,
 )

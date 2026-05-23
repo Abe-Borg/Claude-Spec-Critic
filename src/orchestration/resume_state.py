@@ -173,6 +173,10 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         "verification_profile": result.verification_profile,
         "verification_mode": result.verification_mode,
         "source_quote": result.source_quote,
+        # Chunk 3 / Trust Upgrade: the operational-failure sentinel must
+        # survive resume so a resumed report renders VERIFICATION_FAILED
+        # for the same findings that originally hit a transient error.
+        "verification_failed": bool(result.verification_failed),
     }
 
 
@@ -208,6 +212,12 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         # missing values default to empty string for backward compatibility
         # with state files written before the field was added.
         source_quote=str(payload.get("source_quote", "") or ""),
+        # Chunk 3 / Trust Upgrade: defaults to False for legacy state
+        # files written before the sentinel existed (those findings
+        # render as INSUFFICIENT_EVIDENCE / their verdict — the safe
+        # fallback, since we cannot retroactively know whether the
+        # verifier crashed at the time the state was saved).
+        verification_failed=bool(payload.get("verification_failed", False)),
     )
 
 

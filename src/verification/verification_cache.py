@@ -214,6 +214,18 @@ class VerificationCache:
         # want to share *grounded* verdicts across findings.
         if not getattr(result, "grounded", False):
             return
+        # Chunk 3 / Trust Upgrade: refuse to cache operational-failure
+        # results. The ``verification_failed`` sentinel marks UNVERIFIED
+        # results that came from a transient cause (rate limit, server
+        # error, network failure, parse error, INVALID_REQUEST,
+        # BATCH_CANCELED). Caching these would freeze the transient
+        # error into a durable verdict and silently suppress
+        # re-verification on later runs. The ``grounded`` guard above
+        # already drops every UNVERIFIED, so in practice this branch is
+        # defense-in-depth against a future call site that constructs a
+        # grounded+failed result directly.
+        if bool(getattr(result, "verification_failed", False)):
+            return
         # Refuse to cache a CONFIRMED/CORRECTED that lacks any accepted
         # external citation. The verifier's
         # ``_enforce_grounding_invariant`` would have downgraded such a

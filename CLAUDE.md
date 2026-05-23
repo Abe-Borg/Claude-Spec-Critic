@@ -225,10 +225,11 @@ When a batch retry tail shrinks below `_REALTIME_FALLBACK_THRESHOLD` (5), the re
 | `VERIFIED_SUPPORTED` | `CONFIRMED`, grounded |
 | `VERIFIED_CONTRADICTED` | `CORRECTED`, grounded |
 | `DISPUTED` | explicit DISPUTED, or grounding downgrade |
-| `INSUFFICIENT_EVIDENCE` | `UNVERIFIED` with no contradictory citation |
+| `INSUFFICIENT_EVIDENCE` | `UNVERIFIED` with no contradictory citation; verifier ran cleanly but couldn't ground a claim |
 | `LOCALLY_CLASSIFIED` | `local_skip` resolved (deterministic detector, keyword classifier, or Haiku triage) |
 | `NOT_CHECKED` | no verification ran |
 | `MANUAL_REVIEW_REQUIRED` | suppressed by cross-check, or precondition / parser failure |
+| `VERIFICATION_FAILED` | `VerificationResult.verification_failed=True` — verifier hit a transient operational error (rate limit, server error, network error, parse error, `INVALID_REQUEST`, `BATCH_CANCELED`, real-time fallback crash). Distinct from `INSUFFICIENT_EVIDENCE`; the cache refuses to persist these results so a re-run re-attempts verification. |
 
 | `EditActionLabel` | When |
 |---|---|
