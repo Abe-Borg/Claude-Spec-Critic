@@ -394,6 +394,22 @@ class VerificationCache:
                             for s in (result_payload.get("fetched_sources") or [])
                             if s
                         ],
+                        # Chunk 12 / Trust Upgrade: missing keys default
+                        # to False / [] so v3 entries written before the
+                        # field existed (the field was added without a
+                        # schema bump because it's runtime telemetry,
+                        # not verdict semantics) replay cleanly without
+                        # the contested-status badge — the cached
+                        # verdict still renders via the regular
+                        # verdict-based branches.
+                        models_disagreed=bool(
+                            result_payload.get("models_disagreed", False)
+                        ),
+                        initial_sources=[
+                            str(s)
+                            for s in (result_payload.get("initial_sources") or [])
+                            if s
+                        ],
                     )
                 except Exception:
                     continue
@@ -498,6 +514,16 @@ def _result_to_dict(result: "VerificationResult") -> dict:
         # legacy entries default to 0 / [] on load.
         "web_fetch_requests": int(result.web_fetch_requests),
         "fetched_sources": list(result.fetched_sources),
+        # Chunk 12 / Trust Upgrade: persist the models-disagreed
+        # sentinel and the initial verifier's accepted citations so a
+        # cache replay surfaces the same VERIFIED_CONTESTED status the
+        # original run produced. Runtime telemetry (the verdict
+        # semantics live in ``verdict`` / ``sources``), so no schema
+        # bump is required — missing keys on legacy entries default to
+        # False / [] on load and the result classifies via the
+        # verdict-based branches.
+        "models_disagreed": bool(result.models_disagreed),
+        "initial_sources": list(result.initial_sources),
     }
 
 
@@ -527,6 +553,13 @@ def _clone_for_store(result: "VerificationResult") -> "VerificationResult":
         # counts the original verification produced.
         web_fetch_requests=result.web_fetch_requests,
         fetched_sources=list(result.fetched_sources),
+        # Chunk 12 / Trust Upgrade: carry the models-disagreed sentinel
+        # and the initial verifier's citations so a cache replay
+        # surfaces VERIFIED_CONTESTED for the same finding the original
+        # run did. Without these, a cached escalation-disagreement
+        # finding would replay as VERIFIED_SUPPORTED on the next run.
+        models_disagreed=bool(result.models_disagreed),
+        initial_sources=list(result.initial_sources),
     )
 
 
@@ -569,4 +602,11 @@ def _clone_for_hit(entry: _CacheEntry) -> "VerificationResult":
         # field existed (legacy v3 rows without the key).
         web_fetch_requests=stored.web_fetch_requests,
         fetched_sources=list(stored.fetched_sources),
+        # Chunk 12 / Trust Upgrade: carry the disagreement telemetry
+        # onto the hit clone so the report renders VERIFIED_CONTESTED
+        # for a cache replay of an originally-contested finding.
+        # Defaults on ``VerificationResult`` cover legacy entries that
+        # predate the field (missing keys load as False / []).
+        models_disagreed=bool(stored.models_disagreed),
+        initial_sources=list(stored.initial_sources),
     )

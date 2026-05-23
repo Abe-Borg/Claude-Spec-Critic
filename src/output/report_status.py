@@ -73,6 +73,19 @@ class ReportStatus(str, Enum):
     # nothing was checked." Operators need the distinction so they can
     # re-run the failures rather than treating them as verifier silence.
     VERIFICATION_FAILED = "VERIFICATION_FAILED"
+    # Chunk 12 / Trust Upgrade: the initial verifier (Sonnet) and the
+    # escalation verifier (Opus) returned different verdicts AND both
+    # passes were grounded (each had at least one accepted citation).
+    # Distinct from VERIFIED_SUPPORTED / VERIFIED_CONTRADICTED because
+    # the disagreement itself is a quality signal the reviewer needs to
+    # see: even though the final verdict may be grounded and supported
+    # in isolation, the fact that two capable models reading the same
+    # sources reached different conclusions is reason enough to route
+    # the finding to manual review rather than auto-applying it. The
+    # status overrides the per-verdict classifications so a CONFIRMED
+    # final verdict that disagreed with an initial DISPUTED renders as
+    # VERIFIED_CONTESTED, not VERIFIED_SUPPORTED.
+    VERIFIED_CONTESTED = "VERIFIED_CONTESTED"
 
 
 class EditActionLabel(str, Enum):
@@ -97,6 +110,7 @@ STATUS_LABELS: Final[dict[ReportStatus, str]] = {
     ReportStatus.NOT_CHECKED: "Not checked",
     ReportStatus.MANUAL_REVIEW_REQUIRED: "Manual review required",
     ReportStatus.VERIFICATION_FAILED: "Verification failed (operational)",
+    ReportStatus.VERIFIED_CONTESTED: "Verified — but models disagreed",
 }
 
 # Short single-character glyphs for inline display.
@@ -109,6 +123,10 @@ STATUS_GLYPHS: Final[dict[ReportStatus, str]] = {
     ReportStatus.NOT_CHECKED: "—",
     ReportStatus.MANUAL_REVIEW_REQUIRED: "!",
     ReportStatus.VERIFICATION_FAILED: "⚠",
+    # Chunk 12 / Trust Upgrade: lightning bolt signals "two verifiers,
+    # different verdicts." Distinct from ⚠ (operational failure) and
+    # the verdict glyphs (✓ / ✎ / ✗).
+    ReportStatus.VERIFIED_CONTESTED: "⚡",
 }
 
 EDIT_ACTION_LABELS: Final[dict[EditActionLabel, str]] = {
@@ -297,18 +315,26 @@ def classify_status(finding) -> ReportStatus:
        limit, server error, parse error, INVALID_REQUEST, etc.) so
        reports can show them under a dedicated warning glyph instead of
        quietly conflating them with cleanly-UNVERIFIED claims.
-    4. ``cache_status == "local_skip"`` → ``LOCALLY_CLASSIFIED``.
-    5. Verdict ``CONFIRMED`` + grounded + accepted citation
+    4. ``models_disagreed`` sentinel set → ``VERIFIED_CONTESTED``
+       (Chunk 12 / Trust Upgrade). Set when the initial and escalated
+       passes returned different verdicts and BOTH were grounded.
+       Placed above the verdict-based branches so a CONFIRMED+grounded
+       final verdict that disagreed with the initial DISPUTED still
+       renders as VERIFIED_CONTESTED — the disagreement itself is the
+       quality signal the reviewer needs to see, not the headline
+       verdict.
+    5. ``cache_status == "local_skip"`` → ``LOCALLY_CLASSIFIED``.
+    6. Verdict ``CONFIRMED`` + grounded + accepted citation
        → ``VERIFIED_SUPPORTED``.
-    6. Verdict ``CORRECTED`` + grounded + accepted citation
+    7. Verdict ``CORRECTED`` + grounded + accepted citation
        → ``VERIFIED_CONTRADICTED``.
-    7. Verdict ``DISPUTED`` → ``DISPUTED``.
-    8. Everything else (UNVERIFIED, an ungrounded CONFIRMED/CORRECTED
+    8. Verdict ``DISPUTED`` → ``DISPUTED``.
+    9. Everything else (UNVERIFIED, an ungrounded CONFIRMED/CORRECTED
        that slipped past :func:`_enforce_grounding_invariant`, a
        CONFIRMED/CORRECTED with no accepted citation, unknown verdict
        strings) → ``INSUFFICIENT_EVIDENCE``.
 
-    Chunk 5 — the explicit accepted-citation check on rules 5/6 is
+    Chunk 5 — the explicit accepted-citation check on rules 6/7 is
     belt-and-suspenders for the case where a finding reaches the report
     without going through :func:`src.verifier._enforce_grounding_invariant`
     (e.g. a future call site that bypasses the verifier wrapper, or a
@@ -329,6 +355,16 @@ def classify_status(finding) -> ReportStatus:
     # so it's safe to short-circuit here.
     if bool(getattr(verification, "verification_failed", False)):
         return ReportStatus.VERIFICATION_FAILED
+    # Chunk 12: models-disagreed sentinel beats the verdict-based
+    # branches below. The verifier only sets this when the initial and
+    # escalated passes BOTH grounded their verdicts AND reached
+    # different conclusions, so the result represents a real
+    # disagreement worth surfacing. A swap during escalation could
+    # leave ``verdict`` looking CONFIRMED-and-grounded — without this
+    # short-circuit the report would render VERIFIED_SUPPORTED and hide
+    # the disagreement, which is exactly the bug Chunk 12 fixes.
+    if bool(getattr(verification, "models_disagreed", False)):
+        return ReportStatus.VERIFIED_CONTESTED
     if getattr(verification, "cache_status", "") == _LOCAL_SKIP:
         return ReportStatus.LOCALLY_CLASSIFIED
     verdict = (getattr(verification, "verdict", "") or "").strip().upper()
@@ -352,6 +388,13 @@ def classify_status(finding) -> ReportStatus:
 # are self-evident from the spec itself. The locator/spec_editor
 # preconditions still gate the actual mutation, so a false-supportive
 # router result cannot cause a wrong-text replacement.
+#
+# Chunk 12 / Trust Upgrade: VERIFIED_CONTESTED is intentionally absent.
+# The status is set when the initial and escalated verifiers reached
+# different verdicts on the same finding (both grounded); the
+# disagreement itself is the quality signal that the finding needs a
+# human eye. Auto-applying an edit a second model would have rejected
+# is precisely the failure mode the contested status exists to flag.
 _SUPPORTIVE_STATUSES: Final[frozenset[ReportStatus]] = frozenset({
     ReportStatus.VERIFIED_SUPPORTED,
     ReportStatus.VERIFIED_CONTRADICTED,
@@ -587,9 +630,15 @@ def edit_action_label(action: EditActionLabel | str) -> str:
 # uncertain, then suppressed — matches the reading order on the report.
 # VERIFICATION_FAILED sits next to NOT_CHECKED / MANUAL_REVIEW_REQUIRED
 # (operational tail) so the supportive block stays compact at the top.
+# VERIFIED_CONTESTED (Chunk 12) sits between VERIFIED_CONTRADICTED and
+# DISPUTED — it's a verified-with-caveat verdict (the disagreement
+# itself is the caveat) so it reads naturally next to the other
+# verified buckets, before the uncertain block (LOCALLY_CLASSIFIED,
+# INSUFFICIENT_EVIDENCE, DISPUTED).
 STATUS_DISPLAY_ORDER: Final[tuple[ReportStatus, ...]] = (
     ReportStatus.VERIFIED_SUPPORTED,
     ReportStatus.VERIFIED_CONTRADICTED,
+    ReportStatus.VERIFIED_CONTESTED,
     ReportStatus.LOCALLY_CLASSIFIED,
     ReportStatus.INSUFFICIENT_EVIDENCE,
     ReportStatus.DISPUTED,

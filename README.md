@@ -12,7 +12,7 @@ Configured for the **California 2025 code cycle** by default (`src/core/code_cyc
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, optional Haiku triage, severity-tiered + profile-aware search budgets, persistent on-disk claim cache.
 - **Robust batch processing.** Durable resume across every pipeline phase with content + source-file SHA-256 digests.
 - **Safe Word output.** Id-anchored matching when the model cites a paragraph id; surgical edits gated by safety categories; offset revalidation runs immediately before every mutation. Annotate mode is non-destructive.
-- **Trust-model report output.** Every finding renders one of seven `ReportStatus` labels and one of four `EditActionLabel` values so the report makes uncertainty visible.
+- **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for transient operational errors and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of four `EditActionLabel` values so the report makes uncertainty visible.
 
 ## Pipeline at a Glance
 
@@ -223,6 +223,47 @@ Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic 
 
 - **`CLAUDE.md`** — Engineering reference: source layout, module-level invariants, verification routing tables, feature flag table, test conventions.
 
+## Escalation Disagreement Surfacing
+
+When the initial Sonnet verifier and the escalated Opus verifier reach
+different grounded verdicts on the same finding (both with accepted
+external citations), the finding renders as
+`VERIFIED_CONTESTED` (⚡, purple) in the report rather than as
+`VERIFIED_SUPPORTED` (✓, green) or `VERIFIED_CONTRADICTED` (✎, amber).
+The disagreement itself is the quality signal: two capable models
+reading real sources reached different conclusions, and the right
+default action is human review rather than auto-applying either side's
+edit. `VERIFIED_CONTESTED` is intentionally not in the
+auto-edit-supportive status set, so contested findings always route to
+`MANUAL_EDIT_CANDIDATE`.
+
+The per-finding evidence panel surfaces both verdicts inline:
+- The "Escalation history" line shows the initial → final verdict
+  transition with each verifier's model name and a "manual review
+  recommended" sentence.
+- A dedicated "Initial verifier sources" sub-section lists the
+  citations the initial verifier produced, alongside the final
+  verifier's citations in the regular "Web/code evidence" sub-section.
+
+The contested telemetry round-trips through the verification cache and
+the resume state (no schema bump — runtime telemetry, not verdict
+semantics), so a cache replay or a resumed report renders the same
+`VERIFIED_CONTESTED` status the original run produced.
+
+## Re-Verifying Operationally-Failed Findings (Stub)
+
+`VERIFICATION_FAILED` findings (transient operational errors — rate
+limit, server error, network failure, parse error, INVALID_REQUEST,
+batch cancellation) are not persisted in the verification cache, so a
+re-run will re-attempt verification for them automatically. For
+larger runs where re-running the entire pipeline is expensive, the
+`SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY=1` env var is reserved as the
+toggle for "on the next resume, only re-submit findings whose previous
+verification failed operationally" — the actual implementation is
+deferred to a focused future change (the helper currently logs a
+warning at startup when the flag is set so the operator knows it is
+noted but not yet wired).
+
 ## Changelog (recent)
 
 ### v2.11.0
@@ -233,5 +274,6 @@ Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic 
 - Severity-tiered web-search budgets: CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3
 - Verification output cap tightened to 16k; `SYNTHESIS_OUTPUT_CAP` and `HAIKU_TRIAGE_OUTPUT_CAP` added
 - Cross-check chunking refined (Div 21 / 22 / 23 / Controls / 25 + 01)
+- **Trust Upgrade Chunk 12**: New `VERIFIED_CONTESTED` status (⚡, purple) when initial and escalated verifiers disagreed on grounded verdicts; routes to `MANUAL_EDIT_CANDIDATE` regardless of confidence. Evidence panel renders both verdicts and citation sets side-by-side. `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` env var reserved (stub) for a future "re-verify only operationally-failed findings" resume mode.
 
 Older changelog entries trimmed; see git history for v2.10.0, v2.8.x, and the non-GUI refactor chunks A–P.

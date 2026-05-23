@@ -166,6 +166,30 @@ class VerificationResult:
     initial_verdict: str = ""
     escalation_changed_verdict: bool = False
     escalation_reason: str = ""
+    # ----- Models-disagreed sentinel (Chunk 12 / Trust Upgrade) -----------
+    # True when escalation produced a *real* disagreement: the initial
+    # and escalated verifiers BOTH grounded their verdicts (each had at
+    # least one accepted citation) AND their verdicts differed. Distinct
+    # from ``escalation_changed_verdict`` which fires whenever the
+    # verdicts differ regardless of whether the initial was grounded;
+    # ``models_disagreed`` is the stricter condition that two capable
+    # verifiers reading real sources reached different conclusions on
+    # the same finding. ``report_status.classify_status`` short-circuits
+    # to VERIFIED_CONTESTED when this is True so a nominally CONFIRMED
+    # final verdict that disagreed with a DISPUTED initial does not
+    # render as VERIFIED_SUPPORTED. ``initial_sources`` (below) carries
+    # the citations the initial verifier produced so the evidence panel
+    # can show both sets side-by-side.
+    models_disagreed: bool = False
+    # Citations from the initial verifier's pass, preserved separately
+    # from the swapped-in escalated result's ``sources``. Populated
+    # alongside ``models_disagreed`` (and the existing ``initial_*``
+    # fields) so the report's evidence panel can render "Sonnet 4.6:
+    # DISPUTED, citing {initial_sources}. Opus 4.7: CONFIRMED, citing
+    # {sources}." inline for VERIFIED_CONTESTED findings. Empty list
+    # for results that never escalated or that escalated without
+    # producing a real disagreement.
+    initial_sources: list[str] = field(default_factory=list)
     # ----- Structured-payload preservation --------------------------------
     # When the model invoked ``submit_verification_verdict`` (the success
     # path under the best-effort tool-output flag), this is the raw
@@ -1313,6 +1337,15 @@ def verify_finding(
             initial_verdict_snapshot = result.verdict
             initial_model_snapshot = result.model_used or selected_model
             escalation_reason = _classify_escalation_reason(result)
+            # Chunk 12 / Trust Upgrade: snapshot the initial verifier's
+            # grounding state and accepted citations BEFORE the
+            # escalated call runs and potentially swaps ``result``.
+            # ``models_disagreed`` is the conjunction of "both grounded"
+            # AND "verdicts differ"; we cannot recover the initial
+            # ``grounded`` flag once the swap below replaces ``result``,
+            # so the snapshot has to happen here.
+            initial_grounded_snapshot = bool(result.grounded)
+            initial_sources_snapshot = list(result.sources or [])
 
             esc_result = _run_verification_call(
                 finding,
@@ -1336,6 +1369,23 @@ def verify_finding(
                 result.verdict != initial_verdict_snapshot
             )
             result.escalation_reason = escalation_reason
+            # Chunk 12: set the models-disagreed sentinel ONLY when both
+            # passes were grounded AND the verdicts differ. The stricter
+            # condition (vs. ``escalation_changed_verdict`` which fires
+            # on any verdict change) avoids labelling
+            # initial-UNVERIFIED-then-CONFIRMED escalations as a
+            # disagreement — that's the escalation path doing its job,
+            # not two verifiers reading the same sources and reaching
+            # different conclusions. ``initial_sources`` is populated
+            # unconditionally when escalation runs so the evidence panel
+            # can still show "Initial: UNVERIFIED, no sources" for
+            # non-contested escalations.
+            result.initial_sources = initial_sources_snapshot
+            result.models_disagreed = (
+                initial_grounded_snapshot
+                and bool(esc_result.grounded)
+                and esc_result.verdict != initial_verdict_snapshot
+            )
 
     if cache is not None and result.cache_status == "miss":
         cache.put(finding, cycle=cycle, result=result)

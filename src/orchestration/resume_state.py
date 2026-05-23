@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,49 @@ from ..review.reviewer import EDIT_ACTION_TYPES, EditProposal, Finding, MODEL_OP
 from ..verification.verifier import VerificationResult
 
 _log = logging.getLogger(__name__)
+
+
+def resume_retry_failed_only() -> bool:
+    """Read the ``SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY`` env var (stub — Chunk 12).
+
+    Chunk 12 / Trust Upgrade reserves the env var name as the operator-
+    facing toggle for "on the next resume, only re-submit findings that
+    failed verification operationally (status VERIFICATION_FAILED) rather
+    than re-running every unresolved finding." The actual re-submission
+    plumbing is out of scope for this chunk — implementing it requires
+    distinguishing failed-verification findings inside the saved resume
+    payload, building a synthetic batch wave containing only those
+    findings, and stitching the results back into the existing
+    finding list without losing the rest of the run's state. Moderate
+    complexity that deserves its own focused change.
+
+    Until that lands, the helper:
+
+    * Returns ``True`` when the env var is set to a recognized truthy
+      value (``1`` / ``true`` / ``yes`` / ``on``, case-insensitive,
+      whitespace-tolerant).
+    * Returns ``False`` otherwise.
+    * Logs a one-time warning at WARNING level when the flag is
+      enabled, so the operator who turned it on sees a clear "noted
+      but not yet wired" message rather than silent acceptance.
+
+    The contract is intentionally minimal — adding the actual retry
+    selection logic later means changing the call sites that consume
+    this helper, not the helper itself.
+    """
+    raw = os.environ.get("SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY")
+    if raw is None:
+        return False
+    enabled = raw.strip().lower() in {"1", "true", "yes", "on"}
+    if enabled and not getattr(resume_retry_failed_only, "_warned", False):
+        _log.warning(
+            "SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY=1 is set, but the "
+            "failed-only resume mechanism is not yet implemented "
+            "(Chunk 12 / Trust Upgrade: stub). All unresolved findings "
+            "will resume as usual."
+        )
+        resume_retry_failed_only._warned = True  # type: ignore[attr-defined]
+    return enabled
 
 
 def _content_digest(content: str) -> str:
@@ -208,6 +252,14 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         # would have shown.
         "web_fetch_requests": int(result.web_fetch_requests),
         "fetched_sources": list(result.fetched_sources),
+        # Chunk 12 / Trust Upgrade: the models-disagreed sentinel and
+        # the initial verifier's citations must survive resume so a
+        # resumed report renders VERIFIED_CONTESTED for the same
+        # findings the original run flagged, with the same
+        # initial-verdict citations displayed alongside the final
+        # verdict's sources in the evidence panel.
+        "models_disagreed": bool(result.models_disagreed),
+        "initial_sources": list(result.initial_sources),
     }
 
 
@@ -266,6 +318,12 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         # than crashing on a missing key.
         web_fetch_requests=int(payload.get("web_fetch_requests", 0) or 0),
         fetched_sources=[str(s) for s in payload.get("fetched_sources", []) if s],
+        # Chunk 12 / Trust Upgrade: legacy state files predating the
+        # contested-status field default to False / [] so resumed
+        # findings classify through the regular verdict-based branches
+        # rather than retroactively claiming the verifiers disagreed.
+        models_disagreed=bool(payload.get("models_disagreed", False)),
+        initial_sources=[str(s) for s in payload.get("initial_sources", []) if s],
     )
 
 
