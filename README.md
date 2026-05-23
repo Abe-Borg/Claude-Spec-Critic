@@ -264,6 +264,35 @@ deferred to a focused future change (the helper currently logs a
 warning at startup when the flag is set so the operator knows it is
 noted but not yet wired).
 
+## Budget-Exhausted Findings
+
+When the verifier consumes its full mode-scaled `web_search` budget
+without grounding a verdict, the result carries a
+`VerificationResult.budget_exhausted` sentinel. The trust-level
+classification stays `INSUFFICIENT_EVIDENCE` (no new top-level status),
+but the report distinguishes these findings in two places:
+
+- **Per-finding status line:** the status renders with an inline
+  italic sub-label, e.g. `? Insufficient evidence (search budget
+  exhausted)`. The sub-label color matches the status so the badge
+  reads as part of the status.
+- **Run Diagnostics banner:** a "Budget-exhausted findings" row
+  (highlighted red when count > 0) and a recovery-hint paragraph
+  pointing operators at the severity-tiered budget knob
+  (CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3 — see
+  `api_config._SEVERITY_MAX_USES`) as the actionable remedy.
+
+Budget-exhausted results are NOT persisted in the verification cache
+(same transient-signal logic as `VERIFICATION_FAILED` — a re-run with
+elevated severity allocates more budget; freezing the shortfall as a
+durable verdict would suppress re-verification). The flag round-trips
+through resume state, so a resumed report keeps the sub-label.
+
+The calibration eval (`python -m evals.calibration.runner`) reports a
+`Budget-exhausted findings: N` line in the summary header so the
+recheck can confirm end-to-end telemetry. The
+`tp_unverified_budget_exhausted` fixture is the canonical example.
+
 ## Changelog (recent)
 
 ### v2.11.0
@@ -275,5 +304,6 @@ noted but not yet wired).
 - Verification output cap tightened to 16k; `SYNTHESIS_OUTPUT_CAP` and `HAIKU_TRIAGE_OUTPUT_CAP` added
 - Cross-check chunking refined (Div 21 / 22 / 23 / Controls / 25 + 01)
 - **Trust Upgrade Chunk 12**: New `VERIFIED_CONTESTED` status (⚡, purple) when initial and escalated verifiers disagreed on grounded verdicts; routes to `MANUAL_EDIT_CANDIDATE` regardless of confidence. Evidence panel renders both verdicts and citation sets side-by-side. `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` env var reserved (stub) for a future "re-verify only operationally-failed findings" resume mode.
+- **Trust Upgrade Chunk 13**: New `VerificationResult.budget_exhausted` sentinel on UNVERIFIED results whose verifier consumed its full mode-scaled `web_search` budget. The report's per-finding status line appends a `(search budget exhausted)` sub-label; the Run Diagnostics banner gets a "Budget-exhausted findings" row plus a recovery-hint paragraph pointing operators at the severity-tiered budget knob. Cache refuses to persist exhausted results (transient signal — re-run with higher severity allocates more budget). Calibration eval surfaces the count in its summary header.
 
 Older changelog entries trimmed; see git history for v2.10.0, v2.8.x, and the non-GUI refactor chunks A–P.

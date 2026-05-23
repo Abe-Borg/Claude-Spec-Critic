@@ -72,6 +72,8 @@ def _report_to_dict(report) -> dict:
         "verdict_accuracy_rate": report.overall_verdict_accuracy,
         "fixture_pass": report.fixture_pass,
         "fixture_fail": report.fixture_fail,
+        # Chunk 13 / Trust Upgrade.
+        "budget_exhausted_count": report.budget_exhausted_count,
         "confusion_matrix": {
             "rows": [
                 {

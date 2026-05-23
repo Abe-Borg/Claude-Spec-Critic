@@ -245,6 +245,21 @@ class VerificationCache:
         # grounded+failed result directly.
         if bool(getattr(result, "verification_failed", False)):
             return
+        # Chunk 13 / Trust Upgrade: refuse to cache budget-exhausted
+        # results. The ``budget_exhausted`` sentinel marks UNVERIFIED
+        # outcomes where the verifier consumed its full mode-scaled
+        # web_search budget without producing a grounded verdict.
+        # Persisting these would freeze a transient evidence-shortfall
+        # into a permanent UNVERIFIED — but the same finding might
+        # ground on a re-run that allocates more budget (e.g. severity
+        # was raised) or after the underlying source becomes
+        # discoverable. Same defense-in-depth rationale as
+        # ``verification_failed``: ``budget_exhausted=True`` implies
+        # ``verdict=UNVERIFIED`` which the grounded guard above
+        # already drops; this branch protects against a future call
+        # site that constructs a grounded+exhausted result directly.
+        if bool(getattr(result, "budget_exhausted", False)):
+            return
         # Refuse to cache a CONFIRMED/CORRECTED that lacks any accepted
         # external citation. The verifier's
         # ``_enforce_grounding_invariant`` would have downgraded such a

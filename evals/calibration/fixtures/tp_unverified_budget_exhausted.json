@@ -1,0 +1,59 @@
+{
+  "fixture_id": "tp_unverified_budget_exhausted",
+  "category": "code_standard",
+  "severity": "HIGH",
+  "description": "Verifier consumed its full HIGH-severity search budget (7) attempting to ground an obscure DSA interpretation, but every search returned the same DSA bulletin index without surfacing the cited paragraph. The recommended remedy is raising severity to CRITICAL (8 searches) or producing the source manually.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "23 23 00 - Refrigerant Piping.docx",
+    "section": "1.04",
+    "issue": "Specification cites DSA IR-23-08 §4.2.7 for ammonia detection at field-erected freezers without quoting the requirement; cited section number does not appear in any DSA bulletin index returned by web_search.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": "DSA IR-23-08 §4.2.7",
+    "confidence": 0.55,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p7"
+  },
+  "spec_context": {
+    "filename": "23 23 00 - Refrigerant Piping.docx",
+    "cycle_label": "California 2025",
+    "paragraph_map_slice": [
+      {"index": 6, "id": "p6", "text": "1.04 REGULATORY REQUIREMENTS"},
+      {"index": 7, "id": "p7", "text": "A. Comply with DSA IR-23-08 §4.2.7 for ammonia detection at field-erected freezers."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "UNVERIFIED",
+    "explanation": "Searched 7 of 7 budgeted sources (DSA bulletin index, IR archive, ASHRAE 15, Cal/OSHA refrigerant safety, NFPA 1, UMC ammonia provisions, OSFM). The DSA IR series stops at IR-23-05 in the published index; no IR-23-08 was returned. The cited section number cannot be ground in any retrieved page.",
+    "sources": [],
+    "correction": null,
+    "confidence": 0.0,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "california_ahj",
+    "web_search_requests": 7,
+    "successful_source_count": 7,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.dgs.ca.gov/DSA/Resources/Page-Content/Resources-List-Folder/Interpretation-of-Regulations",
+      "https://www.dgs.ca.gov/DSA/Resources/Bulletin-List",
+      "https://www.ashrae.org/technical-resources/standards-and-guidelines/standards-addenda/ansi-ashrae-standard-15",
+      "https://www.dir.ca.gov/Title8/3500.html",
+      "https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=1",
+      "https://up.codes/viewer/california/ca-mechanical-code-2025",
+      "https://osfm.fire.ca.gov/divisions/code-development-and-analysis"
+    ],
+    "grounded": false,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "correct_correction_text": null,
+    "expected_status": "INSUFFICIENT_EVIDENCE",
+    "expected_edit_action": "REPORT_ONLY",
+    "notes": "Chunk 13 / Trust Upgrade: the verifier consumed all 7 of its HIGH-severity searches without grounding the cited DSA section. The result correctly stays UNVERIFIED → INSUFFICIENT_EVIDENCE (no new top-level status). With Chunk 13's detection, the report would also tag this finding with the '(search budget exhausted)' sub-label and surface a Run Diagnostics row counting it; the operator's actionable remedy is to raise the severity to CRITICAL for more search headroom (or to provide the source manually)."
+  }
+}

@@ -136,12 +136,28 @@ To replay a real failure mode, capture both lists from the run that
 produced the fixture. The `grounding_downgrade_invented_url.json`
 fixture is the canonical example.
 
+### Budget-exhaustion labels
+
+The harness automatically applies the Chunk 13 budget-exhaustion
+detection after grounding: when a fixture's
+`captured_verifier_response.web_search_requests` reaches the
+severity-tiered budget (CRITICAL=8 / HIGH=7 / MEDIUM=5 / GRIPES=3)
+AND the grounded verdict is `UNVERIFIED`, the result picks up
+`VerificationResult.budget_exhausted=True`. Fixtures don't need to
+label the flag explicitly — set the search count to the budget and
+the harness mirrors what production would surface. The
+`tp_unverified_budget_exhausted.json` fixture is the canonical
+example (HIGH-severity DSA bulletin lookup that consumed all 7
+searches without grounding).
+
 ## How to interpret the report
 
 The markdown report has six sections:
 
 1. **Summary header** — total fixtures, verdict accuracy rate, pass /
-   fail count.
+   fail count, **budget-exhausted findings count** (Chunk 13 — counts
+   fixtures whose `web_search_requests` reached the severity budget
+   with an UNVERIFIED grounded verdict).
 2. **Confusion matrix** — rows are ground-truth verdict; columns are
    the verdict the pipeline emitted after grounding. The diagonal is
    correctness; off-diagonals are the failure modes you want to study.

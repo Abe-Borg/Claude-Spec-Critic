@@ -272,6 +272,24 @@ class VerificationResult:
     # replays render the same "Searches: N, Full-page fetches: M" line.
     web_fetch_requests: int = 0
     fetched_sources: list[str] = field(default_factory=list)
+    # ----- Budget-exhaustion sentinel (Chunk 13 / Trust Upgrade) ----------
+    # True when the verifier finished its turn without producing a grounded
+    # verdict AND used its full mode-scaled web_search budget
+    # (``web_search_requests >= decision.web_search_max_uses``). Distinct
+    # from ``verification_failed`` (operational error) and from a plain
+    # UNVERIFIED (verifier ran cleanly but ran out of evidence early) —
+    # this sentinel says "the verifier had every search the policy allowed
+    # and still could not ground the claim", which is the actionable signal
+    # for an operator who can grant more budget by raising the finding's
+    # severity (severity-tiered budgets in ``api_config._SEVERITY_MAX_USES``).
+    # ``classify_status`` keeps these findings on INSUFFICIENT_EVIDENCE (same
+    # trust tier; no new top-level status); the report renderer appends a
+    # "(search budget exhausted)" sub-label and the Run Diagnostics banner
+    # surfaces the count with a recovery hint. Runtime telemetry — the
+    # cache refuses to persist ``budget_exhausted=True`` results (same
+    # logic as ``verification_failed``); round-trips through resume state
+    # so a resumed report keeps the sub-label.
+    budget_exhausted: bool = False
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -1465,6 +1483,7 @@ def _run_verification_call(
         fetch_requests: int = 0,
         fetched_urls: list[str] | None = None,
         failed: bool = False,
+        budget_exhausted: bool = False,
     ) -> VerificationResult:
         return _enforce_grounding_invariant(VerificationResult(
             verdict="UNVERIFIED",
@@ -1481,6 +1500,7 @@ def _run_verification_call(
             verification_failed=failed,
             web_fetch_requests=fetch_requests,
             fetched_sources=list(fetched_urls or []),
+            budget_exhausted=budget_exhausted,
         ))
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -1576,10 +1596,15 @@ def _run_verification_call(
                         _web_search_count(r) for r in all_responses
                     )
                     if total_search_so_far > search_budget_ceiling:
+                        # Chunk 13: the model burned through 2x the
+                        # per-call budget. That clearly exhausted the
+                        # 1x budget too, so flag the result.
                         return _make_unverified(
                             "Verification exceeded the per-call web_search budget "
                             f"({total_search_so_far} > {search_budget_ceiling}) "
-                            "without producing a verdict."
+                            "without producing a verdict.",
+                            search_requests=total_search_so_far,
+                            budget_exhausted=True,
                         )
                     # Server-tool ``pause_turn`` is resumed by re-sending
                     # the assistant response as-is. Per Anthropic's
@@ -1594,9 +1619,19 @@ def _run_verification_call(
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
             final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
             if classify_verification_stop_reason(final_stop) != STOP_CLASS_COMPLETE:
+                # Chunk 13: the model never completed its turn. Recompute
+                # the search count here (the standard collection loop
+                # below has not run yet) so the budget-exhausted flag
+                # reflects the searches the continuation rounds did burn.
+                total_search_so_far = sum(_web_search_count(r) for r in all_responses)
+                budget_cap = int(decision.web_search_max_uses)
                 return _make_unverified(
                     "Verification did not complete after maximum continuation attempts "
-                    f"(max_continuations={max_continuations})."
+                    f"(max_continuations={max_continuations}).",
+                    search_requests=total_search_so_far,
+                    budget_exhausted=(
+                        budget_cap > 0 and total_search_so_far >= budget_cap
+                    ),
                 )
 
             all_searched: list[SearchedSource] = []
@@ -1635,6 +1670,20 @@ def _run_verification_call(
 
             grounded = success_blocks > 0
             fetched_url_list = [s.url for s in deduped_fetched]
+            # Chunk 13 / Trust Upgrade: did the verifier consume its full
+            # mode-scaled web_search budget? The flag is the actionable
+            # signal that an operator could grant more headroom by
+            # raising the finding's severity (severity-tiered budgets in
+            # ``api_config._SEVERITY_MAX_USES``). Computed once before
+            # the not-grounded early returns AND once after the success-
+            # path parse + grounding invariant so both code paths apply
+            # the same condition. ``budget <= 0`` (LOCAL_SKIP / no-search
+            # modes) is treated as not-exhausted because there is no
+            # budget to exhaust.
+            budget_cap = int(decision.web_search_max_uses)
+            budget_was_exhausted = (
+                budget_cap > 0 and total_search_requests >= budget_cap
+            )
             if not grounded:
                 if total_search_errors > 0:
                     return _make_unverified(
@@ -1643,6 +1692,7 @@ def _run_verification_call(
                         search_errors=total_search_errors,
                         fetch_requests=total_fetch_requests,
                         fetched_urls=fetched_url_list,
+                        budget_exhausted=budget_was_exhausted,
                     )
                 return _make_unverified(
                     "Verification did not perform web search. Verdict requires external grounding.",
@@ -1650,6 +1700,7 @@ def _run_verification_call(
                     search_errors=total_search_errors,
                     fetch_requests=total_fetch_requests,
                     fetched_urls=fetched_url_list,
+                    budget_exhausted=budget_was_exhausted,
                 )
 
             # Route the structured-then-text parsing through the canonical
@@ -1668,6 +1719,7 @@ def _run_verification_call(
                     search_successes=success_blocks,
                     fetch_requests=total_fetch_requests,
                     fetched_urls=fetched_url_list,
+                    budget_exhausted=budget_was_exhausted,
                 )
             # text_parse_error and text both produce a (UNVERIFIED) result
             # that should flow through the grounding invariant. The
@@ -1706,7 +1758,22 @@ def _run_verification_call(
                 searched=deduped_searched,
                 fetched=deduped_fetched,
             )
-            return _enforce_grounding_invariant(parsed)
+            parsed = _enforce_grounding_invariant(parsed)
+            # Chunk 13 / Trust Upgrade: stamp budget exhaustion AFTER
+            # the grounding invariant so a CONFIRMED that was downgraded
+            # to UNVERIFIED for missing citations still picks up the flag
+            # when the model used its full search budget. The condition
+            # is narrow ("verdict is UNVERIFIED AND budget hit") so a
+            # grounded CONFIRMED that legitimately consumed every search
+            # — i.e. the model needed the headroom and used it — does
+            # NOT get flagged. That's the verifier doing its job, not a
+            # budget shortfall.
+            if (
+                budget_was_exhausted
+                and (parsed.verdict or "").strip().upper() == "UNVERIFIED"
+            ):
+                parsed.budget_exhausted = True
+            return parsed
         except (KeyboardInterrupt, SystemExit):
             # Control-flow exceptions must escape so Ctrl-C / interpreter
             # shutdown work as the user expects.
@@ -2302,6 +2369,20 @@ def _classify_wave_results(
             fetched=deduped_fetched,
         )
         parsed = _enforce_grounding_invariant(parsed)
+        # Chunk 13 / Trust Upgrade: mirror the real-time budget-exhaustion
+        # check so the batch wave path applies the same condition. The
+        # decision is the one stored in the request context (or rebuilt
+        # from the finding on the first wave) so the budget compared
+        # against is exactly the one the request was built with. Narrow
+        # to UNVERIFIED final verdicts only — a grounded CONFIRMED that
+        # used every search is the model doing its job, not a shortfall.
+        budget_cap = int(getattr(decision, "web_search_max_uses", 0) or 0)
+        if (
+            budget_cap > 0
+            and int(parsed.web_search_requests) >= budget_cap
+            and (parsed.verdict or "").strip().upper() == "UNVERIFIED"
+        ):
+            parsed.budget_exhausted = True
         outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed))
     return outcomes
 

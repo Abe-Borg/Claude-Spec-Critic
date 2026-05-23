@@ -169,6 +169,11 @@ class CalibrationReport:
     calibration: list[CalibrationBucket]
     grounding_integrity: GroundingIntegrity
     outcomes: list[FixtureOutcome]
+    # Chunk 13 / Trust Upgrade: count of fixtures whose verifier
+    # consumed its full mode-scaled search budget without grounding a
+    # verdict. Surfaced in the report header so the recheck can
+    # confirm budget-exhaustion telemetry flows through end-to-end.
+    budget_exhausted_count: int = 0
 
     @property
     def overall_verdict_accuracy(self) -> float:
@@ -309,6 +314,7 @@ def score(result: HarnessResult) -> CalibrationReport:
     outcomes = list(result.outcomes)
     verdict_correct = sum(1 for o in outcomes if o.verdict_match)
     fixture_pass = sum(1 for o in outcomes if not o.issues)
+    budget_exhausted_count = sum(1 for o in outcomes if o.budget_exhausted)
     return CalibrationReport(
         total_fixtures=len(outcomes),
         verdict_correct=verdict_correct,
@@ -320,6 +326,7 @@ def score(result: HarnessResult) -> CalibrationReport:
         calibration=_build_calibration(outcomes),
         grounding_integrity=_build_grounding_integrity(outcomes),
         outcomes=outcomes,
+        budget_exhausted_count=budget_exhausted_count,
     )
 
 
@@ -351,6 +358,11 @@ def _render_header(report: CalibrationReport) -> str:
         f"({_fmt_pct(report.overall_verdict_accuracy)})",
         f"- **Fixture pass / fail (no per-fixture issues):** "
         f"{report.fixture_pass} pass, {report.fixture_fail} fail",
+        # Chunk 13 / Trust Upgrade: surface the budget-exhausted count
+        # so a recheck can confirm the telemetry flowed through. A
+        # fixture whose captured response had ``web_search_requests``
+        # at the severity budget AND verdict UNVERIFIED contributes.
+        f"- **Budget-exhausted findings:** {report.budget_exhausted_count}",
         "",
     ]
     return "\n".join(lines)

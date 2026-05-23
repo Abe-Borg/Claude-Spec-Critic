@@ -528,6 +528,44 @@ def numeric_or_standards_demotion_reason(finding) -> str | None:
     return None
 
 
+def is_budget_exhausted(finding) -> bool:
+    """Return True when the verifier consumed its full search budget.
+
+    Chunk 13 / Trust Upgrade. Surfaces the actionable signal that an
+    operator could grant more budget by raising the finding's severity
+    (severity-tiered budgets in ``api_config._SEVERITY_MAX_USES``). The
+    verifier sets ``VerificationResult.budget_exhausted=True`` whenever
+    ``web_search_requests >= decision.web_search_max_uses`` on an
+    UNVERIFIED result; this helper just defensively reads the flag so
+    the renderer / banner code can branch on it without poking the
+    private verifier state.
+
+    Returns False when the finding has no verification, when the
+    flag is absent (legacy resume payload / cache replay — the field
+    defaults to False on those), or when the underlying boolean is
+    False. The helper deliberately does not check the verdict here —
+    the field is only ever set on UNVERIFIED in the production paths,
+    so a stray-set on a CONFIRMED would still surface the badge to a
+    reviewer, which is the safer failure mode.
+    """
+    verification = getattr(finding, "verification", None)
+    if verification is None:
+        return False
+    return bool(getattr(verification, "budget_exhausted", False))
+
+
+def summarize_budget_exhausted(findings: Iterable) -> int:
+    """Return the count of findings whose verifier exhausted its budget.
+
+    Chunk 13 / Trust Upgrade. Used by the Run Diagnostics banner so a
+    reviewer can see at a glance how many findings hit the search
+    budget without resolving — actionable input for "should I re-run
+    these at higher severity?" The flag round-trips through resume
+    state so the count survives a resumed run.
+    """
+    return sum(1 for finding in findings if is_budget_exhausted(finding))
+
+
 def classify_edit_action(finding) -> EditActionLabel:
     """Map a :class:`Finding` to its :class:`EditActionLabel`.
 

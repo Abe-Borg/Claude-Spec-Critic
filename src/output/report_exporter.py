@@ -56,9 +56,11 @@ from .report_status import (
     classify_status,
     composite_edit_confidence,
     edit_action_label,
+    is_budget_exhausted,
     numeric_or_standards_demotion_reason,
     status_glyph,
     status_label,
+    summarize_budget_exhausted,
     summarize_edit_actions,
     summarize_statuses,
 )
@@ -473,6 +475,14 @@ def _summarize_run_diagnostics(
             ),
         }
 
+    # Chunk 13 / Trust Upgrade: findings whose verifier consumed the full
+    # mode-scaled search budget without producing a grounded verdict.
+    # Surfaced in the banner with a hint pointing operators at the
+    # severity-tiered budget knob so they can choose to re-run with more
+    # headroom. The flag round-trips through resume state so a resumed
+    # run shows the same count.
+    budget_exhausted_count = summarize_budget_exhausted(findings)
+
     return {
         "auto_edit": auto_edit,
         "manual_edit": manual_edit,
@@ -484,6 +494,7 @@ def _summarize_run_diagnostics(
         "demotion_count": demotion_count,
         "extraction_warning_count": extraction_warning_count,
         "cross_check": cross_check_state,
+        "budget_exhausted_count": budget_exhausted_count,
     }
 
 
@@ -528,6 +539,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     cache_count = int(summary.get("cache_replay_count", 0) or 0)
     oldest_age = summary.get("oldest_cache_age_days")
     cross_check = summary.get("cross_check")
+    budget_exhausted_count = int(summary.get("budget_exhausted_count", 0) or 0)
 
     # Build row tuples: (label, value, highlight). ``highlight=True``
     # paints the value cell with light-red shading + dark-red text so
@@ -576,6 +588,19 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             "Spec content extraction warnings",
             str(extraction_warnings),
             extraction_warnings > 0,
+        )
+    )
+
+    # Chunk 13 / Trust Upgrade: budget-exhausted findings. Highlight in
+    # red when > 0 because it's an actionable signal — the operator can
+    # raise the severity of the affected findings to grant more search
+    # headroom. The hint paragraph below the table explains the action;
+    # the row count gives the at-a-glance number.
+    rows.append(
+        (
+            "Budget-exhausted findings",
+            str(budget_exhausted_count),
+            budget_exhausted_count > 0,
         )
     )
 
@@ -645,6 +670,33 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         hint_run.font.size = Pt(10)
         hint_run.font.italic = True
         hint_run.font.color.rgb = RGBColor(178, 34, 34)
+
+    # --- Budget-exhaustion recovery hint (Chunk 13 / Trust Upgrade) ---
+    # Distinct from the failure hint above because the cause and the
+    # remedy differ: failures are transient (re-run sees them fresh),
+    # but budget exhaustion is a policy outcome (re-run with the same
+    # severity will exhaust the same budget). The actionable hint is to
+    # raise the finding's severity so the routing decision allocates
+    # more searches (CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3 per
+    # api_config._SEVERITY_MAX_USES). Rendered in a calmer amber rather
+    # than the failure-red so a reader can tell the two situations
+    # apart at a glance.
+    if budget_exhausted_count > 0:
+        hint_para = doc.add_paragraph()
+        hint_para.paragraph_format.space_before = Pt(6)
+        hint_para.paragraph_format.space_after = Pt(8)
+        hint_run = hint_para.add_run(
+            f"{budget_exhausted_count} finding"
+            f"{'s' if budget_exhausted_count != 1 else ''} exhausted the "
+            "verifier's web_search budget without grounding a verdict "
+            "(rendered as 'Insufficient evidence (search budget exhausted)' "
+            "inline). Consider re-running these findings at a higher "
+            "severity to grant more search headroom — CRITICAL / HIGH "
+            "receive 7 searches, MEDIUM 5, GRIPES 3."
+        )
+        hint_run.font.size = Pt(10)
+        hint_run.font.italic = True
+        hint_run.font.color.rgb = RGBColor(204, 132, 0)
 
     doc.add_paragraph()  # Spacer between banner and the next section.
 
@@ -1742,6 +1794,20 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     value_run.bold = True
     value_run.font.color.rgb = status_color
     value_run.font.size = Pt(10)
+    # Chunk 13 / Trust Upgrade: when the verifier consumed its full
+    # mode-scaled search budget without producing a grounded verdict,
+    # append a "(search budget exhausted)" sub-label so the reviewer
+    # sees the actionable signal inline. The status itself stays
+    # INSUFFICIENT_EVIDENCE — the trust level is the same as any other
+    # unground UNVERIFIED — but the sub-label distinguishes "verifier
+    # had no headroom" from "verifier ran out of evidence at search 2
+    # of 7". Same color as the status so the badge reads as part of
+    # the status, not a separate field.
+    if is_budget_exhausted(finding):
+        budget_run = status_para.add_run(" (search budget exhausted)")
+        budget_run.font.size = Pt(10)
+        budget_run.font.italic = True
+        budget_run.font.color.rgb = status_color
     # Separator + edit-action.
     sep_run = status_para.add_run("  •  ")
     sep_run.font.color.rgb = RGBColor(160, 160, 160)
