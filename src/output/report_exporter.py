@@ -161,6 +161,12 @@ STATUS_COLORS: dict[ReportStatus, RGBColor] = {
     # which findings need re-verification vs. those the verifier ran
     # cleanly on.
     ReportStatus.VERIFICATION_FAILED: RGBColor(178, 34, 34),       # Firebrick / dark red-orange
+    # Chunk 12 / Trust Upgrade: purple, distinct from every other
+    # status color above. Indicates "two verifiers, different verdicts"
+    # — a quality signal that survives the verdict-based rendering so
+    # the report can flag the disagreement without burying it inside a
+    # nominally-supported (green) finding.
+    ReportStatus.VERIFIED_CONTESTED: RGBColor(128, 0, 128),        # Purple
 }
 
 STATUS_SHADING: dict[ReportStatus, str] = {
@@ -172,6 +178,7 @@ STATUS_SHADING: dict[ReportStatus, str] = {
     ReportStatus.NOT_CHECKED: "646464",
     ReportStatus.MANUAL_REVIEW_REQUIRED: "FF6600",
     ReportStatus.VERIFICATION_FAILED: "B22222",
+    ReportStatus.VERIFIED_CONTESTED: "800080",
 }
 
 EDIT_ACTION_COLORS: dict[EditActionLabel, RGBColor] = {
@@ -1290,6 +1297,17 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         final_model = model_used
         escalation_reason = (getattr(vr, "escalation_reason", "") or "").strip()
         changed = bool(getattr(vr, "escalation_changed_verdict", False))
+        # Chunk 12 / Trust Upgrade: the stricter "both grounded AND
+        # verdicts differ" flag (vs. ``escalation_changed_verdict``
+        # which also fires on initial-UNVERIFIED-then-CONFIRMED). When
+        # set, the finding renders as VERIFIED_CONTESTED at the
+        # top-level status badge and the panel below adds the
+        # initial-pass citations side-by-side with the final-pass
+        # citations so a reviewer can see "here are the sources Sonnet
+        # cited, here are the sources Opus cited" without leaving the
+        # finding entry.
+        models_disagreed = bool(getattr(vr, "models_disagreed", False))
+        initial_sources = list(getattr(vr, "initial_sources", []) or [])
 
         # Bold inline label.
         para = doc.add_paragraph()
@@ -1299,8 +1317,16 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         label.font.size = Pt(9)
         # Highlight in red-orange when the escalation actually changed
         # the verdict — that's the "two models disagreed" signal a
-        # reviewer most wants to see.
-        label_color = RGBColor(178, 34, 34) if changed else RGBColor(100, 100, 100)
+        # reviewer most wants to see. Chunk 12: the contested case
+        # (both grounded, verdicts differ) gets the purple
+        # VERIFIED_CONTESTED color so the panel matches the top-level
+        # status badge.
+        if models_disagreed:
+            label_color = RGBColor(128, 0, 128)  # Purple — VERIFIED_CONTESTED
+        elif changed:
+            label_color = RGBColor(178, 34, 34)  # Firebrick — verdict changed
+        else:
+            label_color = RGBColor(100, 100, 100)  # Gray — neutral
         label.font.color.rgb = label_color
         parts = []
         if initial_verdict:
@@ -1320,13 +1346,51 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         sentence = " → ".join(parts) if parts else "escalated"
         if escalation_reason:
             sentence += f". Reason: {escalation_reason}"
-        if changed:
+        # Chunk 12: surface the contested state explicitly so the
+        # inline sentence stays self-explanatory even when the panel
+        # is read in isolation (resume-state JSON dumps, exported
+        # report scanned without the top-level status badge nearby).
+        if models_disagreed:
+            sentence += (
+                " The two models disagreed on this finding while both "
+                "produced grounded verdicts; manual review recommended."
+            )
+        elif changed:
             sentence += " (models disagreed)"
         sentence += "."
         body = para.add_run(sentence)
         body.font.size = Pt(9)
         body.font.color.rgb = label_color
         para.paragraph_format.space_after = Pt(3)
+
+        # Chunk 12 / Trust Upgrade: when the disagreement is real (both
+        # grounded), render the initial verifier's accepted citations
+        # as a follow-up line. The final verifier's citations already
+        # render below under "Web/code evidence" so a reviewer reading
+        # the panel top-to-bottom sees Sonnet's sources here, Opus's
+        # sources below, and can compare side-by-side. Omitted when
+        # there are no initial citations to show (legacy results, or
+        # the stricter ``models_disagreed`` flag was never set).
+        if models_disagreed and initial_sources:
+            initial_label_para = doc.add_paragraph()
+            _set_paragraph_outline_level(initial_label_para, 8)
+            initial_label_run = initial_label_para.add_run(
+                f"Initial verifier sources ({initial_model or 'initial pass'}):"
+            )
+            initial_label_run.font.size = Pt(9)
+            initial_label_run.bold = True
+            initial_label_run.font.color.rgb = RGBColor(128, 0, 128)
+            initial_label_para.paragraph_format.space_after = Pt(2)
+
+            initial_sources_para = doc.add_paragraph()
+            _set_paragraph_outline_level(initial_sources_para, 8)
+            initial_sources_para.paragraph_format.space_after = Pt(3)
+            for i, url in enumerate(initial_sources):
+                if i > 0:
+                    initial_sources_para.add_run("  •  ")
+                run = initial_sources_para.add_run(url)
+                run.font.size = Pt(9)
+                run.font.color.rgb = RGBColor(59, 130, 246)
 
     # --- Accepted source URLs ("Web/code evidence") ---
     if accepted:
