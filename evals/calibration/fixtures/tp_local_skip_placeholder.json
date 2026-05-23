@@ -1,0 +1,51 @@
+{
+  "fixture_id": "tp_local_skip_placeholder",
+  "category": "internal_coordination",
+  "severity": "GRIPES",
+  "description": "Placeholder text [INSERT MANUFACTURER] flagged by the deterministic detector; verification router locally skips because web search adds no signal.",
+  "finding": {
+    "severity": "GRIPES",
+    "fileName": "22 13 13 - Sanitary Sewer.docx",
+    "section": "1.01",
+    "issue": "Spec contains '[INSERT MANUFACTURER]' placeholder that must be resolved before issue.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": null,
+    "confidence": 0.95,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p3"
+  },
+  "spec_context": {
+    "filename": "22 13 13 - Sanitary Sewer.docx",
+    "cycle_label": "California 2025",
+    "paragraph_map_slice": [
+      {"index": 2, "id": "p2", "text": "1.01 SUMMARY"},
+      {"index": 3, "id": "p3", "text": "A. Provide [INSERT MANUFACTURER] equipment per project requirements."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "UNVERIFIED",
+    "explanation": "Locally classified: external grounding not required for this finding.",
+    "sources": [],
+    "correction": null,
+    "confidence": 0.0,
+    "model_used": "local",
+    "verification_mode": "local_skip",
+    "verification_profile": "internal_coordination",
+    "web_search_requests": 0,
+    "successful_source_count": 0,
+    "search_error_count": 0,
+    "searched_urls": [],
+    "grounded": false,
+    "cache_status": "local_skip"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "correct_correction_text": null,
+    "expected_status": "LOCALLY_CLASSIFIED",
+    "expected_edit_action": "REPORT_ONLY",
+    "notes": "Placeholder text is self-evident from the spec — no external verification adds signal. Local skip is the correct routing."
+  }
+}

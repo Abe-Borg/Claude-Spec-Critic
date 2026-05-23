@@ -1,0 +1,56 @@
+{
+  "fixture_id": "tp_unverified_obscure_product",
+  "category": "manufacturer",
+  "severity": "MEDIUM",
+  "description": "Spec cites an obscure manufacturer model number that the verifier could not find in any datasheet or product listing.",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "23 09 13 - Instrumentation.docx",
+    "section": "2.04",
+    "issue": "Specification cites Acme Sensor Co. model ATM-4225-CA without a manufacturer datasheet or California listing reference.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": null,
+    "confidence": 0.65,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p3"
+  },
+  "spec_context": {
+    "filename": "23 09 13 - Instrumentation.docx",
+    "cycle_label": "California 2025",
+    "paragraph_map_slice": [
+      {"index": 2, "id": "p2", "text": "2.04 SENSORS"},
+      {"index": 3, "id": "p3", "text": "A. Acme Sensor Co. model ATM-4225-CA, or approved equal."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "UNVERIFIED",
+    "explanation": "Searched for Acme Sensor Co. model ATM-4225-CA across manufacturer listings and product directories. No matching datasheet or product page was found. The manufacturer name is generic enough that multiple companies use it; without a manufacturer URL or part lookup, the model number cannot be independently verified.",
+    "sources": [],
+    "correction": null,
+    "confidence": 0.0,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "manufacturer",
+    "web_search_requests": 5,
+    "successful_source_count": 4,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.acme.com",
+      "https://www.thomasnet.com",
+      "https://www.globalspec.com",
+      "https://www.iesna.org"
+    ],
+    "grounded": false,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "correct_correction_text": null,
+    "expected_status": "INSUFFICIENT_EVIDENCE",
+    "expected_edit_action": "REPORT_ONLY",
+    "notes": "An obscure manufacturer model the verifier cannot find legitimately produces UNVERIFIED. The finding stays for the reviewer to investigate, but no auto-edit is appropriate."
+  }
+}

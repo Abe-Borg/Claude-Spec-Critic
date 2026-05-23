@@ -1,0 +1,55 @@
+{
+  "fixture_id": "grounding_downgrade_invented_url",
+  "category": "code_standard",
+  "severity": "HIGH",
+  "description": "Verifier returned CONFIRMED but cited a URL the web_search tool never retrieved. Grounding invariant must downgrade to UNVERIFIED.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "23 31 13 - Ductwork.docx",
+    "section": "2.02",
+    "issue": "Spec cites SMACNA HVAC Duct Construction Standards for duct fabrication.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": "SMACNA HVAC Duct Construction Standards 4th Edition",
+    "confidence": 0.75,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p4"
+  },
+  "spec_context": {
+    "filename": "23 31 13 - Ductwork.docx",
+    "cycle_label": "California 2025",
+    "paragraph_map_slice": [
+      {"index": 3, "id": "p3", "text": "PART 2 PRODUCTS"},
+      {"index": 4, "id": "p4", "text": "A. Fabricate sheet metal ductwork per SMACNA HVAC Duct Construction Standards 4th Edition."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "SMACNA HVAC Duct Construction Standards is the widely-adopted reference for sheet metal duct fabrication. The 4th Edition (2020) is current.",
+    "sources": ["https://www.smacna.org/standards/duct-construction-4th-edition"],
+    "correction": null,
+    "confidence": 0.85,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 3,
+    "successful_source_count": 3,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.smacna.org/store/products",
+      "https://www.smacna.org/technical-resources",
+      "https://en.wikipedia.org/wiki/SMACNA"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "correct_correction_text": null,
+    "expected_status": "INSUFFICIENT_EVIDENCE",
+    "expected_edit_action": "REPORT_ONLY",
+    "notes": "Model cited a URL (smacna.org/standards/duct-construction-4th-edition) that the search tool never retrieved. The grounding invariant must downgrade the verdict because the citation cannot be validated against actual search results."
+  }
+}

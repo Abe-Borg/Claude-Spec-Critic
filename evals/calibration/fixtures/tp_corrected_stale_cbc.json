@@ -1,0 +1,57 @@
+{
+  "fixture_id": "tp_corrected_stale_cbc",
+  "category": "california_ahj",
+  "severity": "HIGH",
+  "description": "Stale '2019 CBC' reference in California spec; verifier correctly corrected to 2025 CBC with grounded DGS citation.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "23 21 13 - Hydronic Piping.docx",
+    "section": "1.01",
+    "issue": "Specification cites 2019 California Building Code; the current adopted cycle is 2025 CBC.",
+    "actionType": "EDIT",
+    "existingText": "2019 CBC",
+    "replacementText": "2025 CBC",
+    "codeReference": "CBC 2025",
+    "confidence": 0.9,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p3"
+  },
+  "spec_context": {
+    "filename": "23 21 13 - Hydronic Piping.docx",
+    "cycle_label": "California 2025",
+    "paragraph_map_slice": [
+      {"index": 0, "id": "p0", "text": "SECTION 23 21 13 - HYDRONIC PIPING"},
+      {"index": 1, "id": "p1", "text": "PART 1 GENERAL"},
+      {"index": 2, "id": "p2", "text": "1.01 SUMMARY"},
+      {"index": 3, "id": "p3", "text": "A. Comply with 2019 CBC requirements for hydronic piping systems."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "The Division of the State Architect adopted the 2025 California Building Code as the current cycle. The 2019 CBC is no longer in effect for K-12 projects.",
+    "sources": ["https://www.dgs.ca.gov/DSA/Resources/Page-Content/Resources-List-Folder/Code-Adoption-Cycle"],
+    "correction": "2025 CBC",
+    "confidence": 0.95,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "california_ahj",
+    "web_search_requests": 3,
+    "successful_source_count": 3,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.dgs.ca.gov/DSA/Resources/Page-Content/Resources-List-Folder/Code-Adoption-Cycle",
+      "https://www.dgs.ca.gov/DSA/Resources",
+      "https://www.bsc.ca.gov/codes.aspx"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "correct_correction_text": "2025 CBC",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "expected_edit_action": "AUTO_EDIT_CANDIDATE",
+    "notes": "DSA does adopt 2025 CBC as the current cycle for K-12 projects."
+  }
+}
