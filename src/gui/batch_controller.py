@@ -70,6 +70,7 @@ from ..orchestration.resume_state import (
     build_resume_state,
 )
 from ..review.reviewer import MODEL_OPUS_47
+from .review_run_controller import _maybe_start_recorder, _stop_recorder
 from .widgets import COLORS
 
 _UI_FONT_SIZE = 12
@@ -78,6 +79,17 @@ _BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
 
 def submit_batch_thread(app, run_epoch: int) -> None:
     diag = app._diagnostics_report
+    # Start the trace recorder if tracing is enabled. The recorder lives
+    # for the entire batch lifecycle (submit → poll → collect → verify →
+    # finalize) and is stopped after collect_batch_results completes.
+    # Store on the app so the collect path can reach it.
+    app._trace_recorder = _maybe_start_recorder(
+        run_id=diag.run_id if diag is not None else "no_run_id",
+        mode="batch",
+        model=MODEL_OPUS_47,
+        cycle_label=app._selected_cycle_label,
+        files=app._selected_files_for_review,
+    )
     try:
         if diag:
             diag.log("batch_submit", "step", "Preparing batch submission")
@@ -104,6 +116,9 @@ def submit_batch_thread(app, run_epoch: int) -> None:
         err = f"{e}\n{traceback.format_exc()}"
         if diag:
             diag.log("batch_submit", "error", f"Batch submission failed: {e}", {"traceback": traceback.format_exc()})
+        # Stop the recorder on submission failure so its files get flushed.
+        _stop_recorder(getattr(app, "_trace_recorder", None))
+        app._trace_recorder = None
         app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
 
 
@@ -418,6 +433,13 @@ def collect_batch_results(app) -> None:
             if diag:
                 diag.log("batch_collect", "error", f"Batch collection failed: {e}", {"traceback": traceback.format_exc()})
             app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
+        finally:
+            # Stop the trace recorder once batch collection is fully done
+            # (or has errored out). Resume-after-restart cases skip this
+            # entirely because the recorder was never started in this
+            # process; see Round 2 for app-restart trace continuity.
+            _stop_recorder(getattr(app, "_trace_recorder", None))
+            app._trace_recorder = None
 
     threading.Thread(target=_do_collect, daemon=True).start()
 

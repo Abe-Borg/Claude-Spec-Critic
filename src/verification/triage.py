@@ -48,6 +48,7 @@ from ..review.structured_schemas import (
     triage_classifications_tool,
     triage_tool_choice,
 )
+from ..tracing import capture_hooks as _trace
 
 
 LogFn = Callable[..., None]
@@ -260,24 +261,35 @@ def classify_findings_with_haiku(
     if not eligible:
         return {}
 
-    classifications: dict[int, str] = {}
-    for chunk_start in range(0, len(eligible), batch_size):
-        chunk = eligible[chunk_start:chunk_start + batch_size]
-        chunk_indices = {idx for idx, _ in chunk}
-        chunk_results = _classify_batch(chunk, model=selected_model, log=log)
-        # Only accept results for indices we actually sent — defends against
-        # a hallucinated index in the tool payload.
-        for idx, cls in chunk_results.items():
-            if idx in chunk_indices:
-                classifications[idx] = cls
-
-    skipped = sum(1 for v in classifications.values() if v == "local_skip")
-    log(
-        f"Haiku triage: classified {len(classifications)}/{len(eligible)} eligible "
-        f"finding(s); {skipped} marked local_skip.",
-        level="info",
+    trace_triage = _trace.capture_triage_start(
+        finding_count=len(eligible), model=selected_model,
     )
-    return classifications
+    classifications: dict[int, str] = {}
+    try:
+        for chunk_start in range(0, len(eligible), batch_size):
+            chunk = eligible[chunk_start:chunk_start + batch_size]
+            chunk_indices = {idx for idx, _ in chunk}
+            chunk_results = _classify_batch(chunk, model=selected_model, log=log)
+            # Only accept results for indices we actually sent — defends against
+            # a hallucinated index in the tool payload.
+            for idx, cls in chunk_results.items():
+                if idx in chunk_indices:
+                    classifications[idx] = cls
+            _trace.capture_note(
+                trace_triage, "triage chunk classified",
+                chunk_start=chunk_start, chunk_size=len(chunk),
+                results_in_chunk=len(chunk_results),
+            )
+
+        skipped = sum(1 for v in classifications.values() if v == "local_skip")
+        log(
+            f"Haiku triage: classified {len(classifications)}/{len(eligible)} eligible "
+            f"finding(s); {skipped} marked local_skip.",
+            level="info",
+        )
+        return classifications
+    finally:
+        _trace.capture_triage_end(trace_triage, classifications=classifications)
 
 
 def filter_local_skips(

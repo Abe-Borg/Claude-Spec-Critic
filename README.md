@@ -293,6 +293,41 @@ The calibration eval (`python -m evals.calibration.runner`) reports a
 recheck can confirm end-to-end telemetry. The
 `tp_unverified_budget_exhausted` fixture is the canonical example.
 
+## Agent Tracing
+
+Every run captures a forensic trace of agent invocations to JSONL on disk. When a verdict looks off or a finding got suppressed for non-obvious reasons, the trace lets you reconstruct what the model actually saw, what it produced, and how the pipeline interpreted that output.
+
+**Default-on.** The trace directory lives at `~/.spec_critic/traces/<run_id>/` (override via `SPEC_CRITIC_TRACE_DIR`). The `<run_id>` matches `DiagnosticsReport.run_id` so a trace can be correlated with the diagnostics report by directory name.
+
+### Files
+
+| File | Contents |
+|---|---|
+| `run.json` | Run metadata: run_id, mode, model, cycle, files_reviewed, capture_level, started/ended timestamps. |
+| `spans.jsonl` | One line per closed span. Spans nest via `parent_span_id` — `pipeline` → `review` / `cross_check` / `verification_initial` → `api_call` → `web_search`. |
+| `events.jsonl` | One line per event, keyed by `span_id`. Types include `thinking_block`, `tool_use`, `web_search_query`, `web_search_result`, `pause_turn`, `parse_attempt`, `grounding_outcome`, `escalation_decision`, `budget_exhausted_marker`. |
+| `prompts.jsonl` | Default-level only: content-deduped prompts referenced by SHA-256 hash from span `inputs`. Deep mode inlines prompts on each span instead. |
+| `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every Chunk 11-13 verification field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted). |
+
+### Env vars
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. |
+| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. |
+| `SPEC_CRITIC_TRACE_DIR` | `~/.spec_critic/traces/` (state dir on macOS/Linux, equivalent on Windows) | Override the trace root. `~` and `$VAR` are expanded. |
+
+### GUI
+
+The GUI's Tracing row exposes two checkboxes ("Record agent trace", "Deep mode") and a "Show folder" button that opens the trace root in the OS file explorer. The checkboxes set the env vars at run start, so toggling between runs takes effect without a process restart. The default is "Record agent trace" on, "Deep mode" off.
+
+### Trace silo guarantees
+
+- The trace never alters `Finding` / `ReviewResult` / `VerificationResult` / `DiagnosticsReport` shape. Hooks read existing state; they don't add to it.
+- `DiagnosticsReport.summary()` output is byte-identical with and without tracing enabled.
+- Capture-hook failures never escape into pipeline code. A first-of-kind warning is logged once per (exception-type, frame) and suppressed afterward.
+- API keys and bearer tokens are redacted before serialization (shared regex with `diagnostics.py`).
+
 ## Changelog (recent)
 
 ### v2.11.0

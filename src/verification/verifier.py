@@ -78,6 +78,24 @@ from .verification_routing import (
     merge_extra_headers,
     select_routing,
 )
+from ..tracing import capture_hooks as _trace
+
+
+def _routing_decision_to_dict(decision: VerificationRoutingDecision | None) -> dict:
+    """Best-effort routing-decision snapshot for trace inputs.
+
+    Defensive: future fields on VerificationRoutingDecision get picked up
+    automatically via ``vars()``; missing/non-dataclass shapes degrade to
+    a repr so the trace never fails for an attribute typo.
+    """
+    if decision is None:
+        return {}
+    try:
+        if hasattr(decision, "__dict__"):
+            return {k: v for k, v in vars(decision).items() if not k.startswith("_")}
+    except Exception:
+        pass
+    return {"repr": repr(decision)}
 
 # VERIFICATION_MAX_TOKENS is computed once at import for backward-compat
 # with callers that read the constant. The dynamic helper is used for the
@@ -1304,37 +1322,58 @@ def verify_finding(
     - ``escalated`` is propagated into the result so diagnostics can
       distinguish the first pass from the Opus retry.
     """
+    finding_id = getattr(finding, "finding_id", "") or "unknown"
+
     if cache is not None:
         cached = cache.get(finding, cycle=cycle)
         if cached is not None:
+            cache_age_days = None
+            ts = getattr(cached, "cache_entry_created_ts", 0.0) or 0.0
+            if ts > 0:
+                cache_age_days = (time.time() - ts) / 86400.0
+            _trace.capture_cache_lookup(
+                None, finding_id=finding_id, hit=True,
+                cache_status="hit", cache_entry_age_days=cache_age_days,
+            )
             return cached
 
     if local_skip_enabled() and classify_finding_for_verification(finding) == "local_skip":
+        elevated = local_skip_requires_elevated_confidence(finding)
+        _trace.capture_local_skip(
+            None, finding_id=finding_id, reason="router_classifier",
+            requires_elevated_confidence=elevated,
+        )
         return _local_skip_result(
-            requires_elevated_confidence=local_skip_requires_elevated_confidence(finding),
+            requires_elevated_confidence=elevated,
         )
 
-    # Route the initial-model selection through the central decision
-    # selector so ``verify_finding`` and ``_run_verification_call`` agree
-    # on which model the request will run on. The decision is recomputed
-    # inside ``_run_verification_call`` so the request build cannot accept
-    # a stale model; consulting it here is purely so the caller can pass
-    # ``selected_model`` into the call and let the ``model_override=``
-    # keyword wire it through.
+    # Always compute the initial routing decision (used for both selecting
+    # the model when none is passed and for stamping the trace inputs).
+    initial_decision = select_routing(
+        finding, escalated=escalated, local_skip=False
+    )
     if model is not None:
         selected_model = model
     else:
-        initial_decision = select_routing(
-            finding, escalated=escalated, local_skip=False
-        )
         selected_model = initial_decision.model or initial_verification_model()
-    result = _run_verification_call(
-        finding,
-        cycle=cycle,
-        model=selected_model,
-        max_retries=max_retries,
-        escalated=escalated,
+
+    trace_initial = _trace.capture_verification_call(
+        finding_id=finding_id,
+        routing_decision=_routing_decision_to_dict(initial_decision),
+        escalation=escalated,
     )
+    try:
+        result = _run_verification_call(
+            finding,
+            cycle=cycle,
+            model=selected_model,
+            max_retries=max_retries,
+            escalated=escalated,
+            trace_parent=trace_initial,
+        )
+    except Exception:
+        _trace.capture_verification_end(trace_initial, error="exception")
+        raise
 
     # Escalation: re-run on Opus when Sonnet failed to ground a high-stakes
     # finding. Skip when caller already passed escalated=True (avoid loops).
@@ -1342,6 +1381,7 @@ def verify_finding(
     # is-initial); ``select_routing(escalated=True)`` is the single source
     # of truth for which model and request shape the escalation runs on, so
     # the real-time and batch escalation paths cannot drift.
+    escalation_fired = False
     if not escalated and should_escalate_verification(
         finding,
         verdict=result.verdict,
@@ -1354,6 +1394,7 @@ def verify_finding(
         )
         escalated_model = escalation_decision.model
         if escalated_model and escalated_model != selected_model:
+            escalation_fired = True
             initial_verdict_snapshot = result.verdict
             initial_model_snapshot = result.model_used or selected_model
             escalation_reason = _classify_escalation_reason(result)
@@ -1367,13 +1408,31 @@ def verify_finding(
             initial_grounded_snapshot = bool(result.grounded)
             initial_sources_snapshot = list(result.sources or [])
 
-            esc_result = _run_verification_call(
-                finding,
-                cycle=cycle,
-                model=escalated_model,
-                max_retries=max_retries,
-                escalated=True,
+            # Close the initial span before opening the escalation sibling,
+            # so the viewer's timeline shows them in the right order.
+            _trace.capture_verification_end(trace_initial, verification_result=result)
+            _trace.capture_escalation_decision(
+                None,
+                fired=True, reason=escalation_reason,
+                initial_verdict=initial_verdict_snapshot,
             )
+            trace_esc = _trace.capture_verification_call(
+                finding_id=finding_id,
+                routing_decision=_routing_decision_to_dict(escalation_decision),
+                escalation=True,
+            )
+            try:
+                esc_result = _run_verification_call(
+                    finding,
+                    cycle=cycle,
+                    model=escalated_model,
+                    max_retries=max_retries,
+                    escalated=True,
+                    trace_parent=trace_esc,
+                )
+            except Exception:
+                _trace.capture_verification_end(trace_esc, error="exception")
+                raise
             # Prefer the escalated result when it produced a grounded verdict;
             # otherwise keep the first pass so we don't lose its evidence.
             if esc_result.grounded or (
@@ -1406,6 +1465,10 @@ def verify_finding(
                 and bool(esc_result.grounded)
                 and esc_result.verdict != initial_verdict_snapshot
             )
+            _trace.capture_verification_end(trace_esc, verification_result=result)
+
+    if not escalation_fired:
+        _trace.capture_verification_end(trace_initial, verification_result=result)
 
     if cache is not None and result.cache_status == "miss":
         cache.put(finding, cycle=cycle, result=result)
@@ -1444,6 +1507,7 @@ def _run_verification_call(
     model: str,
     max_retries: int,
     escalated: bool,
+    trace_parent=None,
 ) -> VerificationResult:
     """Single verification call (no caching, no escalation).
 
@@ -1454,6 +1518,10 @@ def _run_verification_call(
     :mod:`verification_routing` so the real-time path uses the same
     selector and request builder as the batch initial / retry /
     continuation paths.
+
+    ``trace_parent`` is an optional SpanHandle from
+    ``capture_verification_call`` — when provided, an api_call child span
+    is opened around each streaming attempt and content blocks emit events.
     """
     # Single routing decision. The decision encodes profile, mode, model,
     # thinking, search budget, escalation eligibility, and tool inclusion
@@ -1588,6 +1656,9 @@ def _run_verification_call(
                 ) as stream:
                     response = stream.get_final_message()
                 all_responses.append(response)
+                # Tracing: emit content-block events (thinking / tool_use /
+                # web_search / web_fetch) on the parent verification span.
+                _trace.capture_response_content_blocks(trace_parent, response)
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)
                 # ``tool_use`` is a successful terminal state when the model
@@ -1603,6 +1674,7 @@ def _run_verification_call(
                     # would exceed the configured budget.
                     continuation_count += 1
                     continuation_total += 1
+                    _trace.capture_pause_turn(trace_parent, continuation_count=continuation_count)
                     total_search_so_far = sum(
                         _web_search_count(r) for r in all_responses
                     )
@@ -1626,6 +1698,7 @@ def _run_verification_call(
                     # changes the model's continuation behavior, and
                     # interferes with thinking / tool-state continuity.
                     messages.append({"role": "assistant", "content": response.content})
+                    _trace.capture_continuation_resume(trace_parent, continuation_index=continuation_count)
                     continue
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
             final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
@@ -1769,7 +1842,13 @@ def _run_verification_call(
                 searched=deduped_searched,
                 fetched=deduped_fetched,
             )
+            verdict_before_invariant = (parsed.verdict or "").strip().upper()
             parsed = _enforce_grounding_invariant(parsed)
+            verdict_after_invariant = (parsed.verdict or "").strip().upper()
+            downgraded = (
+                verdict_before_invariant in ("CONFIRMED", "CORRECTED")
+                and verdict_after_invariant == "UNVERIFIED"
+            )
             # Chunk 13 / Trust Upgrade: stamp budget exhaustion AFTER
             # the grounding invariant so a CONFIRMED that was downgraded
             # to UNVERIFIED for missing citations still picks up the flag
@@ -1784,6 +1863,15 @@ def _run_verification_call(
                 and (parsed.verdict or "").strip().upper() == "UNVERIFIED"
             ):
                 parsed.budget_exhausted = True
+            # Tracing: grounding outcome event captures the accepted /
+            # rejected partition and whether the verdict was downgraded.
+            _trace.capture_grounding_outcome(
+                trace_parent,
+                accepted=list(parsed.accepted_sources or []),
+                rejected=[r.get("url", "") for r in (parsed.rejected_sources or []) if isinstance(r, dict)],
+                downgraded_to_unverified=downgraded,
+                budget_exhausted=bool(parsed.budget_exhausted),
+            )
             return parsed
         except (KeyboardInterrupt, SystemExit):
             # Control-flow exceptions must escape so Ctrl-C / interpreter

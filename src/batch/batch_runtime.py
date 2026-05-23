@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .batch import BatchStatus, poll_batch
+from ..tracing import capture_hooks as _trace
 
 DEFAULT_POLL_INTERVAL_SECONDS = 15
 DEFAULT_MAX_ELAPSED_SECONDS = 4 * 3600
@@ -97,6 +98,11 @@ def poll_batch_bounded(
                 "Remote batch may still be running.",
                 level="warning",
             )
+            _trace.capture_note(
+                None, "batch poll detached",
+                batch_id=batch_id, reason="max_elapsed",
+                elapsed_hours=policy.max_elapsed_seconds / 3600,
+            )
             return PollOutcome(detached=True, detach_reason="max_elapsed")
 
         if now - last_progress_time > policy.max_no_progress_seconds:
@@ -104,6 +110,11 @@ def poll_batch_bounded(
                 f"No progress for {policy.max_no_progress_seconds / 60:.0f} minutes. "
                 "Remote batch may still be running.",
                 level="warning",
+            )
+            _trace.capture_note(
+                None, "batch poll detached",
+                batch_id=batch_id, reason="no_progress",
+                no_progress_minutes=policy.max_no_progress_seconds / 60,
             )
             return PollOutcome(detached=True, detach_reason="no_progress")
 
@@ -132,6 +143,12 @@ def poll_batch_bounded(
 
         normalized = status.status.replace("-", "_")
         if normalized in ("ended", "failed", "expired", "canceled"):
+            _trace.capture_note(
+                None, "batch poll terminal",
+                batch_id=batch_id, terminal_status=status.status,
+                succeeded=status.succeeded, errored=status.errored,
+                canceled=status.canceled, expired=status.expired,
+            )
             return PollOutcome(terminal=True, terminal_status=status.status, final_status=status)
 
         # Progressive backoff (audit Section 9.1): start at the configured

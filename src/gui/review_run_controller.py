@@ -27,7 +27,48 @@ from ..orchestration.diagnostics import DiagnosticsReport
 from ..orchestration.pipeline import run_review
 from ..review.reviewer import MODEL_OPUS_47
 from ..core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
+from ..tracing import (
+    TraceRecorder,
+    current_capture_level,
+    get_recorder,
+    set_recorder,
+    trace_dir_for_run,
+    trace_enabled,
+)
 from .widgets import COLORS
+
+
+def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list) -> TraceRecorder | None:
+    """Spin up a TraceRecorder for the run, gated on the env-var.
+
+    Reads ``current_capture_level()`` so a GUI toggle that just flipped
+    ``SPEC_CRITIC_TRACE`` (or _DEEP) takes effect on the next run without
+    a process restart. Returns ``None`` when tracing is disabled.
+    """
+    if not trace_enabled():
+        return None
+    from .. import __version__ as _spec_critic_version
+    rec = TraceRecorder(
+        run_id=run_id,
+        trace_dir=trace_dir_for_run(run_id),
+        capture_level=current_capture_level(),
+        spec_critic_version=_spec_critic_version,
+    )
+    rec.start(
+        mode=mode, model=model, cycle_label=cycle_label,
+        files_reviewed=[p.name if hasattr(p, "name") else str(p) for p in files],
+    )
+    set_recorder(rec)
+    return rec
+
+
+def _stop_recorder(recorder: TraceRecorder | None) -> None:
+    if recorder is None:
+        return
+    try:
+        recorder.stop()
+    finally:
+        set_recorder(None)
 
 _UI_FONT_SIZE = 12
 _BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
@@ -225,6 +266,17 @@ def start_review(app) -> None:
 
 def run_review_thread(app, run_epoch: int) -> None:
     diag = app._diagnostics_report
+    # Start the agent-trace recorder (gated on SPEC_CRITIC_TRACE) so the
+    # entire real-time review run lands in one trace directory keyed by
+    # the diagnostics run_id. The pipeline / reviewer / verifier capture
+    # hooks no-op when this returns None.
+    trace_recorder = _maybe_start_recorder(
+        run_id=diag.run_id if diag is not None else "no_run_id",
+        mode="realtime",
+        model=MODEL_OPUS_47,
+        cycle_label=app._selected_cycle_label,
+        files=app._selected_files_for_review,
+    )
     try:
         n = len(app._selected_files_for_review)
         app._dispatch_if_current(run_epoch, lambda: app.log.log_step("Starting per-spec review..."))
@@ -378,6 +430,8 @@ def run_review_thread(app, run_epoch: int) -> None:
         if diag:
             diag.log("review", "error", f"Review failed: {e}", {"traceback": traceback.format_exc()})
         app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
+    finally:
+        _stop_recorder(trace_recorder)
 
 
 def on_review_complete(app, result) -> None:

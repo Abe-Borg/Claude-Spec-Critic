@@ -25,6 +25,7 @@ from ..review.structured_schemas import (
     structured_tool_output_enabled,
     verification_verdict_tool,
 )
+from ..tracing import capture_hooks as _trace
 
 
 @dataclass
@@ -123,6 +124,11 @@ def submit_review_batch(
     if use_beta:
         kwargs["betas"] = [BATCH_OUTPUT_BETA]
     mb = create_fn(**kwargs)
+    _trace.capture_note(
+        None, "review batch submitted",
+        batch_id=mb.id, request_count=len(batch_requests),
+        extended_output_beta=use_beta,
+    )
     return BatchJob(batch_id=mb.id, job_type="review", request_map=request_map, created_at=time.time())
 
 
@@ -364,6 +370,10 @@ def submit_verification_batch(
     if union_headers:
         create_kwargs["extra_headers"] = union_headers
     mb = client.messages.batches.create(**create_kwargs)
+    _trace.capture_note(
+        None, "verification batch submitted",
+        batch_id=mb.id, request_count=len(reqs),
+    )
 
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
@@ -381,6 +391,10 @@ def submit_verification_followup_wave(
     if extra_headers:
         create_kwargs["extra_headers"] = extra_headers
     mb = client.messages.batches.create(**create_kwargs)
+    _trace.capture_note(
+        None, "verification followup wave submitted",
+        batch_id=mb.id, request_count=len(requests),
+    )
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
 
