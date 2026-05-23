@@ -315,9 +315,16 @@ def submit_verification_batch(
     # given it STRICT_STRUCTURED).
     from ..verification.verification_routing import (
         build_verification_request,
+        merge_extra_headers,
         select_routing,
     )
 
+    # Per-item extra_headers (web_fetch beta on STANDARD/DEEP modes)
+    # collect here. Forwarded at the batch level via
+    # ``batches.create(extra_headers=...)`` — embedding them inside the
+    # per-request ``params`` body would trigger ``invalid_request_error:
+    # Extra inputs are not permitted`` from the batch API.
+    extra_headers_seq: list[dict[str, str]] = []
     for batch_idx, (finding_idx, finding) in enumerate(verifiable):
         custom_id = f"verify__{batch_idx}"
         decision = select_routing(
@@ -327,14 +334,15 @@ def submit_verification_batch(
             model_override=model,
             cache_phase=PHASE_VERIFICATION,
         )
-        params = build_verification_request(
+        verification_request = build_verification_request(
             decision,
             prompt=build_prompt_fn(finding),
             system_prompt=system_prompt_fn(cycle),
             assistant_content=None,
             include_service_tier=True,
         )
-        reqs.append({"custom_id": custom_id, "params": params})
+        extra_headers_seq.append(verification_request.extra_headers)
+        reqs.append({"custom_id": custom_id, "params": verification_request.params})
         request_map[custom_id] = {
             "batch_idx": batch_idx,
             "finding_idx": finding_idx,
@@ -351,7 +359,11 @@ def submit_verification_batch(
     # Verification output is capped at 32k, well within both Sonnet and Opus
     # base ceilings, so the 300k extended-output beta is not needed. Use the
     # standard batches endpoint.
-    mb = client.messages.batches.create(requests=reqs)
+    union_headers = merge_extra_headers(extra_headers_seq)
+    create_kwargs: dict[str, Any] = {"requests": reqs}
+    if union_headers:
+        create_kwargs["extra_headers"] = union_headers
+    mb = client.messages.batches.create(**create_kwargs)
 
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
@@ -359,11 +371,16 @@ def submit_verification_batch(
 def submit_verification_followup_wave(
     requests: list[dict[str, Any]],
     request_map: dict[str, Any],
+    *,
+    extra_headers: dict[str, str] | None = None,
 ) -> BatchJob:
     if not requests:
         raise ValueError("No verification follow-up requests to submit")
     client = _get_client()
-    mb = client.messages.batches.create(requests=requests)
+    create_kwargs: dict[str, Any] = {"requests": requests}
+    if extra_headers:
+        create_kwargs["extra_headers"] = extra_headers
+    mb = client.messages.batches.create(**create_kwargs)
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
 
 

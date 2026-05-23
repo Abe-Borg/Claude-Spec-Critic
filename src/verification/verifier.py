@@ -71,9 +71,11 @@ from .verification_router import (
     should_escalate_verification,
 )
 from .verification_routing import (
+    VerificationRequest,
     VerificationRoutingDecision,
     apply_routing_to_result,
     build_verification_request,
+    merge_extra_headers,
     select_routing,
 )
 
@@ -1524,12 +1526,14 @@ def _run_verification_call(
     # effort, and the mode-scaled web_search max_uses in one place; the
     # only call-site decision is whether to include the batch
     # ``service_tier`` (not for the streaming path).
-    stream_kwargs = build_verification_request(
+    request = build_verification_request(
         decision,
         prompt=prompt,
         system_prompt=system_prompt,
         include_service_tier=False,
     )
+    stream_kwargs = request.params
+    extra_headers = request.extra_headers
     # The streaming path uses ``client.messages.stream(...)`` which
     # accepts ``messages`` as a top-level kwarg, but the builder bundles
     # it into the params dict. Lift it out so we can keep the same
@@ -1571,9 +1575,16 @@ def _run_verification_call(
             continuation_count = 0
             for _ in range(max_continuations + 1):
                 # --- Streaming API required for web search server tool ---
+                # ``extra_headers`` is forwarded as an SDK transport kwarg
+                # (HTTP headers) — it must NOT be inside ``stream_kwargs``
+                # because the same params dict shape is also used by the
+                # batch path, where the API rejects unknown body keys.
+                stream_call_kwargs = dict(stream_kwargs)
+                if extra_headers:
+                    stream_call_kwargs["extra_headers"] = extra_headers
                 with client.messages.stream(
                     messages=messages,
-                    **stream_kwargs,
+                    **stream_call_kwargs,
                 ) as stream:
                     response = stream.get_final_message()
                 all_responses.append(response)
@@ -1969,7 +1980,7 @@ def _build_retry_request(
     profile: VerificationProfile | str | None = None,
     finding: Finding | None = None,
     escalated: bool = False,
-) -> dict:
+) -> VerificationRequest:
     """Build a verification retry request.
 
     Routes through the central
@@ -1979,6 +1990,11 @@ def _build_retry_request(
     is selected from it; otherwise we synthesize a minimal stand-in from
     the ``severity`` / ``profile`` / ``model`` parameters (tests still
     use this entry point; the wave loop passes the finding through).
+
+    Returns a :class:`VerificationRequest` so the wave loop can route
+    ``extra_headers`` to the batch level (via
+    ``batches.create(extra_headers=...)``) without leaking the SDK
+    transport kwarg into the per-request body that the API validates.
     """
     decision = _retry_routing_decision(
         finding=finding,
@@ -2009,7 +2025,7 @@ def _build_continuation_request(
     profile: VerificationProfile | str | None = None,
     finding: Finding | None = None,
     escalated: bool = False,
-) -> dict:
+) -> VerificationRequest:
     """Build a verification continuation request.
 
     Same routing path as the retry builder. The continuation is
@@ -2693,6 +2709,12 @@ def collect_verification_batch_results(
         next_requests = []
         next_request_map = {}
         next_contexts: dict[str, dict] = {}
+        # Per-item extra_headers (web_fetch beta on STANDARD/DEEP modes)
+        # accumulate here. The union is forwarded to
+        # ``submit_verification_followup_wave`` at the batch level —
+        # embedding them inside the per-request ``params`` body would
+        # trigger ``invalid_request_error`` from the batch API.
+        wave_extra_headers_seq: list[dict[str, str]] = []
         for item in needs_retry:
             original = request_contexts[item.original_custom_id]
             wave_finding = findings[item.finding_idx]
@@ -2713,17 +2735,19 @@ def collect_verification_batch_results(
             wave_severity = retry_decision.severity
             wave_profile = retry_decision.profile.value
             custom_id = f"verify_retry_{wave_index + 1}__{item.original_custom_id}"
+            retry_request = _build_retry_request(
+                original["original_prompt"],
+                cycle=cycle,
+                model=wave_model,
+                severity=wave_severity,
+                profile=wave_profile,
+                finding=wave_finding,
+                escalated=wave_escalated,
+            )
+            wave_extra_headers_seq.append(retry_request.extra_headers)
             next_requests.append({
                 "custom_id": custom_id,
-                "params": _build_retry_request(
-                    original["original_prompt"],
-                    cycle=cycle,
-                    model=wave_model,
-                    severity=wave_severity,
-                    profile=wave_profile,
-                    finding=wave_finding,
-                    escalated=wave_escalated,
-                ),
+                "params": retry_request.params,
             })
             next_request_map[custom_id] = {
                 "finding_idx": item.finding_idx,
@@ -2765,18 +2789,20 @@ def collect_verification_batch_results(
             wave_severity = cont_decision.severity
             wave_profile = cont_decision.profile.value
             custom_id = f"verify_cont_{wave_index + 1}__{item.original_custom_id}"
+            cont_request = _build_continuation_request(
+                original["original_prompt"],
+                item.assistant_content_blocks or [],
+                cycle=cycle,
+                model=wave_model,
+                severity=wave_severity,
+                profile=wave_profile,
+                finding=wave_finding,
+                escalated=wave_escalated,
+            )
+            wave_extra_headers_seq.append(cont_request.extra_headers)
             next_requests.append({
                 "custom_id": custom_id,
-                "params": _build_continuation_request(
-                    original["original_prompt"],
-                    item.assistant_content_blocks or [],
-                    cycle=cycle,
-                    model=wave_model,
-                    severity=wave_severity,
-                    profile=wave_profile,
-                    finding=wave_finding,
-                    escalated=wave_escalated,
-                ),
+                "params": cont_request.params,
             })
             next_request_map[custom_id] = {
                 "finding_idx": item.finding_idx,
@@ -2829,7 +2855,12 @@ def collect_verification_batch_results(
                     verification_failed=op_failed,
                 )
             break
-        current_job = submit_verification_followup_wave(next_requests, next_request_map)
+        wave_extra_headers = merge_extra_headers(wave_extra_headers_seq)
+        current_job = submit_verification_followup_wave(
+            next_requests,
+            next_request_map,
+            extra_headers=wave_extra_headers or None,
+        )
         request_contexts = next_contexts
     counts = {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0}
     for finding in findings:

@@ -392,13 +392,17 @@ class TestBetaHeader:
             VerificationMode.DEEP_REASONING,
         ):
             pytest.skip(f"Test requires fetch-eligible mode; got {decision.mode}")
-        params = build_verification_request(
+        request = build_verification_request(
             decision,
             prompt="user message",
             system_prompt="system message",
         )
-        headers = params.get("extra_headers") or {}
-        assert headers.get("anthropic-beta") == WEB_FETCH_BETA_HEADER
+        assert request.extra_headers.get("anthropic-beta") == WEB_FETCH_BETA_HEADER
+        # Regression guard: ``extra_headers`` is an SDK transport kwarg,
+        # not a Messages API field. Embedding it inside the per-request
+        # batch ``params`` body triggers ``invalid_request_error: Extra
+        # inputs are not permitted``.
+        assert "extra_headers" not in request.params
 
     def test_strict_structured_request_omits_beta_header(self):
         """STRICT_STRUCTURED does not attach web_fetch, so no beta needed."""
@@ -408,13 +412,13 @@ class TestBetaHeader:
             pytest.skip(
                 f"Routing produced {decision.mode}; STRICT_STRUCTURED needed."
             )
-        params = build_verification_request(
+        request = build_verification_request(
             decision,
             prompt="user message",
             system_prompt="system message",
         )
-        headers = params.get("extra_headers") or {}
-        assert "anthropic-beta" not in headers
+        assert "anthropic-beta" not in request.extra_headers
+        assert "extra_headers" not in request.params
 
 
 # ===========================================================================
