@@ -9,7 +9,7 @@ from typing import Callable
 
 from typing import TYPE_CHECKING
 
-from .edit_locator import locate_edits
+from .edit_locator import locate_edits, locator_evidence_from_result
 from ..input.extractor import ExtractedSpec, extract_text_from_docx
 from ..review.reviewer import Finding
 from .spec_editor import (
@@ -190,7 +190,16 @@ def execute_edit_plan(
             if getattr(result, "correction_rejected_as_replacement", False)
         )
         for pair, locator_result in zip(indexed_findings, locator_results):
-            original_index, _, _ = pair
+            original_index, representative_finding, per_file_finding = pair
+            # Chunk 4 / Trust Upgrade: stash the locator-evidence snapshot
+            # on both the per-file original (the locator actually ran on
+            # this one) and the representative (so the report renders the
+            # panel for the deduplicated entry). Both can be the same
+            # object for singletons.
+            evidence = locator_evidence_from_result(locator_result)
+            per_file_finding.locator_evidence = evidence
+            if representative_finding is not per_file_finding:
+                representative_finding.locator_evidence = evidence
             if locator_result.status == "not_found":
                 log(f"[{filename}] Finding #{original_index} not found in document text.")
             elif locator_result.status == "ambiguous":
@@ -407,3 +416,83 @@ def execute_edit_plan(
         )
 
     return reports
+
+
+def populate_locator_evidence(
+    findings: list[Finding],
+    extracted_specs: list[ExtractedSpec],
+) -> None:
+    """Stamp :attr:`Finding.locator_evidence` on findings with edit proposals.
+
+    Chunk 4 / Trust Upgrade. Lets the report exporter render the "Edit
+    Target Evidence" panel (match method, confidence, safety category,
+    element id) without re-running the locator inside the exporter.
+    Called once after the review/verification phases land (in
+    :func:`pipeline.finalize_batch_result` and :func:`pipeline.run_review`)
+    so the first-time report — exported before
+    :func:`execute_edit_plan` ever runs — has the data, and again from
+    :func:`execute_edit_plan` itself so a resumed run that hits apply
+    directly still refreshes the field.
+
+    For merged findings (``occurrence_originals`` non-empty), the
+    locator is run against each per-file original using that file's
+    paragraph map. The representative finding receives the evidence
+    snapshot of its own file's original (matching :attr:`fileName`) so
+    a single-line evidence panel still makes sense for the dedup'd
+    entry, and each original carries its own per-file snapshot for
+    callers that walk the originals list.
+
+    Findings whose paragraph map is unavailable (file not in
+    ``extracted_specs``, no paragraph map, or no edit proposal) are
+    left with :attr:`locator_evidence` ``None`` so the report renders
+    "no edit-target evidence available" rather than fabricating one.
+    """
+    spec_map_by_filename: dict[str, list] = {}
+    for spec in extracted_specs:
+        if spec.paragraph_map:
+            spec_map_by_filename[spec.filename] = spec.paragraph_map
+
+    if not spec_map_by_filename:
+        return
+
+    for finding in findings:
+        if finding.as_edit_proposal() is None:
+            continue
+        originals_by_file = {
+            orig.fileName: orig
+            for orig in finding.occurrence_originals
+            if orig.fileName
+        }
+        # Singletons: the representative IS the original.
+        if not originals_by_file and finding.fileName:
+            originals_by_file = {finding.fileName: finding}
+        # Compute per-file locator evidence; pick the entry whose
+        # filename matches the representative for the headline snapshot.
+        rep_evidence: dict | None = None
+        for file_name, original in originals_by_file.items():
+            paragraph_map = spec_map_by_filename.get(file_name)
+            if not paragraph_map:
+                continue
+            try:
+                results = locate_edits([original], paragraph_map)
+            except Exception:
+                # Locator failures here are non-fatal — the report
+                # falls back to "no locator evidence" rather than
+                # blowing up the whole export.
+                continue
+            if not results:
+                continue
+            evidence = locator_evidence_from_result(results[0])
+            original.locator_evidence = evidence
+            if file_name == finding.fileName:
+                rep_evidence = evidence
+        if rep_evidence is None and originals_by_file:
+            # Representative's own file was not in extracted_specs;
+            # fall back to any computed evidence so the panel still
+            # surfaces something.
+            for orig in originals_by_file.values():
+                if orig.locator_evidence is not None:
+                    rep_evidence = orig.locator_evidence
+                    break
+        if rep_evidence is not None:
+            finding.locator_evidence = rep_evidence

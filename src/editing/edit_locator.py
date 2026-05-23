@@ -874,3 +874,38 @@ def locate_edits(
     min_confidence: float = 0.60,
 ) -> list[LocatorResult]:
     return [locate_edit(finding, paragraph_map, min_confidence=min_confidence) for finding in findings]
+
+
+def locator_evidence_from_result(result: LocatorResult) -> dict:
+    """Extract the locator-evidence snapshot from a :class:`LocatorResult`.
+
+    Chunk 4 / Trust Upgrade helper. The dict is the wire format stashed
+    onto :attr:`Finding.locator_evidence` so the report exporter can
+    render the "Edit Target Evidence" panel (match method, confidence,
+    safety category, element id) without re-running the locator. The
+    shape is JSON-safe so it round-trips through resume state cleanly.
+
+    The "best" location is the one with the highest match confidence —
+    same selection rule used throughout the locator and edit pipeline.
+    When the locator returned no usable location (``not_found`` /
+    ``ambiguous``), the match-method / confidence / element-id fields
+    are empty so the report can render "Not located" without inventing
+    a confidence value.
+    """
+    locations = list(result.locations or [])
+    if locations:
+        best = max(locations, key=lambda loc: loc.match_confidence)
+        match_method = str(best.match_method or "")
+        match_confidence = float(best.match_confidence or 0.0)
+        element_id = str(getattr(best.mapping, "element_id", "") or "")
+    else:
+        match_method = ""
+        match_confidence = 0.0
+        element_id = ""
+    return {
+        "status": str(result.status or ""),
+        "match_method": match_method,
+        "match_confidence": match_confidence,
+        "safety_category": str(result.safety_category or ""),
+        "element_id": element_id,
+    }

@@ -166,6 +166,9 @@ Every preprocessor alert carries a stable `deterministic_rule` id (exposed as `D
 ### Code cycle: California 2025 only
 `DEFAULT_CYCLE = CALIFORNIA_2025`. The 2022-cycle mapping was removed — **do not reintroduce it**. Cycle label is in the verification cache key, so a cycle bump naturally invalidates prior entries.
 
+### Per-finding evidence panel
+The report exporter renders one collapsed "Sources" Heading 4 per finding with a verification result. Contents (in order, below the heading): verifier model, verification mode, search budget (`N of M searches used`), source quote (verbatim from a web_search snippet — Chunk 2 schema), verifier rationale (moved here from above the heading), escalation history when `escalation_attempted`, accepted source URLs, rejected source URLs. A parallel "Edit Target Evidence" Heading 4 renders for findings whose `Finding.locator_evidence` is populated (locator status, match method, match confidence, safety category, element id). `apply_edits.populate_locator_evidence` stamps the evidence dict at the end of `pipeline.finalize_batch_result` / `pipeline.run_review` (so the first-time exported report has the data) and again from `execute_edit_plan` (so resume-after-apply runs keep it fresh). The dict round-trips through `resume_state` so resumed reports preserve it.
+
 ---
 
 ## 3) Verification Routing
