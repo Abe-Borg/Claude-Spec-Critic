@@ -2,9 +2,9 @@
 
 **v2.11.0** — AI-assisted M&P specification review for California K-12 DSA projects.
 
-Spec Critic reviews mechanical and plumbing CSI-format `.docx` specifications against California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) using Claude. It produces structured findings with severity classifications, confidence scores, web-search-backed verification verdicts, optional cross-spec coordination analysis, and either inline edits or yellow-highlighted suggestion annotations on a copy of each spec.
+Spec Critic reviews mechanical and plumbing CSI-format `.docx` specifications against California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) and the NFPA / ASHRAE / IAPMO / UL editions adopted for the current cycle, using Claude. It produces structured findings with severity classifications, confidence scores, web-search-backed verification verdicts, optional cross-spec coordination analysis, and either inline edits or yellow-highlighted suggestion annotations on a copy of each spec.
 
-Configured for the **California 2025 code cycle** by default (`src/core/code_cycles.py`).
+Configured for the **California 2025 code cycle** by default (`src/core/code_cycles.py`). The reviewer and verifier prompts pin the adopted NFPA / ASHRAE / IAPMO / UL editions for the cycle so the model verifies claims against the editions California actually adopted; the exported report's methodology note enumerates the pinned editions.
 
 ## Design Emphasis
 

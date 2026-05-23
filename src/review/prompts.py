@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 _CATEGORIES_TEMPLATE = """\
 1. Internal contradictions within the spec (e.g., conflicting requirements in different articles).
-2. Code edition misalignment: the current cycle is CBC {cbc}, CMC {cmc}, CPC {cpc}, Energy {energy}, CALGreen {calgreen}, ASCE {asce7}. Flag references to superseded editions (e.g., ASCE {asce7_prev} instead of {asce7}).
+2. Code edition misalignment: the current cycle is CBC {cbc}, CMC {cmc}, CPC {cpc}, Energy {energy}, CALGreen {calgreen}, ASCE {asce7}, NFPA 13 {nfpa13}, NFPA 72 {nfpa72}, ASHRAE 62.1 {ashrae_62_1}, ASHRAE 90.1 {ashrae_90_1}. Flag references to superseded editions (e.g., ASCE {asce7_prev} instead of {asce7}).
 3. References to sections, standards, or test methods that do not exist or have been withdrawn.
 4. Explicit cross-references to other CSI sections, equipment tags, or coordination dependencies that the spec author should verify.
 5. Constructability and coordination conflicts (e.g., requirements that contradict typical means and methods, or that depend on equipment/access not provided by another section).
@@ -128,6 +128,10 @@ def get_system_prompt(cycle: CodeCycle) -> str:
         calgreen=cycle.calgreen,
         asce7=cycle.asce7,
         asce7_prev=cycle.asce7_previous,
+        nfpa13=cycle.nfpa13 or "current edition",
+        nfpa72=cycle.nfpa72 or "current edition",
+        ashrae_62_1=cycle.ashrae_62_1 or "current edition",
+        ashrae_90_1=cycle.ashrae_90_1 or "current edition",
     )
     return f"""You are a specification reviewer for mechanical and plumbing disciplines. The project context is California K-12 education facilities under DSA jurisdiction.
 
@@ -236,7 +240,9 @@ def get_single_spec_user_message(
     return (
         "Review the following specification document for a California K-12 project under DSA jurisdiction.\n\n"
         f"Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, "
-        f"Energy Code {cycle.energy_code}, CALGreen {cycle.calgreen}, ASCE {cycle.asce7}.\n\n"
+        f"Energy Code {cycle.energy_code}, CALGreen {cycle.calgreen}, ASCE {cycle.asce7}, "
+        f"NFPA 13 {cycle.nfpa13 or 'current edition'}, NFPA 72 {cycle.nfpa72 or 'current edition'}, "
+        f"ASHRAE 62.1 {cycle.ashrae_62_1 or 'current edition'}, ASHRAE 90.1 {cycle.ashrae_90_1 or 'current edition'}.\n\n"
         "Reminders:\n"
         "- Review every section in the file.\n"
         "- Submit findings via the submit_review_findings tool.\n"

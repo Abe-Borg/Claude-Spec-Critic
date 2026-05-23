@@ -44,6 +44,7 @@ from docx.oxml import OxmlElement
 from lxml import etree
 
 from ..core.api_config import web_search_max_uses_for_severity
+from ..core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE, CodeCycle
 from ..verification.verification_cache import default_cache_path
 from .report_status import (
     EDIT_ACTION_DISPLAY_ORDER,
@@ -728,11 +729,65 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
 
     doc.add_paragraph(para2_text)
 
+    # Chunk 7 / Trust Upgrade \u2014 surface the pinned standards editions
+    # that drove the verifier prompt for this cycle. Reviewers reading
+    # the report can see which editions were treated as authoritative
+    # without opening the source; if the spec cites a different edition
+    # for one of these standards, the finding's relevance to the
+    # current cycle should be re-checked.
+    pinning_text = _render_pinned_editions_note(cycle_label)
+    if pinning_text:
+        doc.add_paragraph(pinning_text)
+
     # Collapsibility tip
     doc.add_paragraph(
         "Tip: In Word, hover over any heading to reveal a collapse triangle. "
         "Click it to hide the content beneath that heading. Use this to "
         "collapse individual findings or entire severity groups."
+    )
+
+
+def _render_pinned_editions_note(cycle_label: str) -> str:
+    """Render the methodology paragraph that enumerates pinned editions.
+
+    Chunk 7 / Trust Upgrade. Looks up the :class:`CodeCycle` for the
+    label and emits a one-paragraph note. Pinning details only render
+    when the cycle has populated the new edition fields \u2014 a cycle with
+    no pinning yet falls back to an empty string so the methodology
+    note degrades gracefully.
+    """
+    cycle: CodeCycle = AVAILABLE_CYCLES.get(cycle_label, DEFAULT_CYCLE)
+    entries: list[tuple[str, str]] = []
+    if cycle.nfpa13:
+        entries.append(("NFPA 13", cycle.nfpa13))
+    if cycle.nfpa14:
+        entries.append(("NFPA 14", cycle.nfpa14))
+    if cycle.nfpa20:
+        entries.append(("NFPA 20", cycle.nfpa20))
+    if cycle.nfpa24:
+        entries.append(("NFPA 24", cycle.nfpa24))
+    if cycle.nfpa25:
+        entries.append(("NFPA 25", cycle.nfpa25))
+    if cycle.nfpa72:
+        entries.append(("NFPA 72", cycle.nfpa72))
+    if cycle.ashrae_62_1:
+        entries.append(("ASHRAE 62.1", cycle.ashrae_62_1))
+    if cycle.ashrae_90_1:
+        entries.append(("ASHRAE 90.1", cycle.ashrae_90_1))
+    if cycle.ashrae_15:
+        entries.append(("ASHRAE 15", cycle.ashrae_15))
+    if cycle.iapmo_tsc:
+        entries.append(("IAPMO Uniform Plumbing TSC", cycle.iapmo_tsc))
+    for standard, edition in cycle.ul_listing_editions:
+        if edition:
+            entries.append((standard, edition))
+    if not entries:
+        return ""
+    rendered = ", ".join(f"{standard} {edition}" for standard, edition in entries)
+    return (
+        f"This review pinned the following standards editions per the {cycle_label} "
+        f"California cycle: {rendered}. Findings referencing other editions should "
+        "be reviewed for relevance to the current cycle."
     )
 
 
