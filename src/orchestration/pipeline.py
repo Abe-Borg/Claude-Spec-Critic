@@ -148,6 +148,15 @@ class PipelineResult:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Chunk 10 / Trust Upgrade: the extracted specs themselves so the
+    # report's Run Diagnostics banner can count specs whose extraction
+    # surfaced warnings (drawing-heavy documents, embedded objects).
+    # The banner reads ``ExtractedSpec.extraction_warnings`` per spec
+    # and reports the number of affected specs. Carrying the list here
+    # (rather than just a count) keeps the door open for the report to
+    # render the warning text inline in a future enhancement without
+    # threading new fields through.
+    extracted_specs: list[ExtractedSpec] = field(default_factory=list)
 
 
 @dataclass
@@ -1252,6 +1261,12 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         template_marker_alerts=list(state.template_marker_alerts),
         invalid_code_cycle_alerts=list(state.invalid_code_cycle_alerts),
         duplicate_paragraph_alerts=list(state.duplicate_paragraph_alerts),
+        # Chunk 10 / Trust Upgrade: ride the extracted specs through to
+        # the PipelineResult so the report banner can surface extraction
+        # warnings. ``prepared_specs`` may be nulled by the recovery
+        # path; the empty-list fallback keeps the banner showing 0
+        # extraction warnings instead of crashing.
+        extracted_specs=list(prepared_specs),
     )
 
 
@@ -1273,6 +1288,10 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
             template_marker_alerts=prepared.template_marker_alerts,
             invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
             duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+            # Chunk 10: preserve the extracted specs even on dry-run so a
+            # reviewer eyeballing the dry-run report still sees extraction
+            # warnings for drawing-heavy specs.
+            extracted_specs=list(specs),
         )
 
     findings: list[Finding] = []
@@ -1387,4 +1406,8 @@ def run_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_c
         template_marker_alerts=prepared.template_marker_alerts,
         invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
         duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+        # Chunk 10 / Trust Upgrade: ride the extracted specs through so
+        # the report banner can surface extraction warnings (drawing-
+        # heavy documents whose text extraction may have missed content).
+        extracted_specs=list(specs),
     )

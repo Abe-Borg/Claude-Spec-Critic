@@ -67,6 +67,7 @@ from .verification_router import (
     classify_finding_for_verification,
     initial_verification_model,
     local_skip_enabled,
+    local_skip_requires_elevated_confidence,
     should_escalate_verification,
 )
 from .verification_routing import (
@@ -218,6 +219,20 @@ class VerificationResult:
     # file. Round-trips through resume state so a resumed report keeps the
     # original entry age.
     cache_entry_created_ts: float = 0.0
+    # ----- Elevated-confidence flag ---------------------------------------
+    # Chunk 10 / Trust Upgrade: True when this finding was routed to
+    # local_skip via the "requires elevated confidence" keyword list
+    # (``"leed"`` / ``"internal contradiction"``). The routing decision is
+    # unchanged for those keywords (they still avoid the web-search round
+    # trip), but the composite-confidence multiplier in
+    # :func:`composite_edit_confidence` applies an additional 0.85 factor
+    # when this flag is set so the auto-edit bar is higher for the
+    # residual-risk classes. Runtime telemetry (like
+    # ``verification_failed``), not durable verdict semantics — local-skip
+    # results never reach the verification cache because they aren't
+    # grounded, so no cache schema bump is required. Round-trips through
+    # resume state so a resumed report keeps the multiplier applied.
+    requires_elevated_confidence: bool = False
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -359,7 +374,11 @@ def _apply_source_grounding(
     return result
 
 
-def _local_skip_result(reason: str = "Locally classified: external grounding not required for this finding.") -> VerificationResult:
+def _local_skip_result(
+    reason: str = "Locally classified: external grounding not required for this finding.",
+    *,
+    requires_elevated_confidence: bool = False,
+) -> VerificationResult:
     return VerificationResult(
         verdict="UNVERIFIED",
         explanation=reason,
@@ -375,6 +394,12 @@ def _local_skip_result(reason: str = "Locally classified: external grounding not
         # and diagnostics use this to count how many findings the keyword/
         # Haiku classifiers caught.
         verification_mode=VerificationMode.LOCAL_SKIP.value,
+        # Chunk 10 / Trust Upgrade: tag the residual-risk classes
+        # (``"leed"`` / ``"internal contradiction"``) so the composite-
+        # confidence multiplier raises the auto-edit bar for them. The
+        # router decides whether the flag applies; this dataclass field
+        # just persists the decision through the pipeline / resume state.
+        requires_elevated_confidence=bool(requires_elevated_confidence),
     )
 
 
@@ -1086,7 +1111,9 @@ def verify_finding(
             return cached
 
     if local_skip_enabled() and classify_finding_for_verification(finding) == "local_skip":
-        return _local_skip_result()
+        return _local_skip_result(
+            requires_elevated_confidence=local_skip_requires_elevated_confidence(finding),
+        )
 
     # Route the initial-model selection through the central decision
     # selector so ``verify_finding`` and ``_run_verification_call`` agree
@@ -1494,7 +1521,9 @@ def prepare_findings_for_verification(
     cache_hits = 0
     for f in findings:
         if local_skip_enabled() and classify_finding_for_verification(f) == "local_skip":
-            f.verification = _local_skip_result()
+            f.verification = _local_skip_result(
+                requires_elevated_confidence=local_skip_requires_elevated_confidence(f),
+            )
             skipped_local += 1
             continue
         if cache is not None:
