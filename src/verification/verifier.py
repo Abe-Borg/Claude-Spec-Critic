@@ -233,6 +233,21 @@ class VerificationResult:
     # grounded, so no cache schema bump is required. Round-trips through
     # resume state so a resumed report keeps the multiplier applied.
     requires_elevated_confidence: bool = False
+    # ----- Web-fetch telemetry (Chunk 11 / Trust Upgrade) -----------------
+    # Companion to ``web_search_requests`` / ``successful_source_count``.
+    # ``web_fetch_requests`` counts how many full-page fetches the verifier
+    # used; ``fetched_sources`` records the URLs the verifier pulled in
+    # full (deduped, in fetch order). STANDARD_REASONING and
+    # DEEP_REASONING modes get the ``web_fetch`` tool attached; the other
+    # modes intentionally omit it, so those results always show 0.
+    # Fetched URLs feed into source grounding the same way searched URLs
+    # do — :func:`_apply_source_grounding` accepts both pools so a model
+    # that fetched a page and cited a URL from that page is treated as
+    # grounded. Runtime telemetry, not verdict semantics: no cache schema
+    # bump required, but the persisted dict carries the counts so cache
+    # replays render the same "Searches: N, Full-page fetches: M" line.
+    web_fetch_requests: int = 0
+    fetched_sources: list[str] = field(default_factory=list)
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -307,6 +322,7 @@ def _apply_source_grounding(
     result: VerificationResult,
     *,
     searched: list[SearchedSource],
+    fetched: list[SearchedSource] | None = None,
 ) -> VerificationResult:
     """Validate the model's cited sources against actual search results.
 
@@ -322,8 +338,8 @@ def _apply_source_grounding(
        payload, regardless of validation outcome.
     3. ``sources`` (the public/report list) is replaced with only the
        *accepted* citations — model-cited URLs whose normalized form
-       appears in the searched set. This keeps reports from rendering
-       URLs the model invented.
+       appears in the searched or fetched set. This keeps reports from
+       rendering URLs the model invented.
     4. ``rejected_sources`` records the ungrounded / malformed citations
        so diagnostics can audit them and reports can show the user the
        evidence that was *not* accepted.
@@ -334,6 +350,15 @@ def _apply_source_grounding(
     sources is already blocked by :func:`_enforce_grounding_invariant`;
     this helper handles the inverse case (citations present but none
     actually grounded).
+
+    Chunk 11 / Trust Upgrade: ``fetched`` is the optional list of URLs
+    the model pulled in full via ``web_fetch``. Fetched URLs validate
+    citations the same way searched URLs do (the API actually retrieved
+    them, so they are real evidence) but they are kept off
+    ``searched_sources`` — the report's separate "Full-text sources
+    consulted" sub-section renders them from ``fetched_sources`` so the
+    distinction between snippet-grounded and fetch-grounded evidence
+    stays visible.
     """
     # Carry the raw searched URLs (deduped) onto the result regardless
     # of the cited-source path so diagnostics see the full retrieval
@@ -344,9 +369,18 @@ def _apply_source_grounding(
     cited_raw = list(result.sources or [])
     result.cited_sources = cited_raw
 
+    # Pool searched + fetched URLs for the validation pass so citations
+    # against fetched pages are accepted as grounded. The two lists
+    # typically overlap (a fetched URL was first seen in a prior search
+    # result) but we union them explicitly so a future call that fetches
+    # a URL surfaced by a previous turn still grounds correctly.
+    fetched_urls = [s.url for s in (fetched or [])]
+    pool = list(searched_urls)
+    pool.extend(u for u in fetched_urls if u not in pool)
+
     outcome = validate_cited_sources(
         cited=cited_raw,
-        searched=searched_urls,
+        searched=pool,
     )
     result.accepted_sources = list(outcome.accepted)
     result.rejected_sources = [dict(r) for r in outcome.rejected]
@@ -650,7 +684,41 @@ def _get_verification_system_prompt(
         '  "correction": null',
         "}",
     ]
-    return "\n".join(base_lines + tool_lines + quote_lines)
+    # Chunk 11 / Trust Upgrade: when the verification routing decision
+    # attached the ``web_fetch`` tool (STANDARD_REASONING and
+    # DEEP_REASONING modes only), the model needs an instruction block
+    # for it. STRICT_STRUCTURED and LOCAL_SKIP don't get the tool, so the
+    # instructions would be misleading there. We can't tell at prompt-
+    # build time which mode this exact call is using (the prompt is
+    # cached and shared across modes for the same cycle), so we always
+    # include the block and lean on the tool list to gate availability —
+    # the model can only call a tool that's actually attached. Frame the
+    # guidance accordingly: "if web_fetch is available, ...".
+    fetch_lines = [
+        "",
+        "Tool usage — web_fetch (when available):",
+        "",
+        "- ``web_fetch`` is a server-side tool that retrieves the full text",
+        "  of a URL that previously appeared in a web_search result. Use it",
+        "  when a web_search snippet looks promising but does not contain the",
+        "  full passage you need (e.g. the snippet shows a section heading",
+        "  or a list of clauses but not the requirement text itself).",
+        "- Reserve web_fetch for high-stakes claims where snippets are",
+        "  insufficient. Each fetch is more expensive than a search and the",
+        "  per-call budget is small (3 fetches by default).",
+        "- Fetch the most authoritative-looking source first (California",
+        "  regulatory pages > code-publisher full text > standards bodies >",
+        "  manufacturer datasheets). Don't fetch aggregators or forums —",
+        "  they are blocked at the tool level anyway.",
+        "- When you fetch a page, populate ``source_quote`` from the fetched",
+        "  content, not just the original search snippet. The fetched body",
+        "  is the evidence you actually read.",
+        "- web_fetch can ONLY retrieve URLs that already appeared in a prior",
+        "  web_search result in this conversation. If you want to read a",
+        "  page that has not yet been surfaced by search, issue a web_search",
+        "  that will return that URL first.",
+    ]
+    return "\n".join(base_lines + tool_lines + quote_lines + fetch_lines)
 
 
 def _content_block_to_plain(block) -> dict | None:
@@ -776,6 +844,93 @@ def _web_search_count(message) -> int:
     usage = getattr(message, "usage", None)
     server_tool_use = getattr(usage, "server_tool_use", None) if usage else None
     return int(getattr(server_tool_use, "web_search_requests", 0) or 0)
+
+
+def _web_fetch_count(message) -> int:
+    """Chunk 11 / Trust Upgrade: pull the per-message web_fetch use count.
+
+    Anthropic surfaces both ``web_search_requests`` and ``web_fetch_requests``
+    on ``usage.server_tool_use`` when the respective tool fires. Defaults to
+    0 when absent — STRICT_STRUCTURED / LOCAL_SKIP modes never attach the
+    web_fetch tool and STANDARD/DEEP modes may simply not have called it.
+    """
+    usage = getattr(message, "usage", None)
+    server_tool_use = getattr(usage, "server_tool_use", None) if usage else None
+    return int(getattr(server_tool_use, "web_fetch_requests", 0) or 0)
+
+
+def _collect_fetch_evidence_detailed(
+    message,
+) -> tuple[list[SearchedSource], int, int]:
+    """Walk a message's content blocks and pull out fetched URLs.
+
+    Parallel to :func:`_collect_search_evidence_detailed` for the
+    ``web_fetch_tool_result`` blocks. Returns a list of
+    :class:`SearchedSource` (one per fetched URL we could identify), the
+    count of successful fetch-result blocks, and the count of error items
+    observed. Used by both real-time and batch wave paths to stamp
+    ``fetched_sources`` / ``web_fetch_requests`` onto the result.
+
+    The fetched URL is the URL the model passed to ``web_fetch`` as input
+    (the ``server_tool_use`` block's ``input.url``) — fetch-result blocks
+    don't always echo the URL back, but the paired server-tool-use block
+    always does. Walks the block list looking for ``server_tool_use``
+    blocks whose ``name == "web_fetch"`` and pulls the URL from their
+    input, in document order. The fetch-result block contributes to the
+    success/error count regardless.
+    """
+    detailed: list[SearchedSource] = []
+    success_count = 0
+    error_count = 0
+    content_iter = _maybe_attr(message, "content") or []
+    for block in content_iter:
+        block_type = _maybe_attr(block, "type")
+        if block_type == "server_tool_use":
+            tool_name = _maybe_attr(block, "name")
+            if tool_name == "web_fetch":
+                tool_input = _maybe_attr(block, "input") or {}
+                fetched_url = (
+                    tool_input.get("url") if isinstance(tool_input, dict) else None
+                )
+                if fetched_url:
+                    detailed.append(SearchedSource(url=str(fetched_url), title=""))
+        elif block_type == "web_fetch_tool_result":
+            block_content = _maybe_attr(block, "content")
+            if isinstance(block_content, dict):
+                # web_fetch returns a single document object inside the
+                # result block (unlike web_search which returns a list).
+                # Treat presence of a usable body as a successful fetch;
+                # an embedded error dict (``type == "web_fetch_tool_result_error"``)
+                # counts as a failure.
+                inner_type = block_content.get("type") or _maybe_attr(block_content, "type")
+                if inner_type == "web_fetch_tool_result_error":
+                    error_count += 1
+                else:
+                    success_count += 1
+                    # Some SDK versions echo the fetched URL on the result
+                    # document — pick it up when present so we don't miss
+                    # fetches whose paired server_tool_use was dropped.
+                    doc = block_content.get("document") if isinstance(block_content, dict) else None
+                    url = None
+                    if isinstance(doc, dict):
+                        url = doc.get("url")
+                    if not url:
+                        url = block_content.get("url")
+                    if url:
+                        already = any(s.url == str(url) for s in detailed)
+                        if not already:
+                            detailed.append(SearchedSource(url=str(url), title=""))
+            elif _maybe_attr(block_content, "type") == "web_fetch_tool_result_error":
+                error_count += 1
+            else:
+                # Treat any other present-but-unknown shape as a successful
+                # fetch to avoid silently dropping evidence; the URL pickup
+                # path above already handles the documented case.
+                if block_content is not None:
+                    success_count += 1
+        elif block_type == "web_fetch_tool_result_error":
+            error_count += 1
+    return detailed, success_count, error_count
 
 
 def _search_gate_failure(message) -> str | None:
@@ -1257,6 +1412,8 @@ def _run_verification_call(
         search_requests: int = 0,
         search_errors: int = 0,
         search_successes: int = 0,
+        fetch_requests: int = 0,
+        fetched_urls: list[str] | None = None,
         failed: bool = False,
     ) -> VerificationResult:
         return _enforce_grounding_invariant(VerificationResult(
@@ -1272,6 +1429,8 @@ def _run_verification_call(
             verification_profile=profile.value,
             verification_mode=mode.value,
             verification_failed=failed,
+            web_fetch_requests=fetch_requests,
+            fetched_sources=list(fetched_urls or []),
         ))
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -1391,32 +1550,56 @@ def _run_verification_call(
                 )
 
             all_searched: list[SearchedSource] = []
+            all_fetched: list[SearchedSource] = []
             success_blocks = 0
             total_search_errors = 0
             total_search_requests = 0
+            total_fetch_requests = 0
             for resp in all_responses:
                 detailed, successes, errors = _collect_search_evidence_detailed(resp)
                 all_searched.extend(detailed)
                 success_blocks += successes
                 total_search_errors += errors
                 total_search_requests += _web_search_count(resp)
+                # Chunk 11 / Trust Upgrade: collect web_fetch evidence in
+                # parallel with web_search. A successful fetch counts toward
+                # ``success_blocks`` for the grounded-check below so a
+                # verifier that fetched a page (even without searching first
+                # in the current call — possible when the URL was surfaced
+                # by a prior continuation) still clears the grounding gate.
+                fetched_detailed, fetch_successes, fetch_errors = (
+                    _collect_fetch_evidence_detailed(resp)
+                )
+                all_fetched.extend(fetched_detailed)
+                success_blocks += fetch_successes
+                total_search_errors += fetch_errors
+                total_fetch_requests += _web_fetch_count(resp)
 
             # Dedupe across waves with normalized URLs so two queries that
             # landed on the same page are counted once.
             deduped_searched = dedupe_searched_sources(all_searched)
+            # Fetch dedupe runs through the same helper so the report shows
+            # one entry per unique URL even if the model fetched it twice
+            # across continuations.
+            deduped_fetched = dedupe_searched_sources(all_fetched)
 
             grounded = success_blocks > 0
+            fetched_url_list = [s.url for s in deduped_fetched]
             if not grounded:
                 if total_search_errors > 0:
                     return _make_unverified(
                         f"Web search attempted but all {total_search_errors} search requests failed.",
                         search_requests=total_search_requests,
                         search_errors=total_search_errors,
+                        fetch_requests=total_fetch_requests,
+                        fetched_urls=fetched_url_list,
                     )
                 return _make_unverified(
                     "Verification did not perform web search. Verdict requires external grounding.",
                     search_requests=total_search_requests,
                     search_errors=total_search_errors,
+                    fetch_requests=total_fetch_requests,
+                    fetched_urls=fetched_url_list,
                 )
 
             # Route the structured-then-text parsing through the canonical
@@ -1433,6 +1616,8 @@ def _run_verification_call(
                     search_requests=total_search_requests,
                     search_errors=total_search_errors,
                     search_successes=success_blocks,
+                    fetch_requests=total_fetch_requests,
+                    fetched_urls=fetched_url_list,
                 )
             # text_parse_error and text both produce a (UNVERIFIED) result
             # that should flow through the grounding invariant. The
@@ -1450,14 +1635,27 @@ def _run_verification_call(
             parsed.web_search_requests = total_search_requests
             parsed.successful_source_count = len(deduped_searched)
             parsed.search_error_count = total_search_errors
+            # Chunk 11 / Trust Upgrade: stamp the web_fetch telemetry so
+            # the evidence panel can render "Searches: N, Full-page
+            # fetches: M" and the "Full-text sources consulted" sub-section
+            # has the URL list. Both stamped before source grounding so
+            # the grounding helper can pool fetched URLs into the
+            # citation-validation set.
+            parsed.web_fetch_requests = total_fetch_requests
+            parsed.fetched_sources = fetched_url_list
             # Stamp the routed decision (mode/profile/escalation flag)
             # onto the result via the centralized helper so the real-time
             # path and the batch wave path use the same stamping routine.
             apply_routing_to_result(decision, parsed)
             # Validate cited sources against the URLs the API actually
-            # fetched. Ungrounded citations are partitioned off and the
-            # verdict is downgraded when every citation missed.
-            parsed = _apply_source_grounding(parsed, searched=deduped_searched)
+            # fetched (both searched and fully-fetched). Ungrounded
+            # citations are partitioned off and the verdict is
+            # downgraded when every citation missed.
+            parsed = _apply_source_grounding(
+                parsed,
+                searched=deduped_searched,
+                fetched=deduped_fetched,
+            )
             return _enforce_grounding_invariant(parsed)
         except (KeyboardInterrupt, SystemExit):
             # Control-flow exceptions must escape so Ctrl-C / interpreter
@@ -2001,19 +2199,31 @@ def _classify_wave_results(
         parsed = outcome.verdict
         searched_detailed, success_blocks, error_count = _collect_search_evidence_detailed(message)
         deduped_searched = dedupe_searched_sources(searched_detailed)
+        # Chunk 11 / Trust Upgrade: parallel fetch-evidence collection.
+        # The batch wave path applies the same grounding pool as the
+        # real-time path so a fetched URL that the model cited validates
+        # identically across modes. A successful fetch block bumps the
+        # grounded check so a finding that converged purely via web_fetch
+        # (rare but possible) still clears the gate.
+        fetched_detailed, fetch_successes, fetch_errors = (
+            _collect_fetch_evidence_detailed(message)
+        )
+        deduped_fetched = dedupe_searched_sources(fetched_detailed)
         # Source trimming: keep only the model's cited sources from the
         # structured verdict payload. ``successful_source_count`` still
         # records how many distinct URLs the model retrieved across
         # searches so diagnostics retain the full evidence-gathering
         # picture. Stamp grounding/source counts so the downstream
         # invariant can downgrade ungrounded verified verdicts.
-        parsed.grounded = success_blocks > 0
+        parsed.grounded = (success_blocks + fetch_successes) > 0
         parsed.model_used = model_used
         parsed.escalated = escalated
         parsed.cache_status = "miss"
         parsed.web_search_requests = _web_search_count(message)
         parsed.successful_source_count = len(deduped_searched)
-        parsed.search_error_count = error_count
+        parsed.search_error_count = error_count + fetch_errors
+        parsed.web_fetch_requests = _web_fetch_count(message)
+        parsed.fetched_sources = [s.url for s in deduped_fetched]
         # Prefer the stored routing decision from the request context so
         # the wave parser stamps the result with the *same*
         # mode/profile/escalation the request was actually built against.
@@ -2036,7 +2246,11 @@ def _classify_wave_results(
                 cache_phase=PHASE_VERIFICATION,
             )
             apply_routing_to_result(decision, parsed)
-        parsed = _apply_source_grounding(parsed, searched=deduped_searched)
+        parsed = _apply_source_grounding(
+            parsed,
+            searched=deduped_searched,
+            fetched=deduped_fetched,
+        )
         parsed = _enforce_grounding_invariant(parsed)
         outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed))
     return outcomes

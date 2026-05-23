@@ -1168,6 +1168,12 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
     escalation_attempted = bool(getattr(vr, "escalation_attempted", False))
     accepted = list(vr.sources or [])
     rejected = list(getattr(vr, "rejected_sources", []) or [])
+    # Chunk 11 / Trust Upgrade: web_fetch evidence. STRICT_STRUCTURED /
+    # LOCAL_SKIP modes never attach the fetch tool, so this is 0/[] for
+    # them; STANDARD/DEEP modes attach the tool but the model may not
+    # have used it, so 0/[] is also the common case there.
+    web_fetch_requests = int(getattr(vr, "web_fetch_requests", 0) or 0)
+    fetched_sources = list(getattr(vr, "fetched_sources", []) or [])
 
     # The panel is rendered whenever ``finding.verification`` exists.
     # Even local-skip findings get the panel — they carry
@@ -1218,9 +1224,22 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         label.bold = True
         label.font.size = Pt(9)
         label.font.color.rgb = RGBColor(100, 100, 100)
-        body = para.add_run(
-            f"{web_search_requests} of {severity_budget} searches used"
-        )
+        # Chunk 11 / Trust Upgrade: when the verifier used web_fetch,
+        # append the fetch count in the same line so a reviewer sees
+        # "Searches: N, Full-page fetches: M" at a glance. The fetch
+        # count is only rendered when > 0 because most verifications
+        # never need a fetch — keeping the line short for the common
+        # path matters more than uniformity.
+        if web_fetch_requests > 0:
+            usage_text = (
+                f"Searches: {web_search_requests} of {severity_budget}, "
+                f"Full-page fetches: {web_fetch_requests}"
+            )
+        else:
+            usage_text = (
+                f"{web_search_requests} of {severity_budget} searches used"
+            )
+        body = para.add_run(usage_text)
         body.font.size = Pt(9)
         body.font.color.rgb = RGBColor(100, 100, 100)
         para.paragraph_format.space_after = Pt(2)
@@ -1357,6 +1376,35 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
                 reason_run = rej_para.add_run(f" [{reason}]")
                 reason_run.font.size = Pt(9)
                 reason_run.font.color.rgb = RGBColor(192, 0, 0)
+
+    # --- Full-text sources consulted (Chunk 11 / Trust Upgrade) ---
+    # When the verifier used web_fetch, list the URLs it pulled in full
+    # in a dedicated sub-section so a reviewer can tell at a glance which
+    # sources were skimmed (web_search snippets) vs. read in depth
+    # (web_fetch). The accepted-citations block above ("Web/code
+    # evidence") already mixes both kinds; this block answers the
+    # narrower question "which pages did the verifier read in full?"
+    # Suppressed when no fetches happened so the panel stays compact
+    # on the common path.
+    if fetched_sources:
+        label_para = doc.add_paragraph()
+        _set_paragraph_outline_level(label_para, 8)
+        label_run = label_para.add_run(
+            "Full-text sources consulted (retrieved via web_fetch):"
+        )
+        label_run.font.size = Pt(9)
+        label_run.bold = True
+        label_run.font.color.rgb = RGBColor(0, 100, 0)
+
+        fetch_para = doc.add_paragraph()
+        _set_paragraph_outline_level(fetch_para, 8)
+        fetch_para.paragraph_format.space_after = Pt(3)
+        for i, url in enumerate(fetched_sources):
+            if i > 0:
+                fetch_para.add_run("  •  ")
+            url_run = fetch_para.add_run(url)
+            url_run.font.size = Pt(9)
+            url_run.font.color.rgb = RGBColor(59, 130, 246)
 
     # --- Force-refresh hint for cache replays (Chunk 5 / Trust Upgrade) ---
     # A workflow hint, not a programmatic feature: tells the reviewer

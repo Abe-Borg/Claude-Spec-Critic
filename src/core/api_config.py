@@ -683,6 +683,72 @@ WEB_SEARCH_TOOL = build_web_search_tool()
 
 
 # ---------------------------------------------------------------------------
+# Web-fetch tool configuration (Chunk 11 / Trust Upgrade)
+# ---------------------------------------------------------------------------
+#
+# The ``web_fetch_20260209`` server tool is the companion to ``web_search``:
+# it pulls the full text of a previously-seen URL (URLs are required to have
+# appeared in a prior web_search result block in the same conversation
+# context, so the model cannot fetch arbitrary URLs it invented). Per
+# Anthropic's pricing docs, web_fetch carries no per-request surcharge —
+# the caller pays only for the tokens the fetched content consumes — so
+# the safety knob here is ``max_uses`` plus ``max_content_tokens``, not a
+# billing rate.
+#
+# Used by STANDARD_REASONING and DEEP_REASONING verification modes only;
+# STRICT_STRUCTURED / LOCAL_SKIP intentionally omit the tool because those
+# modes are explicitly cheap/narrow and don't benefit from a deep dive into
+# a single source page.
+
+# Per-request fetch budget. Lower than the search budget by design — a
+# verification call typically needs at most one or two full-page fetches
+# to confirm a borderline claim; more than that is a sign the model is
+# spinning rather than converging.
+DEFAULT_VERIFICATION_MAX_FETCHES = 3
+
+# Truncation ceiling on fetched-page content. Large code-publisher pages
+# (up.codes / iccsafe.org / nfpa.org) can easily exceed 100k tokens of
+# rendered text; we cap at 50k so a single fetch cannot blow the
+# verification input window. The model gets enough context to find the
+# clause it cares about without forcing the verifier to truncate the
+# response.
+WEB_FETCH_MAX_CONTENT_TOKENS = 50_000
+
+
+def build_web_fetch_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_FETCHES) -> dict:
+    """Build the web_fetch server-tool dict for a verification request.
+
+    Tool type pinned to ``web_fetch_20260209`` per Anthropic's web-fetch
+    server-tool spec (requires the ``web-fetch-2026-02-09`` beta header at
+    the request level; the verification request path attaches the header
+    via the beta-list builder).
+
+    The ``citations`` field is enabled so cited URLs land in the
+    assistant message's source-grounding partition the same way web_search
+    citations do; ``max_content_tokens`` caps the truncation length so
+    one fetch on a giant code-publisher page cannot dominate the verifier
+    response window. ``blocked_domains`` mirrors the web_search blocklist
+    so the two tools share one source-quality policy — a domain we won't
+    search is a domain we won't fetch either.
+    """
+    return {
+        "type": "web_fetch_20260209",
+        "name": "web_fetch",
+        "blocked_domains": list(_WEB_SEARCH_BLOCKED_DOMAINS),
+        "max_uses": max_uses,
+        "citations": {"enabled": True},
+        "max_content_tokens": WEB_FETCH_MAX_CONTENT_TOKENS,
+    }
+
+
+# Beta header required for the web_fetch server tool. The verification
+# request builder attaches this header alongside any other betas the
+# request already carries (e.g. ``output-300k-2026-03-24`` is for batch
+# review only and doesn't conflict).
+WEB_FETCH_BETA_HEADER = "web-fetch-2026-02-09"
+
+
+# ---------------------------------------------------------------------------
 # Cache-token usage extraction (for diagnostics)
 # ---------------------------------------------------------------------------
 
