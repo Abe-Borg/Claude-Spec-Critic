@@ -699,3 +699,52 @@ def test_review_single_spec_integration(
     assert review_span_check["parent_span_id"] == next(
         sp["span_id"] for sp in spans if sp["kind"] == "pipeline"
     )
+
+
+# ---- HTML viewer artifact guards --------------------------------------
+def _viewer_path() -> Path:
+    return (
+        Path(__file__).resolve().parent.parent
+        / "src" / "tracing" / "viewer" / "trace_viewer.html"
+    )
+
+
+def test_viewer_artifact_exists_and_nonempty() -> None:
+    viewer = _viewer_path()
+    assert viewer.exists(), "trace_viewer.html must ship with the package"
+    assert viewer.stat().st_size > 5000, "viewer looks truncated"
+
+
+def test_viewer_references_resolve_to_markup() -> None:
+    """Every getElementById target must exist as an id= in the markup.
+
+    Cheap structural guard that catches a JS typo or a renamed element
+    without needing a browser/JS runtime in CI.
+    """
+    import re
+
+    html = _viewer_path().read_text(encoding="utf-8")
+    referenced = set(re.findall(r"getElementById\([\"']([^\"']+)[\"']\)", html))
+    defined = set(re.findall(r'id="([^"]+)"', html))
+    missing = referenced - defined
+    assert not missing, f"viewer references undefined element ids: {missing}"
+
+
+def test_viewer_has_all_four_tabs() -> None:
+    html = _viewer_path().read_text(encoding="utf-8")
+    for tab in ("finding", "span", "timeline", "grounding"):
+        assert f'data-tab="{tab}"' in html, f"viewer missing tab: {tab}"
+
+
+def test_viewer_status_colors_match_report() -> None:
+    """The viewer's STATUS_COLORS must mirror report_exporter's hex map so
+    a VERIFIED_CONTESTED finding renders the same purple in both surfaces."""
+    from src.output.report_status import ReportStatus
+    from src.output.report_exporter import STATUS_SHADING
+
+    html = _viewer_path().read_text(encoding="utf-8")
+    # Spot-check the two most identity-bearing statuses.
+    contested = STATUS_SHADING[ReportStatus.VERIFIED_CONTESTED]  # 800080
+    failed = STATUS_SHADING[ReportStatus.VERIFICATION_FAILED]    # B22222
+    assert f"#{contested}".upper() in html.upper()
+    assert f"#{failed}".upper() in html.upper()

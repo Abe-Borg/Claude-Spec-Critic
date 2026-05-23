@@ -392,6 +392,14 @@ class SpecReviewApp(_CTkDnDRoot):
             text_color=COLORS["text_primary"],
         )
         self._trace_show_btn.pack(side="left", padx=(12, 0))
+        self._trace_viewer_btn = ctk.CTkButton(
+            tracing_frame, text="Open viewer", width=110,
+            command=self._on_open_trace_viewer,
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+            fg_color=COLORS["border"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text_primary"],
+        )
+        self._trace_viewer_btn.pack(side="left", padx=(8, 0))
         # Apply initial state to env vars so the recorder picks them up
         # on the first run without needing to toggle first.
         self._on_trace_toggle()
@@ -434,6 +442,24 @@ class SpecReviewApp(_CTkDnDRoot):
                 subprocess.run(["xdg-open", str(path)], check=False)
         except Exception as exc:
             self.log.log_warning(f"Could not open trace folder ({exc}). Path: {path}")
+
+    def _on_open_trace_viewer(self) -> None:
+        """Open the bundled single-file HTML trace viewer in the browser.
+
+        The viewer is a static artifact; the user picks a trace folder from
+        within it. We point ``file://`` at the bundled HTML so it works
+        offline without a server.
+        """
+        import webbrowser
+        from pathlib import Path
+        viewer = Path(__file__).resolve().parent.parent / "tracing" / "viewer" / "trace_viewer.html"
+        if not viewer.exists():
+            self.log.log_warning(f"Trace viewer not found at {viewer}")
+            return
+        try:
+            webbrowser.open(viewer.as_uri())
+        except Exception as exc:
+            self.log.log_warning(f"Could not open trace viewer ({exc}). Path: {viewer}")
 
     # --- Project context placeholder helpers ---
 
