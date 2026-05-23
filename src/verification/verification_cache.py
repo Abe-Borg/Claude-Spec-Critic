@@ -145,21 +145,40 @@ def cache_persist_enabled() -> bool:
     return not _env_flag_disabled("SPEC_CRITIC_VERIFICATION_CACHE_PERSIST")
 
 
-def cache_ttl_days() -> int:
-    """Age-based pruning in days. 0 (the default) means no expiry.
+_DEFAULT_CACHE_TTL_DAYS = 60
 
-    Override via ``SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS``. Non-integer
-    or negative values are ignored and treated as 0 — a malformed override
-    should never accidentally invalidate the entire cache.
+
+def cache_ttl_days() -> int:
+    """Age-based pruning in days. Default 60 days.
+
+    Chunk 5 / Trust Upgrade: the default is 60 days, balancing reuse
+    against staleness for code references that may have new amendments
+    or interpretations published quarterly. A cached "current edition is
+    NFPA 13-2022" verdict older than two months may be wrong if the
+    California Building Standards Commission adopted a newer edition in
+    the interim — re-verification at that age catches the drift.
+
+    Override via ``SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS``. Explicit
+    ``0`` restores the legacy "no expiry" behavior for operators who
+    want the cache to act as a permanent database. Malformed or
+    negative values fall back to the 60-day default so a typo never
+    accidentally invalidates the entire cache or disables expiry.
     """
     raw = os.environ.get("SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS")
     if raw is None or not raw.strip():
-        return 0
+        return _DEFAULT_CACHE_TTL_DAYS
     try:
         value = int(raw.strip())
     except ValueError:
+        return _DEFAULT_CACHE_TTL_DAYS
+    # ``0`` is an explicit operator override meaning "no expiry"; preserve
+    # the legacy semantics. Negative values are nonsensical — fall back
+    # to the default rather than silently disabling expiry.
+    if value == 0:
         return 0
-    return value if value > 0 else 0
+    if value < 0:
+        return _DEFAULT_CACHE_TTL_DAYS
+    return value
 
 
 def default_cache_path() -> Path:
@@ -206,7 +225,7 @@ class VerificationCache:
                 self.misses += 1
                 return None
             self.hits += 1
-        return _clone_for_hit(entry.result)
+        return _clone_for_hit(entry)
 
     def put(self, finding, *, cycle: CodeCycle, result: "VerificationResult") -> None:
         # Don't cache results that explicitly opted out of caching, or
@@ -482,8 +501,18 @@ def _clone_for_store(result: "VerificationResult") -> "VerificationResult":
     )
 
 
-def _clone_for_hit(stored: "VerificationResult") -> "VerificationResult":
+def _clone_for_hit(entry: _CacheEntry) -> "VerificationResult":
+    """Clone a stored result for a cache hit.
+
+    Chunk 5 / Trust Upgrade: stamps ``cache_entry_created_ts`` from the
+    sidecar ``_CacheEntry.created_ts`` so the report can render the cache-age
+    badge ("Cache replay — Nd old") without re-reading the cache file. The
+    age field lives on ``VerificationResult`` as runtime telemetry —
+    distinct from the entry creation timestamp which remains the cache's
+    source of truth.
+    """
     from .verifier import VerificationResult
+    stored = entry.result
     return VerificationResult(
         verdict=stored.verdict,
         explanation=stored.explanation,
@@ -503,4 +532,5 @@ def _clone_for_hit(stored: "VerificationResult") -> "VerificationResult":
         verification_profile=stored.verification_profile,
         verification_mode=stored.verification_mode,
         source_quote=stored.source_quote,
+        cache_entry_created_ts=entry.created_ts,
     )

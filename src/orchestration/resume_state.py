@@ -177,6 +177,11 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         # survive resume so a resumed report renders VERIFICATION_FAILED
         # for the same findings that originally hit a transient error.
         "verification_failed": bool(result.verification_failed),
+        # Chunk 5 / Trust Upgrade: the cache-entry creation timestamp
+        # must survive resume so a resumed report renders the same
+        # "Cache replay — Nd old" badge the original run would have
+        # shown. Stored as epoch seconds.
+        "cache_entry_created_ts": float(result.cache_entry_created_ts),
     }
 
 
@@ -218,6 +223,11 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         # fallback, since we cannot retroactively know whether the
         # verifier crashed at the time the state was saved).
         verification_failed=bool(payload.get("verification_failed", False)),
+        # Chunk 5 / Trust Upgrade: defaults to 0.0 for legacy state files
+        # written before the field existed (those resume payloads predate
+        # the cache-age badge — rendering "Cache replay (age unknown)" is
+        # the safe fallback when the original timestamp was never stored).
+        cache_entry_created_ts=float(payload.get("cache_entry_created_ts", 0.0) or 0.0),
     )
 
 

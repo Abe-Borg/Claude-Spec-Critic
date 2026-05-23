@@ -149,6 +149,9 @@ The instruction prefix in front of `<spec ` must stay byte-identical across call
 ### Verification cache key
 `cycle_label | actionType | codeReference | sha256(claim_summary)`. Intentionally omits the verifier model — `VerificationResult.model_used` is stored as provenance inside the entry. Switching `SPEC_CRITIC_VERIFICATION_MODEL` does NOT invalidate existing entries; switching the code cycle does. Claim digest is 24 hex chars; older 16-char entries miss → re-ground → write new 24-char entries (`_CACHE_SCHEMA_VERSION` bump drops the legacy shape).
 
+### Cache-replay visibility (Chunk 5 / Trust Upgrade)
+`_clone_for_hit` stamps the sidecar `_CacheEntry.created_ts` onto `VerificationResult.cache_entry_created_ts` so the report can render an inline "Cache replay — Nd old" badge (amber <30d / orange 30-90d / red >90d) without re-reading the cache file. Per-finding evidence panel surfaces the configured cache path so a reviewer can locate and delete a single entry to force re-verification. Default TTL is now 60 days (down from no-expiry); set `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS=0` to restore the legacy database behavior.
+
 ### Deterministic-rule ids are public
 Every preprocessor alert carries a stable `deterministic_rule` id (exposed as `DETERMINISTIC_RULE_*` constants). The verification router's local-skip keyword list recognizes the rule names, so a GRIPES finding mentioning `todo` / `lorem ipsum` / `duplicate paragraph` / etc. is locally skipped. CRITICAL/HIGH and any non-empty `codeReference` still force `web_required`.
 
@@ -313,7 +316,7 @@ Model-id overrides plus a handful of operator switches for rollback / cache cont
 | `SPEC_CRITIC_RESTORE_KNOWN_FORMATTING` | off | Enable to re-apply bold formatting to recognized standards/code references (`NFPA 13`, `ASCE 7-22`, `CBC 2025`, etc.) inside replacement text after a partial EDIT collapses cross-run formatting. Default-off because a wrong match could incorrectly bold content; validate the registry in `src/editing/replacement_style.py:KNOWN_BOLD_PATTERNS` before enabling. Counter: `DiagnosticsReport.known_pattern_formatting_restored_count`. |
 | `SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT` | off | Enable to skip the replaceability sanity check on `verification.correction` and use it verbatim as the applied edit's replacement text (legacy behavior). When off (default), the locator falls back to the model's `replacement_text` whenever the correction looks explanatory (parenthetical citations, URLs, paragraph-length expansions, `current`/`latest`/`as of <year>` qualifiers not in the original). |
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |
-| `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `0` (no expiry) | Age-based pruning on cache load; non-integer/negative values fall back to 0 |
+| `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `60` days | Age-based pruning on cache load. Explicit `0` restores the legacy "no expiry" behavior; malformed/negative values fall back to the 60-day default so a typo never silently turns the cache into a permanent database. |
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override the on-disk cache file path; `~` and `$VAR` are expanded |
 
 ---

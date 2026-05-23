@@ -30,6 +30,7 @@ Usage:
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -43,6 +44,7 @@ from docx.oxml import OxmlElement
 from lxml import etree
 
 from ..core.api_config import web_search_max_uses_for_severity
+from ..verification.verification_cache import default_cache_path
 from .report_status import (
     EDIT_ACTION_DISPLAY_ORDER,
     EditActionLabel,
@@ -174,6 +176,49 @@ EDIT_ACTION_COLORS: dict[EditActionLabel, RGBColor] = {
     EditActionLabel.REPORT_ONLY: RGBColor(100, 100, 100),           # Gray
     EditActionLabel.SUPPRESSED: RGBColor(192, 0, 0),                # Red
 }
+
+
+# Chunk 5 / Trust Upgrade — cache-age badge color tiers. Cache replays carry
+# evidence that may have drifted since the original verdict was produced;
+# the badge color signals "how stale is this verdict?" at a glance.
+#   < 30 days  → amber  (recent — likely still accurate)
+#   30-90 days → orange (worth a second look on high-stakes findings)
+#   > 90 days  → red    (likely stale; consider re-verifying)
+CACHE_AGE_COLORS: dict[str, RGBColor] = {
+    "fresh": RGBColor(204, 132, 0),       # Amber
+    "stale": RGBColor(255, 102, 0),       # Orange
+    "very_stale": RGBColor(192, 0, 0),    # Red
+}
+
+
+def _cache_age_tier(age_days: int) -> str:
+    """Bucket a cache entry's age in days into the badge-color tier."""
+    if age_days < 30:
+        return "fresh"
+    if age_days <= 90:
+        return "stale"
+    return "very_stale"
+
+
+def _cache_entry_age_days(verification) -> int | None:
+    """Return the age in days of the cache entry behind a cache-hit result.
+
+    Returns ``None`` for non-hit results, for results without a recorded
+    ``cache_entry_created_ts`` (legacy resume payloads predating Chunk 5),
+    or for timestamps in the future (clock-skew anomaly). The caller
+    suppresses the badge in those cases.
+    """
+    if verification is None:
+        return None
+    if (getattr(verification, "cache_status", "") or "") != "hit":
+        return None
+    created_ts = float(getattr(verification, "cache_entry_created_ts", 0.0) or 0.0)
+    if created_ts <= 0.0:
+        return None
+    age_seconds = time.time() - created_ts
+    if age_seconds < 0:
+        return None
+    return int(age_seconds // 86400)
 
 
 # ---------------------------------------------------------------------------
@@ -967,6 +1012,23 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
                 reason_run.font.size = Pt(9)
                 reason_run.font.color.rgb = RGBColor(192, 0, 0)
 
+    # --- Force-refresh hint for cache replays (Chunk 5 / Trust Upgrade) ---
+    # A workflow hint, not a programmatic feature: tells the reviewer
+    # exactly where to delete the entry if they want fresh verification.
+    # Rendered only for cache-hit results so non-replayed findings stay
+    # uncluttered.
+    if (getattr(vr, "cache_status", "") or "") == "hit":
+        hint_para = doc.add_paragraph()
+        _set_paragraph_outline_level(hint_para, 8)
+        hint_run = hint_para.add_run(
+            "To force re-verification of this finding, delete its entry from "
+            f"{default_cache_path()}."
+        )
+        hint_run.font.size = Pt(9)
+        hint_run.font.italic = True
+        hint_run.font.color.rgb = RGBColor(128, 128, 128)
+        hint_para.paragraph_format.space_after = Pt(3)
+
 
 def _write_edit_target_evidence_panel(doc: Document, finding) -> None:
     """Render the locator-evidence panel for findings with edit proposals.
@@ -1187,6 +1249,28 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     edit_value_run.bold = True
     edit_value_run.font.color.rgb = action_color
     edit_value_run.font.size = Pt(10)
+
+    # --- Cache-replay badge (Chunk 5 / Trust Upgrade) ---
+    # When the verifier result came from a cache hit, render an inline
+    # badge showing the entry's age so a reviewer can spot stale verdicts
+    # without expanding the Sources panel. Color tier:
+    #   amber  for <30 days, orange for 30-90 days, red for >90 days.
+    # Suppressed for non-hit results, for legacy resume payloads predating
+    # Chunk 5 (no ``cache_entry_created_ts`` recorded), and for clock-skew
+    # cases where the recorded timestamp is in the future.
+    age_days = _cache_entry_age_days(getattr(finding, "verification", None))
+    if age_days is not None:
+        badge_color = CACHE_AGE_COLORS[_cache_age_tier(age_days)]
+        cache_sep_run = status_para.add_run("  •  ")
+        cache_sep_run.font.color.rgb = RGBColor(160, 160, 160)
+        cache_sep_run.font.size = Pt(10)
+        cache_badge_run = status_para.add_run(
+            f"Cache replay — {age_days}d old"
+        )
+        cache_badge_run.bold = True
+        cache_badge_run.font.color.rgb = badge_color
+        cache_badge_run.font.size = Pt(10)
+
     status_para.paragraph_format.space_after = Pt(3)
 
     # --- Issue ---

@@ -227,7 +227,7 @@ Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic 
 
 ### v2.11.0
 - Default review/cross-check model upgraded to Claude Opus 4.7; escalation model also Opus 4.7
-- Persistent verification cache at `~/.spec_critic/verification_cache.json` (atomic temp-file + rename; database mode by default, optional TTL pruning via `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS`)
+- Persistent verification cache at `~/.spec_critic/verification_cache.json` (atomic temp-file + rename; **60-day default TTL** with age-based pruning on load — set `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS=0` to keep the legacy database mode). Cache replays render an inline "Cache replay — Nd old" badge in the report (amber <30d / orange 30-90d / red >90d) so reviewers can spot stale verdicts at a glance; the evidence panel surfaces the cache file path for force-refresh workflows.
 - Optional Haiku 4.5 verification triage (`SPEC_CRITIC_HAIKU_TRIAGE=1`); hard safety contract (CRITICAL/HIGH and findings with a code reference are never eligible)
 - Cross-discipline synthesis model exposed (Haiku 4.5; `SPEC_CRITIC_SYNTHESIS_MODEL` override)
 - Severity-tiered web-search budgets: CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3
