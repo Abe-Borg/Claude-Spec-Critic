@@ -201,6 +201,13 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         # results never reach the verification cache (they aren't
         # grounded), so no cache schema bump is needed — just resume.
         "requires_elevated_confidence": bool(result.requires_elevated_confidence),
+        # Chunk 11 / Trust Upgrade: fetch telemetry must round-trip
+        # through resume so a resumed report renders the same
+        # "Searches: N, Full-page fetches: M" line and the same
+        # "Full-text sources consulted" sub-section the original run
+        # would have shown.
+        "web_fetch_requests": int(result.web_fetch_requests),
+        "fetched_sources": list(result.fetched_sources),
     }
 
 
@@ -253,6 +260,12 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         # neutral at 1.0 is the safe fallback that preserves the
         # original auto-edit gating decision).
         requires_elevated_confidence=bool(payload.get("requires_elevated_confidence", False)),
+        # Chunk 11 / Trust Upgrade: legacy state files predating the
+        # web_fetch capability default to 0 / [] so the evidence panel
+        # simply omits the fetch count for those resumed findings rather
+        # than crashing on a missing key.
+        web_fetch_requests=int(payload.get("web_fetch_requests", 0) or 0),
+        fetched_sources=[str(s) for s in payload.get("fetched_sources", []) if s],
     )
 
 

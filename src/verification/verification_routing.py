@@ -84,6 +84,7 @@ from ..core.api_config import (
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
+    WEB_FETCH_BETA_HEADER,
     apply_effort_config,
     apply_thinking_config,
     batch_service_tier,
@@ -506,11 +507,22 @@ def build_verification_tools_from_decision(
     ``include_verdict_tool`` field rather than re-querying the env
     helper, so a decision built with one value remains internally
     consistent even if the env toggle flips mid-flight.
+
+    Chunk 11 / Trust Upgrade: STANDARD_REASONING and DEEP_REASONING modes
+    additionally get the ``web_fetch`` server tool so the verifier can
+    pull the full text of a URL when a search snippet is insufficient.
+    STRICT_STRUCTURED and LOCAL_SKIP intentionally omit web_fetch —
+    STRICT_STRUCTURED is cheap-and-narrow by design and LOCAL_SKIP runs
+    no remote call at all. The fetch tool is appended right after the
+    search tool so the model sees them as a pair and the verdict tool
+    stays at the end of the list where ``tools_with_cache`` attaches
+    the trailing cache breakpoint.
     """
     # Local import — :mod:`batch` already depends on :mod:`verifier`, and
     # :mod:`verifier` will depend on this module, so importing batch at
     # module load would form a cycle.
     from ..batch.batch import build_verification_tools_for_profile
+    from ..core.api_config import build_web_fetch_tool
     from ..review.structured_schemas import verification_verdict_tool
 
     tool_list = build_verification_tools_for_profile(
@@ -534,6 +546,16 @@ def build_verification_tools_from_decision(
         web_tool_list[0]["max_uses"] = decision.web_search_max_uses
 
     out: list[dict] = list(web_tool_list)
+    # Chunk 11: attach web_fetch only for modes that benefit from a
+    # deeper read. The mode set is small and closed; future modes that
+    # want fetch should be added here, not gated by a separate flag.
+    from .verification_modes import VerificationMode
+    fetch_eligible_modes = {
+        VerificationMode.STANDARD_REASONING,
+        VerificationMode.DEEP_REASONING,
+    }
+    if decision.mode in fetch_eligible_modes:
+        out.append(build_web_fetch_tool())
     if decision.include_verdict_tool:
         # If the profile builder produced a verdict tool, keep it; otherwise
         # synthesize one. This handles the rare case where the env flag was
@@ -617,12 +639,42 @@ def build_verification_request(
     # omits ``output_config`` for unsupported models).
     apply_effort_config(params, model=decision.model, phase=decision.cache_phase)
 
+    # Chunk 11 / Trust Upgrade: when the request includes the web_fetch
+    # tool (STANDARD_REASONING / DEEP_REASONING), attach the beta header
+    # via ``extra_headers`` so the SDK forwards it on streaming requests.
+    # Carries no effect when the API treats web_fetch as generally
+    # available, so leaving it on is safe; required when the tool is
+    # still gated behind the beta. Detection reads the tool list rather
+    # than the mode so a future mode that opts into fetch also gets the
+    # header automatically.
+    if _tools_include_web_fetch(tools_payload):
+        existing_headers = dict(params.get("extra_headers") or {})
+        existing_headers["anthropic-beta"] = WEB_FETCH_BETA_HEADER
+        params["extra_headers"] = existing_headers
+
     if include_service_tier:
         tier = batch_service_tier()
         if tier:
             params["service_tier"] = tier
 
     return params
+
+
+def _tools_include_web_fetch(tools: list[dict]) -> bool:
+    """Return True iff the tool list contains the web_fetch server tool.
+
+    Walks the list so a caller that built tools through a different
+    helper still gets the beta-header treatment as long as the tool
+    type / name match the documented values.
+    """
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        if str(tool.get("type", "")).startswith("web_fetch"):
+            return True
+        if str(tool.get("name", "")) == "web_fetch":
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------

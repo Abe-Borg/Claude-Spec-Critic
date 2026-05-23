@@ -378,6 +378,22 @@ class VerificationCache:
                         # default to empty string and let the report
                         # render without a quote rather than crashing.
                         source_quote=str(result_payload.get("source_quote") or ""),
+                        # Chunk 11 / Trust Upgrade: missing keys default to
+                        # 0 / [] so v3 entries written before the field
+                        # existed (the field was added without a schema
+                        # bump because it's runtime telemetry, not
+                        # verdict semantics) replay cleanly with empty
+                        # fetch evidence — the report's "Searches: N,
+                        # Full-page fetches: M" line simply shows 0 for
+                        # the legacy entry.
+                        web_fetch_requests=int(
+                            result_payload.get("web_fetch_requests", 0) or 0
+                        ),
+                        fetched_sources=[
+                            str(s)
+                            for s in (result_payload.get("fetched_sources") or [])
+                            if s
+                        ],
                     )
                 except Exception:
                     continue
@@ -474,6 +490,14 @@ def _result_to_dict(result: "VerificationResult") -> dict:
         # replays render the same source_quote the original verification
         # produced. v3 schema bump invalidates v2 entries that lack it.
         "source_quote": result.source_quote,
+        # Chunk 11 / Trust Upgrade: persist web_fetch telemetry so cache
+        # replays render the same "Searches: N, Full-page fetches: M"
+        # line and the "Full-text sources consulted" sub-section the
+        # original verification produced. Runtime telemetry (not verdict
+        # semantics), so no schema bump is required — missing keys on
+        # legacy entries default to 0 / [] on load.
+        "web_fetch_requests": int(result.web_fetch_requests),
+        "fetched_sources": list(result.fetched_sources),
     }
 
 
@@ -498,6 +522,11 @@ def _clone_for_store(result: "VerificationResult") -> "VerificationResult":
         verification_profile=result.verification_profile,
         verification_mode=result.verification_mode,
         source_quote=result.source_quote,
+        # Chunk 11 / Trust Upgrade: carry fetch telemetry into the
+        # stored entry so cache hits replay the same evidence-panel
+        # counts the original verification produced.
+        web_fetch_requests=result.web_fetch_requests,
+        fetched_sources=list(result.fetched_sources),
     )
 
 
@@ -533,4 +562,11 @@ def _clone_for_hit(entry: _CacheEntry) -> "VerificationResult":
         verification_mode=stored.verification_mode,
         source_quote=stored.source_quote,
         cache_entry_created_ts=entry.created_ts,
+        # Chunk 11 / Trust Upgrade: carry stored fetch telemetry onto the
+        # hit clone so the evidence panel renders the same fetch count
+        # and URL list the original verification produced. Defaults on
+        # ``VerificationResult`` cover entries persisted before the
+        # field existed (legacy v3 rows without the key).
+        web_fetch_requests=stored.web_fetch_requests,
+        fetched_sources=list(stored.fetched_sources),
     )
