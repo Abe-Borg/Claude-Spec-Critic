@@ -260,6 +260,14 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         # verdict's sources in the evidence panel.
         "models_disagreed": bool(result.models_disagreed),
         "initial_sources": list(result.initial_sources),
+        # Chunk 13 / Trust Upgrade: the budget-exhausted sentinel must
+        # survive resume so a resumed report renders the same
+        # "Insufficient evidence (search budget exhausted)" sub-label
+        # the original run would have produced. Runtime telemetry —
+        # the verification cache refuses to persist these results so
+        # a cache replay never carries the flag, but resume state
+        # carries the full in-memory pipeline state and must keep it.
+        "budget_exhausted": bool(result.budget_exhausted),
     }
 
 
@@ -324,6 +332,12 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         # rather than retroactively claiming the verifiers disagreed.
         models_disagreed=bool(payload.get("models_disagreed", False)),
         initial_sources=[str(s) for s in payload.get("initial_sources", []) if s],
+        # Chunk 13 / Trust Upgrade: defaults to False for legacy state
+        # files written before the sentinel existed (those resume
+        # payloads predate the budget-exhausted sub-label — leaving the
+        # flag False keeps the INSUFFICIENT_EVIDENCE rendering exactly
+        # as it was on the original run).
+        budget_exhausted=bool(payload.get("budget_exhausted", False)),
     )
 
 

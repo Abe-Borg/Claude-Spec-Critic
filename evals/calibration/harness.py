@@ -92,6 +92,13 @@ class FixtureOutcome:
     web_search_requests: int
     web_search_budget: int
 
+    # Chunk 13 / Trust Upgrade: True when the verifier exhausted its
+    # mode-scaled search budget without grounding a verdict. Computed
+    # by :func:`_apply_budget_exhaustion` in the harness so a fixture
+    # whose captured response had ``web_search_requests`` at or above
+    # the severity-tiered budget surfaces the flag through the scorer.
+    budget_exhausted: bool = False
+
     notes: str = ""
     issues: list[str] = field(default_factory=list)
 
@@ -160,6 +167,39 @@ def _apply_grounding(
     return verifier._enforce_grounding_invariant(grounded)
 
 
+def _apply_budget_exhaustion(
+    result: verifier.VerificationResult,
+    *,
+    severity: str,
+) -> verifier.VerificationResult:
+    """Mirror the production budget-exhaustion detection.
+
+    Chunk 13 / Trust Upgrade: the runtime sets
+    ``VerificationResult.budget_exhausted=True`` when
+    ``web_search_requests >= decision.web_search_max_uses`` AND the
+    final verdict is UNVERIFIED. The calibration harness replays
+    captured verifier responses (not live API calls) so this
+    detection has to be applied here for fixtures that exercise the
+    case to be observable through the scorer's metrics. The condition
+    mirrors :func:`src.verification.verifier._run_verification_call`
+    exactly so a fixture marked with ``web_search_requests`` at or
+    above the severity-tiered budget surfaces the flag.
+
+    Local-skip results bypass detection (they don't search at all);
+    grounded supportive verdicts (CONFIRMED / CORRECTED) likewise are
+    skipped — a grounded verdict that consumed the full budget is the
+    model doing its job, not a shortfall.
+    """
+    if result.cache_status == _LOCAL_SKIP:
+        return result
+    if (result.verdict or "").strip().upper() != "UNVERIFIED":
+        return result
+    budget = web_search_max_uses_for_severity(severity)
+    if budget and result.web_search_requests >= budget:
+        result.budget_exhausted = True
+    return result
+
+
 def _safe_edit_confidence(finding: Finding) -> float | None:
     """Return the edit-proposal confidence, or None for non-edit findings."""
     proposal = finding.as_edit_proposal()
@@ -179,6 +219,13 @@ def run_fixture(fixture: CalibrationFixture) -> FixtureOutcome:
     captured_verdict = response.verdict
     result = _build_verification_result(response)
     grounded_result = _apply_grounding(result, response)
+    # Chunk 13: apply budget-exhaustion detection AFTER grounding so a
+    # CONFIRMED that was downgraded to UNVERIFIED still picks up the
+    # flag when the model used its full search budget. Mirrors the
+    # production ordering in ``_run_verification_call``.
+    grounded_result = _apply_budget_exhaustion(
+        grounded_result, severity=fixture.severity
+    )
 
     finding = _build_finding(fixture.finding)
     finding.verification = grounded_result
@@ -242,6 +289,7 @@ def run_fixture(fixture: CalibrationFixture) -> FixtureOutcome:
         verification_profile=grounded_result.verification_profile,
         web_search_requests=int(response.web_search_requests),
         web_search_budget=_resolve_search_budget(fixture.severity),
+        budget_exhausted=bool(grounded_result.budget_exhausted),
         notes=fixture.ground_truth.notes,
         issues=issues,
     )
