@@ -167,6 +167,7 @@ Every preprocessor alert carries a stable `deterministic_rule` id (exposed as `D
 ### Auto-edit eligibility
 `report_status.classify_edit_action` is the single source of truth. `AUTO_EDIT_CANDIDATE` requires:
 - supportive status (`VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED` / `LOCALLY_CLASSIFIED`), AND
+- `numeric_or_standards_demotion_reason(finding) is None` (Chunk 9; see below), AND
 - `composite_edit_confidence(finding) >= auto_edit_confidence_floor()` (default 0.7, overridable), AND
 - not suppressed by cross-check dependency tracking.
 
@@ -182,6 +183,15 @@ Every preprocessor alert carries a stable `deterministic_rule` id (exposed as `D
 The 0.6 "otherwise" branch only matters for evidence-panel display — `classify_edit_action` filters non-supportive statuses to `MANUAL_EDIT_CANDIDATE` before the composite is compared to the floor. `LOCALLY_CLASSIFIED` is ungrounded by construction (no web search ran), so its composite is bounded above by `edit_confidence * 1.0 * 0.5 * 0.85` — a clean local-skip finding with `edit_confidence=1.0` lands at 0.425 and routes to manual review under the default floor. The threshold is rendered next to the composite in the report's "Edit Target Evidence" panel so reviewers see the gate explicitly.
 
 `auto_edit_confidence_floor()` reads `SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR` at every call (no caching) — process-wide env flips take effect without restart. Default 0.7; values `>= 1.01` are the documented kill switch (composite is bounded above by 1.0). Malformed / negative values fall back to 0.7 so a typo can never silently turn the floor into 0.0 (auto-apply everything).
+
+### Numeric/standards CORRECTED demotion (Chunk 9 / Trust Upgrade)
+`numeric_or_standards_demotion_reason(finding)` is a surgical mitigation against the highest-risk class of auto-edits: a CORRECTED verdict whose proposed replacement rewrites a numeric quantity, a standards-body reference, or a §-prefixed section reference. A wrong specific value (5 ft → 8 ft instead of 6 ft, NFPA 13 → NFPA 13R instead of NFPA 13D) would propagate silently into the spec, so the gate routes any such edit to `MANUAL_EDIT_CANDIDATE` regardless of composite confidence. The helper consults three compiled regex patterns:
+
+- Numeric-with-unit: `\d+(?:\.\d+)?\s*(?:gpm|cfm|psi|ft|in|mm|cm|m|hp|kw|°F|°C|°)(?![A-Za-z])` — `(?![A-Za-z])` is used instead of `\b` so the degree symbol (a non-word character) still has a sensible boundary; the alphabetic units stay safe because "m" in "5 meters" is followed by a letter and the lookahead correctly fails.
+- Standards prefix: `\b(?:NFPA|ASCE|ASHRAE|CBC|CMC|CPC|CEC|CALGreen|IAPMO|ASTM|ANSI|UL|API|AWWA|AISC|ICC)\s+[A-Z]?\d+` — the optional letter prefix accepts `ASTM A53` / `AWWA C151` which the plan's literal `\s+\d+` would have silently skipped.
+- Section reference: `§\s*\d+(?:\.\d+)+` — requires at least one dot-separated continuation so bare `§ 1234` doesn't trigger; the gate targets the deeply nested forms reviewers tend to miss.
+
+The helper short-circuits to `None` when the verdict is not CORRECTED (CONFIRMED edits keep the existing routing — the model said the text is correct), when the action is not EDIT (ADD / DELETE are out of scope per the plan's "Non-goals"), or when there's no proposal / empty replacement. `classify_edit_action` calls the helper between the supportive-status filter and the composite-floor check, so a supportive finding with a high composite still gets routed to manual when its replacement touches a number or a standards reference. The same helper is reused by `report_exporter._write_finding_entry` to render an inline "Edit demoted:" italic note right under the status line — the rendered reason matches the routing decision exactly because both paths consult the same function. Stylistic CORRECTED edits ("shall be installed" → "must be installed") still auto-apply when the composite clears the floor; the gate is narrow by construction.
 
 ### Code cycle: California 2025 only
 `DEFAULT_CYCLE = CALIFORNIA_2025`. The 2022-cycle mapping was removed — **do not reintroduce it**. Cycle label is in the verification cache key, so a cycle bump naturally invalidates prior entries.
