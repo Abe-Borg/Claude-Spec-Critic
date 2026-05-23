@@ -56,6 +56,7 @@ from .report_status import (
     classify_status,
     composite_edit_confidence,
     edit_action_label,
+    numeric_or_standards_demotion_reason,
     status_glyph,
     status_label,
     summarize_edit_actions,
@@ -1663,6 +1664,31 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         cache_badge_run.font.size = Pt(10)
 
     status_para.paragraph_format.space_after = Pt(3)
+
+    # --- Numeric/standards demotion annotation (Chunk 9 / Trust Upgrade) ---
+    # When ``classify_edit_action`` demoted a CORRECTED supportive finding
+    # to MANUAL_EDIT_CANDIDATE because its replacement text touched a
+    # numeric value or a standards reference, render the rationale as a
+    # small italic note immediately under the status line. The composite
+    # confidence breakdown shown later in the Edit Target Evidence panel
+    # would otherwise look like a passing auto-edit (composite ≥ floor)
+    # and the reviewer would have no inline cue that the override fired.
+    # ``numeric_or_standards_demotion_reason`` is the same helper
+    # ``classify_edit_action`` consults, so the displayed reason matches
+    # the demotion decision exactly.
+    demotion_reason = numeric_or_standards_demotion_reason(finding)
+    if demotion_reason:
+        note_para = doc.add_paragraph()
+        prefix_run = note_para.add_run("Edit demoted: ")
+        prefix_run.bold = True
+        prefix_run.font.italic = True
+        prefix_run.font.size = Pt(9)
+        prefix_run.font.color.rgb = RGBColor(120, 120, 120)
+        body_run = note_para.add_run(demotion_reason)
+        body_run.font.italic = True
+        body_run.font.size = Pt(9)
+        body_run.font.color.rgb = RGBColor(120, 120, 120)
+        note_para.paragraph_format.space_after = Pt(3)
 
     # --- Issue ---
     para = doc.add_paragraph()
