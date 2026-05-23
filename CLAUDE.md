@@ -167,10 +167,21 @@ Every preprocessor alert carries a stable `deterministic_rule` id (exposed as `D
 ### Auto-edit eligibility
 `report_status.classify_edit_action` is the single source of truth. `AUTO_EDIT_CANDIDATE` requires:
 - supportive status (`VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED` / `LOCALLY_CLASSIFIED`), AND
-- `edit_confidence >= AUTO_EDIT_CONFIDENCE_FLOOR` (0.7), AND
+- `composite_edit_confidence(finding) >= auto_edit_confidence_floor()` (default 0.7, overridable), AND
 - not suppressed by cross-check dependency tracking.
 
 `LOCALLY_CLASSIFIED` is supportive because the router decided the finding is self-evident from the spec. Locator/spec_editor preconditions still gate the actual mutation.
+
+### Composite edit confidence (Chunk 8 / Trust Upgrade)
+`composite_edit_confidence(finding)` multiplies four independent dimensions so weakness on any one of them pulls the overall number below the auto-edit floor:
+- model `proposal.edit_confidence` (base term),
+- locator match confidence from `Finding.locator_evidence["match_confidence"]` (1.0 when no locator evidence is stashed — legacy resume payloads stay neutral),
+- grounding multiplier: 1.0 when `verification.grounded`, else 0.5,
+- status multiplier: 1.0 for `VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED`, 0.85 for `LOCALLY_CLASSIFIED`, 0.6 otherwise.
+
+The 0.6 "otherwise" branch only matters for evidence-panel display — `classify_edit_action` filters non-supportive statuses to `MANUAL_EDIT_CANDIDATE` before the composite is compared to the floor. `LOCALLY_CLASSIFIED` is ungrounded by construction (no web search ran), so its composite is bounded above by `edit_confidence * 1.0 * 0.5 * 0.85` — a clean local-skip finding with `edit_confidence=1.0` lands at 0.425 and routes to manual review under the default floor. The threshold is rendered next to the composite in the report's "Edit Target Evidence" panel so reviewers see the gate explicitly.
+
+`auto_edit_confidence_floor()` reads `SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR` at every call (no caching) — process-wide env flips take effect without restart. Default 0.7; values `>= 1.01` are the documented kill switch (composite is bounded above by 1.0). Malformed / negative values fall back to 0.7 so a typo can never silently turn the floor into 0.0 (auto-apply everything).
 
 ### Code cycle: California 2025 only
 `DEFAULT_CYCLE = CALIFORNIA_2025`. The 2022-cycle mapping was removed — **do not reintroduce it**. Cycle label is in the verification cache key, so a cycle bump naturally invalidates prior entries.
@@ -324,6 +335,7 @@ Model-id overrides plus a handful of operator switches for rollback / cache cont
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `60` days | Age-based pruning on cache load. Explicit `0` restores the legacy "no expiry" behavior; malformed/negative values fall back to the 60-day default so a typo never silently turns the cache into a permanent database. |
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override the on-disk cache file path; `~` and `$VAR` are expanded |
+| `SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR` | `0.7` | Composite-confidence floor used by `classify_edit_action` to gate `AUTO_EDIT_CANDIDATE`. Read at every call (no caching) so a process-wide env flip takes effect immediately. Values `>= 1.01` are the documented kill switch — composite confidence is bounded above by 1.0, so nothing can clear the bar and every supportive finding routes to `MANUAL_EDIT_CANDIDATE`. Malformed / negative values fall back to the 0.7 default so a typo never silently drops the floor to 0.0 (auto-apply everything). |
 
 ---
 

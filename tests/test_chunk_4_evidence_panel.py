@@ -697,3 +697,85 @@ class TestEvidencePanelSuccessCriteria:
         assert "Match method:" in text
         assert "Match confidence:" in text
         assert "95%" in text
+
+
+# ===========================================================================
+# Composite confidence rendering (Chunk 8 / Trust Upgrade)
+# ===========================================================================
+
+class TestCompositeConfidenceRendering:
+    """The Edit Target Evidence panel surfaces composite confidence.
+
+    Chunk 8 / Trust Upgrade success criterion: "Composite confidence
+    visible in the report." The renderer shows the three contributing
+    numbers (model edit_confidence, locator match_confidence, composite)
+    plus the threshold so a reviewer can see why a finding did or did
+    not clear the auto-edit gate.
+    """
+
+    def test_composite_line_visible_for_finding_with_proposal(
+        self, tmp_path: Path
+    ):
+        proposal = EditProposal(
+            action_type="EDIT",
+            existing_text="2019 CBC",
+            replacement_text="2025 CBC",
+            edit_confidence=0.9,
+        )
+        finding = _finding(
+            edit_proposal=proposal,
+            verification=_verification(verdict="CONFIRMED", grounded=True),
+            locator_evidence={
+                "status": "matched",
+                "match_method": "exact",
+                "match_confidence": 0.92,
+                "safety_category": "AUTO_SAFE",
+                "element_id": "p-1",
+            },
+        )
+        out = tmp_path / "report.docx"
+        export_report(
+            _StubPipelineResult(review_result=ReviewResult(findings=[finding])),
+            out,
+        )
+        text = _all_text_from(Document(str(out)))
+        # Inline labels — the four numbers that feed the composite gate.
+        assert "Confidence:" in text
+        assert "Model 90%" in text
+        assert "Locator 92%" in text
+        # 0.9 * 0.92 * 1.0 * 1.0 = 0.828 → 83% when rounded for display.
+        assert "Composite 83%" in text
+        # The threshold must be visible so reviewers know the bar.
+        assert "threshold: 70%" in text
+
+    def test_composite_line_reflects_env_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Raising the floor via env var must propagate into the
+        # rendered threshold so reviewers see the operator-tightened
+        # bar, not the stale default.
+        monkeypatch.setenv("SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR", "0.85")
+        proposal = EditProposal(
+            action_type="EDIT",
+            existing_text="2019 CBC",
+            replacement_text="2025 CBC",
+            edit_confidence=0.9,
+        )
+        finding = _finding(
+            edit_proposal=proposal,
+            verification=_verification(verdict="CONFIRMED", grounded=True),
+            locator_evidence={
+                "status": "matched",
+                "match_method": "exact",
+                "match_confidence": 0.92,
+                "safety_category": "AUTO_SAFE",
+                "element_id": "p-1",
+            },
+        )
+        out = tmp_path / "report.docx"
+        export_report(
+            _StubPipelineResult(review_result=ReviewResult(findings=[finding])),
+            out,
+        )
+        text = _all_text_from(Document(str(out)))
+        assert "threshold: 85%" in text
