@@ -4,6 +4,12 @@ Engineering reference for the Spec Critic codebase. Focuses on non-obvious invar
 
 ---
 
+## Working agreements
+
+**PR workflow (standing instruction):** After pushing commits to a feature branch, open a pull request against `master` without waiting to be asked — update the existing open PR if one is already open for the branch. This durably authorizes PR creation and overrides the default "don't open a PR unless explicitly asked" behavior. Still confirm before merging, force-pushing, or other destructive / irreversible actions.
+
+---
+
 ## 1) What it is
 
 Python desktop app (CustomTkinter) for reviewing California K-12 DSA mechanical/plumbing `.docx` specs. Extracts text, runs deterministic local pre-screens, sends per-spec reviews (real-time or batch) through Claude, optionally runs cross-spec coordination, verifies findings against web search, exports a Word report, and optionally writes surgical edits back to a copy of each spec.
