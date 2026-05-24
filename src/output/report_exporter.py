@@ -677,11 +677,16 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     # but budget exhaustion is a policy outcome (re-run with the same
     # severity will exhaust the same budget). The actionable hint is to
     # raise the finding's severity so the routing decision allocates
-    # more searches (CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3 per
-    # api_config._SEVERITY_MAX_USES). Rendered in a calmer amber rather
-    # than the failure-red so a reader can tell the two situations
-    # apart at a glance.
+    # more searches. The per-severity budgets are rendered from
+    # api_config._SEVERITY_MAX_USES (via web_search_max_uses_for_severity)
+    # so this hint cannot drift from the actual policy. Rendered in a
+    # calmer amber rather than the failure-red so a reader can tell the
+    # two situations apart at a glance.
     if budget_exhausted_count > 0:
+        budget_str = ", ".join(
+            f"{sev} {web_search_max_uses_for_severity(sev)}"
+            for sev in SEVERITY_ORDER
+        )
         hint_para = doc.add_paragraph()
         hint_para.paragraph_format.space_before = Pt(6)
         hint_para.paragraph_format.space_after = Pt(8)
@@ -690,9 +695,10 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             f"{'s' if budget_exhausted_count != 1 else ''} exhausted the "
             "verifier's web_search budget without grounding a verdict "
             "(rendered as 'Insufficient evidence (search budget exhausted)' "
-            "inline). Consider re-running these findings at a higher "
-            "severity to grant more search headroom — CRITICAL / HIGH "
-            "receive 7 searches, MEDIUM 5, GRIPES 3."
+            "inline). Per-severity web_search budgets are "
+            f"{budget_str}; re-running a lower-severity finding at a higher "
+            "severity grants more headroom (CRITICAL findings already "
+            "receive the maximum budget)."
         )
         hint_run.font.size = Pt(10)
         hint_run.font.italic = True

@@ -795,12 +795,9 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         # duplicating those items as new findings.
         pre_detected_alerts=prepared.pre_detected_by_filename,
     )
-    _trace.capture_note(
-        trace_pipeline,
-        "review batch submitted",
-        batch_id=job.batch_id,
-        request_count=len(job.request_map),
-    )
+    # The "review batch submitted" trace note is emitted inside
+    # ``submit_review_batch`` (with the extended-output-beta flag); no
+    # second note here so the trace shows the submission once.
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
     return BatchSubmission(
         job=job,

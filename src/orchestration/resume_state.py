@@ -268,6 +268,10 @@ def serialize_verification_result(result: VerificationResult | None) -> dict[str
         # a cache replay never carries the flag, but resume state
         # carries the full in-memory pipeline state and must keep it.
         "budget_exhausted": bool(result.budget_exhausted),
+        # Token usage telemetry — carried through resume so a resumed run's
+        # diagnostics keep the spend already attributed to verified findings.
+        "input_tokens": int(result.input_tokens),
+        "output_tokens": int(result.output_tokens),
     }
 
 
@@ -338,6 +342,8 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         # flag False keeps the INSUFFICIENT_EVIDENCE rendering exactly
         # as it was on the original run).
         budget_exhausted=bool(payload.get("budget_exhausted", False)),
+        input_tokens=int(payload.get("input_tokens", 0) or 0),
+        output_tokens=int(payload.get("output_tokens", 0) or 0),
     )
 
 

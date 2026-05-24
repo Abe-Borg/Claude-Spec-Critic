@@ -310,6 +310,15 @@ class VerificationResult:
     # logic as ``verification_failed``); round-trips through resume state
     # so a resumed report keeps the sub-label.
     budget_exhausted: bool = False
+    # ----- Token usage telemetry ------------------------------------------
+    # Input / output token counts for the verification request that produced
+    # this result, read from ``message.usage``. Used only for operational
+    # diagnostics (the per-phase token totals in the run diagnostics) — not
+    # verdict semantics. Like the other runtime-telemetry fields they default
+    # to 0 and round-trip through resume state and the verification cache so
+    # legacy rows load without them; no cache schema bump is required.
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
@@ -921,6 +930,22 @@ def _web_fetch_count(message) -> int:
     return int(getattr(server_tool_use, "web_fetch_requests", 0) or 0)
 
 
+def _token_usage(message) -> tuple[int, int]:
+    """Return ``(input_tokens, output_tokens)`` from a message's usage block.
+
+    Mirrors :func:`_web_search_count`: defensive ``getattr`` chain so a
+    message without a usage block (or a fake test message) yields ``(0, 0)``
+    rather than raising.
+    """
+    usage = getattr(message, "usage", None)
+    if usage is None:
+        return 0, 0
+    return (
+        int(getattr(usage, "input_tokens", 0) or 0),
+        int(getattr(usage, "output_tokens", 0) or 0),
+    )
+
+
 def _collect_fetch_evidence_detailed(
     message,
 ) -> tuple[list[SearchedSource], int, int]:
@@ -1436,37 +1461,16 @@ def verify_finding(
             except Exception:
                 _trace.capture_verification_end(trace_esc, error="exception")
                 raise
-            # Prefer the escalated result when it produced a grounded verdict;
-            # otherwise keep the first pass so we don't lose its evidence.
-            if esc_result.grounded or (
-                esc_result.verdict in ("CONFIRMED", "CORRECTED", "DISPUTED")
-                and result.verdict == "UNVERIFIED"
-            ):
-                result = esc_result
-
-            result.escalation_attempted = True
-            result.initial_model = initial_model_snapshot
-            result.initial_verdict = initial_verdict_snapshot
-            result.escalation_changed_verdict = (
-                result.verdict != initial_verdict_snapshot
-            )
-            result.escalation_reason = escalation_reason
-            # Chunk 12: set the models-disagreed sentinel ONLY when both
-            # passes were grounded AND the verdicts differ. The stricter
-            # condition (vs. ``escalation_changed_verdict`` which fires
-            # on any verdict change) avoids labelling
-            # initial-UNVERIFIED-then-CONFIRMED escalations as a
-            # disagreement — that's the escalation path doing its job,
-            # not two verifiers reading the same sources and reaching
-            # different conclusions. ``initial_sources`` is populated
-            # unconditionally when escalation runs so the evidence panel
-            # can still show "Initial: UNVERIFIED, no sources" for
-            # non-contested escalations.
-            result.initial_sources = initial_sources_snapshot
-            result.models_disagreed = (
-                initial_grounded_snapshot
-                and bool(esc_result.grounded)
-                and esc_result.verdict != initial_verdict_snapshot
+            # Merge via the shared helper so this real-time path and the
+            # batch escalation wave apply identical swap + telemetry rules.
+            result = _apply_escalation_outcome(
+                initial_result=result,
+                esc_result=esc_result,
+                initial_verdict=initial_verdict_snapshot,
+                initial_model=initial_model_snapshot,
+                initial_grounded=initial_grounded_snapshot,
+                initial_sources=initial_sources_snapshot,
+                escalation_reason=escalation_reason,
             )
             _trace.capture_verification_end(trace_esc, verification_result=result)
 
@@ -1501,6 +1505,60 @@ def _classify_escalation_reason(initial_result: VerificationResult) -> str:
     # without one of the above being true, but a future router rule should
     # remain visible.
     return "router_decision"
+
+
+def _apply_escalation_outcome(
+    *,
+    initial_result: VerificationResult,
+    esc_result: VerificationResult,
+    initial_verdict: str,
+    initial_model: str,
+    initial_grounded: bool,
+    initial_sources: list[str],
+    escalation_reason: str,
+) -> VerificationResult:
+    """Merge an initial verifier result with its escalated re-run.
+
+    The single source of truth for escalation merge semantics so the
+    real-time (:func:`verify_finding`) and batch
+    (:func:`verify_findings_batch`) escalation paths cannot drift. The
+    caller is responsible for snapshotting the initial verdict / model /
+    grounding / sources BEFORE the escalation call runs, because the swap
+    below replaces the result object.
+
+    Returns the chosen result with the Chunk 12 escalation telemetry
+    stamped (``escalation_attempted`` / ``initial_*`` /
+    ``escalation_changed_verdict`` / ``escalation_reason`` /
+    ``initial_sources`` / ``models_disagreed``).
+    """
+    # Prefer the escalated result when it produced a grounded verdict;
+    # otherwise keep the first pass so we don't lose its evidence.
+    if esc_result.grounded or (
+        esc_result.verdict in ("CONFIRMED", "CORRECTED", "DISPUTED")
+        and initial_verdict == "UNVERIFIED"
+    ):
+        result = esc_result
+    else:
+        result = initial_result
+
+    result.escalation_attempted = True
+    result.initial_model = initial_model
+    result.initial_verdict = initial_verdict
+    result.escalation_changed_verdict = result.verdict != initial_verdict
+    result.escalation_reason = escalation_reason
+    # Chunk 12: set the models-disagreed sentinel ONLY when both passes
+    # were grounded AND the verdicts differ — the stricter condition (vs.
+    # ``escalation_changed_verdict``) avoids labelling an
+    # initial-UNVERIFIED-then-CONFIRMED escalation as a disagreement.
+    # ``initial_sources`` is set unconditionally so the evidence panel can
+    # still show "Initial: UNVERIFIED, no sources" for non-contested runs.
+    result.initial_sources = list(initial_sources)
+    result.models_disagreed = (
+        initial_grounded
+        and bool(esc_result.grounded)
+        and esc_result.verdict != initial_verdict
+    )
+    return result
 
 
 def _run_verification_call(
@@ -1727,6 +1785,8 @@ def _run_verification_call(
             total_search_errors = 0
             total_search_requests = 0
             total_fetch_requests = 0
+            total_input_tokens = 0
+            total_output_tokens = 0
             for resp in all_responses:
                 detailed, successes, errors = _collect_search_evidence_detailed(resp)
                 all_searched.extend(detailed)
@@ -1746,6 +1806,9 @@ def _run_verification_call(
                 success_blocks += fetch_successes
                 total_search_errors += fetch_errors
                 total_fetch_requests += _web_fetch_count(resp)
+                resp_in, resp_out = _token_usage(resp)
+                total_input_tokens += resp_in
+                total_output_tokens += resp_out
 
             # Dedupe across waves with normalized URLs so two queries that
             # landed on the same page are counted once.
@@ -1832,6 +1895,8 @@ def _run_verification_call(
             # citation-validation set.
             parsed.web_fetch_requests = total_fetch_requests
             parsed.fetched_sources = fetched_url_list
+            parsed.input_tokens = total_input_tokens
+            parsed.output_tokens = total_output_tokens
             # Stamp the routed decision (mode/profile/escalation flag)
             # onto the result via the centralized helper so the real-time
             # path and the batch wave path use the same stamping routine.
@@ -2455,6 +2520,7 @@ def _classify_wave_results(
         parsed.search_error_count = error_count + fetch_errors
         parsed.web_fetch_requests = _web_fetch_count(message)
         parsed.fetched_sources = [s.url for s in deduped_fetched]
+        parsed.input_tokens, parsed.output_tokens = _token_usage(message)
         # Prefer the stored routing decision from the request context so
         # the wave parser stamps the result with the *same*
         # mode/profile/escalation the request was actually built against.
@@ -2499,6 +2565,180 @@ def _classify_wave_results(
             parsed.budget_exhausted = True
         outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed))
     return outcomes
+
+
+def _run_batch_escalation_wave(
+    findings: list[Finding],
+    *,
+    cycle: CodeCycle,
+    cache: VerificationCache | None,
+    policy: PollPolicy,
+    log: Callable[..., None],
+    progress: Callable[[float, str], None],
+) -> None:
+    """Escalate ungrounded high-stakes batch findings on Opus (Chunk 12 parity).
+
+    The real-time path (:func:`verify_finding`) re-runs Sonnet's ungrounded
+    CRITICAL/HIGH verdicts on Opus and surfaces genuine disagreements as
+    VERIFIED_CONTESTED. The batch wave loop produced only the initial pass,
+    so without this wave a batch run never escalates and never contests.
+    This runs ONE additional Opus batch wave for the findings the policy
+    gate (:func:`should_escalate_verification`) selects, then merges each
+    escalated result with its initial result via the shared
+    :func:`_apply_escalation_outcome` helper so the batch and real-time
+    escalation semantics cannot drift.
+
+    Best-effort: any failure (submission, polling, parsing) leaves the
+    initial verdicts untouched — escalation is an enhancement, never the
+    critical path.
+    """
+    include_verdict_tool = verification_request_includes_verdict_tool()
+    system_prompt = _get_verification_system_prompt(
+        cycle, include_verdict_tool=include_verdict_tool
+    )
+
+    escalation_requests: list[dict] = []
+    escalation_request_map: dict[str, dict] = {}
+    escalation_contexts: dict[str, dict] = {}
+    extra_headers_seq: list[dict[str, str]] = []
+    # finding_idx -> snapshot of the initial pass, captured BEFORE the
+    # escalated result can swap it (mirrors the real-time snapshots).
+    snapshots: dict[int, dict] = {}
+
+    for finding_idx, finding in enumerate(findings):
+        v = finding.verification
+        # Skip findings with no verdict yet or already escalated (e.g. the
+        # real-time fallback path escalates inline, setting this flag).
+        if v is None or v.escalation_attempted:
+            continue
+        if not should_escalate_verification(
+            finding,
+            verdict=v.verdict,
+            grounded=v.grounded,
+            successful_source_count=v.successful_source_count,
+            search_error_count=v.search_error_count,
+        ):
+            continue
+        decision = select_routing(finding, escalated=True, local_skip=False)
+        esc_model = decision.model
+        # Mirror the real-time guard: don't re-run on the same model the
+        # initial pass already used (CRITICAL california_ahj findings ran
+        # their initial pass on Opus, so escalating to Opus is a no-op).
+        if not esc_model or esc_model == (v.model_used or ""):
+            continue
+        custom_id = f"verify_escalation__{finding_idx}"
+        prompt = _build_verification_prompt(
+            finding, cycle=cycle, include_verdict_tool=include_verdict_tool
+        )
+        esc_request = build_verification_request(
+            decision,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            include_service_tier=False,
+        )
+        extra_headers_seq.append(esc_request.extra_headers)
+        escalation_requests.append({"custom_id": custom_id, "params": esc_request.params})
+        escalation_request_map[custom_id] = {
+            "finding_idx": finding_idx,
+            "model": esc_model,
+            "escalated": True,
+            "routing": decision.to_dict(),
+        }
+        escalation_contexts[custom_id] = {
+            "finding_idx": finding_idx,
+            "original_prompt": prompt,
+            "resolved": False,
+            "model": esc_model,
+            "escalated": True,
+            "routing": decision.to_dict(),
+            "original_custom_id": custom_id,
+        }
+        snapshots[finding_idx] = {
+            "verdict": v.verdict,
+            "model": v.model_used or initial_verification_model(),
+            "grounded": bool(v.grounded),
+            "sources": list(v.sources or []),
+            "reason": _classify_escalation_reason(v),
+        }
+
+    if not escalation_requests:
+        return
+
+    log(
+        f"Verification: escalating {len(escalation_requests)} ungrounded "
+        "high-stakes finding(s) to Opus.",
+        level="step",
+    )
+    try:
+        union_headers = merge_extra_headers(extra_headers_seq)
+        esc_job = submit_verification_followup_wave(
+            escalation_requests,
+            escalation_request_map,
+            extra_headers=union_headers or None,
+        )
+        poll_outcome = poll_batch_bounded(
+            esc_job.batch_id,
+            policy=policy,
+            log=log,
+            progress_cb=lambda status: progress(
+                90.0 + (status.progress_pct / 100.0) * 8.0,
+                f"Escalation: {status.completed}/{status.total} done",
+            ),
+        )
+        if poll_outcome.detached or poll_outcome.poll_failed:
+            log(
+                "Verification: escalation wave polling ended before terminal "
+                "status; keeping initial verdicts.",
+                level="warning",
+            )
+            return
+        outcomes = _classify_wave_results(
+            job=esc_job, findings=findings, request_contexts=escalation_contexts
+        )
+    except Exception as exc:  # escalation is best-effort; never lose verdicts
+        log(
+            f"Verification: escalation wave failed ({exc}); keeping initial verdicts.",
+            level="warning",
+        )
+        return
+
+    escalated_count = 0
+    contested_count = 0
+    for outcome in outcomes:
+        # Operational failure on the escalation pass keeps the initial
+        # verdict rather than downgrading a good Sonnet result.
+        if outcome.classification != "success" or not outcome.parsed_verification:
+            continue
+        snap = snapshots.get(outcome.finding_idx)
+        if snap is None:
+            continue
+        finding = findings[outcome.finding_idx]
+        merged = _apply_escalation_outcome(
+            initial_result=finding.verification,
+            esc_result=outcome.parsed_verification,
+            initial_verdict=snap["verdict"],
+            initial_model=snap["model"],
+            initial_grounded=snap["grounded"],
+            initial_sources=snap["sources"],
+            escalation_reason=snap["reason"],
+        )
+        finding.verification = merged
+        if merged.escalated:
+            escalated_count += 1
+        if merged.models_disagreed:
+            contested_count += 1
+        # Re-cache so the cache reflects the final post-escalation verdict;
+        # the cache's own grounding / failure guards drop anything that
+        # shouldn't persist (ungrounded, verification_failed, contested
+        # telemetry is runtime-only).
+        if cache is not None and merged.cache_status == "miss":
+            cache.put(finding, cycle=cycle, result=merged)
+
+    log(
+        f"Verification escalation complete: {escalated_count} escalated "
+        f"verdict(s) kept, {contested_count} contested.",
+        level="success",
+    )
 
 
 def collect_verification_batch_results(
@@ -2960,6 +3200,20 @@ def collect_verification_batch_results(
             extra_headers=wave_extra_headers or None,
         )
         request_contexts = next_contexts
+    # Escalation wave (Chunk 12 parity): re-run ungrounded high-stakes
+    # findings on Opus so a batch run surfaces the same escalation /
+    # VERIFIED_CONTESTED signals the real-time path produces. Runs after the
+    # main wave loop has resolved every finding, so each has an initial
+    # verdict to escalate from. Best-effort — keeps initial verdicts on any
+    # failure (see the helper's docstring).
+    _run_batch_escalation_wave(
+        findings,
+        cycle=cycle,
+        cache=cache,
+        policy=policy,
+        log=log,
+        progress=progress,
+    )
     counts = {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0}
     # Tracing: batch verification runs server-side, so there's no live span
     # to wrap. Emit a post-hoc verification span per web-verified finding

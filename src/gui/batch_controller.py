@@ -321,6 +321,14 @@ def collect_batch_results(app) -> None:
                                 "call_mode": "batch",
                                 "model": f.verification.model_used,
                                 "web_search_requests": f.verification.web_search_requests,
+                                # Token usage so the per-phase diagnostics
+                                # rollup reports real verification spend
+                                # (previously absent, so verification showed
+                                # in=0/out=0). Cache-hit / local-skip results
+                                # carry 0 here (no API call ran), which is the
+                                # correct contribution to this-run spend.
+                                "input_tokens": f.verification.input_tokens,
+                                "output_tokens": f.verification.output_tokens,
                                 # Chunk 6: surface retry telemetry so the
                                 # per-phase diagnostics rollup can answer
                                 # "which findings burned retries / hit
