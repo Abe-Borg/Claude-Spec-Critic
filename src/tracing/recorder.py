@@ -246,6 +246,15 @@ class TraceRecorder:
 
         Idempotent. Updates run.json with ``ended_at``. Logs (but does not
         raise) if the writer thread fails to drain within ``flush_timeout``.
+
+        ``ended_at`` marks the end of the *automated pipeline* (review →
+        verification → cross-check → finalize), which is where the GUI tears
+        the recorder down. Report export and edit application run afterward on
+        the UI thread — behind a file-save dialog and user-driven edit
+        selection — so they are intentionally NOT inside the trace window;
+        otherwise ``ended_at`` would absorb open-ended user think-time. A
+        ``run.json`` whose ``ended_at`` predates the on-disk report's mtime is
+        therefore expected, not a truncated trace.
         """
         if self._stopped.is_set():
             return

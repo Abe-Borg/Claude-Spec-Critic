@@ -955,6 +955,33 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
             if v in verdicts
         ]
         para.add_run(", ".join(verdict_parts))
+        # The UNVERIFIED *verdict* lumps locally-classified findings
+        # (resolved without a web search — placeholders, stale cycles, etc.)
+        # together with genuinely-unverifiable ones, so the raw count
+        # overstates "unverified". Break the bucket down by trust status,
+        # using the same labels as the Trust Model Summary below, so a reader
+        # doesn't see "N unverified" here and "M insufficient evidence" there
+        # and wonder which is real.
+        if verdicts.get("UNVERIFIED", 0) > 0:
+            unv_status_counts: dict = {}
+            for f in all_findings:
+                ver = getattr(f, "verification", None)
+                if ver and str(getattr(ver, "verdict", "") or "").upper() == "UNVERIFIED":
+                    st = classify_status(f)
+                    unv_status_counts[st] = unv_status_counts.get(st, 0) + 1
+            breakdown = [
+                f"{unv_status_counts[s]} {status_label(s).lower()}"
+                for s in STATUS_DISPLAY_ORDER
+                if unv_status_counts.get(s, 0) > 0
+            ]
+            if breakdown:
+                note = doc.add_paragraph()
+                note_run = note.add_run(
+                    "Of the unverified-verdict findings: " + ", ".join(breakdown) + "."
+                )
+                note_run.italic = True
+                note_run.font.size = Pt(9)
+                note_run.font.color.rgb = RGBColor(100, 100, 100)
 
 
 # ---------------------------------------------------------------------------
