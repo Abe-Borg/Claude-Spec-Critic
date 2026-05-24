@@ -84,7 +84,6 @@ from ..core.api_config import (
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
-    WEB_FETCH_BETA_HEADER,
     apply_effort_config,
     apply_thinking_config,
     batch_service_tier,
@@ -522,7 +521,7 @@ def build_verification_tools_from_decision(
     # :mod:`verifier` will depend on this module, so importing batch at
     # module load would form a cycle.
     from ..batch.batch import build_verification_tools_for_profile
-    from ..core.api_config import build_web_fetch_tool, web_fetch_enabled
+    from ..core.api_config import build_web_fetch_tool
     from ..review.structured_schemas import verification_verdict_tool
 
     tool_list = build_verification_tools_for_profile(
@@ -548,20 +547,15 @@ def build_verification_tools_from_decision(
     out: list[dict] = list(web_tool_list)
     # Chunk 11: attach web_fetch only for modes that benefit from a
     # deeper read. The mode set is small and closed; future modes that
-    # want fetch should be added here.
-    #
-    # Gated behind ``web_fetch_enabled()`` (default off): the
-    # ``web-fetch-2026-02-09`` beta is rejected with HTTP 400 by accounts
-    # that don't have it enabled, and an unrecognized ``anthropic-beta``
-    # value crashes the request rather than being ignored. Suppressing the
-    # tool here also suppresses the beta header downstream because
-    # ``build_verification_request`` attaches it by inspecting the tool list.
+    # want fetch should be added here. Web fetch is generally available and
+    # needs no beta header, so the tool is attached unconditionally for
+    # these modes.
     from .verification_modes import VerificationMode
     fetch_eligible_modes = {
         VerificationMode.STANDARD_REASONING,
         VerificationMode.DEEP_REASONING,
     }
-    if decision.mode in fetch_eligible_modes and web_fetch_enabled():
+    if decision.mode in fetch_eligible_modes:
         out.append(build_web_fetch_tool())
     if decision.include_verdict_tool:
         # If the profile builder produced a verdict tool, keep it; otherwise
@@ -698,17 +692,14 @@ def build_verification_request(
     # omits ``output_config`` for unsupported models).
     apply_effort_config(params, model=decision.model, phase=decision.cache_phase)
 
-    # Chunk 11 / Trust Upgrade: when the request includes the web_fetch
-    # tool (STANDARD_REASONING / DEEP_REASONING), attach the beta header.
-    # Returned separately from ``params`` because ``extra_headers`` is an
-    # SDK transport kwarg, not a Messages API field — embedding it inside
-    # the batch per-item ``params`` body triggers
-    # ``invalid_request_error: Extra inputs are not permitted``. Detection
-    # reads the tool list rather than the mode so a future mode that opts
-    # into fetch also gets the header automatically.
+    # Web fetch is generally available and needs no ``anthropic-beta``
+    # header, so verification requests attach none (sending the retired
+    # ``web-fetch-2026-02-09`` value is rejected with HTTP 400). ``extra_headers``
+    # remains the dedicated SDK transport seam — it is NOT a Messages API
+    # field, so the batch API rejects unknown keys inside per-item
+    # ``params`` — and is kept empty here so the real-time / batch paths
+    # that forward it stay unchanged.
     extra_headers: dict[str, str] = {}
-    if _tools_include_web_fetch(tools_payload):
-        extra_headers["anthropic-beta"] = WEB_FETCH_BETA_HEADER
 
     if include_service_tier:
         tier = batch_service_tier()
@@ -721,9 +712,9 @@ def build_verification_request(
 def _tools_include_web_fetch(tools: list[dict]) -> bool:
     """Return True iff the tool list contains the web_fetch server tool.
 
-    Walks the list so a caller that built tools through a different
-    helper still gets the beta-header treatment as long as the tool
-    type / name match the documented values.
+    A small pure predicate used to assert tool-list composition. Web fetch
+    is GA and needs no beta header, so the request builder no longer
+    consults this for transport headers.
     """
     for tool in tools or []:
         if not isinstance(tool, dict):
