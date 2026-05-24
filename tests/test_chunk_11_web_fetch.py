@@ -304,6 +304,13 @@ class TestToolListByMode:
     for STANDARD_REASONING and DEEP_REASONING, omits it for the cheaper
     modes."""
 
+    @pytest.fixture(autouse=True)
+    def _enable_web_fetch(self, monkeypatch):
+        # web_fetch is gated off by default (the beta header is rejected by
+        # accounts without the beta enabled). These tests exercise the
+        # "when enabled" tool-inclusion mechanics, so opt in explicitly.
+        monkeypatch.setenv("SPEC_CRITIC_ENABLE_WEB_FETCH", "1")
+
     def _decision_for_mode(self, mode: VerificationMode) -> Any:
         # Synthesize a finding whose routing lands on the target mode.
         # Severity + profile combinations: HIGH default → STANDARD,
@@ -382,6 +389,12 @@ class TestToolListByMode:
 
 
 class TestBetaHeader:
+    @pytest.fixture(autouse=True)
+    def _enable_web_fetch(self, monkeypatch):
+        # See TestToolListByMode — opt into the default-off feature so the
+        # beta-header attach path is exercised.
+        monkeypatch.setenv("SPEC_CRITIC_ENABLE_WEB_FETCH", "1")
+
     def test_standard_reasoning_request_has_beta_header(self):
         """Requests with web_fetch should carry the beta header so the
         SDK forwards it on streaming calls."""
@@ -419,6 +432,65 @@ class TestBetaHeader:
         )
         assert "anthropic-beta" not in request.extra_headers
         assert "extra_headers" not in request.params
+
+
+# ===========================================================================
+# 3b. Default-off gate (SPEC_CRITIC_ENABLE_WEB_FETCH)
+# ===========================================================================
+
+
+class TestWebFetchGate:
+    """web_fetch ships dormant: the tool — and therefore its beta header —
+    is only attached when ``SPEC_CRITIC_ENABLE_WEB_FETCH`` is truthy.
+
+    Regression guard for the 400 ``invalid_request_error`` the
+    ``web-fetch-2026-02-09`` beta triggers on accounts without the beta
+    enabled. The crash hit every verification run because STANDARD_REASONING
+    / DEEP_REASONING are the common modes, and an unrecognized
+    ``anthropic-beta`` value is rejected rather than ignored.
+    """
+
+    def _standard_decision(self) -> Any:
+        finding = _finding(severity="HIGH", code_ref="NFPA 13 §10")
+        decision = select_routing(finding, escalated=False, local_skip=False)
+        if decision.mode not in (
+            VerificationMode.STANDARD_REASONING,
+            VerificationMode.DEEP_REASONING,
+        ):
+            pytest.skip(f"Test requires fetch-eligible mode; got {decision.mode}")
+        return decision
+
+    def test_default_off_omits_web_fetch_tool(self, monkeypatch):
+        monkeypatch.delenv("SPEC_CRITIC_ENABLE_WEB_FETCH", raising=False)
+        decision = self._standard_decision()
+        tools = build_verification_tools_from_decision(decision)
+        assert not _tools_include_web_fetch(tools), (
+            f"web_fetch must be omitted when the flag is unset, got {tools}"
+        )
+
+    def test_default_off_omits_beta_header(self, monkeypatch):
+        monkeypatch.delenv("SPEC_CRITIC_ENABLE_WEB_FETCH", raising=False)
+        decision = self._standard_decision()
+        request = build_verification_request(
+            decision, prompt="user message", system_prompt="system message"
+        )
+        assert "anthropic-beta" not in request.extra_headers
+
+    def test_disable_token_omits_web_fetch_tool(self, monkeypatch):
+        monkeypatch.setenv("SPEC_CRITIC_ENABLE_WEB_FETCH", "0")
+        decision = self._standard_decision()
+        tools = build_verification_tools_from_decision(decision)
+        assert not _tools_include_web_fetch(tools)
+
+    def test_enabled_attaches_tool_and_header(self, monkeypatch):
+        monkeypatch.setenv("SPEC_CRITIC_ENABLE_WEB_FETCH", "1")
+        decision = self._standard_decision()
+        tools = build_verification_tools_from_decision(decision)
+        assert _tools_include_web_fetch(tools)
+        request = build_verification_request(
+            decision, prompt="user message", system_prompt="system message"
+        )
+        assert request.extra_headers.get("anthropic-beta") == WEB_FETCH_BETA_HEADER
 
 
 # ===========================================================================
