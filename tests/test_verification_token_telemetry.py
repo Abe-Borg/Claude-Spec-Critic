@@ -177,8 +177,3 @@ class TestEventPayloadCarriesTokens:
         source = Path("src/gui/batch_controller.py").read_text(encoding="utf-8")
         assert '"input_tokens": f.verification.input_tokens' in source
         assert '"output_tokens": f.verification.output_tokens' in source
-
-    def test_realtime_controller_verification_event_includes_tokens(self):
-        source = Path("src/gui/review_run_controller.py").read_text(encoding="utf-8")
-        assert '"input_tokens": v.input_tokens' in source
-        assert '"output_tokens": v.output_tokens' in source

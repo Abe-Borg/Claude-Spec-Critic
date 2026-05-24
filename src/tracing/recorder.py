@@ -10,7 +10,7 @@ Threading model:
     - The writer thread is the only thread that touches file handles.
     - An ``open_spans`` dict tracks active spans; a lock guards it because
       ``open_span`` / ``close_span`` are called concurrently from worker
-      threads (verify_findings uses a ThreadPoolExecutor).
+      threads (batch verification uses a ThreadPoolExecutor).
     - ``contextvars.ContextVar`` carries the active SpanHandle so worker
       tasks submitted via ``concurrent.futures`` inherit the parent's
       span without explicit plumbing.

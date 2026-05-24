@@ -177,8 +177,8 @@ def count_tokens_via_api(
     local estimate rather than blocking submission.
 
     Plan section 6.3: keep the local estimate for UI responsiveness, use this
-    helper before batch submission and real-time confirmation when exact
-    routing/guardrail decisions matter.
+    helper before batch submission when exact routing/guardrail decisions
+    matter.
     """
     if client is None:
         try:

@@ -204,7 +204,7 @@ def collect_batch_results(app) -> None:
             if diag:
                 # Chunk J: route through ``record_api_call`` so the per-
                 # phase rollup gets a consistent ``call_mode="batch"`` tag
-                # that distinguishes batch review from real-time review.
+                # for the review phase.
                 diag.record_api_call(
                     phase="batch_collect",
                     model=rv.model,
@@ -291,23 +291,18 @@ def collect_batch_results(app) -> None:
                                 "finding_severity": f.severity,
                                 "confidence": f.confidence,
                                 "explanation": f.verification.explanation or "",
-                                # Chunk I: keep the batch path's
-                                # event payload aligned with the
-                                # real-time path so diagnostics
-                                # totals come out the same shape
-                                # in either mode.
+                                # Chunk I: surface the routing decision
+                                # so the diagnostics summary can report
+                                # how many findings each mode handled.
                                 "verification_mode": f.verification.verification_mode,
                                 "verification_profile": f.verification.verification_profile,
                                 "grounded": f.verification.grounded,
                                 "cache_status": f.verification.cache_status,
                                 "escalated": f.verification.escalated,
-                                # Chunk D1.3: escalation telemetry. See
-                                # the matching block in
-                                # ``review_run_controller`` for the
-                                # rationale — keeping the batch and
-                                # real-time payloads aligned means the
-                                # diagnostics summary aggregates the
-                                # same shape in either mode.
+                                # Chunk D1.3: escalation telemetry —
+                                # whether a second pass ran and whether
+                                # it changed the verdict, so the summary
+                                # can report "did escalation pay off?".
                                 "escalation_attempted": f.verification.escalation_attempted,
                                 "initial_model": f.verification.initial_model,
                                 "initial_verdict": f.verification.initial_verdict,
@@ -368,9 +363,9 @@ def collect_batch_results(app) -> None:
                     diag.log("cross_check", "warning", "Cross-check skipped: missing resumable extracted specs")
             if diag and review_state.cross_check_result:
                 cc = review_state.cross_check_result
-                # Chunk J: cross-check after batch review is real-time
-                # (the cross-check pass always runs live regardless of
-                # the review path), so the call_mode reflects that.
+                # Chunk J: the cross-check pass always runs as a live
+                # (synchronous) call, so the call_mode reflects that
+                # rather than the batch review phase.
                 diag.record_api_call(
                     phase="cross_check",
                     model=cc.model,
