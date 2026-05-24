@@ -719,9 +719,10 @@ def build_web_fetch_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_FETCHES) ->
     """Build the web_fetch server-tool dict for a verification request.
 
     Tool type pinned to ``web_fetch_20260209`` per Anthropic's web-fetch
-    server-tool spec (requires the ``web-fetch-2026-02-09`` beta header at
-    the request level; the verification request path attaches the header
-    via the beta-list builder).
+    server-tool spec. Web fetch is generally available and needs no
+    ``anthropic-beta`` header — the tool dict alone enables it, and sending a
+    (retired) beta value such as ``web-fetch-2026-02-09`` is rejected with
+    HTTP 400 ``invalid_request_error``.
 
     The ``citations`` field is enabled so cited URLs land in the
     assistant message's source-grounding partition the same way web_search
@@ -741,41 +742,13 @@ def build_web_fetch_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_FETCHES) ->
     }
 
 
-# Beta header required for the web_fetch server tool. The verification
-# request builder attaches this header alongside any other betas the
-# request already carries (e.g. ``output-300k-2026-03-24`` is for batch
-# review only and doesn't conflict).
-WEB_FETCH_BETA_HEADER = "web-fetch-2026-02-09"
-
-
-# Tokens that mean "turn this default-off flag on" — mirrors the enable-token
-# set used by the other dormant-by-default flags in the codebase.
-_WEB_FETCH_ENABLE_TOKENS = frozenset({"1", "true", "yes", "on"})
-
-
-def web_fetch_enabled() -> bool:
-    """Whether the web_fetch server tool is attached to verification requests.
-
-    Default **off**. Chunk 11 shipped web_fetch on the assumption that the
-    ``web-fetch-2026-02-09`` beta header was "harmless when the API treats
-    web_fetch as generally available" — but an *unrecognized* ``anthropic-beta``
-    value is NOT silently ignored; the API rejects it with HTTP 400
-    ``invalid_request_error``. Until the beta is enabled on the account, any
-    verification request routed to a fetch-eligible mode (STANDARD_REASONING /
-    DEEP_REASONING) would carry the header and crash the whole run — which is
-    the common path, so the feature is gated off by default.
-
-    Set ``SPEC_CRITIC_ENABLE_WEB_FETCH=1`` (or ``true`` / ``yes`` / ``on``) to
-    re-enable it once the beta is available. When off, the tool is never
-    appended, so the beta header is never attached (the header-attach logic
-    keys off the tool list) and verification falls back to web_search only —
-    the pre-Chunk-11 behavior. All other Chunk 11 plumbing (telemetry fields,
-    report rendering, grounding-accepts-fetched) is unaffected.
-    """
-    raw = os.environ.get("SPEC_CRITIC_ENABLE_WEB_FETCH")
-    if raw is None:
-        return False
-    return raw.strip().lower() in _WEB_FETCH_ENABLE_TOKENS
+# Web fetch is generally available and takes NO ``anthropic-beta`` header —
+# the tool dict above is sufficient to enable it. The verification request
+# builder therefore attaches no beta header for web_fetch. Sending a retired
+# beta value such as ``web-fetch-2026-02-09`` is rejected by the API with
+# HTTP 400 ``invalid_request_error: Unexpected value(s) ... for the
+# anthropic-beta header`` — an unrecognized beta value is not silently
+# ignored, so it must not be sent at all.
 
 
 # ---------------------------------------------------------------------------
