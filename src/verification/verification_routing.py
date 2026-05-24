@@ -522,7 +522,7 @@ def build_verification_tools_from_decision(
     # :mod:`verifier` will depend on this module, so importing batch at
     # module load would form a cycle.
     from ..batch.batch import build_verification_tools_for_profile
-    from ..core.api_config import build_web_fetch_tool
+    from ..core.api_config import build_web_fetch_tool, web_fetch_enabled
     from ..review.structured_schemas import verification_verdict_tool
 
     tool_list = build_verification_tools_for_profile(
@@ -548,13 +548,20 @@ def build_verification_tools_from_decision(
     out: list[dict] = list(web_tool_list)
     # Chunk 11: attach web_fetch only for modes that benefit from a
     # deeper read. The mode set is small and closed; future modes that
-    # want fetch should be added here, not gated by a separate flag.
+    # want fetch should be added here.
+    #
+    # Gated behind ``web_fetch_enabled()`` (default off): the
+    # ``web-fetch-2026-02-09`` beta is rejected with HTTP 400 by accounts
+    # that don't have it enabled, and an unrecognized ``anthropic-beta``
+    # value crashes the request rather than being ignored. Suppressing the
+    # tool here also suppresses the beta header downstream because
+    # ``build_verification_request`` attaches it by inspecting the tool list.
     from .verification_modes import VerificationMode
     fetch_eligible_modes = {
         VerificationMode.STANDARD_REASONING,
         VerificationMode.DEEP_REASONING,
     }
-    if decision.mode in fetch_eligible_modes:
+    if decision.mode in fetch_eligible_modes and web_fetch_enabled():
         out.append(build_web_fetch_tool())
     if decision.include_verdict_tool:
         # If the profile builder produced a verdict tool, keep it; otherwise

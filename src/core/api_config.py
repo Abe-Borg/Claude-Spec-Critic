@@ -748,6 +748,36 @@ def build_web_fetch_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_FETCHES) ->
 WEB_FETCH_BETA_HEADER = "web-fetch-2026-02-09"
 
 
+# Tokens that mean "turn this default-off flag on" — mirrors the enable-token
+# set used by the other dormant-by-default flags in the codebase.
+_WEB_FETCH_ENABLE_TOKENS = frozenset({"1", "true", "yes", "on"})
+
+
+def web_fetch_enabled() -> bool:
+    """Whether the web_fetch server tool is attached to verification requests.
+
+    Default **off**. Chunk 11 shipped web_fetch on the assumption that the
+    ``web-fetch-2026-02-09`` beta header was "harmless when the API treats
+    web_fetch as generally available" — but an *unrecognized* ``anthropic-beta``
+    value is NOT silently ignored; the API rejects it with HTTP 400
+    ``invalid_request_error``. Until the beta is enabled on the account, any
+    verification request routed to a fetch-eligible mode (STANDARD_REASONING /
+    DEEP_REASONING) would carry the header and crash the whole run — which is
+    the common path, so the feature is gated off by default.
+
+    Set ``SPEC_CRITIC_ENABLE_WEB_FETCH=1`` (or ``true`` / ``yes`` / ``on``) to
+    re-enable it once the beta is available. When off, the tool is never
+    appended, so the beta header is never attached (the header-attach logic
+    keys off the tool list) and verification falls back to web_search only —
+    the pre-Chunk-11 behavior. All other Chunk 11 plumbing (telemetry fields,
+    report rendering, grounding-accepts-fetched) is unaffected.
+    """
+    raw = os.environ.get("SPEC_CRITIC_ENABLE_WEB_FETCH")
+    if raw is None:
+        return False
+    return raw.strip().lower() in _WEB_FETCH_ENABLE_TOKENS
+
+
 # ---------------------------------------------------------------------------
 # Cache-token usage extraction (for diagnostics)
 # ---------------------------------------------------------------------------
