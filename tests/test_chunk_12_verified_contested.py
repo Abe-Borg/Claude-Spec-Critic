@@ -381,10 +381,14 @@ class TestModelsDisagreedDetection:
     """
 
     def test_verify_finding_source_uses_strict_both_grounded_condition(self):
-        # The exact code path that sets ``models_disagreed`` is a few
-        # lines of pure-Python logic; assert it expresses the strict
-        # "both grounded AND verdicts differ" condition rather than the
-        # weaker "verdicts differ" alone.
+        # The merge logic that sets ``models_disagreed`` now lives in the
+        # shared ``_apply_escalation_outcome`` helper (reused by the
+        # real-time and batch escalation paths so they cannot drift).
+        # Assert (a) verify_finding still snapshots the initial grounded
+        # flag BEFORE the escalation call and passes it into the helper,
+        # and (b) the helper expresses the strict "both grounded AND
+        # verdicts differ" condition rather than the weaker "verdicts
+        # differ" alone.
         source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
         # The snapshot of the initial grounded flag must happen BEFORE
         # the escalated call (otherwise the swap below would clobber it).
@@ -394,17 +398,26 @@ class TestModelsDisagreedDetection:
             "escalation call so models_disagreed can reference the "
             "pre-swap grounded state."
         )
-        # The disagreement flag must combine the snapshot with the
-        # escalated result's grounded state AND a verdict difference.
-        models_disagreed_idx = source.find("result.models_disagreed = (")
-        assert models_disagreed_idx > snapshot_idx, (
-            "Expected `result.models_disagreed = (...)` AFTER the snapshot."
+        # verify_finding must hand the snapshot to the shared merge helper.
+        passes_idx = source.find("initial_grounded=initial_grounded_snapshot")
+        assert passes_idx > snapshot_idx, (
+            "Expected verify_finding to pass `initial_grounded="
+            "initial_grounded_snapshot` into `_apply_escalation_outcome` "
+            "AFTER taking the snapshot."
         )
-        # The assignment block must reference all three pieces.
+        # The helper is the single source of truth for the disagreement
+        # condition. Isolate its body and assert the strict three-part
+        # condition.
+        helper_idx = source.find("def _apply_escalation_outcome(")
+        assert helper_idx > 0, "Expected the shared _apply_escalation_outcome helper."
+        models_disagreed_idx = source.find("result.models_disagreed = (", helper_idx)
+        assert models_disagreed_idx > helper_idx, (
+            "Expected `result.models_disagreed = (...)` inside the helper."
+        )
         block = source[models_disagreed_idx : models_disagreed_idx + 400]
-        assert "initial_grounded_snapshot" in block
+        assert "initial_grounded" in block
         assert "esc_result.grounded" in block
-        assert "esc_result.verdict != initial_verdict_snapshot" in block
+        assert "esc_result.verdict != initial_verdict" in block
 
     def test_verify_finding_records_initial_sources_snapshot(self):
         source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
@@ -414,10 +427,19 @@ class TestModelsDisagreedDetection:
             "capture before the escalation call so initial_sources persists "
             "after the potential swap to esc_result."
         )
-        assignment_idx = source.find(
-            "result.initial_sources = initial_sources_snapshot"
+        # verify_finding hands the snapshot to the shared helper, which sets
+        # ``result.initial_sources`` unconditionally.
+        passes_idx = source.find("initial_sources=initial_sources_snapshot")
+        assert passes_idx > snapshot_idx, (
+            "Expected verify_finding to pass `initial_sources="
+            "initial_sources_snapshot` into `_apply_escalation_outcome` "
+            "after taking the snapshot."
         )
-        assert assignment_idx > snapshot_idx
+        helper_idx = source.find("def _apply_escalation_outcome(")
+        assert source.find("result.initial_sources = list(initial_sources)", helper_idx) > helper_idx, (
+            "Expected the helper to set result.initial_sources from the "
+            "passed-in snapshot."
+        )
 
 
 # ---------------------------------------------------------------------------

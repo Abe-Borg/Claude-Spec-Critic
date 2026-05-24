@@ -363,6 +363,11 @@ def run_review_thread(app, run_epoch: int) -> None:
                         "api_call": v.cache_status not in ("hit", "local_skip"),
                         "call_mode": "realtime",
                         "model": v.model_used,
+                        # Token usage so the per-phase diagnostics rollup
+                        # reports real verification spend. Cache-hit /
+                        # local-skip results carry 0 (no API call ran).
+                        "input_tokens": v.input_tokens,
+                        "output_tokens": v.output_tokens,
                         # Chunk 6: surface retry telemetry so the
                         # per-phase rollup can attribute findings by
                         # failure class / terminal reason.

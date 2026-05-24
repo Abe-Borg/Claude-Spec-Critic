@@ -548,6 +548,43 @@ class TestBannerRendersBudgetExhausted:
         assert "exhausted the verifier's web_search budget" in text
         assert "CRITICAL" in text and "GRIPES" in text
 
+    def test_recovery_hint_numbers_match_severity_budget(self):
+        # Regression guard: the hint used to hard-code "CRITICAL / HIGH
+        # receive 7 searches", but _SEVERITY_MAX_USES has CRITICAL=8. The
+        # numbers are now rendered from web_search_max_uses_for_severity so
+        # they can't drift. Assert each severity's number matches policy.
+        from src.core.api_config import (
+            _SEVERITY_MAX_USES,
+            web_search_max_uses_for_severity,
+        )
+
+        doc = Document()
+        summary = {
+            "auto_edit": 0,
+            "manual_edit": 1,
+            "report_only": 0,
+            "suppressed": 0,
+            "verification_failed": 0,
+            "cache_replay_count": 0,
+            "oldest_cache_age_days": None,
+            "demotion_count": 0,
+            "extraction_warning_count": 0,
+            "cross_check": None,
+            "budget_exhausted_count": 2,
+        }
+        _write_run_diagnostics_banner(doc, summary)
+        text = _all_text_from(doc)
+        for sev, expected in _SEVERITY_MAX_USES.items():
+            assert expected == web_search_max_uses_for_severity(sev)
+            assert f"{sev} {expected}" in text, (
+                f"Expected the hint to render '{sev} {expected}' from policy."
+            )
+        # CRITICAL is 8, not 7 — the old wrong text must be gone, and the
+        # dead-end "raise CRITICAL severity" framing replaced.
+        assert "CRITICAL 8" in text
+        assert "receive 7 searches" not in text
+        assert "CRITICAL findings already receive the maximum" in text
+
 
 # ---------------------------------------------------------------------------
 # 10. Verifier source inspection — the detection lives in the call site
