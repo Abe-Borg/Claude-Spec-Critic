@@ -1,20 +1,16 @@
 """Chunk 3 — central review request builder.
 
-Single source of truth for review API request construction. Real-time
-review (:mod:`src.reviewer`), batch review (:mod:`src.batch`), and the
-token preflight in :func:`src.pipeline._prepare_specs` all build their
-request kwargs through this module so the shape they count is the shape
-they send.
+Single source of truth for review API request construction. Batch
+review (:mod:`src.batch`) and the token preflight in
+:func:`src.pipeline._prepare_specs` build their request kwargs through
+this module so the shape they count is the shape they send.
 
 Why this exists
 ---------------
 
-Before Chunk 3, three places independently constructed review request
-shapes:
-
-* ``reviewer._stream_review`` (real-time streaming);
-* ``batch.submit_review_batch`` (batch submission);
-* ``pipeline._prepare_specs`` (exact-count preflight).
+Before Chunk 3, review request shapes were constructed independently by
+``batch.submit_review_batch`` (batch submission) and
+``pipeline._prepare_specs`` (exact-count preflight).
 
 The preflight in particular only counted ``system + project_context +
 spec_content`` and did NOT include the ``<pre_detected>`` alert block
@@ -81,7 +77,7 @@ class ReviewRequestSpec:
     from this record so the path that counts a request and the path that
     sends a request cannot fall out of sync.
 
-    ``batch`` selects between real-time and batch shape (cache phase,
+    ``batch`` selects the batch vs. non-batch request shape (cache phase,
     service tier, extended-output gating). ``force_allow_extended_output``
     is an escape hatch for tests; production callers leave it ``None``
     and let the builder decide.
@@ -104,8 +100,7 @@ class ReviewRequestSpec:
 class BuiltReviewRequest:
     """Final request payload + the raw inputs used to materialize it.
 
-    ``params`` is the kwargs dict that gets passed to
-    ``client.messages.stream`` (real-time) or appended into
+    ``params`` is the kwargs dict appended into
     ``messages.batches.create(requests=[...])`` (batch). The raw prompt
     / user message / tools list are surfaced so preflight, diagnostics,
     and tests can recover the same shape without re-running the builder.
@@ -151,12 +146,11 @@ def _resolve_extended_output(
 ) -> bool:
     """Decide whether the 300k batch-output beta applies to this request.
 
-    Real-time never gets the beta (Anthropic does not honor the header
-    on streaming requests). For batch, the decision combines model
-    capability with the local cl100k_base count of the actual request
-    shape — small batches stay on the 128k cap, large batches lift to
-    300k. Reading the capability from the central registry lets Sonnet
-    4.6 use the path correctly (Chunk 1).
+    Non-batch requests never get the beta. For batch, the decision
+    combines model capability with the local cl100k_base count of the
+    actual request shape — small batches stay on the 128k cap, large
+    batches lift to 300k. Reading the capability from the central
+    registry lets Sonnet 4.6 use the path correctly (Chunk 1).
     """
     if not spec.batch:
         return False
@@ -179,11 +173,9 @@ def _build_params_from_strings(
 ) -> tuple[dict[str, Any], Optional[list[dict]]]:
     """Build review request kwargs from already-materialized prompts.
 
-    Inner helper used by both :func:`build_review_request` (production
-    pipeline path) and :func:`build_realtime_review_kwargs` (raw-prompt
-    entry point for tests / the legacy ``_stream_review`` signature).
-    Centralizing here is what makes "batch and real-time cannot drift"
-    a structural invariant rather than a code-review hope.
+    Inner helper used by :func:`build_review_request`. Centralizing the
+    request-shape construction here keeps the path that counts a request
+    and the path that sends it from drifting.
     """
     phase = PHASE_BATCH_REVIEW if batch else PHASE_REVIEW
     system_payload = system_prompt_with_cache(system_prompt, phase=phase)
@@ -261,32 +253,6 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
         batch=spec.batch,
         allow_extended_output=allow_extended,
     )
-
-
-def build_realtime_review_kwargs(
-    *,
-    system_prompt: str,
-    user_message: str,
-    model: str,
-) -> dict[str, Any]:
-    """Build real-time review kwargs from raw prompt strings.
-
-    Used by :func:`src.reviewer._stream_review` so the streaming path
-    routes through the same shape-building code as the production
-    :func:`src.reviewer.review_single_spec` (which constructs a
-    :class:`ReviewRequestSpec` and calls :func:`build_review_request`).
-    Tests that need to inject custom prompts without going through
-    :mod:`src.prompts` use this entry point.
-    """
-    params, _ = _build_params_from_strings(
-        system_prompt=system_prompt,
-        user_message=user_message,
-        model=model,
-        batch=False,
-        allow_extended_output=False,
-        include_service_tier=False,
-    )
-    return params
 
 
 def build_token_count_request(

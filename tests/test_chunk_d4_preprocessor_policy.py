@@ -15,8 +15,7 @@ Two independent chunks land in this file because they share the same module
     4. toggleable via ``SPEC_CRITIC_PRE_DETECTED_ALERTS=0``;
     5. filtered by filename so a multi-spec project never leaks one spec's
        alerts into another spec's prompt;
-    6. wired through both the real-time path (``review_single_spec``) and
-       the batch path (``submit_review_batch``).
+    6. wired through the batch path (``submit_review_batch``).
 
 * **Chunk D4.2** — add context-aware suppression for the stale-code-cycle
   detector so obvious negated / historical phrasings ("previously per the

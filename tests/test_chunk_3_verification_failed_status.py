@@ -441,31 +441,6 @@ class TestCacheRejectsFailedResults:
 # ---------------------------------------------------------------------------
 
 
-class TestPipelineCatchAllMarksFailed:
-    """The plan section 3b calls out the pipeline.py catch-all that
-    produces "Verification unavailable: {e}" — that path must set
-    verification_failed=True so the resulting findings render under
-    VERIFICATION_FAILED rather than INSUFFICIENT_EVIDENCE.
-
-    We don't need to drive the full pipeline (it requires a real spec
-    file). Instead we read the source and assert the catch-all path
-    contains the new flag. This catches a future refactor that
-    accidentally drops the flag.
-    """
-
-    def test_pipeline_catch_all_sets_failed(self):
-        source = Path("src/orchestration/pipeline.py").read_text(encoding="utf-8")
-        # The two "Verification unavailable:" call sites must both
-        # carry verification_failed=True. Use a substring count check
-        # so any future site has to come with the flag too.
-        unavailable_lines = source.count("Verification unavailable:")
-        failed_flags = source.count("verification_failed=True")
-        # At least 2 sites in pipeline.py, possibly more across the
-        # codebase — checking >= ensures all unavailable paths flag.
-        assert unavailable_lines == 2
-        assert failed_flags >= unavailable_lines
-
-
 # ---------------------------------------------------------------------------
 # 8. Verifier exception paths mark verification_failed
 # ---------------------------------------------------------------------------
@@ -502,20 +477,6 @@ class TestVerifierExceptionPathsMarkFailed:
         failed_true_calls = exception_section.count("failed=True")
         assert make_unverified_calls >= 5
         assert failed_true_calls >= make_unverified_calls
-
-    def test_verify_findings_thread_crash_marks_failed(self):
-        # The thread-pool catch in verify_findings (the one that
-        # produces "Verification crashed: {e}") must also mark
-        # verification_failed=True so a worker-thread crash surfaces
-        # under VERIFICATION_FAILED.
-        source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
-        crash_index = source.find("Verification crashed:")
-        assert crash_index >= 0
-        # Find the nearest VerificationResult construction after the
-        # crash message — verify it carries verification_failed=True.
-        # The trailing slice covers ~ a few hundred chars of context.
-        nearby = source[crash_index : crash_index + 500]
-        assert "verification_failed=True" in nearby
 
     def test_real_time_fallback_crash_marks_failed(self):
         source = Path("src/verification/verifier.py").read_text(encoding="utf-8")

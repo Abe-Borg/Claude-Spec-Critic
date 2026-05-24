@@ -87,8 +87,7 @@ def show_about_dialog(parent) -> None:
             "The Review Mode selector controls scope: Strict (evidence-backed contradictions "
             "and code-cycle issues only), Comprehensive (adds AEC constructability and "
             "coordination), or Safe edit (only findings that can be expressed as a precise "
-            "auto-applicable edit). Real-time and batch use identical prompts, models, "
-            "and output caps — findings should be equivalent across modes."
+            "auto-applicable edit)."
         )),
         ("4.  Deduplication", (
             "When the same issue appears across multiple specs — like an outdated "
@@ -208,13 +207,9 @@ def show_usage_dialog(parent) -> None:
             "API call and helps Claude produce more relevant findings. "
             "Click Expand for a larger editing area."
         )),
-        ("4.  Choose Your Mode", (
-            "Real-time mode processes the review immediately in the current "
-            "session — faster turnaround but higher cost. Batch mode queues all specs for processing at 50% "
-            f"cost savings, with results {_BATCH_TIMING_COPY}. "
-            "Both modes use identical prompts, models, output caps, and review "
-            "logic — findings should be equivalent; only the API dispatch path "
-            "differs. For more than a few specs, batch mode is strongly recommended."
+        ("4.  Batch Processing", (
+            "All specs are queued and processed through the Batch API on Claude "
+            f"Opus 4.7 at 50% cost savings, with results {_BATCH_TIMING_COPY}."
         )),
         ("5.  Choose Review Mode", (
             "Strict reports only evidence-backed contradictions, code-cycle "
@@ -242,8 +237,8 @@ def show_usage_dialog(parent) -> None:
             "Source files are never overwritten."
         )),
         ("8.  Run the Review", (
-            "Click Run Review (real-time) or Submit Batch (batch mode). "
-            "The activity log shows progress. In batch mode, you can close "
+            "Click Submit Batch. "
+            "The activity log shows progress. You can close "
             "the app and reopen it later — the pending batch state is saved "
             "and you will be prompted to resume."
         )),

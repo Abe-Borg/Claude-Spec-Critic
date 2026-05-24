@@ -1,12 +1,10 @@
-"""Real-time review orchestration plus shared run-lifecycle helpers.
+"""Batch run orchestration plus shared run-lifecycle helpers.
 
 This module owns:
 
 - input validation
 - the run-epoch staleness guard
-- the real-time cost-confirmation dialog
-- the real-time worker thread (``run_review_thread``)
-- the completion / error handlers (used by both real-time and batch)
+- the completion / error handlers
 - ``reset_ui`` which clears in-flight state after a run
 
 Batch submission/polling lives in ``batch_controller`` and uses these
@@ -18,13 +16,9 @@ import os
 import threading
 from tkinter import messagebox
 
-import customtkinter as ctk
-
-from ..core.api_config import review_max_tokens as _review_max_tokens
 from ..batch.batch_state_store import delete_batch_state
-from ..core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
+from ..core.code_cycles import DEFAULT_CYCLE
 from ..orchestration.diagnostics import DiagnosticsReport
-from ..orchestration.pipeline import run_review
 from ..review.reviewer import MODEL_OPUS_47
 from ..core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
 from ..tracing.session import (
@@ -32,7 +26,6 @@ from ..tracing.session import (
     start_run_recorder,
     stop_run_recorder as _stop_recorder,
 )
-from .widgets import COLORS
 
 
 def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list):
@@ -41,10 +34,6 @@ def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: st
     return start_run_recorder(
         run_id=run_id, mode=mode, model=model, cycle_label=cycle_label, files=files
     )
-
-_UI_FONT_SIZE = 12
-_BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
-_MODE_BATCH = "Batch (SLOW: Cheap!)"
 
 
 def validate_inputs(app) -> bool:
@@ -91,96 +80,6 @@ def dispatch_if_current(app, epoch: int, fn) -> None:
     app.after(0, lambda: fn() if app._run_epoch == epoch else None)
 
 
-def confirm_realtime_cost(app, num_specs: int) -> bool:
-    """Show a confirmation dialog warning about real-time mode costs.
-
-    Returns True if the user confirms, False if they cancel. Blocks via
-    ``wait_window`` until the dialog is closed.
-    """
-    app._realtime_confirmed = False
-
-    dialog = ctk.CTkToplevel(app)
-    dialog.title("Real-Time Mode — Cost Warning")
-    dialog.geometry("520x340")
-    dialog.configure(fg_color=COLORS["bg_dark"])
-    dialog.resizable(False, False)
-    dialog.transient(app)
-    dialog.grab_set()
-    dialog.lift()
-    dialog.focus_force()
-
-    inner = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
-    inner.pack(fill="both", expand=True, padx=16, pady=16)
-
-    ctk.CTkLabel(
-        inner, text="⚠  Real-Time Mode Cost Warning",
-        font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
-        text_color=COLORS["warning"],
-    ).pack(anchor="w", padx=16, pady=(16, 8))
-
-    warning_text = (
-        f"You are about to run a real-time review of {num_specs} spec{'s' if num_specs != 1 else ''} "
-        f"using Claude Opus 4.7.\n\n"
-        f"Real-time mode uses full-price API calls for every stage: "
-        f"per-spec review, verification (one call per finding), and "
-        f"cross-spec coordination (if enabled). Depending on the number "
-        f"of specs and findings, this can cost anywhere from dozens to "
-        f"hundreds to thousands of dollars.\n\n"
-    )
-
-    if num_specs > 5:
-        warning_text += (
-            f"⚠  You have {num_specs} specs selected. For more than 5 specs, "
-            f"batch mode is strongly recommended — identical prompts, models, "
-            f"and review logic at 50% lower pricing. Findings should be equivalent."
-        )
-    else:
-        warning_text += (
-            f"Batch mode uses the same prompts, models, and review logic at 50% "
-            f"lower pricing — findings should be equivalent. "
-            f"({_BATCH_TIMING_COPY} instead of immediate in-session processing.)"
-        )
-
-    ctk.CTkLabel(
-        inner, text=warning_text,
-        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-        text_color=COLORS["text_secondary"],
-        wraplength=460, justify="left",
-    ).pack(anchor="w", padx=16, pady=(0, 16))
-
-    btn_frame = ctk.CTkFrame(inner, fg_color="transparent")
-    btn_frame.pack(fill="x", padx=16, pady=(0, 16))
-    btn_kw = {
-        "height": 36,
-        "font": ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE, weight="bold"),
-        "corner_radius": 6,
-    }
-
-    def _confirm():
-        app._realtime_confirmed = True
-        dialog.destroy()
-
-    def _cancel():
-        app._realtime_confirmed = False
-        dialog.destroy()
-
-    ctk.CTkButton(
-        btn_frame, text="Switch to Batch Mode", width=180,
-        fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
-        command=_cancel, **btn_kw,
-    ).pack(side="left", padx=(0, 8))
-
-    ctk.CTkButton(
-        btn_frame, text="Proceed (Real-Time)", width=160,
-        fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
-        border_width=1, border_color=COLORS["warning"],
-        text_color=COLORS["warning"], command=_confirm, **btn_kw,
-    ).pack(side="left")
-
-    dialog.wait_window()
-    return app._realtime_confirmed
-
-
 def start_review(app) -> None:
     if app.is_processing:
         return
@@ -189,14 +88,6 @@ def start_review(app) -> None:
 
     selected_files = app.file_list_panel.get_selected_files()
     num_specs = len(selected_files)
-
-    if not app._is_batch_mode:
-        confirmed = confirm_realtime_cost(app, num_specs)
-        if not confirmed:
-            app.mode_selector.set(_MODE_BATCH)
-            app._on_mode_change(_MODE_BATCH)
-            app.log.log("Switched to batch mode.", level="info")
-            return
 
     app._selected_files_for_review = selected_files
     app._project_context_for_review = app._get_project_context()
@@ -210,9 +101,8 @@ def start_review(app) -> None:
     app.progress_bar.configure(mode="determinate")
     os.environ["ANTHROPIC_API_KEY"] = app.api_key_entry.get().strip()
 
-    mode = "batch" if app._is_batch_mode else "real-time"
     app._diagnostics_report = DiagnosticsReport(
-        mode=mode,
+        mode="batch",
         model=MODEL_OPUS_47,
         cycle_label=app._selected_cycle_label,
         files_selected=[p.name for p in selected_files],
@@ -221,194 +111,13 @@ def start_review(app) -> None:
     )
     app._diagnostics_report.log(
         "init", "info",
-        f"Run started: {mode} mode, {num_specs} files, cycle {app._selected_cycle_label}",
+        f"Run started: batch mode, {num_specs} files, cycle {app._selected_cycle_label}",
     )
     app.diagnostics_button.configure(state="disabled")
 
-    n = num_specs
-    if app._is_batch_mode:
-        app.log.log_step(f"Submitting {n} files for batch review (Opus 4.7)...")
-        run_epoch = app._next_run_epoch()
-        threading.Thread(target=app._submit_batch_thread, args=(run_epoch,), daemon=True).start()
-    else:
-        app.log.log_step(f"Reviewing {n} files (Opus 4.7)...")
-        run_epoch = app._next_run_epoch()
-        threading.Thread(target=app._run_review_thread, args=(run_epoch,), daemon=True).start()
-
-
-def run_review_thread(app, run_epoch: int) -> None:
-    diag = app._diagnostics_report
-    # Start the agent-trace recorder (gated on SPEC_CRITIC_TRACE) so the
-    # entire real-time review run lands in one trace directory keyed by
-    # the diagnostics run_id. The pipeline / reviewer / verifier capture
-    # hooks no-op when this returns None.
-    trace_recorder = _maybe_start_recorder(
-        run_id=diag.run_id if diag is not None else "no_run_id",
-        mode="realtime",
-        model=MODEL_OPUS_47,
-        cycle_label=app._selected_cycle_label,
-        files=app._selected_files_for_review,
-    )
-    try:
-        n = len(app._selected_files_for_review)
-        app._dispatch_if_current(run_epoch, lambda: app.log.log_step("Starting per-spec review..."))
-        cross_check_note = " + cross-check" if app._cross_check_for_review else ""
-        mode_info = f"Model: Opus 4.7  •  {n} specs •  1 API call per spec  •  verification enabled{cross_check_note}"
-        app._dispatch_if_current(run_epoch, lambda: app.log.log(mode_info, level="muted"))
-        if diag:
-            diag.log("review", "step", f"Starting real-time review of {n} specs")
-
-        review_log = app._make_diag_log("review", run_epoch)
-        review_progress = app._make_diag_progress("review", run_epoch)
-        result = run_review(
-            input_dir=app.input_dir,
-            files=app._selected_files_for_review,
-            project_context=app._project_context_for_review,
-            model=MODEL_OPUS_47,
-            verify=True,
-            cross_check=app._cross_check_for_review,
-            dry_run=False, verbose=False,
-            cycle=AVAILABLE_CYCLES.get(app._selected_cycle_label, DEFAULT_CYCLE),
-            log=review_log,
-            progress=review_progress,
-        )
-        if diag and result.review_result:
-            rv = result.review_result
-            review_cap = _review_max_tokens(batch=False, model=rv.model)
-            # Chunk J: route through ``record_api_call`` so the per-phase
-            # rollup in ``DiagnosticsReport.summary`` picks up consistent
-            # call_mode / retry_status / model fields.
-            diag.record_api_call(
-                phase="review",
-                model=rv.model,
-                level="success",
-                message="Review completed",
-                input_tokens=rv.input_tokens,
-                output_tokens=rv.output_tokens,
-                cache_creation_input_tokens=rv.cache_creation_input_tokens,
-                cache_read_input_tokens=rv.cache_read_input_tokens,
-                max_output_tokens=review_cap,
-                stop_reason=rv.stop_reason,
-                mode="realtime",
-                retry_status="initial",
-                structured_payload=rv.structured_payload,
-                extra={
-                    "elapsed_seconds": round(rv.elapsed_seconds, 2),
-                    "parse_status": rv.parse_status,
-                    "severity_counts": {
-                        "CRITICAL": rv.critical_count,
-                        "HIGH": rv.high_count,
-                        "MEDIUM": rv.medium_count,
-                        "GRIPES": rv.gripe_count,
-                    },
-                    "total_findings": rv.total_count,
-                },
-            )
-
-            if rv.error:
-                diag.log("review", "error", f"Review error: {rv.error}")
-                diag.log("review", "warning", "One or more specs failed during review — see report for details.")
-
-            if result.cross_check_result:
-                cc = result.cross_check_result
-                diag.record_api_call(
-                    phase="cross_check",
-                    model=cc.model,
-                    message=f"Cross-check: {cc.cross_check_status}",
-                    input_tokens=cc.input_tokens,
-                    output_tokens=cc.output_tokens,
-                    cache_creation_input_tokens=cc.cache_creation_input_tokens,
-                    cache_read_input_tokens=cc.cache_read_input_tokens,
-                    stop_reason=cc.stop_reason,
-                    mode="realtime",
-                    retry_status="initial",
-                    structured_payload=cc.structured_payload,
-                    extra={"finding_count": len(cc.findings)},
-                )
-            for f in rv.findings:
-                if f.verification:
-                    v = f.verification
-                    event_data = {
-                        "verdict": v.verdict,
-                        "finding_severity": f.severity,
-                        "confidence": f.confidence,
-                        "explanation": v.explanation or "",
-                        "grounded": v.grounded,
-                        "model_used": v.model_used,
-                        "escalated": v.escalated,
-                        "cache_status": v.cache_status,
-                        "web_search_requests": v.web_search_requests,
-                        "successful_source_count": v.successful_source_count,
-                        "search_error_count": v.search_error_count,
-                        # Chunk I: surface the routing decision in
-                        # diagnostics so a run summary can show how
-                        # many findings each mode handled.
-                        "verification_mode": v.verification_mode,
-                        "verification_profile": v.verification_profile,
-                        # Chunk D1.3: escalation telemetry. ``escalation_attempted``
-                        # is True whenever a second pass ran (regardless of
-                        # whether it changed the verdict); the remaining
-                        # fields let the summary report "did escalation
-                        # actually pay off?".
-                        "escalation_attempted": v.escalation_attempted,
-                        "initial_model": v.initial_model,
-                        "initial_verdict": v.initial_verdict,
-                        "escalation_changed_verdict": v.escalation_changed_verdict,
-                        "escalation_reason": v.escalation_reason,
-                        # Chunk J: ``api_call`` flag tells the per-phase
-                        # rollup whether to count this verification toward
-                        # the verification phase's call count. Cache hits
-                        # and local skips are already attributed to the
-                        # initial wave's API call.
-                        "api_call": v.cache_status not in ("hit", "local_skip"),
-                        "call_mode": "realtime",
-                        "model": v.model_used,
-                        # Token usage so the per-phase diagnostics rollup
-                        # reports real verification spend. Cache-hit /
-                        # local-skip results carry 0 (no API call ran).
-                        "input_tokens": v.input_tokens,
-                        "output_tokens": v.output_tokens,
-                        # Chunk 6: surface retry telemetry so the
-                        # per-phase rollup can attribute findings by
-                        # failure class / terminal reason.
-                        "retry_telemetry": v.retry_telemetry,
-                    }
-                    if v.sources:
-                        event_data["sources"] = v.sources[:3]
-                    if v.correction:
-                        event_data["correction"] = v.correction
-                    # Chunk 2: preserve the parsed verdict-tool payload in
-                    # diagnostics so structured-output debugging does not
-                    # have to rely on regenerating the call.
-                    from ..orchestration.diagnostics import bound_structured_payload
-                    bounded_payload = bound_structured_payload(v.structured_payload)
-                    if bounded_payload is not None:
-                        event_data["structured_payload"] = bounded_payload
-                    diag.log("verification", "info", f"Verified: {f.fileName} — {v.verdict}", event_data)
-            unverified = [f for f in rv.findings if f.verification and f.verification.verdict == "UNVERIFIED"]
-            if unverified:
-                failure_reasons = list(set(
-                    (f.verification.explanation or "No explanation provided")
-                    for f in unverified
-                ))
-                diag.log(
-                    "verification", "warning",
-                    f"{len(unverified)}/{len(rv.findings)} findings UNVERIFIED",
-                    {"failure_reasons": failure_reasons},
-                )
-            if result.leed_alerts:
-                diag.log("preprocessing", "warning", f"LEED alerts: {len(result.leed_alerts)}")
-            if result.placeholder_alerts:
-                diag.log("preprocessing", "warning", f"Placeholder alerts: {len(result.placeholder_alerts)}")
-        app._dispatch_if_current(run_epoch, lambda: app._on_review_complete(result))
-    except Exception as e:
-        import traceback
-        err = f"{e}\n{traceback.format_exc()}"
-        if diag:
-            diag.log("review", "error", f"Review failed: {e}", {"traceback": traceback.format_exc()})
-        app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
-    finally:
-        _stop_recorder(trace_recorder)
+    app.log.log_step(f"Submitting {num_specs} files for batch review (Opus 4.7)...")
+    run_epoch = app._next_run_epoch()
+    threading.Thread(target=app._submit_batch_thread, args=(run_epoch,), daemon=True).start()
 
 
 def on_review_complete(app, result) -> None:
@@ -463,8 +172,7 @@ def on_review_error(app, err) -> None:
 
 def reset_ui(app) -> None:
     app.run_button.set_ready()
-    if app._is_batch_mode:
-        app.run_button.configure(text="Submit Batch")
+    app.run_button.configure(text="Submit Batch")
     app.progress_bar.pack_forget()
     app.is_processing = False
     app._batch_submission = None

@@ -428,7 +428,7 @@ def populate_locator_evidence(
     Target Evidence" panel (match method, confidence, safety category,
     element id) without re-running the locator inside the exporter.
     Called once after the review/verification phases land (in
-    :func:`pipeline.finalize_batch_result` and :func:`pipeline.run_review`)
+    :func:`pipeline.finalize_batch_result`)
     so the first-time report — exported before
     :func:`execute_edit_plan` ever runs — has the data, and again from
     :func:`execute_edit_plan` itself so a resumed run that hits apply

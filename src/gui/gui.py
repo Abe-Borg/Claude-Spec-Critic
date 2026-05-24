@@ -7,7 +7,7 @@ delegates all workflow concerns to focused controller modules:
 - ``about_usage_dialogs`` — static informational dialogs
 - ``file_selection_controller`` / ``context_controller`` /
   ``token_analysis_controller`` — input handling
-- ``review_run_controller`` — real-time review orchestration + shared
+- ``review_run_controller`` — run orchestration + shared
   run-lifecycle helpers
 - ``batch_controller`` — batch submission, polling, collection, resume
 - ``report_controller`` — report export and the report window
@@ -115,13 +115,11 @@ from src.gui.file_selection_controller import (
 )
 from src.gui.report_controller import export_report_to_file
 from src.gui.review_run_controller import (
-    confirm_realtime_cost,
     dispatch_if_current,
     next_run_epoch,
     on_review_complete,
     on_review_error,
     reset_ui,
-    run_review_thread,
     start_review as _start_review,
     validate_inputs,
 )
@@ -132,11 +130,6 @@ from src.gui.token_analysis_controller import (
 )
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
-
-# Mode selector labels
-_MODE_REALTIME = "Real-time (FAST: Expensive!)"
-_MODE_BATCH = "Batch (SLOW: Cheap!)"
-_BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
 
 _FONT_SCALE_OPTIONS = {
     "Default (100%)": 1.0,
@@ -184,7 +177,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self._last_result = None
         self._diagnostics_report: Optional[DiagnosticsReport] = None
         self._diagnostics_window: Optional[DiagnosticsWindow] = None
-        self._realtime_confirmed: bool = False
         self._context_debounce_id: str | None = None
         # Chunk D2.2: debounce timer id for the exact-token-count refresh.
         # Tracked here so rapid file-list churn cancels the prior timer
@@ -245,7 +237,7 @@ class SpecReviewApp(_CTkDnDRoot):
         self.file_list_panel = FileListPanel(c, on_selection_change=self._on_file_selection_change, pack_after=self.inputs_card)
         self.token_gauge = TokenGauge(c, max_tokens=RECOMMENDED_MAX)
         self.token_gauge.pack(fill="x", pady=(16, 0))
-        self.run_button = AnimatedButton(c, text="Run Review", command=self.start_review)
+        self.run_button = AnimatedButton(c, text="Submit Batch", command=self.start_review)
         self.run_button.pack(fill="x", pady=(16, 0))
         self.progress_bar = ctk.CTkProgressBar(c, height=4, corner_radius=2, fg_color=COLORS["bg_input"], progress_color=COLORS["accent"], indeterminate_speed=0.5)
         self.progress_bar.set(0)
@@ -324,28 +316,10 @@ class SpecReviewApp(_CTkDnDRoot):
         )
         self.context_token_label.grid(row=1, column=0, sticky="e", pady=(4, 0))
 
-        # --- Row 3: Review Mode ---
-        ctk.CTkLabel(self.inputs_content, text="Mode", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
-        mode_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        mode_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
-        self.mode_selector = ctk.CTkSegmentedButton(
-            mode_frame, values=[_MODE_REALTIME, _MODE_BATCH],
-            command=self._on_mode_change, font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
-            selected_color=COLORS["accent"], selected_hover_color=COLORS["accent_hover"],
-            unselected_color=COLORS["bg_input"], unselected_hover_color=COLORS["border"],
-            fg_color=COLORS["bg_input"], text_color=COLORS["text_primary"],
-            text_color_disabled=COLORS["text_muted"], height=32,
-        )
-        self.mode_selector.set(_MODE_REALTIME)
-        self.mode_selector.pack(side="left")
-        self._mode_hint = ctk.CTkLabel(mode_frame, text="",
-            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
-        self._mode_hint.pack(side="left", padx=(12, 0))
-
-        # --- Row 4: Options ---
-        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
+        # --- Row 3: Options ---
+        ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
         options_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        options_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
+        options_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
         self._cross_check_var = ctk.BooleanVar(value=False)
         self._cross_check_cb = ctk.CTkCheckBox(
             options_frame, text="Cross-spec coordination check", variable=self._cross_check_var,
@@ -360,10 +334,10 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 5: Agent tracing ---
-        ctk.CTkLabel(self.inputs_content, text="Tracing", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
+        # --- Row 4: Agent tracing ---
+        ctk.CTkLabel(self.inputs_content, text="Tracing", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
         tracing_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        tracing_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
+        tracing_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
         self._trace_var = ctk.BooleanVar(value=True)
         self._trace_cb = ctk.CTkCheckBox(
             tracing_frame, text="Record agent trace", variable=self._trace_var,
@@ -493,19 +467,6 @@ class SpecReviewApp(_CTkDnDRoot):
     def _open_context_modal(self):
         open_context_modal(self)
 
-    def _on_mode_change(self, value: str):
-        if value == _MODE_BATCH:
-            self._mode_hint.configure(text=f"Queued processing \u2022 {_BATCH_TIMING_COPY}")
-            self.run_button.configure(text="Submit Batch")
-        else:
-            self._mode_hint.configure(text="")
-            self.run_button.configure(text="Run Review")
-
-    @property
-
-    def _is_batch_mode(self) -> bool:
-        return self.mode_selector.get() == _MODE_BATCH
-
     def _toggle_inputs_card(self, event=None):
         if self._inputs_expanded:
             self.inputs_content.pack_forget(); self.inputs_expand_label.configure(text="\u25b6"); self._inputs_expanded = False
@@ -564,9 +525,6 @@ class SpecReviewApp(_CTkDnDRoot):
     def _dispatch_if_current(self, epoch: int, fn):
         dispatch_if_current(self, epoch, fn)
 
-    def _confirm_realtime_cost(self, num_specs: int) -> bool:
-        return confirm_realtime_cost(self, num_specs)
-
     def start_review(self):
         _start_review(self)
 
@@ -578,9 +536,6 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _finalize_diagnostics(self, phase: str, level: str, message: str) -> None:
         finalize_diagnostics(self, phase, level, message)
-
-    def _run_review_thread(self, run_epoch: int):
-        run_review_thread(self, run_epoch)
 
     def _on_review_complete(self, result):
         on_review_complete(self, result)

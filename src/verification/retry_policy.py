@@ -2,7 +2,7 @@
 
 Before this module, retry behavior lived in five separate manual loops:
 
-* ``reviewer._stream_review`` — streaming review (max_retries=3) with
+* the reviewer's streaming-review loop (max_retries=3) with
   ad-hoc per-exception backoff, plus a string-matching fallback for
   generic connection errors.
 * ``cross_checker.run_cross_check`` — same shape as the reviewer loop,

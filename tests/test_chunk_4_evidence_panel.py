@@ -18,7 +18,7 @@ Evidence" Heading 4 containing:
 - Element id (when present)
 
 The locator-evidence dict is populated during
-``pipeline.finalize_batch_result`` / ``pipeline.run_review`` AND again
+``pipeline.finalize_batch_result`` AND again
 during ``apply_edits.execute_edit_plan`` so first-time exports and
 resumed apply runs both have the data. It round-trips through resume
 state for resume-after-apply workflows.

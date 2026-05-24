@@ -102,17 +102,12 @@ def _routing_decision_to_dict(decision: VerificationRoutingDecision | None) -> d
 # request shape so model routing can change it per call.
 VERIFICATION_MAX_TOKENS = verification_max_tokens()
 
-VerifyProgressFn = Callable[[int, int, str], None]
 MAX_VERIFICATION_WAVES = 3
 
 # When a batch run finishes with only a few unresolved items, fall back to
 # real-time verification for the remainder instead of paying for another
 # full batch wave.
 _REALTIME_FALLBACK_THRESHOLD = 5
-
-
-def _noop_verify_progress(_: int, __: int, ___: str) -> None:
-    return
 
 
 @dataclass
@@ -1520,8 +1515,8 @@ def _apply_escalation_outcome(
     """Merge an initial verifier result with its escalated re-run.
 
     The single source of truth for escalation merge semantics so the
-    real-time (:func:`verify_finding`) and batch
-    (:func:`verify_findings_batch`) escalation paths cannot drift. The
+    real-time (:func:`verify_finding`) and batch wave
+    (:func:`_run_batch_escalation_wave`) escalation paths cannot drift. The
     caller is responsible for snapshotting the initial verdict / model /
     grounding / sources BEFORE the escalation call runs, because the swap
     below replaces the result object.
@@ -2046,72 +2041,6 @@ def prepare_findings_for_verification(
             level="info",
         )
     return remaining
-
-
-def verify_findings(findings: list[Finding], *, progress: VerifyProgressFn = _noop_verify_progress, cycle: CodeCycle = DEFAULT_CYCLE, cache: VerificationCache | None = None) -> list[Finding]:
-    verifiable = list(findings)
-    verifiable.sort(key=lambda f: f.confidence)
-    # Resolve local-skip and cache-hit findings before spinning up workers.
-    remaining = prepare_findings_for_verification(verifiable, cycle=cycle, cache=cache)
-    total = len(remaining)
-    if total == 0:
-        return findings
-    # Snapshot the active pipeline span on THIS thread before submitting to
-    # the pool. ThreadPoolExecutor workers do not inherit the parent's
-    # contextvar / thread-local span, so without passing it explicitly the
-    # per-finding verification spans would orphan (parent_span_id=None)
-    # instead of nesting under the pipeline span.
-    from ..tracing import current_span as _current_span
-    trace_parent = _current_span()
-    max_workers = min(5, total)
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(verify_finding, f, cycle=cycle, cache=cache, _trace_parent=trace_parent): f for f in remaining}
-        completed = 0
-        for future in as_completed(futures):
-            f = futures[future]
-            completed += 1
-            try:
-                f.verification = future.result()
-            except Exception as e:
-                # Chunk 3: a crash escaping the worker is operational — the
-                # verifier could not produce a verdict. Mark as failed so
-                # the report shows VERIFICATION_FAILED instead of
-                # INSUFFICIENT_EVIDENCE, and so the cache does not persist
-                # this transient state.
-                f.verification = VerificationResult(
-                    verdict="UNVERIFIED",
-                    explanation=f"Verification crashed: {e}",
-                    verification_failed=True,
-                )
-            progress(completed, total, f.fileName or "Unknown")
-    return findings
-
-
-def verify_findings_batch(
-    findings: list[Finding],
-    *,
-    log: Callable[..., None] = lambda *_a, **_k: None,
-    progress: Callable[[float, str], None] = lambda _p, _m: None,
-    poll_interval: int = 15,
-    cycle: CodeCycle = DEFAULT_CYCLE,
-    cache: VerificationCache | None = None,
-) -> list[Finding]:
-    if not findings:
-        log("No findings eligible for batch verification.", level="info")
-        return findings
-
-    remaining = prepare_findings_for_verification(findings, cycle=cycle, cache=cache, log=log)
-    if not remaining:
-        progress(100.0, "Verification complete (all resolved locally / cached)")
-        return findings
-
-    progress(0.0, f"Submitting {len(remaining)} verification requests...")
-    job = start_verification_batch(remaining, cycle=cycle)
-    log(f"Verification batch submitted: {job.batch_id}", level="step")
-
-    collect_verification_batch_results(job, remaining, log=log, progress=progress, poll_interval=poll_interval, cycle=cycle, cache=cache)
-    progress(100.0, "Verification complete")
-    return findings
 
 
 def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, model: str | None = None) -> BatchJob:
