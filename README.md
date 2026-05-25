@@ -279,7 +279,7 @@ but the report distinguishes these findings in two places:
 - **Run Diagnostics banner:** a "Budget-exhausted findings" row
   (highlighted red when count > 0) and a recovery-hint paragraph
   pointing operators at the severity-tiered budget knob
-  (CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3 — see
+  (CRITICAL=8, HIGH=7, MEDIUM=5, GRIPES=3 — see
   `api_config._SEVERITY_MAX_USES`) as the actionable remedy.
 
 Budget-exhausted results are NOT persisted in the verification cache
@@ -352,9 +352,8 @@ A batch run's trace survives an app restart: `start_batch_review` stamps the run
 ### v2.11.0
 - Default review/cross-check model upgraded to Claude Opus 4.7; escalation model also Opus 4.7
 - Persistent verification cache at `~/.spec_critic/verification_cache.json` (atomic temp-file + rename; **60-day default TTL** with age-based pruning on load — set `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS=0` to keep the legacy database mode). Cache replays render an inline "Cache replay — Nd old" badge in the report (amber <30d / orange 30-90d / red >90d) so reviewers can spot stale verdicts at a glance; the evidence panel surfaces the cache file path for force-refresh workflows.
-- Optional Haiku 4.5 verification triage (`SPEC_CRITIC_HAIKU_TRIAGE=1`); hard safety contract (CRITICAL/HIGH and findings with a code reference are never eligible)
-- Cross-discipline synthesis model exposed (Haiku 4.5; `SPEC_CRITIC_SYNTHESIS_MODEL` override)
-- Severity-tiered web-search budgets: CRITICAL/HIGH=7, MEDIUM=5, GRIPES=3
+- Haiku 4.5 verification triage (always-on for eligible findings); hard safety contract (CRITICAL/HIGH and findings with a code reference are never eligible; override model via `SPEC_CRITIC_TRIAGE_MODEL`)
+- Severity-tiered web-search budgets: CRITICAL=8, HIGH=7, MEDIUM=5, GRIPES=3
 - Verification output cap tightened to 16k; `SYNTHESIS_OUTPUT_CAP` and `HAIKU_TRIAGE_OUTPUT_CAP` added
 - Cross-check chunking refined (Div 21 / 22 / 23 / Controls / 25 + 01)
 - **Trust Upgrade Chunk 12**: New `VERIFIED_CONTESTED` status (⚡, purple) when initial and escalated verifiers disagreed on grounded verdicts; routes to `MANUAL_EDIT_CANDIDATE` regardless of confidence. Evidence panel renders both verdicts and citation sets side-by-side. `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` env var reserved (stub) for a future "re-verify only operationally-failed findings" resume mode.
