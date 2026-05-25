@@ -89,6 +89,19 @@ src/
 │   ├── replacement_style.py    # Per-document typographic profile + replacement normalizer
 │   └── apply_edits.py          # locate → action build → apply
 
+# Tracing
+├── tracing/
+│   ├── config.py               # Env-var parsing + capture-level enum
+│   ├── session.py              # TraceSession: per-run directory + run.json writer
+│   ├── recorder.py             # TraceRecorder: global singleton, start/stop
+│   ├── spans.py                # SpanHandle + span-kind constants
+│   ├── capture_hooks.py        # Defensive integration hooks (never escape to pipeline)
+│   ├── redaction.py            # API key / bearer-token redaction before serialization
+│   ├── cli.py                  # list / show / prune subcommands
+│   ├── __main__.py             # python -m src.tracing entry point
+│   └── viewer/
+│       └── trace_viewer.html   # Single-file zero-build HTML replay viewer
+
 # Output
 └── output/
     ├── report_exporter.py      # Word (.docx) report generation
@@ -388,6 +401,10 @@ Model-id overrides plus a handful of operator switches for rollback / cache cont
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `60` days | Age-based pruning on cache load. Explicit `0` restores the legacy "no expiry" behavior; malformed/negative values fall back to the 60-day default so a typo never silently turns the cache into a permanent database. |
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override the on-disk cache file path; `~` and `$VAR` are expanded |
 | `SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR` | `0.7` | Composite-confidence floor used by `classify_edit_action` to gate `AUTO_EDIT_CANDIDATE`. Read at every call (no caching) so a process-wide env flip takes effect immediately. Values `>= 1.01` are the documented kill switch — composite confidence is bounded above by 1.0, so nothing can clear the bar and every supportive finding routes to `MANUAL_EDIT_CANDIDATE`. Malformed / negative values fall back to the 0.7 default so a typo never silently drops the floor to 0.0 (auto-apply everything). |
+| `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` | off | **Stub — not yet wired.** When truthy (`1` / `true` / `yes` / `on`, case-insensitive), logs a one-time WARNING at startup acknowledging the flag is noted. The actual "re-submit only operationally-failed findings on resume" plumbing is deferred to a focused future change. |
+| `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. Writes a forensic JSONL trace to `~/.spec_critic/traces/<run_id>/`. |
+| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. |
+| `SPEC_CRITIC_TRACE_DIR` | `~/.spec_critic/traces/` | Override the trace root directory. `~` and `$VAR` are expanded. |
 
 ---
 
