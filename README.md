@@ -184,12 +184,9 @@ Counters render under the "AUTO-APPLY QUALITY" section of the
 diagnostics report; the section is hidden entirely when no quality
 guard fired.
 
-## Processing Modes
+## Processing Mode
 
-- **Real-time** — Immediate processing (streaming API, higher cost).
-- **Batch** — Queued at 50% cost savings (~45 min – 2 hrs, 24 hrs max).
-
-Both modes share identical prompts, models, tool schemas, output caps, and parsing logic. The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header is not honored on streaming) and triggers only for inputs ≥200k tokens.
+All reviews submit via the Message Batches API — queued at 50% cost savings, typical turnaround ~45 min – 2 hrs (24 hrs max). The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header) and triggers only for inputs ≥200k tokens.
 
 ## Model Stack
 
