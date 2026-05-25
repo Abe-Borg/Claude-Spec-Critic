@@ -5,12 +5,11 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from ..input.extractor import extract_text, extract_multiple_specs, ExtractedSpec, SUPPORTED_EXTENSIONS
+from ..input.extractor import ExtractedSpec, SUPPORTED_EXTENSIONS
 from ..input.extraction_cache import (
     cache_token_count,
     extract_multiple_specs_cached,
@@ -20,13 +19,12 @@ from ..input.extraction_cache import (
 from ..input.preprocessor import preprocess_spec, detect_inconsistent_file_naming
 from ..core.tokenizer import (
     RECOMMENDED_MAX,
-    count_tokens,
     count_tokens_via_api,
     exceeds_per_call_limit_for_model,
     local_estimate_safety_factor,
     safe_local_estimate,
 )
-from ..review.reviewer import ReviewResult, Finding, MODEL_OPUS_47
+from ..review.reviewer import ReviewResult, Finding
 from ..review.review_request_builder import (
     ReviewRequestSpec,
     build_token_count_request,
@@ -42,7 +40,7 @@ from ..verification.verifier import (
     prepare_findings_for_verification,
 )
 from ..verification.verification_cache import VerificationCache, cache_persist_enabled
-from ..cross_check.cross_checker import run_cross_check, run_chunked_cross_check
+from ..cross_check.cross_checker import run_chunked_cross_check
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
 from ..tracing import capture_hooks as _trace
 
