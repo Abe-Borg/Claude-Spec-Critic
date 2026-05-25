@@ -83,11 +83,7 @@ def show_about_dialog(parent) -> None:
             "Claude checks for code compliance issues (CBC, CMC, CPC, "
             "Energy Code, CALGreen), DSA-specific requirements, outdated standards, "
             "coordination problems, and constructability concerns. Each finding is "
-            "assigned a severity (Critical, High, Medium, or Gripe) and a confidence score. "
-            "The Review Mode selector controls scope: Strict (evidence-backed contradictions "
-            "and code-cycle issues only), Comprehensive (adds AEC constructability and "
-            "coordination), or Safe edit (only findings that can be expressed as a precise "
-            "auto-applicable edit)."
+            "assigned a severity (Critical, High, Medium, or Gripe) and a confidence score."
         )),
         ("4.  Deduplication", (
             "When the same issue appears across multiple specs — like an outdated "
@@ -211,16 +207,7 @@ def show_usage_dialog(parent) -> None:
             "All specs are queued and processed through the Batch API on Claude "
             f"Opus 4.7 at 50% cost savings, with results {_BATCH_TIMING_COPY}."
         )),
-        ("5.  Choose Review Mode", (
-            "Strict reports only evidence-backed contradictions, code-cycle "
-            "issues, and invalid references — fewer findings, higher precision. "
-            "Comprehensive (the default) adds AEC constructability, coordination, "
-            "TAB/commissioning, schedules, controls, closeout, and material "
-            "coordination issues. Safe edit only emits findings whose fix is a "
-            "precise, unambiguous, low-risk edit — useful when you intend to use "
-            "the auto-edit output."
-        )),
-        ("6.  Enable Cross-Spec Coordination (Optional)", (
+        ("5.  Enable Cross-Spec Coordination (Optional)", (
             "Check this option to run a separate coordination analysis that "
             "sends all spec content to Claude in a single call. This catches "
             "contradictions between specs, missing cross-references, and "
@@ -228,7 +215,7 @@ def show_usage_dialog(parent) -> None:
             "automatically chunked by CSI division when the combined input "
             "exceeds the recommended token ceiling."
         )),
-        ("7.  Save the Report", (
+        ("6.  Save the Report", (
             "When the review completes, you'll be prompted to save a formatted "
             ".docx report. After saving, you can choose to apply edits: "
             "auto-edit writes an edited copy of each spec — only Auto-safe "
@@ -236,13 +223,13 @@ def show_usage_dialog(parent) -> None:
             "richly formatted edits are downgraded to manual review. "
             "Source files are never overwritten."
         )),
-        ("8.  Run the Review", (
+        ("7.  Run the Review", (
             "Click Submit Batch. "
             "The activity log shows progress. You can close "
             "the app and reopen it later — the pending batch state is saved "
             "and you will be prompted to resume."
         )),
-        ("9.  Review the Results", (
+        ("8.  Review the Results", (
             "Findings are grouped by severity (Critical, High, Medium, "
             "Gripe) and sorted by confidence within each severity tier. Each finding "
             "includes a verification verdict from a secondary AI pass with "

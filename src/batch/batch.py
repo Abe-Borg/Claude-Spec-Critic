@@ -98,7 +98,6 @@ def submit_review_batch(
                 paragraph_map=spec.paragraph_map,
                 pre_detected_alerts=spec_pre_detected,
                 retry_instruction=retry_instruction,
-                batch=True,
             )
         )
         if built.allow_extended_output:

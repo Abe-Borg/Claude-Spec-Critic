@@ -45,7 +45,6 @@ from typing import Any, Mapping, Optional, Sequence, TYPE_CHECKING
 
 from ..core.api_config import (
     LARGE_REVIEW_INPUT_THRESHOLD,
-    PHASE_BATCH_REVIEW,
     PHASE_REVIEW,
     apply_effort_config,
     apply_thinking_config,
@@ -77,7 +76,8 @@ class ReviewRequestSpec:
     from this record so the path that counts a request and the path that
     sends a request cannot fall out of sync.
 
-    ``batch`` selects the batch vs. non-batch request shape (cache phase,
+    Review runs exclusively through the Message Batches API, so the
+    builder always produces a batch-shaped request (batch cache phase,
     service tier, extended-output gating). ``force_allow_extended_output``
     is an escape hatch for tests; production callers leave it ``None``
     and let the builder decide.
@@ -91,7 +91,6 @@ class ReviewRequestSpec:
     paragraph_map: "Optional[Sequence[ParagraphMapping]]" = None
     pre_detected_alerts: "Optional[Sequence[Mapping[str, object]]]" = None
     retry_instruction: Optional[str] = None
-    batch: bool = False
     force_allow_extended_output: Optional[bool] = None
     include_service_tier: Optional[bool] = None
 
@@ -112,7 +111,6 @@ class BuiltReviewRequest:
     tools: Optional[list[dict]]
     phase: str
     model: str
-    batch: bool
     allow_extended_output: bool
 
 
@@ -146,14 +144,11 @@ def _resolve_extended_output(
 ) -> bool:
     """Decide whether the 300k batch-output beta applies to this request.
 
-    Non-batch requests never get the beta. For batch, the decision
-    combines model capability with the local cl100k_base count of the
-    actual request shape — small batches stay on the 128k cap, large
-    batches lift to 300k. Reading the capability from the central
-    registry lets Sonnet 4.6 use the path correctly (Chunk 1).
+    The decision combines model capability with the local cl100k_base
+    count of the actual request shape — small batches stay on the 128k
+    cap, large batches lift to 300k. Reading the capability from the
+    central registry lets Sonnet 4.6 use the path correctly (Chunk 1).
     """
-    if not spec.batch:
-        return False
     if spec.force_allow_extended_output is not None:
         return bool(spec.force_allow_extended_output)
     if not model_supports_extended_output_beta(spec.model):
@@ -167,7 +162,6 @@ def _build_params_from_strings(
     system_prompt: str,
     user_message: str,
     model: str,
-    batch: bool,
     allow_extended_output: bool,
     include_service_tier: bool,
 ) -> tuple[dict[str, Any], Optional[list[dict]]]:
@@ -177,17 +171,15 @@ def _build_params_from_strings(
     request-shape construction here keeps the path that counts a request
     and the path that sends it from drifting.
     """
-    phase = PHASE_BATCH_REVIEW if batch else PHASE_REVIEW
-    system_payload = system_prompt_with_cache(system_prompt, phase=phase)
+    system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_REVIEW)
 
     use_tool = structured_tool_output_enabled()
     if use_tool:
-        tools = tools_with_cache([review_findings_tool()], phase=phase)
+        tools = tools_with_cache([review_findings_tool()], phase=PHASE_REVIEW)
     else:
         tools = None
 
     output_limit = review_max_tokens(
-        batch=batch,
         model=model,
         allow_extended_output=allow_extended_output,
     )
@@ -198,13 +190,13 @@ def _build_params_from_strings(
         "system": system_payload,
         "messages": [{"role": "user", "content": user_message}],
     }
-    apply_thinking_config(params, model=model, phase=phase)
-    apply_effort_config(params, model=model, phase=phase)
+    apply_thinking_config(params, model=model, phase=PHASE_REVIEW)
+    apply_effort_config(params, model=model, phase=PHASE_REVIEW)
     if use_tool:
         params["tools"] = tools
         params["tool_choice"] = review_tool_choice()
 
-    if batch and include_service_tier:
+    if include_service_tier:
         tier = batch_service_tier()
         if tier:
             params["service_tier"] = tier
@@ -239,7 +231,6 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
         system_prompt=system_prompt,
         user_message=user_message,
         model=spec.model,
-        batch=spec.batch,
         allow_extended_output=allow_extended,
         include_service_tier=include_tier,
     )
@@ -248,9 +239,8 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
         system_prompt=system_prompt,
         user_message=user_message,
         tools=tools,
-        phase=PHASE_BATCH_REVIEW if spec.batch else PHASE_REVIEW,
+        phase=PHASE_REVIEW,
         model=spec.model,
-        batch=spec.batch,
         allow_extended_output=allow_extended,
     )
 
@@ -291,18 +281,14 @@ def review_request_cache_key(spec: ReviewRequestSpec) -> str:
     Routes through :func:`src.extraction_cache.token_count_cache_key`
     so the on-disk cache layout stays compatible. Includes
     ``pre_detected_alerts`` (via the rendered user message), the
-    paragraph map (same), the tool schema, the cycle label, and
-    whether this is a batch request — every input that can move the
-    count.
+    paragraph map (same), the tool schema, and the cycle label — every
+    input that can move the count.
     """
     from ..input.extraction_cache import token_count_cache_key
 
     system_prompt = get_system_prompt(spec.cycle)
     user_message = build_user_message(spec)
     tools = [review_findings_tool()] if structured_tool_output_enabled() else None
-    extra = {
-        "batch": "1" if spec.batch else "0",
-    }
     return token_count_cache_key(
         model=spec.model,
         system_prompt=system_prompt,
@@ -310,7 +296,6 @@ def review_request_cache_key(spec: ReviewRequestSpec) -> str:
         project_context=spec.project_context,
         cycle_label=spec.cycle.label,
         tools=tools,
-        extra=extra,
     )
 
 

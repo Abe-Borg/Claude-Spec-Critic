@@ -87,7 +87,6 @@ LARGE_REVIEW_INPUT_THRESHOLD = 200_000
 # the registry can reference them directly. ``thinking_config_for`` and
 # ``apply_thinking_config`` further below also consume these.
 PHASE_REVIEW = "review"
-PHASE_BATCH_REVIEW = "batch_review"
 PHASE_CROSS_CHECK = "cross_check"
 PHASE_VERIFICATION = "verification"
 PHASE_VERIFICATION_RETRY = "verification_retry"
@@ -118,7 +117,6 @@ def output_cap_for_model(model: str, *, requested: int) -> int:
 # continuations need more headroom, this is the one place to tune it.
 _PHASE_OUTPUT_BUDGET: dict[str, int] = {
     PHASE_REVIEW: REVIEW_OUTPUT_CAP,
-    PHASE_BATCH_REVIEW: REVIEW_OUTPUT_CAP,
     PHASE_CROSS_CHECK: CROSS_CHECK_OUTPUT_CAP,
     PHASE_VERIFICATION: VERIFICATION_OUTPUT_CAP,
     PHASE_VERIFICATION_RETRY: VERIFICATION_OUTPUT_CAP,
@@ -145,18 +143,18 @@ def triage_max_tokens(*, model: str = TRIAGE_MODEL_DEFAULT) -> int:
     return phase_output_cap(PHASE_TRIAGE, model=model)
 
 
-def review_max_tokens(*, batch: bool = False, model: str = REVIEW_MODEL_DEFAULT, allow_extended_output: bool = False) -> int:
+def review_max_tokens(*, model: str = REVIEW_MODEL_DEFAULT, allow_extended_output: bool = False) -> int:
     """Return a per-call max_tokens for a review request.
 
-    All review requests share the same baseline so findings stay consistent
-    on normal-size specs. ``allow_extended_output`` selects the 300k
-    batch-only path; the beta header is checked at the call site
-    by :func:`assert_extended_output_allowed`.
+    Review runs exclusively through the Message Batches API, so every
+    request shares the same baseline cap on normal-size specs.
+    ``allow_extended_output`` selects the 300k batch-only path; the beta
+    header is checked at the call site by
+    :func:`assert_extended_output_allowed`.
     """
-    if batch and allow_extended_output:
+    if allow_extended_output:
         return min(BATCH_MAX_OUTPUT_TOKENS, REVIEW_OUTPUT_CAP_BATCH_EXTENDED)
-    phase = PHASE_BATCH_REVIEW if batch else PHASE_REVIEW
-    return phase_output_cap(phase, model=model)
+    return phase_output_cap(PHASE_REVIEW, model=model)
 
 
 def cross_check_max_tokens(*, model: str = CROSS_CHECK_MODEL_DEFAULT) -> int:
@@ -359,8 +357,7 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 #
 # - Sonnet verification (PHASE_VERIFICATION{,_RETRY,_CONTINUATION}): medium.
 # - Opus verification (i.e. escalation): high.
-# - Opus/Sonnet deep review (PHASE_REVIEW, PHASE_BATCH_REVIEW,
-#   PHASE_CROSS_CHECK): high.
+# - Opus/Sonnet deep review (PHASE_REVIEW, PHASE_CROSS_CHECK): high.
 # - Triage (Haiku): omit (Haiku does not support effort).
 # - Unknown model: omit.
 
@@ -375,7 +372,6 @@ EFFORT_XHIGH = "xhigh"
 # benefit from elevated effort.
 _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     PHASE_REVIEW: EFFORT_HIGH,
-    PHASE_BATCH_REVIEW: EFFORT_HIGH,
     PHASE_CROSS_CHECK: EFFORT_HIGH,
     PHASE_VERIFICATION: EFFORT_MEDIUM,
     PHASE_VERIFICATION_RETRY: EFFORT_MEDIUM,
@@ -472,7 +468,6 @@ _DEFAULT_PHASE_CACHE_POLICY = CachePolicy(cache_system=True, cache_tools=True)
 
 _PHASE_CACHE_POLICY: dict[str, CachePolicy] = {
     PHASE_REVIEW: CachePolicy(cache_system=True, cache_tools=True),
-    PHASE_BATCH_REVIEW: CachePolicy(cache_system=True, cache_tools=True),
     PHASE_CROSS_CHECK: CachePolicy(cache_system=True, cache_tools=True),
     PHASE_VERIFICATION: CachePolicy(cache_system=True, cache_tools=True),
     PHASE_VERIFICATION_RETRY: CachePolicy(cache_system=True, cache_tools=True),
