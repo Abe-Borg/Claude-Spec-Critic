@@ -9,12 +9,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable
 
-from anthropic import APIError, APIConnectionError, APIStatusError, RateLimitError, InternalServerError
-
 from ..batch.batch import (
     BatchJob,
-    build_verification_tools_for_profile,
-    poll_batch,  # Backward-compatibility export for older tests/patching.
     retrieve_verification_results_detailed,
     submit_verification_batch,
     submit_verification_followup_wave,
@@ -28,7 +24,6 @@ from ..core.api_config import (
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
-    VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
     model_supports_adaptive_thinking,
     verification_max_tokens,
@@ -49,7 +44,6 @@ from ..review.prompt_serialization import (
     wrap_data_block,
 )
 from .source_grounding import (
-    REJECT_UNGROUNDED,
     SearchedSource,
     dedupe_searched_sources,
     validate_cited_sources,
@@ -2204,8 +2198,6 @@ def _decision_from_legacy_params(
     and no profile (the most common direct-call shape), matching the
     default verification phase shape (Sonnet + thinking + full budget).
     """
-    from dataclasses import replace as _dc_replace  # local import
-
     sev = (severity or "MEDIUM").strip().upper() or "MEDIUM"
 
     # Resolve the profile. Unknown strings fall back to CONSTRUCTABILITY
