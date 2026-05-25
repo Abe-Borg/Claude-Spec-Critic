@@ -654,7 +654,6 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             project_context=project_context,
             paragraph_map=spec.paragraph_map,
             pre_detected_alerts=pre_detected_by_filename.get(spec.filename),
-            batch=True,
         )
         for spec in specs
     ]

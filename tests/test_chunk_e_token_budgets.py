@@ -35,7 +35,6 @@ from src.core.api_config import (
     MODEL_HAIKU_45,
     MODEL_OPUS_47,
     MODEL_SONNET_46,
-    PHASE_BATCH_REVIEW,
     PHASE_CROSS_CHECK,
     PHASE_REVIEW,
     PHASE_TRIAGE,
@@ -73,8 +72,6 @@ class TestPhaseOutputCapRegistry:
 
     def test_each_phase_resolves_to_its_documented_cap(self):
         assert phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_47) == REVIEW_OUTPUT_CAP
-        # Real-time and batch share the same baseline cap.
-        assert phase_output_cap(PHASE_BATCH_REVIEW, model=MODEL_OPUS_47) == REVIEW_OUTPUT_CAP
         assert phase_output_cap(PHASE_CROSS_CHECK, model=MODEL_OPUS_47) == CROSS_CHECK_OUTPUT_CAP
         assert phase_output_cap(PHASE_TRIAGE, model=MODEL_HAIKU_45) == HAIKU_TRIAGE_OUTPUT_CAP
         # Retry / continuation share the verification budget.
@@ -97,7 +94,7 @@ class TestPhaseCapsRespectModelCeilings:
 
     def test_no_phase_exceeds_model_ceiling(self):
         phases = [
-            PHASE_REVIEW, PHASE_BATCH_REVIEW, PHASE_CROSS_CHECK,
+            PHASE_REVIEW, PHASE_CROSS_CHECK,
             PHASE_VERIFICATION, PHASE_VERIFICATION_RETRY,
             PHASE_VERIFICATION_CONTINUATION, PHASE_TRIAGE,
         ]
@@ -118,9 +115,9 @@ class TestPhaseCapsRespectModelCeilings:
 
     def test_only_extended_batch_path_returns_300k(self):
         # Standard phases never grant 300k; the extended path requires the flag.
-        assert phase_output_cap(PHASE_BATCH_REVIEW, model=MODEL_OPUS_47) < BATCH_MAX_OUTPUT_TOKENS
+        assert phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_47) < BATCH_MAX_OUTPUT_TOKENS
         assert review_max_tokens(
-            batch=True, model=MODEL_OPUS_47, allow_extended_output=True
+            model=MODEL_OPUS_47, allow_extended_output=True
         ) == BATCH_MAX_OUTPUT_TOKENS
 
 
