@@ -201,5 +201,3 @@ def count_tokens_via_api(
     except Exception as exc:
         _log.warning("count_tokens_via_api failed: %s", exc)
         return None
-
-

@@ -664,13 +664,6 @@ def build_web_search_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_USES) -> d
     }
 
 
-def web_search_tool_for_severity(severity: str | None) -> dict:
-    """Build a web_search tool dict with a per-severity ``max_uses`` budget."""
-    return build_web_search_tool(
-        max_uses=web_search_max_uses_for_severity(severity),
-    )
-
-
 # Default web-search tool used when no per-call override is needed (preserved
 # for backward compatibility with any caller that imports the constant).
 WEB_SEARCH_TOOL = build_web_search_tool()

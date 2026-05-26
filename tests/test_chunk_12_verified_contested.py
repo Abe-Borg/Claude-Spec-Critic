@@ -37,25 +37,17 @@ The contract has these surfaces:
   sentence inline ("manual review recommended") and adds an "Initial
   verifier sources:" sub-section listing the initial verifier's URLs
   for findings with ``models_disagreed=True``.
-* ``resume_retry_failed_only()`` returns ``False`` by default and
-  returns ``True`` when ``SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY`` is
-  set to a truthy value. The actual re-submission mechanism is
-  deferred — the helper is a stub — but the env var is recognized
-  and logged so an operator who turns it on sees a clear message.
 """
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 
-import pytest
 from docx import Document
 
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.orchestration.resume_state import (
     deserialize_verification_result,
-    resume_retry_failed_only,
     serialize_verification_result,
 )
 from src.output.report_exporter import STATUS_COLORS, STATUS_SHADING, export_report
@@ -787,65 +779,3 @@ class TestContestedEvidencePanelRendering:
 # 9. Resume retry-failed-only env var stub
 # ---------------------------------------------------------------------------
 
-
-class TestResumeRetryFailedOnlyStub:
-    """Plan 12f: the env var is recognized as the operator toggle for
-    the future "re-verify only failed findings" resume mode, but the
-    actual mechanism is deferred. The helper must return True for
-    truthy values and False otherwise, and must log a one-time warning
-    when set so the operator sees the "noted but not yet wired"
-    message.
-    """
-
-    def test_unset_returns_false(self, monkeypatch):
-        monkeypatch.delenv("SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY", raising=False)
-        assert resume_retry_failed_only() is False
-
-    def test_empty_returns_false(self, monkeypatch):
-        monkeypatch.setenv("SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY", "")
-        assert resume_retry_failed_only() is False
-
-    @pytest.mark.parametrize(
-        "value", ["1", "true", "TRUE", "yes", "YES", "on", "On", " 1 ", "true "],
-    )
-    def test_truthy_values_return_true(self, monkeypatch, value):
-        monkeypatch.setenv("SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY", value)
-        # Reset the one-time-warning sentinel so each parametrized run
-        # gets a clean state — the helper would otherwise short-circuit
-        # the warning on second invocation.
-        if hasattr(resume_retry_failed_only, "_warned"):
-            delattr(resume_retry_failed_only, "_warned")
-        assert resume_retry_failed_only() is True
-
-    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "anything-else"])
-    def test_falsy_values_return_false(self, monkeypatch, value):
-        monkeypatch.setenv("SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY", value)
-        assert resume_retry_failed_only() is False
-
-    def test_warning_logged_when_enabled(self, monkeypatch, caplog):
-        monkeypatch.setenv("SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY", "1")
-        # Reset the one-time-warning sentinel so this test sees the log.
-        if hasattr(resume_retry_failed_only, "_warned"):
-            delattr(resume_retry_failed_only, "_warned")
-        with caplog.at_level(logging.WARNING, logger="src.orchestration.resume_state"):
-            resume_retry_failed_only()
-        assert any(
-            "SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY" in record.message
-            and "not yet implemented" in record.message
-            for record in caplog.records
-        )
-
-    def test_warning_logged_only_once(self, monkeypatch, caplog):
-        monkeypatch.setenv("SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY", "1")
-        if hasattr(resume_retry_failed_only, "_warned"):
-            delattr(resume_retry_failed_only, "_warned")
-        with caplog.at_level(logging.WARNING, logger="src.orchestration.resume_state"):
-            resume_retry_failed_only()
-            resume_retry_failed_only()
-            resume_retry_failed_only()
-        warning_count = sum(
-            1
-            for record in caplog.records
-            if "SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY" in record.message
-        )
-        assert warning_count == 1

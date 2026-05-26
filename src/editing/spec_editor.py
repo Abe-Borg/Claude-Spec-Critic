@@ -2374,7 +2374,3 @@ def build_edit_actions(
             )
         )
     return actions
-
-
-def apply_edits_to_specs(edit_plan: list[tuple[Path, Path, list[EditAction]]]) -> list[EditReport]:
-    return [apply_edits_to_spec(source, output, actions) for source, output, actions in edit_plan]
