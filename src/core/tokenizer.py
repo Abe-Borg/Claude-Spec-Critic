@@ -288,6 +288,6 @@ def format_token_summary(summary: TokenSummary) -> str:
     if summary.warning_message:
         lines.append(f"\n  {summary.warning_message}")
     else:
-        lines.append(f"  Within recommended limits")
+        lines.append("  Within recommended limits")
     
     return "\n".join(lines)

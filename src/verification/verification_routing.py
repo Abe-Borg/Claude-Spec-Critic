@@ -82,8 +82,6 @@ from typing import Any, Mapping
 
 from ..core.api_config import (
     PHASE_VERIFICATION,
-    PHASE_VERIFICATION_CONTINUATION,
-    PHASE_VERIFICATION_RETRY,
     apply_effort_config,
     apply_thinking_config,
     batch_service_tier,

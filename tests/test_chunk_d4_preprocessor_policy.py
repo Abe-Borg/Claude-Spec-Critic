@@ -25,8 +25,6 @@ Two independent chunks land in this file because they share the same module
 """
 from __future__ import annotations
 
-import os
-from typing import Mapping
 
 import pytest
 

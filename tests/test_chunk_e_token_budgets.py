@@ -200,7 +200,6 @@ class TestExceedsPerCallLimitForModel:
         # cl100k says 450k input — under the 500k recommended max — but
         # Haiku's 1.15× margin pushes the gate. Without the safety factor
         # we would have silently submitted.
-        local_total = 450_000
         spec = 430_000
         overhead = 20_000
         # Sanity: under the legacy gate this is *not* over budget.

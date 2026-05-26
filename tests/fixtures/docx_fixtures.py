@@ -78,7 +78,7 @@ def make_real_world_section_spec(
 ) -> Path:
     """Return a small spec that mirrors common CSI-section structure."""
     paragraphs = [
-        f"SECTION 23 21 13 - HYDRONIC PIPING",
+        "SECTION 23 21 13 - HYDRONIC PIPING",
         "PART 1 GENERAL",
         "1.01 SUMMARY",
         f"A. Comply with California Plumbing Code {code_year} requirements.",
@@ -122,7 +122,7 @@ def make_paragraph_with_hyperlink(
 ) -> Path:
     """Paragraph whose text contains a w:hyperlink element."""
     doc = Document()
-    doc.add_paragraph(f"PART 1 GENERAL")
+    doc.add_paragraph("PART 1 GENERAL")
     para = doc.add_paragraph()
     p_elem = para._element
     # Plain prefix.
@@ -149,7 +149,7 @@ def make_paragraph_with_field_code(
 ) -> Path:
     """Paragraph containing a w:fldChar begin / instr / end sequence."""
     doc = Document()
-    doc.add_paragraph(f"PART 1 GENERAL")
+    doc.add_paragraph("PART 1 GENERAL")
     para = doc.add_paragraph()
     p_elem = para._element
     _add_plain_run(p_elem, text + " ")
@@ -184,7 +184,7 @@ def make_paragraph_with_drawing(
 ) -> Path:
     """Paragraph containing a (minimal) w:drawing element."""
     doc = Document()
-    doc.add_paragraph(f"PART 1 GENERAL")
+    doc.add_paragraph("PART 1 GENERAL")
     para = doc.add_paragraph()
     p_elem = para._element
     _add_plain_run(p_elem, text + " ")
@@ -205,7 +205,7 @@ def make_paragraph_with_tracked_change(
 ) -> Path:
     """Paragraph carrying a w:ins (tracked insertion) element."""
     doc = Document()
-    doc.add_paragraph(f"PART 1 GENERAL")
+    doc.add_paragraph("PART 1 GENERAL")
     para = doc.add_paragraph()
     p_elem = para._element
     _add_plain_run(p_elem, text + " ")
@@ -232,7 +232,7 @@ def make_paragraph_with_comment_range(
 ) -> Path:
     """Paragraph wrapped by w:commentRangeStart / End and a w:commentReference."""
     doc = Document()
-    doc.add_paragraph(f"PART 1 GENERAL")
+    doc.add_paragraph("PART 1 GENERAL")
     para = doc.add_paragraph()
     p_elem = para._element
     start = OxmlElement("w:commentRangeStart")
@@ -260,7 +260,7 @@ def make_paragraph_with_bookmark(
 ) -> Path:
     """Paragraph wrapped by w:bookmarkStart / End markers."""
     doc = Document()
-    doc.add_paragraph(f"PART 1 GENERAL")
+    doc.add_paragraph("PART 1 GENERAL")
     para = doc.add_paragraph()
     p_elem = para._element
     start = OxmlElement("w:bookmarkStart")

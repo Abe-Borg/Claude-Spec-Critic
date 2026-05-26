@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from . import BASELINE_PATH
-from .harness import FixtureResult, HarnessResult, run_harness
+from .harness import HarnessResult, run_harness
 
 
 # ---------------------------------------------------------------------------
