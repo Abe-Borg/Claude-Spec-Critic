@@ -29,17 +29,13 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import pytest
 from docx import Document
 
 from src.output.report_exporter import (
     _summarize_run_diagnostics,
-    _write_run_diagnostics_banner,
     export_report,
 )
 from src.output.report_status import (
-    EditActionLabel,
-    ReportStatus,
     summarize_edit_actions,
     summarize_statuses,
 )

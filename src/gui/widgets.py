@@ -4,11 +4,9 @@ Custom widgets for Spec Critic GUI.
 Contains: TokenGauge, FileListPanel, EnhancedLog,
 AnimatedButton, EditSelectionDialog, EditSummaryDialog, DiagnosticsWindow.
 """
-import json
 import math
 from datetime import datetime
-from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 from collections import deque
 
 import customtkinter as ctk

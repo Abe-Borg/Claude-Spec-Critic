@@ -411,7 +411,6 @@ def _aggregate_metrics(results: list[FixtureResult]) -> dict[str, Any]:
     """Roll per-fixture counters into the ten Chunk 12 metrics."""
     seeded_total = sum(r.seeded_finding_count for r in results)
     parsed_total = sum(r.review_findings_parsed for r in results)
-    expected_review_total = sum(r.review_findings_expected for r in results)
 
     duplicate_total = sum(r.duplicate_finding_count for r in results)
     parse_failures = sum(r.parse_failure_count for r in results)

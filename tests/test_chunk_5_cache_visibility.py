@@ -39,7 +39,7 @@ from src.output.report_exporter import (
     _cache_entry_age_days,
     export_report,
 )
-from src.review.reviewer import EditProposal, Finding, ReviewResult
+from src.review.reviewer import Finding, ReviewResult
 from src.verification.verification_cache import (
     VerificationCache,
     _DEFAULT_CACHE_TTL_DAYS,

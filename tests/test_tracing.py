@@ -19,9 +19,6 @@ All tests are hermetic — no network, no real API key required.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,7 +29,6 @@ from src.tracing import (
     LEVEL_DEEP,
     LEVEL_DEFAULT,
     LEVEL_OFF,
-    SpanHandle,
     TraceRecorder,
     bind_to_current_context,
     current_capture_level,
@@ -53,6 +49,7 @@ from src.tracing.recorder import (
 )
 from src.tracing.spans import (
     EVENT_GROUNDING_OUTCOME,
+    EVENT_NOTE,
     EVENT_STREAM_CHUNK,
     KIND_API_CALL,
     KIND_PIPELINE,
@@ -169,12 +166,12 @@ def test_default_level_omits_stream_chunks(trace_dir: Path, clean_env: None) -> 
     try:
         with rec.span(KIND_API_CALL, "test") as s:
             capture_hooks.capture_stream_chunk(s, "chunk text")
-            capture_hooks.capture_thinking_block(s, "thinking text")
+            capture_hooks.capture_note(s, "note text")
         rec.stop()
         events = [json.loads(line) for line in (trace_dir / FILE_EVENTS).read_text().strip().split("\n")]
         types = [e["type"] for e in events]
         assert EVENT_STREAM_CHUNK not in types
-        assert "thinking_block" in types
+        assert EVENT_NOTE in types
     finally:
         set_recorder(None)
 
@@ -292,10 +289,8 @@ def test_hooks_swallow_recorder_exceptions(trace_dir: Path, clean_env: None) -> 
 
         # Every hook must complete without raising.
         capture_hooks.capture_pipeline_start(mode="realtime", model="m", cycle_label="C", files=[])
-        capture_hooks.capture_review_call(filename="x.docx", model="m", cycle_label="C")
         capture_hooks.capture_verification_call(finding_id="f1", routing_decision={"mode": "x"})
         capture_hooks.capture_stream_chunk(None, "text")
-        capture_hooks.capture_thinking_block(None, "text")
         capture_hooks.capture_grounding_outcome(None, accepted=[], rejected=[], downgraded_to_unverified=False)
         capture_hooks.capture_finding_terminal(object())
     finally:
@@ -308,7 +303,6 @@ def test_hooks_noop_without_recorder(clean_env: None) -> None:
     assert get_recorder() is None
     # No exceptions should fire.
     assert capture_hooks.capture_pipeline_start(mode="realtime", model="m", cycle_label="C", files=[]) is None
-    assert capture_hooks.capture_review_call(filename="x", model="m", cycle_label="C") is None
     capture_hooks.capture_stream_chunk(None, "text")  # returns None
     capture_hooks.capture_finding_terminal(object())  # returns None
 
@@ -563,7 +557,6 @@ def test_cross_check_chunk_stamps_metadata(recorder: TraceRecorder, trace_dir: P
         chunk_name="div_23", spec_count=4, finding_count=12, parent=pipeline
     )
     capture_hooks.capture_cross_check_end(chunk, finding_count=2)
-    capture_hooks.capture_pipeline_end(pipeline, success=True)
     recorder.stop()
 
     spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]

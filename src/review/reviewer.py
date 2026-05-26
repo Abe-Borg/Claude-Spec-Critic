@@ -13,12 +13,8 @@ if TYPE_CHECKING:
 from anthropic import Anthropic
 
 from ..core.api_config import (
-    MODEL_OPUS_47,
+    MODEL_OPUS_47 as MODEL_OPUS_47,  # re-exported for batch/resume/GUI importers
     REVIEW_MODEL_DEFAULT,
-)
-from .structured_schemas import (
-    REVIEW_TOOL_NAME,
-    extract_tool_use_block,
 )
 
 # Chunk L / plan section "Separate Findings From Edit Proposals":
@@ -388,25 +384,6 @@ def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[l
         return [], ""
 
     raise ValueError(f"Could not extract JSON findings from response (stop_reason: {stop_reason}): {text[:200]}...")
-
-
-def _extract_structured_findings(resp) -> tuple[list[dict], str, dict] | None:
-    """Pull findings out of a ``submit_review_findings`` tool_use block.
-
-    Returns ``(findings_list, analysis_summary, raw_payload)`` when a
-    matching tool_use block is present, else ``None`` so callers fall
-    back to text parsing. The third element is the parsed tool input
-    dict; callers may surface it to diagnostics so the structured payload
-    is preserved alongside the regular telemetry.
-    """
-    payload = extract_tool_use_block(resp, REVIEW_TOOL_NAME)
-    if not isinstance(payload, dict):
-        return None
-    findings = payload.get("findings") or []
-    if not isinstance(findings, list):
-        findings = []
-    summary = str(payload.get("analysis_summary") or "")
-    return findings, summary, payload
 
 
 def _parse_findings(data: list) -> list[Finding]:

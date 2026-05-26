@@ -17,7 +17,6 @@ from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph
 
 from .edit_candidates import (
-    SAFETY_AUTO_SAFE,
     SAFETY_AUTO_WITH_CAUTION,
     SAFETY_MANUAL_REVIEW,
     SAFETY_REPORT_ONLY,
@@ -723,10 +722,6 @@ def detect_unsafe_markup(element) -> UnsafeMarkupResult:
     return UnsafeMarkupResult(True, tuple(found))
 
 
-def _is_table_cell_mapping(mapping) -> bool:
-    return getattr(mapping, "element_type", None) == "table_cell"
-
-
 # Canonical "disable" tokens for boolean env-var flags. Anything else —
 # including an unset variable — leaves the default-enabled behavior in place.
 _DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
@@ -1421,7 +1416,6 @@ def _resolve_cell_and_offsets(
     for duplicated or missing target text). The caller uses ``status`` to
     record the right outcome.
     """
-    mapping = action.location.mapping
     row_text_parts: list[tuple[object, str]] = []
     for cell in row.cells:
         text = cell.text.strip()

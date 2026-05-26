@@ -30,7 +30,6 @@ import pytest
 from src.core.code_cycles import CALIFORNIA_2025
 from src.cross_check.cross_checker import (
     _build_cross_check_input,
-    _cross_system_prompt,
     _get_cross_check_user_message,
 )
 from src.input.extractor import ExtractedSpec
@@ -50,7 +49,7 @@ from src.review.prompts import (
     get_single_spec_user_message,
     get_system_prompt,
 )
-from src.review.reviewer import Finding, ReviewResult
+from src.review.reviewer import Finding
 from src.verification.triage import _build_user_prompt as triage_build_user_prompt
 from src.verification.verifier import _build_verification_prompt
 

@@ -1047,16 +1047,6 @@ def classify_cross_check_dependencies(
     return kept, suppressed
 
 
-def _parallel_cross_check_enabled() -> bool:
-    """Whether cross-check overlaps with verification polling.
-
-    Always True. Cross-check runs concurrently with the review
-    verification batch poll; findings whose upstream review verdict
-    became DISPUTED are dropped after both join.
-    """
-    return True
-
-
 def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _noop_log) -> CollectedBatchState:
     results_by_request = retrieve_review_results(submission.job, model=submission.model)
     results_by_request = _recover_retryable_review_batch_results(submission, results_by_request, log=log)

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.output.report_status import (
