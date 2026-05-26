@@ -209,10 +209,6 @@ def extraction_cache_stats() -> dict:
     return _extraction_cache.stats()
 
 
-def clear_extraction_cache() -> None:
-    _extraction_cache.clear()
-
-
 # ---------------------------------------------------------------------------
 # Token-count cache (plan 13.2: "exact token preflight is reused when prompt
 # /model/config are unchanged"). Keyed on a content + config hash so callers
@@ -314,10 +310,6 @@ def get_cached_token_count(key: str) -> Optional[int]:
 
 def cache_token_count(key: str, value: int) -> None:
     _token_cache.put(key, value)
-
-
-def token_cache_stats() -> dict:
-    return _token_cache.stats()
 
 
 def clear_token_cache() -> None:

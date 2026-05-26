@@ -394,9 +394,3 @@ def submit_verification_followup_wave(
         batch_id=mb.id, request_count=len(requests),
     )
     return BatchJob(batch_id=mb.id, job_type="verify", request_map=request_map, created_at=time.time())
-
-
-def cancel_batch(batch_id: str) -> str:
-    client = _get_client()
-    batch = client.messages.batches.cancel(batch_id)
-    return batch.processing_status
