@@ -20,7 +20,7 @@ from ..batch.batch_state_store import delete_batch_state
 from ..core.code_cycles import DEFAULT_CYCLE
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..review.reviewer import MODEL_OPUS_47
-from ..core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
+from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from ..tracing.session import (
     reattach_run_recorder as _reattach_recorder,
     start_run_recorder,
@@ -52,8 +52,7 @@ def validate_inputs(app) -> bool:
         return False
     ctx = app._get_project_context()
     if ctx:
-        from tiktoken import get_encoding
-        ctx_tokens = len(get_encoding("cl100k_base").encode(ctx))
+        ctx_tokens = count_tokens(ctx)
         app._project_context_tokens = ctx_tokens
         app._update_context_token_label()
         if ctx_tokens > PROJECT_CONTEXT_MAX_TOKENS:
