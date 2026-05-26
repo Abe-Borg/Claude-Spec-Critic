@@ -29,7 +29,6 @@ import json
 import time
 from pathlib import Path
 
-import pytest
 
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.review.reviewer import Finding
@@ -51,7 +50,6 @@ from src.orchestration.resume_state import (
 )
 from tests.fixtures.fake_anthropic import (
     sample_verification_verdict_payload,
-    verification_text_fallback_response,
     verification_tool_use_response,
 )
 

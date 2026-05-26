@@ -62,7 +62,7 @@ from src.verification.verification_router import (
     classify_finding_for_verification,
     local_skip_requires_elevated_confidence,
 )
-from src.verification.verifier import VerificationResult, _local_skip_result
+from src.verification.verifier import _local_skip_result
 
 
 # ---------------------------------------------------------------------------

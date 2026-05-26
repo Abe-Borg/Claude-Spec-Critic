@@ -40,27 +40,19 @@ from .spans import (
     EVENT_RETRY,
     EVENT_STREAM_CHUNK,
     EVENT_THINKING_BLOCK,
-    EVENT_TOOL_RESULT,
     EVENT_TOOL_USE,
     EVENT_WEB_FETCH_REQUEST,
     EVENT_WEB_FETCH_RESULT,
     EVENT_WEB_SEARCH_QUERY,
     EVENT_WEB_SEARCH_RESULT,
-    KIND_API_CALL,
     KIND_CROSS_CHECK,
     KIND_CROSS_CHECK_CHUNK,
-    KIND_EXTRACTION,
     KIND_PIPELINE,
-    KIND_REVIEW,
     KIND_TRIAGE,
-    KIND_VERIFICATION_CONTINUATION,
     KIND_VERIFICATION_ESCALATION,
     KIND_VERIFICATION_INITIAL,
-    KIND_VERIFICATION_RETRY,
-    KIND_WEB_SEARCH,
     STATUS_ERROR,
     STATUS_OK,
-    STATUS_SKIPPED,
 )
 
 _log = logging.getLogger(__name__)
@@ -132,23 +124,6 @@ def capture_pipeline_start(
 
 
 @_safe
-def capture_pipeline_end(
-    handle: SpanHandle | None,
-    *,
-    success: bool,
-    summary: dict[str, Any] | None = None,
-) -> None:
-    recorder = _get()
-    if recorder is None or handle is None:
-        return
-    recorder.close_span(
-        handle,
-        outputs={"success": success, "summary": summary or {}},
-        status=STATUS_OK if success else STATUS_ERROR,
-    )
-
-
-@_safe
 def capture_pipeline_end_by_id(
     span_id: str,
     *,
@@ -182,116 +157,6 @@ def capture_note(handle: SpanHandle | None, message: str, **fields: Any) -> None
         return
     target = handle if handle is not None else current_span()
     recorder.add_event(target, EVENT_NOTE, message=message, **fields)
-
-
-# ---- Extraction --------------------------------------------------------
-@_safe
-def capture_extraction_span(
-    *,
-    filename: str,
-    parent: SpanHandle | None = None,
-) -> SpanHandle | None:
-    recorder = _get()
-    if recorder is None:
-        return None
-    return recorder.open_span(
-        KIND_EXTRACTION,
-        f"extract: {filename}",
-        parent=parent,
-        inputs={"filename": filename},
-    )
-
-
-@_safe
-def capture_extraction_end(
-    handle: SpanHandle | None,
-    *,
-    success: bool,
-    paragraph_count: int = 0,
-    extraction_warnings: list[str] | None = None,
-    error: str | None = None,
-) -> None:
-    recorder = _get()
-    if recorder is None or handle is None:
-        return
-    recorder.close_span(
-        handle,
-        outputs={
-            "paragraph_count": paragraph_count,
-            "extraction_warnings": list(extraction_warnings or []),
-        },
-        status=STATUS_OK if success else STATUS_ERROR,
-        error=error,
-    )
-
-
-# ---- Review ------------------------------------------------------------
-@_safe
-def capture_review_call(
-    *,
-    filename: str,
-    model: str,
-    cycle_label: str,
-    system_prompt: str = "",
-    user_message: str = "",
-    paragraph_map_summary: dict[str, Any] | None = None,
-    pre_detected_alerts_count: int = 0,
-    parent: SpanHandle | None = None,
-) -> SpanHandle | None:
-    recorder = _get()
-    if recorder is None:
-        return None
-    inputs: dict[str, Any] = {
-        "filename": filename,
-        "model": model,
-        "cycle_label": cycle_label,
-        "paragraph_map_summary": paragraph_map_summary or {},
-        "pre_detected_alerts_count": pre_detected_alerts_count,
-    }
-    if system_prompt:
-        inputs["system_prompt"] = recorder.prompt_ref("review_system", system_prompt)
-    if user_message:
-        inputs["user_message"] = recorder.prompt_ref("review_user", user_message)
-    return recorder.open_span(
-        KIND_REVIEW,
-        f"review: {filename}",
-        parent=parent,
-        inputs=inputs,
-    )
-
-
-@_safe
-def capture_review_end(
-    handle: SpanHandle | None,
-    *,
-    finding_count: int,
-    parse_status: str,
-    stop_reason: str | None,
-    structured_payload: dict[str, Any] | None = None,
-    raw_response: str = "",
-    thinking_text: str = "",
-    findings_summary: list[dict[str, Any]] | None = None,
-    error: str | None = None,
-) -> None:
-    recorder = _get()
-    if recorder is None or handle is None:
-        return
-    outputs: dict[str, Any] = {
-        "finding_count": finding_count,
-        "parse_status": parse_status,
-        "stop_reason": stop_reason,
-        "structured_payload": structured_payload,
-        "findings": list(findings_summary or []),
-    }
-    if recorder.is_deep:
-        outputs["raw_response"] = raw_response
-        outputs["thinking_text"] = thinking_text
-    recorder.close_span(
-        handle,
-        outputs=outputs,
-        status=STATUS_OK if error is None else STATUS_ERROR,
-        error=error,
-    )
 
 
 # ---- Cross-check -------------------------------------------------------
@@ -390,35 +255,6 @@ def capture_verification_call(
 
 
 @_safe
-def capture_verification_wave_call(
-    *,
-    finding_id: str,
-    wave_kind: str,  # "retry" | "continuation"
-    wave_index: int,
-    routing_decision: dict[str, Any],
-    parent: SpanHandle | None = None,
-) -> SpanHandle | None:
-    recorder = _get()
-    if recorder is None:
-        return None
-    kind = (
-        KIND_VERIFICATION_RETRY if wave_kind == "retry" else KIND_VERIFICATION_CONTINUATION
-    )
-    return recorder.open_span(
-        kind,
-        f"verify-{wave_kind} #{wave_index}: {finding_id}",
-        parent=parent,
-        inputs={
-            "finding_id": finding_id,
-            "wave_kind": wave_kind,
-            "wave_index": wave_index,
-            "routing_decision": routing_decision,
-        },
-        metadata={"finding_id": finding_id, "wave_kind": wave_kind},
-    )
-
-
-@_safe
 def capture_verification_end(
     handle: SpanHandle | None,
     *,
@@ -502,104 +338,6 @@ def capture_stream_chunk(handle: SpanHandle | None, text: str) -> None:
     if recorder is None or not recorder.is_deep:
         return
     recorder.add_event(handle, EVENT_STREAM_CHUNK, text=text)
-
-
-@_safe
-def capture_thinking_block(handle: SpanHandle | None, text: str) -> None:
-    recorder = _get()
-    if recorder is None:
-        return
-    # Default mode keeps the consolidated text on the parent review/verify
-    # span (caller does that via capture_review_end / capture_verification_end);
-    # the per-block event still fires so the timeline view can render
-    # individual thinking moments.
-    recorder.add_event(handle, EVENT_THINKING_BLOCK, text=text)
-
-
-@_safe
-def capture_tool_use_block(handle: SpanHandle | None, *, tool_name: str, tool_input: Any, tool_use_id: str | None = None) -> None:
-    recorder = _get()
-    if recorder is None:
-        return
-    recorder.add_event(
-        handle,
-        EVENT_TOOL_USE,
-        tool_name=tool_name,
-        tool_input=tool_input,
-        tool_use_id=tool_use_id,
-    )
-
-
-@_safe
-def capture_tool_result_block(
-    handle: SpanHandle | None,
-    *,
-    tool_use_id: str | None,
-    content: Any,
-    is_error: bool = False,
-) -> None:
-    recorder = _get()
-    if recorder is None:
-        return
-    recorder.add_event(
-        handle,
-        EVENT_TOOL_RESULT,
-        tool_use_id=tool_use_id,
-        content=content,
-        is_error=is_error,
-    )
-
-
-@_safe
-def capture_web_search_query(handle: SpanHandle | None, *, query: str) -> None:
-    recorder = _get()
-    if recorder is None:
-        return
-    recorder.add_event(handle, EVENT_WEB_SEARCH_QUERY, query=query)
-
-
-@_safe
-def capture_web_search_result(
-    handle: SpanHandle | None,
-    *,
-    urls_with_titles: list[dict[str, Any]],
-    snippet_bodies_included: bool,
-) -> None:
-    recorder = _get()
-    if recorder is None:
-        return
-    recorder.add_event(
-        handle,
-        EVENT_WEB_SEARCH_RESULT,
-        urls_with_titles=list(urls_with_titles),
-        snippet_bodies_included=snippet_bodies_included,
-    )
-
-
-@_safe
-def capture_web_fetch_request(handle: SpanHandle | None, *, url: str) -> None:
-    recorder = _get()
-    if recorder is None:
-        return
-    recorder.add_event(handle, EVENT_WEB_FETCH_REQUEST, url=url)
-
-
-@_safe
-def capture_web_fetch_result(
-    handle: SpanHandle | None,
-    *,
-    url: str,
-    title: str = "",
-    content_preview: str = "",
-    is_error: bool = False,
-) -> None:
-    recorder = _get()
-    if recorder is None:
-        return
-    fields = {"url": url, "title": title, "is_error": is_error}
-    if recorder.is_deep:
-        fields["content_preview"] = content_preview
-    recorder.add_event(handle, EVENT_WEB_FETCH_RESULT, **fields)
 
 
 @_safe

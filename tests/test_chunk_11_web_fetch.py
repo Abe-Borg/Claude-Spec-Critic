@@ -46,7 +46,7 @@ from src.orchestration.resume_state import (
     serialize_verification_result,
 )
 from src.output.report_exporter import export_report
-from src.review.reviewer import EditProposal, Finding, ReviewResult
+from src.review.reviewer import Finding, ReviewResult
 from src.verification.source_grounding import SearchedSource
 from src.verification.verification_cache import (
     VerificationCache,
@@ -69,7 +69,6 @@ from src.verification.verifier import (
 from tests.fixtures.fake_anthropic import (
     FakeMessage,
     FakeServerToolUseBlock,
-    FakeTextBlock,
     FakeToolUseBlock,
     FakeUsage,
     FakeWebSearchResultBlock,

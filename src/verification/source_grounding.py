@@ -33,9 +33,9 @@ parsed, while ``_collect_search_evidence`` is still in scope.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable
-from urllib.parse import parse_qsl, urlsplit, urlunsplit, unquote
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 
 # Tracking parameters that mean the same URL when stripped. Keep this

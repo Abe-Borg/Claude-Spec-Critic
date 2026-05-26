@@ -36,7 +36,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from .config import LEVEL_DEEP, LEVEL_DEFAULT, LEVEL_OFF
+from .config import LEVEL_DEEP, LEVEL_DEFAULT
 from .redaction import scrub_data
 from .spans import (
     AgentSpan,

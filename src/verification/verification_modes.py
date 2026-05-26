@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..core.api_config import (
-    MODEL_OPUS_47,
     MODEL_SONNET_46,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT,

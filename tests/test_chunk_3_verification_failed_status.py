@@ -26,7 +26,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.orchestration.resume_state import (

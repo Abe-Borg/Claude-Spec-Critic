@@ -6,7 +6,6 @@ we don't pay tokens for them.
 """
 from __future__ import annotations
 
-import re
 
 from ..core.api_config import (
     VERIFICATION_ESCALATION_MODEL,
