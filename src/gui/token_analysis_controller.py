@@ -20,7 +20,7 @@ import threading
 from ..core.code_cycles import DEFAULT_CYCLE
 from ..input.extractor import ExtractedSpec, extract_text
 from ..review.prompts import get_system_prompt
-from ..core.tokenizer import exceeds_per_call_limit
+from ..core.tokenizer import count_tokens, exceeds_per_call_limit
 
 
 # Chunk D2.2: 300–500 ms recommended by the delta plan. 400 ms balances
@@ -63,15 +63,13 @@ def analyze_tokens(app, file_paths) -> None:
             _dispatch_if_current(lambda: app._clear_file_state())
             file_data = []
             processed_names: list[str] = []
-            from tiktoken import get_encoding
-            enc = get_encoding("cl100k_base")
-            sys_tokens = len(enc.encode(get_system_prompt(cycle)))
-            ctx_tokens = len(enc.encode(project_context)) if project_context else 0
+            sys_tokens = count_tokens(get_system_prompt(cycle))
+            ctx_tokens = count_tokens(project_context) if project_context else 0
             extracted_specs: list[ExtractedSpec] = []
             for f in file_paths:
                 try:
                     spec = extract_text(f)
-                    tokens = len(enc.encode(spec.content))
+                    tokens = count_tokens(spec.content)
                     file_data.append({"path": f, "filename": spec.filename, "tokens": tokens, "content": spec.content})
                     processed_names.append(f.name)
                     extracted_specs.append(spec)
@@ -165,10 +163,12 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
                 # request, so id-tagged element overhead is reflected.
                 paragraph_map=biggest_spec.paragraph_map,
             )
+            from ..review.structured_schemas import review_findings_tool
             exact = count_tokens_via_api(
                 model=selected_model,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
+                tools=[review_findings_tool()],
             )
             if exact is None:
                 return
@@ -225,3 +225,11 @@ def on_file_selection_change(app) -> None:
     app.token_gauge.update_gauge(largest_call, fc)
     app.run_button.configure(state="normal" if (fc > 0 and not per_file_exceeded) else "disabled")
     app.file_list_panel.set_over_limit(per_file_exceeded)
+    if fc > 0 and getattr(app, "_extracted_specs", None):
+        refresh_exact_token_count(
+            app, selected_data, app._extracted_specs,
+            app._get_project_context(), DEFAULT_CYCLE,
+            getattr(app, "_system_prompt_tokens", 0),
+            getattr(app, "_project_context_tokens", 0),
+            lambda fn: app.after(0, fn),
+        )

@@ -20,7 +20,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from ..input.extractor import CONTEXT_ATTACHMENT_EXTENSIONS, extract_context_text
-from ..core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
+from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from .widgets import COLORS
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
@@ -65,9 +65,7 @@ def do_context_change(app) -> None:
     app._context_debounce_id = None
     ctx = get_project_context(app)
     if ctx:
-        from tiktoken import get_encoding
-        enc = get_encoding("cl100k_base")
-        app._project_context_tokens = len(enc.encode(ctx))
+        app._project_context_tokens = count_tokens(ctx)
     else:
         app._project_context_tokens = 0
     update_context_token_label(app)
@@ -168,9 +166,7 @@ def attach_context_files(app, target_textbox=None) -> None:
         existing = target_textbox.get("1.0", "end").strip()
     merged = f"{existing}\n\n{combined}" if existing else combined
 
-    from tiktoken import get_encoding
-    enc = get_encoding("cl100k_base")
-    merged_tokens = len(enc.encode(merged))
+    merged_tokens = count_tokens(merged)
     if merged_tokens > PROJECT_CONTEXT_MAX_TOKENS:
         messagebox.showerror(
             "Project Context too large",
@@ -222,9 +218,7 @@ def open_context_modal(app) -> None:
     def _save_and_close():
         new_text = modal_textbox.get("1.0", "end").strip()
         if new_text:
-            from tiktoken import get_encoding
-            enc = get_encoding("cl100k_base")
-            tokens = len(enc.encode(new_text))
+            tokens = count_tokens(new_text)
             if tokens > PROJECT_CONTEXT_MAX_TOKENS:
                 messagebox.showerror(
                     "Project Context too large",
