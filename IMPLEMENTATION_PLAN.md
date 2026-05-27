@@ -33,19 +33,24 @@ Dependencies between modules are called out explicitly where they exist.
 
 ## At a glance
 
-| Module | What | Importance | Safe to skip? | Effort | Depends on |
-|---|---|---|---|---|---|
-| **M1** | Remove the resume / durable-state subsystem | 🟠 (Directed) | **No** | Large | — |
-| **M2** | Resolve the orphaned cross-check suppression feature | 🟠 High | For now | Small (delete) / Med (wire) | needs your decision |
-| **M3** | Purge the auto-apply / locator fossils | 🟡 Medium | Yes | Medium | — |
-| **M4** | Sweep the remaining dead symbols | ⚪ Low | Yes | Small | — |
-| **M5** | Add minimal CI | 🟠 High | For now | Small | — |
-| **M6** | Fix CLAUDE.md / README staleness | 🟡 Medium | For now | Small | M1, M2, M3 (doc tail) |
-| **M7** | Unify `VerificationResult` serialization | ⚪ Low | Yes | Medium | easier after M1 |
-| **M8** | Split the `verifier.py` god-module | ⚪ Low | Yes | Large/risky | — |
-| **M9** | Cosmetic: chunk-comments, test names, router/routing rename | ⚪ Low | Yes | Medium (mechanical) | — |
+| Module | What | Importance | Safe to skip? | Effort | Depends on | Status |
+|---|---|---|---|---|---|---|
+| **M1** | Remove the resume / durable-state subsystem | 🟠 (Directed) | **No** | Large | — | — |
+| **M2** | Resolve the orphaned cross-check suppression feature | 🟠 High | For now | Small (delete) / Med (wire) | needs your decision | — |
+| **M3** | Purge the auto-apply / locator fossils | 🟡 Medium | Yes | Medium | — | — |
+| **M4** | Sweep the remaining dead symbols | ⚪ Low | Yes | Small | — | ✅ **Done** — PR #194 (merged) |
+| **M5** | Add minimal CI | 🟠 High | For now | Small | — | — |
+| **M6** | Fix CLAUDE.md / README staleness | 🟡 Medium | For now | Small | M1, M2, M3 (doc tail) | 🟡 Step 1 done — PR #195 |
+| **M7** | Unify `VerificationResult` serialization | ⚪ Low | Yes | Medium | easier after M1 | — |
+| **M8** | Split the `verifier.py` god-module | ⚪ Low | Yes | Large/risky | — | — |
+| **M9** | Cosmetic: chunk-comments, test names, router/routing rename | ⚪ Low | Yes | Medium (mechanical) | — | — |
 
 **If you want the highest value for the least work:** do **M1 + M2 (decide) + M5 + M6**. Everything else is hygiene you can take or leave.
+
+### Progress log
+
+- **M4 — Sweep dead symbols** — ✅ **merged** via PR #194. Removed confirmed zero-caller symbols across `widgets.py`, `api_config.py`, `extraction_cache.py`, `prompt_serialization.py`, `spans.py`, `config.py`, `verification_routing.py`. Two deliberate deviations from the literal list, both within the module's stated latitude: **kept** `clear_token_cache` (live test-fixture use — the documented "keep both" option) and **relocated** `_tools_include_web_fetch` into its test file rather than deleting the behavior tests that consume it. Hermetic suite green (677 passed).
+- **M6 step 1 — Stale resume-retry stub docs** — 🟡 **open** in PR #195. Removed the `resume_retry_failed_only` / `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` references (already gone from `src/`) from CLAUDE.md (Chunk 12 paragraph + §8 row) and README.md (the "(Stub)" section + the Chunk 12 changelog sentence). M6 steps 2–5 remain — they are the doc tail of M1 / M2 / M3.
 
 ---
 
@@ -106,7 +111,7 @@ Dependencies between modules are called out explicitly where they exist.
 
 ---
 
-## M4 — Sweep the remaining dead symbols  ⚪ Low · Safe to skip: **Yes**
+## M4 — Sweep the remaining dead symbols  ⚪ Low · Safe to skip: **Yes** · ✅ DONE (PR #194, merged)
 
 **Why it matters.** Pure hygiene — a smaller, more honest surface. Good "warm-up" batch; each is a confirmed zero-caller symbol.
 
@@ -135,12 +140,12 @@ Dependencies between modules are called out explicitly where they exist.
 
 ---
 
-## M6 — Fix CLAUDE.md / README staleness  🟡 Medium · Safe to skip: **For now**
+## M6 — Fix CLAUDE.md / README staleness  🟡 Medium · Safe to skip: **For now** · 🟡 Step 1 DONE (PR #195)
 
 **Why it matters.** CLAUDE.md is the engineering reference the next agent (including future-me) reads first. Stale entries don't just clutter — they actively cause wrong decisions.
 
 **Scope / steps:**
-1. **Already stale today (independent of everything):** remove the `resume_retry_failed_only` stub description from the Chunk 12 section, and remove the `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` row from the §8 env-var table. Both describe a function/flag that was already deleted from `src/`.
+1. ✅ **Done (PR #195).** Removed the `resume_retry_failed_only` stub description from the Chunk 12 section and the `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` row from the §8 env-var table — both described a function/flag already deleted from `src/`. Also removed the matching references in README.md (the "(Stub)" section + the Chunk 12 changelog sentence).
 2. **After M1:** delete §9 "Resume State" entirely, and scrub resume mentions from §1, the high-level flow, and §8.
 3. **After M2:** if you chose M2b, delete the §2 "Cross-check dependency suppression" block and the `MANUAL_REVIEW_REQUIRED`/`SUPPRESSED` rows that depend on it; if M2a, keep but verify the description matches the now-wired behavior.
 4. **After M3:** fix any invariant text that still implies an internal applier/locator.
