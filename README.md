@@ -107,20 +107,6 @@ the resume state (no schema bump — runtime telemetry, not verdict
 semantics), so a cache replay or a resumed report renders the same
 `VERIFIED_CONTESTED` status the original run produced.
 
-## Re-Verifying Operationally-Failed Findings (Stub)
-
-`VERIFICATION_FAILED` findings (transient operational errors — rate
-limit, server error, network failure, parse error, INVALID_REQUEST,
-batch cancellation) are not persisted in the verification cache, so a
-re-run will re-attempt verification for them automatically. For
-larger runs where re-running the entire pipeline is expensive, the
-`SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY=1` env var is reserved as the
-toggle for "on the next resume, only re-submit findings whose previous
-verification failed operationally" — the actual implementation is
-deferred to a focused future change (the helper currently logs a
-warning at startup when the flag is set so the operator knows it is
-noted but not yet wired).
-
 ## Budget-Exhausted Findings
 
 When the verifier consumes its full mode-scaled `web_search` budget
@@ -218,7 +204,7 @@ A batch run's trace survives an app restart: `start_batch_review` stamps the run
 - Severity-tiered web-search budgets: CRITICAL=8, HIGH=7, MEDIUM=5, GRIPES=3
 - Verification output cap tightened to 16k; `SYNTHESIS_OUTPUT_CAP` and `HAIKU_TRIAGE_OUTPUT_CAP` added
 - Cross-check chunking refined (Div 21 / 22 / 23 / Controls / 25 + 01)
-- **Trust Upgrade Chunk 12**: New `VERIFIED_CONTESTED` status (⚡, purple) when initial and escalated verifiers disagreed on grounded verdicts; routes to `MANUAL_EDIT_CANDIDATE` regardless of confidence. Evidence panel renders both verdicts and citation sets side-by-side. `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` env var reserved (stub) for a future "re-verify only operationally-failed findings" resume mode.
+- **Trust Upgrade Chunk 12**: New `VERIFIED_CONTESTED` status (⚡, purple) when initial and escalated verifiers disagreed on grounded verdicts; routes to `MANUAL_EDIT_CANDIDATE` regardless of confidence. Evidence panel renders both verdicts and citation sets side-by-side.
 - **Trust Upgrade Chunk 13**: New `VerificationResult.budget_exhausted` sentinel on UNVERIFIED results whose verifier consumed its full mode-scaled `web_search` budget. The report's per-finding status line appends a `(search budget exhausted)` sub-label; the Run Diagnostics banner gets a "Budget-exhausted findings" row plus a recovery-hint paragraph pointing operators at the severity-tiered budget knob. Cache refuses to persist exhausted results (transient signal — re-run with higher severity allocates more budget). Calibration eval surfaces the count in its summary header.
 
 Older changelog entries trimmed; see git history for v2.10.0, v2.8.x, and the non-GUI refactor chunks A–P.
