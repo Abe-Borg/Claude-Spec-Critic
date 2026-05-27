@@ -257,14 +257,12 @@ class VerificationResult:
     # local_skip via the "requires elevated confidence" keyword list
     # (``"leed"`` / ``"internal contradiction"``). The routing decision is
     # unchanged for those keywords (they still avoid the web-search round
-    # trip), but the composite-confidence multiplier in
-    # :func:`composite_edit_confidence` applies an additional 0.85 factor
-    # when this flag is set so the auto-edit bar is higher for the
-    # residual-risk classes. Runtime telemetry (like
-    # ``verification_failed``), not durable verdict semantics — local-skip
-    # results never reach the verification cache because they aren't
-    # grounded, so no cache schema bump is required. Round-trips through
-    # resume state so a resumed report keeps the multiplier applied.
+    # trip); the flag is retained as telemetry so a downstream applier can
+    # apply a higher bar before acting on these residual-risk classes.
+    # Runtime telemetry (like ``verification_failed``), not durable verdict
+    # semantics — local-skip results never reach the verification cache
+    # because they aren't grounded, so no cache schema bump is required.
+    # Round-trips through resume state so a resumed report keeps the flag.
     requires_elevated_confidence: bool = False
     # ----- Web-fetch telemetry (Chunk 11 / Trust Upgrade) -----------------
     # Companion to ``web_search_requests`` / ``successful_source_count``.

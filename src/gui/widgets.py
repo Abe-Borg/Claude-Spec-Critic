@@ -538,10 +538,9 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                     text_color=COLORS["text_muted"],
                 ).pack(anchor="w")
 
-        # Failed / skipped specs.
+        # Failed specs.
         failed = summary.get("failed_specs") or []
-        skipped = summary.get("skipped_specs") or []
-        if failed or skipped:
+        if failed:
             fs_frame = ctk.CTkFrame(parent, fg_color="transparent")
             fs_frame.pack(fill="x", pady=(8, 0))
             ctk.CTkLabel(
@@ -549,43 +548,12 @@ class DiagnosticsWindow(ctk.CTkToplevel):
                 font=ctk.CTkFont(family="Consolas", size=12),
                 text_color=COLORS["text_secondary"],
             ).pack(anchor="w")
-            if failed:
-                ctk.CTkLabel(
-                    fs_frame,
-                    text=f"  failed   ({len(failed)}): {', '.join(failed[:6])}{' ...' if len(failed) > 6 else ''}",
-                    font=ctk.CTkFont(family="Consolas", size=12),
-                    text_color=COLORS["error"],
-                ).pack(anchor="w")
-            if skipped:
-                ctk.CTkLabel(
-                    fs_frame,
-                    text=f"  skipped  ({len(skipped)}): {', '.join(skipped[:6])}{' ...' if len(skipped) > 6 else ''}",
-                    font=ctk.CTkFont(family="Consolas", size=12),
-                    text_color=COLORS["warning"],
-                ).pack(anchor="w")
-
-        # Edit pipeline outcomes.
-        applied = summary.get("edits_applied_total", 0)
-        skipped_e = summary.get("edits_skipped_total", 0)
-        failed_e = summary.get("edits_failed_total", 0)
-        ambig = summary.get("ambiguous_locator_count", 0)
-        edit_reasons = summary.get("edit_skip_reasons") or {}
-        if applied or skipped_e or failed_e or ambig or edit_reasons:
-            ed_frame = ctk.CTkFrame(parent, fg_color="transparent")
-            ed_frame.pack(fill="x", pady=(8, 0))
             ctk.CTkLabel(
-                ed_frame,
-                text=f"Edits: applied={applied}  skipped={skipped_e}  failed={failed_e}  ambiguous_locators={ambig}",
+                fs_frame,
+                text=f"  failed   ({len(failed)}): {', '.join(failed[:6])}{' ...' if len(failed) > 6 else ''}",
                 font=ctk.CTkFont(family="Consolas", size=12),
-                text_color=COLORS["text_secondary"],
+                text_color=COLORS["error"],
             ).pack(anchor="w")
-            if edit_reasons:
-                for reason, cnt in edit_reasons.items():
-                    ctk.CTkLabel(
-                        ed_frame, text=f"  skip[{reason}] = {cnt}",
-                        font=ctk.CTkFont(family="Consolas", size=12),
-                        text_color=COLORS["text_muted"],
-                    ).pack(anchor="w")
 
         # Output / search budget telemetry.
         ot = summary.get("output_telemetry") or {}

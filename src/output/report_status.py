@@ -69,11 +69,11 @@ class ReportStatus(str, Enum):
     # the disagreement itself is a quality signal the reviewer needs to
     # see: even though the final verdict may be grounded and supported
     # in isolation, the fact that two capable models reading the same
-    # sources reached different conclusions is reason enough to route
-    # the finding to manual review rather than auto-applying it. The
-    # status overrides the per-verdict classifications so a CONFIRMED
-    # final verdict that disagreed with an initial DISPUTED renders as
-    # VERIFIED_CONTESTED, not VERIFIED_SUPPORTED.
+    # sources reached different conclusions is reason enough to flag the
+    # finding for manual review so a downstream applier can withhold the
+    # edit. The status overrides the per-verdict classifications so a
+    # CONFIRMED final verdict that disagreed with an initial DISPUTED
+    # renders as VERIFIED_CONTESTED, not VERIFIED_SUPPORTED.
     VERIFIED_CONTESTED = "VERIFIED_CONTESTED"
 
 
