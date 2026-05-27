@@ -485,8 +485,7 @@ class TestBannerRendersBudgetExhausted:
     def test_banner_row_appears_with_count(self):
         doc = Document()
         summary = {
-            "auto_edit": 0,
-            "manual_edit": 1,
+            "edit_suggested": 1,
             "report_only": 0,
             "suppressed": 0,
             "verification_failed": 0,
@@ -506,8 +505,7 @@ class TestBannerRendersBudgetExhausted:
     def test_zero_count_renders_without_hint(self):
         doc = Document()
         summary = {
-            "auto_edit": 1,
-            "manual_edit": 0,
+            "edit_suggested": 1,
             "report_only": 0,
             "suppressed": 0,
             "verification_failed": 0,
@@ -528,8 +526,7 @@ class TestBannerRendersBudgetExhausted:
     def test_nonzero_count_renders_recovery_hint(self):
         doc = Document()
         summary = {
-            "auto_edit": 0,
-            "manual_edit": 1,
+            "edit_suggested": 1,
             "report_only": 0,
             "suppressed": 0,
             "verification_failed": 0,
@@ -559,8 +556,7 @@ class TestBannerRendersBudgetExhausted:
 
         doc = Document()
         summary = {
-            "auto_edit": 0,
-            "manual_edit": 1,
+            "edit_suggested": 1,
             "report_only": 0,
             "suppressed": 0,
             "verification_failed": 0,

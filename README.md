@@ -1,8 +1,8 @@
 # Spec Critic
 
-**v2.11.0** — AI-assisted M&P specification review for California K-12 DSA projects.
+**v3.0.0** — AI-assisted M&P specification review for California K-12 DSA projects.
 
-Spec Critic reviews mechanical and plumbing CSI-format `.docx` specifications against California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) and the NFPA / ASHRAE / IAPMO / UL editions adopted for the current cycle, using Claude. It produces structured findings with severity classifications, confidence scores, web-search-backed verification verdicts, optional cross-spec coordination analysis, and either inline edits or yellow-highlighted suggestion annotations on a copy of each spec.
+Spec Critic reviews mechanical and plumbing CSI-format `.docx` specifications against California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) and the NFPA / ASHRAE / IAPMO / UL editions adopted for the current cycle, using Claude. It produces structured findings with severity classifications, confidence scores, web-search-backed verification verdicts, optional cross-spec coordination analysis, and structured edit instructions — rendered in a Word report and written to a machine-readable JSON sidecar for a separate, downstream applier to ingest. Spec Critic emits edit instructions but does not apply them.
 
 Configured for the **California 2025 code cycle** by default (`src/core/code_cycles.py`). The reviewer and verifier prompts pin the adopted NFPA / ASHRAE / IAPMO / UL editions for the cycle so the model verifies claims against the editions California actually adopted; the exported report's methodology note enumerates the pinned editions.
 
@@ -11,178 +11,34 @@ Configured for the **California 2025 code cycle** by default (`src/core/code_cyc
 - **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` verdicts require at least one cited URL that the `web_search` tool actually retrieved.
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, optional Haiku triage, severity-tiered + profile-aware search budgets, persistent on-disk claim cache.
 - **Robust batch processing.** Durable resume across every pipeline phase with content + source-file SHA-256 digests.
-- **Safe Word output.** Id-anchored matching when the model cites a paragraph id; surgical edits gated by safety categories; offset revalidation runs immediately before every mutation. Annotate mode is non-destructive.
-- **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for transient operational errors and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of four `EditActionLabel` values so the report makes uncertainty visible.
+- **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
+- **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for transient operational errors and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of three `EditActionLabel` values (`EDIT_SUGGESTED` / `REPORT_ONLY` / `SUPPRESSED`) so the report makes uncertainty visible.
 
 ## Pipeline at a Glance
 
 1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers. Cached by file hash. Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …).
 2. **Local Pre-Screening** — Deterministic detectors run before any API call: LEED, placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 3. **Per-Spec Review** — Each spec sent to Claude Opus 4.7 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
-4. **Deduplication** — Identical findings consolidated across specs; per-file occurrences tracked separately for multi-file edits.
+4. **Deduplication** — Identical findings consolidated across specs; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text.
 5. **Cross-Spec Coordination** *(optional)* — Chunked by CSI division (21 / 22 / 23 / Controls / 25 + 01) on large projects. Runs in parallel with verification.
 6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 4.6 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 4.7. Persistent on-disk cache.
-7. **Edit Application** *(optional)* — **Edit mode** applies surgical edits to a copy. **Annotate mode** inserts yellow-highlighted suggestions without mutating the original.
+7. **Report + Edit Sidecar** — A Word report is exported with every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar lists each finding's edit proposal for a downstream applier. Spec Critic does not modify spec documents.
 
-## Auto-Apply Quality Guarantees
+## Edit Instructions (Emit-Only)
 
-Edit mode applies surgical edits to a copy of each spec. The auto-apply
-pipeline enforces the following quality guarantees so the output
-document reads consistently with the source:
+Spec Critic emits edit instructions but does not apply them. Each finding
+may carry a structured edit proposal (action / existing text → replacement
+text / target element id / confidence). Proposals are rendered inline in the
+Word report ("Proposed replacement") and written to a machine-readable
+`<report-stem>.edits.json` sidecar next to the report, as a clean hand-off to
+a separate, future program that ingests the instructions and applies them.
 
-- **Replacement text style matching.** Before each edit is applied, the
-  source document is profiled for its typographic conventions (curly vs
-  straight quotes, em-dash vs hyphen, ASCII vs Unicode apostrophe, NBSP
-  in measurements). The model's `replacement_text` is rewritten to
-  match the profile, so an edit landing in a curly-quote document keeps
-  curly quotes (and vice versa). Counter:
-  `DiagnosticsReport.replacement_text_normalized_count`. Kill switch:
-  `SPEC_CRITIC_NORMALIZE_REPLACEMENT_STYLE=0`.
-- **Punctuation boundary preservation.** When the model's `existingText`
-  ends with `.`, `,`, `;`, or `:` and the corresponding
-  `replacement_text` does not (or vice versa), the applied edit silently
-  drops or doubles the punctuation. The fix is a deterministic pass
-  that adds back the original trailing punctuation when the next live
-  character is whitespace / end-of-paragraph, and strips a doubled
-  trailing mark when the replacement adds one already present in the
-  live paragraph. Counter:
-  `DiagnosticsReport.punctuation_boundary_fixed_count`. Kill switch:
-  `SPEC_CRITIC_PUNCTUATION_BOUNDARY_FIX=0`.
-- **Whole-paragraph DELETE inside table cells.** A DELETE that covers
-  the entire matched paragraph inside a table cell now removes the
-  `<w:p>` element (when the cell has additional paragraphs) instead of
-  clearing its text and leaving a blank line in the cell. When the
-  paragraph is the cell's only one, its text is cleared in place so
-  Word's "every cell needs at least one paragraph" rule still holds.
-- **ADD-inserted paragraphs do not join the anchor's list.** When an
-  ADD action's anchor paragraph is part of a numbered/bulleted list,
-  the inherited paragraph properties are scrubbed before the new
-  paragraph is built: `<w:numPr>`, `<w:outlineLvl>`, and `<w:pBdr>`
-  are always stripped; `<w:ind>` is stripped only when the inserted
-  text itself does not read as list-shaped (no `A.` / `1.` / `•` /
-  `–` / `-` prefix). `<w:pStyle>`, `<w:jc>`, `<w:spacing>`, and the
-  pPr `<w:rPr>` are preserved so the new paragraph still inherits
-  font, size, and alignment from its anchor. Kill switch:
-  `SPEC_CRITIC_ADD_INHERITS_LIST_NUMBERING=1` reverts to the legacy
-  verbatim-deepcopy behavior.
-- **ADD without explicit insertPosition is refused.** ADD findings
-  whose `insertPosition` is missing or invalid ("before"/"after" are
-  the only acceptable values) are demoted to REPORT_ONLY at parse
-  time. The auto-apply layer also refuses defensively when a legacy
-  resume payload or test fixture sneaks an ADD without a usable
-  position past parsing. The buggy heuristic that previously guessed
-  position by comparing normalized text but slicing raw bytes — which
-  produced inserted paragraphs containing chopped fragments of the
-  anchor — has been removed. Counter:
-  `DiagnosticsReport.add_demoted_missing_position_count`.
-- **Smarter paragraph splitting for inserted content.** ADD
-  replacement text is split into paragraphs as follows: double-newline
-  (`\n\s*\n+`) separators always produce paragraph breaks; chunks
-  whose every non-empty line starts with a list prefix (`A.` / `1.` /
-  `•` / `–` / `-`) are split into one paragraph per item; otherwise
-  single-newline-separated lines are treated as soft breaks inside one
-  paragraph and collapsed to single-space separators. Word renders the
-  result correctly instead of leaving embedded line breaks visible.
-- **Span-aware formatting-loss detection.** The extractor records a
-  per-run `(start_offset, end_offset, format_signature)` map on every
-  body paragraph (`ParagraphMapping.run_format_map`, in stripped-text
-  coordinates). The locator's downgrade pass walks that map to decide
-  whether a partial replacement actually crosses runs with distinct
-  formatting — an EDIT that lands entirely inside one uniformly-
-  formatted region of an otherwise richly-formatted paragraph stays
-  `AUTO_SAFE`, while an EDIT that crosses bold/italic/font boundaries
-  downgrades to `AUTO_WITH_CAUTION`. Whole-paragraph EDITs on a
-  multi-format paragraph still route to `MANUAL_REVIEW` because the
-  full replacement would erase every inline emphasis the paragraph
-  carried. Legacy resume-state payloads without a per-run map fall
-  back to the coarser paragraph-level check, so the new behavior is
-  opt-in by extraction.
-- **Known-pattern formatting restoration (opt-in).** When a partial
-  EDIT crosses runs with distinct character formatting,
-  `_replace_in_paragraph` collapses the affected runs into the first
-  run's formatting and silently drops bold/italic markup on tokens
-  inside the replacement span. After the mutation, the auto-apply
-  pipeline can scan the new replacement text for tokens matching a
-  small registry of recognized standards / code references
-  (`NFPA 13`, `ASCE 7-22`, `CBC 2025`, `Section 23 21 13`, …) and
-  re-apply bold formatting to each match by splitting the containing
-  run. The feature is **default off** because a wrong match could
-  bold something that shouldn't be bold; flip
-  `SPEC_CRITIC_RESTORE_KNOWN_FORMATTING=1` once your workflow has
-  validated the registry. Counter:
-  `DiagnosticsReport.known_pattern_formatting_restored_count`. The
-  registry lives in `src/editing/replacement_style.py:KNOWN_BOLD_PATTERNS`
-  — add new entries when a real workflow proves the new pattern is
-  unambiguous in spec documents.
-- **Conflict resolver surfaces lost narrower-edit intent.** When two
-  edits in the same paragraph have strict containment (broader fully
-  contains narrower, spans not identical), the broader edit still
-  wins — but the conflict resolver now checks whether the narrower
-  edit's correction is preserved in the broader's `replacement_text`
-  (whitespace-normalized, case-insensitive substring). When the
-  narrower's correction is preserved, the skipped outcome's detail
-  reads "intent preserved by broader edit's replacement" and the new
-  `EditOutcome.contained_edit_lost_intent` flag stays False. When the
-  narrower's correction is NOT preserved (a GRIPES typo nested inside
-  a MEDIUM rewrite that picks different text), the broader still
-  applies (preserving user agency), but the flag is set so the report
-  surfaces the loss and the diagnostics counter
-  `DiagnosticsReport.contained_edits_lost_intent_count` aggregates the
-  run-wide frequency. Identical-span duplicates still resolve via the
-  severity / confidence tie-break with no change.
-- **Per-file edit originals survive case/whitespace-only dedup
-  collisions.** `_deduplicate_findings` keys on a digest of normalized
-  (lowercase + whitespace-stripped) issue / existing / replacement
-  text, so two findings whose `existingText` differs only in case or
-  trailing whitespace collapse to one representative. The merged
-  representative's `occurrence_originals` lists every group member as
-  the original `Finding` object, which still carries its
-  pre-normalization text. Edit execution looks up each affected file's
-  original by `fileName` and uses that file's actual `existingText` for
-  locator matching — so the case-only collision does not break either
-  file's edit. This invariant is now locked in by regression tests in
-  `tests/test_chunk_8_dedup_edit_identity.py`.
-- **Cross-paragraph multi-window matches route to manual review.**
-  All cross-paragraph window matches carry the same flat 0.88
-  confidence, so the previous behavior — `max(filtered_spans, ...)`
-  picking the first window by insertion order when multiple windows
-  matched identically — was a coin flip on which paragraph actually
-  got edited. The locator now sets
-  `LocatorResult.cross_paragraph_ambiguous=True` on the multi-window
-  case, sets `safety_category=SAFETY_MANUAL_REVIEW` explicitly, and
-  emits a warning that names the multi-window cause. The
-  single-window cross-paragraph match (one valid window of N
-  paragraphs) keeps its previous behavior (`status="matched"`,
-  AUTO_WITH_CAUTION). Counter:
-  `DiagnosticsReport.cross_paragraph_ambiguity_routed_to_manual_count`.
-- **Verifier correction is sanity-checked before being used as
-  replacement text.** When the verifier returns `CORRECTED` with a
-  non-empty `verification.correction`, the locator previously used
-  the correction string verbatim as the applied edit's replacement.
-  The verifier's prompt is optimized for explanation — corrections
-  often carry parenthetical citations (`(per CBC § 1613.1)`), URLs,
-  paragraph-length expansions, or temporal qualifiers (`current`,
-  `latest`, `as of <year>`) that don't belong in spec body text.
-  `replacement_style.correction_looks_replaceable(correction,
-  original_replacement)` now gates the swap: when it returns False,
-  the locator falls back to the model's original `replacement_text`
-  for the applied edit and sets
-  `LocatorResult.correction_rejected_as_replacement=True`. The
-  verifier's correction stays on `Finding.verification.correction`
-  for the report (so the user still sees the verifier's
-  explanation) — only the *applied* edit text changes. The same
-  sanity check runs in the candidate UI so the preview matches what
-  the apply path will actually land. Counter:
-  `DiagnosticsReport.verifier_correction_rejected_as_replacement_count`.
-  Kill switch: `SPEC_CRITIC_USE_VERIFIER_CORRECTION_AS_REPLACEMENT=1`
-  reverts to the legacy verbatim path. Unlike the other Phase-1 flags
-  this one defaults *off* (the new sanity-checked behavior); set it
-  to an enable token (`1`/`true`/`yes`/`on`) to restore the legacy
-  verbatim path.
-
-Counters render under the "AUTO-APPLY QUALITY" section of the
-diagnostics report; the section is hidden entirely when no quality
-guard fired.
+The locating-and-mutating write-back stack — and the auto-edit confidence
+gating that only existed to decide whether to auto-apply — was removed in
+v3.0.0. A finding's verification status (`VERIFIED_SUPPORTED` /
+`VERIFICATION_FAILED` / `VERIFIED_CONTESTED` / …) and `edit_confidence` ride
+along in the report and the JSON sidecar so a downstream applier can do its
+own gating.
 
 ## Processing Modes
 
@@ -232,10 +88,11 @@ external citations), the finding renders as
 `VERIFIED_SUPPORTED` (✓, green) or `VERIFIED_CONTRADICTED` (✎, amber).
 The disagreement itself is the quality signal: two capable models
 reading real sources reached different conclusions, and the right
-default action is human review rather than auto-applying either side's
-edit. `VERIFIED_CONTESTED` is intentionally not in the
-auto-edit-supportive status set, so contested findings always route to
-`MANUAL_EDIT_CANDIDATE`.
+default action is human review rather than applying either side's
+edit. The `VERIFIED_CONTESTED` status is carried into the report and the
+JSON sidecar so a downstream applier sees the disagreement and can
+withhold the edit, even when the finding still carries an
+`EDIT_SUGGESTED` proposal.
 
 The per-finding evidence panel surfaces both verdicts inline:
 - The "Escalation history" line shows the initial → final verdict
@@ -348,6 +205,11 @@ A batch run's trace survives an app restart: `start_batch_review` stamps the run
 - API keys and bearer tokens are redacted before serialization (shared regex with `diagnostics.py`).
 
 ## Changelog (recent)
+
+### v3.0.0
+- **Emit-but-don't-apply edits.** Removed the surgical write-back stack (the `src/editing/` package: locator, spec_editor, apply_edits, replacement_style, edit_candidates), the GUI apply dialogs, and the auto-edit confidence gating (composite confidence, numeric/standards demotion, the auto-edit floor). Spec Critic now emits structured edit proposals — rendered inline in the Word report and written to a machine-readable `<report-stem>.edits.json` sidecar — for a separate, future applier to ingest.
+- `EditActionLabel` collapsed to `EDIT_SUGGESTED` / `REPORT_ONLY` / `SUPPRESSED`; `classify_edit_action` is now simply "does this finding carry a proposal?" (verification status and `edit_confidence` ride along for a downstream applier to gate on).
+- Removed the now-dead edit-application env vars (`SPEC_CRITIC_TABLE_CELL_AUTO_EDIT`, `_EDIT_TRANSACTIONAL`, `_NORMALIZE_REPLACEMENT_STYLE`, `_PUNCTUATION_BOUNDARY_FIX`, `_ADD_INHERITS_LIST_NUMBERING`, `_RESTORE_KNOWN_FORMATTING`, `_USE_VERIFIER_CORRECTION_AS_REPLACEMENT`, `_AUTO_EDIT_CONFIDENCE_FLOOR`). The verification / grounding system and its calibration eval are unchanged.
 
 ### v2.11.0
 - Default review/cross-check model upgraded to Claude Opus 4.7; escalation model also Opus 4.7

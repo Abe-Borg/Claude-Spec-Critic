@@ -50,7 +50,6 @@
     "correct_verdict": "CONFIRMED",
     "correct_correction_text": null,
     "expected_status": "VERIFIED_SUPPORTED",
-    "expected_edit_action": "REPORT_ONLY",
     "notes": "Although NFPA 13 allows up to 15 ft maximum for light hazard, the 12 ft spec value is the project-specified design value (often constrained by sprinkler coverage area, listing, or local AHJ amendment). The model overgeneralized the code allowance into a 'must replace' edit. This is the canonical 'overconfident numeric swap' false positive Chunk 1 is meant to surface."
   }
 }

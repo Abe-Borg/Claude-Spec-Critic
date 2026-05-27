@@ -275,10 +275,9 @@ def deserialize_verification_result(payload: dict[str, Any] | None) -> Verificat
         # the safe fallback when the original timestamp was never stored).
         cache_entry_created_ts=float(payload.get("cache_entry_created_ts", 0.0) or 0.0),
         # Chunk 10 / Trust Upgrade: defaults to False for legacy state
-        # files written before the field existed (those payloads predate
-        # the elevated-confidence multiplier — leaving the multiplier
-        # neutral at 1.0 is the safe fallback that preserves the
-        # original auto-edit gating decision).
+        # files written before the field existed. The flag is now
+        # telemetry-only — no app code consumes it for routing — so the
+        # default is harmless.
         requires_elevated_confidence=bool(payload.get("requires_elevated_confidence", False)),
         # Chunk 11 / Trust Upgrade: legacy state files predating the
         # web_fetch capability default to 0 / [] so the evidence panel

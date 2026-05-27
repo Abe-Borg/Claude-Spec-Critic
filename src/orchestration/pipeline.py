@@ -209,9 +209,9 @@ class FindingOccurrence:
         Edit execution should prefer the original member finding for each
         affected file so a representative's edit text is never applied to
         a file whose original text differed. Falls back to the
-        representative when no per-file original was recorded — callers
-        that treat that fallback as unsafe (apply_edits.execute_edit_plan)
-        should check :meth:`has_original` first.
+        representative when no per-file original was recorded — a
+        downstream applier that treats that fallback as unsafe should
+        check :meth:`has_original` first.
         """
         return self.original_finding if self.original_finding is not None else self.finding
 

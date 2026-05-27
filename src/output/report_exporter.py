@@ -1562,8 +1562,8 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
           status is the first thing readers see (Directive 5: avoid
           presenting all findings as equally certain).
         - Adds an "Edit eligibility" line so readers can tell at a glance
-          whether the finding is an auto-edit candidate, a manual edit
-          candidate, report-only, or suppressed.
+          whether the finding carries a suggested edit, is report-only, or
+          was suppressed.
         - Renames the spec quote / web sources / rationale / rejected
           sources sub-labels so the four evidence concepts (Directive 3)
           are explicit rather than implied.
@@ -2140,8 +2140,8 @@ def export_report(
     )
 
     # Chunk 6 / Trust Upgrade — Run Diagnostics banner. Renders right
-    # after the title block so the operational picture (auto-edit
-    # eligibility, cache replays, verification failures, parse-time
+    # after the title block so the operational picture (edit-suggested
+    # counts, cache replays, verification failures, parse-time
     # demotions, cross-check status) is the first thing a reviewer
     # sees. Derived from data already on the findings + verification
     # stats; no resume state or persistence changes needed.

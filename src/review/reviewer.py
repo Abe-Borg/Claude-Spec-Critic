@@ -56,8 +56,8 @@ def validate_edit_shape(
 
     The return value is the short human-readable reason that the parser
     stamps on ``Finding.demotion_reason`` so diagnostics, the report, and
-    the edit-candidate UI can all explain *why* a finding lost its edit
-    slot rather than treating it as a generic REPORT_ONLY.
+    the edit-instruction sidecar can all explain *why* a finding lost its
+    edit slot rather than treating it as a generic REPORT_ONLY.
     """
     norm = (action or "").strip().upper()
     if norm == "EDIT":
@@ -103,9 +103,8 @@ class EditProposal:
       insertion point.
     * ``insert_position``   — ADD only: ``"before"`` / ``"after"``.
     * ``target_element_id`` — optional ``ParagraphMapping.element_id`` of
-      the paragraph / row / heading the proposal targets. Disambiguates
-      identical text in different sections and revalidates against the
-      live element at apply time.
+      the paragraph / row / heading the proposal targets. Lets a downstream
+      applier disambiguate identical text in different sections.
     * ``edit_confidence``   — 0.0-1.0 model confidence in the edit itself,
       separate from the finding's overall confidence. Defaults to the
       finding-level confidence when the schema does not surface a
@@ -148,10 +147,10 @@ class Finding:
     # Chunk L / plan section "Separate Findings From Edit Proposals":
     # the optional structured edit half. Findings with no clean textual fix
     # leave this None and set ``actionType = "REPORT_ONLY"`` (or leave the
-    # legacy fields blank). The locator and edit-candidate paths route
-    # through :meth:`as_edit_proposal` so they see the same value whether
-    # the proposal arrived from the new schema slot or was reconstructed
-    # from legacy fields at runtime.
+    # legacy fields blank). Report rendering and the edit-instruction
+    # sidecar route through :meth:`as_edit_proposal` so they see the same
+    # value whether the proposal arrived from the new schema slot or was
+    # reconstructed from legacy fields at runtime.
     edit_proposal: EditProposal | None = None
     # Chunk M / plan section "Cross-Check Dependency Tracking": stable
     # identifier assigned at dedup time. Cross-check findings cite these
@@ -178,8 +177,9 @@ class Finding:
     # when the parser demotes an EDIT / DELETE / ADD action to REPORT_ONLY
     # because action-specific fields were missing, it stamps the short
     # reason here so diagnostics, the report's demoted-edits section, and
-    # the edit-candidate UI can explain *why* the proposal was rejected
-    # instead of treating the finding as a generic REPORT_ONLY. ``None`` is
+    # the edit-instruction sidecar can explain *why* the proposal was
+    # rejected instead of treating the finding as a generic REPORT_ONLY.
+    # ``None`` is
     # the default — the finding was either a real edit, a native
     # REPORT_ONLY emission, or an unknown action coerced to REPORT_ONLY
     # without a per-action shape requirement to cite.
@@ -193,9 +193,8 @@ class Finding:
     # ``evidenceElementId`` / ``edit_proposal`` are never fanned out
     # across files that may have different exact text. Singletons leave
     # this empty (the finding *is* its own original); legacy resume
-    # payloads (pre-Chunk-8) also load empty and the executor falls back
-    # to "auto-edit only the representative's own file, route others to
-    # manual review" rather than guessing.
+    # payloads (pre-Chunk-8) also load empty, in which case a downstream
+    # applier sees only the representative's own per-file text.
     occurrence_originals: list["Finding"] = field(default_factory=list)
 
     def as_edit_proposal(self) -> EditProposal | None:
@@ -214,8 +213,8 @@ class Finding:
         before returning a proposal. A Finding constructed with an
         EDIT/ADD/DELETE action but missing required fields (e.g.,
         ``actionType="EDIT"`` with ``existingText=None``) returns None
-        instead of leaking an unusable proposal into the locator / edit
-        pipeline. Parser callers should never hit this path because
+        instead of leaking an unusable proposal into the report or the
+        edit-instruction sidecar. Parser callers should never hit this path because
         ``_parse_findings`` demotes invalid shapes at parse time; the
         defensive check guards legacy resume payloads and directly-
         constructed test Findings that bypass the parser.
@@ -451,8 +450,8 @@ def _parse_findings(data: list) -> list[Finding]:
         # if the model claims EDIT/DELETE/ADD but omits an action-specific
         # required field, demote the finding to REPORT_ONLY *here*, stamp
         # a clear ``demotion_reason``, and clear every executable edit
-        # field. Downstream code (locator, edit-candidates, spec_editor)
-        # then sees a clean REPORT_ONLY and the finding's underlying
+        # field. Downstream consumers (the report and the edit-instruction
+        # sidecar) then see a clean REPORT_ONLY and the finding's underlying
         # issue is preserved for the report. The previous behavior
         # silently built an EditProposal with missing fields and pushed
         # the error detection into the locator, which had to invent

@@ -53,7 +53,6 @@
     "correct_verdict": "UNVERIFIED",
     "correct_correction_text": null,
     "expected_status": "INSUFFICIENT_EVIDENCE",
-    "expected_edit_action": "REPORT_ONLY",
     "notes": "Chunk 13 / Trust Upgrade: the verifier consumed all 7 of its HIGH-severity searches without grounding the cited DSA section. The result correctly stays UNVERIFIED → INSUFFICIENT_EVIDENCE (no new top-level status). With Chunk 13's detection, the report would also tag this finding with the '(search budget exhausted)' sub-label and surface a Run Diagnostics row counting it; the operator's actionable remedy is to raise the severity to CRITICAL for more search headroom (or to provide the source manually)."
   }
 }

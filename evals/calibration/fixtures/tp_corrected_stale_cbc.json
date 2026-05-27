@@ -51,7 +51,6 @@
     "correct_verdict": "CORRECTED",
     "correct_correction_text": "2025 CBC",
     "expected_status": "VERIFIED_CONTRADICTED",
-    "expected_edit_action": "AUTO_EDIT_CANDIDATE",
     "notes": "DSA does adopt 2025 CBC as the current cycle for K-12 projects."
   }
 }

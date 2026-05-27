@@ -381,7 +381,7 @@ class TraceRecorder:
         """Serialize one Finding to findings.jsonl at its terminal state.
 
         Uses ``dataclasses.asdict`` recursively to capture nested fields
-        (verification, locator_evidence, etc.). Non-dataclass fields fall
+        (verification, occurrence_originals, etc.). Non-dataclass fields fall
         back to ``repr`` so the line stays JSON-serializable even when a
         field's type doesn't have a clean JSON form.
         """

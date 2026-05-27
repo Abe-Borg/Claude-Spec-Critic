@@ -105,12 +105,9 @@ def _is_heading_paragraph(text: str) -> bool:
 
     Chunk K1 needs a cheap, deterministic section attribution so the
     paragraph map can carry a ``section_id`` without re-walking the doc.
-    The locator already has a more elaborate header detector
-    (``edit_locator._header_level``); we deliberately don't import it here
-    to avoid a circular dependency, and the heuristic only has to be
-    close enough that downstream prompts and reports can group paragraphs
-    by section. False positives are harmless — they shift the section
-    boundary by one paragraph.
+    The heuristic only has to be close enough that downstream prompts and
+    reports can group paragraphs by section. False positives are harmless
+    — they shift the section boundary by one paragraph.
     """
     stripped = (text or "").strip()
     if not stripped or len(stripped) > 80:
