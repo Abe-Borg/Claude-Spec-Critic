@@ -49,7 +49,6 @@
     "correct_verdict": "UNVERIFIED",
     "correct_correction_text": null,
     "expected_status": "INSUFFICIENT_EVIDENCE",
-    "expected_edit_action": "REPORT_ONLY",
     "notes": "Model cited a URL (smacna.org/standards/duct-construction-4th-edition) that the search tool never retrieved. The grounding invariant must downgrade the verdict because the citation cannot be validated against actual search results."
   }
 }

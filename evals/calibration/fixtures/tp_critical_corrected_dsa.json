@@ -54,7 +54,6 @@
     "correct_verdict": "CORRECTED",
     "correct_correction_text": "submit to DSA for review",
     "expected_status": "VERIFIED_CONTRADICTED",
-    "expected_edit_action": "AUTO_EDIT_CANDIDATE",
     "notes": "DSA is the correct AHJ for K-12 public school construction. OSHPD/HCAI handles hospitals."
   }
 }

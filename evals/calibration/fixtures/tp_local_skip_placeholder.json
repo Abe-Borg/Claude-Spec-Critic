@@ -45,7 +45,6 @@
     "correct_verdict": "UNVERIFIED",
     "correct_correction_text": null,
     "expected_status": "LOCALLY_CLASSIFIED",
-    "expected_edit_action": "REPORT_ONLY",
     "notes": "Placeholder text is self-evident from the spec — no external verification adds signal. Local skip is the correct routing."
   }
 }

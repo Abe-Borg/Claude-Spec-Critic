@@ -1,30 +1,21 @@
-"""Report trust-model statuses for Spec Critic findings (Chunk N).
+"""Report trust-model statuses for Spec Critic findings.
 
-Single closed set of statuses every finding maps to for display, plus a
-matching closed set of "what should be done with this finding" edit
-labels. Both are *derived* from already-stored Finding fields
-(``verification``, ``suppression_reason``, ``edit_proposal``) — nothing
-on the Finding itself changes. Reports use these to make uncertainty
-visible: a CONFIRMED + grounded finding renders differently from a
-DISPUTED one, and a high-confidence auto-edit candidate renders
+A single closed set of statuses every finding maps to for display
+(:class:`ReportStatus`), plus a matching closed set of edit-action labels
+(:class:`EditActionLabel`). Both are *derived* from already-stored Finding
+fields (``verification``, ``suppression_reason``, ``edit_proposal``) —
+nothing on the Finding itself changes. Reports use these to make
+uncertainty visible: a CONFIRMED + grounded finding renders differently
+from a DISPUTED one, and a finding carrying a suggested edit renders
 differently from a coordination claim with no proposal.
 
-The plan (Chunk N, Directive 1) enumerates seven concepts:
-
-- Verified supported
-- Verified contradicted
-- Disputed
-- Insufficient evidence
-- Not checked
-- Locally classified / deterministic
-- Manual review required
-
-and (Directive 4) four edit-action labels:
-
-- Auto-edit candidate
-- Manual edit candidate
-- Report only
-- Suppressed
+This app emits edit instructions but never applies them, so
+:class:`EditActionLabel` is a simple "does this finding carry a suggested
+edit?" classification — ``EDIT_SUGGESTED`` / ``REPORT_ONLY`` /
+``SUPPRESSED``. Any confidence- or verdict-based gating for *applying* an
+edit is a downstream applier's responsibility; the finding's verification
+status and ``edit_confidence`` ride along in the report and JSON sidecar
+for that purpose.
 
 The rules in :func:`classify_status` / :func:`classify_edit_action`
 assign exactly one of each to every finding so the report never has to

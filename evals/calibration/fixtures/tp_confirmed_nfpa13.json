@@ -51,7 +51,6 @@
     "correct_verdict": "CONFIRMED",
     "correct_correction_text": null,
     "expected_status": "VERIFIED_SUPPORTED",
-    "expected_edit_action": "REPORT_ONLY",
     "notes": "NFPA 13 is the correct standard for sprinkler system installation."
   }
 }

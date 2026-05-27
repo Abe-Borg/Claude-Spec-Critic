@@ -83,7 +83,6 @@ existing fixtures as templates — they cover several outcome shapes.
     "correct_verdict": "CORRECTED",
     "correct_correction_text": "2025 CBC",
     "expected_status": "VERIFIED_CONTRADICTED",
-    "expected_edit_action": "AUTO_EDIT_CANDIDATE",
     "notes": "Pithy reasoning so a future reader understands the label."
   }
 }
@@ -117,9 +116,8 @@ existing fixtures as templates — they cover several outcome shapes.
   when `correct_verdict == "CORRECTED"`. Future scorer additions can
   compare it to the model's `correction`.
 - `expected_status` — what `report_status.classify_status` should return.
-  When set, contributes to the per-status accuracy table.
-- `expected_edit_action` — what `report_status.classify_edit_action`
-  should return. When set, contributes to fixture pass/fail signal.
+  When set, contributes to the per-status accuracy table and the fixture
+  pass/fail signal.
 - `notes` — anything that explains the label to a future reader.
 
 ### Source-grounding labels
@@ -152,38 +150,35 @@ searches without grounding).
 
 ## How to interpret the report
 
-The markdown report has six sections:
+The markdown report has a summary header followed by four numbered
+tables and a per-fixture detail section:
 
-1. **Summary header** — total fixtures, verdict accuracy rate, pass /
-   fail count, **budget-exhausted findings count** (Chunk 13 — counts
-   fixtures whose `web_search_requests` reached the severity budget
-   with an UNVERIFIED grounded verdict).
-2. **Confusion matrix** — rows are ground-truth verdict; columns are
+- **Summary header** — total fixtures, verdict accuracy rate, pass /
+  fail count, **budget-exhausted findings count** (Chunk 13 — counts
+  fixtures whose `web_search_requests` reached the severity budget
+  with an UNVERIFIED grounded verdict).
+1. **Confusion matrix** — rows are ground-truth verdict; columns are
    the verdict the pipeline emitted after grounding. The diagonal is
    correctness; off-diagonals are the failure modes you want to study.
    Per-row recall and per-column precision call out which verdicts the
    pipeline tends to over- or under-emit.
-3. **Per-status accuracy** — for each `ReportStatus` the pipeline
+2. **Per-status accuracy** — for each `ReportStatus` the pipeline
    assigned, how often did the fixture's `expected_status` agree?
    "Assigned" is the count for that status in any fixture; "expected"
    is the count of fixtures that asked for that status. Precision and
    recall fall out of the two counts.
-4. **False-positive auto-edit rate at thresholds 0.70 / 0.80 / 0.85 /
-   0.90** — at each threshold, count fixtures the pipeline would
-   auto-edit (supportive status + threshold met) and split them by
-   whether the ground-truth verdict matched the pipeline's verdict.
-   The FP rate is the single number tuning chunks should optimize
-   for. A 0% FP rate at 0.7 means the floor is well-placed; a non-zero
-   FP rate at 0.9 means even the most confident auto-edits are wrong
-   sometimes.
-5. **Confidence calibration** — fixtures bucketed by
+3. **Confidence calibration** — fixtures bucketed by
    `finding.confidence` and reported with their observed correctness
    rate. A well-calibrated model has correctness rates near the
    bucket midpoint. Skew indicates over- or under-confidence.
-6. **Source-grounding integrity** — count of CONFIRMED/CORRECTED
+4. **Source-grounding integrity** — count of CONFIRMED/CORRECTED
    verdicts that survived (or were caught by) the grounding invariant.
    The "final without accepted citation" count should always be 0;
    non-zero means the invariant has a hole and needs a fix.
+
+A **per-fixture detail** table closes the report, with a row per
+fixture (captured → grounded verdict, expected verdict, match, status)
+and an itemized issues list for any fixture that failed.
 
 ### What the fixture pass/fail signal means
 
@@ -191,9 +186,7 @@ A fixture *passes* when:
 
 - the post-grounding verdict matches `ground_truth.correct_verdict`,
 - AND (if `expected_status` was provided) the classifier assigned that
-  status,
-- AND (if `expected_edit_action` was provided) the classifier picked
-  that edit action.
+  status.
 
 A fixture fails when any of those checks disagree. The runner's exit
 code is 1 in that case, and the markdown report enumerates the failing
@@ -202,15 +195,15 @@ production code.
 
 ## Calibration vs. regression
 
-The Chunk 12 harness at `python -m evals.runner` is a *regression*
-suite: it asks "do the parser / locator / unsafe-markup detector keep
-returning exactly the same outputs they always have?" Numerical drift
-is a failure signal there.
+The harness at `python -m evals.runner` is a *regression* suite: it
+asks "do the parser, edit-proposal validation, dedup, and verification
+grounding keep returning exactly the same outputs they always have?"
+Numerical drift is a failure signal there.
 
-This Chunk 1 harness is a *calibration* suite: it asks "are the
-pipeline's outputs *correct* against a human label?" Drift here is
-intentional — every later chunk should push numbers in a better
-direction (lower FP rate, fewer ungrounded CONFIRMED survivors, etc.).
+This calibration harness asks "are the pipeline's outputs *correct*
+against a human label?" Drift here is intentional — every later tuning
+change should push numbers in a better direction (fewer ungrounded
+CONFIRMED survivors, better-calibrated confidence, etc.).
 The two harnesses are complementary; both should be green before
 shipping a tuning change.
 

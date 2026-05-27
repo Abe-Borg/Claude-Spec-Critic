@@ -50,7 +50,6 @@
     "correct_verdict": "UNVERIFIED",
     "correct_correction_text": null,
     "expected_status": "INSUFFICIENT_EVIDENCE",
-    "expected_edit_action": "REPORT_ONLY",
     "notes": "An obscure manufacturer model the verifier cannot find legitimately produces UNVERIFIED. The finding stays for the reviewer to investigate, but no auto-edit is appropriate."
   }
 }

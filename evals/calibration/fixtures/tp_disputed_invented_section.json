@@ -50,7 +50,6 @@
     "correct_verdict": "DISPUTED",
     "correct_correction_text": null,
     "expected_status": "DISPUTED",
-    "expected_edit_action": "MANUAL_EDIT_CANDIDATE",
     "notes": "CBC 1108.7 does not exist; the model's proposed replacement is also wrong. Manual reviewer should pick the right section."
   }
 }
