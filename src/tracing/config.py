@@ -22,8 +22,6 @@ LEVEL_OFF = "off"
 LEVEL_DEFAULT = "default"
 LEVEL_DEEP = "deep"
 
-CAPTURE_LEVELS = frozenset({LEVEL_OFF, LEVEL_DEFAULT, LEVEL_DEEP})
-
 
 # Env var names — exposed as module constants so callers (and tests) can
 # patch them by reference rather than hardcoding the string each time.

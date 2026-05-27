@@ -361,10 +361,8 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 # - Triage (Haiku): omit (Haiku does not support effort).
 # - Unknown model: omit.
 
-EFFORT_LOW = "low"
 EFFORT_MEDIUM = "medium"
 EFFORT_HIGH = "high"
-EFFORT_XHIGH = "xhigh"
 
 # Phases whose request paths route through ``output_config.effort``. Triage
 # is intentionally omitted — it defaults to Haiku which does not support
@@ -662,11 +660,6 @@ def build_web_search_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_USES) -> d
             "region": "California",
         },
     }
-
-
-# Default web-search tool used when no per-call override is needed (preserved
-# for backward compatibility with any caller that imports the constant).
-WEB_SEARCH_TOOL = build_web_search_tool()
 
 
 # ---------------------------------------------------------------------------

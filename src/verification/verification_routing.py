@@ -707,23 +707,6 @@ def build_verification_request(
     return VerificationRequest(params=params, extra_headers=extra_headers)
 
 
-def _tools_include_web_fetch(tools: list[dict]) -> bool:
-    """Return True iff the tool list contains the web_fetch server tool.
-
-    A small pure predicate used to assert tool-list composition. Web fetch
-    is GA and needs no beta header, so the request builder no longer
-    consults this for transport headers.
-    """
-    for tool in tools or []:
-        if not isinstance(tool, dict):
-            continue
-        if str(tool.get("type", "")).startswith("web_fetch"):
-            return True
-        if str(tool.get("name", "")) == "web_fetch":
-            return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Result stamping
 # ---------------------------------------------------------------------------

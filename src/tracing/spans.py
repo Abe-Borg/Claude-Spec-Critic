@@ -47,33 +47,11 @@ KIND_CACHE_LOOKUP = "cache_lookup"
 KIND_LOCAL_SKIP = "local_skip"
 KIND_ROUTING_DECISION = "routing_decision"
 
-SPAN_KINDS = frozenset(
-    {
-        KIND_PIPELINE,
-        KIND_EXTRACTION,
-        KIND_REVIEW,
-        KIND_CROSS_CHECK,
-        KIND_CROSS_CHECK_CHUNK,
-        KIND_TRIAGE,
-        KIND_VERIFICATION_INITIAL,
-        KIND_VERIFICATION_ESCALATION,
-        KIND_VERIFICATION_CONTINUATION,
-        KIND_VERIFICATION_RETRY,
-        KIND_API_CALL,
-        KIND_WEB_SEARCH,
-        KIND_PARSE,
-        KIND_CACHE_LOOKUP,
-        KIND_LOCAL_SKIP,
-        KIND_ROUTING_DECISION,
-    }
-)
-
 
 # ---- Event types -------------------------------------------------------
 EVENT_STREAM_CHUNK = "stream_chunk"  # deep level only
 EVENT_THINKING_BLOCK = "thinking_block"
 EVENT_TOOL_USE = "tool_use"
-EVENT_TOOL_RESULT = "tool_result"
 EVENT_WEB_SEARCH_QUERY = "web_search_query"
 EVENT_WEB_SEARCH_RESULT = "web_search_result"
 EVENT_WEB_FETCH_REQUEST = "web_fetch_request"
@@ -94,7 +72,6 @@ EVENT_NOTE = "note"
 STATUS_RUNNING = "running"
 STATUS_OK = "ok"
 STATUS_ERROR = "error"
-STATUS_SKIPPED = "skipped"
 
 
 @dataclass
