@@ -499,6 +499,7 @@ def capture_batch_verification_span(
     finding_id: str,
     verification_result: Any,
     parent: SpanHandle | None = None,
+    raw_message: Any = None,
 ) -> None:
     """Emit a post-hoc verification span for a batch-verified finding.
 
@@ -512,6 +513,13 @@ def capture_batch_verification_span(
     in the finding's lifecycle). Skips local-skip / cache-hit results —
     those never went through web verification and are already represented
     by the cache_lookup / local_skip events.
+
+    When ``raw_message`` (the successful wave's Anthropic message) is
+    supplied AND the recorder is in deep mode, the message's content blocks
+    are walked onto the span — thinking / tool_use / web_search / web_fetch
+    events — giving deep-mode batch findings parity with the real-time path.
+    Gated to deep mode on purpose: batch is the common path, so capturing
+    every finding's thinking at the default level would bloat traces.
     """
     recorder = _get()
     if recorder is None or verification_result is None:
@@ -536,6 +544,8 @@ def capture_batch_verification_span(
         },
         metadata={"finding_id": finding_id, "mode": mode, "source": "batch"},
     )
+    if recorder.is_deep and raw_message is not None:
+        capture_response_content_blocks(handle, raw_message)
     recorder.close_span(
         handle,
         outputs=_verification_outputs(verification_result, deep=recorder.is_deep),

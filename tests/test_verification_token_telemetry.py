@@ -103,6 +103,33 @@ class TestWaveParserStampsTokens:
         assert parsed.input_tokens == 120
         assert parsed.output_tokens == 60
 
+    def test_classify_wave_results_carries_raw_message(self, monkeypatch):
+        """The success outcome retains the raw batch message (by identity, not
+        a copy) so the deep-mode tracer can walk its thinking / tool blocks."""
+        import src.verification.verifier as V
+
+        f = Finding(
+            severity="HIGH", fileName="x.docx", section="2.1", issue="i",
+            actionType="REPORT_ONLY", existingText=None, replacementText=None,
+            confidence=0.5, codeReference="",
+        )
+        cid = "verify__0"
+        ctx = {cid: {"finding_idx": 0, "model": "claude-sonnet-4-6", "escalated": False}}
+        job = SimpleNamespace(
+            batch_id="b",
+            request_map={cid: {"finding_idx": 0, "model": "claude-sonnet-4-6"}},
+            job_type="verify",
+        )
+        msg = _grounded_message_with_tokens()
+        monkeypatch.setattr(
+            V, "retrieve_verification_results_detailed",
+            lambda _job: {cid: batch_verification_result(custom_id=cid, message=msg)},
+        )
+        outcomes = _classify_wave_results(job=job, findings=[f], request_contexts=ctx)
+        assert len(outcomes) == 1
+        assert outcomes[0].classification == "success"
+        assert outcomes[0].raw_message is msg
+
 
 # ---------------------------------------------------------------------------
 # 3. Resume-state round-trip

@@ -403,7 +403,7 @@ Model-id overrides plus a handful of operator switches for rollback / cache cont
 | `SPEC_CRITIC_AUTO_EDIT_CONFIDENCE_FLOOR` | `0.7` | Composite-confidence floor used by `classify_edit_action` to gate `AUTO_EDIT_CANDIDATE`. Read at every call (no caching) so a process-wide env flip takes effect immediately. Values `>= 1.01` are the documented kill switch — composite confidence is bounded above by 1.0, so nothing can clear the bar and every supportive finding routes to `MANUAL_EDIT_CANDIDATE`. Malformed / negative values fall back to the 0.7 default so a typo never silently drops the floor to 0.0 (auto-apply everything). |
 | `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` | off | **Stub — not yet wired.** When truthy (`1` / `true` / `yes` / `on`, case-insensitive), logs a one-time WARNING at startup acknowledging the flag is noted. The actual "re-submit only operationally-failed findings on resume" plumbing is deferred to a focused future change. |
 | `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. Writes a forensic JSONL trace to `~/.spec_critic/traces/<run_id>/`. |
-| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. |
+| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, batch-verification thinking / tool-use blocks, untruncated raw responses, and inline prompts. Implies trace enabled. |
 | `SPEC_CRITIC_TRACE_DIR` | `~/.spec_critic/traces/` | Override the trace root directory. `~` and `$VAR` are expanded. |
 
 ---
