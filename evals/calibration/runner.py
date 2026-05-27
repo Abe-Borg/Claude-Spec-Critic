@@ -99,16 +99,6 @@ def _report_to_dict(report) -> dict:
             }
             for s in report.status_accuracy
         ],
-        "auto_edit_false_positive": [
-            {
-                "threshold": row.threshold,
-                "auto_edit_count": row.auto_edit_count,
-                "correct_count": row.correct_count,
-                "incorrect_count": row.incorrect_count,
-                "false_positive_rate": row.false_positive_rate,
-            }
-            for row in report.auto_edit_fp
-        ],
         "calibration": [
             {
                 "label": b.label,

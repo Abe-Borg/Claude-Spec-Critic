@@ -11,7 +11,6 @@ delegates all workflow concerns to focused controller modules:
   run-lifecycle helpers
 - ``batch_controller`` — batch submission, polling, collection, resume
 - ``report_controller`` — report export and the report window
-- ``edit_workflow_controller`` — edit candidate selection + application
 - ``diagnostics_controller`` — diagnostics callbacks and window
 """
 import os
@@ -42,8 +41,6 @@ from src.batch.batch import BatchStatus
 from src.orchestration.diagnostics import DiagnosticsReport
 from src.input.extractor import ExtractedSpec
 from src.orchestration.pipeline import BatchSubmission
-from src.review.reviewer import Finding
-from src.editing.spec_editor import EditReport
 
 # Constants used by widgets
 from src.core.code_cycles import DEFAULT_CYCLE
@@ -95,11 +92,6 @@ from src.gui.diagnostics_controller import (
     make_diag_log,
     make_diag_progress,
     open_diagnostics_window,
-)
-from src.gui.edit_workflow_controller import (
-    apply_selected_edits,
-    on_edits_applied,
-    show_edit_selection_dialog,
 )
 from src.gui.file_selection_controller import (
     apply_selected_specs,
@@ -537,29 +529,6 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _export_report_to_file(self, result) -> str:
         return export_report_to_file(self, result)
-
-    def _show_edit_selection_dialog(self, result) -> None:
-        show_edit_selection_dialog(self, result)
-
-    def _apply_selected_edits(
-        self,
-        selected_indices: list[int],
-        all_findings: list[Finding],
-        cross_check_findings: list[Finding],
-        extracted_specs: list[ExtractedSpec],
-        source_paths: list[Path],
-    ) -> None:
-        apply_selected_edits(
-            self,
-            selected_indices,
-            all_findings,
-            cross_check_findings,
-            extracted_specs,
-            source_paths,
-        )
-
-    def _on_edits_applied(self, reports: list[EditReport]) -> None:
-        on_edits_applied(self, reports)
 
     def _on_review_error(self, err):
         on_review_error(self, err)

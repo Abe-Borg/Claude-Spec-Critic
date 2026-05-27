@@ -51,13 +51,10 @@ from .report_status import (
     EditActionLabel,
     ReportStatus,
     STATUS_DISPLAY_ORDER,
-    auto_edit_confidence_floor,
     classify_edit_action,
     classify_status,
-    composite_edit_confidence,
     edit_action_label,
     is_budget_exhausted,
-    numeric_or_standards_demotion_reason,
     status_glyph,
     status_label,
     summarize_budget_exhausted,
@@ -88,26 +85,6 @@ def _verification_mode_label(mode: str) -> str:
     if not mode:
         return ""
     return _VERIFICATION_MODE_LABELS.get(mode, mode.replace("_", " ").title())
-
-
-# Human-readable labels for locator match-method strings stamped on
-# Finding.locator_evidence["match_method"]. Keys match the strings
-# returned by edit_locator's match-method constants.
-_MATCH_METHOD_LABELS: dict[str, str] = {
-    "id": "Id-anchored",
-    "exact": "Exact",
-    "normalized": "Normalized",
-    "section_anchored": "Section-anchored",
-    "section_anchored_fuzzy": "Section-anchored (fuzzy)",
-    "fuzzy": "Fuzzy",
-}
-
-
-def _match_method_label(method: str) -> str:
-    method = (method or "").strip()
-    if not method:
-        return ""
-    return _MATCH_METHOD_LABELS.get(method, method.replace("_", " ").title())
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +161,7 @@ STATUS_SHADING: dict[ReportStatus, str] = {
 }
 
 EDIT_ACTION_COLORS: dict[EditActionLabel, RGBColor] = {
-    EditActionLabel.AUTO_EDIT_CANDIDATE: RGBColor(0, 128, 0),       # Green
-    EditActionLabel.MANUAL_EDIT_CANDIDATE: RGBColor(204, 132, 0),   # Amber
+    EditActionLabel.EDIT_SUGGESTED: RGBColor(0, 128, 0),            # Green
     EditActionLabel.REPORT_ONLY: RGBColor(100, 100, 100),           # Gray
     EditActionLabel.SUPPRESSED: RGBColor(192, 0, 0),                # Red
 }
@@ -401,8 +377,7 @@ def _summarize_run_diagnostics(
 
     Returns a dict with the rolled-up values the renderer consumes.
     """
-    auto_edit = int(edit_action_counts.get(EditActionLabel.AUTO_EDIT_CANDIDATE, 0) or 0)
-    manual_edit = int(edit_action_counts.get(EditActionLabel.MANUAL_EDIT_CANDIDATE, 0) or 0)
+    edit_suggested = int(edit_action_counts.get(EditActionLabel.EDIT_SUGGESTED, 0) or 0)
     report_only = int(edit_action_counts.get(EditActionLabel.REPORT_ONLY, 0) or 0)
     suppressed = int(edit_action_counts.get(EditActionLabel.SUPPRESSED, 0) or 0)
     verification_failed = int(status_counts.get(ReportStatus.VERIFICATION_FAILED, 0) or 0)
@@ -484,8 +459,7 @@ def _summarize_run_diagnostics(
     budget_exhausted_count = summarize_budget_exhausted(findings)
 
     return {
-        "auto_edit": auto_edit,
-        "manual_edit": manual_edit,
+        "edit_suggested": edit_suggested,
         "report_only": report_only,
         "suppressed": suppressed,
         "verification_failed": verification_failed,
@@ -545,8 +519,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     # paints the value cell with light-red shading + dark-red text so
     # the row pops from the surrounding neutral grid.
     rows: list[tuple[str, str, bool]] = [
-        ("Auto-edit eligible", str(summary.get("auto_edit", 0)), False),
-        ("Manual edit required", str(summary.get("manual_edit", 0)), False),
+        ("Edit suggested", str(summary.get("edit_suggested", 0)), False),
         ("Report-only", str(summary.get("report_only", 0)), False),
         ("Suppressed (cross-check filter)", str(summary.get("suppressed", 0)), False),
     ]
@@ -1573,163 +1546,6 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         hint_para.paragraph_format.space_after = Pt(3)
 
 
-def _write_edit_target_evidence_panel(doc: Document, finding) -> None:
-    """Render the locator-evidence panel for findings with edit proposals.
-
-    Chunk 4 / Trust Upgrade. Parallel sub-section to the Sources panel
-    above. Lives under its own collapsed-by-default Heading 4 so a
-    reader can drill into "why was this picked as the edit target?"
-    without losing the verification-evidence panel.
-
-    Shown only when :attr:`Finding.locator_evidence` is populated —
-    that is, the finding had an edit proposal AND the pipeline had a
-    paragraph map for the file at the time
-    :func:`apply_edits.populate_locator_evidence` ran. Findings
-    without proposals (REPORT_ONLY, coordination-only) skip the panel
-    by construction; legacy resume payloads (pre-Chunk-4) likewise
-    skip cleanly with ``locator_evidence=None``.
-    """
-    evidence = getattr(finding, "locator_evidence", None)
-    if not isinstance(evidence, dict):
-        return
-    status = str(evidence.get("status", "") or "").strip()
-    match_method = str(evidence.get("match_method", "") or "").strip()
-    match_confidence = float(evidence.get("match_confidence", 0.0) or 0.0)
-    safety_category = str(evidence.get("safety_category", "") or "").strip()
-    element_id = str(evidence.get("element_id", "") or "").strip()
-
-    # Sanity check: at least one signal must be present. An evidence
-    # dict with every field blank (the locator never produced anything
-    # useful) renders no panel.
-    if not (status or match_method or safety_category or element_id):
-        return
-
-    heading = doc.add_heading("Edit Target Evidence", level=4)
-    _set_paragraph_collapsed(heading)
-
-    if status:
-        para = doc.add_paragraph()
-        _set_paragraph_outline_level(para, 8)
-        label = para.add_run("Locator status: ")
-        label.bold = True
-        label.font.size = Pt(9)
-        label.font.color.rgb = RGBColor(100, 100, 100)
-        body = para.add_run(status)
-        body.font.size = Pt(9)
-        # Highlight unrecoverable outcomes in red so a reader can spot
-        # "the edit target could not be located" while skimming.
-        if status in ("not_found", "ambiguous"):
-            body.font.color.rgb = RGBColor(192, 0, 0)
-        else:
-            body.font.color.rgb = RGBColor(100, 100, 100)
-        para.paragraph_format.space_after = Pt(2)
-
-    if match_method:
-        para = doc.add_paragraph()
-        _set_paragraph_outline_level(para, 8)
-        label = para.add_run("Match method: ")
-        label.bold = True
-        label.font.size = Pt(9)
-        label.font.color.rgb = RGBColor(100, 100, 100)
-        body = para.add_run(_match_method_label(match_method))
-        body.font.size = Pt(9)
-        body.font.color.rgb = RGBColor(100, 100, 100)
-        para.paragraph_format.space_after = Pt(2)
-
-    if match_method:
-        # Match confidence is meaningless without a method, so render
-        # it only when we have one. Colored by tier so a low-confidence
-        # match stands out at a glance.
-        para = doc.add_paragraph()
-        _set_paragraph_outline_level(para, 8)
-        label = para.add_run("Match confidence: ")
-        label.bold = True
-        label.font.size = Pt(9)
-        label.font.color.rgb = RGBColor(100, 100, 100)
-        body = para.add_run(f"{match_confidence:.0%}")
-        body.font.size = Pt(9)
-        body.font.color.rgb = CONFIDENCE_COLORS[_confidence_tier(match_confidence)]
-        para.paragraph_format.space_after = Pt(2)
-
-    if safety_category:
-        para = doc.add_paragraph()
-        _set_paragraph_outline_level(para, 8)
-        label = para.add_run("Safety category: ")
-        label.bold = True
-        label.font.size = Pt(9)
-        label.font.color.rgb = RGBColor(100, 100, 100)
-        body = para.add_run(safety_category)
-        body.font.size = Pt(9)
-        # MANUAL_REVIEW and REPORT_ONLY are the "do not auto-apply"
-        # outcomes — highlight in amber so a reviewer scanning by
-        # finding can spot them without reading the label.
-        if safety_category in ("MANUAL_REVIEW", "REPORT_ONLY"):
-            body.font.color.rgb = RGBColor(204, 132, 0)
-        elif safety_category == "AUTO_SAFE":
-            body.font.color.rgb = RGBColor(0, 128, 0)
-        else:
-            body.font.color.rgb = RGBColor(100, 100, 100)
-        para.paragraph_format.space_after = Pt(2)
-
-    if element_id:
-        para = doc.add_paragraph()
-        _set_paragraph_outline_level(para, 8)
-        label = para.add_run("Element id: ")
-        label.bold = True
-        label.font.size = Pt(9)
-        label.font.color.rgb = RGBColor(100, 100, 100)
-        body = para.add_run(element_id)
-        body.font.size = Pt(9)
-        body.font.color.rgb = RGBColor(100, 100, 100)
-        para.paragraph_format.space_after = Pt(3)
-
-    # --- Composite confidence breakdown (Chunk 8 / Trust Upgrade) ---
-    # Render only for findings that have an edit proposal — the composite
-    # is only meaningful when there's an edit to gate. The line surfaces
-    # the four input numbers so a reviewer can see exactly why a finding
-    # did (or did not) clear the auto-edit floor, plus the effective
-    # threshold so the bar is explicit instead of buried in env state.
-    proposal = (
-        finding.as_edit_proposal()
-        if hasattr(finding, "as_edit_proposal")
-        else None
-    )
-    if proposal is not None:
-        model_confidence = float(
-            getattr(proposal, "edit_confidence", 0.5) or 0.0
-        )
-        composite = composite_edit_confidence(finding)
-        threshold = auto_edit_confidence_floor()
-        passes = composite >= threshold
-
-        para = doc.add_paragraph()
-        _set_paragraph_outline_level(para, 8)
-        label = para.add_run("Confidence: ")
-        label.bold = True
-        label.font.size = Pt(9)
-        label.font.color.rgb = RGBColor(100, 100, 100)
-        # Render the model / locator / composite triple inline so the
-        # reviewer can see which dimension dragged the composite down
-        # without expanding any extra panel. Match-confidence is
-        # repeated here from the line above for readability — the
-        # composite formula only makes sense when all four inputs are
-        # adjacent.
-        body = para.add_run(
-            f"Model {model_confidence:.0%} / "
-            f"Locator {match_confidence:.0%} / "
-            f"Composite {composite:.0%} "
-            f"(threshold: {threshold:.0%})"
-        )
-        body.font.size = Pt(9)
-        # Color the line by whether the composite cleared the bar — green
-        # for pass, amber for fail. The reviewer scanning the report sees
-        # the auto-edit eligibility decision at a glance.
-        body.font.color.rgb = (
-            RGBColor(0, 128, 0) if passes else RGBColor(204, 132, 0)
-        )
-        para.paragraph_format.space_after = Pt(3)
-
-
 # ---------------------------------------------------------------------------
 # Single finding entry (collapsible via Heading 3)
 # ---------------------------------------------------------------------------
@@ -1876,31 +1692,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
 
     status_para.paragraph_format.space_after = Pt(3)
 
-    # --- Numeric/standards demotion annotation (Chunk 9 / Trust Upgrade) ---
-    # When ``classify_edit_action`` demoted a CORRECTED supportive finding
-    # to MANUAL_EDIT_CANDIDATE because its replacement text touched a
-    # numeric value or a standards reference, render the rationale as a
-    # small italic note immediately under the status line. The composite
-    # confidence breakdown shown later in the Edit Target Evidence panel
-    # would otherwise look like a passing auto-edit (composite ≥ floor)
-    # and the reviewer would have no inline cue that the override fired.
-    # ``numeric_or_standards_demotion_reason`` is the same helper
-    # ``classify_edit_action`` consults, so the displayed reason matches
-    # the demotion decision exactly.
-    demotion_reason = numeric_or_standards_demotion_reason(finding)
-    if demotion_reason:
-        note_para = doc.add_paragraph()
-        prefix_run = note_para.add_run("Edit demoted: ")
-        prefix_run.bold = True
-        prefix_run.font.italic = True
-        prefix_run.font.size = Pt(9)
-        prefix_run.font.color.rgb = RGBColor(120, 120, 120)
-        body_run = note_para.add_run(demotion_reason)
-        body_run.font.italic = True
-        body_run.font.size = Pt(9)
-        body_run.font.color.rgb = RGBColor(120, 120, 120)
-        note_para.paragraph_format.space_after = Pt(3)
-
     # --- Issue ---
     para = doc.add_paragraph()
     para.add_run("Issue: ").bold = True
@@ -2009,14 +1800,6 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         # open-time collapse zone hides them along with the URLs that
         # used to live alone under this heading.
         _write_evidence_panel(doc, finding, vr)
-
-    # --- Edit Target Evidence panel (Chunk 4 / Trust Upgrade) ---
-    # Independent of verification — a LOCALLY_CLASSIFIED finding still
-    # has a locator-evidence story to tell when the proposal touches
-    # real spec text. Skipped for REPORT_ONLY findings (no edit
-    # proposal → no locator ran) and for findings whose locator never
-    # ran (legacy resume payload, file unavailable at finalize time).
-    _write_edit_target_evidence_panel(doc, finding)
 
 
 # ---------------------------------------------------------------------------

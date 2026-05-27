@@ -23,8 +23,7 @@ Every fixture is one file under :data:`FIXTURES_DIR` containing:
   web_search_requests / successful_source_count / search_error_count /
   searched_urls / grounded / cache_status.
 * ``ground_truth`` — hand-labeled correctness oracle: correct_verdict,
-  correct_correction_text (when applicable), expected_status,
-  expected_edit_action, notes.
+  correct_correction_text (when applicable), expected_status, notes.
 
 The loader is conservative: missing required keys raise so a malformed
 fixture fails fast rather than silently scoring as a pass.
@@ -55,13 +54,6 @@ _VALID_STATUSES = frozenset({
     "LOCALLY_CLASSIFIED",
     "NOT_CHECKED",
     "MANUAL_REVIEW_REQUIRED",
-})
-
-_VALID_EDIT_ACTIONS = frozenset({
-    "AUTO_EDIT_CANDIDATE",
-    "MANUAL_EDIT_CANDIDATE",
-    "REPORT_ONLY",
-    "SUPPRESSED",
 })
 
 
@@ -119,7 +111,6 @@ class GroundTruth:
     correct_verdict: str
     correct_correction_text: str | None = None
     expected_status: str | None = None
-    expected_edit_action: str | None = None
     notes: str = ""
 
 
@@ -218,20 +209,10 @@ def _parse_ground_truth(raw: dict, context: str) -> GroundTruth:
                 f"{context}: ground_truth.expected_status '{expected_status}' "
                 f"is not one of {sorted(_VALID_STATUSES)}"
             )
-    expected_edit_action = raw.get("expected_edit_action")
-    if expected_edit_action is not None:
-        expected_edit_action = str(expected_edit_action).strip().upper()
-        if expected_edit_action not in _VALID_EDIT_ACTIONS:
-            raise ValueError(
-                f"{context}: ground_truth.expected_edit_action "
-                f"'{expected_edit_action}' is not one of "
-                f"{sorted(_VALID_EDIT_ACTIONS)}"
-            )
     return GroundTruth(
         correct_verdict=correct,
         correct_correction_text=_optional_str(raw.get("correct_correction_text")),
         expected_status=expected_status,
-        expected_edit_action=expected_edit_action,
         notes=str(raw.get("notes", "")),
     )
 

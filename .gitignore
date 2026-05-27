@@ -34,7 +34,8 @@ htmlcov/
 # macOS system files
 .DS_Store
 
-output/
+# Top-level run-output directory (anchored so it does not shadow src/output/)
+/output/
 
 specs/
 

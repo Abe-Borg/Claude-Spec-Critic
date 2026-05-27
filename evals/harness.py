@@ -12,8 +12,6 @@ Metric coverage (one row per Chunk 12 plan bullet):
 * ``duplicate_finding_rate``       — duplicate fileName+section+issue triples.
 * ``parse_failure_rate``           — fixture findings dropped by the parser.
 * ``edit_proposal_validity``       — surviving EDIT proposals over expected.
-* ``locator_success_rate``         — locator located the cited text.
-* ``unsafe_edit_refusal_rate``     — detect_unsafe_markup said unsafe.
 * ``citation_acceptance_rate``     — accepted / total cited URLs.
 * ``sourceless_confirmed_rate``    — CONFIRMED that survived without a citation.
 
@@ -24,15 +22,12 @@ quick diffing against the baseline.
 """
 from __future__ import annotations
 
-import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from src.editing import edit_locator, spec_editor
 from src.output import report_status
 from src.verification import source_grounding, verifier
-from src.input import extractor, preprocessor
+from src.input import preprocessor
 from src.review import reviewer
 from src.core.api_config import MODEL_SONNET_46
 from src.core.code_cycles import CALIFORNIA_2025
@@ -40,7 +35,6 @@ from src.core.code_cycles import CALIFORNIA_2025
 from .fixtures import (
     GoldenFixture,
     all_fixtures,
-    build_docx_for_fixture,
 )
 
 
@@ -72,10 +66,6 @@ class FixtureResult:
     # edit-proposal-validity metric.
     edit_proposal_valid_count: int = 0
     demoted_findings: int = 0
-    locator_attempted: int = 0
-    locator_succeeded: int = 0
-    unsafe_markup_attempted: int = 0
-    unsafe_markup_refused: int = 0
     verification_initial_verdict: str = ""
     verification_final_verdict: str = ""
     cited_citation_count: int = 0
@@ -245,53 +235,6 @@ def _run_preprocessor_fixture(fixture: GoldenFixture, fr: FixtureResult) -> None
             )
 
 
-def _run_locator_fixture(
-    fixture: GoldenFixture, fr: FixtureResult, tmp_dir: Path
-) -> None:
-    """Exercise the locator + unsafe-markup detector against a real .docx."""
-    docx_path = build_docx_for_fixture(fixture, tmp_dir)
-    if docx_path is None:
-        return
-
-    if fixture.docx_kind == "safe_paragraph":
-        # Extract the spec and run the locator over the fixture's parsed
-        # findings. ``review_payload`` may be None for non-edit fixtures.
-        spec = extractor.extract_text_from_docx(docx_path)
-        payload = fixture.review_payload or {"findings": []}
-        parsed = reviewer._parse_findings(list(payload.get("findings") or []))
-        edit_findings = [f for f in parsed if f.has_edit_proposal()]
-        fr.locator_attempted = len(edit_findings)
-        if edit_findings:
-            results = edit_locator.locate_edits(
-                edit_findings, spec.paragraph_map or []
-            )
-            fr.locator_succeeded = sum(
-                1 for r in results if r.status == "matched"
-            )
-        expected = fixture.expected.get("expected_locator_success")
-        if expected is not None and fr.locator_succeeded != int(expected):
-            fr.issues.append(
-                f"locator successes: expected {expected}, got {fr.locator_succeeded}"
-            )
-    elif fixture.docx_kind == "unsafe_hyperlink":
-        from docx import Document  # local import — hermetic dependency
-
-        doc = Document(str(docx_path))
-        # The hyperlink fixture's hyperlink-bearing paragraph is the
-        # second paragraph (index 1); index 0 is the "PART 1 GENERAL"
-        # heading. The detector walks the subtree, so we hand the
-        # paragraph element directly.
-        target_paragraph = doc.paragraphs[1]
-        fr.unsafe_markup_attempted = 1
-        outcome = spec_editor.detect_unsafe_markup(target_paragraph)
-        fr.unsafe_markup_refused = 1 if outcome.unsafe else 0
-        expected = fixture.expected.get("expected_unsafe_markup_refusal")
-        if expected is True and not outcome.unsafe:
-            fr.issues.append(
-                "unsafe-markup detector did not refuse a hyperlink paragraph"
-            )
-
-
 def _run_verification_fixture(fixture: GoldenFixture, fr: FixtureResult) -> None:
     """Apply source-grounding + invariant enforcement to a verdict payload."""
     payload = fixture.verification_payload
@@ -372,19 +315,8 @@ def _run_verification_fixture(fixture: GoldenFixture, fr: FixtureResult) -> None
 # ---------------------------------------------------------------------------
 
 
-def run_harness(*, tmp_dir: Path | None = None) -> HarnessResult:
-    """Run every fixture and return aggregate metrics.
-
-    ``tmp_dir`` is used for staged DOCX fixtures. The caller may pass a
-    pre-existing path (the runner uses ``tempfile.mkdtemp`` so artifacts
-    persist for manual inspection); when ``None`` a fresh tempdir is
-    created and left in place — small, deterministic, and not worth
-    re-deleting in CI.
-    """
-    if tmp_dir is None:
-        tmp_dir = Path(tempfile.mkdtemp(prefix="speccritic_eval_"))
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
+def run_harness() -> HarnessResult:
+    """Run every fixture and return aggregate metrics."""
     fixture_results: list[FixtureResult] = []
     for fixture in all_fixtures():
         fr = FixtureResult(
@@ -394,7 +326,6 @@ def run_harness(*, tmp_dir: Path | None = None) -> HarnessResult:
         )
         _run_review_fixture(fixture, fr)
         _run_preprocessor_fixture(fixture, fr)
-        _run_locator_fixture(fixture, fr, tmp_dir)
         _run_verification_fixture(fixture, fr)
         fixture_results.append(fr)
 
@@ -408,7 +339,7 @@ def run_harness(*, tmp_dir: Path | None = None) -> HarnessResult:
 
 
 def _aggregate_metrics(results: list[FixtureResult]) -> dict[str, Any]:
-    """Roll per-fixture counters into the ten Chunk 12 metrics."""
+    """Roll per-fixture counters into the golden-set metrics."""
     seeded_total = sum(r.seeded_finding_count for r in results)
     parsed_total = sum(r.review_findings_parsed for r in results)
 
@@ -430,12 +361,6 @@ def _aggregate_metrics(results: list[FixtureResult]) -> dict[str, Any]:
 
     edit_valid_total = sum(r.edit_proposal_valid_count for r in results)
     edit_input_total = sum(r.edit_proposal_input_count for r in results)
-
-    locator_attempted = sum(r.locator_attempted for r in results)
-    locator_succeeded = sum(r.locator_succeeded for r in results)
-
-    unsafe_attempted = sum(r.unsafe_markup_attempted for r in results)
-    unsafe_refused = sum(r.unsafe_markup_refused for r in results)
 
     cited_total = sum(r.cited_citation_count for r in results)
     accepted_total = sum(r.accepted_citation_count for r in results)
@@ -479,16 +404,6 @@ def _aggregate_metrics(results: list[FixtureResult]) -> dict[str, Any]:
             "numerator": edit_valid_total,
             "denominator": edit_input_total,
             "rate": _safe_divide(edit_valid_total, edit_input_total),
-        },
-        "locator_success": {
-            "numerator": locator_succeeded,
-            "denominator": locator_attempted,
-            "rate": _safe_divide(locator_succeeded, locator_attempted),
-        },
-        "unsafe_edit_refusal": {
-            "numerator": unsafe_refused,
-            "denominator": unsafe_attempted,
-            "rate": _safe_divide(unsafe_refused, unsafe_attempted),
         },
         "citation_acceptance": {
             "numerator": accepted_total,

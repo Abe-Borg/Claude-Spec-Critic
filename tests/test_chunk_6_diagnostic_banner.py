@@ -3,7 +3,7 @@
 Chunk 6 of the Trust Upgrade adds a styled-table banner right after the
 title block that surfaces operational health at-a-glance:
 
-* Auto-edit / Manual-edit / Report-only / Suppressed counts (from the
+* Edit-suggested / Report-only / Suppressed counts (from the
   edit-action histogram already computed for the trust-model summary).
 * Cache replays with the oldest entry age (using Chunk 5's
   ``cache_entry_created_ts``).
@@ -180,8 +180,7 @@ def _findings_to_summary(
 class TestSummarizeRunDiagnostics:
     def test_empty_run_returns_zero_counts(self):
         summary = _findings_to_summary([])
-        assert summary["auto_edit"] == 0
-        assert summary["manual_edit"] == 0
+        assert summary["edit_suggested"] == 0
         assert summary["report_only"] == 0
         assert summary["suppressed"] == 0
         assert summary["verification_failed"] == 0
@@ -191,21 +190,19 @@ class TestSummarizeRunDiagnostics:
         assert summary["extraction_warning_count"] == 0
         assert summary["cross_check"] is None
 
-    def test_auto_edit_count_reflects_supportive_findings(self):
-        # A VERIFIED_SUPPORTED finding with a high-confidence edit
-        # proposal is the canonical auto-edit candidate.
+    def test_edit_suggested_count_reflects_proposal(self):
+        # Any finding carrying an edit proposal is EDIT_SUGGESTED — the
+        # app emits the instruction without gating on confidence.
         f = _finding(verification=_verified_supported(), confidence=0.9)
         summary = _findings_to_summary([f])
-        assert summary["auto_edit"] == 1
-        assert summary["manual_edit"] == 0
+        assert summary["edit_suggested"] == 1
 
-    def test_manual_edit_count_reflects_low_confidence(self):
-        # Edit proposal + supportive status + confidence below floor →
-        # MANUAL_EDIT_CANDIDATE rather than AUTO.
+    def test_edit_suggested_ignores_confidence(self):
+        # Confidence no longer gates the label; a low-confidence proposal
+        # is still EDIT_SUGGESTED (a downstream applier does its own gating).
         f = _finding(verification=_verified_supported(), confidence=0.5)
         summary = _findings_to_summary([f])
-        assert summary["auto_edit"] == 0
-        assert summary["manual_edit"] == 1
+        assert summary["edit_suggested"] == 1
 
     def test_report_only_count_reflects_no_proposal(self):
         f = _finding(
@@ -386,8 +383,7 @@ class TestBannerRendering:
         # Every plan-specified row label must appear. Some rows depend
         # on the run (cross-check only renders when configured); these
         # are the always-present rows.
-        assert "Auto-edit eligible" in text
-        assert "Manual edit required" in text
+        assert "Edit suggested" in text
         assert "Report-only" in text
         assert "Suppressed (cross-check filter)" in text
         assert "Cache replays" in text

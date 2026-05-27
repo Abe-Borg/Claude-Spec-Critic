@@ -15,9 +15,9 @@ nothing." The contract has five surfaces:
   set, prioritized after suppression but BEFORE the verdict-based
   branches (so a CONFIRMED-looking verdict that's actually a transient
   failure can't masquerade as VERIFIED_SUPPORTED).
-* ``classify_edit_action`` never routes a VERIFICATION_FAILED finding
-  to AUTO_EDIT_CANDIDATE — it lands on MANUAL_EDIT_CANDIDATE or
-  REPORT_ONLY depending on whether an edit proposal is attached.
+* ``classify_edit_action`` labels a VERIFICATION_FAILED finding
+  EDIT_SUGGESTED when it carries a proposal and REPORT_ONLY otherwise;
+  the failed status rides along for a downstream applier to act on.
 * ``VerificationCache.put`` refuses to persist ``verification_failed=True``
   results regardless of grounded/sources — these are transient signals,
   not durable verdicts.
@@ -225,11 +225,11 @@ class TestClassifyStatusVerificationFailed:
 
 
 class TestClassifyEditActionVerificationFailed:
-    def test_failed_with_proposal_routes_to_manual(self):
-        # A finding that had a proposal but whose verifier crashed
-        # must NEVER be AUTO_EDIT_CANDIDATE. We don't know whether the
-        # proposal would be safe to apply because we have no verifier
-        # signal — manual review only.
+    def test_failed_with_proposal_is_edit_suggested(self):
+        # The app emits edit instructions but never applies them, so a
+        # finding with a proposal is labeled EDIT_SUGGESTED regardless of
+        # verification status. The VERIFICATION_FAILED status rides along
+        # in the sidecar so a downstream applier can decide to skip it.
         proposal = EditProposal(
             action_type="EDIT",
             existing_text="old",
@@ -240,7 +240,7 @@ class TestClassifyEditActionVerificationFailed:
             verification=_failed_verification(),
             edit_proposal=proposal,
         )
-        assert classify_edit_action(f) is EditActionLabel.MANUAL_EDIT_CANDIDATE
+        assert classify_edit_action(f) is EditActionLabel.EDIT_SUGGESTED
 
     def test_failed_without_proposal_routes_to_report_only(self):
         # No proposal means no edit, regardless of status. The
@@ -256,21 +256,6 @@ class TestClassifyEditActionVerificationFailed:
             edit_proposal=None,
         )
         assert classify_edit_action(f) is EditActionLabel.REPORT_ONLY
-
-    def test_failed_with_high_confidence_proposal_still_manual(self):
-        # Confidence is irrelevant when the verifier failed — the
-        # status itself is the disqualifier (not in _SUPPORTIVE_STATUSES).
-        proposal = EditProposal(
-            action_type="EDIT",
-            existing_text="old",
-            replacement_text="new",
-            edit_confidence=0.99,
-        )
-        f = _finding(
-            verification=_failed_verification(),
-            edit_proposal=proposal,
-        )
-        assert classify_edit_action(f) is EditActionLabel.MANUAL_EDIT_CANDIDATE
 
 
 # ---------------------------------------------------------------------------

@@ -59,19 +59,13 @@ class FixtureOutcome:
     # The model's self-reported confidence on the underlying finding —
     # bucketed for the calibration plot. Pulled from ``finding.confidence``.
     finding_confidence: float
-    # The edit-proposal confidence (``edit_proposal.edit_confidence``).
-    # Used to drive the AUTO_EDIT false-positive-rate thresholds. ``None``
-    # for findings without an edit proposal (REPORT_ONLY etc.).
-    edit_confidence: float | None
 
-    # Trust-model status / edit-action assignments after grounding.
+    # Trust-model status after grounding.
     actual_status: str
-    actual_edit_action: str
 
-    # Expected status / edit-action from the fixture (may be None when
-    # the fixture only labels the verdict).
+    # Expected status from the fixture (may be None when the fixture only
+    # labels the verdict).
     expected_status: str | None
-    expected_edit_action: str | None
 
     # Source-grounding evidence after the helpers ran.
     cited_count: int
@@ -80,11 +74,10 @@ class FixtureOutcome:
     cache_status: str
 
     # Whether the fixture's classifier outcomes matched the ground truth.
-    # Verdict match is the primary correctness signal; status / action
-    # matches are tracked separately when the fixture labels them.
+    # Verdict match is the primary correctness signal; status match is
+    # tracked separately when the fixture labels it.
     verdict_match: bool
     status_match: bool | None
-    edit_action_match: bool | None
 
     # Captured response metadata used by the scorer.
     verification_mode: str
@@ -200,14 +193,6 @@ def _apply_budget_exhaustion(
     return result
 
 
-def _safe_edit_confidence(finding: Finding) -> float | None:
-    """Return the edit-proposal confidence, or None for non-edit findings."""
-    proposal = finding.as_edit_proposal()
-    if proposal is None:
-        return None
-    return float(proposal.edit_confidence)
-
-
 def _resolve_search_budget(severity: str) -> int:
     """Return the per-severity web_search budget for context."""
     return web_search_max_uses_for_severity(severity) or DEFAULT_VERIFICATION_MAX_USES
@@ -231,21 +216,14 @@ def run_fixture(fixture: CalibrationFixture) -> FixtureOutcome:
     finding.verification = grounded_result
 
     status = report_status.classify_status(finding)
-    edit_action = report_status.classify_edit_action(finding)
 
     expected_verdict = fixture.ground_truth.correct_verdict
     expected_status = fixture.ground_truth.expected_status
-    expected_edit_action = fixture.ground_truth.expected_edit_action
 
     grounded_verdict = (grounded_result.verdict or "").strip().upper()
     verdict_match = grounded_verdict == expected_verdict
     status_match = (
         status.value == expected_status if expected_status is not None else None
-    )
-    edit_action_match = (
-        edit_action.value == expected_edit_action
-        if expected_edit_action is not None
-        else None
     )
 
     issues: list[str] = []
@@ -258,11 +236,6 @@ def run_fixture(fixture: CalibrationFixture) -> FixtureOutcome:
         issues.append(
             f"status mismatch: expected {expected_status}, got {status.value}"
         )
-    if edit_action_match is False:
-        issues.append(
-            f"edit-action mismatch: expected {expected_edit_action}, "
-            f"got {edit_action.value}"
-        )
 
     return FixtureOutcome(
         fixture_id=fixture.fixture_id,
@@ -273,18 +246,14 @@ def run_fixture(fixture: CalibrationFixture) -> FixtureOutcome:
         grounded_verdict=grounded_verdict,
         expected_verdict=expected_verdict,
         finding_confidence=float(fixture.finding.confidence),
-        edit_confidence=_safe_edit_confidence(finding),
         actual_status=status.value,
-        actual_edit_action=edit_action.value,
         expected_status=expected_status,
-        expected_edit_action=expected_edit_action,
         cited_count=len(grounded_result.cited_sources),
         accepted_count=len(grounded_result.accepted_sources),
         grounded=bool(grounded_result.grounded),
         cache_status=grounded_result.cache_status,
         verdict_match=verdict_match,
         status_match=status_match,
-        edit_action_match=edit_action_match,
         verification_mode=grounded_result.verification_mode,
         verification_profile=grounded_result.verification_profile,
         web_search_requests=int(response.web_search_requests),

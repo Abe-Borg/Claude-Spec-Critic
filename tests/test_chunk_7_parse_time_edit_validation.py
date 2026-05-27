@@ -12,9 +12,6 @@ guards for the surrounding pipeline.
 from __future__ import annotations
 
 
-from src.editing.edit_candidates import SAFETY_REPORT_ONLY, classify_edit_candidates
-from src.editing.edit_locator import locate_edit
-from src.input.extractor import ParagraphMapping
 from src.orchestration.pipeline import _deduplicate_findings
 from src.orchestration.resume_state import deserialize_finding, serialize_finding
 from src.review.reviewer import (
@@ -41,22 +38,6 @@ def _verified(verdict: str) -> VerificationResult:
         grounded=True,
         model_used="fake",
         cache_status="miss",
-    )
-
-
-def _paragraph(text: str, *, body_index: int = 0) -> ParagraphMapping:
-    return ParagraphMapping(
-        body_index=body_index,
-        element_type="paragraph",
-        text=text,
-        table_index=None,
-        row_index=None,
-        cell_index=None,
-        section_index=0,
-        run_count=1,
-        distinct_formatting_runs=1,
-        element_id=f"p{body_index}",
-        section_id="",
     )
 
 
@@ -465,40 +446,6 @@ class TestDedupDoesNotRehydrate:
 
 
 class TestDownstreamConsumers:
-    def test_edit_candidates_marks_demoted_finding_ineligible(self):
-        findings = _parse_findings(
-            [_valid_review_payload(replacementText="")]
-        )
-        f = findings[0]
-        f.verification = _verified("CONFIRMED")
-        candidates = classify_edit_candidates([f])
-        c = candidates[0]
-        assert c.eligible is False
-        assert c.safety_category == SAFETY_REPORT_ONLY
-        # The UI sees the specific demotion reason, not the legacy
-        # generic "REPORT_ONLY" message.
-        assert "Demoted to REPORT_ONLY" in (c.ineligible_reason or "")
-        assert "replacementText" in (c.ineligible_reason or "")
-
-    def test_locator_short_circuits_for_demoted_finding(self):
-        findings = _parse_findings(
-            [
-                _valid_review_payload(
-                    actionType="ADD",
-                    existingText=None,
-                    replacementText="new",
-                    anchorText=None,
-                    insertPosition="after",
-                )
-            ]
-        )
-        f = findings[0]
-        result = locate_edit(
-            f, [_paragraph("Some paragraph", body_index=0)]
-        )
-        assert result.status == "not_found"
-        assert result.safety_category == SAFETY_REPORT_ONLY
-
     def test_as_edit_proposal_defends_against_legacy_invalid_shapes(self):
         # A Finding constructed directly with actionType="EDIT" but
         # missing existingText must not produce an EditProposal. The
