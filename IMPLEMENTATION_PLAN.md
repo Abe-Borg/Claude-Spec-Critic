@@ -39,7 +39,7 @@ Dependencies between modules are called out explicitly where they exist.
 | **M2** | Resolve the orphaned cross-check suppression feature | 🟠 High | For now | Small (delete) / Med (wire) | needs your decision | — |
 | **M3** | Purge the auto-apply / locator fossils | 🟡 Medium | Yes | Medium | — | — |
 | **M4** | Sweep the remaining dead symbols | ⚪ Low | Yes | Small | — | ✅ **Done** — PR #194 (merged) |
-| **M5** | Add minimal CI | 🟠 High | For now | Small | — | — |
+| **M5** | Add minimal CI | 🟠 High | For now | Small | — | 🟡 Implemented — PR open |
 | **M6** | Fix CLAUDE.md / README staleness | 🟡 Medium | For now | Small | M1, M2, M3 (doc tail) | 🟡 Step 1 done — PR #195 |
 | **M7** | Unify `VerificationResult` serialization | ⚪ Low | Yes | Medium | easier after M1 | — |
 | **M8** | Split the `verifier.py` god-module | ⚪ Low | Yes | Large/risky | — | — |
@@ -51,6 +51,7 @@ Dependencies between modules are called out explicitly where they exist.
 
 - **M4 — Sweep dead symbols** — ✅ **merged** via PR #194. Removed confirmed zero-caller symbols across `widgets.py`, `api_config.py`, `extraction_cache.py`, `prompt_serialization.py`, `spans.py`, `config.py`, `verification_routing.py`. Two deliberate deviations from the literal list, both within the module's stated latitude: **kept** `clear_token_cache` (live test-fixture use — the documented "keep both" option) and **relocated** `_tools_include_web_fetch` into its test file rather than deleting the behavior tests that consume it. Hermetic suite green (677 passed).
 - **M6 step 1 — Stale resume-retry stub docs** — 🟡 **open** in PR #195. Removed the `resume_retry_failed_only` / `SPEC_CRITIC_RESUME_RETRY_FAILED_ONLY` references (already gone from `src/`) from CLAUDE.md (Chunk 12 paragraph + §8 row) and README.md (the "(Stub)" section + the Chunk 12 changelog sentence). M6 steps 2–5 remain — they are the doc tail of M1 / M2 / M3.
+- **M5 — Add minimal CI** — 🟡 **implemented, PR open**. Added `.github/workflows/tests.yml` (step 1): on push to `master` and on every PR, it sets up Python 3.11, `pip install -r requirements.txt`, and runs the hermetic `python -m pytest` suite (no API key / network — conftest injects a placeholder key and skips `@pytest.mark.network`). Verified green locally: **677 passed**, both with tkinter absent (3.11) and present-without-display (3.12), so the run is hermetic regardless of runner Tk state. Optional step 2 (eval-harness job) and step 3 (cross-check suppression integration test) were **deliberately skipped**: step 2 needs an API key/network secret, and step 3 ties to M2a — the suppression feature is still unwired (M2 undecided), so that test would fail today. Both remain easy follow-ups once M2 is resolved.
 
 ---
 
