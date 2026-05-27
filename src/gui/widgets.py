@@ -50,12 +50,6 @@ VERDICT_COLORS = {
     "DISPUTED": "#EF4444",
 }
 
-CONFIDENCE_COLORS = {
-    "high": "#22C55E",
-    "moderate": "#F59E0B",
-    "low": "#EF4444",
-}
-
 LOG_COLORS = {
     "info": COLORS["text_secondary"],
     "success": COLORS["success"],
@@ -73,12 +67,6 @@ ANIM = {
     "expand_duration": 200, "expand_steps": 10,
 }
 
-_VERDICT_ICONS = {
-    "CONFIRMED": "\u2713",
-    "CORRECTED": "\u270e",
-    "UNVERIFIED": "\u2014",
-}
-
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -92,13 +80,6 @@ def rgb_to_hex(r, g, b): return f"#{r:02x}{g:02x}{b:02x}"
 def blend_colors(c1, c2, t):
     r1, g1, b1 = hex_to_rgb(c1); r2, g2, b2 = hex_to_rgb(c2)
     return rgb_to_hex(int(lerp(r1, r2, t)), int(lerp(g1, g2, t)), int(lerp(b1, b2, t)))
-
-def _confidence_color(confidence: float) -> str:
-    if confidence >= 0.85: return CONFIDENCE_COLORS["high"]
-    elif confidence >= 0.60: return CONFIDENCE_COLORS["moderate"]
-    else: return CONFIDENCE_COLORS["low"]
-
-def _confidence_label(confidence: float) -> str: return f"{confidence:.0%}"
 
 
 # ============================================================================

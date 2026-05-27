@@ -54,7 +54,6 @@ from src.verification.verification_cache import (
 )
 from src.verification.verification_modes import VerificationMode
 from src.verification.verification_routing import (
-    _tools_include_web_fetch,
     build_verification_request,
     build_verification_tools_from_decision,
     select_routing,
@@ -74,6 +73,23 @@ from tests.fixtures.fake_anthropic import (
     FakeWebSearchResultBlock,
     sample_verification_verdict_payload,
 )
+
+
+def _tools_include_web_fetch(tools: list[dict]) -> bool:
+    """Local test predicate: True iff the tool list includes web_fetch.
+
+    Mirrors the tool-list shape the request builder produces. Production
+    code no longer needs this (web_fetch is GA and takes no beta header),
+    so the predicate lives here alongside the assertions that use it.
+    """
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        if str(tool.get("type", "")).startswith("web_fetch"):
+            return True
+        if str(tool.get("name", "")) == "web_fetch":
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------

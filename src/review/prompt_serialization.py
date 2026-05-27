@@ -74,8 +74,6 @@ TAG_ALREADY_IDENTIFIED = "already_identified"
 TAG_PRIOR_FINDING = "prior"
 TAG_FINDING = "finding"
 TAG_FINDINGS = "findings"
-TAG_CHUNK_FINDINGS = "chunk_findings"
-TAG_CHUNK = "chunk"
 # Chunk K2: element-level wrappers used when the id-tagged rendering is on.
 # The model receives one ``<para id="...">…</para>`` (or ``<row …>``) per
 # extracted element so it can cite ``evidenceElementId`` precisely.

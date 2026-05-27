@@ -31,7 +31,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
-from .extractor import ExtractedSpec, extract_text
+from .extractor import ExtractedSpec
 
 
 _DEFAULT_MAX_ENTRIES = 64
@@ -154,19 +154,6 @@ _extraction_cache = _ExtractionCache()
 def cache_enabled() -> bool:
     """Whether the extraction cache is active. Always True."""
     return True
-
-
-def extract_text_cached(filepath: Path) -> ExtractedSpec:
-    """Return a cached ExtractedSpec when the file's identity is unchanged."""
-    path = Path(filepath)
-    if not cache_enabled():
-        return extract_text(path)
-    cached = _extraction_cache.get(path)
-    if cached is not None:
-        return cached
-    spec = extract_text(path)
-    _extraction_cache.put(path, spec)
-    return spec
 
 
 def extract_multiple_specs_cached(
