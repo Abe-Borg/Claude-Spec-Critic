@@ -7,7 +7,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from ..batch.batch import (
     BatchJob,
@@ -1302,6 +1302,10 @@ class VerificationItemOutcome:
     original_custom_id: str
     classification: str
     parsed_verification: VerificationResult | None = None
+    # Raw batch message of the successful wave, retained only so the tracer
+    # can walk thinking / tool-use blocks in deep mode. Transient (never
+    # persisted); None on non-success outcomes.
+    raw_message: Any = None
     assistant_content_blocks: list | None = None
     unverified_reason: str | None = None
     # Failure class for the per-finding wave tracker. Set on ``retry`` and
@@ -2484,7 +2488,7 @@ def _classify_wave_results(
             and (parsed.verdict or "").strip().upper() == "UNVERIFIED"
         ):
             parsed.budget_exhausted = True
-        outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed))
+        outcomes.append(VerificationItemOutcome(finding_idx=finding_idx, original_custom_id=custom_id, classification="success", parsed_verification=parsed, raw_message=message))
     return outcomes
 
 
@@ -2722,6 +2726,11 @@ def collect_verification_batch_results(
     # the same number of pause/resume rounds the real-time path would
     # have allowed in one call, and the next wave is unlikely to help.
     continuation_counts: dict[str, int] = {}
+    # Deep-mode tracing: retain each finding's final successful wave message
+    # so the post-hoc batch verification span can walk its thinking / tool
+    # blocks. Keyed by finding index; a finding resolves exactly once, so the
+    # last success wins. Stays empty (and unused) in non-deep runs.
+    final_wave_messages: dict[int, Any] = {}
     current_job = job
     for wave_index in range(max_waves):
         wave_label = f"wave {wave_index + 1}/{max_waves}"
@@ -2761,6 +2770,8 @@ def collect_verification_batch_results(
                     cache.put(finding, cycle=cycle, result=outcome.parsed_verification)
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 succeeded += 1
+                if outcome.raw_message is not None:
+                    final_wave_messages[outcome.finding_idx] = outcome.raw_message
             elif outcome.classification == "retry":
                 # Apply the per-finding wave tracker.
                 #
@@ -3144,13 +3155,14 @@ def collect_verification_batch_results(
     # the same thread); otherwise the span correlates by finding_id.
     from ..tracing import current_span as _current_span
     _trace_parent = _current_span()
-    for finding in findings:
+    for finding_idx, finding in enumerate(findings):
         if finding.verification is None:
             finding.verification = VerificationResult(verdict="UNVERIFIED", explanation="No verification result after all batch waves.")
         _trace.capture_batch_verification_span(
             finding_id=getattr(finding, "finding_id", "") or "unknown",
             verification_result=finding.verification,
             parent=_trace_parent,
+            raw_message=final_wave_messages.get(finding_idx),
         )
         counts[finding.verification.verdict] = counts.get(finding.verification.verdict, 0) + 1
     log(

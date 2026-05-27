@@ -867,3 +867,91 @@ def test_batch_verification_span_skips_local_skip_and_cache_hit(recorder: TraceR
     spans = [json.loads(line) for line in spans_path.read_text().strip().split("\n")] if spans_path.read_text().strip() else []
     vspans = [s for s in spans if s["kind"] == "verification_initial"]
     assert len(vspans) == 0
+
+
+def _batch_message_with_thinking():
+    """A succeeded-wave message carrying a thinking block, a web_search, and
+    the terminal verdict tool_use — the shape the batch retrieval hands back."""
+    from tests.fixtures.fake_anthropic import (
+        FakeMessage,
+        FakeServerToolUseBlock,
+        FakeToolUseBlock,
+        FakeUsage,
+    )
+
+    return FakeMessage(
+        content=[
+            {"type": "thinking", "thinking": "NFPA 13 §8.3 governs sprinkler spacing here."},
+            FakeServerToolUseBlock(name="web_search", input={"query": "NFPA 13 sprinkler spacing"}),
+            FakeToolUseBlock(name="submit_verification_verdict", input={"verdict": "CONFIRMED"}),
+        ],
+        stop_reason="tool_use",
+        usage=FakeUsage(),
+    )
+
+
+def test_batch_verification_span_deep_walks_thinking(trace_dir: Path, clean_env: None) -> None:
+    """Deep mode walks the successful wave's raw message onto the batch
+    verification span: thinking + web_search events appear, correlated to the
+    span by span_id."""
+    rec = TraceRecorder(run_id="bvdeep", trace_dir=trace_dir, capture_level=LEVEL_DEEP)
+    rec.start(mode="batch")
+    set_recorder(rec)
+    try:
+        capture_hooks.capture_batch_verification_span(
+            finding_id="bf-1",
+            verification_result=_FakeVerification(verdict="CONFIRMED", grounded=True, cache_status="miss"),
+            raw_message=_batch_message_with_thinking(),
+        )
+        rec.stop()
+    finally:
+        set_recorder(None)
+
+    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
+    vspan = next(s for s in spans if s["kind"] == "verification_initial")
+    events = [json.loads(line) for line in (trace_dir / FILE_EVENTS).read_text().strip().split("\n")]
+    types = [e["type"] for e in events]
+    assert "thinking_block" in types
+    assert "web_search_query" in types
+    thinking = next(e for e in events if e["type"] == "thinking_block")
+    assert thinking["span_id"] == vspan["span_id"]  # attached to the batch verify span
+    assert "NFPA 13" in thinking["text"]
+
+
+def test_batch_verification_span_default_omits_thinking(recorder: TraceRecorder, trace_dir: Path) -> None:
+    """Default mode does NOT walk the raw message — batch is the common path,
+    so thinking capture is gated behind deep mode. The span is still emitted."""
+    capture_hooks.capture_batch_verification_span(
+        finding_id="bf-2",
+        verification_result=_FakeVerification(verdict="CONFIRMED", grounded=True, cache_status="miss"),
+        raw_message=_batch_message_with_thinking(),
+    )
+    recorder.stop()
+
+    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
+    assert any(s["kind"] == "verification_initial" for s in spans)
+    raw = (trace_dir / FILE_EVENTS).read_text().strip()
+    types = [json.loads(line)["type"] for line in raw.split("\n")] if raw else []
+    assert "thinking_block" not in types
+
+
+def test_batch_verification_span_deep_no_message_no_block_events(trace_dir: Path, clean_env: None) -> None:
+    """Deep mode but no raw_message (a finding that never produced a
+    successful wave message) → the span is emitted, but with no content-block
+    events to walk."""
+    rec = TraceRecorder(run_id="bvnomsg", trace_dir=trace_dir, capture_level=LEVEL_DEEP)
+    rec.start(mode="batch")
+    set_recorder(rec)
+    try:
+        capture_hooks.capture_batch_verification_span(
+            finding_id="bf-3",
+            verification_result=_FakeVerification(verdict="UNVERIFIED", cache_status="miss"),
+            raw_message=None,
+        )
+        rec.stop()
+    finally:
+        set_recorder(None)
+
+    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
+    assert any(s["kind"] == "verification_initial" for s in spans)
+    assert (trace_dir / FILE_EVENTS).read_text().strip() == ""
