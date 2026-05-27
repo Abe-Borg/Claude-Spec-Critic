@@ -208,16 +208,16 @@ class TestClassifyStatusBudgetExhausted:
 
 
 # ---------------------------------------------------------------------------
-# 4. classify_edit_action — exhausted findings never auto-edit
+# 4. classify_edit_action — proposal presence drives the label
 # ---------------------------------------------------------------------------
 
 
 class TestClassifyEditActionBudgetExhausted:
-    def test_exhausted_with_proposal_routes_to_manual(self):
-        # A finding that exhausted its search budget without a verdict
-        # must NEVER be AUTO_EDIT_CANDIDATE — the status itself is
-        # INSUFFICIENT_EVIDENCE (not in _SUPPORTIVE_STATUSES) so the
-        # action falls through to MANUAL_EDIT_CANDIDATE.
+    def test_exhausted_with_proposal_is_edit_suggested(self):
+        # The app emits edit instructions but never applies them. A
+        # budget-exhausted finding with a proposal is labeled
+        # EDIT_SUGGESTED; its INSUFFICIENT_EVIDENCE status rides along in
+        # the sidecar for a downstream applier to act on.
         proposal = EditProposal(
             action_type="EDIT",
             existing_text="old",
@@ -228,7 +228,7 @@ class TestClassifyEditActionBudgetExhausted:
             verification=_exhausted_verification(),
             edit_proposal=proposal,
         )
-        assert classify_edit_action(f) is EditActionLabel.MANUAL_EDIT_CANDIDATE
+        assert classify_edit_action(f) is EditActionLabel.EDIT_SUGGESTED
 
     def test_exhausted_without_proposal_routes_to_report_only(self):
         f = _finding(

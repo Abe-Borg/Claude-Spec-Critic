@@ -3,7 +3,7 @@
 Run with ``python -m evals.runner`` to:
 
 * execute every fixture from :mod:`evals.fixtures`,
-* compute the ten Chunk 12 metrics,
+* compute the golden-set metrics,
 * render a summary table + per-fixture pass/fail report,
 * compare metrics against the checked-in baseline at
   :data:`evals.BASELINE_PATH` and report any drift.
@@ -44,8 +44,6 @@ _METRIC_DISPLAY_ORDER = (
     ("duplicate_finding", "Duplicate findings"),
     ("parse_failure", "Parse failures"),
     ("edit_proposal_validity", "Edit proposal validity"),
-    ("locator_success", "Locator success"),
-    ("unsafe_edit_refusal", "Unsafe-edit refusal"),
     ("citation_acceptance", "Citation acceptance"),
     ("sourceless_confirmed", "Sourceless CONFIRMED survivors"),
 )
@@ -122,8 +120,6 @@ _RATE_KEYS = (
     "duplicate_finding",
     "parse_failure",
     "edit_proposal_validity",
-    "locator_success",
-    "unsafe_edit_refusal",
     "citation_acceptance",
     "sourceless_confirmed",
 )

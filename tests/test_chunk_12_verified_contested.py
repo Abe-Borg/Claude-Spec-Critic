@@ -25,9 +25,9 @@ The contract has these surfaces:
   ``models_disagreed`` is True, prioritized BEFORE the verdict-based
   branches so a final CONFIRMED+grounded verdict that disagreed with a
   DISPUTED initial does not slip through as VERIFIED_SUPPORTED.
-* ``classify_edit_action`` never routes a VERIFIED_CONTESTED finding
-  to AUTO_EDIT_CANDIDATE — VERIFIED_CONTESTED is not in
-  ``_SUPPORTIVE_STATUSES`` by construction.
+* ``classify_edit_action`` labels a VERIFIED_CONTESTED finding
+  EDIT_SUGGESTED when it carries a proposal and REPORT_ONLY otherwise;
+  the contested status rides along for a downstream applier to act on.
 * ``verify_finding`` sets ``models_disagreed`` only when BOTH passes
   were grounded AND the verdicts differ. Initial-UNVERIFIED-then-
   CONFIRMED escalations do NOT trigger it — the initial pass was not
@@ -57,7 +57,6 @@ from src.output.report_status import (
     STATUS_DISPLAY_ORDER,
     STATUS_GLYPHS,
     STATUS_LABELS,
-    _SUPPORTIVE_STATUSES,
     classify_edit_action,
     classify_status,
 )
@@ -300,18 +299,16 @@ class TestClassifyStatusContested:
 
 
 # ---------------------------------------------------------------------------
-# 4. classify_edit_action — VERIFIED_CONTESTED never auto-edits
+# 4. classify_edit_action — proposal presence drives the label
 # ---------------------------------------------------------------------------
 
 
 class TestClassifyEditActionContested:
-    def test_contested_not_in_supportive_statuses(self):
-        # The supportive set drives auto-edit eligibility. By the plan
-        # VERIFIED_CONTESTED must NOT be supportive — the disagreement
-        # is the signal that the finding needs a human eye.
-        assert ReportStatus.VERIFIED_CONTESTED not in _SUPPORTIVE_STATUSES
-
-    def test_contested_with_proposal_routes_to_manual(self):
+    def test_contested_with_proposal_is_edit_suggested(self):
+        # The app emits edit instructions but never applies them. A
+        # contested finding with a proposal is labeled EDIT_SUGGESTED;
+        # the VERIFIED_CONTESTED status rides along in the sidecar so a
+        # downstream applier sees the disagreement and can skip it.
         proposal = EditProposal(
             action_type="EDIT",
             existing_text="old",
@@ -322,7 +319,7 @@ class TestClassifyEditActionContested:
             verification=_contested_verification(),
             edit_proposal=proposal,
         )
-        assert classify_edit_action(f) is EditActionLabel.MANUAL_EDIT_CANDIDATE
+        assert classify_edit_action(f) is EditActionLabel.EDIT_SUGGESTED
 
     def test_contested_without_proposal_routes_to_report_only(self):
         # No proposal short-circuits to REPORT_ONLY regardless of status.
@@ -334,22 +331,6 @@ class TestClassifyEditActionContested:
             edit_proposal=None,
         )
         assert classify_edit_action(f) is EditActionLabel.REPORT_ONLY
-
-    def test_contested_with_high_confidence_proposal_still_manual(self):
-        # Confidence is irrelevant when the status is contested — the
-        # disagreement itself is the disqualifier (not in
-        # _SUPPORTIVE_STATUSES).
-        proposal = EditProposal(
-            action_type="EDIT",
-            existing_text="old",
-            replacement_text="new",
-            edit_confidence=0.99,
-        )
-        f = _finding(
-            verification=_contested_verification(),
-            edit_proposal=proposal,
-        )
-        assert classify_edit_action(f) is EditActionLabel.MANUAL_EDIT_CANDIDATE
 
 
 # ---------------------------------------------------------------------------

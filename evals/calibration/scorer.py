@@ -1,7 +1,7 @@
 """Calibration scorer — convert fixture outcomes into trust metrics.
 
-Five tables, each defined precisely so a future Chunk-1 tuning pass can
-read the same numbers across runs:
+Four tables, each defined precisely so a future tuning pass can read the
+same numbers across runs:
 
 1. **Confusion matrix.** Rows = ``ground_truth.correct_verdict``;
    columns = the verdict the pipeline emitted *after* grounding (so an
@@ -15,20 +15,13 @@ read the same numbers across runs:
    ``ground_truth.expected_status`` agree? Fixtures with no
    ``expected_status`` are excluded from the denominator.
 
-3. **False-positive auto-edit rate** at four ``edit_confidence``
-   thresholds (0.70 / 0.80 / 0.85 / 0.90). At each threshold we count
-   fixtures that the pipeline would treat as ``AUTO_EDIT_CANDIDATE``
-   (supportive status + ``edit_confidence >= threshold``) and split
-   them into "would have edited the right thing" vs. "would have
-   edited the wrong thing" using the ground-truth verdict.
-
-4. **Calibration plot.** Bucket every fixture by
+3. **Calibration plot.** Bucket every fixture by
    ``finding.confidence`` (the model's self-reported confidence in the
    underlying claim) into five buckets and report the observed
    correctness rate per bucket. Correctness uses the verdict match —
    "the pipeline emitted the verdict the human labeled as right."
 
-5. **Source-grounding integrity.** Count CONFIRMED / CORRECTED
+4. **Source-grounding integrity.** Count CONFIRMED / CORRECTED
    verdicts (both the captured pre-grounding verdict and the
    post-grounding verdict) that survived without an accepted citation.
    The post-grounding count should always be zero in production; the
@@ -52,9 +45,6 @@ from .harness import FixtureOutcome, HarnessResult
 # (CONFIRMED → CORRECTED → DISPUTED → UNVERIFIED) so the rendered table
 # always reads the same way.
 _VERDICTS: tuple[str, ...] = ("CONFIRMED", "CORRECTED", "DISPUTED", "UNVERIFIED")
-
-# AUTO_EDIT confidence thresholds called out in the Chunk 1 plan.
-_EDIT_CONFIDENCE_THRESHOLDS: tuple[float, ...] = (0.70, 0.80, 0.85, 0.90)
 
 # Calibration plot buckets. The lower bound is inclusive, the upper bound
 # exclusive (except for the last bucket which is inclusive on both ends).
@@ -120,18 +110,6 @@ class StatusAccuracy:
 
 
 @dataclass
-class AutoEditFalsePositive:
-    threshold: float
-    auto_edit_count: int = 0
-    correct_count: int = 0
-    incorrect_count: int = 0
-
-    @property
-    def false_positive_rate(self) -> float:
-        return _safe_div(self.incorrect_count, self.auto_edit_count)
-
-
-@dataclass
 class CalibrationBucket:
     label: str
     lower: float
@@ -165,7 +143,6 @@ class CalibrationReport:
     fixture_fail: int
     confusion_matrix: ConfusionMatrix
     status_accuracy: list[StatusAccuracy]
-    auto_edit_fp: list[AutoEditFalsePositive]
     calibration: list[CalibrationBucket]
     grounding_integrity: GroundingIntegrity
     outcomes: list[FixtureOutcome]
@@ -234,40 +211,6 @@ def _build_status_accuracy(outcomes: Iterable[FixtureOutcome]) -> list[StatusAcc
     return sorted(by_status.values(), key=lambda r: r.status)
 
 
-def _build_auto_edit_fp(
-    outcomes: Iterable[FixtureOutcome],
-) -> list[AutoEditFalsePositive]:
-    """Count AUTO_EDIT findings that the ground truth says were wrong.
-
-    The eligibility rule mirrors :func:`classify_edit_action`: a finding
-    qualifies for AUTO_EDIT when the pipeline labeled it
-    ``AUTO_EDIT_CANDIDATE`` *and* its ``edit_confidence`` reaches the
-    threshold. We re-walk the threshold here rather than reading
-    ``actual_edit_action`` so a future change to the production floor
-    cannot silently lower or raise our reported numbers.
-    """
-    rows = [AutoEditFalsePositive(threshold=t) for t in _EDIT_CONFIDENCE_THRESHOLDS]
-    for o in outcomes:
-        # Only findings whose pipeline status is supportive can become
-        # AUTO_EDIT candidates. Mirror the production gate:
-        # AUTO_EDIT requires actual_status in the supportive set AND
-        # edit_confidence >= floor. ``actual_edit_action`` already
-        # encodes both conditions at the production floor; for stricter
-        # thresholds we re-check the edit confidence.
-        if o.edit_confidence is None:
-            continue
-        if o.actual_status not in ("VERIFIED_SUPPORTED", "VERIFIED_CONTRADICTED", "LOCALLY_CLASSIFIED"):
-            continue
-        for row in rows:
-            if o.edit_confidence >= row.threshold:
-                row.auto_edit_count += 1
-                if o.verdict_match:
-                    row.correct_count += 1
-                else:
-                    row.incorrect_count += 1
-    return rows
-
-
 def _build_calibration(outcomes: Iterable[FixtureOutcome]) -> list[CalibrationBucket]:
     buckets = [
         CalibrationBucket(label=label, lower=lo, upper=hi)
@@ -322,7 +265,6 @@ def score(result: HarnessResult) -> CalibrationReport:
         fixture_fail=len(outcomes) - fixture_pass,
         confusion_matrix=_build_confusion_matrix(outcomes),
         status_accuracy=_build_status_accuracy(outcomes),
-        auto_edit_fp=_build_auto_edit_fp(outcomes),
         calibration=_build_calibration(outcomes),
         grounding_integrity=_build_grounding_integrity(outcomes),
         outcomes=outcomes,
@@ -415,33 +357,9 @@ def _render_status_accuracy(rows: list[StatusAccuracy]) -> str:
     return "\n".join(lines)
 
 
-def _render_auto_edit_fp(rows: list[AutoEditFalsePositive]) -> str:
-    lines = [
-        "## 3. False-positive auto-edit rate",
-        "",
-        "At each ``edit_confidence`` threshold, count fixtures the pipeline"
-        " would auto-edit (supportive status + threshold met) and split"
-        " them by whether the ground-truth verdict matched the verdict the"
-        " pipeline emitted. A high FP rate is the trust signal Chunk 1 is"
-        " here to measure.",
-        "",
-        "| threshold | auto-edit eligible | correct | incorrect | FP rate |",
-        "|---|---|---|---|---|",
-    ]
-    for row in rows:
-        lines.append(
-            f"| ≥ {row.threshold:.2f} | {_fmt_int(row.auto_edit_count)} "
-            f"| {_fmt_int(row.correct_count)} "
-            f"| {_fmt_int(row.incorrect_count)} "
-            f"| {_fmt_pct(row.false_positive_rate)} |"
-        )
-    lines.append("")
-    return "\n".join(lines)
-
-
 def _render_calibration(buckets: list[CalibrationBucket]) -> str:
     lines = [
-        "## 4. Confidence calibration",
+        "## 3. Confidence calibration",
         "",
         "Findings bucketed by ``finding.confidence`` (the model's"
         " self-reported confidence). A well-calibrated model has a"
@@ -470,7 +388,7 @@ def _render_grounding_integrity(integrity: GroundingIntegrity) -> str:
         integrity.grounded_supportive_total,
     )
     lines = [
-        "## 5. Source-grounding integrity",
+        "## 4. Source-grounding integrity",
         "",
         "Captured = before the grounding invariant ran. Final = after"
         " ``_apply_source_grounding`` + ``_enforce_grounding_invariant``."
@@ -500,16 +418,15 @@ def _render_per_fixture(outcomes: list[FixtureOutcome]) -> str:
         "## Per-fixture detail",
         "",
         "| fixture_id | severity | category | verdict (captured → grounded) "
-        "| expected | match | status | edit action |",
-        "|---|---|---|---|---|---|---|---|",
+        "| expected | match | status |",
+        "|---|---|---|---|---|---|---|",
     ]
     for o in outcomes:
         match = "✓" if o.verdict_match else "✗"
         lines.append(
             f"| `{o.fixture_id}` | {o.severity} | {o.category} "
             f"| {o.captured_verdict} → {o.grounded_verdict} "
-            f"| {o.expected_verdict} | {match} | {o.actual_status} "
-            f"| {o.actual_edit_action} |"
+            f"| {o.expected_verdict} | {match} | {o.actual_status} |"
         )
     lines.append("")
     fail_block: list[str] = []
@@ -533,7 +450,6 @@ def render_markdown(report: CalibrationReport) -> str:
         _render_header(report),
         _render_confusion_matrix(report.confusion_matrix),
         _render_status_accuracy(report.status_accuracy),
-        _render_auto_edit_fp(report.auto_edit_fp),
         _render_calibration(report.calibration),
         _render_grounding_integrity(report.grounding_integrity),
         _render_per_fixture(report.outcomes),

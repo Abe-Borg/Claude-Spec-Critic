@@ -197,23 +197,6 @@ class Finding:
     # to "auto-edit only the representative's own file, route others to
     # manual review" rather than guessing.
     occurrence_originals: list["Finding"] = field(default_factory=list)
-    # Chunk 4 / Trust Upgrade: locator evidence captured from the best
-    # ``EditLocation`` produced for this finding's edit proposal. Allows
-    # the report to render the "Edit Target Evidence" panel (match
-    # method, confidence, safety category, element id) without rerunning
-    # the locator inside the exporter. Populated whenever the pipeline
-    # has access to a paragraph map for the finding's file — that
-    # is, in ``finalize_batch_result`` after the
-    # review is done, and again in ``execute_edit_plan`` so the field
-    # stays fresh when edits are applied from a resume state. Keys:
-    # ``status`` (locator outcome), ``match_method`` (id / exact /
-    # normalized / section-anchored / fuzzy), ``match_confidence``
-    # (float in [0, 1]), ``safety_category`` (AUTO_SAFE /
-    # AUTO_WITH_CAUTION / MANUAL_REVIEW / REPORT_ONLY), ``element_id``
-    # (matched paragraph id or empty string). ``None`` is the default
-    # — the finding had no edit proposal, or the locator never ran
-    # (e.g. file unavailable, legacy resume payload).
-    locator_evidence: dict | None = None
 
     def as_edit_proposal(self) -> EditProposal | None:
         """Return the structured edit proposal for this finding, if any.

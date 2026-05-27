@@ -1225,25 +1225,16 @@ def collect_batch_verification_results(
 
 
 def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
-    # Chunk 4 / Trust Upgrade: stamp locator evidence on findings with
-    # edit proposals so the first-time exported report can render the
-    # "Edit Target Evidence" panel. Run before constructing
-    # PipelineResult so the side effects on Finding.locator_evidence
-    # propagate through review_result / cross_check_result. Guarded by
-    # truthiness on prepared_specs because the recovery path may have
-    # nulled it.
+    # ``prepared_specs`` rides through to PipelineResult.extracted_specs for
+    # the report's extraction-warnings banner. The recovery path may null it.
     prepared_specs = state.submission.prepared_specs or []
     all_findings: list[Finding] = []
     if state.review_result and state.review_result.findings:
         all_findings.extend(state.review_result.findings)
     if state.cross_check_result and state.cross_check_result.findings:
         all_findings.extend(state.cross_check_result.findings)
-    if prepared_specs and all_findings:
-        from ..editing.apply_edits import populate_locator_evidence
-        populate_locator_evidence(all_findings, prepared_specs)
     # Tracing: snapshot every finding's terminal state and close the
-    # batch-mode pipeline span. Done after locator-evidence population so
-    # findings.jsonl includes the locator data.
+    # batch-mode pipeline span.
     for _f in all_findings:
         _trace.capture_finding_terminal(_f)
     if state.trace_span_id:

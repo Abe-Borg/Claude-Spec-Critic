@@ -8,10 +8,9 @@ Chunk 10 of the Trust Upgrade has two unrelated surfaces:
   match) and is removed outright. ``"leed"`` and ``"internal
   contradiction"`` still route to ``local_skip`` (web search adds no
   signal for either) but are now tagged with ``requires_elevated_confidence``
-  on the resulting :class:`VerificationResult` so the composite-confidence
-  multiplier in :func:`composite_edit_confidence` applies an additional
-  0.85 factor — raising the auto-edit bar for the residual-risk classes
-  without paying for verification that wouldn't add evidence.
+  on the resulting :class:`VerificationResult` so a downstream applier
+  can raise the bar for the residual-risk classes without paying for
+  verification that wouldn't add evidence.
 
 * **10b — DOCX content-loss warning.** A drawing-heavy spec (more than
   20% of body children carrying ``<w:drawing>`` / ``<w:pict>`` /
@@ -48,12 +47,8 @@ from src.orchestration.resume_state import (
 )
 from src.output.report_exporter import _summarize_run_diagnostics, export_report
 from src.output.report_status import (
-    EditActionLabel,
     ReportStatus,
-    auto_edit_confidence_floor,
-    classify_edit_action,
     classify_status,
-    composite_edit_confidence,
     summarize_edit_actions,
     summarize_statuses,
 )
@@ -129,8 +124,8 @@ class TestFormattingKeywordRemoved:
 
 class TestElevatedConfidenceKeywords:
     """``"leed"`` and ``"internal contradiction"`` still route to local_skip
-    but get tagged so the composite-confidence multiplier raises the
-    auto-edit bar."""
+    but get tagged with ``requires_elevated_confidence`` for a downstream
+    applier to act on."""
 
     def test_leed_routes_to_local_skip(self):
         f = _gripe(issue="LEED reference is inappropriate for K-12 project")
@@ -187,7 +182,7 @@ class TestRegularKeywordWinsOverElevated:
 class TestLocalSkipResultCarriesFlag:
     """``_local_skip_result`` propagates the elevated-confidence flag
     onto the resulting VerificationResult so downstream consumers
-    (composite_edit_confidence, resume state) can read it."""
+    (resume state, a future applier) can read it."""
 
     def test_default_flag_is_false(self):
         result = _local_skip_result()
@@ -203,79 +198,6 @@ class TestLocalSkipResultCarriesFlag:
         f = _gripe(issue="LEED reference is inappropriate")
         f.verification = _local_skip_result(requires_elevated_confidence=True)
         assert classify_status(f) is ReportStatus.LOCALLY_CLASSIFIED
-
-
-class TestCompositeConfidenceWithElevatedFlag:
-    """The composite-confidence multiplier applies an additional 0.85
-    factor when the verification result is tagged with
-    ``requires_elevated_confidence=True``."""
-
-    def _finding_with_flag(
-        self,
-        *,
-        flag: bool,
-        edit_confidence: float = 1.0,
-    ) -> Finding:
-        f = _gripe(issue="LEED reference is inappropriate")
-        f.existingText = "old text"
-        f.replacementText = "new text"
-        proposal = EditProposal(
-            action_type="EDIT",
-            existing_text="old text",
-            replacement_text="new text",
-            edit_confidence=edit_confidence,
-        )
-        f.edit_proposal = proposal
-        f.verification = _local_skip_result(requires_elevated_confidence=flag)
-        return f
-
-    def test_elevated_flag_drops_composite_by_point_eighty_five(self):
-        # LOCALLY_CLASSIFIED ungrounded composite without the flag:
-        #   edit 1.0 * locator 1.0 * grounded 0.5 * status 0.85 = 0.425
-        # With the elevated flag: multiply by 0.85 = 0.36125.
-        without = self._finding_with_flag(flag=False, edit_confidence=1.0)
-        with_flag = self._finding_with_flag(flag=True, edit_confidence=1.0)
-        assert composite_edit_confidence(without) == pytest.approx(0.425)
-        assert composite_edit_confidence(with_flag) == pytest.approx(0.36125)
-
-    def test_elevated_flag_keeps_composite_below_auto_edit_floor(self):
-        # With default floor 0.7, both the flagged and unflagged composite
-        # are below the floor — but the flagged case is even further
-        # below, so even a higher floor would still demote it.
-        floor = auto_edit_confidence_floor()
-        with_flag = self._finding_with_flag(flag=True, edit_confidence=1.0)
-        assert composite_edit_confidence(with_flag) < floor
-        assert classify_edit_action(with_flag) == EditActionLabel.MANUAL_EDIT_CANDIDATE
-
-    def test_missing_flag_treated_as_neutral(self):
-        # A legacy verification result (no requires_elevated_confidence
-        # attribute at all) should not blow up — the helper reads
-        # defensively and defaults to the neutral 1.0 multiplier.
-        f = _gripe(issue="placeholder text needs replacement")
-        f.existingText = "old text"
-        f.replacementText = "new text"
-        f.edit_proposal = EditProposal(
-            action_type="EDIT",
-            existing_text="old text",
-            replacement_text="new text",
-            edit_confidence=1.0,
-        )
-
-        class _LegacyVerification:
-            """A VerificationResult-like object that predates the field."""
-
-            verdict = "UNVERIFIED"
-            grounded = False
-            cache_status = "local_skip"
-            sources: list = []
-            accepted_sources: list = []
-            verification_failed = False
-            suppression_reason = None
-
-        f.verification = _LegacyVerification()
-        # Should compute the LOCALLY_CLASSIFIED composite without the
-        # elevated multiplier: 1.0 * 1.0 * 0.5 * 0.85 = 0.425.
-        assert composite_edit_confidence(f) == pytest.approx(0.425)
 
 
 class TestResumeStateRoundTrip:

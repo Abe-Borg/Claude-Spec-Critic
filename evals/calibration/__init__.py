@@ -1,7 +1,7 @@
-"""Chunk 1 — calibration eval harness.
+"""Calibration eval harness.
 
-The Chunk 12 regression harness in :mod:`evals` answers "did the parser /
-locator / detector keep doing what it used to do?" — a deterministic
+The regression harness in :mod:`evals` answers "did the parser /
+detector keep doing what it used to do?" — a deterministic
 contract check. This sub-package answers a different question: "when the
 verifier says CONFIRMED at confidence 0.9, how often is it actually
 right?"
@@ -20,19 +20,17 @@ Each fixture is a JSON file under :file:`fixtures/` containing:
 The harness reconstructs the ``VerificationResult``, replays the
 source-grounding helpers (so an ungrounded CONFIRMED downgrades to
 UNVERIFIED in the eval the same way it would in production), runs
-:func:`src.output.report_status.classify_status` /
-:func:`classify_edit_action`, and hands the per-fixture outcomes to the
-scorer.
+:func:`src.output.report_status.classify_status`, and hands the
+per-fixture outcomes to the scorer.
 
-The scorer emits five tables:
+The scorer emits four tables:
 
 1. Confusion matrix — captured verdict vs. ground-truth verdict.
 2. Per-status accuracy — does ``VERIFIED_SUPPORTED`` actually mean the
    finding was right?
-3. False-positive auto-edit rate at four ``edit_confidence`` thresholds.
-4. Calibration plot — self-reported model confidence bucketed against
+3. Calibration plot — self-reported model confidence bucketed against
    observed correctness rate.
-5. Source-grounding integrity — count of CONFIRMED / CORRECTED with and
+4. Source-grounding integrity — count of CONFIRMED / CORRECTED with and
    without accepted citations.
 
 The harness is intentionally hermetic. ``ANTHROPIC_API_KEY`` is set to a

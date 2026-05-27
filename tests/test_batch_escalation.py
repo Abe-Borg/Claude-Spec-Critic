@@ -155,8 +155,9 @@ class TestApplyEscalationOutcome:
         f.verification = merged
         # The disagreement overrides the per-verdict classification.
         assert classify_status(f) == ReportStatus.VERIFIED_CONTESTED
-        # ... and a contested finding is never auto-applied.
-        assert classify_edit_action(f) == EditActionLabel.MANUAL_EDIT_CANDIDATE
+        # ... and a finding with a proposal is labeled EDIT_SUGGESTED
+        # (the app emits edit instructions; it never applies them).
+        assert classify_edit_action(f) == EditActionLabel.EDIT_SUGGESTED
 
     def test_no_disagreement_when_same_verdict(self):
         initial = _vr("CONFIRMED", grounded=True, sources=["https://a"], model=INIT_MODEL)

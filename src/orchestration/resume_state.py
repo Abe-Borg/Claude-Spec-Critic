@@ -369,15 +369,6 @@ def serialize_finding(finding: Finding, *, _include_originals: bool = True) -> d
         "independent_evidence_ids": list(finding.independent_evidence_ids),
         "suppression_reason": finding.suppression_reason,
         "demotion_reason": finding.demotion_reason,
-        # Chunk 4 / Trust Upgrade: locator evidence (match method,
-        # confidence, safety category, element id) so a resumed run
-        # exporting the report after edits were applied can still
-        # render the "Edit Target Evidence" panel.
-        "locator_evidence": (
-            dict(finding.locator_evidence)
-            if finding.locator_evidence is not None
-            else None
-        ),
     }
     # Per-file pre-merge originals. The originals are themselves singleton
     # findings (their own ``occurrence_originals`` is empty), so the recursion
@@ -444,26 +435,6 @@ def deserialize_finding(payload: dict[str, Any], *, _include_originals: bool = T
         ]
     else:
         occurrence_originals = []
-    # Chunk 4 / Trust Upgrade: locator evidence is an opaque dict with
-    # known string/float keys. Coerce values defensively so a malformed
-    # resume payload cannot blow up the deserializer; missing/invalid
-    # values fall back to ``None`` (the report will simply skip the
-    # locator panel for that finding).
-    locator_evidence_raw = payload.get("locator_evidence")
-    if isinstance(locator_evidence_raw, dict):
-        locator_evidence: dict | None = {
-            "status": str(locator_evidence_raw.get("status", "") or ""),
-            "match_method": str(locator_evidence_raw.get("match_method", "") or ""),
-            "match_confidence": float(
-                locator_evidence_raw.get("match_confidence", 0.0) or 0.0
-            ),
-            "safety_category": str(
-                locator_evidence_raw.get("safety_category", "") or ""
-            ),
-            "element_id": str(locator_evidence_raw.get("element_id", "") or ""),
-        }
-    else:
-        locator_evidence = None
     return Finding(
         severity=str(payload.get("severity", "MEDIUM")),
         fileName=str(payload.get("fileName", "")),
@@ -486,7 +457,6 @@ def deserialize_finding(payload: dict[str, Any], *, _include_originals: bool = T
         suppression_reason=suppression_reason,
         demotion_reason=demotion_reason,
         occurrence_originals=occurrence_originals,
-        locator_evidence=locator_evidence,
     )
 
 

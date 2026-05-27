@@ -1,33 +1,28 @@
-"""Golden-set fixture taxonomy for Chunk 12.
+"""Golden-set fixture taxonomy.
 
 Every fixture knows three things:
 
-1. **What it represents.** ``category`` is one of the ten cases called
-   out in the Chunk 12 plan (``clean_spec``, ``stale_code_cycle``,
-   ``placeholder``, ``internal_contradiction``, ``coordination``,
-   ``valid_edit``, ``invalid_edit``, ``unsafe_docx``,
-   ``verification_with_source``, ``verification_sourceless_confirmed``).
+1. **What it represents.** ``category`` is one of the cases the harness
+   covers (``clean_spec``, ``stale_code_cycle``, ``placeholder``,
+   ``internal_contradiction``, ``coordination``, ``valid_edit``,
+   ``invalid_edit``, ``verification_with_source``,
+   ``verification_sourceless_confirmed``).
 2. **How to exercise production code.** ``spec_text`` is the raw spec
    body; ``review_payload`` / ``verification_payload`` are dicts that
    match the structured tool schemas (so the production parsers in
-   :mod:`src.reviewer` / :mod:`src.verifier` consume them unchanged);
-   ``docx_kind`` is ``"safe_paragraph"`` / ``"unsafe_hyperlink"`` /
-   ``None`` so :func:`build_docx_for_fixture` can stage a real .docx
-   when the fixture exercises the locator or unsafe-markup detector.
+   :mod:`src.reviewer` / :mod:`src.verifier` consume them unchanged).
 3. **What "right" looks like.** ``expected`` carries the per-metric
-   ground-truth values the harness checks against. Each key maps to
-   one of the ten metrics in the Chunk 12 plan; a missing key means
+   ground-truth values the harness checks against; a missing key means
    the metric does not apply to this fixture.
 
 The fixtures are deliberately small so the whole harness runs in
 under a second. Each one is a single contract-shaped case, not a
 realistic full-spec sample — that's the eval part of "golden set":
-we measure parser / locator / detector behavior, not model behavior.
+we measure parser / detector / verifier behavior, not model behavior.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
@@ -47,7 +42,6 @@ class GoldenFixture:
     review_payload: Optional[dict] = None
     verification_payload: Optional[dict] = None
     searched_urls: list[str] = field(default_factory=list)
-    docx_kind: Optional[str] = None
     expected: dict[str, Any] = field(default_factory=dict)
 
 
@@ -276,15 +270,14 @@ def _make_fixtures() -> list[GoldenFixture]:
     ))
 
     # ------------------------------------------------------------------
-    # 6. Valid safe edit target — EDIT must survive parse + locator.
+    # 6. Valid edit proposal — EDIT must survive parse with a proposal.
     # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="valid_edit",
         category="valid_edit",
-        description="EDIT with exact existingText that matches the spec body.",
+        description="EDIT with both existingText and replacementText survives parse.",
         spec_text=_STALE_CYCLE_SPEC_BODY,
         filename="23 21 13 - Hydronic ValidEdit.docx",
-        docx_kind="safe_paragraph",
         review_payload=_review_payload(
             findings=[{
                 "severity": "HIGH",
@@ -306,7 +299,6 @@ def _make_fixtures() -> list[GoldenFixture]:
             "seeded_finding_count": 1,
             "expected_review_findings": 1,
             "expected_edit_proposal_valid": 1,
-            "expected_locator_success": 1,
         },
     ))
 
@@ -345,22 +337,7 @@ def _make_fixtures() -> list[GoldenFixture]:
     ))
 
     # ------------------------------------------------------------------
-    # 8. Unsafe DOCX target — hyperlink-bearing paragraph; detector must refuse.
-    # ------------------------------------------------------------------
-    fixtures.append(GoldenFixture(
-        fixture_id="unsafe_docx_hyperlink",
-        category="unsafe_docx",
-        description="Paragraph carrying w:hyperlink — detect_unsafe_markup must return unsafe.",
-        spec_text="",
-        filename="hyperlink_spec.docx",
-        docx_kind="unsafe_hyperlink",
-        expected={
-            "expected_unsafe_markup_refusal": True,
-        },
-    ))
-
-    # ------------------------------------------------------------------
-    # 9. Verification with accepted source — CONFIRMED stays CONFIRMED.
+    # 8. Verification with accepted source — CONFIRMED stays CONFIRMED.
     # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="verification_accepted_source",
@@ -380,7 +357,7 @@ def _make_fixtures() -> list[GoldenFixture]:
     ))
 
     # ------------------------------------------------------------------
-    # 10. Verification source-less CONFIRMED — must downgrade to UNVERIFIED.
+    # 9. Verification source-less CONFIRMED — must downgrade to UNVERIFIED.
     # ------------------------------------------------------------------
     fixtures.append(GoldenFixture(
         fixture_id="verification_sourceless_confirmed",
@@ -417,31 +394,3 @@ def fixture_by_id(fixture_id: str) -> GoldenFixture:
         if fx.fixture_id == fixture_id:
             return fx
     raise KeyError(fixture_id)
-
-
-# ---------------------------------------------------------------------------
-# DOCX staging — fixtures that need a real .docx (locator / unsafe markup).
-# ---------------------------------------------------------------------------
-
-
-def build_docx_for_fixture(fixture: GoldenFixture, tmp_dir: Path) -> Optional[Path]:
-    """Write a .docx for ``fixture`` if it needs one, return the path.
-
-    Pure-text fixtures return ``None``. The helper reuses the in-memory
-    DOCX builders from ``tests/fixtures/docx_fixtures.py`` so eval and
-    unit-test fixtures stay in lockstep.
-    """
-    if fixture.docx_kind == "safe_paragraph":
-        # Build a paragraph-bearing .docx whose body contains the spec text
-        # so the locator has something to exact-match.
-        from tests.fixtures.docx_fixtures import make_paragraph_spec
-
-        paragraphs = [
-            line for line in fixture.spec_text.splitlines() if line.strip()
-        ]
-        return make_paragraph_spec(tmp_dir, paragraphs, filename=fixture.filename)
-    if fixture.docx_kind == "unsafe_hyperlink":
-        from tests.fixtures.docx_fixtures import make_paragraph_with_hyperlink
-
-        return make_paragraph_with_hyperlink(tmp_dir, filename=fixture.filename)
-    return None

@@ -2,18 +2,18 @@
 
 Two complementary harnesses live under this package:
 
-- :mod:`evals.runner` (Chunk 12) — the **regression** harness. Walks the
+- :mod:`evals.runner` — the **regression** harness. Walks the
   fixture taxonomy in :mod:`evals.fixtures` through the production
-  parsers, locators, unsafe-markup detectors, and source-grounding
-  helpers. The metric story is "did the parser / locator / detector
-  keep doing what it used to do?" — drift signals a regression.
+  parsers and source-grounding helpers. The metric story is "did the
+  parser / detector keep doing what it used to do?" — drift signals a
+  regression.
 
-- :mod:`evals.calibration` (Chunk 1) — the **calibration** harness.
+- :mod:`evals.calibration` — the **calibration** harness.
   Replays hand-labeled JSON fixtures through the production grounding
   + classification helpers and scores the pipeline's verdicts /
-  statuses / edit-actions against ground-truth labels. The metric
-  story is "is the pipeline *correct*?" Drift here is intentional —
-  later tuning chunks should push numbers in a better direction.
+  statuses against ground-truth labels. The metric story is "is the
+  pipeline *correct*?" Drift here is intentional — later tuning should
+  push numbers in a better direction.
 
 Both harnesses are hermetic. The Chunk 12 runner uses stubbed Anthropic
 responses from :mod:`tests.fixtures.fake_anthropic` and DOCX fixtures

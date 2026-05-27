@@ -112,23 +112,20 @@ def show_about_dialog(parent) -> None:
             "markers) are resolved locally without web search and reported as Locally "
             "classified. This is an AI-assisted check, not a substitute for engineer review."
         )),
-        ("7.  Edit Safety Classification", (
-            "Each finding is labeled in the report as Auto-edit candidate, "
-            "Manual edit candidate, Report only, or Suppressed. Auto-edit candidate "
-            "requires a supportive verification status (Verified-supported, "
-            "Verified-contradicted, or Locally classified), an edit-confidence of at "
-            "least 0.7, and no cross-check suppression. Findings that propose an edit "
-            "but don’t clear that bar fall to Manual edit candidate. Ambiguous "
-            "matches, missing ADD anchors, and table/header/footer/rich-format edits "
-            "are never auto-applied. When an id-anchored quote no longer matches the "
-            "cited paragraph, the locator routes the edit to manual review rather than "
-            "matching the quote elsewhere in the document."
+        ("7.  Edit Instruction Labels", (
+            "Each finding is labeled in the report as Edit suggested, Report only, "
+            "or Suppressed. Edit suggested means the model proposed a concrete text "
+            "change (existing text → replacement); Report only means the finding has "
+            "no clean textual fix; Suppressed means it was dropped by cross-spec "
+            "dependency tracking. Spec Critic emits these suggestions but no longer "
+            "applies them — applying edits is left to a separate tool."
         )),
         ("8.  Output", (
-            "Results can be viewed in-app, exported as a Word report, or used to produce "
-            "an edited copy of each spec. Auto-edit mode applies surgical changes in a "
-            "safe order with revalidation immediately before each mutation. The source "
-            "files are never overwritten."
+            "Results can be viewed in-app or exported as a Word report. Alongside the "
+            "report, Spec Critic writes a machine-readable JSON sidecar listing every "
+            "suggested edit (existing text and proposed replacement per finding) for "
+            "ingestion by a separate editing tool. Spec Critic never modifies your "
+            "source files."
         )),
     ]
 
@@ -143,7 +140,8 @@ def show_about_dialog(parent) -> None:
         scroll,
         text=(
             "Spec Critic is a review assistant — it never modifies your source "
-            "documents. Auto-edit always writes to a copy. "
+            "documents. It produces a report and a JSON list of suggested edits; "
+            "applying them is left to a separate tool. "
             "It’s advisory only and not a substitute for AHJ review. Code "
             "citations should still be spot-checked by the engineer of record."
         ),
@@ -217,11 +215,10 @@ def show_usage_dialog(parent) -> None:
         )),
         ("6.  Save the Report", (
             "When the review completes, you'll be prompted to save a formatted "
-            ".docx report. After saving, you can choose to apply edits: "
-            "auto-edit writes an edited copy of each spec — only Auto-safe "
-            "findings are applied; ambiguous, table, header/footer, and "
-            "richly formatted edits are downgraded to manual review. "
-            "Source files are never overwritten."
+            ".docx report. Spec Critic also writes a JSON sidecar next to it "
+            "listing the suggested edits (existing text and proposed replacement "
+            "per finding) for use by a separate editing tool. Your source files "
+            "are never modified."
         )),
         ("7.  Run the Review", (
             "Click Submit Batch. "
@@ -236,7 +233,7 @@ def show_usage_dialog(parent) -> None:
             "web search, and shows whether the verdict was externally grounded "
             "or escalated to Opus. Open the Diagnostics window to see "
             "model usage, prompt-cache hits, token counts by phase, "
-            "verification evidence stats, and edit-skip reasons."
+            "verification evidence stats, and suggested-edit counts."
         )),
     ]
 

@@ -153,7 +153,7 @@ def on_review_complete(app, result) -> None:
             app.log.log_warning("Export failed.")
             app._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
         elif export_status == "success":
-            app._show_edit_selection_dialog(result)
+            app._finalize_diagnostics("finalization", "success", "Run completed successfully")
     delete_batch_state()
     if not result.review_result:
         app._finalize_diagnostics("finalization", "success", "Run completed successfully")
