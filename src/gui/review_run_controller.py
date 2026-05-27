@@ -22,6 +22,7 @@ from ..orchestration.diagnostics import DiagnosticsReport
 from ..review.reviewer import MODEL_OPUS_47
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from ..tracing.session import (
+    reattach_run_recorder as _reattach_recorder,  # noqa: F401  re-exported for batch_controller
     start_run_recorder,
     stop_run_recorder as _stop_recorder,
 )
