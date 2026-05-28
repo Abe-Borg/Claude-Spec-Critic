@@ -44,10 +44,6 @@ from src.verification.verifier import (
     _verdict_from_tool_use,
 )
 from src.verification.verification_cache import VerificationCache, _CACHE_SCHEMA_VERSION
-from src.orchestration.resume_state import (
-    deserialize_verification_result,
-    serialize_verification_result,
-)
 from tests.fixtures.fake_anthropic import (
     sample_verification_verdict_payload,
     verification_tool_use_response,
@@ -455,88 +451,6 @@ class TestCacheSchemaV3:
         hit = cache.get(f, cycle=DEFAULT_CYCLE)
         assert hit is not None
         assert hit.source_quote == "original snippet"
-
-
-# ===========================================================================
-# 8. Resume state serialize/deserialize
-# ===========================================================================
-
-
-class TestResumeStateSourceQuote:
-    def test_serialize_includes_source_quote(self):
-        result = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            sources=["https://nfpa.org/"],
-            source_quote="snippet text",
-        )
-        payload = serialize_verification_result(result)
-        assert payload is not None
-        assert payload["source_quote"] == "snippet text"
-
-    def test_deserialize_restores_source_quote(self):
-        payload = {
-            "verdict": "CONFIRMED",
-            "explanation": "",
-            "sources": ["https://nfpa.org/"],
-            "correction": None,
-            "grounded": True,
-            "model_used": "claude-sonnet-4-6",
-            "escalated": False,
-            "cache_status": "n/a",
-            "web_search_requests": 1,
-            "successful_source_count": 1,
-            "search_error_count": 0,
-            "searched_sources": ["https://nfpa.org/"],
-            "cited_sources": ["https://nfpa.org/"],
-            "accepted_sources": ["https://nfpa.org/"],
-            "rejected_sources": [],
-            "verification_profile": "code_standard",
-            "verification_mode": "standard_reasoning",
-            "source_quote": "snippet text",
-        }
-        result = deserialize_verification_result(payload)
-        assert result is not None
-        assert result.source_quote == "snippet text"
-
-    def test_deserialize_legacy_payload_without_source_quote(self):
-        # Resume state is unversioned, so a state file written before
-        # Chunk 2 must deserialize cleanly with an empty source_quote.
-        payload = {
-            "verdict": "CONFIRMED",
-            "explanation": "",
-            "sources": ["https://nfpa.org/"],
-            "correction": None,
-            "grounded": True,
-            "model_used": "claude-sonnet-4-6",
-            "escalated": False,
-            "cache_status": "n/a",
-            "web_search_requests": 1,
-            "successful_source_count": 1,
-            "search_error_count": 0,
-            "searched_sources": ["https://nfpa.org/"],
-            "cited_sources": ["https://nfpa.org/"],
-            "accepted_sources": ["https://nfpa.org/"],
-            "rejected_sources": [],
-            "verification_profile": "code_standard",
-            "verification_mode": "standard_reasoning",
-            # source_quote intentionally omitted
-        }
-        result = deserialize_verification_result(payload)
-        assert result is not None
-        assert result.source_quote == ""
-
-    def test_round_trip_preserves_source_quote(self):
-        original = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            sources=["https://nfpa.org/"],
-            source_quote="full snippet body",
-        )
-        payload = serialize_verification_result(original)
-        restored = deserialize_verification_result(payload)
-        assert restored is not None
-        assert restored.source_quote == original.source_quote
 
 
 # ===========================================================================

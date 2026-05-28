@@ -367,18 +367,6 @@ def test_bind_to_current_context_propagates(recorder: TraceRecorder) -> None:
 
 
 # ---- Silo guarantees ---------------------------------------------------
-def test_resume_state_legacy_compat() -> None:
-    """The resume_state module loads without needing trace fields.
-
-    The current implementation must not require trace_run_id / trace_dir
-    — we'll add round-trip support in the next phase; this test pins
-    today's tolerant behavior so the addition is genuinely backward-compatible.
-    """
-    from src.orchestration import resume_state
-    # The module imports cleanly with no trace dependency.
-    assert hasattr(resume_state, "deserialize_resume_state")
-
-
 def test_diagnostics_summary_unaffected_by_tracing(monkeypatch: pytest.MonkeyPatch, trace_dir: Path) -> None:
     """DiagnosticsReport.summary() must be byte-identical with/without tracing.
 
@@ -744,64 +732,6 @@ def test_cli_parse_duration() -> None:
     assert _parse_duration("12h") == 12 * 3600
     assert _parse_duration("90m") == 90 * 60
     assert _parse_duration("7") == 7 * 86400  # bare number → days
-
-
-# ---- Resume-state trace continuity ------------------------------------
-def _minimal_submission(trace_span_id: str = ""):
-    from src.orchestration.pipeline import BatchSubmission
-    from src.batch.batch import BatchJob
-    job = BatchJob(
-        batch_id="msgbatch_test123",
-        job_type="review",
-        request_map={"review__a__0": {"filename": "a.docx", "index": 0, "type": "review"}},
-        created_at=1000.0,
-    )
-    return BatchSubmission(
-        job=job,
-        files_reviewed=["a.docx"],
-        review_request_ids=["review__a__0"],
-        trace_span_id=trace_span_id,
-    )
-
-
-def test_resume_state_persists_trace_block(trace_dir: Path, clean_env: None) -> None:
-    """build_resume_state includes a trace block when a recorder is active,
-    and deserialize_resume_state surfaces it for reattachment."""
-    from src.orchestration.resume_state import build_resume_state, deserialize_resume_state, PHASE_REVIEW_POLL
-
-    rec = TraceRecorder(run_id="resume_rt", trace_dir=trace_dir, capture_level=LEVEL_DEFAULT)
-    rec.start(mode="batch")
-    set_recorder(rec)
-    try:
-        submission = _minimal_submission(trace_span_id="abc123span")
-        state = build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission)
-    finally:
-        rec.stop()
-        set_recorder(None)
-
-    assert state["trace"]["run_id"] == "resume_rt"
-    assert state["trace"]["capture_level"] == LEVEL_DEFAULT
-    assert str(trace_dir) in state["trace"]["trace_dir"]
-    assert state["submission"]["trace_span_id"] == "abc123span"
-
-    # Round-trip back out.
-    restored = deserialize_resume_state(state)
-    assert restored["trace"]["run_id"] == "resume_rt"
-    assert restored["submission"].trace_span_id == "abc123span"
-
-
-def test_resume_state_no_trace_block_when_recorder_off(clean_env: None) -> None:
-    """No recorder installed → no trace block (and no crash)."""
-    from src.orchestration.resume_state import build_resume_state, deserialize_resume_state, PHASE_REVIEW_POLL
-
-    set_recorder(None)
-    submission = _minimal_submission()
-    state = build_resume_state(phase=PHASE_REVIEW_POLL, submission=submission)
-    assert "trace" not in state
-    # Legacy/no-trace payload deserializes cleanly with no trace key.
-    restored = deserialize_resume_state(state)
-    assert "trace" not in restored
-    assert restored["submission"].trace_span_id == ""
 
 
 def test_reattach_recorder_appends_to_existing_dir(trace_dir: Path, clean_env: None) -> None:

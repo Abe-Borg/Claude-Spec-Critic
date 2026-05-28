@@ -10,7 +10,7 @@ Configured for the **California 2025 code cycle** by default (`src/core/code_cyc
 
 - **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` verdicts require at least one cited URL that the `web_search` tool actually retrieved.
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, optional Haiku triage, severity-tiered + profile-aware search budgets, persistent on-disk claim cache.
-- **Robust batch processing.** Durable resume across every pipeline phase with content + source-file SHA-256 digests.
+- **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
 - **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
 - **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for transient operational errors and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of three `EditActionLabel` values (`EDIT_SUGGESTED` / `REPORT_ONLY` / `SUPPRESSED`) so the report makes uncertainty visible.
 
@@ -99,10 +99,10 @@ The per-finding evidence panel surfaces both verdicts inline:
   citations the initial verifier produced, alongside the final
   verifier's citations in the regular "Web/code evidence" sub-section.
 
-The contested telemetry round-trips through the verification cache and
-the resume state (no schema bump — runtime telemetry, not verdict
-semantics), so a cache replay or a resumed report renders the same
-`VERIFIED_CONTESTED` status the original run produced.
+The contested telemetry round-trips through the verification cache
+(no schema bump — runtime telemetry, not verdict semantics), so a
+cache replay renders the same `VERIFIED_CONTESTED` status the original
+run produced.
 
 ## Budget-Exhausted Findings
 
@@ -125,8 +125,8 @@ but the report distinguishes these findings in two places:
 Budget-exhausted results are NOT persisted in the verification cache
 (same transient-signal logic as `VERIFICATION_FAILED` — a re-run with
 elevated severity allocates more budget; freezing the shortfall as a
-durable verdict would suppress re-verification). The flag round-trips
-through resume state, so a resumed report keeps the sub-label.
+durable verdict would suppress re-verification). The flag is in-memory
+runtime telemetry for the current run.
 
 The calibration eval (`python -m evals.calibration.runner`) reports a
 `Budget-exhausted findings: N` line in the summary header so the
@@ -175,10 +175,6 @@ python -m src.tracing prune --older-than 30d --yes  # delete runs older than 30 
 ```
 
 All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` resolves `<run_id>` by directory name or by the `run_id` embedded in `run.json`.
-
-### Batch-resume continuity
-
-A batch run's trace survives an app restart: `start_batch_review` stamps the run's trace `run_id` / `trace_dir` / `capture_level` into the resume state, and the resume path reopens that same trace directory (appending, not truncating) so the whole run lands in one trace.
 
 ### Trace silo guarantees
 

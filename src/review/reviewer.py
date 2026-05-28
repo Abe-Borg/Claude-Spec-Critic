@@ -273,8 +273,8 @@ class ReviewResult:
     # the schema). Held in memory so diagnostics can preserve the actual
     # structured payload instead of relying on ``raw_response``, which is
     # the text-block concatenation and is empty for tool-use responses.
-    # Not persisted by ``resume_state`` — telemetry describes runtime
-    # behavior, not durable state.
+    # In-memory only — telemetry describes runtime behavior, not durable
+    # state.
     structured_payload: dict | None = None
     # Chunk M / plan section "Cross-Check Dependency Tracking": findings
     # dropped by the upstream-disputed suppression filter live here, each

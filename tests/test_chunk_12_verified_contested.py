@@ -46,10 +46,6 @@ from pathlib import Path
 from docx import Document
 
 from src.core.code_cycles import DEFAULT_CYCLE
-from src.orchestration.resume_state import (
-    deserialize_verification_result,
-    serialize_verification_result,
-)
 from src.output.report_exporter import STATUS_COLORS, STATUS_SHADING, export_report
 from src.output.report_status import (
     EditActionLabel,
@@ -416,88 +412,6 @@ class TestModelsDisagreedDetection:
 
 
 # ---------------------------------------------------------------------------
-# 6. Resume state — models_disagreed + initial_sources round-trip
-# ---------------------------------------------------------------------------
-
-
-class TestResumeStateContested:
-    def test_serialize_includes_contested_fields(self):
-        result = _contested_verification()
-        payload = serialize_verification_result(result)
-        assert payload is not None
-        assert payload["models_disagreed"] is True
-        assert payload["initial_sources"] == ["https://nfpa.org/codes/13/2022"]
-
-    def test_serialize_includes_false_and_empty_when_not_contested(self):
-        result = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            sources=["https://x"],
-            accepted_sources=["https://x"],
-        )
-        payload = serialize_verification_result(result)
-        assert payload is not None
-        assert payload["models_disagreed"] is False
-        assert payload["initial_sources"] == []
-
-    def test_deserialize_restores_contested_fields(self):
-        payload = serialize_verification_result(_contested_verification())
-        assert payload is not None
-        restored = deserialize_verification_result(payload)
-        assert restored is not None
-        assert restored.models_disagreed is True
-        assert restored.initial_sources == ["https://nfpa.org/codes/13/2022"]
-
-    def test_deserialize_legacy_payload_defaults_to_neutral(self):
-        # State files written before Chunk 12 don't have the fields.
-        # Missing → False / []. The safe fallback: render via the
-        # verdict-based branches rather than retroactively claiming the
-        # verifiers disagreed.
-        payload = {
-            "verdict": "CONFIRMED",
-            "explanation": "Verified",
-            "sources": ["https://x"],
-            "correction": None,
-            "grounded": True,
-            "model_used": "",
-            "escalated": False,
-            "cache_status": "miss",
-            "web_search_requests": 1,
-            "successful_source_count": 1,
-            "search_error_count": 0,
-            "searched_sources": ["https://x"],
-            "cited_sources": ["https://x"],
-            "accepted_sources": ["https://x"],
-            "rejected_sources": [],
-            "verification_profile": "",
-            "verification_mode": "",
-            "source_quote": "snippet",
-            "verification_failed": False,
-            "cache_entry_created_ts": 0.0,
-            "requires_elevated_confidence": False,
-            "web_fetch_requests": 0,
-            "fetched_sources": [],
-            # models_disagreed and initial_sources intentionally omitted
-        }
-        result = deserialize_verification_result(payload)
-        assert result is not None
-        assert result.models_disagreed is False
-        assert result.initial_sources == []
-
-    def test_round_trip_preserves_contested_state(self):
-        original = _contested_verification()
-        payload = serialize_verification_result(original)
-        restored = deserialize_verification_result(payload)
-        assert restored is not None
-        assert restored.models_disagreed is True
-        assert restored.initial_sources == original.initial_sources
-        # Sanity: a resumed contested finding still classifies as
-        # VERIFIED_CONTESTED via classify_status.
-        f = _finding(verification=restored)
-        assert classify_status(f) is ReportStatus.VERIFIED_CONTESTED
-
-
-# ---------------------------------------------------------------------------
 # 7. Cache persist + replay — contested fields round-trip
 # ---------------------------------------------------------------------------
 
@@ -759,4 +673,3 @@ class TestContestedEvidencePanelRendering:
 # ---------------------------------------------------------------------------
 # 9. Resume retry-failed-only env var stub
 # ---------------------------------------------------------------------------
-

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 
 from src.orchestration.pipeline import _deduplicate_findings
-from src.orchestration.resume_state import deserialize_finding, serialize_finding
 from src.review.reviewer import (
     EditProposal,
     Finding,
@@ -492,48 +491,6 @@ class TestDownstreamConsumers:
             edit_proposal=bad_proposal,
         )
         assert f.as_edit_proposal() is None
-
-
-# ---------------------------------------------------------------------------
-# 7. Resume state round-trips demotion_reason
-# ---------------------------------------------------------------------------
-
-
-class TestResumeStateRoundTrip:
-    def test_demotion_reason_round_trips_through_resume_state(self):
-        findings = _parse_findings(
-            [_valid_review_payload(existingText=None)]
-        )
-        original = findings[0]
-        payload = serialize_finding(original)
-        assert payload["demotion_reason"] == original.demotion_reason
-        restored = deserialize_finding(payload)
-        assert restored.demotion_reason == original.demotion_reason
-        assert restored.actionType == REPORT_ONLY_ACTION
-        assert restored.existingText is None
-
-    def test_legacy_resume_payload_loads_with_demotion_reason_none(self):
-        # Pre-Chunk-7 payloads omit ``demotion_reason``. They must load
-        # cleanly with the field set to None — no migration required.
-        legacy_payload = {
-            "severity": "HIGH",
-            "fileName": "spec.docx",
-            "section": "2.1",
-            "issue": "Legacy.",
-            "actionType": "EDIT",
-            "existingText": "old",
-            "replacementText": "new",
-            "codeReference": None,
-            "confidence": 0.8,
-            "affected_files": [],
-            "verification": None,
-            "anchorText": None,
-            "insertPosition": None,
-            "evidenceElementId": None,
-        }
-        restored = deserialize_finding(legacy_payload)
-        assert restored.demotion_reason is None
-        assert restored.actionType == "EDIT"
 
 
 # ---------------------------------------------------------------------------

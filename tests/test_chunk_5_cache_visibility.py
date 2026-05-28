@@ -29,10 +29,6 @@ import pytest
 from docx import Document
 
 from src.core.code_cycles import DEFAULT_CYCLE
-from src.orchestration.resume_state import (
-    deserialize_verification_result,
-    serialize_verification_result,
-)
 from src.output.report_exporter import (
     CACHE_AGE_COLORS,
     _cache_age_tier,
@@ -357,82 +353,6 @@ class TestCacheEntryAgeDays:
         # Defensive: a finding without a verification object renders
         # no badge.
         assert _cache_entry_age_days(None) is None
-
-
-# ---------------------------------------------------------------------------
-# 6. Resume state round-trips cache_entry_created_ts
-# ---------------------------------------------------------------------------
-
-
-class TestResumeStateRoundTrip:
-    def test_serialize_includes_timestamp(self):
-        ts = time.time() - 86400
-        result = VerificationResult(
-            verdict="CONFIRMED",
-            cache_status="hit",
-            cache_entry_created_ts=ts,
-        )
-        payload = serialize_verification_result(result)
-        assert payload is not None
-        assert payload["cache_entry_created_ts"] == pytest.approx(ts)
-
-    def test_deserialize_restores_timestamp(self):
-        ts = time.time() - 86400
-        payload = {
-            "verdict": "CONFIRMED",
-            "explanation": "Cached.",
-            "sources": ["https://x"],
-            "correction": None,
-            "grounded": True,
-            "model_used": "claude-sonnet-4-6",
-            "escalated": False,
-            "cache_status": "hit",
-            "web_search_requests": 0,
-            "successful_source_count": 0,
-            "search_error_count": 0,
-            "searched_sources": [],
-            "cited_sources": [],
-            "accepted_sources": ["https://x"],
-            "rejected_sources": [],
-            "verification_profile": "",
-            "verification_mode": "",
-            "source_quote": "",
-            "verification_failed": False,
-            "cache_entry_created_ts": ts,
-        }
-        result = deserialize_verification_result(payload)
-        assert result is not None
-        assert result.cache_entry_created_ts == pytest.approx(ts)
-
-    def test_deserialize_legacy_payload_defaults_zero(self):
-        # State files written before Chunk 5 don't carry the field.
-        # Missing → 0.0 (badge suppressed; safe fallback when the
-        # original timestamp was never recorded).
-        payload = {
-            "verdict": "CONFIRMED",
-            "explanation": "Cached.",
-            "sources": ["https://x"],
-            "correction": None,
-            "grounded": True,
-            "model_used": "claude-sonnet-4-6",
-            "escalated": False,
-            "cache_status": "hit",
-            "web_search_requests": 0,
-            "successful_source_count": 0,
-            "search_error_count": 0,
-            "searched_sources": [],
-            "cited_sources": [],
-            "accepted_sources": ["https://x"],
-            "rejected_sources": [],
-            "verification_profile": "",
-            "verification_mode": "",
-            "source_quote": "",
-            "verification_failed": False,
-            # cache_entry_created_ts intentionally omitted
-        }
-        result = deserialize_verification_result(payload)
-        assert result is not None
-        assert result.cache_entry_created_ts == 0.0
 
 
 # ---------------------------------------------------------------------------

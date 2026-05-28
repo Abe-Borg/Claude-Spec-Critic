@@ -19,13 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.orchestration.diagnostics import DiagnosticsReport
-from src.orchestration.resume_state import (
-    deserialize_verification_result,
-    serialize_verification_result,
-)
 from src.review.reviewer import Finding
 from src.verification.verifier import (
-    VerificationResult,
     _classify_wave_results,
     _token_usage,
 )
@@ -129,35 +124,6 @@ class TestWaveParserStampsTokens:
         assert len(outcomes) == 1
         assert outcomes[0].classification == "success"
         assert outcomes[0].raw_message is msg
-
-
-# ---------------------------------------------------------------------------
-# 3. Resume-state round-trip
-# ---------------------------------------------------------------------------
-
-
-class TestResumeRoundTrip:
-    def test_tokens_round_trip(self):
-        result = VerificationResult(verdict="CONFIRMED", grounded=True,
-                                    sources=["https://x"], accepted_sources=["https://x"],
-                                    input_tokens=222, output_tokens=33)
-        restored = deserialize_verification_result(serialize_verification_result(result))
-        assert restored is not None
-        assert restored.input_tokens == 222
-        assert restored.output_tokens == 33
-
-    def test_legacy_payload_defaults_to_zero(self):
-        # A state file written before the token fields existed loads as 0/0.
-        payload = serialize_verification_result(
-            VerificationResult(verdict="UNVERIFIED")
-        )
-        assert payload is not None
-        payload.pop("input_tokens", None)
-        payload.pop("output_tokens", None)
-        restored = deserialize_verification_result(payload)
-        assert restored is not None
-        assert restored.input_tokens == 0
-        assert restored.output_tokens == 0
 
 
 # ---------------------------------------------------------------------------

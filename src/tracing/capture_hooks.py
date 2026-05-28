@@ -134,9 +134,9 @@ def capture_pipeline_end_by_id(
 
     Used by batch mode: ``start_batch_review`` opens the span and carries
     the ID through ``BatchSubmission`` / ``CollectedBatchState`` to
-    ``finalize_batch_result``, which closes it via this helper. The
-    SpanHandle isn't conveniently storable on those dataclasses (clean
-    JSON shape for resume_state).
+    ``finalize_batch_result``, which closes it via this helper. Only the
+    span_id travels with those dataclasses; the SpanHandle itself isn't
+    conveniently storable on them.
     """
     recorder = _get()
     if recorder is None or not span_id:

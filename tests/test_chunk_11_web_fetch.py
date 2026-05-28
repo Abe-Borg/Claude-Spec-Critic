@@ -41,10 +41,6 @@ from src.core.api_config import (
     build_web_fetch_tool,
 )
 from src.core.code_cycles import DEFAULT_CYCLE
-from src.orchestration.resume_state import (
-    deserialize_verification_result,
-    serialize_verification_result,
-)
 from src.output.report_exporter import export_report
 from src.review.reviewer import Finding, ReviewResult
 from src.verification.source_grounding import SearchedSource
@@ -811,64 +807,6 @@ class TestCachePersistsFetchFields:
         stored = entries[0].result
         assert stored.web_fetch_requests == 0
         assert stored.fetched_sources == []
-
-
-# ===========================================================================
-# 9. Resume state round-trips fetch telemetry
-# ===========================================================================
-
-
-class TestResumeStateRoundTrip:
-    def test_serialize_includes_fetch_fields(self):
-        result = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            source_quote="quote",
-            web_fetch_requests=2,
-            fetched_sources=["https://a.example/", "https://b.example/"],
-        )
-        payload = serialize_verification_result(result)
-        assert payload is not None
-        assert payload["web_fetch_requests"] == 2
-        assert payload["fetched_sources"] == [
-            "https://a.example/",
-            "https://b.example/",
-        ]
-
-    def test_deserialize_restores_fetch_fields(self):
-        result = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            source_quote="quote",
-            web_fetch_requests=2,
-            fetched_sources=["https://a.example/", "https://b.example/"],
-        )
-        round_trip = deserialize_verification_result(
-            serialize_verification_result(result)
-        )
-        assert round_trip is not None
-        assert round_trip.web_fetch_requests == 2
-        assert round_trip.fetched_sources == [
-            "https://a.example/",
-            "https://b.example/",
-        ]
-
-    def test_legacy_payload_without_fetch_keys_loads_with_defaults(self):
-        """A resume payload predating Chunk 11 (no fetch keys) must
-        deserialize cleanly with 0 / []."""
-        legacy = {
-            "verdict": "CONFIRMED",
-            "explanation": "legacy",
-            "sources": ["https://www.nfpa.org/13"],
-            "grounded": True,
-            "source_quote": "legacy quote",
-            "web_search_requests": 1,
-            # No web_fetch_requests / fetched_sources keys.
-        }
-        result = deserialize_verification_result(legacy)
-        assert result is not None
-        assert result.web_fetch_requests == 0
-        assert result.fetched_sources == []
 
 
 # ===========================================================================

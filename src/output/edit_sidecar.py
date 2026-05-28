@@ -3,9 +3,7 @@
 Spec Critic emits edit instructions but no longer applies them. After the
 Word report is written, this module writes a companion JSON file listing
 every finding that carries a structured edit proposal so a separate tool can
-ingest and apply them. Proposal fields reuse
-:func:`orchestration.resume_state.serialize_edit_proposal` so the on-disk
-shape stays in sync with the rest of the codebase.
+ingest and apply them.
 """
 from __future__ import annotations
 
@@ -13,10 +11,24 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..orchestration.resume_state import serialize_edit_proposal
 from .report_status import classify_status
 
 SIDECAR_SCHEMA_VERSION = 1
+
+
+def _serialize_edit_proposal(proposal) -> dict | None:
+    """Flatten an ``EditProposal`` into the sidecar's JSON shape."""
+    if proposal is None:
+        return None
+    return {
+        "action_type": proposal.action_type,
+        "existing_text": proposal.existing_text,
+        "replacement_text": proposal.replacement_text,
+        "anchor_text": proposal.anchor_text,
+        "insert_position": proposal.insert_position,
+        "target_element_id": proposal.target_element_id,
+        "edit_confidence": proposal.edit_confidence,
+    }
 
 
 def _verification_verdict(finding) -> str | None:
@@ -49,7 +61,7 @@ def _finding_entry(finding) -> dict | None:
         # dropped from the main report; surface the reason so the applier
         # can decide whether to skip them.
         "suppression_reason": getattr(finding, "suppression_reason", None),
-        "edit_proposal": serialize_edit_proposal(proposal),
+        "edit_proposal": _serialize_edit_proposal(proposal),
     }
 
 
