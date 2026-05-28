@@ -20,8 +20,6 @@ The chunk has five moving pieces:
 * M-Filter  — :func:`pipeline.classify_cross_check_dependencies` partitions
   cross-check findings into kept/suppressed based on cited upstream ids,
   falling back to the heuristic only when the model emitted no ids.
-* M-Resume  — the new ``suppressed_findings`` list and per-finding fields
-  round-trip through :mod:`resume_state`.
 
 The four directive-9 acceptance scenarios from the plan are covered by
 :class:`TestSuppressionFilter`:
@@ -34,9 +32,6 @@ The four directive-9 acceptance scenarios from the plan are covered by
 
 from __future__ import annotations
 
-import json
-
-
 from src.cross_check.cross_checker import _build_cross_check_input, _cross_system_prompt
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.input.extractor import ExtractedSpec
@@ -45,13 +40,7 @@ from src.orchestration.pipeline import (
     classify_cross_check_dependencies,
     compute_finding_id,
 )
-from src.orchestration.resume_state import (
-    deserialize_finding,
-    deserialize_review_result,
-    serialize_finding,
-    serialize_review_result,
-)
-from src.review.reviewer import Finding, ReviewResult, _parse_findings
+from src.review.reviewer import Finding, _parse_findings
 from src.review.structured_schemas import (
     CROSS_CHECK_FINDINGS_SCHEMA,
     REVIEW_FINDINGS_SCHEMA,
@@ -521,79 +510,6 @@ class TestSuppressionFilter:
         warning_msgs = [m for lvl, m in log_messages if lvl == "warning"]
         assert any("id-based" in m for m in warning_msgs)
         assert any("heuristic" in m.lower() for m in warning_msgs)
-
-
-# ---------------------------------------------------------------------------
-# M-Resume — round-trip the new fields through serialize/deserialize
-# ---------------------------------------------------------------------------
-
-
-class TestResumeRoundTrip:
-    def test_finding_id_round_trips(self):
-        f = _review_finding()
-        f.finding_id = "rf-roundtrip"
-        loaded = deserialize_finding(serialize_finding(f))
-        assert loaded.finding_id == "rf-roundtrip"
-
-    def test_upstream_and_independent_ids_round_trip(self):
-        cross = _cross_finding(
-            upstream_ids=["rf-a", "rf-b"],
-            independent_ids=["p5", "t0r1"],
-        )
-        loaded = deserialize_finding(serialize_finding(cross))
-        assert loaded.upstream_finding_ids == ["rf-a", "rf-b"]
-        assert loaded.independent_evidence_ids == ["p5", "t0r1"]
-
-    def test_suppression_reason_round_trips(self):
-        f = _cross_finding(upstream_ids=["rf-x"])
-        f.suppression_reason = "Test reason"
-        loaded = deserialize_finding(serialize_finding(f))
-        assert loaded.suppression_reason == "Test reason"
-
-    def test_legacy_payload_without_chunk_m_fields_loads_cleanly(self):
-        """Pre-Chunk-M resume payloads lack the new fields. The
-        deserializer must default them so a session resumed from before
-        the upgrade keeps working under the heuristic-fallback path."""
-        legacy_payload = {
-            "severity": "HIGH",
-            "fileName": "A.docx",
-            "section": "2.1",
-            "issue": "Legacy finding",
-            "actionType": "EDIT",
-            "existingText": "old",
-            "replacementText": "new",
-            "codeReference": "CBC §1",
-            "confidence": 0.7,
-            "affected_files": ["A.docx"],
-            # No finding_id, upstream_finding_ids, independent_evidence_ids,
-            # or suppression_reason — pre-Chunk-M shape.
-        }
-        loaded = deserialize_finding(legacy_payload)
-        assert loaded.finding_id == ""
-        assert loaded.upstream_finding_ids == []
-        assert loaded.independent_evidence_ids == []
-        assert loaded.suppression_reason is None
-
-    def test_review_result_round_trips_suppressed_findings(self):
-        """``ReviewResult.suppressed_findings`` carries the report's
-        explanation of which coordination claims were dropped. It must
-        survive a resume so the report a resumed session generates looks
-        the same as the report the original would have generated."""
-        dropped = _cross_finding(upstream_ids=["rf-x"])
-        dropped.suppression_reason = "All upstream DISPUTED"
-        result = ReviewResult(
-            findings=[],
-            cross_check_status="completed",
-            suppressed_findings=[dropped],
-        )
-        payload = serialize_review_result(result)
-        assert payload is not None
-        # JSON round-trip — resume state lives on disk as JSON.
-        loaded = deserialize_review_result(json.loads(json.dumps(payload)))
-        assert loaded is not None
-        assert len(loaded.suppressed_findings) == 1
-        assert loaded.suppressed_findings[0].suppression_reason == "All upstream DISPUTED"
-        assert loaded.suppressed_findings[0].upstream_finding_ids == ["rf-x"]
 
 
 # ---------------------------------------------------------------------------

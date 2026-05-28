@@ -62,13 +62,12 @@ def start_run_recorder(
 
 
 def reattach_run_recorder(trace_meta: dict | None) -> TraceRecorder | None:
-    """Reopen a recorder against an existing trace dir on batch resume.
+    """Reopen a recorder against an existing trace dir.
 
-    ``trace_meta`` is the ``trace`` block from ``deserialize_resume_state``
-    (``{run_id, trace_dir, capture_level}``) — ``None`` / empty when the
-    original run had tracing off or predates the trace-resume field. A
-    second ``TraceRecorder.start()`` against the same directory appends to
-    the existing JSONL files.
+    ``trace_meta`` is a ``{run_id, trace_dir, capture_level}`` dict —
+    ``None`` / empty when the original run had tracing off. A second
+    ``TraceRecorder.start()`` against the same directory appends to the
+    existing JSONL files.
     """
     if not trace_meta or not trace_meta.get("run_id"):
         return None

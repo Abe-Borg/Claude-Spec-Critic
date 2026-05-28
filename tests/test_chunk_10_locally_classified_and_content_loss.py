@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -39,12 +38,6 @@ from src.input.extractor import (
     extract_text_from_docx,
 )
 from src.orchestration.pipeline import PipelineResult
-from src.orchestration.resume_state import (
-    deserialize_extracted_spec,
-    deserialize_verification_result,
-    serialize_extracted_spec,
-    serialize_verification_result,
-)
 from src.output.report_exporter import _summarize_run_diagnostics, export_report
 from src.output.report_status import (
     ReportStatus,
@@ -198,39 +191,6 @@ class TestLocalSkipResultCarriesFlag:
         f = _gripe(issue="LEED reference is inappropriate")
         f.verification = _local_skip_result(requires_elevated_confidence=True)
         assert classify_status(f) is ReportStatus.LOCALLY_CLASSIFIED
-
-
-class TestResumeStateRoundTrip:
-    """The elevated-confidence flag survives resume state save / load."""
-
-    def test_flag_true_round_trips(self):
-        original = _local_skip_result(requires_elevated_confidence=True)
-        payload = serialize_verification_result(original)
-        assert payload["requires_elevated_confidence"] is True
-        restored = deserialize_verification_result(payload)
-        assert restored.requires_elevated_confidence is True
-
-    def test_flag_false_round_trips(self):
-        original = _local_skip_result(requires_elevated_confidence=False)
-        payload = serialize_verification_result(original)
-        assert payload["requires_elevated_confidence"] is False
-        restored = deserialize_verification_result(payload)
-        assert restored.requires_elevated_confidence is False
-
-    def test_legacy_payload_defaults_to_false(self):
-        # A resume payload written before the field existed has no key.
-        # The deserializer must default to False so the legacy run's
-        # auto-edit gating decision is preserved (the elevated multiplier
-        # was not applied at the time the state was saved).
-        legacy = {
-            "verdict": "UNVERIFIED",
-            "explanation": "Locally classified",
-            "grounded": False,
-            "cache_status": "local_skip",
-        }
-        restored = deserialize_verification_result(legacy)
-        assert restored is not None
-        assert restored.requires_elevated_confidence is False
 
 
 # ===========================================================================
@@ -430,54 +390,6 @@ class TestExtractTextFromDocxAttachesWarnings:
         spec = extract_text_from_docx(doc_path)
         assert spec.word_count > 0
         assert "Paragraph 1" in spec.content
-
-
-class TestResumeStateRoundTripsWarnings:
-    """``serialize_extracted_spec`` / ``deserialize_extracted_spec``
-    preserve the extraction warnings so a resumed run's banner stays
-    accurate even when the source DOCX changed on disk."""
-
-    def test_warnings_round_trip(self):
-        original = ExtractedSpec(
-            filename="drawing_heavy.docx",
-            content="some text",
-            word_count=2,
-            source_path="",
-            source_format="docx",
-            extraction_warnings=["Spec contains 50% non-text elements"],
-        )
-        payload = serialize_extracted_spec(original)
-        assert payload["extraction_warnings"] == [
-            "Spec contains 50% non-text elements"
-        ]
-        restored = deserialize_extracted_spec(payload)
-        assert restored.extraction_warnings == [
-            "Spec contains 50% non-text elements"
-        ]
-
-    def test_legacy_payload_defaults_to_empty_list(self):
-        # A resume payload written before the field existed has no key;
-        # the deserializer must default to [] so the legacy banner shape
-        # is preserved.
-        legacy = {
-            "filename": "old.docx",
-            "content": "text",
-            "word_count": 1,
-        }
-        restored = deserialize_extracted_spec(legacy)
-        assert restored.extraction_warnings == []
-
-    def test_warnings_filter_empty_strings(self):
-        # Defensive: a malformed payload with empty/None entries should
-        # not produce empty-string warnings in the restored list.
-        payload = {
-            "filename": "x.docx",
-            "content": "text",
-            "word_count": 1,
-            "extraction_warnings": ["real warning", "", None, "another"],
-        }
-        restored = deserialize_extracted_spec(payload)
-        assert restored.extraction_warnings == ["real warning", "another"]
 
 
 # ===========================================================================

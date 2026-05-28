@@ -33,10 +33,6 @@ from pathlib import Path
 from docx import Document
 
 from src.core.code_cycles import DEFAULT_CYCLE
-from src.orchestration.resume_state import (
-    deserialize_verification_result,
-    serialize_verification_result,
-)
 from src.output.report_exporter import (
     _summarize_run_diagnostics,
     _write_run_diagnostics_banner,
@@ -316,89 +312,6 @@ class TestCacheRejectsBudgetExhausted:
         # The hit clone must default budget_exhausted to False — the
         # cache layer never persists it.
         assert hit.budget_exhausted is False
-
-
-# ---------------------------------------------------------------------------
-# 6. Resume state — budget_exhausted round-trips
-# ---------------------------------------------------------------------------
-
-
-class TestResumeStateBudgetExhausted:
-    def test_serialize_includes_budget_exhausted_when_true(self):
-        result = _exhausted_verification()
-        payload = serialize_verification_result(result)
-        assert payload is not None
-        assert payload["budget_exhausted"] is True
-
-    def test_serialize_includes_false_for_clean_result(self):
-        result = _clean_unverified()
-        payload = serialize_verification_result(result)
-        assert payload is not None
-        assert payload["budget_exhausted"] is False
-
-    def test_deserialize_restores_budget_exhausted(self):
-        payload = {
-            "verdict": "UNVERIFIED",
-            "explanation": "budget used",
-            "sources": [],
-            "correction": None,
-            "grounded": False,
-            "model_used": "claude-sonnet-4-6",
-            "escalated": False,
-            "cache_status": "miss",
-            "web_search_requests": 5,
-            "successful_source_count": 0,
-            "search_error_count": 0,
-            "searched_sources": [],
-            "cited_sources": [],
-            "accepted_sources": [],
-            "rejected_sources": [],
-            "verification_profile": "",
-            "verification_mode": "standard_reasoning",
-            "source_quote": "",
-            "verification_failed": False,
-            "budget_exhausted": True,
-        }
-        result = deserialize_verification_result(payload)
-        assert result is not None
-        assert result.budget_exhausted is True
-
-    def test_deserialize_legacy_payload_defaults_false(self):
-        # State files written before Chunk 13 don't have the key.
-        # Missing → False (safe fallback: render as plain
-        # INSUFFICIENT_EVIDENCE without the sub-label).
-        payload = {
-            "verdict": "UNVERIFIED",
-            "explanation": "no evidence",
-            "sources": [],
-            "correction": None,
-            "grounded": False,
-            "model_used": "",
-            "escalated": False,
-            "cache_status": "miss",
-            "web_search_requests": 2,
-            "successful_source_count": 0,
-            "search_error_count": 0,
-            "searched_sources": [],
-            "cited_sources": [],
-            "accepted_sources": [],
-            "rejected_sources": [],
-            "verification_profile": "",
-            "verification_mode": "",
-            "source_quote": "",
-            # budget_exhausted intentionally omitted
-        }
-        result = deserialize_verification_result(payload)
-        assert result is not None
-        assert result.budget_exhausted is False
-
-    def test_round_trip_preserves_flag(self):
-        original = _exhausted_verification(web_search_requests=7)
-        payload = serialize_verification_result(original)
-        restored = deserialize_verification_result(payload)
-        assert restored is not None
-        assert restored.budget_exhausted is True
-        assert restored.web_search_requests == 7
 
 
 # ---------------------------------------------------------------------------

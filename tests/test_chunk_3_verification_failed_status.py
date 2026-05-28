@@ -28,10 +28,6 @@ from pathlib import Path
 
 
 from src.core.code_cycles import DEFAULT_CYCLE
-from src.orchestration.resume_state import (
-    deserialize_verification_result,
-    serialize_verification_result,
-)
 from src.output.report_exporter import STATUS_COLORS, STATUS_SHADING
 from src.output.report_status import (
     EditActionLabel,
@@ -256,89 +252,6 @@ class TestClassifyEditActionVerificationFailed:
             edit_proposal=None,
         )
         assert classify_edit_action(f) is EditActionLabel.REPORT_ONLY
-
-
-# ---------------------------------------------------------------------------
-# 5. Resume state — verification_failed round-trips
-# ---------------------------------------------------------------------------
-
-
-class TestResumeStateVerificationFailed:
-    def test_serialize_includes_verification_failed(self):
-        result = _failed_verification()
-        payload = serialize_verification_result(result)
-        assert payload is not None
-        assert payload["verification_failed"] is True
-
-    def test_serialize_includes_false_when_not_failed(self):
-        result = VerificationResult(verdict="CONFIRMED", grounded=True, sources=["https://x"])
-        payload = serialize_verification_result(result)
-        assert payload is not None
-        assert payload["verification_failed"] is False
-
-    def test_deserialize_restores_verification_failed(self):
-        payload = {
-            "verdict": "UNVERIFIED",
-            "explanation": "Rate limited during verification.",
-            "sources": [],
-            "correction": None,
-            "grounded": False,
-            "model_used": "claude-sonnet-4-6",
-            "escalated": False,
-            "cache_status": "n/a",
-            "web_search_requests": 0,
-            "successful_source_count": 0,
-            "search_error_count": 0,
-            "searched_sources": [],
-            "cited_sources": [],
-            "accepted_sources": [],
-            "rejected_sources": [],
-            "verification_profile": "code_standard",
-            "verification_mode": "standard_reasoning",
-            "source_quote": "",
-            "verification_failed": True,
-        }
-        result = deserialize_verification_result(payload)
-        assert result is not None
-        assert result.verification_failed is True
-
-    def test_deserialize_legacy_payload_defaults_false(self):
-        # State files written before Chunk 3 don't have the field.
-        # Missing → False (safe fallback: render as the verdict-based
-        # status rather than retroactively claiming the verifier
-        # crashed).
-        payload = {
-            "verdict": "UNVERIFIED",
-            "explanation": "No evidence",
-            "sources": [],
-            "correction": None,
-            "grounded": False,
-            "model_used": "",
-            "escalated": False,
-            "cache_status": "n/a",
-            "web_search_requests": 0,
-            "successful_source_count": 0,
-            "search_error_count": 0,
-            "searched_sources": [],
-            "cited_sources": [],
-            "accepted_sources": [],
-            "rejected_sources": [],
-            "verification_profile": "",
-            "verification_mode": "",
-            "source_quote": "",
-            # verification_failed intentionally omitted
-        }
-        result = deserialize_verification_result(payload)
-        assert result is not None
-        assert result.verification_failed is False
-
-    def test_round_trip_preserves_failed_flag(self):
-        original = _failed_verification("API error during verification: 502")
-        payload = serialize_verification_result(original)
-        restored = deserialize_verification_result(payload)
-        assert restored is not None
-        assert restored.verification_failed is True
-        assert restored.explanation == original.explanation
 
 
 # ---------------------------------------------------------------------------

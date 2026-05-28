@@ -1,38 +1,22 @@
 """App-specific filesystem paths and filenames.
 
 Centralizes the locations Spec Critic uses for persistent state and config —
-the API key file, batch resume state, and any other app-owned files. Path
-helpers create directories on demand so callers can read/write without
-their own setup boilerplate.
+the API key file and any other app-owned files. Path helpers create
+directories on demand so callers can read/write without their own setup
+boilerplate.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-from platformdirs import user_config_dir, user_state_dir
+from platformdirs import user_config_dir
 
 API_KEY_FILENAME = "spec_critic_api_key.txt"
-BATCH_STATE_FILENAME = "batch_state.json"
-
-# Chunk 1: keep local resume-state retention conservatively under the
-# Anthropic Message Batches result-download window. The API holds batch
-# results for ~29 days; expiring our local state at 28 days guarantees
-# any state we still keep can actually be redeemed. The warning threshold
-# fires earlier so the GUI can surface a "results may expire soon" hint
-# before we are out of runway.
-BATCH_STATE_MAX_AGE_HOURS = 24 * 28
-BATCH_STATE_WARNING_AGE_HOURS = 24 * 25
 
 
 def app_config_dir() -> Path:
     d = Path(user_config_dir("SpecCritic", appauthor=False))
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def app_state_dir() -> Path:
-    d = Path(user_state_dir("SpecCritic", appauthor=False))
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -55,7 +39,3 @@ def api_key_paths() -> list[Path]:
         app_config_dir() / API_KEY_FILENAME,
         executable_dir() / API_KEY_FILENAME,
     ]
-
-
-def batch_state_path() -> Path:
-    return app_state_dir() / BATCH_STATE_FILENAME

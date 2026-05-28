@@ -3,13 +3,13 @@
 This file is a thin GUI shell. It builds the root window, the layout, and
 delegates all workflow concerns to focused controller modules:
 
-- ``app_paths`` / ``api_key_store`` / ``batch_state_store`` — persistence
+- ``app_paths`` / ``api_key_store`` — persistence
 - ``about_usage_dialogs`` — static informational dialogs
 - ``file_selection_controller`` / ``context_controller`` /
   ``token_analysis_controller`` — input handling
 - ``review_run_controller`` — run orchestration + shared
   run-lifecycle helpers
-- ``batch_controller`` — batch submission, polling, collection, resume
+- ``batch_controller`` — batch submission, polling, collection
 - ``report_controller`` — report export and the report window
 - ``diagnostics_controller`` — diagnostics callbacks and window
 """
@@ -62,16 +62,10 @@ from src.core.api_key_store import load_api_key_from_file
 # Controllers
 from src.gui.about_usage_dialogs import show_about_dialog, show_usage_dialog
 from src.gui.batch_controller import (
-    check_pending_batch,
     collect_batch_results,
-    format_batch_age,
-    is_valid_verification_resume_state,
     on_batch_submitted,
     poll_and_collect_thread,
     poll_batch,
-    resume_batch,
-    resume_cross_check_verification_poll,
-    resume_verification_poll,
     submit_batch_thread,
     update_poll_progress,
 )
@@ -172,7 +166,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self._selected_cycle_label: str = DEFAULT_CYCLE.label
         self._font_scale_label: str = "Default (100%)"
         self._create_ui()
-        self.after(500, self._check_pending_batch)
 
     def _create_ui(self):
         c = ctk.CTkFrame(self, fg_color="transparent")
@@ -555,26 +548,6 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _reset_ui(self):
         reset_ui(self)
-
-    # ----- Persistent batch state -----
-
-    def _check_pending_batch(self):
-        check_pending_batch(self)
-
-    def _format_batch_age(self, created_at: float) -> str:
-        return format_batch_age(created_at)
-
-    def _resume_batch(self, loaded_state: dict):
-        resume_batch(self, loaded_state)
-
-    def _is_valid_verification_resume_state(self, loaded_state: dict) -> bool:
-        return is_valid_verification_resume_state(loaded_state)
-
-    def _resume_verification_poll(self, loaded_state: dict):
-        resume_verification_poll(self, loaded_state)
-
-    def _resume_cross_check_verification_poll(self, loaded_state: dict):
-        resume_cross_check_verification_poll(self, loaded_state)
 
     def _open_diagnostics_window(self):
         open_diagnostics_window(self)

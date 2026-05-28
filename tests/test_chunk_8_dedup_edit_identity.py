@@ -29,7 +29,6 @@ from src.orchestration.pipeline import (
     _deduplicate_findings,
     group_findings,
 )
-from src.orchestration.resume_state import deserialize_finding, serialize_finding
 from src.review.reviewer import Finding, REPORT_ONLY_ACTION
 
 
@@ -304,63 +303,3 @@ class TestReportOnlyGroupedFindings:
         groups = group_findings([merged])
         names = [o.file_name for o in groups[0].occurrences]
         assert sorted(names) == ["a.docx", "b.docx"]
-
-
-# ---------------------------------------------------------------------------
-# Resume state round-trip
-# ---------------------------------------------------------------------------
-
-
-class TestResumeStateRoundTrip:
-    def test_round_trip_preserves_occurrence_originals(self):
-        # Same existingText/replacementText (so the dedup key collapses) but
-        # different per-file anchor — anchor isn't part of the dedup key, so
-        # this is a realistic shape for what occurrence_originals captures.
-        a = _make_finding(file_name="a.docx", existing="ASCE 7-16", replacement="ASCE 7-25")
-        a.anchorText = "near top of section 1"
-        b = _make_finding(file_name="b.docx", existing="ASCE 7-16", replacement="ASCE 7-25")
-        b.anchorText = "near top of section 2"
-        merged = _deduplicate_findings([a, b])[0]
-        payload = serialize_finding(merged)
-        # The serialized form contains the originals.
-        assert "occurrence_originals" in payload
-        assert len(payload["occurrence_originals"]) == 2
-        # Round-trip preserves per-file edit metadata.
-        loaded = deserialize_finding(payload)
-        by_file = {o.fileName: o for o in loaded.occurrence_originals}
-        assert by_file["a.docx"].existingText == "ASCE 7-16"
-        assert by_file["b.docx"].existingText == "ASCE 7-16"
-        assert by_file["a.docx"].anchorText == "near top of section 1"
-        assert by_file["b.docx"].anchorText == "near top of section 2"
-
-    def test_legacy_payload_without_originals_loads_with_empty_list(self):
-        # Pre-Chunk-8 payload: no ``occurrence_originals`` key at all.
-        legacy_payload = {
-            "severity": "HIGH",
-            "fileName": "a.docx",
-            "section": "2.1",
-            "issue": "outdated reference",
-            "actionType": "EDIT",
-            "existingText": "old",
-            "replacementText": "new",
-            "codeReference": "CBC",
-            "confidence": 0.7,
-            "affected_files": ["a.docx", "b.docx"],
-        }
-        loaded = deserialize_finding(legacy_payload)
-        assert loaded.occurrence_originals == []
-        # Backward compatibility: the legacy fields still load.
-        assert loaded.affected_files == ["a.docx", "b.docx"]
-
-    def test_nested_originals_are_not_serialized_recursively(self):
-        # Defense in depth: even if a member somehow carried its own
-        # occurrence_originals, the second-level serialization clears it so
-        # the JSON cannot grow without bound.
-        member_with_nested = _make_finding(file_name="a.docx")
-        member_with_nested.occurrence_originals = [_make_finding(file_name="a.docx")]
-        merged = _make_finding(file_name="a.docx")
-        merged.occurrence_originals = [member_with_nested]
-        payload = serialize_finding(merged)
-        nested = payload["occurrence_originals"][0]
-        # The nested member's own occurrence_originals is forced empty.
-        assert nested["occurrence_originals"] == []

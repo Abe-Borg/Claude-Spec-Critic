@@ -16,13 +16,11 @@ import os
 import threading
 from tkinter import messagebox
 
-from ..batch.batch_state_store import delete_batch_state
 from ..core.code_cycles import DEFAULT_CYCLE
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..review.reviewer import MODEL_OPUS_47
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from ..tracing.session import (
-    reattach_run_recorder as _reattach_recorder,  # noqa: F401  re-exported for batch_controller
     start_run_recorder,
     stop_run_recorder as _stop_recorder,
 )
@@ -154,7 +152,6 @@ def on_review_complete(app, result) -> None:
             app._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
         elif export_status == "success":
             app._finalize_diagnostics("finalization", "success", "Run completed successfully")
-    delete_batch_state()
     if not result.review_result:
         app._finalize_diagnostics("finalization", "success", "Run completed successfully")
     app.run_button.set_complete()
