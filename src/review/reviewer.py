@@ -140,9 +140,10 @@ class Finding:
     insertPosition: str | None = None  # "before" | "after" | None
     # Chunk K3 / plan section "Stable Document IDs": optional pointer to
     # the paragraph / row / heading id (see ``ParagraphMapping.element_id``).
-    # The locator prefers this id when it is non-empty and revalidates the
-    # exact-text quote against the live element before applying any edit.
-    # Empty string is the legacy fallback path (text-based matching).
+    # A downstream applier can prefer this id when it is non-empty and
+    # revalidate the exact-text quote against the live element before
+    # applying any edit. Empty string is the legacy fallback (text-based
+    # matching).
     evidenceElementId: str | None = None
     # Chunk L / plan section "Separate Findings From Edit Proposals":
     # the optional structured edit half. Findings with no clean textual fix
@@ -454,7 +455,7 @@ def _parse_findings(data: list) -> list[Finding]:
         # sidecar) then see a clean REPORT_ONLY and the finding's underlying
         # issue is preserved for the report. The previous behavior
         # silently built an EditProposal with missing fields and pushed
-        # the error detection into the locator, which had to invent
+        # the error detection downstream, where it surfaced as vague
         # warnings like "Finding has no anchor text" instead of citing
         # the specific schema field that was missing.
         demotion_reason: str | None = None

@@ -231,85 +231,8 @@ class DiagnosticsReport:
     cross_check_enabled: bool = False
     events: list[DiagnosticEvent] = field(default_factory=list)
     # Actionable fields. Populated by the pipeline / GUI when the
-    # corresponding phase records actionable failure or skip information.
+    # corresponding phase records actionable failure information.
     failed_specs: list[str] = field(default_factory=list)
-    skipped_specs: list[str] = field(default_factory=list)
-    edit_skip_reasons: dict[str, int] = field(default_factory=dict)
-    ambiguous_locator_count: int = 0
-    edits_applied_total: int = 0
-    edits_skipped_total: int = 0
-    edits_failed_total: int = 0
-    # Locator-method telemetry. Surfaces how many findings the locator
-    # resolved via the id path vs. text-based fallbacks. Keys are
-    # :attr:`EditLocation.match_method` values (``"id"`` / ``"exact"`` /
-    # ``"normalized"`` / ``"section_anchored"`` / ``"fuzzy"``) so the
-    # breakdown reads cleanly in diagnostics.
-    locator_methods: dict[str, int] = field(default_factory=dict)
-    # Phase 1 / Step 1.1 of the auto-apply quality plan: count of edits
-    # whose replacement text was rewritten to match the source
-    # document's typographic conventions (curly vs straight quotes,
-    # em-dash vs hyphen, NBSP in measurements, etc.) before being
-    # applied. Aggregated from ``EditReport.replacement_normalized_count``
-    # by :func:`apply_edits.execute_edit_plan`.
-    replacement_text_normalized_count: int = 0
-    # Phase 1 / Step 1.2: count of edits whose trailing punctuation was
-    # repaired (drop avoidance or doubling prevention) before being
-    # applied. Aggregated from
-    # ``EditReport.punctuation_boundary_fixed_count`` by
-    # :func:`apply_edits.execute_edit_plan`.
-    punctuation_boundary_fixed_count: int = 0
-    # Phase 2 / Step 2.2: count of ADD findings that the auto-apply
-    # pipeline refused at apply time because the recorded
-    # ``insertPosition`` was missing or invalid ("before" / "after" are
-    # the only acceptable values). The parser normally demotes such
-    # ADDs at parse time via :func:`validate_edit_shape`; the
-    # apply-layer counter is a defensive net for legacy resume payloads
-    # or directly-constructed Findings that bypass parsing. Aggregated
-    # from ``EditReport.add_demoted_missing_position_count`` by
-    # :func:`apply_edits.execute_edit_plan`.
-    add_demoted_missing_position_count: int = 0
-    # Phase 3 / Step 3.2: count of token spans that the auto-apply
-    # pipeline re-bolded after a partial replacement crossed runs with
-    # distinct formatting. Default-off via
-    # ``SPEC_CRITIC_RESTORE_KNOWN_FORMATTING``; non-zero only when an
-    # operator opted in and a recognized standards / code token
-    # (``NFPA 13``, ``CBC 2025``, ``Section 23 21 13``, …) landed
-    # inside the replacement span of a paragraph whose original runs
-    # carried inline emphasis.
-    known_pattern_formatting_restored_count: int = 0
-    # Phase 4 / Step 4.1: count of narrower edits whose correction was
-    # silently discarded by a broader containing edit whose replacement
-    # did NOT carry the narrower's text forward. The broader edit still
-    # applies (preserving user agency); this counter surfaces "you
-    # probably want to revisit these manually" at the run level so the
-    # report and diagnostics can flag the loss. Aggregated from
-    # ``EditReport.contained_edits_lost_intent_count`` by
-    # :func:`apply_edits.execute_edit_plan`.
-    contained_edits_lost_intent_count: int = 0
-    # Phase 4 / Step 4.3: count of findings whose cross-paragraph
-    # ``existingText`` matched more than one identical window in the
-    # document, so the locator refused to guess which one to edit and
-    # routed the finding to manual review. Separate from the general
-    # ``ambiguous_locator_count`` because cross-paragraph multi-window
-    # ambiguity is a distinct signal (the model emitted a repeated
-    # multi-paragraph quote) that operators may want to act on
-    # differently than ordinary single-paragraph ambiguity.
-    # Aggregated from
-    # ``LocatorResult.cross_paragraph_ambiguous`` by
-    # :func:`apply_edits.execute_edit_plan`.
-    cross_paragraph_ambiguity_routed_to_manual_count: int = 0
-    # Phase 5 / Step 5.1: count of CORRECTED findings whose
-    # ``verification.correction`` failed the replaceability sanity
-    # check (``correction_looks_replaceable``), so the applied edit
-    # used the model's original ``replacement_text`` instead of the
-    # verifier's correction. The verifier's correction is still
-    # preserved on the result for the report — only the *applied* edit
-    # text changes. Non-zero values are a useful "the verifier emitted
-    # explanation, not clean replacement text" signal so operators can
-    # revisit those findings manually. Aggregated from
-    # ``EditReport.verifier_correction_rejected_as_replacement_count``
-    # by :func:`apply_edits.execute_edit_plan`.
-    verifier_correction_rejected_as_replacement_count: int = 0
     max_events: int = _DEFAULT_MAX_EVENTS
     events_dropped: int = 0
     # Diagnostic byte caps. Prevent a single event from blowing up
@@ -390,76 +313,6 @@ class DiagnosticsReport:
     def record_failed_spec(self, filename: str) -> None:
         if filename and filename not in self.failed_specs:
             self.failed_specs.append(filename)
-
-    def record_skipped_spec(self, filename: str) -> None:
-        if filename and filename not in self.skipped_specs:
-            self.skipped_specs.append(filename)
-
-    def record_edit_skip(self, reason: str) -> None:
-        if not reason:
-            return
-        self.edit_skip_reasons[reason] = self.edit_skip_reasons.get(reason, 0) + 1
-        if reason == "ambiguous":
-            self.ambiguous_locator_count += 1
-
-    def record_edit_report(
-        self,
-        *,
-        applied: int = 0,
-        skipped: int = 0,
-        failed: int = 0,
-    ) -> None:
-        self.edits_applied_total += int(applied)
-        self.edits_skipped_total += int(skipped)
-        self.edits_failed_total += int(failed)
-
-    def _auto_apply_quality_lines(self) -> list[str]:
-        """Render the Phase 1 auto-apply quality counters.
-
-        Returns an empty list when every counter is zero so
-        :meth:`to_text` can skip the section header for runs that did
-        not exercise the edit pipeline. New counters added by later
-        Phase 1 / 2 steps land here as additional one-liners.
-        """
-        rows: list[tuple[str, int]] = [
-            ("Replacement text normalized", self.replacement_text_normalized_count),
-            ("Punctuation boundary fixed", self.punctuation_boundary_fixed_count),
-            (
-                "ADD demoted (missing insertPosition)",
-                self.add_demoted_missing_position_count,
-            ),
-            (
-                "Known-pattern formatting restored",
-                self.known_pattern_formatting_restored_count,
-            ),
-            (
-                "Contained-edit intent loss",
-                self.contained_edits_lost_intent_count,
-            ),
-            (
-                "Cross-paragraph ambiguity routed to manual",
-                self.cross_paragraph_ambiguity_routed_to_manual_count,
-            ),
-            (
-                "Verifier correction rejected as replacement",
-                self.verifier_correction_rejected_as_replacement_count,
-            ),
-        ]
-        active = [(label, count) for label, count in rows if count]
-        if not active:
-            return []
-        return [f"  {label:35s} {count}" for label, count in active]
-
-    def record_locator_method(self, method: str) -> None:
-        """Count how many findings used each locator method.
-
-        Called by ``apply_edits.execute_edit_plan`` for every successful
-        locator match. The higher the ``id`` bucket's share, the less the
-        pipeline depends on fuzzy text rediscovery.
-        """
-        if not method:
-            return
-        self.locator_methods[method] = self.locator_methods.get(method, 0) + 1
 
     def record_api_call(
         self,
@@ -926,13 +779,6 @@ class DiagnosticsReport:
             "phase_telemetry": dict(phase_telemetry),
             "cost_summary": cost_summary,
             "failed_specs": list(self.failed_specs),
-            "skipped_specs": list(self.skipped_specs),
-            "edit_skip_reasons": dict(self.edit_skip_reasons),
-            "ambiguous_locator_count": self.ambiguous_locator_count,
-            "edits_applied_total": self.edits_applied_total,
-            "edits_skipped_total": self.edits_skipped_total,
-            "edits_failed_total": self.edits_failed_total,
-            "locator_methods": dict(self.locator_methods),
             "events_dropped": self.events_dropped,
             # Diagnostics-cap visibility. Operators can see at a glance
             # whether the run hit the per-event byte cap or had any
@@ -1144,46 +990,13 @@ class DiagnosticsReport:
                     bits.append("models=" + ",".join(bucket["models"]))
                 lines.append(f"    {phase_name:20s} {', '.join(bits)}")
 
-        # Surface failed specs, skipped edits, ambiguous locator count, and
-        # event truncation so users can see what required attention without
-        # scanning the timeline.
+        # Surface failed specs and event truncation so users can see what
+        # required attention without scanning the timeline.
         if s.get("failed_specs"):
             lines.append("")
             lines.append(f"  Failed Specs:    {len(s['failed_specs'])}")
             for fname in s["failed_specs"]:
                 lines.append(f"                   - {fname}")
-        if s.get("skipped_specs"):
-            lines.append(f"  Skipped Specs:   {len(s['skipped_specs'])}")
-            for fname in s["skipped_specs"]:
-                lines.append(f"                   - {fname}")
-        if s.get("edit_skip_reasons"):
-            lines.append("  Edit Skips:")
-            for reason, cnt in s["edit_skip_reasons"].items():
-                lines.append(f"    {reason:20s} {cnt}")
-        if s.get("ambiguous_locator_count"):
-            lines.append(f"  Ambiguous Locators: {s['ambiguous_locator_count']}")
-        if (s.get("edits_applied_total") or s.get("edits_skipped_total")
-                or s.get("edits_failed_total")):
-            lines.append(
-                "  Edit Application: "
-                f"applied={s['edits_applied_total']}, "
-                f"skipped={s['edits_skipped_total']}, "
-                f"failed={s['edits_failed_total']}"
-            )
-        # Locator-method breakdown. Hidden when no edit plan ran.
-        locator_methods = s.get("locator_methods") or {}
-        if locator_methods:
-            lines.append(f"  Locator Methods: {locator_methods}")
-        # Phase 1 of the auto-apply quality plan: surface per-fix
-        # counters under a dedicated section so users can see which
-        # quality guards fired. Hidden entirely when every counter is
-        # zero (typical for runs without an edit pass).
-        quality_lines = self._auto_apply_quality_lines()
-        if quality_lines:
-            lines.append("")
-            lines.append("AUTO-APPLY QUALITY")
-            lines.append("-" * 40)
-            lines.extend(quality_lines)
         if s.get("events_dropped"):
             lines.append(
                 f"  Events Dropped:  {s['events_dropped']} "

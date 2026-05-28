@@ -69,14 +69,14 @@ _LOCAL_SKIP_KEYWORDS = (
 
 # Chunk 10 — keywords that still route to local_skip (web search adds no
 # signal) but tag the resulting :class:`VerificationResult` with
-# ``requires_elevated_confidence=True`` so the composite-confidence
-# multiplier in :func:`composite_edit_confidence` applies an additional
-# 0.85 factor. These are the residual-risk classes: a model-reported
-# "LEED reference is inappropriate" claim or an "internal contradiction"
-# claim is locally diagnosable, but the model's confidence in *which*
-# text to edit is lower than for a plain placeholder / template marker.
-# Raising the auto-edit bar reduces the false-positive auto-apply rate
-# without paying for web verification that wouldn't add evidence anyway.
+# ``requires_elevated_confidence=True``. The flag is retained as telemetry
+# for a downstream applier; nothing in this app consumes it for routing.
+# These are the residual-risk classes: a model-reported "LEED reference is
+# inappropriate" claim or an "internal contradiction" claim is locally
+# diagnosable, but the model's confidence in *which* text to edit is lower
+# than for a plain placeholder / template marker, so a downstream applier
+# may want a higher bar before acting on them. Web verification wouldn't
+# add evidence for either class anyway.
 _LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED = (
     "leed",
     "internal contradiction",
@@ -145,9 +145,9 @@ def local_skip_requires_elevated_confidence(finding: Finding) -> bool:
     :data:`_LOCAL_SKIP_KEYWORDS` into
     :data:`_LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED`. The routing decision
     is unchanged (those keywords still route to local_skip), but a finding
-    that matched ONLY the elevated list should carry the flag so the
-    composite-confidence multiplier in :func:`composite_edit_confidence`
-    knocks the auto-edit threshold higher for that finding.
+    that matched ONLY the elevated list should carry the flag as telemetry
+    so a downstream applier can apply a higher bar before acting on that
+    finding.
 
     A finding matching BOTH the regular keyword list and the elevated
     list does NOT get the flag — the regular-list match is the stronger

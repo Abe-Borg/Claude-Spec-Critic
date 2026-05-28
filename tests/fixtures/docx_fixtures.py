@@ -1,4 +1,4 @@
-"""Tiny in-memory DOCX builders for edit-safety / locator tests.
+"""Tiny in-memory DOCX builders for extraction / paragraph-map tests.
 
 Chunk A baseline: Chunk F (edit precondition offset safety) and later
 edit-related work need cheap DOCX fixtures so they can exercise the real
@@ -9,7 +9,7 @@ These helpers are intentionally minimal:
 - ``make_table_spec`` builds a one-table spec with the given cell values.
 - ``make_real_world_section_spec`` returns a spec that looks like a
   realistic CSI-section snippet (PART / 1.01 / paragraph), good enough
-  for testing locator behavior under anchor matching.
+  for exercising the extractor's paragraph map and element ids.
 
 Chunk 9 adds unsafe-markup builders for the new edit-refusal contract:
 - ``make_paragraph_with_hyperlink`` injects a w:hyperlink element.
@@ -98,10 +98,9 @@ def make_real_world_section_spec(
 # Chunk 9 — unsafe-markup paragraph builders.
 #
 # Each helper crafts a paragraph whose run-text reads as the supplied
-# ``text`` string for python-docx purposes (so the locator can still find
-# the substring), but whose XML carries the unsafe WordprocessingML
-# construct named after the helper. The detect_unsafe_markup() scan in
-# spec_editor.py should refuse to mutate these paragraphs.
+# ``text`` string for python-docx purposes, but whose XML carries the
+# unsafe WordprocessingML construct named after the helper — useful for
+# any downstream consumer that needs to detect and refuse such markup.
 # ---------------------------------------------------------------------------
 
 

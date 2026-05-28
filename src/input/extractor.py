@@ -25,27 +25,6 @@ class ParagraphMapping:
     cell_index: int | None
     section_index: int | None = None
     container_type: str | None = None
-    # Phase 4 (audit Section 8.5): rich-formatting downgrade. ``run_count``
-    # is the number of non-empty runs in the source paragraph;
-    # ``distinct_formatting_runs`` is the count of distinct character-format
-    # signatures across those runs (bold/italic/underline/font/size/color).
-    # Both are 0 for non-paragraph mappings (table cells flatten multiple
-    # paragraphs and runs; treat them via the table-cell caution path).
-    run_count: int = 0
-    distinct_formatting_runs: int = 0
-    # Phase 3 / Step 3.1: per-run character offset + format signature
-    # for span-aware formatting-loss detection. Each entry is
-    # ``(start_offset, end_offset, signature_tuple)`` in *stripped-text*
-    # coordinates (matching ``ParagraphMapping.text``). The locator's
-    # downgrade pass walks this list to decide whether a partial
-    # replacement actually crosses runs with distinct formatting (in
-    # which case formatting is silently destroyed) or sits entirely
-    # inside one uniformly-formatted region (in which case AUTO_SAFE is
-    # preserved). ``None`` for non-paragraph mappings and for legacy
-    # resume-state payloads that predate Step 3.1; downstream code
-    # falls back to the coarser ``distinct_formatting_runs`` count when
-    # the per-run map is missing.
-    run_format_map: list[tuple[int, int, tuple]] | None = None
     # Chunk K1: stable, deterministic element identifier scoped to a single
     # extracted document. The format is human-readable so a finding that
     # cites it can be debugged at a glance: ``p<body_index>`` for body
@@ -57,8 +36,8 @@ class ParagraphMapping:
     # legacy mappings constructed by tests that predate Chunk K.
     element_id: str = ""
     # Section heading text the element belongs to (best-effort). Surfacing
-    # this lets the locator disambiguate identical text in different
-    # sections without re-scanning the paragraph map.
+    # this lets a downstream applier disambiguate identical text in
+    # different sections without re-scanning the paragraph map.
     section_id: str = ""
 
 
@@ -73,8 +52,8 @@ class ExtractedSpec:
     # Chunk K1: stable, human-debuggable document identifier. Defaults to
     # the filename without extension; when filenames could collide the
     # caller can override. Element ids are only unique inside a single
-    # document, so the locator pairs ``(document_id, element_id)`` when it
-    # disambiguates findings that cite an id.
+    # document, so a downstream applier pairs ``(document_id, element_id)``
+    # when it disambiguates findings that cite an id.
     document_id: str = ""
     # Chunk 10 / Trust Upgrade: warnings emitted during text extraction
     # that the report banner surfaces so reviewers can spot specs where
@@ -91,7 +70,7 @@ def _derive_document_id(filename: str) -> str:
     """Return a stable, human-readable document id for ``filename``.
 
     Chunk K1 keeps ids debuggable: the filename without its extension is
-    enough for a per-run locator and reads cleanly in logs. Callers that
+    enough as a per-run identifier and reads cleanly in logs. Callers that
     expect cross-run stability across renames should override
     ``ExtractedSpec.document_id`` themselves.
     """
@@ -123,68 +102,6 @@ def _is_heading_paragraph(text: str) -> bool:
     ):
         return True
     return False
-
-
-def _summarize_paragraph_formatting(
-    paragraph: Paragraph,
-) -> tuple[int, int, list[tuple[int, int, tuple]]]:
-    """Return ``(run_count, distinct_formatting_runs, run_format_map)`` for a paragraph.
-
-    Phase 4 (audit Section 8.5): callers downgrade auto-edit safety when a
-    paragraph has multiple runs with distinct character formatting, because
-    run-level replacement collapses non-matching formatting into the first
-    run and silently destroys inline emphasis/font choices.
-
-    Phase 3 / Step 3.1: the per-run offset map (third tuple element) is
-    in *stripped-text* coordinates — the same coordinate space the
-    locator's ``EditLocation.match_start`` / ``match_end`` use. The
-    extractor stores ``para.text.strip()`` on each ``ParagraphMapping``,
-    so an offset that's relative to ``para.text`` (the unstripped
-    concatenation of run texts) would not align with what the locator
-    sees. We shift offsets by the leading-whitespace prefix length and
-    clamp the trailing edge to the stripped length so runs that span
-    pure leading/trailing whitespace are dropped from the map.
-    """
-    runs = list(paragraph.runs)
-    if not runs:
-        return 0, 0, []
-    raw_text = paragraph.text or ""
-    if not raw_text:
-        return 0, 0, []
-    leading_ws = len(raw_text) - len(raw_text.lstrip())
-    stripped_len = len(raw_text.strip())
-
-    signatures: set[tuple] = set()
-    non_empty = 0
-    run_format_map: list[tuple[int, int, tuple]] = []
-    cursor = 0
-    for run in runs:
-        text = run.text or ""
-        if not text:
-            continue
-        run_start_raw = cursor
-        run_end_raw = cursor + len(text)
-        cursor = run_end_raw
-        non_empty += 1
-        font = run.font
-        signature = (
-            bool(run.bold),
-            bool(run.italic),
-            bool(run.underline),
-            getattr(font, "name", None),
-            float(font.size.pt) if getattr(font, "size", None) is not None else None,
-            str(getattr(getattr(font, "color", None), "rgb", None) or ""),
-        )
-        signatures.add(signature)
-        # Translate offsets into stripped-text coordinates. Runs that
-        # fall entirely inside the stripped leading/trailing whitespace
-        # are dropped from the map (they would produce a zero-width
-        # entry that no downstream check can use).
-        start_stripped = max(0, run_start_raw - leading_ws)
-        end_stripped = min(stripped_len, run_end_raw - leading_ws)
-        if end_stripped > start_stripped:
-            run_format_map.append((start_stripped, end_stripped, signature))
-    return non_empty, len(signatures), run_format_map
 
 
 # Chunk 10 / Trust Upgrade: threshold above which a spec is flagged as
@@ -283,7 +200,6 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             text = para.text.strip()
             if text:
                 paragraphs.append(text)
-                run_count, distinct_fmt, run_format_map = _summarize_paragraph_formatting(para)
                 if _is_heading_paragraph(text):
                     current_section = text
                 paragraph_map.append(
@@ -294,9 +210,6 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                         table_index=None,
                         row_index=None,
                         cell_index=None,
-                        run_count=run_count,
-                        distinct_formatting_runs=distinct_fmt,
-                        run_format_map=run_format_map,
                         element_id=f"p{body_index}",
                         section_id=current_section,
                     )

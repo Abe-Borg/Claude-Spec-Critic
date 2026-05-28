@@ -378,8 +378,8 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
         files = list(dict.fromkeys([f.fileName for f in group if f.fileName]))
         # Carry the representative's edit_proposal onto the merged finding
         # so REPORT_ONLY findings stay REPORT_ONLY after dedupe and so the
-        # locator/edit pipeline does not see a freshly-constructed Finding
-        # that lost its proposal half.
+        # report / edit-instruction sidecar (and any downstream applier) do
+        # not see a freshly-constructed Finding that lost its proposal half.
         merged_proposal = rep.as_edit_proposal()
         # Derive the merged finding's id from the representative before
         # issue-text mutation. The dedup key already collapses the whole
@@ -387,7 +387,7 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
         # id; using rep is the cheaper of the two equivalent paths.
         merged_id = rep.finding_id or compute_finding_id(rep)
         # Retain the per-file pre-merge member findings on the merged
-        # representative so edit execution can use each file's own
+        # representative so a downstream applier can use each file's own
         # ``existingText`` / ``replacementText`` / ``anchorText`` /
         # ``evidenceElementId`` / ``edit_proposal`` instead of fanning the
         # representative's text across files that may have differed. The
