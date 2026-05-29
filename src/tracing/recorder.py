@@ -513,7 +513,6 @@ class TraceRecorder:
             "existingText",
             "replacementText",
             "evidenceElementId",
-            "suppression_reason",
             "demotion_reason",
         )
         out: dict[str, Any] = {}

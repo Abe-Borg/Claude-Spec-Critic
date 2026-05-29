@@ -84,7 +84,6 @@ def _finding(
     replacement: str | None = "new text",
     verification: VerificationResult | None = None,
     edit_proposal: EditProposal | None = None,
-    suppression_reason: str | None = None,
 ) -> Finding:
     f = Finding(
         severity=severity,
@@ -97,7 +96,6 @@ def _finding(
         codeReference="CBC §1234",
         confidence=confidence,
         edit_proposal=edit_proposal,
-        suppression_reason=suppression_reason,
     )
     f.verification = verification
     return f
@@ -260,17 +258,6 @@ class TestClassifyStatusContested:
         )
         f = _finding(verification=v)
         assert classify_status(f) is ReportStatus.VERIFIED_CONTESTED
-
-    def test_suppression_still_wins_over_disagreement(self):
-        # The suppression branch is the highest-priority rule in
-        # classify_status — even a real model disagreement defers to it
-        # because the operator needs to know the cross-check filter
-        # demoted the finding before debating verdict semantics.
-        f = _finding(
-            verification=_contested_verification(),
-            suppression_reason="upstream disputed",
-        )
-        assert classify_status(f) is ReportStatus.MANUAL_REVIEW_REQUIRED
 
     def test_verification_failed_still_wins_over_disagreement(self):
         # An operational failure beats a model disagreement: if the

@@ -330,10 +330,9 @@ def _dedup_key(f: Finding) -> tuple:
 def compute_finding_id(f: Finding) -> str:
     """Compute a stable, deterministic id for a finding.
 
-    Each review finding gets a stable id at dedup time so the cross-check
-    pass can cite those ids in ``upstreamFindingIds`` and the
-    post-verification suppression filter can match dependencies
-    deterministically instead of falling back to file/section overlap.
+    Each review finding gets a stable id at dedup time so the report and
+    the edit-instruction sidecar can reference it and so the cross-check
+    pass can label the prior findings it was shown.
 
     The id is derived from the same key the dedup helper uses, so two
     findings with the same dedup identity share the same id (and a
@@ -349,8 +348,8 @@ def compute_finding_id(f: Finding) -> str:
 
 def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
     if len(findings) <= 1:
-        # Singleton lists still need a stable finding_id so the cross-check
-        # pass can cite the review finding via upstream ids.
+        # Singleton lists still need a stable finding_id so the report and
+        # edit-instruction sidecar can reference the finding.
         for f in findings:
             if not f.finding_id:
                 f.finding_id = compute_finding_id(f)
@@ -366,9 +365,9 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             f = group[0]
             if not f.affected_files and f.fileName:
                 f.affected_files = [f.fileName]
-            # Stamp a stable finding id so the cross-check pass can cite
-            # it via upstream_finding_ids. Computed from the dedup key so
-            # the id is deterministic across runs of the same content.
+            # Stamp a stable finding id so the report and edit-instruction
+            # sidecar can reference it. Computed from the dedup key so the
+            # id is deterministic across runs of the same content.
             if not f.finding_id:
                 f.finding_id = compute_finding_id(f)
             out.append(f)
@@ -903,148 +902,6 @@ def _log_cross_check_status(log: LogFn, cross: ReviewResult):
         log(f"Cross-check skipped: {cross.thinking}", level="warning")
     elif cross.cross_check_status == "failed":
         log(f"Cross-check failed: {cross.error}", level="error")
-
-
-def classify_cross_check_dependencies(
-    cross_findings: list[Finding],
-    review_findings: list[Finding],
-    *,
-    log: LogFn = _noop_log,
-) -> tuple[list[Finding], list[Finding]]:
-    """Partition cross-check findings into (kept, suppressed) by upstream verdict.
-
-    When a cross-check finding cites upstream review ids in
-    ``upstream_finding_ids``, those ids are the authoritative dependency
-    check. The rules are:
-
-    * If at least one cited upstream is NOT DISPUTED, keep the finding —
-      the dependency still holds on the surviving upstream(s).
-    * If every cited upstream is DISPUTED but the finding has
-      ``independent_evidence_ids``, keep it — raw spec evidence stands on
-      its own even when the upstream finding falls.
-    * If every cited upstream is DISPUTED and there is no independent
-      evidence, suppress the finding with a reason naming the disputed
-      upstream(s) so the report can explain the decision.
-    * If the finding cites no upstream ids, fall back to the file +
-      section overlap heuristic. The fallback is labeled as such so
-      operators can see when the model failed to emit ids — typically a
-      sign that the fallback tagged-JSON parser was used.
-      ``suppression_reason`` carries the fallback marker so the report
-      can render the reduced confidence.
-
-    Returns ``(kept, suppressed)``. Suppressed findings have their
-    ``suppression_reason`` field set; callers should stash them on
-    ``ReviewResult.suppressed_findings`` rather than dropping them silently.
-    """
-    # Build lookups keyed by stable finding id and by the (filename,
-    # section) tuple (heuristic fallback). The id path is preferred when
-    # both are populated.
-    id_to_verdict: dict[str, str] = {}
-    id_to_finding: dict[str, Finding] = {}
-    for f in review_findings:
-        if not f.finding_id:
-            continue
-        verdict = (f.verification.verdict if f.verification else "") or ""
-        id_to_verdict[f.finding_id] = verdict
-        id_to_finding[f.finding_id] = f
-
-    disputed_keys: set[tuple[str, str]] = set()
-    for f in review_findings:
-        if not f.verification or f.verification.verdict != "DISPUTED":
-            continue
-        files = list(f.affected_files) or [f.fileName]
-        for fname in files:
-            disputed_keys.add(((fname or "").strip().lower(), (f.section or "").strip().lower()))
-
-    kept: list[Finding] = []
-    suppressed: list[Finding] = []
-    id_dropped = 0
-    fallback_dropped = 0
-
-    for f in cross_findings:
-        upstream_ids = [uid for uid in (f.upstream_finding_ids or []) if uid]
-        if upstream_ids:
-            # ID-based path. Inspect every cited upstream's verdict to decide.
-            cited = [(uid, id_to_verdict.get(uid, "")) for uid in upstream_ids]
-            disputed_upstream = [
-                (uid, id_to_finding.get(uid))
-                for uid, verdict in cited
-                if verdict == "DISPUTED"
-            ]
-            non_disputed = [uid for uid, verdict in cited if verdict != "DISPUTED"]
-            if non_disputed:
-                # At least one upstream still stands — keep the finding.
-                kept.append(f)
-                continue
-            if f.independent_evidence_ids:
-                # Independent raw-spec evidence holds even when every cited
-                # upstream is discredited.
-                kept.append(f)
-                continue
-            # Every cited upstream disputed, no independent evidence — drop.
-            disputed_labels: list[str] = []
-            for uid, upstream in disputed_upstream:
-                if upstream is None:
-                    disputed_labels.append(uid)
-                    continue
-                label_parts = [uid]
-                if upstream.fileName:
-                    label_parts.append(upstream.fileName)
-                if upstream.section:
-                    label_parts.append(upstream.section)
-                disputed_labels.append(" — ".join(label_parts))
-            reason = (
-                "All cited upstream review findings were DISPUTED and no "
-                "independent spec evidence was provided. Disputed upstream(s): "
-                + "; ".join(disputed_labels)
-                + "."
-            )
-            f.suppression_reason = reason
-            suppressed.append(f)
-            id_dropped += 1
-            continue
-
-        # Fallback path: the model did not cite upstream ids (tagged-JSON
-        # fallback, or a coordination claim the model genuinely could
-        # not attribute). Use the file+section heuristic.
-        if not disputed_keys:
-            kept.append(f)
-            continue
-        files = list(f.affected_files) or [f.fileName]
-        section_key = (f.section or "").strip().lower()
-        matched_keys = [
-            ((fname or "").strip().lower(), section_key)
-            for fname in files
-            if ((fname or "").strip().lower(), section_key) in disputed_keys
-        ]
-        if not matched_keys:
-            kept.append(f)
-            continue
-        reason = (
-            "Heuristic fallback: matched a DISPUTED review finding by "
-            f"(file, section) overlap on {matched_keys[0][0] or '<no file>'} / "
-            f"{matched_keys[0][1] or '<no section>'} because the cross-check "
-            "finding did not cite an upstream id."
-        )
-        f.suppression_reason = reason
-        suppressed.append(f)
-        fallback_dropped += 1
-
-    if id_dropped:
-        log(
-            f"Cross-check: suppressing {id_dropped} finding(s) whose every "
-            "cited upstream review finding was DISPUTED (id-based).",
-            level="warning",
-        )
-    if fallback_dropped:
-        log(
-            f"Cross-check: suppressing {fallback_dropped} finding(s) whose "
-            "upstream review finding was DISPUTED (heuristic fallback by "
-            "file/section overlap because the cross-check finding did not "
-            "cite an upstream id).",
-            level="warning",
-        )
-    return kept, suppressed
 
 
 def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _noop_log) -> CollectedBatchState:

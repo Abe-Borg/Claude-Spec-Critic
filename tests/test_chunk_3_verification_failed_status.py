@@ -60,7 +60,6 @@ def _finding(
     replacement: str | None = "new text",
     verification: VerificationResult | None = None,
     edit_proposal: EditProposal | None = None,
-    suppression_reason: str | None = None,
 ) -> Finding:
     f = Finding(
         severity=severity,
@@ -73,7 +72,6 @@ def _finding(
         codeReference="CBC §1234",
         confidence=confidence,
         edit_proposal=edit_proposal,
-        suppression_reason=suppression_reason,
     )
     f.verification = verification
     return f
@@ -176,17 +174,6 @@ class TestClassifyStatusVerificationFailed:
         )
         f = _finding(verification=v)
         assert classify_status(f) is ReportStatus.VERIFICATION_FAILED
-
-    def test_failed_sentinel_does_not_override_suppression(self):
-        # Suppression is the highest-priority branch — a suppressed
-        # finding stays MANUAL_REVIEW_REQUIRED even if the verifier
-        # also failed operationally. The suppression reason is more
-        # actionable for the operator than the verification failure.
-        f = _finding(
-            verification=_failed_verification(),
-            suppression_reason="upstream disputed",
-        )
-        assert classify_status(f) is ReportStatus.MANUAL_REVIEW_REQUIRED
 
     def test_clean_unverified_stays_insufficient_evidence(self):
         # A regular UNVERIFIED (verifier ran, didn't ground) keeps

@@ -12,7 +12,7 @@ Configured for the **California 2025 code cycle** by default (`src/core/code_cyc
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, optional Haiku triage, severity-tiered + profile-aware search budgets, persistent on-disk claim cache.
 - **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
 - **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
-- **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for transient operational errors and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of three `EditActionLabel` values (`EDIT_SUGGESTED` / `REPORT_ONLY` / `SUPPRESSED`) so the report makes uncertainty visible.
+- **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for transient operational errors and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of two `EditActionLabel` values (`EDIT_SUGGESTED` / `REPORT_ONLY`) so the report makes uncertainty visible.
 
 ## Pipeline at a Glance
 
@@ -135,7 +135,7 @@ recheck can confirm end-to-end telemetry. The
 
 ## Agent Tracing
 
-Every run captures a forensic trace of agent invocations to JSONL on disk. When a verdict looks off or a finding got suppressed for non-obvious reasons, the trace lets you reconstruct what the model actually saw, what it produced, and how the pipeline interpreted that output.
+Every run captures a forensic trace of agent invocations to JSONL on disk. When a verdict looks off or a finding landed in an unexpected status, the trace lets you reconstruct what the model actually saw, what it produced, and how the pipeline interpreted that output.
 
 **Default-on.** The trace directory lives at `~/.spec_critic/traces/<run_id>/` (override via `SPEC_CRITIC_TRACE_DIR`). The `<run_id>` matches `DiagnosticsReport.run_id` so a trace can be correlated with the diagnostics report by directory name.
 
@@ -187,7 +187,7 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 
 ### v3.0.0
 - **Emit-but-don't-apply edits.** Removed the surgical write-back stack (the `src/editing/` package: locator, spec_editor, apply_edits, replacement_style, edit_candidates), the GUI apply dialogs, and the auto-edit confidence gating (composite confidence, numeric/standards demotion, the auto-edit floor). Spec Critic now emits structured edit proposals — rendered inline in the Word report and written to a machine-readable `<report-stem>.edits.json` sidecar — for a separate, future applier to ingest.
-- `EditActionLabel` collapsed to `EDIT_SUGGESTED` / `REPORT_ONLY` / `SUPPRESSED`; `classify_edit_action` is now simply "does this finding carry a proposal?" (verification status and `edit_confidence` ride along for a downstream applier to gate on).
+- `EditActionLabel` collapsed to `EDIT_SUGGESTED` / `REPORT_ONLY` (the `SUPPRESSED` label was later removed along with the cross-check dependency-suppression feature); `classify_edit_action` is now simply "does this finding carry a proposal?" (verification status and `edit_confidence` ride along for a downstream applier to gate on).
 - Removed the now-dead edit-application env vars (`SPEC_CRITIC_TABLE_CELL_AUTO_EDIT`, `_EDIT_TRANSACTIONAL`, `_NORMALIZE_REPLACEMENT_STYLE`, `_PUNCTUATION_BOUNDARY_FIX`, `_ADD_INHERITS_LIST_NUMBERING`, `_RESTORE_KNOWN_FORMATTING`, `_USE_VERIFIER_CORRECTION_AS_REPLACEMENT`, `_AUTO_EDIT_CONFIDENCE_FLOOR`). The verification / grounding system and its calibration eval are unchanged.
 
 ### v2.11.0

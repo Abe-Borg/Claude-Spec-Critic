@@ -9,11 +9,11 @@ sources) that the report exporter has to surface distinctly.
 Coverage:
 
 * ``TestReportStatusClassification`` exercises every status branch of
-  :func:`classify_status`, including the priority ordering (suppression
-  beats verification beats local-skip beats verdict).
+  :func:`classify_status`, including the priority ordering (verification
+  failure beats disagreement beats local-skip beats verdict).
 * ``TestEditActionClassification`` exercises every label branch of
-  :func:`classify_edit_action`: suppression → SUPPRESSED, no proposal →
-  REPORT_ONLY, otherwise EDIT_SUGGESTED.
+  :func:`classify_edit_action`: no proposal → REPORT_ONLY, otherwise
+  EDIT_SUGGESTED.
 * ``TestSummarizeHelpers`` checks that the histogram helpers return
   zero-filled dicts and sum to the input count.
 * ``TestLabelHelpers`` covers the human-readable label / glyph mapping
@@ -62,7 +62,6 @@ def _finding(
     replacement: str | None = "new text",
     verification: VerificationResult | None = None,
     edit_proposal: EditProposal | None = None,
-    suppression_reason: str | None = None,
 ) -> Finding:
     f = Finding(
         severity=severity,
@@ -75,7 +74,6 @@ def _finding(
         codeReference="CBC §1234",
         confidence=confidence,
         edit_proposal=edit_proposal,
-        suppression_reason=suppression_reason,
     )
     f.verification = verification
     return f
@@ -155,29 +153,12 @@ class TestReportStatusClassification:
         f = _finding(verification=_verification("CONFIRMED", grounded=False))
         assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
 
-    def test_suppression_reason_beats_everything(self):
-        # Even a confirmed+grounded finding renders as MANUAL_REVIEW_REQUIRED
-        # if it was suppressed; the report shows it under the suppressed
-        # section, not the verified section.
-        f = _finding(
-            verification=_verification("CONFIRMED", grounded=True),
-            suppression_reason="All upstream review findings disputed",
-        )
-        assert classify_status(f) is ReportStatus.MANUAL_REVIEW_REQUIRED
-
 
 # ---------------------------------------------------------------------------
 # classify_edit_action — every branch (Chunk N Directive 4)
 # ---------------------------------------------------------------------------
 
 class TestEditActionClassification:
-    def test_suppressed_short_circuits(self):
-        f = _finding(
-            verification=_verification("CONFIRMED"),
-            suppression_reason="dropped by upstream-disputed filter",
-        )
-        assert classify_edit_action(f) is EditActionLabel.SUPPRESSED
-
     def test_no_proposal_is_report_only(self):
         f = _finding(action="REPORT_ONLY", existing=None, replacement=None)
         assert classify_edit_action(f) is EditActionLabel.REPORT_ONLY
@@ -279,10 +260,6 @@ class TestSummarizeHelpers:
             _finding(verification=_verification("DISPUTED", grounded=False)),
             _finding(verification=None),
             _finding(
-                verification=_verification("CONFIRMED", grounded=True),
-                suppression_reason="upstream disputed",
-            ),
-            _finding(
                 verification=_verification(
                     "UNVERIFIED", grounded=False, cache_status="local_skip"
                 ),
@@ -292,7 +269,6 @@ class TestSummarizeHelpers:
         assert counts[ReportStatus.VERIFIED_SUPPORTED] == 1
         assert counts[ReportStatus.DISPUTED] == 1
         assert counts[ReportStatus.NOT_CHECKED] == 1
-        assert counts[ReportStatus.MANUAL_REVIEW_REQUIRED] == 1
         assert counts[ReportStatus.LOCALLY_CLASSIFIED] == 1
         assert sum(counts.values()) == len(findings)
 
@@ -314,16 +290,10 @@ class TestSummarizeHelpers:
                 verification=_verification("CONFIRMED", grounded=True),
             ),
             _finding(action="REPORT_ONLY", existing=None, replacement=None),
-            _finding(
-                edit_proposal=proposal,
-                verification=_verification("CONFIRMED", grounded=True),
-                suppression_reason="dropped",
-            ),
         ]
         counts = summarize_edit_actions(findings)
         assert counts[EditActionLabel.EDIT_SUGGESTED] == 1
         assert counts[EditActionLabel.REPORT_ONLY] == 1
-        assert counts[EditActionLabel.SUPPRESSED] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -540,47 +510,3 @@ class TestReportExporterStatusIntegration:
         # The disputed finding has a rejected source, so the
         # unsupported-sources label must render.
         assert "Unsupported / rejected sources" in text
-
-    def test_suppressed_findings_dont_pollute_main_severity_section(
-        self, tmp_path: Path
-    ):
-        # Suppressed findings must remain distinguishable from supported
-        # findings. The report renders them in their own subsection under
-        # the cross-check section; they should be tagged MANUAL_REVIEW_REQUIRED.
-        verified = _finding(
-            severity="HIGH",
-            verification=_verification("CONFIRMED", grounded=True),
-        )
-        suppressed = _finding(
-            severity="HIGH",
-            issue="Coordination claim — upstream review disputed",
-            suppression_reason="All cited upstream findings disputed",
-        )
-        review = ReviewResult(findings=[verified])
-        cross = ReviewResult(
-            findings=[],
-            cross_check_status="completed",
-            suppressed_findings=[suppressed],
-        )
-
-        out = tmp_path / "report_with_suppressed.docx"
-        export_report(
-            _StubPipelineResult(
-                review_result=review,
-                cross_check_result=cross,
-                files_reviewed=[verified.fileName],
-            ),
-            out,
-        )
-        doc = Document(str(out))
-        text = _all_text_from(doc)
-
-        # The suppressed finding is rendered under a dedicated
-        # "Suppressed Coordination Findings" subsection (Chunk M wiring,
-        # preserved by Chunk N).
-        assert "Suppressed Coordination Findings" in text
-        # And it shows the MANUAL_REVIEW_REQUIRED status (Chunk N), so
-        # the reader doesn't think it's an accepted finding.
-        assert STATUS_LABELS[ReportStatus.MANUAL_REVIEW_REQUIRED] in text
-        # The Edit: Suppressed label must be visible on the finding.
-        assert "Suppressed" in text

@@ -131,9 +131,6 @@ These are the contracts the agent should preserve when editing the code. Field-l
 
 `VerificationResult.sources` is the *accepted* list, not the cited list — reports and cache never persist model-invented URLs.
 
-### Cross-check dependency suppression
-`pipeline.classify_cross_check_dependencies` drops a cross-check finding only when **every** cited `upstreamFindingIds` is `DISPUTED` *and* `independentEvidenceIds` is empty. Otherwise the finding survives. Findings without cited ids fall back to a `(filename, section)` heuristic — labeled as such in logs. Dropped findings land on `suppressed_findings` with `suppression_reason` set so the report can explain the decision.
-
 ### FindingGroup vs FindingOccurrence
 `Finding.occurrence_originals` holds per-file pre-merge member findings when `_deduplicate_findings` collapses across files, so per-file `existingText` / `replacementText` differences survive the merge for the report and the edit-instruction sidecar. Singletons leave it empty (the finding is its own original).
 
@@ -159,7 +156,7 @@ The instruction prefix in front of `<spec ` must stay byte-identical across call
 `_clone_for_hit` stamps the sidecar `_CacheEntry.created_ts` onto `VerificationResult.cache_entry_created_ts` so the report can render an inline "Cache replay — Nd old" badge (amber <30d / orange 30-90d / red >90d) without re-reading the cache file. Per-finding evidence panel surfaces the configured cache path so a reviewer can locate and delete a single entry to force re-verification. Default TTL is now 60 days (down from no-expiry); set `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS=0` to restore the legacy database behavior.
 
 ### Run Diagnostics banner (Chunk 6 / Trust Upgrade)
-`report_exporter._write_run_diagnostics_banner` renders a styled table right after the title block surfacing operational health: edit-suggested / report-only / suppressed counts (from the edit-action histogram), cache replays + oldest entry age (Chunk 5's `cache_entry_created_ts`), verification failures (Chunk 3's `VERIFICATION_FAILED` status — highlighted red when > 0), parse-time REPORT_ONLY demotions (`Finding.demotion_reason`), spec content extraction warnings (slot reserved for Chunk 10), and cross-spec coordination status (skipped/failed highlighted red). When verification failures > 0, a recovery-hint paragraph below the banner explains the ⚠ glyph and notes that the cache does not persist operational-failure results, so a re-run sees them fresh. All values are derived from existing `Finding` / `VerificationResult` fields — no new persistence; `_summarize_run_diagnostics` is the pure helper used by the renderer (and unit tests).
+`report_exporter._write_run_diagnostics_banner` renders a styled table right after the title block surfacing operational health: edit-suggested / report-only counts (from the edit-action histogram), cache replays + oldest entry age (Chunk 5's `cache_entry_created_ts`), verification failures (Chunk 3's `VERIFICATION_FAILED` status — highlighted red when > 0), parse-time REPORT_ONLY demotions (`Finding.demotion_reason`), spec content extraction warnings (slot reserved for Chunk 10), and cross-spec coordination status (skipped/failed highlighted red). When verification failures > 0, a recovery-hint paragraph below the banner explains the ⚠ glyph and notes that the cache does not persist operational-failure results, so a re-run sees them fresh. All values are derived from existing `Finding` / `VerificationResult` fields — no new persistence; `_summarize_run_diagnostics` is the pure helper used by the renderer (and unit tests).
 
 ### Pinned standards editions (Chunk 7 / Trust Upgrade)
 `CodeCycle` carries adopted-edition fields for NFPA 13 / 14 / 20 / 24 / 25 / 72, ASHRAE 62.1 / 90.1 / 15, IAPMO Uniform Plumbing TSC, and UL listings (UL 300, UL 555, UL 555S, UL 268, UL 1479). `CALIFORNIA_2025` is populated from the California Building Standards Commission adoption matrix — verify against the published matrix before changing edition strings. UL editions are a `tuple[tuple[str, str], ...]` (not a dict) so the dataclass stays hashable under `frozen=True`. The reviewer system prompt's "Code edition misalignment" category lists NFPA 13 / 72 and ASHRAE 62.1 / 90.1 explicitly. The verifier system prompt renders a "Pinned standards editions" block right after the cycle context (built by `verifier._pinned_standards_lines`) listing every populated edition and instructing the model to flag drift. The methodology note in the exported report (`report_exporter._render_pinned_editions_note`) enumerates the pinned editions for the cycle. Empty edition fields are silently dropped from all three surfaces so future cycles that don't populate the new fields degrade gracefully.
@@ -172,11 +169,10 @@ Every preprocessor alert carries a stable `deterministic_rule` id (exposed as `D
 
 ### Edit-action labels
 `report_status.classify_edit_action` is the single source of truth and is intentionally simple now that the app emits — but never applies — edits:
-- `suppression_reason` set → `SUPPRESSED`,
 - no edit proposal → `REPORT_ONLY`,
 - otherwise → `EDIT_SUGGESTED`.
 
-There is no confidence gate, no supportive-status filter, and no numeric/standards demotion — those existed only to decide *auto-apply*, which this app no longer does. A finding's verification status (`VERIFIED_SUPPORTED` / `VERIFICATION_FAILED` / `VERIFIED_CONTESTED` / etc.) and `edit_confidence` ride along in the report and the JSON sidecar so a downstream applier can do its own gating. `summarize_edit_actions` feeds the Run Diagnostics banner's edit-suggested / report-only / suppressed counts.
+There is no confidence gate, no supportive-status filter, and no numeric/standards demotion — those existed only to decide *auto-apply*, which this app no longer does. A finding's verification status (`VERIFIED_SUPPORTED` / `VERIFICATION_FAILED` / `VERIFIED_CONTESTED` / etc.) and `edit_confidence` ride along in the report and the JSON sidecar so a downstream applier can do its own gating. `summarize_edit_actions` feeds the Run Diagnostics banner's edit-suggested / report-only counts.
 
 ### LOCALLY_CLASSIFIED keyword tightening (Chunk 10 / Trust Upgrade)
 `verification_router._LOCAL_SKIP_KEYWORDS` no longer contains `"formatting"` — too broad, a real CMC formatting requirement ("label valves per ASME A13.1 color formatting") could match and bypass verification. `"leed"` and `"internal contradiction"` were moved to `_LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED`; they still route to `local_skip` (web search adds no signal for either) but `local_skip_requires_elevated_confidence(finding)` returns `True` for them. `_local_skip_result()` accepts a `requires_elevated_confidence=` kwarg and stamps it onto `VerificationResult.requires_elevated_confidence`. The flag is carried into the sidecar but never reaches the verification cache (local-skip results aren't grounded, so the cache's `grounded` guard drops them; no schema bump needed). It is retained as telemetry for a downstream applier — nothing in this app consumes it for routing anymore. A finding matching BOTH a regular keyword and an elevated keyword takes the regular path with no flag set — the regular-list match (placeholder, TODO, duplicate paragraph) is the stronger signal because it maps directly to a deterministic detector. Haiku-triaged local skips never get the flag.
@@ -279,7 +275,7 @@ When a batch retry tail shrinks below `_REALTIME_FALLBACK_THRESHOLD` (5), the re
 | `INSUFFICIENT_EVIDENCE` | `UNVERIFIED` with no contradictory citation; verifier ran cleanly but couldn't ground a claim |
 | `LOCALLY_CLASSIFIED` | `local_skip` resolved (deterministic detector, keyword classifier, or Haiku triage) |
 | `NOT_CHECKED` | no verification ran |
-| `MANUAL_REVIEW_REQUIRED` | suppressed by cross-check, or precondition / parser failure |
+| `MANUAL_REVIEW_REQUIRED` | reserved for precondition / parser failures (no current producer in `classify_status`) |
 | `VERIFICATION_FAILED` | `VerificationResult.verification_failed=True` — verifier hit a transient operational error (rate limit, server error, network error, parse error, `INVALID_REQUEST`, `BATCH_CANCELED`, real-time fallback crash). Distinct from `INSUFFICIENT_EVIDENCE`; the cache refuses to persist these results so a re-run re-attempts verification. |
 | `VERIFIED_CONTESTED` | `VerificationResult.models_disagreed=True` — initial (Sonnet) and escalated (Opus) verifiers BOTH grounded their verdicts (each with at least one accepted citation) AND reached different conclusions. Distinct from `VERIFIED_SUPPORTED`/`CONTRADICTED`; the disagreement itself is the quality signal, carried into the report and sidecar so a downstream applier can withhold the edit. |
 
@@ -287,9 +283,8 @@ When a batch retry tail shrinks below `_REALTIME_FALLBACK_THRESHOLD` (5), the re
 |---|---|
 | `EDIT_SUGGESTED` | finding carries an edit proposal |
 | `REPORT_ONLY` | no edit proposal |
-| `SUPPRESSED` | `suppression_reason` set |
 
-Both labels are *derived* from existing `Finding` fields (`suppression_reason`, `edit_proposal`) — no new persistence column. The app emits edit instructions but never applies them, so the label is a simple "is there a suggested edit?" classification; verification status and `edit_confidence` travel alongside for a downstream applier to gate on.
+Both labels are *derived* from existing `Finding` fields (`edit_proposal`) — no new persistence column. The app emits edit instructions but never applies them, so the label is a simple "is there a suggested edit?" classification; verification status and `edit_confidence` travel alongside for a downstream applier to gate on.
 
 ---
 

@@ -13,7 +13,9 @@ from pathlib import Path
 
 from .report_status import classify_status
 
-SIDECAR_SCHEMA_VERSION = 1
+# v2 dropped the per-entry ``suppression_reason`` key along with the
+# cross-check dependency-suppression feature that produced it.
+SIDECAR_SCHEMA_VERSION = 2
 
 
 def _serialize_edit_proposal(proposal) -> dict | None:
@@ -57,10 +59,6 @@ def _finding_entry(finding) -> dict | None:
         "evidenceElementId": getattr(finding, "evidenceElementId", None),
         "verification_verdict": _verification_verdict(finding),
         "report_status": classify_status(finding).value,
-        # Suppressed cross-check findings keep their proposal but were
-        # dropped from the main report; surface the reason so the applier
-        # can decide whether to skip them.
-        "suppression_reason": getattr(finding, "suppression_reason", None),
         "edit_proposal": _serialize_edit_proposal(proposal),
     }
 
@@ -75,7 +73,6 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
         findings.extend(getattr(review, "findings", []) or [])
     if cross_check is not None:
         findings.extend(getattr(cross_check, "findings", []) or [])
-        findings.extend(getattr(cross_check, "suppressed_findings", []) or [])
 
     entries: list[dict] = []
     for finding in findings:
