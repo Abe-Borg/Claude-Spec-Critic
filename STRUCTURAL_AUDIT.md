@@ -67,6 +67,20 @@ one place the program can mislead, and it's exactly what the user must be able t
 ## P1 — Real correctness / traceability gaps
 
 ### P1-1 — Cross-check (coordination) findings have no `finding_id` and are never deduplicated
+> **RESOLVED** (branch `claude/gracious-franklin-027AS`). `compute_finding_id` now takes a
+> `prefix=` (default `"rf"`), and `pipeline.assign_cross_check_finding_ids` stamps every
+> coordination finding with a stable, content-derived `cf-` id inside `run_cross_check_for_batch`
+> — *before* the findings enter cross-check verification and the edit sidecar. This closes the
+> empty-`finding_id` collision in the sidecar and gives cross-check verification spans a real
+> per-finding handle in the trace viewer (they previously correlated as `unknown`). The `cf-`/`rf-`
+> prefix split guarantees a coordination finding and a review finding that share a dedup key never
+> collapse into one sidecar entry. On the **dedup** half: true cross-division collapse is a no-op in
+> practice because `_label_finding_with_chunk` prefixes each finding's `section` with its CSI-division
+> label (distinct sections → distinct keys), and content-addressed ids already give a downstream
+> applier the dedup signal for any genuine same-content pair — so collapse was intentionally left out
+> to avoid changing report finding counts. Covered by `tests/test_cross_check_finding_ids.py` (unit
+> stamping + end-to-end through `run_cross_check_for_batch` into the sidecar). See the "Finding-id
+> namespacing" invariant in `CLAUDE.md`.
 - **Where:** `compute_finding_id` is called **only** inside `_deduplicate_findings`
   (`pipeline.py:355,372,387`). Review findings are deduped + id-stamped at review-collect
   (`pipeline.py:953`). Cross-check findings are appended later in `finalize_batch_result`
