@@ -33,11 +33,11 @@ important thing still being perfected, and this chapter is where it lives.
 
 In a synchronous program, "run state" is just local variables on a call stack.
 Spec Critic doesn't get that luxury. Because the review goes through the Message
-Batches API (**Ch 6 — Batch Processing**), the run is not one function call; it
+Batches API ([**Ch 6 — Batch Processing**](06_batch_processing.md)), the run is not one function call; it
 is a sequence of *separate* calls — submit, poll, collect, finalize — with
 forty-five minutes to two hours of wall-clock between the first and the third.
-The GUI spawns a fresh worker thread for each phase (**Ch 13 — The Desktop
-GUI**). So the spine cannot keep its state on a stack; it has to keep it in
+The GUI spawns a fresh worker thread for each phase ([**Ch 13 — The Desktop
+GUI**](13_gui.md)). So the spine cannot keep its state on a stack; it has to keep it in
 *objects* that are handed forward across the gaps. There are three, and they form
 a chain:
 
@@ -152,13 +152,13 @@ estimate padded by a model-aware safety factor (`exceeds_per_call_limit_for_mode
 → `safe_local_estimate`). The exact count catches the truth; the padded local
 count catches the spec the exact pass didn't reach. Neither alone is trusted to
 be the whole answer. (The token-economics machinery — the safety multipliers, the
-`RECOMMENDED_MAX` rationale — is **Ch 12 — Configuration, Models & Token
-Economics**'s; here it is enough that the spine *enforces* it by refusing.)
+`RECOMMENDED_MAX` rationale — is [**Ch 12 — Configuration, Models & Token
+Economics**](12_configuration_and_models.md)'s; here it is enough that the spine *enforces* it by refusing.)
 
 ## Reconciliation: nothing is silently dropped at the data layer
 
 When the batch comes home, `collect_review_batch_results` faces the question the
-batch layer deliberately left to it (**Ch 6**): the wrapper returns a dictionary
+batch layer deliberately left to it ([**Ch 6**](06_batch_processing.md)): the wrapper returns a dictionary
 keyed by `custom_id`, and a submitted spec that *never came back* is simply absent
 from that dictionary. Detecting absence — and every other species of failure — is
 the spine's job, and the way it does it is the foundation of the audit's
@@ -207,7 +207,7 @@ pointed retry instruction:
 > *"This is a retry of a previously truncated review … Spend the entire output
 > budget on the findings array."*
 
-It polls that repair batch with the same bounded poller (**Ch 6**), retrieves the
+It polls that repair batch with the same bounded poller ([**Ch 6**](06_batch_processing.md)), retrieves the
 results, and overwrites the failed entries in place. The logging is deliberately
 honest about partial recovery: `"Review repair batch recovered {recovered}/{N}
 item(s)"` at `success` level only when *all* recovered, `warning` otherwise. And
@@ -235,7 +235,7 @@ findings are deduplicated, the list is fixed and not reordered, and verification
 writes each verdict back by a stable index into that frozen list
 (`findings[finding_idx].verification = …`, with the `original_custom_id`
 preserved across retry and continuation waves — the verifier mechanics are
-**Ch 10 — Verification II**'s). If dedup ran *after* verification, or if the list
+[**Ch 10 — Verification II**](10_verification_grounding.md)'s). If dedup ran *after* verification, or if the list
 were reordered between submit and collect, a verdict could bind to the wrong
 finding — the one trust failure that would silently corrupt every report. By
 freezing identity first, the spine guarantees a verdict can only ever land on the
@@ -345,14 +345,14 @@ but it is *incomplete* for a tool whose whole point is machine-readable edits. T
 fix is small and the machinery is already built and tested — wiring
 `group_findings()` + `executable_finding()` into the sidecar, or at minimum
 including `affected_files` per entry — and it belongs to the chapter that owns the
-sidecar's shape: **Ch 11 — The Trust Model & Report Output**. The spine's
+sidecar's shape: [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md). The spine's
 responsibility, met today, is to *preserve* the per-file data; realizing it in the
 artifact is the open work.
 
 ## Handing findings to verification, and getting them back
 
-After dedup (and the optional cross-check pass, whose chunking is **Ch 8 —
-Cross-Spec Coordination**'s), the spine hands the frozen finding list to
+After dedup (and the optional cross-check pass, whose chunking is [**Ch 8 —
+Cross-Spec Coordination**](08_cross_spec_coordination.md)'s), the spine hands the frozen finding list to
 verification. Its half of that contract is narrow and worth isolating from the
 verifier's, because the audit (P1-2) raised a shared concern that splits cleanly
 along this seam.
@@ -375,8 +375,8 @@ is about the *verifier* side: on the final wave, a shrunken unresolved tail flip
 from batch to real-time, and the audit flagged that it had not personally traced
 whether a tail finding could be both submitted to an in-flight wave *and* run
 real-time (last-writer-wins) or dropped by both. That is a question about the
-verifier's wave mechanics, not the spine's hand-off, and it belongs to **Ch 10 —
-Verification II**. The spine side is sound: a stable list out, the same objects
+verifier's wave mechanics, not the spine's hand-off, and it belongs to [**Ch 10 —
+Verification II**](10_verification_grounding.md). The spine side is sound: a stable list out, the same objects
 annotated in place, the same objects read back.
 
 ## `finalize_batch_result`: assembling the artifact
@@ -396,7 +396,7 @@ coordination finding reaches the sidecar with `finding_id = ""`. The report
 doesn't key by id, so nothing crashes, but a downstream applier that dedupes or
 cross-references edits by id sees every coordination edit sharing the empty key.
 The fix is contained — stamp `compute_finding_id` on cross-check findings (and
-consider running them through dedup too) — and the surfacing belongs to **Ch 11**.
+consider running them through dedup too) — and the surfacing belongs to [**Ch 11**](11_trust_model_and_output.md).
 
 Second, `finalize_batch_result` is where `truncated_specs` *stops*. The
 `CollectedBatchState` carried it faithfully through collect and cross-check; the
@@ -428,8 +428,8 @@ through. The data already exists; the fix is to plumb `truncated_specs` into a
 "Specs that failed review" diagnostics-banner row (red when > 0), correct
 "Files Reviewed: N" to "{reviewed}/{submitted}", and give the GUI a distinct
 "Completed with errors" terminal state instead of an unconditional green
-checkmark. Those renderings are owned by **Ch 11 — The Trust Model & Report
-Output** (the banner and report) and **Ch 13 — The Desktop GUI** (the terminal
+checkmark. Those renderings are owned by [**Ch 11 — The Trust Model & Report
+Output**](11_trust_model_and_output.md) (the banner and report) and [**Ch 13 — The Desktop GUI**](13_gui.md) (the terminal
 state); the spine's part of the fix is the one missing field on `PipelineResult`.
 
 It is worth noting, for contrast, what the program *does* get right here, because
@@ -445,7 +445,7 @@ The lower-priority edges round out the honest picture:
 - **P1-1 — cross-check findings carry `finding_id = ""`** (above): a sidecar
   traceability gap, not a crash.
 - **P1-2 — the batch→real-time verification handoff** (above): the spine side is
-  sound; the tail-fallback question is **Ch 10**'s to settle definitively.
+  sound; the tail-fallback question is [**Ch 10**](10_verification_grounding.md)'s to settle definitively.
 - **P2-2 — `finding_id` is 48 bits**: negligible collision risk at this scale.
 - **P2-3 — a stale doc claim** that cross-check runs "parallel with verification";
   the batch flow actually runs sequentially (review → verify → cross-check →
@@ -459,26 +459,26 @@ remains is making the artifact say everything the data already knows.
 
 - **Upstream — the batch backbone.** The wrapper that submits, polls, and maps
   results back by `custom_id`, and the honest courier contract the spine relies on
-  (every result classified, nothing dropped), is **Ch 6 — Batch Processing**. The
+  (every result classified, nothing dropped), is [**Ch 6 — Batch Processing**](06_batch_processing.md). The
   spine is the "caller" Ch 6 hands its reconciliation responsibility to.
 - **The review request shape** the preflight counts and the repair batch rebuilds
-  is **Ch 5 — The Review Engine**'s; the extraction and pre-screen that feed
-  `_prepare_specs` are **Ch 4 — Input**'s.
+  is [**Ch 5 — The Review Engine**](05_review_engine.md)'s; the extraction and pre-screen that feed
+  `_prepare_specs` are [**Ch 4 — Input**](04_input.md)'s.
 - **Cross-spec coordination** — the chunked-by-CSI-division pass the spine invokes
   via `run_cross_check_for_batch`, and which excludes failed specs from its input
-  — is **Ch 8 — Cross-Spec Coordination**.
+  — is [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md).
 - **Verification** — the wave loop, grounding, escalation, and the real-time
-  fallback whose tail-handoff is the verifier half of P1-2 — is **Ch 10 —
-  Verification II**. The spine owns only the hand-off (a stable list out, verdicts
+  fallback whose tail-handoff is the verifier half of P1-2 — is [**Ch 10 —
+  Verification II**](10_verification_grounding.md). The spine owns only the hand-off (a stable list out, verdicts
   read back by index).
 - **The honesty gap's fix** — the "specs that failed review" banner row, the
   corrected "Files Reviewed" count, the per-file sidecar fan-out, and stamping ids
-  on cross-check findings — is rendered in **Ch 11 — The Trust Model & Report
-  Output**; the GUI terminal state is **Ch 13 — The Desktop GUI**.
+  on cross-check findings — is rendered in [**Ch 11 — The Trust Model & Report
+  Output**](11_trust_model_and_output.md); the GUI terminal state is [**Ch 13 — The Desktop GUI**](13_gui.md).
 - **The audit framing** that organizes this chapter — data-plane-sound,
-  edges-still-perfecting — is the subject of **Ch 16 — Trust Under the
-  Microscope**, and `DiagnosticsReport`, the operational record the spine writes
-  to, is **Ch 14 — Observability**'s.
+  edges-still-perfecting — is the subject of [**Ch 16 — Trust Under the
+  Microscope**](16_trust_under_the_microscope.md), and `DiagnosticsReport`, the operational record the spine writes
+  to, is [**Ch 14 — Observability**](14_observability.md)'s.
 
 ## Key takeaways
 

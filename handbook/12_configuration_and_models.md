@@ -76,7 +76,7 @@ initial review and the escalation tier of verification.
 > environment-variable table agrees — it lists no cross-check override. If a
 > future operator needs to retune the coordination model, this is the one phase
 > that requires a code change rather than a config change. The *consumption* of
-> the cross-check model is **Ch 8 — Cross-Spec Coordination**; the default is
+> the cross-check model is [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md); the default is
 > defined here.
 
 ## The capability whitelist, and why an unknown model is *safe*
@@ -207,7 +207,7 @@ SDK.
 That the extended path is *batch-only* is not a Spec Critic decision — 300k output
 is available on the Message Batches API by Anthropic's design, which fits the
 program's architecture perfectly, since all reviews already run through batch
-(the mechanics are **Ch 6 — Batch Processing: The Message Batches Backbone**).
+(the mechanics are [**Ch 6 — Batch Processing: The Message Batches Backbone**](06_batch_processing.md)).
 One subtlety: Sonnet 4.6 also carries the extended-output capability now; an
 earlier version of the code gated this by Opus-family membership and *excluded*
 Sonnet incorrectly. Reading the flag from the capability registry instead of
@@ -260,7 +260,7 @@ known model." The crucial caveat: this padding only matters on the *fallback*
 path. When the exact Anthropic count is available it is authoritative and the
 local pad is bypassed entirely. The preflight that actually *raises* a
 `ValueError` when the exact count exceeds `RECOMMENDED_MAX` lives at the pipeline
-call site — that is **Ch 7 — Orchestration & State: The Pipeline Spine**; this
+call site — that is [**Ch 7 — Orchestration & State: The Pipeline Spine**](07_orchestration.md); this
 chapter owns the constants and the estimator it consults.
 
 ## Prompt-cache policy
@@ -268,7 +268,7 @@ chapter owns the constants and the estimator it consults.
 Prompt caching is where the program's token economics turn into real savings, and
 the *policy* — which phases cache and why — is centralized in `cache_policy_for`,
 even though the *prompt-side discipline* of where the cache breakpoints physically
-land is **Ch 5 — The Review Engine**'s to own.
+land is [**Ch 5 — The Review Engine**](05_review_engine.md)'s to own.
 
 A `CachePolicy` independently toggles whether the system prompt and the trailing
 tool block each carry a `cache_control` breakpoint. The default (and the setting
@@ -294,7 +294,7 @@ the policy; the latter attaches the breakpoint to the *last* tool in the list so
 the system prompt and tool definitions share one cache prefix, and changing only
 a tool definition invalidates only the tool-level entry. (`extract_cache_usage`
 pulls the `cache_creation` / `cache_read` token counts off the response for the
-diagnostics layer — **Ch 14 — Observability**.)
+diagnostics layer — [**Ch 14 — Observability**](14_observability.md).)
 
 ## Pinned standards editions: the data behind the prompts
 
@@ -324,8 +324,8 @@ These editions surface in three places downstream — the reviewer system prompt
 the verifier system prompt, and the methodology note in the exported report — and
 the rendering logic for each **silently drops empty edition fields**, so a future
 cycle that does not populate every standard degrades gracefully instead of
-emitting blank lines. Those three *uses* belong to **Ch 5**, **Ch 10 —
-Verification II**, and **Ch 11 — The Trust Model & Report Output** respectively;
+emitting blank lines. Those three *uses* belong to [**Ch 5**](05_review_engine.md), [**Ch 10 —
+Verification II**](10_verification_grounding.md), and [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md) respectively;
 this chapter owns the data they read.
 
 `DEFAULT_CYCLE = CALIFORNIA_2025` is the only cycle in `AVAILABLE_CYCLES`. The
@@ -333,14 +333,14 @@ this chapter owns the data they read.
 important coupling here: the cycle *label* is part of the verification cache key,
 so bumping the cycle naturally invalidates every prior cached verdict — operators
 do not clear the cache by hand when the cycle changes. The cache-key mechanics
-are **Ch 10**'s; what matters for configuration is that changing one string in
+are [**Ch 10**](10_verification_grounding.md)'s; what matters for configuration is that changing one string in
 this file has a deliberate, system-wide effect.
 
 ## Web tool configuration
 
 The verifier's two server tools — `web_search` and `web_fetch` — are built here,
 so their *configuration* is the control plane's, even though their *use* in
-routing is **Ch 9 — Verification I**'s and their *grounding* is **Ch 10**'s.
+routing is [**Ch 9 — Verification I**](09_verification_routing.md)'s and their *grounding* is [**Ch 10**](10_verification_grounding.md)'s.
 
 `build_web_search_tool` pins the tool type to `web_search_20260209`, sets a US /
 California approximate user location (so results lean toward the right
@@ -365,7 +365,7 @@ The per-severity search budget map, `_SEVERITY_MAX_USES`, also lives here:
 unrecognized severity "so a misclassified finding still gets a reasonable
 budget." The map is flat across profiles — a CRITICAL claim gets 8 searches
 whether it is a California-AHJ question or a manufacturer question. *How* the
-router spends this budget is **Ch 9**; the numbers are defined here, and they are
+router spends this budget is [**Ch 9**](09_verification_routing.md); the numbers are defined here, and they are
 defined *once* so the tool builder and the verifier read the same figures.
 
 `build_web_fetch_tool` (type `web_fetch_20260209`) mirrors the same blocklist — "a
@@ -378,8 +378,8 @@ because "a verification call typically needs at most one or two full-page fetche
 … more than that is a sign the model is spinning."
 
 There is one hard-won rule embedded in this builder, and it is important enough
-that the full story is told twice elsewhere (**Ch 10** and **Ch 17 — Evolution &
-Lessons**): **web fetch is generally available and takes no `anthropic-beta`
+that the full story is told twice elsewhere ([**Ch 10**](10_verification_grounding.md) and [**Ch 17 — Evolution &
+Lessons**](17_evolution_and_lessons.md)): **web fetch is generally available and takes no `anthropic-beta`
 header.** The tool dict alone enables it. An *earlier* version of the code
 attached a `web-fetch-2026-02-09` beta header on the theory that it was "harmless
 when GA, required when gated." That was wrong on both counts — an unrecognized
@@ -442,7 +442,7 @@ helper are **re-declared independently in three modules** — `tracing/config.py
 than living in one shared place. The convention is consistent today because three
 copies happen to agree; nothing structural keeps them in sync, and a fourth flag
 added with a fourth copy could quietly drift. The cache-control flags belong to
-**Ch 10**, element-ids to **Ch 5**, and the trace flags to **Ch 14**; the
+[**Ch 10**](10_verification_grounding.md), element-ids to [**Ch 5**](05_review_engine.md), and the trace flags to [**Ch 14**](14_observability.md); the
 *convention* is what this chapter owns, and the convention has no single home. The
 model-id overrides, by contrast, are genuinely centralized here — they are the
 only env parsing that lives in `api_config.py`.
@@ -508,24 +508,24 @@ without complaint until the findings get thinner after an "upgrade."
 The control plane touches nearly every subsystem, always as the *definer* of a
 policy someone else *consumes*:
 
-- **Ch 5 — The Review Engine** consumes the prompt-cache breakpoints, the
+- [**Ch 5 — The Review Engine**](05_review_engine.md) consumes the prompt-cache breakpoints, the
   pinned-edition reviewer prompt, and the element-ids flag.
-- **Ch 6 — Batch Processing** consumes the extended-output gating and the batch
+- [**Ch 6 — Batch Processing**](06_batch_processing.md) consumes the extended-output gating and the batch
   service tier (`batch_service_tier()` returns `"auto"` for priority capacity).
-- **Ch 7 — Orchestration** owns the token-preflight call that *raises*; this
+- [**Ch 7 — Orchestration**](07_orchestration.md) owns the token-preflight call that *raises*; this
   chapter owns the limits and the estimator it checks.
-- **Ch 8 — Cross-Spec Coordination** consumes the (non-overridable) cross-check
+- [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) consumes the (non-overridable) cross-check
   model default.
-- **Ch 9 — Verification I** consumes the severity search-budget map and the mode
+- [**Ch 9 — Verification I**](09_verification_routing.md) consumes the severity search-budget map and the mode
   routing it feeds.
-- **Ch 10 — Verification II** consumes the cache key (with the cycle label), the
+- [**Ch 10 — Verification II**](10_verification_grounding.md) consumes the cache key (with the cycle label), the
   pinned editions in the verifier prompt, and tells the full web-fetch-header
   story.
-- **Ch 11 — The Trust Model & Report Output** consumes the pinned-editions
+- [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md) consumes the pinned-editions
   methodology note.
-- **Ch 14 — Observability** consumes the trace env vars and cache-usage
+- [**Ch 14 — Observability**](14_observability.md) consumes the trace env vars and cache-usage
   extraction.
-- **Ch 16 — Trust Under the Microscope** and **Ch 17 — Evolution & Lessons**
+- [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md) and [**Ch 17 — Evolution & Lessons**](17_evolution_and_lessons.md)
   carry audit findings P0-3 / P0-4 and the lessons behind them.
 
 ## Key takeaways

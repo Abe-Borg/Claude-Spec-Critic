@@ -35,19 +35,19 @@ You will see this principle take many concrete forms, and each later chapter own
 one of them:
 
 - **It checks the cheap, certain things locally first** — deterministic detectors
-  that need no model and never guess (see **Ch 4 — Input**).
+  that need no model and never guess (see [**Ch 4 — Input**](04_input.md)).
 - **It refuses to call a claim "confirmed" on the model's word alone.** A positive
   verdict must be *grounded* in a source the search tool actually retrieved
-  (**Ch 10 — Verification II**).
+  ([**Ch 10 — Verification II**](10_verification_grounding.md)).
 - **It emits edit instructions but never applies them.** The tool proposes; a
-  human or a separate, future program disposes (**Ch 11 — The Trust Model &
-  Report Output**).
+  human or a separate, future program disposes ([**Ch 11 — The Trust Model &
+  Report Output**](11_trust_model_and_output.md)).
 - **It labels every finding with one of nine trust statuses** — including honest
   labels for *"the verifier ran but couldn't ground this,"* *"two models
-  disagreed,"* and *"verification failed operationally"* (**Ch 11**).
+  disagreed,"* and *"verification failed operationally"* ([**Ch 11**](11_trust_model_and_output.md)).
 - **It records a forensic trace of every run**, so that when a verdict looks
   wrong you can reconstruct exactly what the model saw and how the pipeline
-  interpreted it (**Ch 14 — Observability**).
+  interpreted it ([**Ch 14 — Observability**](14_observability.md)).
 
 None of these is a feature bolted on for polish; they are the load-bearing
 structure. Read the handbook with the question *"how does this part make
@@ -69,10 +69,10 @@ it with an *emit-only* stance. Spec Critic now produces structured edit
 *instructions* and hands them off, but never touches the source document. That
 pivot rippled through the trust model, the report, and the configuration surface,
 and much of this book explains the system as it stands after the decision
-settled. **Ch 17 — Evolution & Lessons** tells that story directly. This is also,
+settled. [**Ch 17 — Evolution & Lessons**](17_evolution_and_lessons.md) tells that story directly. This is also,
 plainly, a *living* system with documented edges — known gaps, honest caveats,
-and audit findings the team chose to surface rather than bury, which **Ch 16 —
-Trust Under the Microscope** is built entirely from.
+and audit findings the team chose to surface rather than bury, which [**Ch 16 —
+Trust Under the Microscope**](16_trust_under_the_microscope.md) is built entirely from.
 
 ## Who this is for
 
@@ -144,8 +144,8 @@ A few conventions hold across every chapter; knowing them now will save friction
   `CLAUDE.md`, and a chapter disagree, **the code wins.** Model ids, version
   strings, and token caps drift, so a chapter citing a value names the file (and
   often the symbol) for you to confirm — and is expected to flag any contradiction
-  it finds. That drift is what the audits in **Ch 16** care about.
-- **Cross-references** read as *"see **Ch 10 — Verification II**,"* using the
+  it finds. That drift is what the audits in [**Ch 16**](16_trust_under_the_microscope.md) care about.
+- **Cross-references** read as *"see [**Ch 10 — Verification II**](10_verification_grounding.md),"* using the
   canonical title so they stay unambiguous out of context.
 - **Diagrams** favor plain-text legibility — simple ASCII boxes and arrows, or
   Mermaid where it helps.
@@ -155,7 +155,7 @@ A few conventions hold across every chapter; knowing them now will save friction
   for a human or a downstream tool — never a change the program made. The tool
   never mutates a spec.
 
-With that framing set, **Ch 1 — The Problem Domain** begins with the world of
+With that framing set, [**Ch 1 — The Problem Domain**](01_problem_domain.md) begins with the world of
 California DSA spec review and why reviewing these documents by hand is so
 unforgiving. The glossary below is here to flip back to whenever a term goes by
 faster than you'd like.
@@ -166,8 +166,8 @@ faster than you'd like.
 
 Terms a reader new to the domain *and* the codebase will meet repeatedly,
 alphabetized for flip-back reference. Domain vocabulary, the core data objects,
-and the process terms are interleaved. Each data object is *introduced* in **Ch 2
-— Architecture at a Glance** and detailed in the chapter that owns its code.
+and the process terms are interleaved. Each data object is *introduced* in [**Ch 2
+— Architecture at a Glance**](02_architecture.md) and detailed in the chapter that owns its code.
 
 - **AHJ — Authority Having Jurisdiction.** The agency empowered to review,
   approve, and enforce code compliance for a project; for California K-12 work

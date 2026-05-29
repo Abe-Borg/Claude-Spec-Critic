@@ -19,7 +19,7 @@ what it does, and you should be able to sketch — from memory — the handful o
 data objects that flow from a `.docx` file to a Word report. We deliberately
 stay at altitude here: we draw the boxes and name the data shapes, but we leave
 the *moving picture* (what happens, in what order, when you click "Review") to
-**Ch 3 — A Run, End to End**, and we leave field-by-field semantics of each data
+[**Ch 3 — A Run, End to End**](03_end_to_end_flow.md), and we leave field-by-field semantics of each data
 object to the chapter that owns the file it lives in.
 
 Two ideas carry the chapter. First, the system is **layered**, not monolithic: a
@@ -39,15 +39,15 @@ human (or a downstream applier) needs to decide whether to trust it. Follow the
 ## 1. The shape of the system: ten packages
 
 `src/` is organized into **ten packages** — eight *functional* packages plus the
-`gui` and `tracing` siblings. The tree holds **58 Python modules** in total: 47
-application modules and 11 package `__init__.py` files, alongside a root
-`main.py` launcher and a single self-contained HTML trace viewer under
-`tracing/viewer/`.[^count]
+`gui` and `tracing` siblings. The tree holds **58 Python modules** in total: 48
+application modules and 10 package `__init__.py` files (the `output` package
+ships without one), alongside a root `main.py` launcher and a single
+self-contained HTML trace viewer under `tracing/viewer/`.[^count]
 
 [^count]: `HANDBOOK_PLAN.md` §6 cites "56 source files"; the tree today holds 58
 `.py` files under `src/`. The figure drifted by two as the codebase grew —
-exactly the kind of small fact-vs-source gap the audits (see **Ch 16 — Trust
-Under the Microscope**) exist to catch. The per-package counts below are
+exactly the kind of small fact-vs-source gap the audits (see [**Ch 16 — Trust
+Under the Microscope**](16_trust_under_the_microscope.md)) exist to catch. The per-package counts below are
 authoritative as of this writing; verify against the tree if precision matters.
 
 Here is the whole system on one page: each package, the problem it owns, its
@@ -55,26 +55,26 @@ files, and the chapter that takes it apart in depth.
 
 | Package | Responsibility | Key files (app modules) | Deep dive |
 |---|---|---|---|
-| **`core`** (5) | Foundation: model ids & capability whitelist, output caps, code-cycle definitions, token counting, API-key storage, platform paths. Everything sits on this. | `api_config.py`, `code_cycles.py`, `tokenizer.py`, `api_key_store.py`, `app_paths.py` | **Ch 12 — Configuration, Models & Token Economics** |
-| **`input`** (3) | Turn `.docx` files into reviewable text + a stable element-id map, with caching; run the deterministic local detectors. | `extractor.py`, `extraction_cache.py`, `preprocessor.py` | **Ch 4 — Input** |
-| **`review`** (5) | The per-spec Claude pass: build the request, define the tool-use schemas, render prompts, parse findings. Defines the `Finding`/`EditProposal`/`ReviewResult` data model. | `reviewer.py`, `review_request_builder.py`, `structured_schemas.py`, `prompts.py`, `prompt_serialization.py` | **Ch 5 — The Review Engine** |
-| **`batch`** (2) | The Message Batches API backbone: submit/retrieve wrapper and bounded polling with progressive backoff. | `batch.py`, `batch_runtime.py` | **Ch 6 — Batch Processing** |
-| **`orchestration`** (2) | The spine. Sequences every stage, owns aggregate run state, deduplicates findings, and keeps the in-memory operational diagnostics. | `pipeline.py`, `diagnostics.py` | **Ch 7 — Orchestration & State**; diagnostics → **Ch 14 — Observability** |
-| **`cross_check`** (1) | The cross-spec coordination pass: find defects that span multiple specs, chunked by CSI division. | `cross_checker.py` | **Ch 8 — Cross-Spec Coordination** |
-| **`verification`** (9) | The largest functional package. Decide *whether* to check a finding (routing, modes, profiles, triage, prescreen) and *how to check and judge* it (the verifier, source grounding, the claim cache, retry policy). | `verifier.py`, `verification_routing.py`, `verification_modes.py`, `verification_profiles.py`, `verification_prescreen.py`, `triage.py`, `source_grounding.py`, `verification_cache.py`, `retry_policy.py` | **Ch 9 — Verification I** (routing) & **Ch 10 — Verification II** (checking) |
-| **`output`** (3) | Consume the finished state: classify each finding's trust status & edit label, render the Word report, write the JSON edit sidecar. | `report_status.py`, `report_exporter.py`, `edit_sidecar.py` | **Ch 11 — The Trust Model & Report Output** |
-| **`gui`** (10) | The CustomTkinter desktop app: a shell, reusable widgets, dialogs, and seven thin controllers bridging widgets to the pipeline. | `gui.py`, `widgets.py`, `about_usage_dialogs.py`, + 7 `*_controller.py` | **Ch 13 — The Desktop GUI** |
-| **`tracing`** (8) | A forensic observability silo: per-run JSONL trace (spans/events/prompts/findings), defensive capture hooks, redaction, a CLI, and a zero-build HTML replay viewer. | `recorder.py`, `session.py`, `spans.py`, `capture_hooks.py`, `redaction.py`, `config.py`, `cli.py`, `__main__.py` | **Ch 14 — Observability** |
+| **`core`** (5) | Foundation: model ids & capability whitelist, output caps, code-cycle definitions, token counting, API-key storage, platform paths. Everything sits on this. | `api_config.py`, `code_cycles.py`, `tokenizer.py`, `api_key_store.py`, `app_paths.py` | [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md) |
+| **`input`** (3) | Turn `.docx` files into reviewable text + a stable element-id map, with caching; run the deterministic local detectors. | `extractor.py`, `extraction_cache.py`, `preprocessor.py` | [**Ch 4 — Input**](04_input.md) |
+| **`review`** (5) | The per-spec Claude pass: build the request, define the tool-use schemas, render prompts, parse findings. Defines the `Finding`/`EditProposal`/`ReviewResult` data model. | `reviewer.py`, `review_request_builder.py`, `structured_schemas.py`, `prompts.py`, `prompt_serialization.py` | [**Ch 5 — The Review Engine**](05_review_engine.md) |
+| **`batch`** (2) | The Message Batches API backbone: submit/retrieve wrapper and bounded polling with progressive backoff. | `batch.py`, `batch_runtime.py` | [**Ch 6 — Batch Processing**](06_batch_processing.md) |
+| **`orchestration`** (2) | The spine. Sequences every stage, owns aggregate run state, deduplicates findings, and keeps the in-memory operational diagnostics. | `pipeline.py`, `diagnostics.py` | [**Ch 7 — Orchestration & State**](07_orchestration.md); diagnostics → [**Ch 14 — Observability**](14_observability.md) |
+| **`cross_check`** (1) | The cross-spec coordination pass: find defects that span multiple specs, chunked by CSI division. | `cross_checker.py` | [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
+| **`verification`** (9) | The largest functional package. Decide *whether* to check a finding (routing, modes, profiles, triage, prescreen) and *how to check and judge* it (the verifier, source grounding, the claim cache, retry policy). | `verifier.py`, `verification_routing.py`, `verification_modes.py`, `verification_profiles.py`, `verification_prescreen.py`, `triage.py`, `source_grounding.py`, `verification_cache.py`, `retry_policy.py` | [**Ch 9 — Verification I**](09_verification_routing.md) (routing) & [**Ch 10 — Verification II**](10_verification_grounding.md) (checking) |
+| **`output`** (3) | Consume the finished state: classify each finding's trust status & edit label, render the Word report, write the JSON edit sidecar. | `report_status.py`, `report_exporter.py`, `edit_sidecar.py` | [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md) |
+| **`gui`** (10) | The CustomTkinter desktop app: a shell, reusable widgets, dialogs, and seven thin controllers bridging widgets to the pipeline. | `gui.py`, `widgets.py`, `about_usage_dialogs.py`, + 7 `*_controller.py` | [**Ch 13 — The Desktop GUI**](13_gui.md) |
+| **`tracing`** (8) | A forensic observability silo: per-run JSONL trace (spans/events/prompts/findings), defensive capture hooks, redaction, a CLI, and a zero-build HTML replay viewer. | `recorder.py`, `session.py`, `spans.py`, `capture_hooks.py`, `redaction.py`, `config.py`, `cli.py`, `__main__.py` | [**Ch 14 — Observability**](14_observability.md) |
 
 A few orienting notes on the packages that surprise people:
 
 **`verification` is nearly half the worker code for a reason.** It is split into
 *two questions* that the rest of the book treats as separate chapters. The
 "should we even spend a web search on this?" machinery — prescreen, profiles,
-modes, routing, optional Haiku triage — is one cluster (**Ch 9**). The "go check
+modes, routing, optional Haiku triage — is one cluster ([**Ch 9**](09_verification_routing.md)). The "go check
 it, and decide what counts as proof" machinery — the verifier itself, source
 grounding, the persistent claim cache, the retry/continuation taxonomy — is the
-other (**Ch 10**). Nine files sounds heavy until you realize that *grounding a
+other ([**Ch 10**](10_verification_grounding.md)). Nine files sounds heavy until you realize that *grounding a
 verdict in real evidence* is the single hardest thing this program does.
 
 **`core` is genuinely foundational, with one honest exception.** Every other
@@ -93,7 +93,7 @@ cache path and verdict vocabulary). Notably it does **not** import `review`,
 even though its whole job is to render `Finding` objects: `report_status.py`
 treats a `Finding` *structurally* — it reads `.verification` and
 `.edit_proposal` off whatever object it is handed — rather than importing the
-class. That duck-typing is what lets the trust-model classifier (**Ch 11**) be
+class. That duck-typing is what lets the trust-model classifier ([**Ch 11**](11_trust_model_and_output.md)) be
 unit-tested against hand-built stand-ins with no review machinery in sight.
 
 ---
@@ -194,7 +194,7 @@ guarantee**, not the absence of imports:
 
 So tracing sits beside the system, watching it, structurally unable to corrupt
 it. The full mechanics — spans, events, the JSONL files, the redaction layer —
-are **Ch 14 — Observability**'s to explain.
+are [**Ch 14 — Observability**](14_observability.md)'s to explain.
 
 **Why this layering and not a monolith?** Because each worker subsystem can be
 *tested and reasoned about in isolation*. The extractor can be exercised against
@@ -280,12 +280,12 @@ The intermediate carrier `CollectedBatchState` does not appear above because it
 is a *transport* object, not a transformation: in batch mode the pipeline splits
 into separate `submit → poll → collect → finalize` calls, and
 `CollectedBatchState` is the bundle that survives the gaps between them. More on
-that in **Ch 7 — Orchestration & State**.
+that in [**Ch 7 — Orchestration & State**](07_orchestration.md).
 
 ### 3.2 The objects, in flow order
 
 **`ExtractedSpec` + `ParagraphMapping`** *(defined in `input/extractor.py`;
-detail → **Ch 4 — Input**).* One `ExtractedSpec` per document: the flattened
+detail → [**Ch 4 — Input**](04_input.md)).* One `ExtractedSpec` per document: the flattened
 `content` string, a `word_count`, a `document_id`, and — the load-bearing part —
 an optional `paragraph_map` of `ParagraphMapping` rows. Each row records one
 extracted element (a body paragraph, a table-cell row, a header/footer
@@ -296,7 +296,7 @@ mean" without anyone re-walking the document. `ExtractedSpec` also carries
 `extraction_warnings` — the breadcrumb a drawing-heavy spec leaves so the report
 can warn that some content may not have been captured as text.
 
-**`PreprocessResult`** *(defined in `input/preprocessor.py`; detail → **Ch 4**).*
+**`PreprocessResult`** *(defined in `input/preprocessor.py`; detail → [**Ch 4**](04_input.md)).*
 This is the output of the *deterministic* pre-screen, and it is structurally
 important precisely because it is **not** model-derived. It is a bag of alert
 lists — LEED references, placeholders, template markers, stale and invalid code
@@ -309,7 +309,7 @@ expensive, probabilistic ones so the two can be rendered (and trusted)
 differently.
 
 **`Finding` + `EditProposal`** *(defined in `review/reviewer.py`; detail →
-**Ch 5 — The Review Engine**).* The `Finding` is the unit of currency. At birth
+[**Ch 5 — The Review Engine**](05_review_engine.md)).* The `Finding` is the unit of currency. At birth
 it carries a `severity` (`CRITICAL` / `HIGH` / `MEDIUM` / `GRIPES`), the
 `fileName` and `section` it came from, the `issue` prose, an `actionType`, the
 verbatim `existingText` / `replacementText` it proposes to change, an optional
@@ -345,12 +345,12 @@ sidecar can refer to the same finding by name. And `occurrence_originals` is how
 a *multi-file* finding remembers its parts: when dedup collapses the same defect
 across several specs into one representative, the per-file member findings are
 preserved here so each file's own exact `existingText` survives the merge — the
-detail belongs to **Ch 7**, but the field is part of the data model, so it is
+detail belongs to [**Ch 7**](07_orchestration.md), but the field is part of the data model, so it is
 named here. The `as_edit_proposal()` accessor is the single way anyone asks
 "does this finding have a usable edit?", reconstructing one from legacy fields
 when needed and returning `None` for `REPORT_ONLY` or malformed shapes.
 
-**`ReviewResult`** *(defined in `review/reviewer.py`; detail → **Ch 5**).* The
+**`ReviewResult`** *(defined in `review/reviewer.py`; detail → [**Ch 5**](05_review_engine.md)).* The
 envelope around one review (or cross-check) call: the `findings` list plus
 metadata — the model used, token counts, prompt-cache telemetry,
 `parse_status`, `stop_reason`, and the raw `structured_payload` the model sent
@@ -360,7 +360,7 @@ pass. Its convenience properties (`critical_count`, `high_count`, …) are how t
 GUI and report get their severity tallies without re-counting.
 
 **`VerificationRoutingDecision`** *(defined in
-`verification/verification_routing.py`; detail → **Ch 9 — Verification I**).*
+`verification/verification_routing.py`; detail → [**Ch 9 — Verification I**](09_verification_routing.md)).*
 Before a finding is checked, a *pure function* produces this frozen policy
 bundle for it: the chosen `mode` and `profile`, the `model` id, whether
 `thinking` is enabled, the `web_search_max_uses` budget, which tools to attach,
@@ -371,7 +371,7 @@ reads from the same decision and cannot quietly pick a different policy than the
 selector intended. It is a contract object, not a result.
 
 **`VerificationResult`** *(defined in `verification/verifier.py`; detail →
-**Ch 10 — Verification II**).* This is the richest object in the system, and
+[**Ch 10 — Verification II**](10_verification_grounding.md)).* This is the richest object in the system, and
 deliberately so — adjudicating trust requires a lot of evidence. The headline
 fields are the `verdict` (`CONFIRMED` / `CORRECTED` / `DISPUTED` / `UNVERIFIED`),
 a `grounded` boolean, and the `sources` list — which, by invariant, contains
@@ -383,18 +383,18 @@ by name even at this altitude — `models_disagreed` (both verifiers grounded a
 verdict and *disagreed* → the `VERIFIED_CONTESTED` status), `verification_failed`
 (a transient operational error, not a clean "couldn't ground it"), and
 `budget_exhausted` (spent the whole search budget without grounding). The full
-field tour is **Ch 10**'s; what matters *here* is simply that this object gets
+field tour is [**Ch 10**](10_verification_grounding.md)'s; what matters *here* is simply that this object gets
 attached to `Finding.verification`, completing the finding.
 
 **`PipelineResult`** *(defined in `orchestration/pipeline.py`; detail →
-**Ch 7**).* The aggregate run state the report consumes: the per-spec
+[**Ch 7**](07_orchestration.md)).* The aggregate run state the report consumes: the per-spec
 `review_result`, the optional `cross_check_result`, every deterministic alert
 list carried through from preprocessing, the `cycle_label`, and the list of
 `extracted_specs` (so the report's diagnostics banner can count specs whose
 extraction raised warnings). It is the single object handed to the exporter.
 
 **`FindingGroup` + `FindingOccurrence`** *(defined in
-`orchestration/pipeline.py`; detail → **Ch 7**).* These formalize the difference
+`orchestration/pipeline.py`; detail → [**Ch 7**](07_orchestration.md)).* These formalize the difference
 between a *display* concept and an *executable* one. A `FindingGroup` is "the
 same issue, with a representative finding"; its `occurrences` expand to one
 `FindingOccurrence` per affected file, each binding the representative to that
@@ -404,7 +404,7 @@ deduplicated list — a clean split so multi-file edits never fan one file's exa
 text across files whose text differed.
 
 **`DiagnosticsReport`** *(defined in `orchestration/diagnostics.py`; detail →
-**Ch 14 — Observability**).* The in-memory operational health record for a run:
+[**Ch 14 — Observability**](14_observability.md)).* The in-memory operational health record for a run:
 a `run_id`, timestamped `events`, the list of `failed_specs`, and a set of byte
 caps and counters (`secrets_redacted`, `events_dropped`) that keep it bounded on
 a long batch poll. It is *operational* metadata — "did the machinery work?" —
@@ -470,8 +470,8 @@ off the package map and the data model without running anything.
    truth for model capabilities, and an *unknown* model id degrades to defaults
    that disable every capability flag — producing a smaller, safe request rather
    than an API rejection. The configuration layer is built to fail quiet and
-   small. The mechanics are **Ch 12 — Configuration, Models & Token
-   Economics**'s to detail.
+   small. The mechanics are [**Ch 12 — Configuration, Models & Token
+   Economics**](12_configuration_and_models.md)'s to detail.
 
 ---
 
@@ -480,26 +480,26 @@ off the package map and the data model without running anything.
 This chapter is the index for the rest of the book. Each box on the package map
 has a chapter that opens it up:
 
-- The **dynamic** counterpart to this static map is **Ch 3 — A Run, End to
-  End**, which takes the same objects and shows them *moving* — the actual
+- The **dynamic** counterpart to this static map is [**Ch 3 — A Run, End to
+  End**](03_end_to_end_flow.md), which takes the same objects and shows them *moving* — the actual
   sequence of calls from a click to a finished report. We drew the boxes; Ch 3
   animates them.
-- **Part II** opens the ingestion and review machines: **Ch 4 — Input**
+- **Part II** opens the ingestion and review machines: [**Ch 4 — Input**](04_input.md)
   (`ExtractedSpec`, the element-id scheme, the deterministic pre-screen),
-  **Ch 5 — The Review Engine** (`Finding`, `EditProposal`, `ReviewResult`,
-  prompts and schemas), and **Ch 6 — Batch Processing** (the Message Batches
+  [**Ch 5 — The Review Engine**](05_review_engine.md) (`Finding`, `EditProposal`, `ReviewResult`,
+  prompts and schemas), and [**Ch 6 — Batch Processing**](06_batch_processing.md) (the Message Batches
   backbone every model call rides on).
-- **Part III** is coordination and verification: **Ch 7 — Orchestration &
-  State** (the spine, `PipelineResult`, dedup, the grouping pair), **Ch 8 —
-  Cross-Spec Coordination**, **Ch 9 — Verification I** (routing, modes,
-  profiles, triage, `VerificationRoutingDecision`), and **Ch 10 — Verification
-  II** (grounding, verdicts, escalation, the cache, `VerificationResult`).
-- **Part IV** is where trust becomes visible: **Ch 11 — The Trust Model & Report
-  Output** (the nine statuses, the Word report, the edit sidecar).
-- **Part V** covers the cross-cutting systems: **Ch 12 — Configuration, Models &
-  Token Economics** (`core`), **Ch 13 — The Desktop GUI** (`gui` and `main.py`),
-  **Ch 14 — Observability** (`tracing` and `diagnostics`), and **Ch 15 — Quality
-  Engineering** (tests and calibration).
+- **Part III** is coordination and verification: [**Ch 7 — Orchestration &
+  State**](07_orchestration.md) (the spine, `PipelineResult`, dedup, the grouping pair), [**Ch 8 —
+  Cross-Spec Coordination**](08_cross_spec_coordination.md), [**Ch 9 — Verification I**](09_verification_routing.md) (routing, modes,
+  profiles, triage, `VerificationRoutingDecision`), and [**Ch 10 — Verification
+  II**](10_verification_grounding.md) (grounding, verdicts, escalation, the cache, `VerificationResult`).
+- **Part IV** is where trust becomes visible: [**Ch 11 — The Trust Model & Report
+  Output**](11_trust_model_and_output.md) (the nine statuses, the Word report, the edit sidecar).
+- **Part V** covers the cross-cutting systems: [**Ch 12 — Configuration, Models &
+  Token Economics**](12_configuration_and_models.md) (`core`), [**Ch 13 — The Desktop GUI**](13_gui.md) (`gui` and `main.py`),
+  [**Ch 14 — Observability**](14_observability.md) (`tracing` and `diagnostics`), and [**Ch 15 — Quality
+  Engineering**](15_quality_engineering.md) (tests and calibration).
 
 ---
 
@@ -508,7 +508,7 @@ has a chapter that opens it up:
 - **Ten packages, five tiers.** A `core` foundation; `input` / `review` /
   `batch` / `cross_check` / `verification` workers; an `orchestration` spine; an
   `output` consumer; a thin `gui` driver; a `tracing` silo. 58 Python modules
-  (47 application + 11 initializers) in `src/`.
+  (48 application + 10 initializers) in `src/`.
 - **The data model is the contract.** A `Finding` is the unit of currency. It is
   born in review (problem + optional `EditProposal`, empty verdict), stamped with
   a `finding_id` and `occurrence_originals` at dedup, and annotated with a
@@ -525,4 +525,4 @@ has a chapter that opens it up:
   and `tracing` is a silo by virtue of one-way, failure-isolated hooks that never
   reshape the data — not by being unimported.
 - **Defer for detail.** This chapter is the map. Field-level semantics live in
-  each object's owning chapter; the moving picture lives in **Ch 3**.
+  each object's owning chapter; the moving picture lives in [**Ch 3**](03_end_to_end_flow.md).

@@ -74,12 +74,12 @@ near-misses — they were assertions of severe bugs that simply weren't there:
 
 - A sweep flagged the DOCX content-loss threshold as an inverted-polarity
   CRITICAL bug; the re-read showed `extractor.py` implements the documented "warn
-  when proportion `>` 0.20" exactly correctly (see **Ch 4 — Input**).
+  when proportion `>` 0.20" exactly correctly (see [**Ch 4 — Input**](04_input.md)).
 - A sweep claimed review batch results were "silently dropped" — built on reading
   one function and *assuming* its caller. The actual caller,
   `collect_review_batch_results`, iterates the *submitted* ids and turns every
-  missing or errored result into a visible error (see **Ch 7 — Orchestration &
-  State**).
+  missing or errored result into a visible error (see [**Ch 7 — Orchestration &
+  State**](07_orchestration.md)).
 - A sweep reported a `custom_id` collision the id-construction scheme makes
   impossible.
 
@@ -121,8 +121,8 @@ into focus. The places where a compliance tool would most catastrophically betra
 a user — inventing a source, applying the wrong edit, attaching a verdict to the
 wrong finding, losing findings on a batch hiccup, serving a stale extraction —
 are exactly the places that were read most carefully and found most solid. The
-grounding gate alone is checked in three independent places (see **Ch 10 —
-Verification II** and **Ch 11 — The Trust Model & Report Output**). This is what
+grounding gate alone is checked in three independent places (see [**Ch 10 —
+Verification II**](10_verification_grounding.md) and [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md)). This is what
 defense-in-depth looks like when it works.
 
 ## The headline gap: a failed run can look like a clean one
@@ -184,9 +184,9 @@ knows. Second, the proposed remedy is small and isolated — add a "Specs that
 failed review" row to the Run Diagnostics banner (fed by `truncated_specs`, red
 when greater than zero), correct the header to read "{reviewed}/{submitted}," and
 make the UI's terminal state reflect partial failure instead of a bare green
-checkmark. The owning chapters are **Ch 11 — The Trust Model & Report Output**
-(the report and banner) and **Ch 13 — The Desktop GUI** (the completion handler),
-with the source data owned by **Ch 7 — Orchestration & State**. Third — and this
+checkmark. The owning chapters are [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md)
+(the report and banner) and [**Ch 13 — The Desktop GUI**](13_gui.md) (the completion handler),
+with the source data owned by [**Ch 7 — Orchestration & State**](07_orchestration.md). Third — and this
 is the uncomfortable part — **as of this writing the gap is still open.**
 `report_exporter.py` contains zero references to `truncated_specs`; the banner's
 "Spec content extraction warnings" row is a *different* mechanism entirely (it
@@ -245,8 +245,8 @@ outside the test suite. P0-2 is the sharp edge of the same problem: because
 anchor, which can mislocate the insertion in the other files. The correct
 per-file anchors are sitting in `occurrence_originals`, unread. The fix — wire
 `group_findings()` into the sidecar, or at minimum emit `affected_files` per
-entry — lives in **Ch 7 — Orchestration & State** and **Ch 11 — The Trust Model
-& Report Output**.
+entry — lives in [**Ch 7 — Orchestration & State**](07_orchestration.md) and [**Ch 11 — The Trust Model
+& Report Output**](11_trust_model_and_output.md).
 
 ### Cross-check findings carry no stable id (Structural P1-1)
 
@@ -260,8 +260,8 @@ track a coordination edit across re-runs. The structural audit is careful to
 *downgrade* a sub-agent's framing here: this is **not** a crash (the report
 doesn't key by id), it is a sidecar/traceability quality gap. The fix is small and
 contained — stamp `compute_finding_id` on cross-check findings, and consider
-running them through the same dedup — and it lives across **Ch 7 — Orchestration &
-State** and **Ch 8 — Cross-Spec Coordination**. (It also ties to the trust audit's
+running them through the same dedup — and it lives across [**Ch 7 — Orchestration &
+State**](07_orchestration.md) and [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md). (It also ties to the trust audit's
 P1-3 concern that coordination duplicates spanning two CSI-division chunks are
 never collapsed.) The re-read for this chapter confirms `compute_finding_id` is
 still invoked only inside `_deduplicate_findings`; the item remains open.
@@ -277,7 +277,7 @@ being dropped by both. The auditor's judgment is "likely benign — an abandoned
 never-retrieved batch wave doesn't write back — but 'likely' isn't good enough for
 the trust bar here." The remedy is a verify-first read plus a hermetic test
 asserting every tail finding ends with **exactly one** terminal
-`VerificationResult`. This is owned by **Ch 10 — Verification II**. Note the
+`VerificationResult`. This is owned by [**Ch 10 — Verification II**](10_verification_grounding.md). Note the
 discipline in how this is reported: an unverified path is named as unverified
 rather than waved through — which is, again, the product's own philosophy turned
 on its author.
@@ -293,7 +293,7 @@ falls through to `_DEFAULT_CAPABILITIES`, which disables every capability flag �
 no adaptive thinking, no extended-output beta, a 200k context window, output
 capped at 128k instead of 300k. This "safe default" is genuinely smart in one
 direction: a misconfigured model id produces a *smaller* request, never an API
-rejection (see **Ch 12 — Configuration, Models & Token Economics**). But it has a
+rejection (see [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md)). But it has a
 perverse failure mode. An operator who deliberately points
 `SPEC_CRITIC_REVIEW_MODEL` at a **newer, more capable** model — precisely to get
 *better* reviews — instead gets a silently *degraded* one: no extended thinking,
@@ -307,8 +307,8 @@ The **300k extended-output beta header** (`BATCH_OUTPUT_BETA =
 "output-300k-2026-03-24"`) is the same risk class, and the audit names the
 precedent directly. This codebase was once bitten by a retired
 `web-fetch-2026-02-09` beta header that caused HTTP 400 and crashed every run on
-the common path — a story told in full in **Ch 10** and **Ch 17 — Evolution &
-Lessons**. The 300k header is hardcoded the same way, and `assert_extended_output_allowed`
+the common path — a story told in full in [**Ch 10**](10_verification_grounding.md) and [**Ch 17 — Evolution &
+Lessons**](17_evolution_and_lessons.md). The 300k header is hardcoded the same way, and `assert_extended_output_allowed`
 checks only that the header is *present*, not that the API still *accepts* it. If
 that beta value is ever retired or renamed, every large-input (≥200k-token) batch
 review crashes at submit — the exact failure mode of the prior incident, on a
@@ -317,7 +317,7 @@ less-common path. There is a genuinely encouraging coda here, though: the team
 beta header for `web_fetch` at all and documents, at length, *why* an unrecognized
 beta value is rejected rather than ignored. The lesson was learned for one header;
 the structurally-identical check on the 300k header is simply the next place to
-apply it. Both items are owned by **Ch 12**.
+apply it. Both items are owned by [**Ch 12**](12_configuration_and_models.md).
 
 ### Extraction completeness: is any spec text never reviewed? (Trust P0-6)
 
@@ -326,13 +326,13 @@ verify-first. `extract_text_from_docx` walks the document body for paragraphs an
 tables. python-docx body iteration typically misses **headers and footers, text
 boxes** (`w:txbxContent` inside a drawing), **footnotes/endnotes**, and
 grouped-shape text — and DSA specs sometimes park requirements or revision notes
-in exactly those places. The content-loss warning (see **Ch 4 — Input**) covers
+in exactly those places. The content-loss warning (see [**Ch 4 — Input**](04_input.md)) covers
 drawing/picture/OLE-heavy specs but not text-bearing parts outside the body. If a
 requirement lives in an unextracted part, the model never sees it, and a real
 defect there is silently un-flagged. The proposed first step is empirical: build
 a fixture `.docx` with text in a header, a text box, and a footnote, and confirm
 whether each is captured — then decide whether to extract them or at least extend
-the content-loss warning to flag their presence. Owned by **Ch 4**.
+the content-loss warning to flag their presence. Owned by [**Ch 4**](04_input.md).
 
 ### Batch grounding parity — likely fine, must be proven (Trust P0-5)
 
@@ -348,26 +348,26 @@ guarantee in the table of defenses above. The auditor's own assessment is "likel
 fine, but must be proven given trust requirements," and the recommended proof is a
 hermetic test that feeds a batch `CONFIRMED` with an *ungrounded* citation and
 asserts it is downgraded to `UNVERIFIED`, identical to the existing real-time
-test. Owned by **Ch 10**.
+test. Owned by [**Ch 10**](10_verification_grounding.md).
 
 ### Minor and hardening items
 
 The long tail is genuinely minor and is recorded for completeness, not alarm: a
 `validate_edit_shape` that permits a no-op `EDIT` where `existingText ==
-replacementText` (Trust P1-1, **Ch 5**); ASCE 7 editions older than 2005 falling
+replacementText` (Trust P1-1, [**Ch 5**](05_review_engine.md)); ASCE 7 editions older than 2005 falling
 outside the deterministic detector's "plausible" set, which the LLM review likely
-still catches (Trust P2-1, **Ch 4**); a continuation-cap off-by-one that is bounded
-and lossless (Structural P2-1, **Ch 10**); a `finding_id` truncated to 48 bits,
+still catches (Trust P2-1, [**Ch 4**](04_input.md)); a continuation-cap off-by-one that is bounded
+and lossless (Structural P2-1, [**Ch 10**](10_verification_grounding.md)); a `finding_id` truncated to 48 bits,
 with negligible collision risk at the typical scale (Structural P2-2); a
 documentation drift where `CLAUDE.md` calls cross-check "parallel with
 verification" while the batch flow runs sequentially — and sequential is the
 *safer* arrangement, so the doc is what needs correcting (Structural P2-3); and a
 `TraceRecorder` singleton reset that lags completion just long enough for a second
 run to catch a first run's late trace events — *tracing only, never findings or the
-report* (Structural P2-4, **Ch 14 — Observability**). One item is a separate
+report* (Structural P2-4, [**Ch 14 — Observability**](14_observability.md)). One item is a separate
 workstream, not a code fix: the *content* of the system prompts and the pinned
 edition strings in `code_cycles.py` need a mechanical/plumbing **domain expert**,
-not a code-logic reviewer (Trust P1-4, **Ch 5** and **Ch 12**).
+not a code-logic reviewer (Trust P1-4, [**Ch 5**](05_review_engine.md) and [**Ch 12**](12_configuration_and_models.md)).
 
 ## Where the risk really lives
 
@@ -414,7 +414,7 @@ tool is handed to a new user: **human spot-checking of `VERIFIED_*` findings
 remains warranted.** The tool's value is that it does the expensive work of
 finding candidate defects, gathering real sources, and rendering its own
 uncertainty honestly across nine trust levels. Its value is *not* that it removes
-the human from the loop. The nine-label trust model (see **Ch 11**) exists
+the human from the loop. The nine-label trust model (see [**Ch 11**](11_trust_model_and_output.md)) exists
 precisely so that a reviewer can spend their scarce attention where it matters —
 on the contested, the insufficient, and yes, the spot-check of the confirmed —
 rather than reading every finding from scratch. Grounding makes uncertainty
@@ -446,7 +446,7 @@ Crucially, these workstreams touch disjoint modules and can be dispatched in
 parallel. The road from here to a closed backlog — and the larger story of how the
 program arrived at this shape, the v3.0.0 pivot that removed the surgical-edit
 machinery and made Spec Critic a tool that *emits but never applies* — is the
-subject of **Ch 17 — Evolution & Lessons**.
+subject of [**Ch 17 — Evolution & Lessons**](17_evolution_and_lessons.md).
 
 The honest summary: the core you would expect to be fragile is the part you can
 lean on, and the edges you would expect to be trivial are where the real work
@@ -479,4 +479,4 @@ already done the hardest part of earning trust.
 - **A backlog, not a panic.** Surface partial failure first; then close
   edit-emission completeness; then the cheap config checks; then prove the
   verify-first items. The fixes are small, scoped, and owned by identified chapters.
-  See **Ch 17 — Evolution & Lessons** for where the road leads.
+  See [**Ch 17 — Evolution & Lessons**](17_evolution_and_lessons.md) for where the road leads.

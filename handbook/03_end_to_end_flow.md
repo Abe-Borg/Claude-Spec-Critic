@@ -11,8 +11,8 @@ from raw paragraphs into grounded, severity-ranked, trust-labeled findings.
 This is the connective-tissue chapter. Every stage gets *introduced* here at
 moderate altitude and then handed off to the chapter that owns its mechanics. If
 you want to know precisely how a verdict gets grounded against a cited URL, this
-chapter will tell you *when* and *why* that happens and point you to **Ch 10 —
-Verification II**; it will not reproduce the grounding logic. Read this chapter
+chapter will tell you *when* and *why* that happens and point you to [**Ch 10 —
+Verification II**](10_verification_grounding.md); it will not reproduce the grounding logic. Read this chapter
 to learn the shape of a run — the order of operations, the object handed across
 each boundary, and the invariants that keep the whole thing trustworthy. Read
 the owning chapters to learn how each stage works inside.
@@ -31,8 +31,8 @@ The first thing to understand about a Spec Critic run is that **most of its
 wall-clock time is spent waiting.** Every per-spec review goes through
 Anthropic's **Message Batches API** — there is no synchronous review path in
 this product. Batching buys roughly 50% on per-token cost and lifts the output
-ceiling (the 300k extended-output path is batch-only; see **Ch 6 — Batch
-Processing**), at the price of latency: a typical batch returns in 45 minutes to
+ceiling (the 300k extended-output path is batch-only; see [**Ch 6 — Batch
+Processing**](06_batch_processing.md)), at the price of latency: a typical batch returns in 45 minutes to
 2 hours, with a 24-hour ceiling the API almost never approaches. The design
 assumes the reviewer submits a project and walks away.
 
@@ -44,7 +44,7 @@ preflight, deduplication, finalize, export — is fast and synchronous. The wait
 where the clock actually moves. Because the program is a desktop GUI, none of
 that waiting is allowed to freeze the window, which is why the run is spread
 across a foreground thread and a chain of background worker threads. The
-threading discipline itself belongs to **Ch 13 — The Desktop GUI**; here we care
+threading discipline itself belongs to [**Ch 13 — The Desktop GUI**](13_gui.md); here we care
 only about the *order* in which the work happens and *what object* crosses each
 boundary.
 
@@ -89,7 +89,7 @@ from an abandoned or superseded run is silently dropped rather than painted into
 a stale UI. Each background thread does one phase and then dispatches the next
 phase's kickoff back onto the foreground thread. The entry point that bootstraps
 all of this — `main.py` — is a thin PyInstaller-aware shim that imports and calls
-`src.gui.gui.main`; it owns nothing but the launch and is covered in **Ch 13**.
+`src.gui.gui.main`; it owns nothing but the launch and is covered in [**Ch 13**](13_gui.md).
 
 ## The pipeline, top to bottom
 
@@ -166,8 +166,8 @@ do: `_prepare_specs`, `start_batch_review`, `collect_review_batch_results`,
 `collect_batch_verification_results`, and `finalize_batch_result`. Each is a
 checkpoint where one named dataclass is produced and the next is consumed. The
 internals of those functions — how state threads through `BatchSubmission` →
-`CollectedBatchState` → `PipelineResult`, how the dedup key is built — are **Ch 7
-— Orchestration & State**. What follows is the moving picture.
+`CollectedBatchState` → `PipelineResult`, how the dedup key is built — are [**Ch 7
+— Orchestration & State**](07_orchestration.md). What follows is the moving picture.
 
 ### Stage 1 — Selection and extraction
 
@@ -182,7 +182,7 @@ document is so drawing- or object-heavy that meaningful content may not have
 survived extraction. Extraction is LRU-cached by file identity and content
 fingerprint, so re-running a project after toggling an option skips the DOCX
 parse entirely. The mechanics — the XML walk, the element-id scheme, the
-content-loss heuristic — are **Ch 4 — Input**.
+content-loss heuristic — are [**Ch 4 — Input**](04_input.md).
 
 A spec that extracts to zero words is logged and dropped. If *every* file fails
 extraction, `_prepare_specs` raises and the run ends before any money is spent.
@@ -201,7 +201,7 @@ problems. These alerts do two jobs. They become findings in their own right
 into each spec's prompt as a `<pre_detected>` block so the model is *told* what
 local rules already caught and does not waste output re-reporting it. The full
 detector catalog and the subtle suppression windows (e.g. not flagging "the
-*previously* adopted 2019 cycle") are **Ch 4**.
+*previously* adopted 2019 cycle") are [**Ch 4**](04_input.md).
 
 The ordering here is itself a trust invariant: **local detectors run before any
 API call.** The deterministic, explainable checks get first pass; the model is
@@ -223,7 +223,7 @@ warning and submitted anyway, trusting the API to truncate — which silently
 produced reviews of half a spec. Preflight now fails loudly and early rather
 than producing a confident-looking report of an incompletely-read document. The
 token budgets, safety multipliers, and the small-batch-versus-top-K counting
-strategy are **Ch 12 — Configuration, Models & Token Economics**.
+strategy are [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md).
 
 ### Stage 4 — Submitting the review batch
 
@@ -237,15 +237,15 @@ failures and surface extraction warnings), the cycle label, and the
 cross-check-enabled flag. Control returns to the GUI, the progress bar jumps to
 roughly 40%, and the run settles into its long poll. How the review request is
 *shaped* — the `submit_review_findings` tool schema, the prompt-cache breakpoints,
-the tagged-JSON text fallback — is **Ch 5 — The Review Engine**; the batch
-wrapper itself is **Ch 6**.
+the tagged-JSON text fallback — is [**Ch 5 — The Review Engine**](05_review_engine.md); the batch
+wrapper itself is [**Ch 6**](06_batch_processing.md).
 
 ### Stage 5 — Poll, collect, reconcile, repair
 
 A background thread calls `poll_batch_bounded` with `DEFAULT_REVIEW_POLL_POLICY`,
 which polls the batch with progressive backoff and a bounded budget — it will not
 poll forever, and if it loses the connection or the batch detaches it reports
-that cleanly rather than hanging. The polling mechanics are **Ch 6**.
+that cleanly rather than hanging. The polling mechanics are [**Ch 6**](06_batch_processing.md).
 
 When the batch reaches terminal status, `collect_review_batch_results` does the
 careful part. It retrieves the per-request results and then **reconciles them
@@ -279,7 +279,7 @@ invariants of the whole system. Verification is the expensive, web-search-backed
 stage; deduplicating first means we pay to verify a claim *once* and bind the
 resulting verdict to the single representative finding, rather than verifying
 twelve copies and risking a verdict attaching to the wrong one. The dedup key
-construction and the occurrence-tracking model are **Ch 7**.
+construction and the occurrence-tracking model are [**Ch 7**](07_orchestration.md).
 
 ### Stages 7 & 8 — Verification and cross-spec coordination
 
@@ -314,19 +314,19 @@ order is strictly sequential and verification of the review findings comes
 > *first* — `run_cross_check_for_batch` reads each finding's `verification.verdict`
 > to drop DISPUTED findings from the "already identified" context, which only
 > works if verification has already run. Per the handbook's conflict rule, the
-> code wins; this is exactly the species of documentation drift that **Ch 16 —
-> Trust Under the Microscope** exists to catalog.
+> code wins; this is exactly the species of documentation drift that [**Ch 16 —
+> Trust Under the Microscope**](16_trust_under_the_microscope.md) exists to catalog.
 
 The verification stage is itself a small pipeline. Each finding is *routed* into
 one of four modes (`local_skip`, `strict_structured`, `standard_reasoning`,
 `deep_reasoning`) by severity, profile, and content — the routing, the five
 profiles, the severity-tiered search budgets, and the Haiku triage safety
-contract are **Ch 9 — Verification I**. The web-backed call then tries to
+contract are [**Ch 9 — Verification I**](09_verification_routing.md). The web-backed call then tries to
 *ground* a verdict: a `CONFIRMED` or `CORRECTED` verdict is only allowed to stand
 if the model cited at least one URL that the `web_search` (or `web_fetch`) tool
 actually retrieved. Grounding, the verdict taxonomy, escalation (Sonnet → Opus
 when an initial pass is uncertain), the "contested" disagreement signal, and the
-claim cache are **Ch 10 — Verification II**.
+claim cache are [**Ch 10 — Verification II**](10_verification_grounding.md).
 
 One flow-level detail belongs here because it is about *timing*, not mechanism:
 the verification batch runs in **waves** (submit → poll → collect → resubmit the
@@ -352,8 +352,8 @@ its proposed replacement text shown inline. The sidecar serializes each finding'
 structured edit proposal for a downstream applier to ingest. **Spec Critic emits
 edit instructions; it never applies them.** The surgical write-back stack that
 once mutated documents was removed in v3.0.0. The report layout, the nine-label
-trust model, the sidecar schema, and the Run Diagnostics banner are **Ch 11 — The
-Trust Model & Report Output**.
+trust model, the sidecar schema, and the Run Diagnostics banner are [**Ch 11 — The
+Trust Model & Report Output**](11_trust_model_and_output.md).
 
 ## Follow one finding
 
@@ -403,7 +403,7 @@ Had this instead been a literal "2019 CBC" reference, the deterministic detector
 Second, **routing was forced, not guessed.** Because the finding is HIGH severity
 *and* carries a non-empty `codeReference`, the local-skip and Haiku-triage paths
 are contractually forbidden from short-circuiting it (the triage safety contract
-in **Ch 9** makes CRITICAL/HIGH and any code-referencing finding ineligible for a
+in [**Ch 9**](09_verification_routing.md) makes CRITICAL/HIGH and any code-referencing finding ineligible for a
 local skip). A claim about a building code is never allowed to slip past
 verification on a cost-saving heuristic.
 
@@ -411,7 +411,7 @@ Third, **the verdict had to be grounded to count.** Sonnet did not get to assert
 "the 2019 edition is wrong" on its own authority; the `CORRECTED` verdict only
 survived because the model cited a URL that the search tool had actually
 retrieved. Grounding proves the *source is real* — not, importantly, that the
-source proves the claim, a caveat **Ch 10** is careful about — but it is the line
+source proves the claim, a caveat [**Ch 10**](10_verification_grounding.md) is careful about — but it is the line
 between an evidence-backed correction and a confident hallucination. Had the
 search returned nothing citable, the same finding would have landed as
 `INSUFFICIENT_EVIDENCE` instead, and the report would have said so rather than
@@ -470,9 +470,9 @@ miss that a fifth of the project never got reviewed.
 
 This is a known edge, not a bug in disguise — the signal exists, it is simply
 quieter than it ideally would be. The mechanics of how partial failures are
-surfaced (and where the gaps remain) are **Ch 11 — The Trust Model & Report
-Output**; the broader question of whether the artifact's trust signaling matches
-its trust *reality* is exactly what **Ch 16 — Trust Under the Microscope**
+surfaced (and where the gaps remain) are [**Ch 11 — The Trust Model & Report
+Output**](11_trust_model_and_output.md); the broader question of whether the artifact's trust signaling matches
+its trust *reality* is exactly what [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md)
 audits.
 
 ## How this connects
@@ -481,23 +481,23 @@ This chapter is the book's index to the pipeline. Each stage's deep dive lives
 elsewhere, and you should follow the cross-references rather than expect the
 mechanics here:
 
-- **Stages 1–2 (extraction, pre-screen)** → **Ch 4 — Input**.
-- **Stage 4 (review request shape)** → **Ch 5 — The Review Engine**.
-- **Stages 4–5 (batch submission, polling)** → **Ch 6 — Batch Processing**.
-- **Stages 5–6 (collection, reconciliation, dedup, state objects)** → **Ch 7 —
-  Orchestration & State**.
-- **Stage 8 (cross-spec coordination)** → **Ch 8 — Cross-Spec Coordination**.
-- **Stage 7/8 routing** → **Ch 9 — Verification I**; **grounding/verdicts/cache**
-  → **Ch 10 — Verification II**.
-- **Stage 9 (report, sidecar, trust labels)** → **Ch 11 — The Trust Model &
-  Report Output**.
-- **Token preflight and budgets** → **Ch 12 — Configuration, Models & Token
-  Economics**.
-- **The threading model, the run-epoch guard, `main.py`** → **Ch 13 — The Desktop
-  GUI**.
-- **The trace spans woven through every stage** → **Ch 14 — Observability**.
-- **The static box-and-arrow architecture and the data-model map** → **Ch 2 —
-  Architecture at a Glance** (which this chapter set in motion).
+- **Stages 1–2 (extraction, pre-screen)** → [**Ch 4 — Input**](04_input.md).
+- **Stage 4 (review request shape)** → [**Ch 5 — The Review Engine**](05_review_engine.md).
+- **Stages 4–5 (batch submission, polling)** → [**Ch 6 — Batch Processing**](06_batch_processing.md).
+- **Stages 5–6 (collection, reconciliation, dedup, state objects)** → [**Ch 7 —
+  Orchestration & State**](07_orchestration.md).
+- **Stage 8 (cross-spec coordination)** → [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md).
+- **Stage 7/8 routing** → [**Ch 9 — Verification I**](09_verification_routing.md); **grounding/verdicts/cache**
+  → [**Ch 10 — Verification II**](10_verification_grounding.md).
+- **Stage 9 (report, sidecar, trust labels)** → [**Ch 11 — The Trust Model &
+  Report Output**](11_trust_model_and_output.md).
+- **Token preflight and budgets** → [**Ch 12 — Configuration, Models & Token
+  Economics**](12_configuration_and_models.md).
+- **The threading model, the run-epoch guard, `main.py`** → [**Ch 13 — The Desktop
+  GUI**](13_gui.md).
+- **The trace spans woven through every stage** → [**Ch 14 — Observability**](14_observability.md).
+- **The static box-and-arrow architecture and the data-model map** → [**Ch 2 —
+  Architecture at a Glance**](02_architecture.md) (which this chapter set in motion).
 
 ## Key takeaways
 
@@ -518,7 +518,7 @@ mechanics here:
   `EditProposal` in the sidecar — with nothing applied.
 - The implemented GUI path **verifies review findings before cross-check**,
   diverging from the "parallel" description in `CLAUDE.md`/README; the code wins,
-  and the drift is a **Ch 16** concern.
+  and the drift is a [**Ch 16**](16_trust_under_the_microscope.md) concern.
 - A **partial failure is recorded but not loud** — surfaced in statuses and the
   Run Diagnostics banner, yet not as a top-level "incomplete run" headline. An
-  honest edge, detailed in **Ch 11** and audited in **Ch 16**.
+  honest edge, detailed in [**Ch 11**](11_trust_model_and_output.md) and audited in [**Ch 16**](16_trust_under_the_microscope.md).
