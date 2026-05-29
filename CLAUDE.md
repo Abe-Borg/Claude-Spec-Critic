@@ -274,6 +274,8 @@ Priority order: cache-hit replay → local_skip → escalated → CRITICAL `cali
 ### Real-time fallback
 When a batch retry tail shrinks below `_REALTIME_FALLBACK_THRESHOLD` (5), the remainder flips to real-time rather than waiting another batch cycle.
 
+**Exactly-once terminal result invariant (STRUCTURAL_AUDIT P1-2).** Every finding in `collect_verification_batch_results` ends with exactly one `VerificationResult` — never dropped, never double-written. Three properties guarantee it and must be preserved together: (1) the post-loop tail at `verifier.py:3157-3159` is the safety net — any finding still at `verification is None` after the wave loop *and* the escalation wave becomes a terminal UNVERIFIED, which is also what catches the detach-on-final-wave `break`; (2) the real-time fallback (last wave + `break`) and the follow-up-wave submit (non-last waves only) are **mutually exclusive**, success/terminal outcomes are written back *and* marked `resolved=True`, and resolved findings are excluded from `active_contexts`/`next_contexts`, so a batch-resolved finding is never also handed to `verify_finding`; (3) `_run_batch_escalation_wave` skips findings whose `verification.escalation_attempted` is set — exactly the flag the real-time fallback's `verify_finding` stamps inline — so a fallback finding is not re-escalated. Locked in by `tests/test_batch_fallback_handoff.py` (fallback enabled / disabled / detached-final-wave).
+
 ---
 
 ## 4) Trust Model / Report Output
