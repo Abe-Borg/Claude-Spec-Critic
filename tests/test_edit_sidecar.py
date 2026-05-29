@@ -88,16 +88,15 @@ def test_report_only_finding_omitted():
     assert payload["edits"] == []
 
 
-def test_cross_check_suppressed_findings_included_with_reason():
-    suppressed = _finding_with_edit(section="4.0")
-    suppressed.suppression_reason = "every upstream finding was DISPUTED"
-    cc = ReviewResult(findings=[], suppressed_findings=[suppressed])
+def test_cross_check_findings_included_in_payload():
+    cc_finding = _finding_with_edit(section="4.0")
+    cc = ReviewResult(findings=[cc_finding], cross_check_status="completed")
     result = _StubPipelineResult(
         review_result=ReviewResult(findings=[]), cross_check_result=cc
     )
     payload = build_edit_instructions(result)
     assert payload["edit_count"] == 1
-    assert payload["edits"][0]["suppression_reason"] == "every upstream finding was DISPUTED"
+    assert payload["edits"][0]["section"] == "4.0"
 
 
 def test_write_sidecar_creates_file_next_to_report(tmp_path: Path):

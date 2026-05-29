@@ -3,7 +3,7 @@
 Chunk 6 of the Trust Upgrade adds a styled-table banner right after the
 title block that surfaces operational health at-a-glance:
 
-* Edit-suggested / Report-only / Suppressed counts (from the
+* Edit-suggested / Report-only counts (from the
   edit-action histogram already computed for the trust-model summary).
 * Cache replays with the oldest entry age (using Chunk 5's
   ``cache_entry_created_ts``).
@@ -60,7 +60,6 @@ def _finding(
     replacement: str | None = "2025 CBC",
     verification: VerificationResult | None = None,
     edit_proposal: EditProposal | None = None,
-    suppression_reason: str | None = None,
     demotion_reason: str | None = None,
 ) -> Finding:
     f = Finding(
@@ -74,7 +73,6 @@ def _finding(
         codeReference="CBC §1234",
         confidence=confidence,
         edit_proposal=edit_proposal,
-        suppression_reason=suppression_reason,
         demotion_reason=demotion_reason,
     )
     f.verification = verification
@@ -182,7 +180,6 @@ class TestSummarizeRunDiagnostics:
         summary = _findings_to_summary([])
         assert summary["edit_suggested"] == 0
         assert summary["report_only"] == 0
-        assert summary["suppressed"] == 0
         assert summary["verification_failed"] == 0
         assert summary["cache_replay_count"] == 0
         assert summary["oldest_cache_age_days"] is None
@@ -213,14 +210,6 @@ class TestSummarizeRunDiagnostics:
         )
         summary = _findings_to_summary([f])
         assert summary["report_only"] == 1
-
-    def test_suppressed_count_reflects_suppression_reason(self):
-        f = _finding(
-            verification=_verified_supported(),
-            suppression_reason="upstream disputed",
-        )
-        summary = _findings_to_summary([f])
-        assert summary["suppressed"] == 1
 
     def test_verification_failed_count_uses_status_histogram(self):
         f = _finding(verification=_failed_verification())
@@ -385,7 +374,6 @@ class TestBannerRendering:
         # are the always-present rows.
         assert "Edit suggested" in text
         assert "Report-only" in text
-        assert "Suppressed (cross-check filter)" in text
         assert "Cache replays" in text
         assert "Verification failures (operational)" in text
         assert "REPORT_ONLY demotions at parse time" in text

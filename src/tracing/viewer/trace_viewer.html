@@ -118,7 +118,6 @@ const KIND_COLORS = {
 
 // ---- Replicates report_status.classify_status (JS port) ----
 function classifyStatus(finding) {
-  if (finding && finding.suppression_reason) return "MANUAL_REVIEW_REQUIRED";
   const v = finding ? finding.verification : null;
   if (!v) return "NOT_CHECKED";
   if (v.verification_failed) return "VERIFICATION_FAILED";

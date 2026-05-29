@@ -3,16 +3,16 @@
 A single closed set of statuses every finding maps to for display
 (:class:`ReportStatus`), plus a matching closed set of edit-action labels
 (:class:`EditActionLabel`). Both are *derived* from already-stored Finding
-fields (``verification``, ``suppression_reason``, ``edit_proposal``) —
-nothing on the Finding itself changes. Reports use these to make
+fields (``verification``, ``edit_proposal``) — nothing on the Finding
+itself changes. Reports use these to make
 uncertainty visible: a CONFIRMED + grounded finding renders differently
 from a DISPUTED one, and a finding carrying a suggested edit renders
 differently from a coordination claim with no proposal.
 
 This app emits edit instructions but never applies them, so
 :class:`EditActionLabel` is a simple "does this finding carry a suggested
-edit?" classification — ``EDIT_SUGGESTED`` / ``REPORT_ONLY`` /
-``SUPPRESSED``. Any confidence- or verdict-based gating for *applying* an
+edit?" classification — ``EDIT_SUGGESTED`` / ``REPORT_ONLY``. Any
+confidence- or verdict-based gating for *applying* an
 edit is a downstream applier's responsibility; the finding's verification
 status and ``edit_confidence`` ride along in the report and JSON sidecar
 for that purpose.
@@ -52,7 +52,8 @@ class ReportStatus(str, Enum):
     LOCALLY_CLASSIFIED = "LOCALLY_CLASSIFIED"
     # Finding never reached the verifier.
     NOT_CHECKED = "NOT_CHECKED"
-    # Cross-check suppression or other manual-review-required path.
+    # Reserved for precondition / parser failures that require a human to
+    # look at the finding before it can be trusted.
     MANUAL_REVIEW_REQUIRED = "MANUAL_REVIEW_REQUIRED"
     # Chunk 3 / Trust Upgrade: the verifier attempted to run but failed
     # operationally (rate limit, server error, network failure, parse
@@ -82,13 +83,11 @@ class EditActionLabel(str, Enum):
 
     This app no longer applies edits — it emits them. ``EDIT_SUGGESTED``
     marks a finding that carries a structured edit proposal (existing →
-    replacement); ``REPORT_ONLY`` has no proposal; ``SUPPRESSED`` was
-    dropped by cross-check dependency tracking.
+    replacement); ``REPORT_ONLY`` has no proposal.
     """
 
     EDIT_SUGGESTED = "EDIT_SUGGESTED"
     REPORT_ONLY = "REPORT_ONLY"
-    SUPPRESSED = "SUPPRESSED"
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +125,6 @@ STATUS_GLYPHS: Final[dict[ReportStatus, str]] = {
 EDIT_ACTION_LABELS: Final[dict[EditActionLabel, str]] = {
     EditActionLabel.EDIT_SUGGESTED: "Edit suggested",
     EditActionLabel.REPORT_ONLY: "Report only",
-    EditActionLabel.SUPPRESSED: "Suppressed",
 }
 
 
@@ -147,17 +145,13 @@ def classify_status(finding) -> ReportStatus:
 
     Rules in priority order (first match wins):
 
-    1. ``suppression_reason`` set → ``MANUAL_REVIEW_REQUIRED``. Chunk M
-       puts suppressed cross-check findings on a separate list, but the
-       report still renders them in a dedicated section and they should
-       not pretend to be supported.
-    2. No ``verification`` → ``NOT_CHECKED``.
-    3. ``verification_failed`` sentinel set → ``VERIFICATION_FAILED``
+    1. No ``verification`` → ``NOT_CHECKED``.
+    2. ``verification_failed`` sentinel set → ``VERIFICATION_FAILED``
        (Chunk 3 / Trust Upgrade). Surfaces operational failures (rate
        limit, server error, parse error, INVALID_REQUEST, etc.) so
        reports can show them under a dedicated warning glyph instead of
        quietly conflating them with cleanly-UNVERIFIED claims.
-    4. ``models_disagreed`` sentinel set → ``VERIFIED_CONTESTED``
+    3. ``models_disagreed`` sentinel set → ``VERIFIED_CONTESTED``
        (Chunk 12 / Trust Upgrade). Set when the initial and escalated
        passes returned different verdicts and BOTH were grounded.
        Placed above the verdict-based branches so a CONFIRMED+grounded
@@ -165,18 +159,18 @@ def classify_status(finding) -> ReportStatus:
        renders as VERIFIED_CONTESTED — the disagreement itself is the
        quality signal the reviewer needs to see, not the headline
        verdict.
-    5. ``cache_status == "local_skip"`` → ``LOCALLY_CLASSIFIED``.
-    6. Verdict ``CONFIRMED`` + grounded + accepted citation
+    4. ``cache_status == "local_skip"`` → ``LOCALLY_CLASSIFIED``.
+    5. Verdict ``CONFIRMED`` + grounded + accepted citation
        → ``VERIFIED_SUPPORTED``.
-    7. Verdict ``CORRECTED`` + grounded + accepted citation
+    6. Verdict ``CORRECTED`` + grounded + accepted citation
        → ``VERIFIED_CONTRADICTED``.
-    8. Verdict ``DISPUTED`` → ``DISPUTED``.
-    9. Everything else (UNVERIFIED, an ungrounded CONFIRMED/CORRECTED
+    7. Verdict ``DISPUTED`` → ``DISPUTED``.
+    8. Everything else (UNVERIFIED, an ungrounded CONFIRMED/CORRECTED
        that slipped past :func:`_enforce_grounding_invariant`, a
        CONFIRMED/CORRECTED with no accepted citation, unknown verdict
        strings) → ``INSUFFICIENT_EVIDENCE``.
 
-    Chunk 5 — the explicit accepted-citation check on rules 6/7 is
+    Chunk 5 — the explicit accepted-citation check on rules 5/6 is
     belt-and-suspenders for the case where a finding reaches the report
     without going through :func:`src.verifier._enforce_grounding_invariant`
     (e.g. a future call site that bypasses the verifier wrapper, or a
@@ -185,8 +179,6 @@ def classify_status(finding) -> ReportStatus:
     duplicate check here means the report cannot accidentally show
     "Verified — supported" for a source-less verdict.
     """
-    if getattr(finding, "suppression_reason", None):
-        return ReportStatus.MANUAL_REVIEW_REQUIRED
     verification = getattr(finding, "verification", None)
     if verification is None:
         return ReportStatus.NOT_CHECKED
@@ -267,17 +259,14 @@ def classify_edit_action(finding) -> EditActionLabel:
 
     Rules in priority order:
 
-    1. ``suppression_reason`` set → ``SUPPRESSED``.
-    2. No edit proposal → ``REPORT_ONLY``.
-    3. Otherwise → ``EDIT_SUGGESTED``.
+    1. No edit proposal → ``REPORT_ONLY``.
+    2. Otherwise → ``EDIT_SUGGESTED``.
 
     This app emits edit instructions but never applies them, so the
     label is a simple "does this finding carry a suggested edit?"
     classification. Any confidence- or verdict-based gating for
     *applying* the edit is the downstream applier's responsibility.
     """
-    if getattr(finding, "suppression_reason", None):
-        return EditActionLabel.SUPPRESSED
     # Findings constructed in legacy tests may not have ``as_edit_proposal``.
     proposal = (
         finding.as_edit_proposal()
@@ -328,7 +317,7 @@ def edit_action_label(action: EditActionLabel | str) -> str:
 # ---------------------------------------------------------------------------
 
 # Stable display order for the summary table. Supportive first, then
-# uncertain, then suppressed — matches the reading order on the report.
+# uncertain — matches the reading order on the report.
 # VERIFICATION_FAILED sits next to NOT_CHECKED / MANUAL_REVIEW_REQUIRED
 # (operational tail) so the supportive block stays compact at the top.
 # VERIFIED_CONTESTED (Chunk 12) sits between VERIFIED_CONTRADICTED and
@@ -351,7 +340,6 @@ STATUS_DISPLAY_ORDER: Final[tuple[ReportStatus, ...]] = (
 EDIT_ACTION_DISPLAY_ORDER: Final[tuple[EditActionLabel, ...]] = (
     EditActionLabel.EDIT_SUGGESTED,
     EditActionLabel.REPORT_ONLY,
-    EditActionLabel.SUPPRESSED,
 )
 
 

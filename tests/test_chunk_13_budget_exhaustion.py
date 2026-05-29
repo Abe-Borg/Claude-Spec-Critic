@@ -69,7 +69,6 @@ def _finding(
     replacement: str | None = "new text",
     verification: VerificationResult | None = None,
     edit_proposal: EditProposal | None = None,
-    suppression_reason: str | None = None,
 ) -> Finding:
     f = Finding(
         severity=severity,
@@ -82,7 +81,6 @@ def _finding(
         codeReference="CBC §1234",
         confidence=confidence,
         edit_proposal=edit_proposal,
-        suppression_reason=suppression_reason,
     )
     f.verification = verification
     return f

@@ -41,8 +41,6 @@ _STATUS_GLYPHS = {
 
 
 def _classify_status(finding: dict) -> str:
-    if finding.get("suppression_reason"):
-        return "MANUAL_REVIEW_REQUIRED"
     v = finding.get("verification")
     if not v:
         return "NOT_CHECKED"
