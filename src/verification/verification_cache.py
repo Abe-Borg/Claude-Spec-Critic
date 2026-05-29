@@ -34,7 +34,7 @@ import re
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -321,7 +321,6 @@ class VerificationCache:
         cutoff = time.time() - (ttl_days * 86400) if ttl_days > 0 else 0.0
         loaded = 0
         expired = 0
-        from .verifier import VerificationResult
 
         with self._lock:
             for key, raw in raw_entries.items():
@@ -335,97 +334,11 @@ class VerificationCache:
                 if not isinstance(result_payload, dict):
                     continue
                 try:
-                    raw_rejected = result_payload.get("rejected_sources") or []
-                    rejected: list[dict] = []
-                    for r in raw_rejected:
-                        if isinstance(r, dict):
-                            rejected.append(
-                                {
-                                    "url": str(r.get("url") or ""),
-                                    "reason": str(r.get("reason") or ""),
-                                }
-                            )
-                    entry_result = VerificationResult(
-                        verdict=str(result_payload.get("verdict") or "UNVERIFIED"),
-                        explanation=str(result_payload.get("explanation") or ""),
-                        sources=[str(s) for s in (result_payload.get("sources") or []) if s],
-                        correction=(
-                            str(result_payload["correction"])
-                            if result_payload.get("correction") is not None
-                            else None
-                        ),
-                        grounded=bool(result_payload.get("grounded", False)),
-                        model_used=str(result_payload.get("model_used") or ""),
-                        escalated=bool(result_payload.get("escalated", False)),
-                        cache_status="miss",
-                        web_search_requests=int(result_payload.get("web_search_requests", 0) or 0),
-                        successful_source_count=int(
-                            result_payload.get("successful_source_count", 0) or 0
-                        ),
-                        search_error_count=int(result_payload.get("search_error_count", 0) or 0),
-                        # Source-grounding evidence. Legacy entries lack
-                        # these keys; the defaults below preserve the
-                        # cached verdict exactly.
-                        searched_sources=[
-                            str(s) for s in (result_payload.get("searched_sources") or []) if s
-                        ],
-                        cited_sources=[
-                            str(s) for s in (result_payload.get("cited_sources") or []) if s
-                        ],
-                        accepted_sources=[
-                            str(s) for s in (result_payload.get("accepted_sources") or []) if s
-                        ],
-                        rejected_sources=rejected,
-                        verification_profile=str(
-                            result_payload.get("verification_profile") or ""
-                        ),
-                        # Stored verification mode. Missing on legacy
-                        # entries — defaults to "" so the routing logic
-                        # falls back to STANDARD_REASONING the next time
-                        # the entry is used.
-                        verification_mode=str(
-                            result_payload.get("verification_mode") or ""
-                        ),
-                        # Chunk 2 / Trust Upgrade: the verbatim snippet.
-                        # v3 entries always carry it; the schema-version
-                        # gate above already dropped pre-v3 files, so a
-                        # missing value here means a malformed entry —
-                        # default to empty string and let the report
-                        # render without a quote rather than crashing.
-                        source_quote=str(result_payload.get("source_quote") or ""),
-                        # Chunk 11 / Trust Upgrade: missing keys default to
-                        # 0 / [] so v3 entries written before the field
-                        # existed (the field was added without a schema
-                        # bump because it's runtime telemetry, not
-                        # verdict semantics) replay cleanly with empty
-                        # fetch evidence — the report's "Searches: N,
-                        # Full-page fetches: M" line simply shows 0 for
-                        # the legacy entry.
-                        web_fetch_requests=int(
-                            result_payload.get("web_fetch_requests", 0) or 0
-                        ),
-                        fetched_sources=[
-                            str(s)
-                            for s in (result_payload.get("fetched_sources") or [])
-                            if s
-                        ],
-                        # Chunk 12 / Trust Upgrade: missing keys default
-                        # to False / [] so v3 entries written before the
-                        # field existed (the field was added without a
-                        # schema bump because it's runtime telemetry,
-                        # not verdict semantics) replay cleanly without
-                        # the contested-status badge — the cached
-                        # verdict still renders via the regular
-                        # verdict-based branches.
-                        models_disagreed=bool(
-                            result_payload.get("models_disagreed", False)
-                        ),
-                        initial_sources=[
-                            str(s)
-                            for s in (result_payload.get("initial_sources") or [])
-                            if s
-                        ],
-                    )
+                    # Single deserialization path — same allow-list +
+                    # defensive coercion the in-memory clones use. Legacy
+                    # entries that predate a telemetry field load it at its
+                    # default (e.g. fetch / disagreement keys → 0 / False / []).
+                    entry_result = _result_from_dict(result_payload, cache_status="miss")
                 except Exception:
                     continue
                 if not entry_result.grounded:
@@ -492,90 +405,156 @@ class VerificationCache:
         return count
 
 
+# ---------------------------------------------------------------------------
+# VerificationResult serialization policy
+# ---------------------------------------------------------------------------
+#
+# The cache persists only a *subset* of VerificationResult's fields — the
+# durable verdict semantics plus the evidence/telemetry needed to re-render a
+# cached hit identically. ``_PERSISTED_*`` below is the single source of truth
+# for that subset: ``_result_to_dict`` and ``_result_from_dict`` both drive
+# off it, replacing the four hand-maintained field-by-field projections this
+# module used to carry (to-dict, from-dict on load, clone-for-store,
+# clone-for-hit). A field is split by JSON type only so the loader can coerce
+# legacy / hand-edited entries defensively; the persisted *names* are the
+# combined set.
+#
+# Every field NOT persisted is listed in ``_SKIPPED_FIELDS`` with the reason.
+# ``test_verification_cache_serialization`` asserts that
+# ``_PERSISTED_FIELDS | _SKIPPED_FIELDS`` covers every dataclass field, so
+# adding a field to VerificationResult fails the test until it is explicitly
+# classified here — the drift that this unification exists to prevent.
+
+# ``verdict`` defaults to "UNVERIFIED"; every other string field defaults to "".
+_PERSISTED_STR_FIELDS = (
+    "verdict",
+    "explanation",
+    "model_used",
+    "verification_profile",
+    "verification_mode",
+    "source_quote",
+)
+_PERSISTED_BOOL_FIELDS = ("grounded", "escalated", "models_disagreed")
+_PERSISTED_INT_FIELDS = (
+    "web_search_requests",
+    "successful_source_count",
+    "search_error_count",
+    "web_fetch_requests",
+)
+_PERSISTED_STR_LIST_FIELDS = (
+    "sources",
+    "searched_sources",
+    "cited_sources",
+    "accepted_sources",
+    "fetched_sources",
+    "initial_sources",
+)
+# ``correction`` (str | None) and ``rejected_sources`` (list[dict]) need
+# bespoke coercion, so they sit outside the typed tuples above.
+_PERSISTED_FIELD_ORDER = (
+    *_PERSISTED_STR_FIELDS,
+    "correction",
+    *_PERSISTED_BOOL_FIELDS,
+    *_PERSISTED_INT_FIELDS,
+    *_PERSISTED_STR_LIST_FIELDS,
+    "rejected_sources",
+)
+_PERSISTED_FIELDS = frozenset(_PERSISTED_FIELD_ORDER)
+
+# Fields the cache deliberately does NOT persist, each with its reason. Kept
+# as an explicit set (not an implicit omission) so the round-trip test can
+# prove the union with _PERSISTED_FIELDS is exhaustive.
+_SKIPPED_FIELDS = frozenset({
+    # Replay state — stamped fresh on every store ("miss") / hit ("hit").
+    "cache_status",
+    "cache_entry_created_ts",
+    # Raw in-memory payloads — diagnostics only, never persisted.
+    "structured_payload",
+    "retry_telemetry",
+    # Transient signals the cache refuses to store (see ``put``): a re-run
+    # must re-attempt these rather than replay a frozen shortfall.
+    "verification_failed",
+    "budget_exhausted",
+    # Local-skip-only telemetry; local-skip results are never grounded, so
+    # they never reach the cache in the first place.
+    "requires_elevated_confidence",
+    # Escalation history. A cache hit replays the final verdict and the
+    # Chunk 12 ``models_disagreed`` / ``initial_sources`` signal, but not
+    # the full before/after escalation trace — preserved behavior from the
+    # original projections.
+    "escalation_attempted",
+    "initial_model",
+    "initial_verdict",
+    "escalation_changed_verdict",
+    "escalation_reason",
+    # Operational token counts — diagnostics only, not persisted.
+    "input_tokens",
+    "output_tokens",
+})
+
+
+def _coerce_rejected(raw) -> list[dict]:
+    out: list[dict] = []
+    for r in raw or []:
+        if isinstance(r, dict):
+            out.append(
+                {"url": str(r.get("url") or ""), "reason": str(r.get("reason") or "")}
+            )
+    return out
+
+
 def _result_to_dict(result: "VerificationResult") -> dict:
-    return {
-        "verdict": result.verdict,
-        "explanation": result.explanation,
-        "sources": list(result.sources),
-        "correction": result.correction,
-        "grounded": bool(result.grounded),
-        "model_used": result.model_used,
-        "escalated": bool(result.escalated),
-        "web_search_requests": int(result.web_search_requests),
-        "successful_source_count": int(result.successful_source_count),
-        "search_error_count": int(result.search_error_count),
-        # Persist the source-grounding partition + profile so a restored
-        # cache hit shows reports the same accepted / rejected sources the
-        # original run produced.
-        "searched_sources": list(result.searched_sources),
-        "cited_sources": list(result.cited_sources),
-        "accepted_sources": list(result.accepted_sources),
-        "rejected_sources": [dict(r) for r in result.rejected_sources],
-        "verification_profile": result.verification_profile,
-        # Persist the verification mode so a restored cache hit carries the
-        # original routing decision into reports and diagnostics. Legacy
-        # entries (without this field) load as empty string; the routing
-        # logic treats that as STANDARD_REASONING for backward compatibility.
-        "verification_mode": result.verification_mode,
-        # Chunk 2 / Trust Upgrade: persist the verbatim snippet so cache
-        # replays render the same source_quote the original verification
-        # produced. v3 schema bump invalidates v2 entries that lack it.
-        "source_quote": result.source_quote,
-        # Chunk 11 / Trust Upgrade: persist web_fetch telemetry so cache
-        # replays render the same "Searches: N, Full-page fetches: M"
-        # line and the "Full-text sources consulted" sub-section the
-        # original verification produced. Runtime telemetry (not verdict
-        # semantics), so no schema bump is required — missing keys on
-        # legacy entries default to 0 / [] on load.
-        "web_fetch_requests": int(result.web_fetch_requests),
-        "fetched_sources": list(result.fetched_sources),
-        # Chunk 12 / Trust Upgrade: persist the models-disagreed
-        # sentinel and the initial verifier's accepted citations so a
-        # cache replay surfaces the same VERIFIED_CONTESTED status the
-        # original run produced. Runtime telemetry (the verdict
-        # semantics live in ``verdict`` / ``sources``), so no schema
-        # bump is required — missing keys on legacy entries default to
-        # False / [] on load and the result classifies via the
-        # verdict-based branches.
-        "models_disagreed": bool(result.models_disagreed),
-        "initial_sources": list(result.initial_sources),
-    }
+    """Project a VerificationResult onto its persisted-field dict.
+
+    Uses :func:`dataclasses.asdict` (which deep-copies nested lists / dicts)
+    and filters to the explicit ``_PERSISTED_FIELD_ORDER`` allow-list, so a
+    newly added dataclass field is never silently written to disk — it has to
+    be classified in ``_PERSISTED_*`` or ``_SKIPPED_FIELDS`` first.
+    """
+    full = asdict(result)
+    return {name: full[name] for name in _PERSISTED_FIELD_ORDER}
+
+
+def _result_from_dict(
+    payload: dict,
+    *,
+    cache_status: str,
+    cache_entry_created_ts: float = 0.0,
+) -> "VerificationResult":
+    """Rebuild a VerificationResult from a persisted-field dict.
+
+    The inverse of :func:`_result_to_dict`, driven by the same allow-list.
+    Coerces defensively so legacy / hand-edited cache files (missing keys,
+    wrong JSON types) load to the field defaults rather than crashing. Skipped
+    fields take their dataclass defaults; ``cache_status`` /
+    ``cache_entry_created_ts`` are stamped by the caller (store vs. hit).
+    """
+    from .verifier import VerificationResult
+
+    kwargs: dict = {}
+    for name in _PERSISTED_STR_FIELDS:
+        default = "UNVERIFIED" if name == "verdict" else ""
+        kwargs[name] = str(payload.get(name) or default)
+    for name in _PERSISTED_BOOL_FIELDS:
+        kwargs[name] = bool(payload.get(name, False))
+    for name in _PERSISTED_INT_FIELDS:
+        kwargs[name] = int(payload.get(name, 0) or 0)
+    for name in _PERSISTED_STR_LIST_FIELDS:
+        kwargs[name] = [str(s) for s in (payload.get(name) or []) if s]
+    kwargs["correction"] = (
+        str(payload["correction"]) if payload.get("correction") is not None else None
+    )
+    kwargs["rejected_sources"] = _coerce_rejected(payload.get("rejected_sources"))
+    return VerificationResult(
+        cache_status=cache_status,
+        cache_entry_created_ts=cache_entry_created_ts,
+        **kwargs,
+    )
 
 
 def _clone_for_store(result: "VerificationResult") -> "VerificationResult":
-    from .verifier import VerificationResult
-    return VerificationResult(
-        verdict=result.verdict,
-        explanation=result.explanation,
-        sources=list(result.sources),
-        correction=result.correction,
-        grounded=result.grounded,
-        model_used=result.model_used,
-        escalated=result.escalated,
-        cache_status="miss",
-        web_search_requests=result.web_search_requests,
-        successful_source_count=result.successful_source_count,
-        search_error_count=result.search_error_count,
-        searched_sources=list(result.searched_sources),
-        cited_sources=list(result.cited_sources),
-        accepted_sources=list(result.accepted_sources),
-        rejected_sources=[dict(r) for r in result.rejected_sources],
-        verification_profile=result.verification_profile,
-        verification_mode=result.verification_mode,
-        source_quote=result.source_quote,
-        # Chunk 11 / Trust Upgrade: carry fetch telemetry into the
-        # stored entry so cache hits replay the same evidence-panel
-        # counts the original verification produced.
-        web_fetch_requests=result.web_fetch_requests,
-        fetched_sources=list(result.fetched_sources),
-        # Chunk 12 / Trust Upgrade: carry the models-disagreed sentinel
-        # and the initial verifier's citations so a cache replay
-        # surfaces VERIFIED_CONTESTED for the same finding the original
-        # run did. Without these, a cached escalation-disagreement
-        # finding would replay as VERIFIED_SUPPORTED on the next run.
-        models_disagreed=bool(result.models_disagreed),
-        initial_sources=list(result.initial_sources),
-    )
+    """In-memory store clone — round-trips through the persisted-field policy."""
+    return _result_from_dict(_result_to_dict(result), cache_status="miss")
 
 
 def _clone_for_hit(entry: _CacheEntry) -> "VerificationResult":
@@ -588,40 +567,8 @@ def _clone_for_hit(entry: _CacheEntry) -> "VerificationResult":
     distinct from the entry creation timestamp which remains the cache's
     source of truth.
     """
-    from .verifier import VerificationResult
-    stored = entry.result
-    return VerificationResult(
-        verdict=stored.verdict,
-        explanation=stored.explanation,
-        sources=list(stored.sources),
-        correction=stored.correction,
-        grounded=stored.grounded,
-        model_used=stored.model_used,
-        escalated=stored.escalated,
+    return _result_from_dict(
+        _result_to_dict(entry.result),
         cache_status="hit",
-        web_search_requests=stored.web_search_requests,
-        successful_source_count=stored.successful_source_count,
-        search_error_count=stored.search_error_count,
-        searched_sources=list(stored.searched_sources),
-        cited_sources=list(stored.cited_sources),
-        accepted_sources=list(stored.accepted_sources),
-        rejected_sources=[dict(r) for r in stored.rejected_sources],
-        verification_profile=stored.verification_profile,
-        verification_mode=stored.verification_mode,
-        source_quote=stored.source_quote,
         cache_entry_created_ts=entry.created_ts,
-        # Chunk 11 / Trust Upgrade: carry stored fetch telemetry onto the
-        # hit clone so the evidence panel renders the same fetch count
-        # and URL list the original verification produced. Defaults on
-        # ``VerificationResult`` cover entries persisted before the
-        # field existed (legacy v3 rows without the key).
-        web_fetch_requests=stored.web_fetch_requests,
-        fetched_sources=list(stored.fetched_sources),
-        # Chunk 12 / Trust Upgrade: carry the disagreement telemetry
-        # onto the hit clone so the report renders VERIFIED_CONTESTED
-        # for a cache replay of an originally-contested finding.
-        # Defaults on ``VerificationResult`` cover legacy entries that
-        # predate the field (missing keys load as False / []).
-        models_disagreed=bool(stored.models_disagreed),
-        initial_sources=list(stored.initial_sources),
     )
