@@ -57,7 +57,7 @@ from .verification_profiles import (
     VerificationProfile,
     profile_max_uses,
 )
-from .verification_router import (
+from .verification_prescreen import (
     classify_finding_for_verification,
     initial_verification_model,
     local_skip_enabled,
@@ -158,7 +158,7 @@ class VerificationResult:
     # question: did escalation actually pay off?
     #
     # ``escalation_attempted`` is True whenever
-    # :func:`verification_router.should_escalate_verification` fired and the
+    # :func:`verification_prescreen.should_escalate_verification` fired and the
     # escalation call was issued — regardless of whether the escalated result
     # was kept. ``escalated`` (above) is the subset where the escalated
     # result became the final one.
@@ -175,7 +175,7 @@ class VerificationResult:
     initial_verdict: str = ""
     escalation_changed_verdict: bool = False
     escalation_reason: str = ""
-    # ----- Models-disagreed sentinel (Chunk 12 / Trust Upgrade) -----------
+    # ----- Models-disagreed sentinel -----------
     # True when escalation produced a *real* disagreement: the initial
     # and escalated verifiers BOTH grounded their verdicts (each had at
     # least one accepted citation) AND their verdicts differed. Distinct
@@ -229,7 +229,7 @@ class VerificationResult:
     # for every grounded verdict produced by the production paths.
     # Empty string for UNVERIFIED/DISPUTED verdicts that don't have an
     # underlying supporting quote, and for legacy/cache entries that
-    # predate Chunk 2's schema bump.
+    # predate the source-quote schema bump.
     source_quote: str = ""
     # ----- Operational-failure sentinel -----------------------------------
     # True when the UNVERIFIED verdict came from a transient operational
@@ -243,7 +243,7 @@ class VerificationResult:
     # results — they are transient signals, not durable verdicts.
     verification_failed: bool = False
     # ----- Cache-entry age telemetry --------------------------------------
-    # Chunk 5 / Trust Upgrade: epoch seconds when the cache entry behind a
+    # Epoch seconds when the cache entry behind a
     # ``cache_status="hit"`` result was originally stored. Default 0.0 means
     # "not from a cache hit" (the verifier produced this result fresh).
     # Stamped by :func:`verification_cache._clone_for_hit` so the report
@@ -253,7 +253,7 @@ class VerificationResult:
     # original entry age.
     cache_entry_created_ts: float = 0.0
     # ----- Elevated-confidence flag ---------------------------------------
-    # Chunk 10 / Trust Upgrade: True when this finding was routed to
+    # True when this finding was routed to
     # local_skip via the "requires elevated confidence" keyword list
     # (``"leed"`` / ``"internal contradiction"``). The routing decision is
     # unchanged for those keywords (they still avoid the web-search round
@@ -264,7 +264,7 @@ class VerificationResult:
     # because they aren't grounded, so no cache schema bump is required.
     # Round-trips through resume state so a resumed report keeps the flag.
     requires_elevated_confidence: bool = False
-    # ----- Web-fetch telemetry (Chunk 11 / Trust Upgrade) -----------------
+    # ----- Web-fetch telemetry -----------------
     # Companion to ``web_search_requests`` / ``successful_source_count``.
     # ``web_fetch_requests`` counts how many full-page fetches the verifier
     # used; ``fetched_sources`` records the URLs the verifier pulled in
@@ -279,7 +279,7 @@ class VerificationResult:
     # replays render the same "Searches: N, Full-page fetches: M" line.
     web_fetch_requests: int = 0
     fetched_sources: list[str] = field(default_factory=list)
-    # ----- Budget-exhaustion sentinel (Chunk 13 / Trust Upgrade) ----------
+    # ----- Budget-exhaustion sentinel ----------
     # True when the verifier finished its turn without producing a grounded
     # verdict AND used its full mode-scaled web_search budget
     # (``web_search_requests >= decision.web_search_max_uses``). Distinct
@@ -410,7 +410,7 @@ def _apply_source_grounding(
     this helper handles the inverse case (citations present but none
     actually grounded).
 
-    Chunk 11 / Trust Upgrade: ``fetched`` is the optional list of URLs
+    ``fetched`` is the optional list of URLs
     the model pulled in full via ``web_fetch``. Fetched URLs validate
     citations the same way searched URLs do (the API actually retrieved
     them, so they are real evidence) but they are kept off
@@ -487,7 +487,7 @@ def _local_skip_result(
         # and diagnostics use this to count how many findings the keyword/
         # Haiku classifiers caught.
         verification_mode=VerificationMode.LOCAL_SKIP.value,
-        # Chunk 10 / Trust Upgrade: tag the residual-risk classes
+        # Tag the residual-risk classes
         # (``"leed"`` / ``"internal contradiction"``) so the composite-
         # confidence multiplier raises the auto-edit bar for them. The
         # router decides whether the flag applies; this dataclass field
@@ -560,7 +560,7 @@ def _build_verification_prompt(
 def _pinned_standards_lines(cycle: CodeCycle) -> list[str]:
     """Render the "Pinned standards editions" block for the verifier prompt.
 
-    Chunk 7 / Trust Upgrade: the California 2025 cycle pins specific
+    The California 2025 cycle pins specific
     editions of NFPA, ASHRAE, IAPMO, and UL standards. Surfacing these
     in the verifier system prompt lets the model verify claims against
     the editions California actually adopted, and flag any drift the
@@ -713,7 +713,7 @@ def _get_verification_system_prompt(
             "  (for CORRECTED only) correction so it can be parsed.",
             "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
         ]
-    # Chunk 2 / Trust Upgrade: every grounded verdict must carry the
+    # Every grounded verdict must carry the
     # verbatim snippet text the model actually read. Without that quote
     # the report has no audit trail back to a specific search result.
     # The parser demotes CONFIRMED/CORRECTED with empty source_quote to
@@ -743,7 +743,7 @@ def _get_verification_system_prompt(
         '  "correction": null',
         "}",
     ]
-    # Chunk 11 / Trust Upgrade: when the verification routing decision
+    # When the verification routing decision
     # attached the ``web_fetch`` tool (STANDARD_REASONING and
     # DEEP_REASONING modes only), the model needs an instruction block
     # for it. STRICT_STRUCTURED and LOCAL_SKIP don't get the tool, so the
@@ -906,7 +906,7 @@ def _web_search_count(message) -> int:
 
 
 def _web_fetch_count(message) -> int:
-    """Chunk 11 / Trust Upgrade: pull the per-message web_fetch use count.
+    """Pull the per-message web_fetch use count.
 
     Anthropic surfaces both ``web_search_requests`` and ``web_fetch_requests``
     on ``usage.server_tool_use`` when the respective tool fires. Defaults to
@@ -1067,7 +1067,7 @@ def _normalize_source_quote(value) -> str:
 def _demote_if_missing_source_quote(result: VerificationResult) -> VerificationResult:
     """Demote CONFIRMED/CORRECTED with an empty ``source_quote`` to UNVERIFIED.
 
-    Chunk 2 invariant: a grounded verdict must carry the verbatim snippet
+    Invariant: a grounded verdict must carry the verbatim snippet
     the model said it relied on. Without that quote there is no audit
     trail back to the actual search result, which is the whole point of
     the field. Mirrors the structure of :func:`_enforce_grounding_invariant`
@@ -1417,7 +1417,7 @@ def verify_finding(
             initial_verdict_snapshot = result.verdict
             initial_model_snapshot = result.model_used or selected_model
             escalation_reason = _classify_escalation_reason(result)
-            # Chunk 12 / Trust Upgrade: snapshot the initial verifier's
+            # Snapshot the initial verifier's
             # grounding state and accepted citations BEFORE the
             # escalated call runs and potentially swaps ``result``.
             # ``models_disagreed`` is the conjunction of "both grounded"
@@ -1478,7 +1478,7 @@ def _classify_escalation_reason(initial_result: VerificationResult) -> str:
     """Return a short machine-readable tag for why escalation fired.
 
     Mirrors the decision tree in
-    :func:`verification_router.should_escalate_verification` so the
+    :func:`verification_prescreen.should_escalate_verification` so the
     telemetry says exactly which branch triggered escalation. Tags are
     intentionally short and stable so downstream aggregation can bucket
     by reason without parsing free text.
@@ -1518,7 +1518,7 @@ def _apply_escalation_outcome(
     grounding / sources BEFORE the escalation call runs, because the swap
     below replaces the result object.
 
-    Returns the chosen result with the Chunk 12 escalation telemetry
+    Returns the chosen result with the escalation telemetry
     stamped (``escalation_attempted`` / ``initial_*`` /
     ``escalation_changed_verdict`` / ``escalation_reason`` /
     ``initial_sources`` / ``models_disagreed``).
@@ -1538,7 +1538,7 @@ def _apply_escalation_outcome(
     result.initial_verdict = initial_verdict
     result.escalation_changed_verdict = result.verdict != initial_verdict
     result.escalation_reason = escalation_reason
-    # Chunk 12: set the models-disagreed sentinel ONLY when both passes
+    # Set the models-disagreed sentinel ONLY when both passes
     # were grounded AND the verdicts differ — the stricter condition (vs.
     # ``escalation_changed_verdict``) avoids labelling an
     # initial-UNVERIFIED-then-CONFIRMED escalation as a disagreement.
@@ -1732,7 +1732,7 @@ def _run_verification_call(
                         _web_search_count(r) for r in all_responses
                     )
                     if total_search_so_far > search_budget_ceiling:
-                        # Chunk 13: the model burned through 2x the
+                        # The model burned through 2x the
                         # per-call budget. That clearly exhausted the
                         # 1x budget too, so flag the result.
                         return _make_unverified(
@@ -1756,7 +1756,7 @@ def _run_verification_call(
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
             final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
             if classify_verification_stop_reason(final_stop) != STOP_CLASS_COMPLETE:
-                # Chunk 13: the model never completed its turn. Recompute
+                # The model never completed its turn. Recompute
                 # the search count here (the standard collection loop
                 # below has not run yet) so the budget-exhausted flag
                 # reflects the searches the continuation rounds did burn.
@@ -1785,7 +1785,7 @@ def _run_verification_call(
                 success_blocks += successes
                 total_search_errors += errors
                 total_search_requests += _web_search_count(resp)
-                # Chunk 11 / Trust Upgrade: collect web_fetch evidence in
+                # Collect web_fetch evidence in
                 # parallel with web_search. A successful fetch counts toward
                 # ``success_blocks`` for the grounded-check below so a
                 # verifier that fetched a page (even without searching first
@@ -1812,7 +1812,7 @@ def _run_verification_call(
 
             grounded = success_blocks > 0
             fetched_url_list = [s.url for s in deduped_fetched]
-            # Chunk 13 / Trust Upgrade: did the verifier consume its full
+            # Did the verifier consume its full
             # mode-scaled web_search budget? The flag is the actionable
             # signal that an operator could grant more headroom by
             # raising the finding's severity (severity-tiered budgets in
@@ -1879,7 +1879,7 @@ def _run_verification_call(
             parsed.web_search_requests = total_search_requests
             parsed.successful_source_count = len(deduped_searched)
             parsed.search_error_count = total_search_errors
-            # Chunk 11 / Trust Upgrade: stamp the web_fetch telemetry so
+            # Stamp the web_fetch telemetry so
             # the evidence panel can render "Searches: N, Full-page
             # fetches: M" and the "Full-text sources consulted" sub-section
             # has the URL list. Both stamped before source grounding so
@@ -1909,7 +1909,7 @@ def _run_verification_call(
                 verdict_before_invariant in ("CONFIRMED", "CORRECTED")
                 and verdict_after_invariant == "UNVERIFIED"
             )
-            # Chunk 13 / Trust Upgrade: stamp budget exhaustion AFTER
+            # Stamp budget exhaustion AFTER
             # the grounding invariant so a CONFIRMED that was downgraded
             # to UNVERIFIED for missing citations still picks up the flag
             # when the model used its full search budget. The condition
@@ -1945,7 +1945,7 @@ def _run_verification_call(
             # original error message visibly so the operator sees what
             # went wrong.
             #
-            # Chunk 3: every UNVERIFIED that exits through this exception
+            # Every UNVERIFIED that exits through this exception
             # block is an operational failure (rate limit, server error,
             # network error, INVALID_REQUEST, unexpected exception). The
             # ``failed=True`` flag routes them to the VERIFICATION_FAILED
@@ -2419,7 +2419,7 @@ def _classify_wave_results(
         parsed = outcome.verdict
         searched_detailed, success_blocks, error_count = _collect_search_evidence_detailed(message)
         deduped_searched = dedupe_searched_sources(searched_detailed)
-        # Chunk 11 / Trust Upgrade: parallel fetch-evidence collection.
+        # Parallel fetch-evidence collection.
         # The batch wave path applies the same grounding pool as the
         # real-time path so a fetched URL that the model cited validates
         # identically across modes. A successful fetch block bumps the
@@ -2473,7 +2473,7 @@ def _classify_wave_results(
             fetched=deduped_fetched,
         )
         parsed = _enforce_grounding_invariant(parsed)
-        # Chunk 13 / Trust Upgrade: mirror the real-time budget-exhaustion
+        # Mirror the real-time budget-exhaustion
         # check so the batch wave path applies the same condition. The
         # decision is the one stored in the request context (or rebuilt
         # from the finding on the first wave) so the budget compared
@@ -2500,7 +2500,7 @@ def _run_batch_escalation_wave(
     log: Callable[..., None],
     progress: Callable[[float, str], None],
 ) -> None:
-    """Escalate ungrounded high-stakes batch findings on Opus (Chunk 12 parity).
+    """Escalate ungrounded high-stakes batch findings on Opus (real-time parity).
 
     The real-time path (:func:`verify_finding`) re-runs Sonnet's ungrounded
     CRITICAL/HIGH verdicts on Opus and surfaces genuine disagreements as
@@ -2799,7 +2799,7 @@ def collect_verification_batch_results(
                             terminal_reason=terminal_reason_str,
                             continuation_count=continuation_counts.get(stable_key, 0),
                         ),
-                        # Chunk 3: INVALID_REQUEST and BATCH_CANCELED both
+                        # INVALID_REQUEST and BATCH_CANCELED both
                         # land here — both are operational failures (bad
                         # request shape or platform cancellation) rather
                         # than verifier-said-nothing outcomes.
@@ -2865,7 +2865,7 @@ def collect_verification_batch_results(
             else:
                 if outcome.failure_class is not None:
                     failure_tracker.record(stable_key, outcome.failure_class)
-                # Chunk 3: ``terminal_unverified`` outcomes carry a
+                # ``terminal_unverified`` outcomes carry a
                 # FailureClass when they originated from an operational
                 # problem (PARSE_ERROR on incomplete/empty/malformed
                 # responses, INVALID_REQUEST/BATCH_CANCELED on batch
@@ -2934,7 +2934,7 @@ def collect_verification_batch_results(
                         try:
                             f.verification = future.result()
                         except Exception as e:
-                            # Chunk 3: fallback worker crashed — operational
+                            # Fallback worker crashed — operational
                             # failure, route to VERIFICATION_FAILED.
                             f.verification = VerificationResult(
                                 verdict="UNVERIFIED",
@@ -2952,7 +2952,7 @@ def collect_verification_batch_results(
                     .get("original_custom_id")
                     or outcome.original_custom_id
                 )
-                # Chunk 3: a finding that ran out of batch waves with a
+                # A finding that ran out of batch waves with a
                 # failure_class set is an operational failure (repeated
                 # transport errors that the wave tracker never resolved).
                 # When the failure_class is PAUSE_TURN, the model failed
@@ -3108,7 +3108,7 @@ def collect_verification_batch_results(
                     .get("original_custom_id")
                     or outcome.original_custom_id
                 )
-                # Chunk 3: tracker_terminated means repeated same-class
+                # tracker_terminated means repeated same-class
                 # failures across waves — operational by definition.
                 fc = outcome.failure_class
                 op_failed = fc is not None and fc is not FailureClass.PAUSE_TURN
@@ -3131,7 +3131,7 @@ def collect_verification_batch_results(
             extra_headers=wave_extra_headers or None,
         )
         request_contexts = next_contexts
-    # Escalation wave (Chunk 12 parity): re-run ungrounded high-stakes
+    # Escalation wave (real-time parity): re-run ungrounded high-stakes
     # findings on Opus so a batch run surfaces the same escalation /
     # VERIFIED_CONTESTED signals the real-time path produces. Runs after the
     # main wave loop has resolved every finding, so each has an initial

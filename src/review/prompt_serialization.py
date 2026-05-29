@@ -1,9 +1,9 @@
 """Safe serialization helpers for embedding untrusted content in prompts.
 
-Chunk K2 adds an opt-in id-tagged document rendering so findings can cite a
+An opt-in id-tagged document rendering lets findings cite a
 stable :attr:`ParagraphMapping.element_id` alongside the exact quote. The
-id-tagged path lives in this module so the wrapper escaping rules from
-Chunk G stay in one place; the system-prompt prefix is unchanged byte-for-
+id-tagged path lives in this module so the wrapper escaping rules
+stay in one place; the system-prompt prefix is unchanged byte-for-
 byte, so prompt-caching breakpoints continue to land where they did. The
 opt-in is exposed via :func:`element_ids_enabled` so a future regression
 can be rolled back without redeploying — set
@@ -18,7 +18,7 @@ like strings could close or redefine those wrappers — a prompt-injection
 boundary problem regardless of whether the document was hostile or just
 contained the wrong characters by accident.
 
-Chunk G chose "escaped text inside explicit content blocks" over full JSON
+We chose "escaped text inside explicit content blocks" over full JSON
 serialization because:
 
 * it preserves the readable, model-trained prompt shape, so model behavior
@@ -74,13 +74,13 @@ TAG_ALREADY_IDENTIFIED = "already_identified"
 TAG_PRIOR_FINDING = "prior"
 TAG_FINDING = "finding"
 TAG_FINDINGS = "findings"
-# Chunk K2: element-level wrappers used when the id-tagged rendering is on.
+# Element-level wrappers used when the id-tagged rendering is on.
 # The model receives one ``<para id="...">…</para>`` (or ``<row …>``) per
 # extracted element so it can cite ``evidenceElementId`` precisely.
 TAG_PARA = "para"
 TAG_ROW = "row"
 TAG_HEADING = "heading"
-# Chunk D4.1: wrapper for the per-spec list of items the deterministic
+# Wrapper for the per-spec list of items the deterministic
 # preprocessor already detected. The block sits at the *end* of the user
 # message so the cached system prompt prefix is unchanged and the
 # instruction-prefix invariant tested by ``TestPromptCacheBreakpointSafety``
@@ -195,7 +195,7 @@ def render_blocks(blocks: Iterable[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Chunk K2: id-tagged document rendering
+# Id-tagged document rendering
 # ---------------------------------------------------------------------------
 
 
@@ -267,7 +267,7 @@ def render_spec_with_ids(
     for mapping in paragraph_map:
         eid = (getattr(mapping, "element_id", "") or "").strip()
         if not eid:
-            # Mapping predates Chunk K1 — fall back to a plain ``<para>``
+            # Mapping has no element id — fall back to a plain ``<para>``
             # without an id so the model still sees the body text.
             body_lines.append(wrap_data_block(TAG_PARA, mapping.text))
             continue
@@ -286,7 +286,7 @@ def render_spec_with_ids(
 
 
 # ---------------------------------------------------------------------------
-# Chunk D4.1: pre-detected deterministic-alerts block
+# Pre-detected deterministic-alerts block
 # ---------------------------------------------------------------------------
 
 
@@ -361,7 +361,7 @@ def render_pre_detected_block(
 ) -> str:
     """Render a compact ``<pre_detected>`` block summarising deterministic alerts.
 
-    Chunk D4.1: the block lists each detected ``deterministic_rule`` once
+    The block lists each detected ``deterministic_rule`` once
     with its count and up to ``_PRE_DETECTED_EXAMPLES_PER_RULE`` example
     matches, plus a one-line instruction telling the model not to surface
     the same items as new findings. Returns ``""`` when there are no

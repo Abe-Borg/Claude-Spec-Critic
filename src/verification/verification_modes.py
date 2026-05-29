@@ -143,11 +143,11 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
 
     Unknown / malformed strings fall back to STANDARD_REASONING so a
     pre-existing finding that did not record its mode (e.g. legacy
-    cache entries from before Chunk I) still produces a sensible
-    request shape. The default is intentionally the same shape the
-    verifier used before Chunk I — same model, same thinking
-    config, same budget — so a missing mode is observationally
-    indistinguishable from the pre-Chunk-I behavior.
+    cache entries that predate per-mode persistence) still produces a
+    sensible request shape. The default is intentionally the same shape
+    the verifier used before per-mode persistence — same model, same
+    thinking config, same budget — so a missing mode is observationally
+    indistinguishable from the legacy behavior.
     """
     if isinstance(mode, str):
         try:

@@ -1,7 +1,7 @@
-"""Chunk 8 tests: separate report deduplication from executable edit identity.
+"""Tests for separating report deduplication from executable edit identity.
 
-Plan section "Chunk 8 — Separate report deduplication from executable edit
-identity". The chunk preserves the per-file pre-merge edit fields when
+Plan section "Separate report deduplication from executable edit
+identity". This work preserves the per-file pre-merge edit fields when
 :func:`pipeline._deduplicate_findings` collapses findings across files, so
 edit execution does not fan one representative's ``existingText`` /
 ``replacementText`` / ``anchorText`` / ``evidenceElementId`` /
@@ -181,8 +181,8 @@ class TestGroupFindingsPerFileOriginal:
         groups = group_findings([f])
         assert len(groups) == 1
         occ = groups[0].occurrences[0]
-        # Singleton: the representative is the only original (Chunk 8
-        # backfill so executable_finding() returns the right thing).
+        # Singleton: the representative is the only original (backfill
+        # so executable_finding() returns the right thing).
         assert occ.has_original()
         assert occ.original_finding is f
         assert occ.executable_finding() is f

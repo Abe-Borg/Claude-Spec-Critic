@@ -86,14 +86,14 @@ def _sanitize_narrative(text: str) -> str:
 def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list[Finding]) -> str:
     """Render spec corpus for cross-check.
 
-    Chunk G: each spec is serialized through :func:`wrap_document_block` so
+    Each spec is serialized through :func:`wrap_document_block` so
     a literal ``</spec>`` (or any other reserved character) inside a spec
     body cannot close the wrapper. Filename and finding-attribute values
     flow through :func:`escape_attr` so attribute-breaking characters
     cannot truncate the opening tag either. ``render_blocks`` joins the
     pieces with newlines, dropping empties.
 
-    Chunk K2: when element ids are enabled and the spec has a paragraph
+    When element ids are enabled and the spec has a paragraph
     map, the body is rendered with one id-tagged element per paragraph /
     row / heading so the cross-check model can cite ids in its findings.
     Specs without a map (the rare path that hands raw strings around)
@@ -191,7 +191,7 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
 
 
 def _get_cross_check_user_message(spec_input: str, file_count: int, project_context: str = "") -> str:
-    # Chunk G: project_context serialized via wrap_document_block so a literal
+    # project_context serialized via wrap_document_block so a literal
     # ``</project_context>`` (or any reserved character) inside the operator-
     # supplied context cannot escape the wrapper.
     ctx = (
@@ -243,12 +243,12 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
         "messages": [{"role": "user", "content": user_message}],
     }
     apply_thinking_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
-    # Chunk D1.2: pair the effort policy with the thinking config so the
+    # Pair the effort policy with the thinking config so the
     # cross-check request includes ``output_config.effort`` on models
     # that support it (Opus / Sonnet — both standard cross-check models).
     apply_effort_config(request_kwargs, model=model, phase=PHASE_CROSS_CHECK)
     if use_structured_tool:
-        # Chunk J: cross-check tools cache under the cross_check phase
+        # Cross-check tools cache under the cross_check phase
         # policy. Today this is the global default (cache=on, ttl=1h);
         # routing through ``tools_with_cache`` keeps the policy in one
         # place if a future tuning pass diverges.
@@ -257,7 +257,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
         )
         request_kwargs["tool_choice"] = cross_check_tool_choice()
 
-    # Chunk 6: route through the centralized retry policy so cross-check,
+    # Route through the centralized retry policy so cross-check,
     # review streaming, and verification streaming agree on which
     # exception classes are retryable and how long to back off.
     policy = DEFAULT_REALTIME_RETRY_POLICY
@@ -411,7 +411,7 @@ def _close_cross_api_span(handle, result, *, source: str, status: str = "ok", er
 
 
 # ---------------------------------------------------------------------------
-# Phase 8 / plan section 12.3: chunked cross-check for large projects
+# Chunked cross-check for large projects
 # ---------------------------------------------------------------------------
 
 # CSI MasterFormat division 22/23 dominate K-12 mechanical/plumbing reviews.

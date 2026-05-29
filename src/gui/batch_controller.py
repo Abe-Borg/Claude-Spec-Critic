@@ -159,7 +159,7 @@ def collect_batch_results(app) -> None:
             )
             rv = review_state.review_result
             if diag:
-                # Chunk J: route through ``record_api_call`` so the per-
+                # Route through ``record_api_call`` so the per-
                 # phase rollup gets a consistent ``call_mode="batch"`` tag
                 # for the review phase.
                 diag.record_api_call(
@@ -238,7 +238,7 @@ def collect_batch_results(app) -> None:
                                 "finding_severity": f.severity,
                                 "confidence": f.confidence,
                                 "explanation": f.verification.explanation or "",
-                                # Chunk I: surface the routing decision
+                                # Surface the routing decision
                                 # so the diagnostics summary can report
                                 # how many findings each mode handled.
                                 "verification_mode": f.verification.verification_mode,
@@ -246,7 +246,7 @@ def collect_batch_results(app) -> None:
                                 "grounded": f.verification.grounded,
                                 "cache_status": f.verification.cache_status,
                                 "escalated": f.verification.escalated,
-                                # Chunk D1.3: escalation telemetry —
+                                # Escalation telemetry —
                                 # whether a second pass ran and whether
                                 # it changed the verdict, so the summary
                                 # can report "did escalation pay off?".
@@ -255,7 +255,7 @@ def collect_batch_results(app) -> None:
                                 "initial_verdict": f.verification.initial_verdict,
                                 "escalation_changed_verdict": f.verification.escalation_changed_verdict,
                                 "escalation_reason": f.verification.escalation_reason,
-                                # Chunk J: tag remote verifications as
+                                # Tag remote verifications as
                                 # batch API calls so the per-phase
                                 # rollup's call_mode counters reflect
                                 # the path that actually ran.
@@ -271,7 +271,7 @@ def collect_batch_results(app) -> None:
                                 # correct contribution to this-run spend.
                                 "input_tokens": f.verification.input_tokens,
                                 "output_tokens": f.verification.output_tokens,
-                                # Chunk 6: surface retry telemetry so the
+                                # Surface retry telemetry so the
                                 # per-phase diagnostics rollup can answer
                                 # "which findings burned retries / hit
                                 # the continuation cap?".
@@ -303,7 +303,7 @@ def collect_batch_results(app) -> None:
                     diag.log("cross_check", "warning", "Cross-check skipped: missing extracted specs")
             if diag and review_state.cross_check_result:
                 cc = review_state.cross_check_result
-                # Chunk J: the cross-check pass always runs as a live
+                # The cross-check pass always runs as a live
                 # (synchronous) call, so the call_mode reflects that
                 # rather than the batch review phase.
                 diag.record_api_call(

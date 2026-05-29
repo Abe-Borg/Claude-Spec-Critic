@@ -50,7 +50,7 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
         "confidence",
         "anchorText",
         "insertPosition",
-        # Chunk K3: optional evidence pointer. Required-but-nullable so
+        # Optional evidence pointer. Required-but-nullable so
         # strict-mode constrained sampling still has a deterministic shape.
         "evidenceElementId",
     ],
@@ -74,7 +74,6 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
         },
         "actionType": {
             "type": "string",
-            # Chunk L / plan section "Separate Findings From Edit Proposals":
             # ``REPORT_ONLY`` is the explicit "this finding has no clean
             # textual fix" choice. Models no longer have to manufacture a
             # replacement quote for coordination / interpretation findings
@@ -113,8 +112,7 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
             "enum": ["before", "after", None],
             "description": "ADD only: insert before or after the anchor.",
         },
-        # Chunk K3 / plan section "Chunk K — Stable Document IDs": when the
-        # prompt renders spec elements with id attributes, the model should
+        # When the prompt renders spec elements with id attributes, the model should
         # cite the element id of the paragraph / row / heading the finding
         # quotes. The id is a stable per-run identifier (e.g. ``p17``,
         # ``t2r3``) emitted by the extractor — see ``ParagraphMapping.element_id``.
@@ -247,7 +245,7 @@ VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
             "type": ["string", "null"],
             "description": "For CORRECTED verdicts only: the corrected reference text.",
         },
-        # Chunk 2 / Trust Upgrade: every grounded verdict must carry a
+        # Every grounded verdict must carry a
         # verbatim snippet from the search result that the model actually
         # read. CONFIRMED/CORRECTED with an empty source_quote is demoted
         # to UNVERIFIED at parse time — see ``_verdict_from_tool_use`` and

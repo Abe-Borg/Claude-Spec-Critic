@@ -1,4 +1,4 @@
-"""Source-grounding helpers for verification (Chunk H).
+"""Source-grounding helpers for verification.
 
 The verifier previously had two parallel notions of "sources":
 
@@ -10,8 +10,8 @@ The verifier previously had two parallel notions of "sources":
 There was no consistency check between the two: a model that cited a URL
 the API never actually retrieved (a hallucinated source) would have been
 accepted just like one that cited a real result. The verifier system
-prompt asks the model not to invent URLs, but Chunk H Directive 2 calls
-for programmatic enforcement.
+prompt asks the model not to invent URLs, but this module enforces that
+programmatically.
 
 This module owns the contract:
 
@@ -306,7 +306,7 @@ class SearchedSource:
 
     The verifier was previously collecting these as bare strings, which
     made it impossible to surface titles in reports without re-walking
-    the assistant message. Chunk H stores the title alongside the URL so
+    the assistant message. We store the title alongside the URL so
     reports can render ``[title] (url)`` without losing data.
     """
 

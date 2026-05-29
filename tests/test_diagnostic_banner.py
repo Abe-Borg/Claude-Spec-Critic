@@ -1,17 +1,17 @@
-"""Chunk 6 tests — Run Diagnostics banner.
+"""Tests for the Run Diagnostics banner.
 
-Chunk 6 of the Trust Upgrade adds a styled-table banner right after the
-title block that surfaces operational health at-a-glance:
+A styled-table banner right after the title block surfaces operational
+health at-a-glance:
 
 * Edit-suggested / Report-only counts (from the
   edit-action histogram already computed for the trust-model summary).
-* Cache replays with the oldest entry age (using Chunk 5's
+* Cache replays with the oldest entry age (using
   ``cache_entry_created_ts``).
-* Verification failures (Chunk 3's ``VERIFICATION_FAILED`` status),
+* Verification failures (the ``VERIFICATION_FAILED`` status),
   highlighted red when > 0.
-* REPORT_ONLY demotions at parse time (Chunk 7's ``demotion_reason``).
-* Spec content extraction warnings (slot reserved for Chunk 10; renders 0
-  on every run until that lands).
+* REPORT_ONLY demotions at parse time (the ``demotion_reason``).
+* Spec content extraction warnings (slot reserved for the content-loss
+  warning; renders 0 on every run until that lands).
 * Cross-spec coordination status — skipped / failed / completed.
 
 A failure recovery hint paragraph appears below the table whenever the
@@ -243,7 +243,7 @@ class TestSummarizeRunDiagnostics:
 
     def test_legacy_cache_hit_counts_but_no_age(self):
         # A cache_status="hit" with cache_entry_created_ts=0.0 (legacy
-        # resume payload predating Chunk 5) counts toward the cache
+        # resume payload predating cache-age tracking) counts toward the cache
         # replay total but cannot contribute to the oldest-age display.
         # Note: _enforce_grounding_invariant downgrades verdicts where
         # accepted citation chain is missing, but for a legacy payload
@@ -290,15 +290,15 @@ class TestSummarizeRunDiagnostics:
         assert summary["demotion_count"] == 0
 
     def test_extraction_warning_count_defaults_zero(self):
-        # Chunk 10 will populate ExtractedSpec.extraction_warnings.
-        # Until then this stays 0 for every run.
+        # With no extracted specs carrying extraction_warnings, this
+        # stays 0 for every run.
         summary = _findings_to_summary([])
         assert summary["extraction_warning_count"] == 0
 
     def test_extraction_warning_count_reads_from_pipeline_result(self):
         # When the pipeline_result has extracted_specs with non-empty
         # extraction_warnings, the count reflects the number of specs
-        # affected. This is the slot Chunk 10 will populate.
+        # affected.
         class _StubSpec:
             def __init__(self, warnings):
                 self.extraction_warnings = warnings
@@ -601,8 +601,7 @@ class TestBannerCrossCheckStatus:
 class TestBannerHighlights:
     """The plan calls for verification failures to highlight in red
     when > 0 — we verify by inspecting cell shading on the value
-    column. Same treatment applies to extraction warnings (slot
-    reserved for Chunk 10 but the highlight wiring is in place now)."""
+    column. Same treatment applies to extraction warnings."""
 
     def _value_cell_shading_for_label(self, doc: Document, label: str) -> str | None:
         """Walk every table in the doc; return the value-cell shading

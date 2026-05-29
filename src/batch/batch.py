@@ -73,7 +73,7 @@ def submit_review_batch(
     if not specs:
         raise ValueError("No specs to submit for batch review")
     client = _get_client()
-    # Chunk 3: route every spec through the central review request builder
+    # Route every spec through the central review request builder
     # so the batch path, the real-time path, and the token preflight share
     # the same request-shape contributors (system prompt + cache control,
     # user message with paragraph map / pre_detected alerts, structured
@@ -227,7 +227,7 @@ def _extract_api_error_message(error_obj) -> str:
     return s[:200] if len(s) > 200 else s
 
 
-# Chunk D: ``retrieve_verification_results`` (text-only legacy batch
+# ``retrieve_verification_results`` (text-only legacy batch
 # parser) was removed because (a) it had no callers, and (b) it pre-dates
 # structured tool use and treated every non-``end_turn`` stop reason as
 # incomplete. Under structured outputs the model frequently stops with
@@ -306,12 +306,12 @@ def submit_verification_batch(
     client = _get_client()
     reqs = []
     request_map = {}
-    # Chunk 4: route every finding through the same selector and
+    # Route every finding through the same selector and
     # request builder as the real-time path. ``select_routing`` reads
     # severity / profile / mode / model / thinking / search budget /
     # tool inclusion in one place; ``build_verification_request``
     # consumes the decision to produce the exact same request shape
-    # the streaming path uses. This removes the pre-Chunk-4 drift
+    # the streaming path uses. This removes the earlier drift
     # where the batch initial pass applied ``thinking`` unconditionally
     # and used the profile-only ``max_uses`` ceiling regardless of
     # mode (a GRIPES finding routed through batch got the full
@@ -353,7 +353,7 @@ def submit_verification_batch(
             "model": decision.model,
             "severity": decision.severity,
             "profile": decision.profile.value,
-            # Chunk 4: stash the full routing decision so the wave
+            # Stash the full routing decision so the wave
             # parser can stamp the result with the actual policy that
             # produced this request (rather than re-deriving the mode
             # from the finding alone).

@@ -1,8 +1,16 @@
-"""Verification model routing and local pre-classification.
+"""Pre-screening decisions made before a finding is verified.
 
-Splits verification into Sonnet-first + Opus-escalation routing, and
-locally classifies findings that do not need external web grounding so
-we don't pay tokens for them.
+Two responsibilities, both answering "what verification treatment does this
+finding get?" before any request is built:
+
+* **Local pre-classification** — flag findings that do not need external web
+  grounding (placeholders, TODOs, duplicate paragraphs, …) so we don't pay
+  tokens verifying them.
+* **Escalation policy** — pick the Sonnet-first initial model and decide
+  when an UNVERIFIED result warrants an Opus escalation pass.
+
+Distinct from :mod:`verification_routing`, which takes these decisions and
+builds the concrete request (tools, headers, budgets) sent to the API.
 """
 from __future__ import annotations
 
@@ -26,7 +34,7 @@ _ESCALATION_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
 # Tokens that strongly indicate a finding is a local quality gripe / placeholder
 # / duplicate, where web search adds no signal. Conservative on purpose.
 #
-# Chunk O — extended with the additional rule names produced by the new
+# Extended with the additional rule names produced by the new
 # deterministic checks. A GRIPES-severity finding whose ``issue`` text says
 # "duplicate paragraph" or "invalid code cycle year" should not pay for a
 # Sonnet+web_search round-trip because the preprocessor already detected
@@ -34,15 +42,14 @@ _ESCALATION_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
 # ``preprocessor.DETERMINISTIC_RULE_*`` constants for parity with the rule
 # labels the report renders.
 #
-# Chunk 10 — tightened: ``"formatting"`` was removed because a real CMC
+# Tightened: ``"formatting"`` was removed because a real CMC
 # formatting requirement (e.g. "label valves per ASME A13.1 color
 # formatting") could match and silently bypass verification. ``"leed"``
 # and ``"internal contradiction"`` were moved to
 # :data:`_LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED` so they still route to
 # local_skip (web search adds no signal for either) but are tagged with
-# ``requires_elevated_confidence=True`` on the verification result so
-# Chunk 8's composite-confidence multiplier applies an additional 0.85
-# factor, raising the auto-edit bar for the residual-risk classes.
+# ``requires_elevated_confidence=True`` on the verification result,
+# raising the bar for the residual-risk classes.
 _LOCAL_SKIP_KEYWORDS = (
     "placeholder",
     "[select]",
@@ -67,7 +74,7 @@ _LOCAL_SKIP_KEYWORDS = (
     "inconsistent filename",
 )
 
-# Chunk 10 — keywords that still route to local_skip (web search adds no
+# Keywords that still route to local_skip (web search adds no
 # signal) but tag the resulting :class:`VerificationResult` with
 # ``requires_elevated_confidence=True``. The flag is retained as telemetry
 # for a downstream applier; nothing in this app consumes it for routing.
@@ -110,7 +117,7 @@ def classify_finding_for_verification(finding: Finding) -> str:
     - ``"web_required"``  — needs external grounding (default)
     - ``"local_skip"``    — locally diagnosable; no web search needed
 
-    Chunk 10: keywords in :data:`_LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED`
+    Keywords in :data:`_LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED`
     still route to ``"local_skip"`` (so the routing decision is unchanged
     for those keywords — they still avoid the web-search round trip), but
     callers should also consult :func:`local_skip_requires_elevated_confidence`
@@ -141,7 +148,7 @@ def classify_finding_for_verification(finding: Finding) -> str:
 def local_skip_requires_elevated_confidence(finding: Finding) -> bool:
     """Return True iff a local-skip finding matched an elevated-confidence keyword.
 
-    Chunk 10: ``"leed"`` and ``"internal contradiction"`` were moved from
+    ``"leed"`` and ``"internal contradiction"`` were moved from
     :data:`_LOCAL_SKIP_KEYWORDS` into
     :data:`_LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED`. The routing decision
     is unchanged (those keywords still route to local_skip), but a finding

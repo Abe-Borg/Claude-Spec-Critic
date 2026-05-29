@@ -1,6 +1,6 @@
-"""Chunk 7 tests: validate edit proposals at parse time.
+"""Tests for validating edit proposals at parse time.
 
-Plan section "Chunk 7 — Validate edit proposals at parse time". The parser
+Plan section "Validate edit proposals at parse time". The parser
 demotes EDIT / DELETE / ADD findings that omit action-specific required
 fields to ``REPORT_ONLY``, clears the executable edit fields, and stamps
 a short ``demotion_reason`` so diagnostics, the report, and the

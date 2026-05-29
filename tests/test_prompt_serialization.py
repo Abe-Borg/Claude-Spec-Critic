@@ -1,4 +1,4 @@
-"""Chunk G — prompt/input serialization hardening regression tests.
+"""Prompt/input serialization hardening regression tests.
 
 Validates that every prompt builder which embeds user- or document-supplied
 content (spec bodies, project context, finding fields, filenames, section
@@ -446,7 +446,7 @@ class TestPromptCacheBreakpointSafety:
 
     Prompt caching breakpoints are pinned by exact-prefix matching. If the
     instruction prefix changed based on payload content, cache hits would
-    disappear silently. Chunk G's serialization split — instructions first,
+    disappear silently. The serialization split — instructions first,
     wrapped document payload second — preserves that invariant.
     """
 

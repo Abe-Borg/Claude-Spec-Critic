@@ -159,7 +159,7 @@ class SpecReviewApp(_CTkDnDRoot):
         self._diagnostics_report: Optional[DiagnosticsReport] = None
         self._diagnostics_window: Optional[DiagnosticsWindow] = None
         self._context_debounce_id: str | None = None
-        # Chunk D2.2: debounce timer id for the exact-token-count refresh.
+        # Debounce timer id for the exact-token-count refresh.
         # Tracked here so rapid file-list churn cancels the prior timer
         # instead of stacking up multiple outbound API calls.
         self._exact_token_refresh_timer_id: str | None = None

@@ -1,6 +1,6 @@
 """Fake Anthropic response builders for hermetic tests.
 
-Chunk A baseline: the production parsers in ``src.reviewer``,
+The production parsers in ``src.reviewer``,
 ``src.batch``, and ``src.verifier`` consume objects that look like the
 Anthropic SDK's Pydantic models — attribute access for ``content``,
 ``stop_reason``, ``usage``, ``content[i].type``, ``content[i].name``,
@@ -13,7 +13,7 @@ Builders only emit data; they never hit the network. Pair them with a
 ``messages.batches.results`` in tests that want to exercise the full
 reviewer/verifier flow.
 
-What's covered (the five cases called out in Chunk A directive 4):
+What's covered (five cases):
 
 1. ``review_tool_use_response`` — structured ``submit_review_findings`` tool call.
 2. ``verification_tool_use_response`` — structured ``submit_verification_verdict`` tool call.
@@ -114,7 +114,7 @@ def sample_review_findings_payload() -> dict[str, Any]:
                 "confidence": 0.85,
                 "anchorText": None,
                 "insertPosition": None,
-                # Chunk K3: the schema now requires evidenceElementId on
+                # The schema now requires evidenceElementId on
                 # every finding (nullable). Fixture findings cite an id
                 # so request-shape tests cover the populated path.
                 "evidenceElementId": "p17",
@@ -131,7 +131,7 @@ def sample_verification_verdict_payload(
 ) -> dict[str, Any]:
     """Return a structured payload that matches ``VERIFICATION_VERDICT_SCHEMA``.
 
-    Chunk 2 / Trust Upgrade: ``source_quote`` is a required-but-nullable
+    ``source_quote`` is a required-but-nullable
     schema field; for CONFIRMED / CORRECTED verdicts the verifier demotes
     empty quotes to UNVERIFIED at parse time, so this fixture defaults to
     a non-empty snippet to keep grounded test paths grounded.
@@ -154,7 +154,7 @@ def sample_verification_verdict_payload(
 
 
 # ---------------------------------------------------------------------------
-# Response builders (case 1 – case 5 from Chunk A directive 4).
+# Response builders (case 1 – case 5).
 # ---------------------------------------------------------------------------
 
 
@@ -199,7 +199,7 @@ def verification_tool_use_response(
     """Cases 2 + 3: a structured ``submit_verification_verdict`` tool call.
 
     Defaults to ``stop_reason="tool_use"`` so this single builder also
-    covers Chunk A directive 4 case 3 ("a verification response that stops
+    covers case 3 ("a verification response that stops
     with tool use"). Set ``stop_reason="end_turn"`` for the legacy path.
 
     When ``include_web_search_blocks=True`` (the default), the response

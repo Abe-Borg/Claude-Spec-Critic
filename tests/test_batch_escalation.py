@@ -27,7 +27,7 @@ from src.output.report_status import (
     classify_status,
 )
 from src.review.reviewer import Finding
-from src.verification.verification_router import VERIFICATION_ESCALATION_MODEL
+from src.verification.verification_prescreen import VERIFICATION_ESCALATION_MODEL
 from src.verification.verifier import (
     DEFAULT_VERIFICATION_POLL_POLICY,
     VerificationResult,

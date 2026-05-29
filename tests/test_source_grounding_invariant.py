@@ -1,8 +1,8 @@
-"""Chunk 5 tests — strengthened source-grounding invariant.
+"""Tests for the strengthened source-grounding invariant.
 
-Plan chunk 5 acceptance: an *externally* verified ``CONFIRMED`` /
+An *externally* verified ``CONFIRMED`` /
 ``CORRECTED`` result must carry at least one **accepted external
-citation**. The prior invariant (plan 7.5 / Chunk H) only required
+citation**. The prior invariant only required
 ``grounded=True`` — which is satisfied by any successful web_search
 block — so a model that emitted ``CONFIRMED`` with ``sources=[]``
 slipped through. That is an audit liability for the report.
@@ -267,7 +267,7 @@ class TestProductionGroundingFlow:
     def test_confirmed_with_no_citations_downgrades_via_invariant(self):
         """Search ran successfully but the model emitted no citations.
 
-        Before Chunk 5 this slipped through: ``_apply_source_grounding``
+        Before the strengthened invariant this slipped through: ``_apply_source_grounding``
         does not touch the verdict when ``cited_sources`` is empty, and
         ``_enforce_grounding_invariant`` only checked ``grounded``. The
         strengthened invariant catches it.
@@ -347,9 +347,9 @@ class TestLocalSkipExempt:
 
 class TestVerificationCacheInvariant:
     def test_schema_version_is_at_least_v2(self):
-        """The bump invalidates pre-Chunk-5 entries that may have stored
-        source-less CONFIRMED results. Subsequent bumps (Chunk 2 →
-        v3 for source_quote) only tighten the invariant further."""
+        """The bump invalidates older entries that may have stored
+        source-less CONFIRMED results. Subsequent bumps (the v3
+        source_quote bump) only tighten the invariant further."""
         assert _CACHE_SCHEMA_VERSION >= 2
 
     def test_cache_put_refuses_source_less_confirmed(self):
@@ -450,7 +450,7 @@ class TestVerificationCacheInvariant:
         bug), the load-time check refuses to resurrect it. Production
         never produces such entries because the verifier downgrades them
         before write. The test uses ``_CACHE_SCHEMA_VERSION`` so future
-        bumps (e.g. Chunk 2 → v3 for source_quote) don't break it.
+        bumps (e.g. the v3 source_quote bump) don't break it.
         """
         cache_path = tmp_path / "cache.json"
         bad = {
@@ -540,7 +540,7 @@ class TestBatchAndRealtimePathParity:
                 ["https://dgs.ca.gov/page"],
                 "UNVERIFIED",
             ),
-            # No citations at all → downgrade (Chunk 5).
+            # No citations at all → downgrade.
             (
                 "CONFIRMED",
                 [],

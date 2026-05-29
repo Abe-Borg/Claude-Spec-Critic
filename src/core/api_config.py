@@ -191,7 +191,7 @@ def assert_extended_output_allowed(*, max_tokens: int, betas: Iterable[str] | No
 
 
 # ---------------------------------------------------------------------------
-# Model capability policy (Chunk B)
+# Model capability policy
 # ---------------------------------------------------------------------------
 #
 # Whitelist-style registry of per-model capabilities. The Anthropic API
@@ -214,7 +214,7 @@ class ModelCapabilities:
     max_output_tokens: int
     supports_extended_output_beta: bool  # 300k batch-only beta header
     context_window: int
-    # Chunk D1.2: whether the model accepts ``output_config.effort``. The
+    # Whether the model accepts ``output_config.effort``. The
     # parameter controls token eagerness and tool-call behavior. Sending
     # it to an unsupported model returns an API error, so the policy in
     # :func:`effort_config_for` must consult this flag before attaching
@@ -233,7 +233,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     MODEL_SONNET_46: ModelCapabilities(
         supports_adaptive_thinking=True,
         max_output_tokens=MAX_OUTPUT_TOKENS_SONNET,
-        # Chunk 1: Sonnet 4.6 supports the ``output-300k-2026-03-24`` beta
+        # Sonnet 4.6 supports the ``output-300k-2026-03-24`` beta
         # on Message Batches. The prior ``False`` value predated that
         # capability rollout and forced the batch path to gate extended
         # output by Opus-only family membership.
@@ -282,7 +282,7 @@ def model_supports_adaptive_thinking(model: str) -> bool:
 def model_supports_effort(model: str) -> bool:
     """Whether ``model`` accepts the ``output_config.effort`` parameter.
 
-    Chunk D1.2: callers MUST check this before attaching
+    Callers MUST check this before attaching
     ``output_config={"effort": ...}`` to a request. Unsupported models
     (Haiku 4.5, unknown / future models) silently omit the field — the
     field is opt-in per model, so omitting it is always safe.
@@ -293,7 +293,7 @@ def model_supports_effort(model: str) -> bool:
 def model_supports_extended_output_beta(model: str) -> bool:
     """Whether ``model`` is eligible for the 300k batch-output beta.
 
-    Chunk 1: the extended-output decision must read from the capability
+    The extended-output decision must read from the capability
     registry rather than testing ``model in OPUS_MODELS``. Sonnet 4.6
     supports the ``output-300k-2026-03-24`` beta on Message Batches,
     which the family-style check incorrectly excluded.
@@ -338,7 +338,7 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Output-config effort policy (Chunk D1.2)
+# Output-config effort policy
 # ---------------------------------------------------------------------------
 #
 # The Anthropic API accepts an ``output_config.effort`` parameter on
@@ -595,10 +595,10 @@ def token_count_preflight_enabled() -> bool:
 #
 # TODO: explore a category-based blocking helper so each entry is annotated
 # with its category and the report can explain *why* a citation was rejected
-# (Chunk 13 deferred this; the immediate fix here is just deduplicating the
+# (deferred for now; the immediate fix here is just deduplicating the
 # obvious subdomain overlap). Any change to this list should be exercised
 # against the verifier's grounding tests in
-# ``tests/test_chunk_h_source_grounding.py``.
+# ``tests/test_source_grounding_invariant.py``.
 _WEB_SEARCH_BLOCKED_DOMAINS = [
     # Aggregators / Q&A
     "reddit.com", "quora.com", "medium.com",
@@ -663,7 +663,7 @@ def build_web_search_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_USES) -> d
 
 
 # ---------------------------------------------------------------------------
-# Web-fetch tool configuration (Chunk 11 / Trust Upgrade)
+# Web-fetch tool configuration
 # ---------------------------------------------------------------------------
 #
 # The ``web_fetch_20260209`` server tool is the companion to ``web_search``:

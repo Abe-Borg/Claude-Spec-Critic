@@ -1,6 +1,6 @@
-"""Chunk 2 tests — source_quote schema field.
+"""Tests for the source_quote schema field.
 
-The Trust Upgrade Chunk 2 introduces a verbatim ``source_quote`` field on
+The ``source_quote`` field is a verbatim quote on
 every grounded verdict. The contract has five surfaces:
 
 * ``VERIFICATION_VERDICT_SCHEMA`` requires ``source_quote`` (nullable for

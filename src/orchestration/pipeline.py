@@ -125,7 +125,7 @@ class PipelineResult:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
-    # Chunk 10 / Trust Upgrade: the extracted specs themselves so the
+    # The extracted specs themselves so the
     # report's Run Diagnostics banner can count specs whose extraction
     # surfaced warnings (drawing-heavy documents, embedded objects).
     # The banner reads ``ExtractedSpec.extraction_warnings`` per spec
@@ -1023,7 +1023,7 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
             "They remain on the final result; only the cross-check input is filtered.",
             level="info",
         )
-    # Chunk by CSI division when the combined input would otherwise
+    # Split by CSI division when the combined input would otherwise
     # exceed the cross-check token budget. Without this, a large project
     # would get a ``skipped`` status and no coordination review at all.
     # ``run_chunked_cross_check`` falls back to the single-pass
@@ -1122,7 +1122,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         template_marker_alerts=list(state.template_marker_alerts),
         invalid_code_cycle_alerts=list(state.invalid_code_cycle_alerts),
         duplicate_paragraph_alerts=list(state.duplicate_paragraph_alerts),
-        # Chunk 10 / Trust Upgrade: ride the extracted specs through to
+        # Ride the extracted specs through to
         # the PipelineResult so the report banner can surface extraction
         # warnings. ``prepared_specs`` may be nulled by the recovery
         # path; the empty-list fallback keeps the banner showing 0

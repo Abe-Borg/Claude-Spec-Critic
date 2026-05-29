@@ -64,7 +64,7 @@ from .report_status import (
 
 
 # ---------------------------------------------------------------------------
-# Evidence panel labels (Chunk 4 / Trust Upgrade)
+# Evidence panel labels
 # ---------------------------------------------------------------------------
 
 # Human-readable labels for the verification-mode strings stamped on
@@ -120,8 +120,8 @@ CONFIDENCE_COLORS = {
 
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "GRIPES"]
 
-# Chunk N — closed-set status display colors. The plan (Directive 5) calls
-# out "avoid presenting all findings as equally certain", so each status
+# Closed-set status display colors. To avoid presenting all findings as
+# equally certain, each status
 # gets a distinct color so a quick scroll of the report makes the
 # evidence picture visible. Status color hex strings double as the
 # summary-table cell shading values.
@@ -133,14 +133,14 @@ STATUS_COLORS: dict[ReportStatus, RGBColor] = {
     ReportStatus.LOCALLY_CLASSIFIED: RGBColor(59, 130, 246),       # Blue
     ReportStatus.NOT_CHECKED: RGBColor(100, 100, 100),             # Dark gray
     ReportStatus.MANUAL_REVIEW_REQUIRED: RGBColor(255, 102, 0),    # Orange
-    # Chunk 3 / Trust Upgrade: dark red-orange, distinct from the red
+    # Dark red-orange, distinct from the red
     # used for DISPUTED (C00000) and the orange used for
     # MANUAL_REVIEW_REQUIRED (FF6600). Operational failures need a
     # visually distinct treatment so a quick scroll of the report shows
     # which findings need re-verification vs. those the verifier ran
     # cleanly on.
     ReportStatus.VERIFICATION_FAILED: RGBColor(178, 34, 34),       # Firebrick / dark red-orange
-    # Chunk 12 / Trust Upgrade: purple, distinct from every other
+    # Purple, distinct from every other
     # status color above. Indicates "two verifiers, different verdicts"
     # — a quality signal that survives the verdict-based rendering so
     # the report can flag the disagreement without burying it inside a
@@ -166,7 +166,7 @@ EDIT_ACTION_COLORS: dict[EditActionLabel, RGBColor] = {
 }
 
 
-# Chunk 5 / Trust Upgrade — cache-age badge color tiers. Cache replays carry
+# Cache-age badge color tiers. Cache replays carry
 # evidence that may have drifted since the original verdict was produced;
 # the badge color signals "how stale is this verdict?" at a glance.
 #   < 30 days  → amber  (recent — likely still accurate)
@@ -192,7 +192,7 @@ def _cache_entry_age_days(verification) -> int | None:
     """Return the age in days of the cache entry behind a cache-hit result.
 
     Returns ``None`` for non-hit results, for results without a recorded
-    ``cache_entry_created_ts`` (legacy resume payloads predating Chunk 5),
+    ``cache_entry_created_ts`` (legacy resume payloads that predate the badge),
     or for timestamps in the future (clock-skew anomaly). The caller
     suppresses the badge in those cases.
     """
@@ -339,7 +339,7 @@ def _write_files_reviewed(doc: Document, files_reviewed: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Run Diagnostics banner (Chunk 6 / Trust Upgrade)
+# Run Diagnostics banner
 # ---------------------------------------------------------------------------
 
 def _summarize_run_diagnostics(
@@ -352,10 +352,10 @@ def _summarize_run_diagnostics(
 ) -> dict:
     """Roll up operational counts for the Run Diagnostics banner.
 
-    Chunk 6 / Trust Upgrade. Surfaces at-a-glance operational health:
+    Surfaces at-a-glance operational health:
     edit-action histogram, cache-replay count + oldest age, verification
-    failures, parse-time REPORT_ONLY demotions, extraction warnings (slot
-    reserved for Chunk 10), and cross-check status. Every value is
+    failures, parse-time REPORT_ONLY demotions, extraction warnings,
+    and cross-check status. Every value is
     derived from data already present on the findings / status counts /
     pipeline result; no new persistence is needed.
 
@@ -370,7 +370,7 @@ def _summarize_run_diagnostics(
             when cross-check was disabled / never ran.
         pipeline_result: The pipeline result, queried opportunistically
             for ``extracted_specs`` so the extraction-warning slot can
-            be populated when Chunk 10 lands. ``getattr`` with default
+            be populated. ``getattr`` with default
             so legacy callers and test doubles work.
 
     Returns a dict with the rolled-up values the renderer consumes.
@@ -382,7 +382,7 @@ def _summarize_run_diagnostics(
     # Cache replays: count findings whose verification carries a cache
     # hit. Track the oldest age so a reviewer can see "the staleness
     # picture" without expanding individual findings. Legacy resume
-    # payloads predating Chunk 5 produce ``None`` from
+    # payloads without a recorded cache-entry timestamp produce ``None`` from
     # :func:`_cache_entry_age_days` — they count toward the total but
     # cannot contribute to the oldest-age display.
     cache_replay_count = 0
@@ -412,11 +412,10 @@ def _summarize_run_diagnostics(
         if (getattr(finding, "demotion_reason", None) or "").strip()
     )
 
-    # Extraction warnings: reserved slot for Chunk 10. Looks for an
+    # Extraction warnings. Looks for an
     # ``extracted_specs`` attribute on the pipeline result with per-spec
-    # ``extraction_warnings`` lists. Until Chunk 10 lands, this resolves
-    # to 0 for every run — the row still renders so the banner shape
-    # stays stable across the rollout.
+    # ``extraction_warnings`` lists. Resolves to 0 when no specs carry
+    # warnings — the row still renders so the banner shape stays stable.
     extraction_warning_count = 0
     extracted_specs = getattr(pipeline_result, "extracted_specs", None) or []
     for spec in extracted_specs:
@@ -447,7 +446,7 @@ def _summarize_run_diagnostics(
             ),
         }
 
-    # Chunk 13 / Trust Upgrade: findings whose verifier consumed the full
+    # Findings whose verifier consumed the full
     # mode-scaled search budget without producing a grounded verdict.
     # Surfaced in the banner with a hint pointing operators at the
     # severity-tiered budget knob so they can choose to re-run with more
@@ -469,7 +468,7 @@ def _summarize_run_diagnostics(
 
 
 def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
-    """Render the Run Diagnostics banner (Chunk 6 / Trust Upgrade).
+    """Render the Run Diagnostics banner.
 
     A styled table that surfaces operational health right after the
     title block. Reviewers can scan the banner to answer "did anything
@@ -487,8 +486,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     A failure recovery hint paragraph appears below the table when
     verification-failure count > 0, pointing the reviewer at the
     workflow for re-running the failed findings. The actual re-run-
-    failed-only mechanism is deferred to Chunk 12; this chunk only
-    surfaces the visibility.
+    failed-only mechanism is deferred; this only surfaces the visibility.
     """
     doc.add_heading("Run Diagnostics", level=1)
 
@@ -547,10 +545,10 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         )
     )
 
-    # Spec content extraction warnings: reserved slot for Chunk 10.
+    # Spec content extraction warnings.
     # Highlight in red when > 0 so a drawing-heavy spec that may have
-    # lost text content stands out. Currently always 0 until Chunk 10
-    # populates ExtractedSpec.extraction_warnings.
+    # lost text content stands out. Reads from
+    # ExtractedSpec.extraction_warnings.
     rows.append(
         (
             "Spec content extraction warnings",
@@ -559,7 +557,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         )
     )
 
-    # Chunk 13 / Trust Upgrade: budget-exhausted findings. Highlight in
+    # Budget-exhausted findings. Highlight in
     # red when > 0 because it's an actionable signal — the operator can
     # raise the severity of the affected findings to grant more search
     # headroom. The hint paragraph below the table explains the action;
@@ -617,8 +615,8 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         if highlight:
             value_run.font.color.rgb = RGBColor(192, 0, 0)
 
-    # --- Failure recovery hint (Chunk 6 / 6b) ---
-    # The re-run-failed-only mechanism is Chunk 12; for now we just
+    # --- Failure recovery hint ---
+    # The re-run-failed-only mechanism is deferred; for now we just
     # describe what re-running will do. The ⚠ glyph match is the same
     # one stamped on individual VERIFICATION_FAILED findings (see
     # STATUS_GLYPHS in report_status.py) so a reviewer can grep for it.
@@ -639,7 +637,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         hint_run.font.italic = True
         hint_run.font.color.rgb = RGBColor(178, 34, 34)
 
-    # --- Budget-exhaustion recovery hint (Chunk 13 / Trust Upgrade) ---
+    # --- Budget-exhaustion recovery hint ---
     # Distinct from the failure hint above because the cause and the
     # remedy differ: failures are transient (re-run sees them fresh),
     # but budget exhaustion is a policy outcome (re-run with the same
@@ -682,7 +680,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
 def _summarize_verification_outcomes(findings: list) -> dict[str, object]:
     """Roll up the trust-model statuses + raw verdict counts for the methodology note.
 
-    Chunk N: the status histogram (computed via
+    The status histogram (computed via
     :func:`report_status.summarize_statuses`) drives the methodology
     narrative and the new trust-model summary table. The verdict-count
     breakdown is preserved alongside it so existing summary lines
@@ -765,7 +763,7 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
 
     doc.add_paragraph(para2_text)
 
-    # Chunk 7 / Trust Upgrade \u2014 surface the pinned standards editions
+    # Surface the pinned standards editions
     # that drove the verifier prompt for this cycle. Reviewers reading
     # the report can see which editions were treated as authoritative
     # without opening the source; if the spec cites a different edition
@@ -786,7 +784,7 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
 def _render_pinned_editions_note(cycle_label: str) -> str:
     """Render the methodology paragraph that enumerates pinned editions.
 
-    Chunk 7 / Trust Upgrade. Looks up the :class:`CodeCycle` for the
+    Looks up the :class:`CodeCycle` for the
     label and emits a one-paragraph note. Pinning details only render
     when the cycle has populated the new edition fields \u2014 a cycle with
     no pinning yet falls back to an empty string so the methodology
@@ -953,7 +951,7 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
 
 
 # ---------------------------------------------------------------------------
-# Trust-model summary (Chunk N)
+# Trust-model summary
 # ---------------------------------------------------------------------------
 
 def _write_trust_model_summary(
@@ -963,7 +961,7 @@ def _write_trust_model_summary(
 ) -> None:
     """Render the per-status / per-edit-action histograms.
 
-    Chunk N Directive 1+4: every finding receives one status and one
+    Every finding receives one status and one
     edit-action label. The table here gives a top-of-report at-a-glance
     picture of how much of the run is supported vs. uncertain, before
     the reader gets to individual findings. The
@@ -1049,11 +1047,11 @@ def _write_alert_section(
 ) -> None:
     """Render one named alert section with per-file bullet groups.
 
-    Chunk O — every deterministic alert category goes through this helper
+    Every deterministic alert category goes through this helper
     so the section layout stays consistent. Each section also gets a
     "(deterministic check)" suffix so the reader can tell at a glance which
-    alerts came from local rules vs. LLM findings — Chunk O Directive 2
-    asks for deterministic findings to be clearly labeled.
+    alerts came from local rules vs. LLM findings — deterministic findings
+    are clearly labeled.
     """
     if not alerts:
         return
@@ -1089,7 +1087,7 @@ def _write_alerts(
 ) -> None:
     """Write the Alerts section with every deterministic-check category.
 
-    Chunk O — previously this rendered only ``leed_alerts`` and
+    Previously this rendered only ``leed_alerts`` and
     ``placeholder_alerts``; ``code_cycle_alerts`` / ``structural_alerts`` /
     ``naming_alerts`` were collected during preflight but silently dropped
     before the report saw them, so users had to read the log to discover
@@ -1182,13 +1180,13 @@ def _write_alerts(
 
 
 # ---------------------------------------------------------------------------
-# Per-finding evidence panel (Chunk 4 / Trust Upgrade)
+# Per-finding evidence panel
 # ---------------------------------------------------------------------------
 
 def _write_evidence_panel(doc: Document, finding, vr) -> None:
     """Render the verifier-evidence panel under the collapsed Sources heading.
 
-    Chunk 4 / Trust Upgrade. Replaces the old URL-only Sources block.
+    Replaces the old URL-only Sources block.
     For every finding with a verification result, surface enough audit
     trail that a reviewer can answer "why did the verifier reach this
     verdict?" without leaving the report:
@@ -1198,7 +1196,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
       / DEEP_REASONING) in human-readable form.
     - Search budget used ("N of M searches used") computed from
       ``web_search_requests`` and the severity-based ceiling.
-    - Source quote (Chunk 2): the verbatim snippet the verifier said
+    - Source quote: the verbatim snippet the verifier said
       it relied on. Rendered as an indented italic blockquote so it is
       visually distinct from prose paragraphs.
     - Verifier rationale: the model's explanation. Moved here from
@@ -1228,7 +1226,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
     escalation_attempted = bool(getattr(vr, "escalation_attempted", False))
     accepted = list(vr.sources or [])
     rejected = list(getattr(vr, "rejected_sources", []) or [])
-    # Chunk 11 / Trust Upgrade: web_fetch evidence. STRICT_STRUCTURED /
+    # web_fetch evidence. STRICT_STRUCTURED /
     # LOCAL_SKIP modes never attach the fetch tool, so this is 0/[] for
     # them; STANDARD/DEEP modes attach the tool but the model may not
     # have used it, so 0/[] is also the common case there.
@@ -1284,7 +1282,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         label.bold = True
         label.font.size = Pt(9)
         label.font.color.rgb = RGBColor(100, 100, 100)
-        # Chunk 11 / Trust Upgrade: when the verifier used web_fetch,
+        # When the verifier used web_fetch,
         # append the fetch count in the same line so a reviewer sees
         # "Searches: N, Full-page fetches: M" at a glance. The fetch
         # count is only rendered when > 0 because most verifications
@@ -1304,7 +1302,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         body.font.color.rgb = RGBColor(100, 100, 100)
         para.paragraph_format.space_after = Pt(2)
 
-    # --- Source quote (Chunk 2) ---
+    # --- Source quote ---
     if source_quote:
         label_para = doc.add_paragraph()
         _set_paragraph_outline_level(label_para, 8)
@@ -1328,7 +1326,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
 
     # --- Verifier rationale (moved from above) ---
     # Label kept as "Verification rationale:" so existing report
-    # consumers and the Chunk N label-rename invariants continue to
+    # consumers and the label-rename invariants continue to
     # find the field.
     if explanation:
         para = doc.add_paragraph()
@@ -1350,7 +1348,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         final_model = model_used
         escalation_reason = (getattr(vr, "escalation_reason", "") or "").strip()
         changed = bool(getattr(vr, "escalation_changed_verdict", False))
-        # Chunk 12 / Trust Upgrade: the stricter "both grounded AND
+        # The stricter "both grounded AND
         # verdicts differ" flag (vs. ``escalation_changed_verdict``
         # which also fires on initial-UNVERIFIED-then-CONFIRMED). When
         # set, the finding renders as VERIFIED_CONTESTED at the
@@ -1370,7 +1368,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         label.font.size = Pt(9)
         # Highlight in red-orange when the escalation actually changed
         # the verdict — that's the "two models disagreed" signal a
-        # reviewer most wants to see. Chunk 12: the contested case
+        # reviewer most wants to see. The contested case
         # (both grounded, verdicts differ) gets the purple
         # VERIFIED_CONTESTED color so the panel matches the top-level
         # status badge.
@@ -1399,7 +1397,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         sentence = " → ".join(parts) if parts else "escalated"
         if escalation_reason:
             sentence += f". Reason: {escalation_reason}"
-        # Chunk 12: surface the contested state explicitly so the
+        # Surface the contested state explicitly so the
         # inline sentence stays self-explanatory even when the panel
         # is read in isolation (resume-state JSON dumps, exported
         # report scanned without the top-level status badge nearby).
@@ -1416,7 +1414,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
         body.font.color.rgb = label_color
         para.paragraph_format.space_after = Pt(3)
 
-        # Chunk 12 / Trust Upgrade: when the disagreement is real (both
+        # When the disagreement is real (both
         # grounded), render the initial verifier's accepted citations
         # as a follow-up line. The final verifier's citations already
         # render below under "Web/code evidence" so a reviewer reading
@@ -1494,7 +1492,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
                 reason_run.font.size = Pt(9)
                 reason_run.font.color.rgb = RGBColor(192, 0, 0)
 
-    # --- Full-text sources consulted (Chunk 11 / Trust Upgrade) ---
+    # --- Full-text sources consulted ---
     # When the verifier used web_fetch, list the URLs it pulled in full
     # in a dedicated sub-section so a reviewer can tell at a glance which
     # sources were skimmed (web_search snippets) vs. read in depth
@@ -1523,7 +1521,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
             url_run.font.size = Pt(9)
             url_run.font.color.rgb = RGBColor(59, 130, 246)
 
-    # --- Force-refresh hint for cache replays (Chunk 5 / Trust Upgrade) ---
+    # --- Force-refresh hint for cache replays ---
     # A workflow hint, not a programmatic feature: tells the reviewer
     # exactly where to delete the entry if they want fresh verification.
     # Rendered only for cache-hit results so non-replayed findings stay
@@ -1552,15 +1550,15 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     Word's native heading-collapse feature. Users can click the collapse
     triangle that appears on hover to hide the finding's body content.
 
-    Chunk N changes:
+    Trust-model rendering:
         - Adds a "Status" line right under the header so the trust-model
-          status is the first thing readers see (Directive 5: avoid
-          presenting all findings as equally certain).
+          status is the first thing readers see (avoid presenting all
+          findings as equally certain).
         - Adds an "Edit eligibility" line so readers can tell at a glance
           whether the finding carries a suggested edit or is report-only.
         - Renames the spec quote / web sources / rationale / rejected
-          sources sub-labels so the four evidence concepts (Directive 3)
-          are explicit rather than implied.
+          sources sub-labels so the four evidence concepts are explicit
+          rather than implied.
 
     Layout:
         Heading 3:  [SEVERITY] 92% — filename.docx — Section ref
@@ -1614,7 +1612,7 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
 
     # --- Body content (Normal paragraphs, hidden when heading is collapsed) ---
 
-    # --- Status + edit-action line (Chunk N) ---
+    # --- Status + edit-action line ---
     # The trust-model status renders right under the header so readers
     # see "Verified — supported" / "Disputed" / "Insufficient evidence"
     # before they read the issue. The edit-action label sits on the
@@ -1637,7 +1635,7 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     value_run.bold = True
     value_run.font.color.rgb = status_color
     value_run.font.size = Pt(10)
-    # Chunk 13 / Trust Upgrade: when the verifier consumed its full
+    # When the verifier consumed its full
     # mode-scaled search budget without producing a grounded verdict,
     # append a "(search budget exhausted)" sub-label so the reviewer
     # sees the actionable signal inline. The status itself stays
@@ -1663,13 +1661,13 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     edit_value_run.font.color.rgb = action_color
     edit_value_run.font.size = Pt(10)
 
-    # --- Cache-replay badge (Chunk 5 / Trust Upgrade) ---
+    # --- Cache-replay badge ---
     # When the verifier result came from a cache hit, render an inline
     # badge showing the entry's age so a reviewer can spot stale verdicts
     # without expanding the Sources panel. Color tier:
     #   amber  for <30 days, orange for 30-90 days, red for >90 days.
-    # Suppressed for non-hit results, for legacy resume payloads predating
-    # Chunk 5 (no ``cache_entry_created_ts`` recorded), and for clock-skew
+    # Suppressed for non-hit results, for legacy resume payloads with
+    # no ``cache_entry_created_ts`` recorded, and for clock-skew
     # cases where the recorded timestamp is in the future.
     age_days = _cache_entry_age_days(getattr(finding, "verification", None))
     if age_days is not None:
@@ -1693,16 +1691,15 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     para.paragraph_format.space_after = Pt(3)
 
     # --- Action / edit-proposal block ---
-    # Chunk L / plan section "Separate Findings From Edit Proposals":
-    # the report now distinguishes findings that carry an edit proposal
+    # The report distinguishes findings that carry an edit proposal
     # from ones that don't. REPORT_ONLY findings render an explicit
     # "No edit proposal — surfaced for review only" line so readers see
     # the finding without expecting an edit; findings with a proposal
     # keep the original Action / Existing / Replace With layout.
     #
-    # Chunk N: the "Existing Text" label becomes "Spec evidence" so the
+    # The "Existing Text" label becomes "Spec evidence" so the
     # quoted-from-the-spec source is explicitly the *spec evidence*
-    # concept in Directive 3, distinct from web/code evidence (sources)
+    # concept, distinct from web/code evidence (sources)
     # and verification rationale (explanation).
     proposal = finding.as_edit_proposal()
     if proposal is None:
@@ -1711,8 +1708,7 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         run.bold = True
         para.paragraph_format.space_after = Pt(3)
 
-        # Chunk 7 / plan section "Validate edit proposals at parse time":
-        # when the parser demoted an EDIT/DELETE/ADD because a required
+        # When the parser demoted an EDIT/DELETE/ADD because a required
         # field was missing, surface the specific reason inline so a
         # reader sees "the model claimed EDIT but no existingText was
         # provided" instead of the generic coordination/interpretation
@@ -1785,7 +1781,7 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
             run.font.color.rgb = RGBColor(204, 132, 0)  # Amber
             para.paragraph_format.space_after = Pt(3)
 
-        # --- Evidence panel (Chunk 4 / Trust Upgrade) ---
+        # --- Evidence panel ---
         # Rendered under the existing collapsed-by-default "Sources" Heading
         # 4. Order: verifier model → verification mode → search budget →
         # source quote (blockquote) → verifier rationale → escalation
@@ -1998,7 +1994,7 @@ def export_report(
         cycle_label=cycle_label,
     )
 
-    # Chunk 6 / Trust Upgrade — Run Diagnostics banner. Renders right
+    # Run Diagnostics banner. Renders right
     # after the title block so the operational picture (edit-suggested
     # counts, cache replays, verification failures, parse-time
     # demotions, cross-check status) is the first thing a reviewer
@@ -2035,7 +2031,7 @@ def export_report(
         total_elapsed_seconds=getattr(pipeline_result, "total_elapsed_seconds", None),
     )
 
-    # Chunk N — trust-model histogram. Renders right after the severity
+    # Trust-model histogram. Renders right after the severity
     # summary so the reader sees "how many issues are critical?" and
     # "how many of them are actually trustworthy?" together.
     _write_trust_model_summary(
@@ -2044,7 +2040,7 @@ def export_report(
         verification_stats.get("edit_action_counts", {}),
     )
 
-    # Chunk O — fall back to ``getattr`` for the new alert lists so
+    # Fall back to ``getattr`` for the new alert lists so
     # ``_StubPipelineResult`` style ad-hoc test doubles (and any legacy
     # callers that build the result by hand without the new fields)
     # keep working. The real ``PipelineResult`` dataclass always has them.

@@ -11,8 +11,8 @@ Covers:
     - Resume-state compatibility (legacy payloads without trace fields load OK).
     - Diagnostics non-interference (DiagnosticsReport.summary() byte-identical
       with and without tracing enabled).
-    - Chunk 11-13 round-trip (web_fetch / models_disagreed / budget_exhausted
-      survive recorder serialization into findings.jsonl).
+    - Verification telemetry round-trip (web_fetch / models_disagreed /
+      budget_exhausted survive recorder serialization into findings.jsonl).
 
 All tests are hermetic — no network, no real API key required.
 """
@@ -403,7 +403,7 @@ def test_diagnostics_summary_unaffected_by_tracing(monkeypatch: pytest.MonkeyPat
     assert s1 == s2
 
 
-# ---- Chunk 11-13 round-trip -------------------------------------------
+# ---- Verification telemetry round-trip --------------------------------
 @dataclass
 class _FakeVerification:
     """Synthetic VerificationResult mirroring the real shape for snapshot tests."""
@@ -422,11 +422,11 @@ class _FakeVerification:
     escalation_reason: str = ""
     initial_model: str = ""
     initial_verdict: str = ""
-    models_disagreed: bool = False  # Chunk 12
+    models_disagreed: bool = False
     initial_sources: list[str] = field(default_factory=list)
-    web_fetch_requests: int = 0  # Chunk 11
+    web_fetch_requests: int = 0
     fetched_sources: list[str] = field(default_factory=list)
-    budget_exhausted: bool = False  # Chunk 13
+    budget_exhausted: bool = False
     verification_failed: bool = False
     source_quote: str = ""
     cache_status: str = "none"
@@ -456,10 +456,10 @@ def test_chunk_11_12_13_round_trip(recorder: TraceRecorder, trace_dir: Path) -> 
             grounded=True,
             sources=["https://example.com/a"],
             initial_sources=["https://example.com/initial"],
-            web_fetch_requests=2,  # Chunk 11
+            web_fetch_requests=2,
             fetched_sources=["https://example.com/fetched-1", "https://example.com/fetched-2"],
-            models_disagreed=True,  # Chunk 12
-            budget_exhausted=True,  # Chunk 13
+            models_disagreed=True,
+            budget_exhausted=True,
             web_search_requests=7,
         )
     )
@@ -470,23 +470,23 @@ def test_chunk_11_12_13_round_trip(recorder: TraceRecorder, trace_dir: Path) -> 
     assert len(lines) == 1
     snap = json.loads(lines[0])
     v = snap["verification"]
-    # Chunk 11
+    # web_fetch telemetry
     assert v["web_fetch_requests"] == 2
     assert v["fetched_sources"] == [
         "https://example.com/fetched-1",
         "https://example.com/fetched-2",
     ]
-    # Chunk 12
+    # escalation disagreement telemetry
     assert v["models_disagreed"] is True
     assert v["initial_sources"] == ["https://example.com/initial"]
-    # Chunk 13
+    # budget-exhaustion telemetry
     assert v["budget_exhausted"] is True
 
 
 def test_verification_end_captures_all_chunk_fields(
     recorder: TraceRecorder, trace_dir: Path
 ) -> None:
-    """capture_verification_end pulls every Chunk 11-13 field off a
+    """capture_verification_end pulls every telemetry field off a
     VerificationResult and stamps them on the span outputs."""
     verification = _FakeVerification(
         verdict="CORRECTED",

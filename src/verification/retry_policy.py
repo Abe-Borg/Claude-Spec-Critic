@@ -1,4 +1,4 @@
-"""Chunk 6 — centralized retry, continuation, and batch-failure policy.
+"""Centralized retry, continuation, and batch-failure policy.
 
 Before this module, retry behavior lived in five separate manual loops:
 

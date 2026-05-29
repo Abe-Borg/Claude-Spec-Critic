@@ -1,4 +1,4 @@
-"""Chunk E — token counting and output budget enforcement tests.
+"""Token counting and output budget enforcement tests.
 
 Covers the directives in section 5 of the implementation plan:
 
@@ -68,7 +68,7 @@ pytestmark = pytest.mark.token_budget
 
 
 class TestPhaseOutputCapRegistry:
-    """Directive 6: one registry feeds every phase helper."""
+    """One registry feeds every phase helper."""
 
     def test_each_phase_resolves_to_its_documented_cap(self):
         assert phase_output_cap(PHASE_REVIEW, model=MODEL_OPUS_47) == REVIEW_OUTPUT_CAP
@@ -186,7 +186,7 @@ class TestLocalEstimateSafetyFactor:
 
 
 class TestExceedsPerCallLimitForModel:
-    """Directive 5: the local fallback gate uses the safety factor."""
+    """The local fallback gate uses the safety factor."""
 
     def test_returns_false_when_well_under_budget(self):
         # 100k tokens is well under RECOMMENDED_MAX (500k) for any safety
@@ -295,7 +295,7 @@ def stub_count_tokens(monkeypatch):
 
     monkeypatch.setattr("src.core.tokenizer.count_tokens", _fake_count)
     monkeypatch.setattr("src.orchestration.pipeline.count_tokens", _fake_count, raising=False)
-    # Chunk 3: the central review request builder also imports
+    # The central review request builder also imports
     # ``count_tokens`` to gate the extended-output decision.
     monkeypatch.setattr(
         "src.review.review_request_builder.count_tokens", _fake_count, raising=False
@@ -317,7 +317,7 @@ def stub_client(monkeypatch, stub_count_tokens):
 
 
 class TestPipelinePreflightSelectsModel:
-    """Directive 2: exact token counting uses the selected model."""
+    """Exact token counting uses the selected model."""
 
     def test_preflight_passes_selected_model_to_api(
         self, monkeypatch, patched_extractor, stub_client
@@ -369,7 +369,7 @@ class TestPipelinePreflightSelectsModel:
 
 
 class TestPipelinePreflightExactCountAuthoritative:
-    """Directive 3: exact count exceeding budget fails early."""
+    """Exact count exceeding budget fails early."""
 
     def test_exact_count_over_budget_raises(
         self, monkeypatch, patched_extractor, stub_client

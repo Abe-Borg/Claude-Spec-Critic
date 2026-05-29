@@ -69,7 +69,7 @@ def test_cache_persist_disabled_via_env(
 
 
 def test_cache_ttl_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Chunk 5 / Trust Upgrade: the unset default is 60 days, balancing
+    # The unset default is 60 days, balancing
     # reuse against staleness for code references that may have new
     # amendments published quarterly. Operators can explicitly opt out
     # via SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS=0 to keep the legacy
@@ -86,7 +86,7 @@ def test_cache_ttl_positive_value(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_cache_ttl_explicit_zero_means_no_expiry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Chunk 5 / Trust Upgrade: ``0`` is an operator-explicit "no expiry"
+    # ``0`` is an operator-explicit "no expiry"
     # override and must be preserved verbatim — the legacy database-mode
     # behavior remains available for users who want it.
     monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS", "0")
@@ -99,7 +99,7 @@ def test_cache_ttl_invalid_or_negative_falls_back_to_default(
 ) -> None:
     """Malformed or negative values fall back to the 60-day default.
 
-    Chunk 5 / Trust Upgrade: the previous behavior (fall back to 0 = no
+    The previous behavior (fall back to 0 = no
     expiry) silently disabled expiry on any typo. The new behavior falls
     back to the 60-day default so a typo never accidentally turns the
     cache into a permanent database. Explicit ``0`` is still honored

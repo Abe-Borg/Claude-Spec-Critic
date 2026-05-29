@@ -1,6 +1,6 @@
-"""Chunk 12 tests — VERIFIED_CONTESTED status + models_disagreed sentinel.
+"""Tests for the VERIFIED_CONTESTED status + models_disagreed sentinel.
 
-Chunk 12 of the Trust Upgrade surfaces escalation disagreements as a
+Escalation disagreements surface as a
 dedicated trust-model status. When the initial Sonnet verifier and the
 escalated Opus verifier reach different verdicts on a finding AND both
 verdicts were grounded (each had at least one accepted citation), the
@@ -242,7 +242,7 @@ class TestClassifyStatusContested:
         # CONFIRMED. After the escalation swap, ``result.verdict`` is
         # CONFIRMED and ``result.grounded`` is True. Without the sentinel
         # check the status would render as VERIFIED_SUPPORTED — exactly
-        # the bug Chunk 12 fixes.
+        # the bug the sentinel check fixes.
         f = _finding(verification=_contested_verification())
         assert classify_status(f) is ReportStatus.VERIFIED_CONTESTED
 
@@ -472,7 +472,7 @@ class TestCacheContested:
         assert replayed.initial_sources
 
     def test_cache_load_legacy_entry_defaults_neutral(self, tmp_path: Path):
-        # A v3 cache entry written before Chunk 12 lacks both new keys.
+        # A v3 cache entry written before the new keys existed lacks both.
         # Loading it must not crash and must default the fields to
         # neutral values so the legacy entry classifies via the
         # verdict-based branches.
@@ -586,7 +586,7 @@ class TestContestedEvidencePanelRendering:
         )
         text = _all_text_from(Document(str(out)))
         assert "Escalation history:" in text
-        # The Chunk 12 expanded sentence must appear when both passes
+        # The expanded sentence must appear when both passes
         # were grounded and disagreed. The shorter "(models disagreed)"
         # parenthetical from the existing escalation block belongs to
         # the weaker ``escalation_changed_verdict`` path — for the
@@ -628,7 +628,7 @@ class TestContestedEvidencePanelRendering:
         # (e.g. initial UNVERIFIED, escalated CONFIRMED) should not get
         # the "Initial verifier sources" sub-section. The existing
         # "Escalation history" line is still rendered (escalation
-        # happened); only the Chunk 12 sub-section is conditional.
+        # happened); only the disagreement sub-section is conditional.
         v = VerificationResult(
             verdict="CONFIRMED",
             explanation="Verified after escalation.",
