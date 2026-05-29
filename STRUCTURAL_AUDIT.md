@@ -97,6 +97,32 @@ one place the program can mislead, and it's exactly what the user must be able t
   same dedup) so the sidecar emits stable, unique ids. Small, contained change.
 
 ### P1-2 — Batch→real-time fallback handoff: confirm no finding is double-processed or dropped
+> **RESOLVED** (branch `claude/wonderful-knuth-oAv5B`). Traced the submit-vs-fallback ordering
+> end-to-end and confirmed the path is **sound** — no code change needed, locked in by a new
+> regression test (`tests/test_batch_fallback_handoff.py`). Three guarantees hold:
+> 1. **No drop (zero results impossible):** after the wave loop *and* the escalation wave, the tail
+>    loop at `verifier.py:3157-3159` sets any finding still at `verification is None` to a terminal
+>    UNVERIFIED ("No verification result after all batch waves."). The detach-on-final-wave `break`
+>    (`:2744-2746`) leaves the tail for exactly this safety net.
+> 2. **No double terminal result:** within a wave the classification is a clean partition (each
+>    finding appears once in `outcomes`; success / non-retryable / cap-exceeded / terminal are written
+>    back **and** marked `resolved=True`; only `needs_retry`/`needs_continue`/`tracker_terminated` stay
+>    unresolved). The real-time fallback (last wave + `break`) and the follow-up-wave submit (non-last
+>    waves only) are **mutually exclusive**, and resolved findings are excluded from `active_contexts`
+>    and never re-enter `next_contexts`, so a finding the batch resolved is never handed to
+>    `verify_finding`.
+> 3. **No double-escalation:** `_run_batch_escalation_wave` skips findings whose
+>    `verification.escalation_attempted` is set (`:2536`) — exactly the flag the real-time fallback's
+>    `verify_finding` stamps inline — so a fallback finding is not re-escalated.
+>
+> The new test drives a 3-finding batch where the tail (findings 1 & 2) hits a retryable
+> `SERVER_ERROR` on wave 1 (→ `needs_retry`, genuinely *submitted* to an in-flight wave 2) and again
+> on wave 2 (→ `tracker_terminated`, the unresolved tail), exercising the precise "submitted to a wave
+> AND eligible for real-time" situation. It asserts each finding ends with exactly one
+> `VerificationResult` across all three terminal last-wave paths: fallback enabled (tail resolves via
+> real-time, once each; a batch-resolved finding is not re-run; no extra batch submit), fallback
+> disabled (tail resolves via the batch-exhaustion marker, once each; real-time never invoked), and a
+> detached final wave (the safety net assigns one terminal UNVERIFIED each, nothing dropped).
 - **Where:** `src/verification/verifier.py` last-wave fallback (~:2902-2944) and the wave-submit just
   before it. On the final wave the unresolved tail flips to real-time (`verify_finding` per finding,
   results assigned in-place).
