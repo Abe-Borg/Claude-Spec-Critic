@@ -337,7 +337,7 @@ def _dedup_key(f: Finding) -> tuple:
     )
 
 
-def compute_finding_id(f: Finding) -> str:
+def compute_finding_id(f: Finding, *, prefix: str = "rf") -> str:
     """Compute a stable, deterministic id for a finding.
 
     Each review finding gets a stable id at dedup time so the report and
@@ -350,10 +350,17 @@ def compute_finding_id(f: Finding) -> str:
     12 hex chars — collision risk is negligible at the per-run scale we
     operate at (typically <100 findings) and the short form keeps the id
     readable in transcripts and reports.
+
+    ``prefix`` namespaces the id by finding origin: review findings use
+    ``rf-`` (the default), cross-check / coordination findings use ``cf-``
+    (see :func:`assign_cross_check_finding_ids`). Because the id is purely
+    content-derived, the prefix is what guarantees a review finding and a
+    coordination finding that happen to share an identical dedup key never
+    collide into one sidecar entry.
     """
     key = _dedup_key(f)
     digest = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
-    return f"rf-{digest[:12]}"
+    return f"{prefix}-{digest[:12]}"
 
 
 def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
@@ -430,6 +437,37 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             occurrence_originals=member_originals,
         ))
     return out
+
+
+def assign_cross_check_finding_ids(findings: list[Finding]) -> list[Finding]:
+    """Stamp a stable, content-derived id on each cross-check finding.
+
+    Cross-check (coordination) findings are produced *after* the review
+    dedup pass and never flow through :func:`_deduplicate_findings` — the
+    only place review findings are id-stamped. Without this, every
+    coordination finding carries ``finding_id=""`` all the way into the
+    edit-instruction sidecar, so a downstream applier that keys, dedupes,
+    or cross-references edits by ``finding_id`` would see every
+    coordination edit collide on the empty key, and the cross-check
+    verification spans would correlate as ``unknown`` in the trace viewer.
+
+    The id reuses :func:`compute_finding_id` (the same content hash review
+    ids derive from) with a ``cf-`` prefix so it (a) stays stable across
+    runs of identical content, (b) never collides with a review finding's
+    ``rf-`` id even when the two share a dedup key, and (c) gives the
+    cross-check verification pass and the trace viewer a real per-finding
+    handle. Two coordination findings with the same content key
+    intentionally share an id — that is the dedup signal a downstream
+    applier keys on, mirroring how review ids behave post-dedup.
+
+    Mutates in place (only filling empty ids) and returns the same list so
+    callers can chain. Idempotent: a finding that already carries an id is
+    left untouched.
+    """
+    for f in findings:
+        if not f.finding_id:
+            f.finding_id = compute_finding_id(f, prefix="cf")
+    return findings
 
 
 @dataclass
@@ -1039,6 +1077,12 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
     # ``run_chunked_cross_check`` falls back to the single-pass
     # ``run_cross_check`` when the input fits.
     cross = run_chunked_cross_check(specs, dedup_findings, project_context=project_context, cycle=cycle, log=log)
+    # Stamp a stable, content-derived id on each coordination finding
+    # before it flows into cross-check verification and the edit sidecar.
+    # These findings never pass through the review dedup pass, so without
+    # this they carry ``finding_id=""`` — colliding on the empty key in the
+    # sidecar and correlating as "unknown" in verification traces.
+    assign_cross_check_finding_ids(cross.findings)
     state.cross_check_result = cross
     _log_cross_check_status(log, cross)
     return state

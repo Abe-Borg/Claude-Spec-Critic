@@ -134,6 +134,9 @@ These are the contracts the agent should preserve when editing the code. Field-l
 ### FindingGroup vs FindingOccurrence
 `Finding.occurrence_originals` holds per-file pre-merge member findings when `_deduplicate_findings` collapses across files, so per-file `existingText` / `replacementText` differences survive the merge for the report and the edit-instruction sidecar. Singletons leave it empty (the finding is its own original).
 
+### Finding-id namespacing (review `rf-` vs cross-check `cf-`)
+`compute_finding_id(f, *, prefix="rf")` is the single content-addressed id minter — `sha256(repr(_dedup_key(f)))[:12]` under a 2-char prefix. Review findings are id-stamped inside `_deduplicate_findings` (prefix `rf-`). Cross-check / coordination findings never flow through that dedup pass, so `pipeline.assign_cross_check_finding_ids` stamps them with prefix `cf-` in `run_cross_check_for_batch`, *before* they enter cross-check verification and the edit sidecar. Without it every coordination finding reaches the sidecar with `finding_id=""` (all colliding on the empty key) and correlates as `unknown` in the trace viewer. Because the id is purely content-derived, the prefix is what guarantees a review finding and a coordination finding that share an identical dedup key never collapse into one sidecar entry (same 12-hex digest tail, different prefix). Same-content coordination findings intentionally share a `cf-` id — that is the dedup signal a downstream applier keys on, mirroring review ids post-dedup. The helper is idempotent (only fills empty ids) and chains (returns the same list). (STRUCTURAL_AUDIT P1-1.)
+
 ### REPORT_ONLY action
 The structured tool schema includes `REPORT_ONLY` so coordination/interpretation findings don't have to fabricate `existingText` / `replacementText`. `validate_edit_shape` demotes EDIT/DELETE/ADD findings that lack action-specific required fields to REPORT_ONLY with `demotion_reason` stamped.
 
