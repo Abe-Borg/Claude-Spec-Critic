@@ -8,7 +8,7 @@ surface of the program — and for most of its life that surface has to do
 something genuinely hard while *looking* like it is doing nothing at all: wait.
 
 A review is not a function call that returns in a second. It goes through the
-Message Batches API (**Ch 6 — Batch Processing**), which means a single run is a
+Message Batches API ([**Ch 6 — Batch Processing**](06_batch_processing.md)), which means a single run is a
 sequence of *separate* operations — submit, poll, collect, verify, finalize —
 with forty-five minutes to two hours of wall-clock time in Anthropic's queue
 between the first and the last. During all of that the window must stay alive:
@@ -23,7 +23,7 @@ codebase works so hard to prevent: confident, invisible wrongness.
 
 This chapter is about how a deliberately *thin* GUI solves a time problem. The
 structural audit looked hard at this layer and reached an unusually clean
-verdict — **"GUI threading is sound"** (**Ch 16 — Trust Under the Microscope**).
+verdict — **"GUI threading is sound"** ([**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md)).
 The bulk of this chapter explains *why* it is sound, and the last part is honest
 about the one place the surface can still mislead.
 
@@ -74,10 +74,10 @@ focused modules, each owning one slice of the workflow.
 Why split it this way? Two reasons, both about trust by way of testability. First,
 keeping `gui.py` a shell means the *business logic of a run* is reachable without
 ever constructing a Tk window. The controllers call straight into the
-orchestration spine (`src/orchestration/pipeline.py`, **Ch 7 — Orchestration &
-State**), which is pure Python; the hermetic test suite exercises that spine
+orchestration spine (`src/orchestration/pipeline.py`, [**Ch 7 — Orchestration &
+State**](07_orchestration.md)), which is pure Python; the hermetic test suite exercises that spine
 directly and **skips the GUI tests entirely when `tkinter` is unavailable** (the
-project's test harness does exactly this — see **Ch 15 — Quality Engineering**).
+project's test harness does exactly this — see [**Ch 15 — Quality Engineering**](15_quality_engineering.md)).
 A program whose core can only be tested through its UI is a program whose core is
 hard to trust. Second, the controllers carve the workflow along its natural
 seams, so a change to (say) how project context is attached touches one file
@@ -106,8 +106,8 @@ The seven controllers, each in one paragraph:
   sees before committing to a run. It runs the fast local `cl100k_base` estimate
   for every selected file off-thread, then fires a debounced (400 ms) Anthropic
   `count_tokens` call for the *largest* spec and swaps the gauge to the exact
-  figure when it returns. The token math itself belongs to **Ch 12 —
-  Configuration, Models & Token Economics**; this controller's job is to display
+  figure when it returns. The token math itself belongs to [**Ch 12 —
+  Configuration, Models & Token Economics**](12_configuration_and_models.md); this controller's job is to display
   it without blocking or letting a stale pass overwrite a fresh one.
 
 - **`review_run_controller`** is the run's spine on the UI side. It owns input
@@ -126,13 +126,13 @@ The seven controllers, each in one paragraph:
 - **`report_controller`** is the smallest: it opens the save dialog, calls
   `export_report`, writes the machine-readable edit sidecar beside it, and returns
   a status string (`"canceled"` / `"success"` / `"error"`) so the caller can
-  decide what to log. The report's *contents* are **Ch 11 — The Trust Model &
-  Report Output**; this controller only triggers the export.
+  decide what to log. The report's *contents* are [**Ch 11 — The Trust Model &
+  Report Output**](11_trust_model_and_output.md); this controller only triggers the export.
 
 - **`diagnostics_controller`** builds the log/progress callbacks the pipeline
   calls into during a run and owns the pop-out Diagnostics window. Its callbacks
   fan out to *two* places at once — the on-screen activity log and the in-memory
-  `DiagnosticsReport` (**Ch 14 — Observability**) — so the UI and the forensic
+  `DiagnosticsReport` ([**Ch 14 — Observability**](14_observability.md)) — so the UI and the forensic
   record never drift apart.
 
 | Controller | Responsibility | Key entry points |
@@ -291,7 +291,7 @@ gated independently:
 ```
 
 Reading that swimlane top to bottom is the run *from the UI's side* — the same
-sequence **Ch 3 — A Run, End to End** narrates at the data level, here at the
+sequence [**Ch 3 — A Run, End to End**](03_end_to_end_flow.md) narrates at the data level, here at the
 interaction level. A few details earn their place:
 
 - **The save dialog runs on the main thread.** `on_review_complete` (and the
@@ -345,8 +345,8 @@ is applied once at startup so the very first run honours the defaults. "Show
 folder" opens `~/.spec_critic/traces/` in the OS file explorer; "Open viewer"
 opens the bundled single-file HTML replay tool via a `file://` URL so it works
 offline. What those traces *contain*, how the recorder is structured, and how the
-viewer reconstructs a run all belong to **Ch 14 — Observability: Tracing &
-Diagnostics**.
+viewer reconstructs a run all belong to [**Ch 14 — Observability: Tracing &
+Diagnostics**](14_observability.md).
 
 ## Edges & what's still being perfected
 
@@ -357,8 +357,8 @@ the gap between what the program knows and what its surface shows.
 **P0-1 — a partially-failed run can look like a clean one (the headline audit
 finding).** When the batch comes back, the spine *correctly* records every spec
 whose review failed — a missing, truncated, parse-errored, or errored result lands
-in `truncated_specs` and sets `review_result.error` (**Ch 7 — Orchestration &
-State**). The GUI even surfaces it transiently: `collect_batch_results` logs a
+in `truncated_specs` and sets `review_result.error` ([**Ch 7 — Orchestration &
+State**](07_orchestration.md)). The GUI even surfaces it transiently: `collect_batch_results` logs a
 per-spec warning, and `on_review_complete` logs *"Review completed with errors —
 some specs failed."* But then the same handler calls `set_complete()` — the green
 "✓ Complete" — and finalizes the diagnostics status. Crucially, the *only* thing
@@ -371,12 +371,12 @@ reviewed all five and they're clean"* and *"two of five never got reviewed"* mus
 not share a terminal state. The data to fix it already exists end-to-end
 (`truncated_specs`); the gap is purely one of *surfacing* it — a distinct
 "Completed with errors" state in the UI and a corresponding row in the report's
-Run Diagnostics banner (**Ch 11 — The Trust Model & Report Output**; the full
-finding and its remedy are in **Ch 16 — Trust Under the Microscope**). It is worth
+Run Diagnostics banner ([**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md); the full
+finding and its remedy are in [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md)). It is worth
 naming plainly because it sits on the most-trusted surface of the program.
 
 **P2-4 — the trace recorder's reset rides on the delayed `reset_ui`.** The trace
-recorder is a process-global singleton (its internals are **Ch 14**'s to explain).
+recorder is a process-global singleton (its internals are [**Ch 14**](14_observability.md)'s to explain).
 In the normal path it is stopped and flushed inside `collect_batch_results`'s
 `finally` the instant collection ends; `reset_ui` then performs a second,
 idempotent stop and clears the reference — but `reset_ui` runs ~2.5 s *after*
@@ -406,19 +406,19 @@ reconciled.
 The GUI is the program's mouth and hands, so it touches nearly every other
 chapter — always as a *driver*, never as a re-implementer:
 
-- It triggers the run that **Ch 3 — A Run, End to End** follows at the data level
-  and that the spine in **Ch 7 — Orchestration & State** actually sequences; the
+- It triggers the run that [**Ch 3 — A Run, End to End**](03_end_to_end_flow.md) follows at the data level
+  and that the spine in [**Ch 7 — Orchestration & State**](07_orchestration.md) actually sequences; the
   failed-spec data behind P0-1 lives there.
-- It displays the preflight token math owned by **Ch 12 — Configuration, Models &
-  Token Economics**, and it submits through the batch backbone of **Ch 6 — Batch
-  Processing**.
+- It displays the preflight token math owned by [**Ch 12 — Configuration, Models &
+  Token Economics**](12_configuration_and_models.md), and it submits through the batch backbone of [**Ch 6 — Batch
+  Processing**](06_batch_processing.md).
 - It fires the export whose contents — the Word report, the trust labels, the edit
-  sidecar — belong to **Ch 11 — The Trust Model & Report Output**, and where the
+  sidecar — belong to [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md), and where the
   P0-1 banner fix would land.
-- Its tracing row and diagnostics window are thin handles onto **Ch 14 —
-  Observability**, which owns the recorder internals and the P2-4 mechanism.
-- Both honest edges (P0-1, P2-4) are catalogued in full in **Ch 16 — Trust Under
-  the Microscope**.
+- Its tracing row and diagnostics window are thin handles onto [**Ch 14 —
+  Observability**](14_observability.md), which owns the recorder internals and the P2-4 mechanism.
+- Both honest edges (P0-1, P2-4) are catalogued in full in [**Ch 16 — Trust Under
+  the Microscope**](16_trust_under_the_microscope.md).
 
 ## Key takeaways
 

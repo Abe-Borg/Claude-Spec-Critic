@@ -116,8 +116,8 @@ Placing the `models_disagreed` short-circuit at step 3 means a swapped-in,
 grounded, CONFIRMED final verdict still renders as `VERIFIED_CONTESTED`. **The
 disagreement itself is the quality signal**, more important than the headline
 verdict, so it wins. (The production verifier only sets `models_disagreed` when
-both passes grounded *and* differed — see **Ch 10 — Verification II: How We Check
-& Judge** for how that flag is computed; this layer only reads and honors it.)
+both passes grounded *and* differed — see [**Ch 10 — Verification II: How We Check
+& Judge**](10_verification_grounding.md) for how that flag is computed; this layer only reads and honors it.)
 
 Rules 5 and 6 carry one more piece of belt-and-suspenders: the explicit
 `has_accepted` check. The grounding invariant (Ch 10) already downgrades a
@@ -229,7 +229,7 @@ this out loud. The note also embeds the **pinned-editions enumeration**
 (`_render_pinned_editions_note`): a one-paragraph list of exactly which
 NFPA/ASHRAE/IAPMO/UL editions the verifier treated as authoritative for the cycle
 (for `CALIFORNIA_2025`: NFPA 13 "2022 with California Amendments," ASHRAE 90.1
-"2022," and so on — see **Ch 12 — Configuration, Models & Token Economics** for
+"2022," and so on — see [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md) for
 where those strings live). Empty edition fields are silently dropped, so a future cycle that hasn't
 populated them degrades to a shorter note rather than printing blanks.
 
@@ -255,8 +255,8 @@ line. The severity table answers *how many issues are critical?*; this one answe
 sub-section explicitly suffixed "(deterministic check)" so the reader can tell at
 a glance which items came from local rules versus the model. These are the
 `leed_reference` / `placeholder` / `template_marker` / stale-cycle / structural /
-duplicate / naming alerts owned by **Ch 4 — Input: Extraction, Element IDs & the
-Deterministic Pre-Screen**; this layer only lays them out.
+duplicate / naming alerts owned by [**Ch 4 — Input: Extraction, Element IDs & the
+Deterministic Pre-Screen**](04_input.md); this layer only lays them out.
 
 ## The Run Diagnostics banner
 
@@ -312,7 +312,7 @@ Same red-ish family, two different colors, two different remedies, because the
 A clarification the chapter prompt insists on: this Run Diagnostics *banner* — a
 section of the Word report — is **not** the same thing as the in-memory
 `DiagnosticsReport` (`orchestration/diagnostics.py`), which is the operational ops
-report owned by **Ch 14 — Observability: Tracing & Diagnostics**. They share a
+report owned by [**Ch 14 — Observability: Tracing & Diagnostics**](14_observability.md). They share a
 spirit ("surface operational health") but live in different worlds: one is a few
 rows of a printed artifact derived from finding fields; the other is a structured
 in-memory object threaded through the run. Don't confuse them.
@@ -355,8 +355,8 @@ contents render in a fixed order:
 
 1. **Verifier model** (e.g. Sonnet 4.6 / Opus 4.7 / local).
 2. **Verification mode** in human-readable form (Local skip / Strict structured /
-   Standard reasoning / Deep reasoning — the routing dimension owned by **Ch 9 —
-   Verification I: How We Decide to Check**).
+   Standard reasoning / Deep reasoning — the routing dimension owned by [**Ch 9 —
+   Verification I: How We Decide to Check**](09_verification_routing.md)).
 3. **Search budget used** — "N of M searches used," or, when the verifier pulled
    full pages, "Searches: N of M, Full-page fetches: K." Suppressed for
    `local_skip`, where "0 of N searches" would be misleading by design.
@@ -408,7 +408,7 @@ A trimmed entry:
 
 ```json
 {
-  "finding_id": "a1b2c3d4",
+  "finding_id": "rf-3f9a2b7c4d1e",
   "fileName": "230500_Common_Work_Results_HVAC.docx",
   "section": "2.3 PIPE MATERIALS",
   "severity": "HIGH",
@@ -433,7 +433,7 @@ A trimmed entry:
 object, mirroring the `EditProposal` dataclass field-for-field
 (`action_type` / `existing_text` / `replacement_text` / `anchor_text` /
 `insert_position` / `target_element_id` / `edit_confidence`; the dataclass itself
-is owned by **Ch 5 — The Review Engine**). The two trust fields carried alongside
+is owned by [**Ch 5 — The Review Engine**](05_review_engine.md)). The two trust fields carried alongside
 — `verification_verdict` and `report_status` — are the "ride-along" data the
 applier gates on: it can decide, for example, to skip any entry whose
 `report_status` is `VERIFIED_CONTESTED` and require a human, while applying
@@ -466,9 +466,9 @@ from a clean spec (0 findings) in the exported `.docx`. "We reviewed all 5 and
 they're clean" and "2 of 5 silently failed" render identically. The fix is purely
 additive — a banner row fed by `truncated_specs`, highlighted red when > 0, and a
 "reviewed/submitted" count — and it belongs here in `_summarize_run_diagnostics`,
-but the data it needs is produced upstream in the spine (**Ch 7 — Orchestration &
-State: The Pipeline Spine**). It is the headline finding of the structural audit
-(**Ch 16 — Trust Under the Microscope: The Audits**).
+but the data it needs is produced upstream in the spine ([**Ch 7 — Orchestration &
+State: The Pipeline Spine**](07_orchestration.md)). It is the headline finding of the structural audit
+([**Ch 16 — Trust Under the Microscope: The Audits**](16_trust_under_the_microscope.md)).
 
 **TRUST_AUDIT P0-1 — the sidecar under-emits for multi-file defects.** When dedup
 collapses the same defect across N specs — common for templated DSA master
@@ -484,7 +484,7 @@ already *exists*, but is called only from tests, never wired into the sidecar.
 CLAUDE.md even claims the per-file originals survive the merge "for the report and
 the edit-instruction sidecar," and that intent is simply not yet realized in code.
 The fix (emit one entry per affected file, or at minimum include `affected_files`)
-straddles this chapter and the dedup spine in **Ch 7**.
+straddles this chapter and the dedup spine in [**Ch 7**](07_orchestration.md).
 
 Two smaller edges round out the honesty ledger. The `MANUAL_REVIEW_REQUIRED`
 status is a real enum value with a glyph and a color, but `classify_status` has
@@ -504,19 +504,19 @@ quieter, and therefore more dangerous, than a stack trace.
 
 This chapter is the downstream terminus of almost everything. It **renders** the
 `VerificationResult` whose verdict, grounding, and telemetry are *produced* in
-**Ch 10 — Verification II** — classification and display only; none of the
-judgment happens here. It shows the routing **mode** chosen in **Ch 9 —
-Verification I** in each evidence panel. It lays out the deterministic **alerts**
-and consumes the content-loss **extraction warnings** from **Ch 4 — Input**. It
-renders the `Finding` / `EditProposal` data model defined in **Ch 5 — The Review
-Engine**, and depends on the dedup / multi-file grouping in **Ch 7 —
-Orchestration & State**, where the spine-side fix for the sidecar's multi-file
+[**Ch 10 — Verification II**](10_verification_grounding.md) — classification and display only; none of the
+judgment happens here. It shows the routing **mode** chosen in [**Ch 9 —
+Verification I**](09_verification_routing.md) in each evidence panel. It lays out the deterministic **alerts**
+and consumes the content-loss **extraction warnings** from [**Ch 4 — Input**](04_input.md). It
+renders the `Finding` / `EditProposal` data model defined in [**Ch 5 — The Review
+Engine**](05_review_engine.md), and depends on the dedup / multi-file grouping in [**Ch 7 —
+Orchestration & State**](07_orchestration.md), where the spine-side fix for the sidecar's multi-file
 fan-out (and the failed-spec data) lives. The pinned-editions note pulls cycle
-data owned by **Ch 12 — Configuration, Models & Token Economics**. The Run
+data owned by [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md). The Run
 Diagnostics *banner* described here should not be confused with the in-memory
-`DiagnosticsReport` of **Ch 14 — Observability: Tracing & Diagnostics**. And the
-two P0-1 audit findings are examined in full in **Ch 16 — Trust Under the
-Microscope: The Audits**.
+`DiagnosticsReport` of [**Ch 14 — Observability: Tracing & Diagnostics**](14_observability.md). And the
+two P0-1 audit findings are examined in full in [**Ch 16 — Trust Under the
+Microscope: The Audits**](16_trust_under_the_microscope.md).
 
 ## Key takeaways
 

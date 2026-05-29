@@ -29,7 +29,7 @@ Four files carry the work, each owned by this chapter:
 | `retry_policy.py` | the failure taxonomy that decides retry vs. continue vs. give up |
 
 The routing *decision* this chapter executes — which model, which mode, how much
-search budget — was built in **Ch 9 — Verification I: How We Decide to Check**.
+search budget — was built in [**Ch 9 — Verification I: How We Decide to Check**](09_verification_routing.md).
 The clean seam between the two is deliberate: Ch 9 is a pure function you can
 unit-test without a network; Ch 10 is where the network, the model, and the
 grounding gate live.
@@ -47,8 +47,8 @@ built by `_pinned_standards_lines` — the specific NFPA, ASHRAE, IAPMO, and UL
 editions California adopted for the cycle, with an explicit instruction: *use the
 edition listed here; if a search result shows a different edition, flag the
 difference and treat the pinned edition as authoritative.* (The edition *data*
-itself lives on the `CodeCycle` and is owned by **Ch 12 — Configuration, Models &
-Token Economics**; this chapter owns only the prompt's *use* of it.) Empty
+itself lives on the `CodeCycle` and is owned by [**Ch 12 — Configuration, Models &
+Token Economics**](12_configuration_and_models.md); this chapter owns only the prompt's *use* of it.) Empty
 edition fields are silently dropped, so a future cycle that hasn't been populated
 degrades to an empty block rather than claiming a pinning that isn't there.
 
@@ -153,7 +153,7 @@ that lacks an accepted citation, and the load path re-checks the same condition
 when reading from disk. The trust property is enforced at write *and* read.
 
 There is a fifth, independent re-check in `report_status.classify_status`
-(**Ch 11 — The Trust Model & Report Output**), which re-derives grounding before
+([**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md)), which re-derives grounding before
 it will paint a finding `VERIFIED_SUPPORTED`. The trust audit verified this whole
 chain — conservative normalization, exact match, fabricated URLs can't match,
 plus the independent re-check — as genuine defense-in-depth, and it is the
@@ -207,8 +207,8 @@ close it: the model still chooses which snippet to quote and asserts that it
 supports the verdict. That semantic link — *this passage establishes this
 requirement* — is the model's judgment, not a verified fact.
 
-The honest consequence, which the trust audit (**Ch 16 — Trust Under the
-Microscope**) states plainly and which this handbook will not soften: **human
+The honest consequence, which the trust audit ([**Ch 16 — Trust Under the
+Microscope**](16_trust_under_the_microscope.md)) states plainly and which this handbook will not soften: **human
 spot-checking of `VERIFIED_*` findings is still warranted.** Grounding raises the
 floor — it eliminates the confidently-invented citation, which is the most
 dangerous failure mode — but it is not a substitute for a licensed reviewer
@@ -256,7 +256,7 @@ inside per-item `params`**. Bundling a header into the body would itself trigger
 and batch paths that forward it stay structurally identical. The lesson
 generalizes to a whole *risk class*: a hardcoded beta header is a time bomb that
 fires when the value retires. The still-live `output-300k-2026-03-24` header on
-the extended-output batch path (**Ch 6 — Batch Processing**) is the same class of
+the extended-output batch path ([**Ch 6 — Batch Processing**](06_batch_processing.md)) is the same class of
 risk, and the audit names it as the next one to watch.
 
 ## Escalation and the contested verdict
@@ -264,7 +264,7 @@ risk, and the audit names it as the next one to watch.
 When Sonnet runs a CRITICAL or HIGH finding and comes back ungrounded, the
 program does not shrug. It escalates: re-runs the same finding on Opus, the
 stronger model. Whether to escalate is a *policy* decision owned by
-`should_escalate_verification` in **Ch 9**; this chapter owns the *run*.
+`should_escalate_verification` in [**Ch 9**](09_verification_routing.md); this chapter owns the *run*.
 
 The mechanics have one subtlety worth dwelling on, because it is the difference
 between a useful signal and a misleading one. Before the escalation call can
@@ -299,7 +299,7 @@ a *disagreement* — the first pass never grounded anything to disagree about; t
 escalation was simply doing its job. `models_disagreed` fires only when **both
 verifiers grounded their verdicts** (each with a real accepted citation) **and
 reached different conclusions.** When it does, `classify_status` short-circuits
-the finding to `VERIFIED_CONTESTED` (**Ch 11**) *before* the verdict branches, so
+the finding to `VERIFIED_CONTESTED` ([**Ch 11**](11_trust_model_and_output.md)) *before* the verdict branches, so
 a swapped-in grounded `CONFIRMED` that contradicts a grounded `DISPUTED` initial
 does not get to masquerade as `VERIFIED_SUPPORTED`. The evidence panel renders
 both citation sets side by side.
@@ -472,7 +472,7 @@ hand-edited JSON by skipping bad entries rather than crashing the run. A read
 clone (`_clone_for_hit`) stamps the entry's original `created_ts` onto the result
 as `cache_entry_created_ts`, which is what lets the report render a "Cache replay
 — Nd old" age badge (amber/orange/red by age) without re-reading the file — that
-rendering belongs to **Ch 11**.
+rendering belongs to [**Ch 11**](11_trust_model_and_output.md).
 
 A final structural note that prevents a whole class of silent bugs: the persisted
 field set is an *explicit* allow-list (`_PERSISTED_FIELDS`), and every non-persisted
@@ -514,22 +514,22 @@ without a schema bump; legacy v3 rows that predate a field load it at its defaul
 
 - **Upstream — the decision being executed.** Every model id, mode, search
   budget, continuation cap, and escalation-eligibility flag this chapter consumes
-  was assembled into a `VerificationRoutingDecision` by **Ch 9 — Verification I:
-  How We Decide to Check**. This chapter never *decides* policy; it *runs* it.
+  was assembled into a `VerificationRoutingDecision` by [**Ch 9 — Verification I:
+  How We Decide to Check**](09_verification_routing.md). This chapter never *decides* policy; it *runs* it.
 - **Sideways — transport.** Waves submit, poll, and collect through the Message
-  Batches backbone of **Ch 6 — Batch Processing**, which also owns the
+  Batches backbone of [**Ch 6 — Batch Processing**](06_batch_processing.md), which also owns the
   still-live 300k extended-output header risk class.
 - **Downstream — presentation.** The `VerificationResult` this chapter produces is
   *classified* into one of the nine `ReportStatus` labels, and *rendered* (the
   evidence panel, the cache-replay age badge, the budget-exhausted sub-label, the
-  side-by-side contested citations) by **Ch 11 — The Trust Model & Report
-  Output**. This chapter judges; Ch 11 displays the judgment.
+  side-by-side contested citations) by [**Ch 11 — The Trust Model & Report
+  Output**](11_trust_model_and_output.md). This chapter judges; Ch 11 displays the judgment.
 - **Configuration.** The pinned-edition data on the `CodeCycle`, the severity
-  budget map, the output caps, and the model-capability whitelist are **Ch 12 —
-  Configuration, Models & Token Economics**.
+  budget map, the output caps, and the model-capability whitelist are [**Ch 12 —
+  Configuration, Models & Token Economics**](12_configuration_and_models.md).
 - **Audits.** The trust caveat, the batch-parity finding (P0-5), and the fallback
-  handoff (P1-2) are examined in **Ch 16 — Trust Under the Microscope**; the
-  retired-beta-header lesson recurs in **Ch 17 — Evolution & Lessons**.
+  handoff (P1-2) are examined in [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md); the
+  retired-beta-header lesson recurs in [**Ch 17 — Evolution & Lessons**](17_evolution_and_lessons.md).
 
 For reference, the verdict→status mapping this chapter hands to Ch 11:
 

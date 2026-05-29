@@ -6,8 +6,8 @@ question that has nothing to do with whether any individual finding is *right*:
 **which of these two hundred claims is worth paying to check?**
 
 Checking is not free. Verification is the web-search-backed pass that adjudicates
-a finding into a grounded verdict (the mechanics are **Ch 10 — Verification II:
-How We Check & Judge**), and every check spends real money and real time — a
+a finding into a grounded verdict (the mechanics are [**Ch 10 — Verification II:
+How We Check & Judge**](10_verification_grounding.md)), and every check spends real money and real time — a
 verifier call on Opus with eight web searches and a full-page fetch is the most
 expensive single operation in the entire pipeline. A leftover `TODO:` left in a
 spec deserves none of that; it is self-evidently a defect and no amount of web
@@ -38,8 +38,8 @@ Five files carry the decision layer, each a leaf with a single job:
 
 The web-search budget map itself lives one layer down in `api_config.py`
 (`_SEVERITY_MAX_USES`), shared so the tool builder and the verifier read the same
-numbers — full configuration ownership is **Ch 12 — Configuration, Models &
-Token Economics**.
+numbers — full configuration ownership is [**Ch 12 — Configuration, Models &
+Token Economics**](12_configuration_and_models.md).
 
 ## The shape of a decision
 
@@ -118,8 +118,8 @@ catalogue of the deterministic pre-screen's own output: `placeholder`, `[select]
 `inconsistent filename`, and more.
 
 That overlap is intentional and load-bearing. Every deterministic detector from
-the local pre-screen (**Ch 4 — Input: Extraction, Element IDs & the Deterministic
-Pre-Screen**) carries a stable `deterministic_rule` id, and those rule names are
+the local pre-screen ([**Ch 4 — Input: Extraction, Element IDs & the Deterministic
+Pre-Screen**](04_input.md)) carries a stable `deterministic_rule` id, and those rule names are
 *public* precisely so this list can recognize them. When the preprocessor has
 already caught a duplicate paragraph locally — no model required — a GRIPES
 finding describing that same duplicate should not then turn around and pay for a
@@ -176,10 +176,10 @@ matter and are easy to get wrong:
   emit-but-don't-apply stance throughout this handbook) can read the flag from the
   edit sidecar and apply a higher bar before acting. But the flag never reaches
   the verification cache: local-skip results are ungrounded, and the cache refuses
-  to persist ungrounded verdicts (the grounding guard is **Ch 10**'s), so it
+  to persist ungrounded verdicts (the grounding guard is [**Ch 10**](10_verification_grounding.md)'s), so it
   drops them before the flag could ever be stored. No cache schema bump was needed.
-  How the flag surfaces in the report and sidecar is **Ch 11 — The Trust Model &
-  Report Output**'s.
+  How the flag surfaces in the report and sidecar is [**Ch 11 — The Trust Model &
+  Report Output**](11_trust_model_and_output.md)'s.
 - **Matching both lists takes the regular path, no flag.** A finding that matches
   *both* a regular keyword (say `duplicate paragraph`) and an elevated keyword is
   treated as a regular skip with no flag. The regular-list match is the stronger
@@ -295,7 +295,7 @@ acceptable: *"A wrong classification at worst picks the wrong priority-source
 paragraph; the grounding invariant … is the real safety net."* Profile is a
 *hint* to the verifier, not a gate on truth. The thing that actually prevents a
 wrong verdict — the requirement that every CONFIRMED/CORRECTED be backed by a real,
-retrieved citation — lives in **Ch 10**, and it does not care which profile the
+retrieved citation — lives in [**Ch 10**](10_verification_grounding.md), and it does not care which profile the
 finding was tagged with.
 
 [^profile-drift]: A drift worth flagging in the spirit of this handbook's
@@ -380,8 +380,8 @@ those two modes. STRICT_STRUCTURED and LOCAL_SKIP omit it: STRICT_STRUCTURED is
 cheap-and-narrow by design, and LOCAL_SKIP makes no remote call at all. (Web fetch
 is generally available and takes **no** beta header — a once-attached
 `web-fetch-2026-02-09` header crashed the common verification path with an HTTP
-400; the full cautionary tale is **Ch 10 — Verification II** and **Ch 17 —
-Evolution & Lessons**.) One ordering detail matters for prompt caching: the verdict
+400; the full cautionary tale is [**Ch 10 — Verification II**](10_verification_grounding.md) and [**Ch 17 —
+Evolution & Lessons**](17_evolution_and_lessons.md).) One ordering detail matters for prompt caching: the verdict
 tool stays at the *end* of the tool list so `tools_with_cache` attaches the
 trailing cache breakpoint to the right place — the byte-stability of cache
 breakpoints is a recurring concern across the codebase.
@@ -401,7 +401,7 @@ Escalation — re-running an uncertain finding on the stronger model (Sonnet →
 — is where the decision layer and the execution layer meet, and the line between
 them is worth drawing carefully. This chapter owns the *policy*: which findings
 are *eligible* to escalate, and the fact that escalation forces DEEP_REASONING.
-**Ch 10** owns the *execution*: how the escalation call actually runs, and how a
+[**Ch 10**](10_verification_grounding.md) owns the *execution*: how the escalation call actually runs, and how a
 disagreement between the two verifiers becomes a "contested" result.
 
 Two gates govern eligibility, both in this layer. First, at the mode level, only
@@ -421,7 +421,7 @@ lines up, the escalated re-run is routed by passing `escalated=True` back throug
 The continuation cap travels in the decision too: `max_continuations` is 2 for
 every mode except DEEP_REASONING, which gets 4 so a legitimately hard CRITICAL
 California finding has room to converge across pause-turn rounds. The continuation
-*loop* that consumes that cap is **Ch 10**'s.
+*loop* that consumes that cap is [**Ch 10**](10_verification_grounding.md)'s.
 
 ## One decision object, four callers
 
@@ -431,7 +431,7 @@ computes for itself — is a real bug the codebase lived through.
 
 Verification runs on four code paths: the real-time streaming call, the batch
 initial submission, and the batch retry and continuation builders (the batch
-transport itself is **Ch 6 — Batch Processing**). The routing decision used to be
+transport itself is [**Ch 6 — Batch Processing**](06_batch_processing.md)). The routing decision used to be
 re-derived independently in three of them, and they drifted. The batch initial
 path applied a thinking config unconditionally and used the profile budget
 *without* the mode's adjustment — so a GRIPES finding that would have been
@@ -464,7 +464,7 @@ The decision also carries a short `trace_reason` tag — `local_skip`,
 `gripes_strict_structured`, `internal_coordination_strict`,
 `default_standard_reasoning` — so a diagnostics dump can bucket findings by *why*
 they were routed the way they were, without parsing free text. That observability
-hook feeds **Ch 14 — Observability: Tracing & Diagnostics**.
+hook feeds [**Ch 14 — Observability: Tracing & Diagnostics**](14_observability.md).
 
 ## Predicting the routing: worked examples
 
@@ -509,7 +509,7 @@ where they don't.
   can't be cached and why the `requires_elevated_confidence` flag can only ever be
   telemetry. The trust model handles this by giving these findings their own
   status, `LOCALLY_CLASSIFIED`, rather than dressing them up as "verified"
-  (**Ch 11**). The honest statement to the reviewer is "we resolved this locally,"
+  ([**Ch 11**](11_trust_model_and_output.md)). The honest statement to the reviewer is "we resolved this locally,"
   not "we confirmed this against the world."
 - **The stale module comment** in `verification_profiles.py` (footnote above) is a
   small live example of the drift this handbook's conflict rule is designed to
@@ -519,29 +519,29 @@ where they don't.
 ## How this connects
 
 - **Upstream — what feeds the decision.** The `deterministic_rule` ids whose names
-  the local-skip list recognizes come from the pre-screen in **Ch 4 — Input:
-  Extraction, Element IDs & the Deterministic Pre-Screen**. The `Finding` fields
+  the local-skip list recognizes come from the pre-screen in [**Ch 4 — Input:
+  Extraction, Element IDs & the Deterministic Pre-Screen**](04_input.md). The `Finding` fields
   the classifiers read (`severity`, `codeReference`, `issue`, `existingText`,
-  `replacementText`) are shaped by **Ch 5 — The Review Engine**. The pre-pass that
+  `replacementText`) are shaped by [**Ch 5 — The Review Engine**](05_review_engine.md). The pre-pass that
   invokes these classifiers in order — keyword skip, cache lookup, Haiku triage —
-  is wired into the verification spine in **Ch 7 — Orchestration & State** and
-  **Ch 10 — Verification II**.
+  is wired into the verification spine in [**Ch 7 — Orchestration & State**](07_orchestration.md) and
+  [**Ch 10 — Verification II**](10_verification_grounding.md).
 - **Downstream — what executes the decision.** The verification *call* itself,
   grounding, verdict parsing, the escalation *run*, contested detection, budget-
   exhaustion detection, the continuation loop, the real-time fallback, and the
-  cache all belong to **Ch 10 — Verification II: How We Check & Judge**. This
+  cache all belong to [**Ch 10 — Verification II: How We Check & Judge**](10_verification_grounding.md). This
   chapter decides the policy; Ch 10 carries it out.
 - **Sideways — transport.** All four request paths ship through the Message
-  Batches backbone (or the real-time stream) of **Ch 6 — Batch Processing**, which
+  Batches backbone (or the real-time stream) of [**Ch 6 — Batch Processing**](06_batch_processing.md), which
   carries the built `params` as an opaque body.
 - **Configuration.** The severity budget map, the model ids, the capability
   whitelist, and the env overrides (`SPEC_CRITIC_TRIAGE_MODEL`,
   `SPEC_CRITIC_VERIFICATION_MODEL`, `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL`)
-  are **Ch 12 — Configuration, Models & Token Economics**.
+  are [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md).
 - **Presentation.** How a `local_skip` finding renders as `LOCALLY_CLASSIFIED`,
   and how the `requires_elevated_confidence` telemetry surfaces in the edit
-  sidecar, are **Ch 11 — The Trust Model & Report Output**. The `trace_reason`
-  tags feed **Ch 14 — Observability: Tracing & Diagnostics**.
+  sidecar, are [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md). The `trace_reason`
+  tags feed [**Ch 14 — Observability: Tracing & Diagnostics**](14_observability.md).
 
 ## Key takeaways
 

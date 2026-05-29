@@ -18,14 +18,14 @@ precisely and in a machine-readable form, but I will not change it myself.* That
 subtraction made the program smaller, simpler, and — this is the argument of the
 chapter — **more trustworthy**. It is a satisfying counter-narrative to the
 instinct that more features mean a better tool, and it is the natural endpoint of
-the throughline this book has followed since **Ch 1 — The Problem Domain**: a
+the throughline this book has followed since [**Ch 1 — The Problem Domain**](01_problem_domain.md): a
 compliance tool earns its keep by making uncertainty *visible*, and there is no
 louder way to hide uncertainty than to silently rewrite a legal document.
 
 This chapter draws the arc that led there, tells the war story that bit the team
 along the way, distills the design creed the whole codebase quietly obeys, and
-lays out an honest road ahead — grounded in the two audits that **Ch 16 — Trust
-Under the Microscope** examines in full.
+lays out an honest road ahead — grounded in the two audits that [**Ch 16 — Trust
+Under the Microscope**](16_trust_under_the_microscope.md) examines in full.
 
 ## 1. The arc: from construction to hardening to subtraction
 
@@ -71,8 +71,8 @@ appeared whose entire purpose was to *surface doubt more precisely*:
 their verdicts yet disagreed; and the `budget_exhausted` sentinel, for when a
 verifier spent its full allowance without grounding anything. (Their original
 internal "chunk" labels were later stripped from the code in the M9 cleanup; the
-`README.md` changelog still names them historically.) Read **Ch 10 — Verification
-II** and **Ch 11 — The Trust Model & Report Output** for the mechanics. What
+`README.md` changelog still names them historically.) Read [**Ch 10 — Verification
+II**](10_verification_grounding.md) and [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md) for the mechanics. What
 matters *here* is the direction of travel: every one of these investments made
 the program better at saying *"I am not sure."*
 
@@ -105,7 +105,7 @@ v3.0.0 deleted the whole apparatus. In its place: the program emits a structured
 anchor / target element id / confidence), renders it inline in the Word report as
 a "Proposed replacement," and writes it to a machine-readable
 `<report-stem>.edits.json` **sidecar** for a *separate, future applier* to ingest.
-Nothing in the codebase now locates or mutates a spec. (See **Ch 11** for how the
+Nothing in the codebase now locates or mutates a spec. (See [**Ch 11**](11_trust_model_and_output.md) for how the
 proposal and sidecar are rendered today.)
 
 ### Why give up a working feature
@@ -117,7 +117,7 @@ welded together.
 - **The asymmetry of a wrong application.** A wrong *finding* costs a reviewer a
   few seconds of dismissal. A wrong *applied edit* silently mutates a stamped
   legal instrument and may sail through to a school site, exactly the "confident
-  error is a hazard" failure mode from **Ch 1**. The downside is not symmetric, so
+  error is a hazard" failure mode from [**Ch 1**](01_problem_domain.md). The downside is not symmetric, so
   the bar for acting should not be the same as the bar for suggesting.
 - **Locating is fragile.** The locator had to find the *right* run of text inside
   a messy `.docx` — across tables, list numbering, split runs, near-duplicate
@@ -143,7 +143,7 @@ all go, and the program got materially simpler for it.
 | GUI apply dialogs | To let a human approve in-app mutations | A simpler GUI whose terminal act is "export report + sidecar," not "change files" |
 | Auto-edit confidence gating (composite confidence, numeric/standards demotion, auto-edit floor) | To decide whether an edit was *safe to apply automatically* | `classify_edit_action` collapsed to a one-line question (below) |
 | `EditActionLabel` value set | Multiple labels to express apply-readiness; a `SUPPRESSED` label rode with cross-check dependency-suppression | Two values: `EDIT_SUGGESTED` / `REPORT_ONLY` |
-| A raft of edit-application env vars (`SPEC_CRITIC_TABLE_CELL_AUTO_EDIT`, `_EDIT_TRANSACTIONAL`, `_NORMALIZE_REPLACEMENT_STYLE`, `_AUTO_EDIT_CONFIDENCE_FLOOR`, …) | To tune mutation behavior | A smaller, comprehensible configuration surface (**Ch 12 — Configuration, Models & Token Economics**) |
+| A raft of edit-application env vars (`SPEC_CRITIC_TABLE_CELL_AUTO_EDIT`, `_EDIT_TRANSACTIONAL`, `_NORMALIZE_REPLACEMENT_STYLE`, `_AUTO_EDIT_CONFIDENCE_FLOOR`, …) | To tune mutation behavior | A smaller, comprehensible configuration surface ([**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md)) |
 
 The headline simplification is `classify_edit_action`. It used to be the
 gatekeeper that weighed confidence, verification status, and numeric/standards
@@ -183,10 +183,11 @@ each removing a piece of newly-dead weight:
   to names.
 
 The cumulative effect is captured in one number the project is rightly proud of:
-the test suite went from **601 to 448 tests** (shedding ~2.2k lines), not because
-coverage got worse but because there was *less surface to cover*. A smaller,
-honest codebase needs fewer tests to pin it down. (See **Ch 15 — Quality
-Engineering** for what the surviving suite guarantees.) The M-series is the
+the v3.0.0 trim took the test suite from **601 to 448 tests** (shedding ~2.2k
+lines), not because coverage got worse but because there was *less surface to
+cover*. A smaller, honest codebase needs fewer tests to pin it down. (The suite
+has kept being pared since; [**Ch 15 — Quality Engineering**](15_quality_engineering.md) counts ~396 `def
+test_` functions in the current tree and explains what the survivors guarantee.) The M-series is the
 quiet, professional half of a pivot: not just deciding to remove a feature, but
 following the removal all the way to the corners.
 
@@ -198,7 +199,7 @@ principle about programming against an external contract.
 
 Verification's richer modes (`standard_reasoning` and `deep_reasoning`) use a
 second server tool alongside web search: **web_fetch**, which retrieves the full
-text of a page rather than a search snippet (see **Ch 10**). When web_fetch was
+text of a page rather than a search snippet (see [**Ch 10**](10_verification_grounding.md)). When web_fetch was
 wired in, the code attached an `anthropic-beta: web-fetch-2026-02-09` header to
 every request that carried the tool. The reasoning seemed airtight at the time,
 and it is the kind of reasoning a careful engineer makes every day:
@@ -249,8 +250,8 @@ retired or renamed, every large-input batch review will crash at submit — the
 Trust Audit flags this as **P0-4** precisely because the codebase has *already
 been bitten once* by a hardcoded beta value, and the second one is structurally
 identical. The honest disposition: this is a known, accepted, still-open risk,
-documented rather than buried. It lives on the road ahead (§6), and **Ch 6 —
-Batch Processing**, **Ch 12**, and **Ch 16** all return to it.
+documented rather than buried. It lives on the road ahead (§6), and [**Ch 6 —
+Batch Processing**](06_batch_processing.md), [**Ch 12**](12_configuration_and_models.md), and [**Ch 16**](16_trust_under_the_microscope.md) all return to it.
 
 ## 5. The design philosophy, distilled
 
@@ -262,20 +263,20 @@ program better.
 
 | Principle | What it means in practice | Where it shows up |
 |---|---|---|
-| **Determinism before the model** | Run cheap, certain, no-API checks first; never ask a model what a regex can prove | Deterministic pre-screen (**Ch 4 — Input**) |
-| **Evidence-grounded verdicts** | A positive verdict requires a cited URL the search tool *actually retrieved*; the model's word alone is never enough | The grounding gate (**Ch 10**) |
-| **Emit, don't apply** | Propose precise edits; never mutate the document — applying is a separate, accountable act | The v3.0.0 pivot; the edit sidecar (**Ch 11**) |
-| **Degrade to safe defaults** | A misconfiguration produces a *smaller, safe* request, never an API rejection or a silent corruption | Unknown model ids → capability defaults (**Ch 12**) |
-| **Make uncertainty visible** | When the program isn't sure, it must *say so* in the artifact — contested, insufficient, failed, exhausted | The nine-label trust model (**Ch 11**) |
-| **Observe without mutating** | Instrumentation reads existing state; it never alters a `Finding` or changes a run's outcome | The forensic trace silo (**Ch 14 — Observability**) |
-| **Pin invariants with tests** | The contracts that matter (grounding, dedup identity, status order) are nailed down by a hermetic suite | The test harness (**Ch 15**) |
-| **Keep the docs honest about the edges** | Known gaps and caveats are written down and *kept in the repo*, not quietly omitted | The audits (**Ch 16**); this chapter |
+| **Determinism before the model** | Run cheap, certain, no-API checks first; never ask a model what a regex can prove | Deterministic pre-screen ([**Ch 4 — Input**](04_input.md)) |
+| **Evidence-grounded verdicts** | A positive verdict requires a cited URL the search tool *actually retrieved*; the model's word alone is never enough | The grounding gate ([**Ch 10**](10_verification_grounding.md)) |
+| **Emit, don't apply** | Propose precise edits; never mutate the document — applying is a separate, accountable act | The v3.0.0 pivot; the edit sidecar ([**Ch 11**](11_trust_model_and_output.md)) |
+| **Degrade to safe defaults** | A misconfiguration produces a *smaller, safe* request, never an API rejection or a silent corruption | Unknown model ids → capability defaults ([**Ch 12**](12_configuration_and_models.md)) |
+| **Make uncertainty visible** | When the program isn't sure, it must *say so* in the artifact — contested, insufficient, failed, exhausted | The nine-label trust model ([**Ch 11**](11_trust_model_and_output.md)) |
+| **Observe without mutating** | Instrumentation reads existing state; it never alters a `Finding` or changes a run's outcome | The forensic trace silo ([**Ch 14 — Observability**](14_observability.md)) |
+| **Pin invariants with tests** | The contracts that matter (grounding, dedup identity, status order) are nailed down by a hermetic suite | The test harness ([**Ch 15**](15_quality_engineering.md)) |
+| **Keep the docs honest about the edges** | Known gaps and caveats are written down and *kept in the repo*, not quietly omitted | The audits ([**Ch 16**](16_trust_under_the_microscope.md)); this chapter |
 
 Two of these deserve a closing emphasis because they are the most distinctive.
 *Make uncertainty visible* is the throughline of the whole book — it is why the
 trust model has nine labels and not three, why a contested finding gets its own
 purple status, why budget exhaustion earns a sub-label. And *keep the docs honest
-about the edges* is the principle this very chapter, and **Ch 16**, embody: a
+about the edges* is the principle this very chapter, and [**Ch 16**](16_trust_under_the_microscope.md), embody: a
 project that writes down "here is where we might be wrong" and commits it
 alongside the code is making a trust claim no marketing copy can.
 
@@ -284,7 +285,7 @@ alongside the code is making a trust claim no marketing copy can.
 A handbook that ended on "and it's all finished" would violate the last principle
 in that table. Spec Critic's core — extraction, deterministic screening, the
 grounded verification engine — is genuinely well-built, and the audits confirm it
-(see the "verified-clean" findings in **Ch 16**). The surprising inversion the
+(see the "verified-clean" findings in [**Ch 16**](16_trust_under_the_microscope.md)). The surprising inversion the
 audits surface is that **the risk does not live where people expect it.** The LLM
 is not the weak link; the grounding gate holds. The higher-risk surface is the
 *edges*: the honesty of the final artifact and the completeness of what reaches
@@ -298,15 +299,15 @@ the audits sequence it — surfacing partial failure first.
 
 | Item | Motivation | Source / cross-ref |
 |---|---|---|
-| **Surface partial-failure in the artifact** *(headline)* | A run where some specs *failed* review reads as a clean run: "Files Reviewed: 5" even when 2 silently failed; the data (`truncated_specs`) exists but isn't shown. For a compliance tool this is the most dangerous gap. | Structural P0-1 → **Ch 11** (report), **Ch 7 — Orchestration & State** |
-| **Per-file sidecar fan-out** | A defect found across N specs emits *one* edit instruction; a downstream applier fixes one file and never learns of the others. The fan-out helper (`group_findings()`) exists but is wired only into tests. | Trust P0-1/P0-2 → **Ch 7**, **Ch 11** |
-| **Build the downstream applier** | The sidecar is a hand-off with no recipient yet. The whole emit-only bet pays off only when a dedicated, auditable applier (plus a human) consumes it. | The v3.0.0 stance → **Ch 11** |
-| **Model-whitelist maintenance / loud-warn on unknown ids** | An operator setting a *newer, better* model (e.g. `claude-opus-4-8`) silently degrades to capped output and no extended thinking. Safe-default protects against rejection but trades it for quiet quality loss. | Trust P0-3 → **Ch 12** |
-| **Beta-header acceptance, not just presence** | The hardcoded 300k header is checked for presence, not acceptance — the same risk class as the web_fetch crash. Confirm validity; add graceful fallback to 128k. | Trust P0-4 → **Ch 6**, **Ch 12** |
-| **Extraction completeness** | Text in headers/footers, text boxes, or footnotes may not be extracted, so a real defect there is never reviewed — a "miss a real problem" gap. | Trust P0-6 → **Ch 4** |
-| **Cross-check finding ids + dedup** | Coordination findings reach the sidecar with an empty `finding_id` and aren't deduped across CSI-division chunks. | Structural P1-1 → **Ch 7**, **Ch 8 — Cross-Spec Coordination** |
-| **Prove batch grounding parity & fallback handoff** | The batch (default) verification path is believed to mirror the real-time grounding gate, and the batch→real-time tail is believed to write exactly one result — both *must be proven*, not assumed, at the trust bar. | Trust P0-5, Structural P1-2 → **Ch 10** |
-| **Keep the pinned-edition matrix current** | The adopted NFPA/ASHRAE/IAPMO/UL editions are hand-maintained against the California adoption matrix; they must be re-confirmed as cycles advance. | Trust P1-4 → **Ch 12** |
+| **Surface partial-failure in the artifact** *(headline)* | A run where some specs *failed* review reads as a clean run: "Files Reviewed: 5" even when 2 silently failed; the data (`truncated_specs`) exists but isn't shown. For a compliance tool this is the most dangerous gap. | Structural P0-1 → [**Ch 11**](11_trust_model_and_output.md) (report), [**Ch 7 — Orchestration & State**](07_orchestration.md) |
+| **Per-file sidecar fan-out** | A defect found across N specs emits *one* edit instruction; a downstream applier fixes one file and never learns of the others. The fan-out helper (`group_findings()`) exists but is wired only into tests. | Trust P0-1/P0-2 → [**Ch 7**](07_orchestration.md), [**Ch 11**](11_trust_model_and_output.md) |
+| **Build the downstream applier** | The sidecar is a hand-off with no recipient yet. The whole emit-only bet pays off only when a dedicated, auditable applier (plus a human) consumes it. | The v3.0.0 stance → [**Ch 11**](11_trust_model_and_output.md) |
+| **Model-whitelist maintenance / loud-warn on unknown ids** | An operator setting a *newer, better* model (e.g. `claude-opus-4-8`) silently degrades to capped output and no extended thinking. Safe-default protects against rejection but trades it for quiet quality loss. | Trust P0-3 → [**Ch 12**](12_configuration_and_models.md) |
+| **Beta-header acceptance, not just presence** | The hardcoded 300k header is checked for presence, not acceptance — the same risk class as the web_fetch crash. Confirm validity; add graceful fallback to 128k. | Trust P0-4 → [**Ch 6**](06_batch_processing.md), [**Ch 12**](12_configuration_and_models.md) |
+| **Extraction completeness** | Text in headers/footers, text boxes, or footnotes may not be extracted, so a real defect there is never reviewed — a "miss a real problem" gap. | Trust P0-6 → [**Ch 4**](04_input.md) |
+| **Cross-check finding ids + dedup** | Coordination findings reach the sidecar with an empty `finding_id` and aren't deduped across CSI-division chunks. | Structural P1-1 → [**Ch 7**](07_orchestration.md), [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
+| **Prove batch grounding parity & fallback handoff** | The batch (default) verification path is believed to mirror the real-time grounding gate, and the batch→real-time tail is believed to write exactly one result — both *must be proven*, not assumed, at the trust bar. | Trust P0-5, Structural P1-2 → [**Ch 10**](10_verification_grounding.md) |
+| **Keep the pinned-edition matrix current** | The adopted NFPA/ASHRAE/IAPMO/UL editions are hand-maintained against the California adoption matrix; they must be re-confirmed as cycles advance. | Trust P1-4 → [**Ch 12**](12_configuration_and_models.md) |
 
 And one item that is **not** a bug but is the most important caveat in the entire
 book, repeated here because the road ahead cannot improve it away with code: a
@@ -314,12 +315,12 @@ book, repeated here because the road ahead cannot improve it away with code: a
 *actually retrieved by the search tool* — **not** that the page's content
 demonstrably supports the specific code claim. **Grounding proves the source is
 real, not that the source proves the claim.** Human spot-checking of `VERIFIED_*`
-findings remains warranted, and always will. **Ch 16** states this caveat at
+findings remains warranted, and always will. [**Ch 16**](16_trust_under_the_microscope.md) states this caveat at
 length; the road ahead's job is to keep it honest, not to pretend it away.
 
 ## 7. An honest ending
 
-The book opened, in **Ch 1**, with a stale code reference hiding in a
+The book opened, in [**Ch 1**](01_problem_domain.md), with a stale code reference hiding in a
 forty-page plumbing spec, one approval stamp away from a school site — and with
 the distinction that organizes everything: *a missed defect is a cost; a confident
 error is a hazard.* Seventeen chapters later, that sentence is still the key to
@@ -349,13 +350,13 @@ knowing exactly what you do not yet know.
 ## How it connects
 
 This chapter reflects on the whole system rather than owning a subsystem. It
-closes the loop on the problem framing of **Ch 1 — The Problem Domain**; it tells
-the *why* behind the emit-only artifact realized in **Ch 11 — The Trust Model &
-Report Output**; it traces the beta-header lesson whose mechanics live in **Ch 10
-— Verification II** and whose still-live cousin (the 300k header) belongs to
-**Ch 6 — Batch Processing** and **Ch 12 — Configuration, Models & Token
-Economics**; and it draws its road ahead directly from the audits anatomized in
-**Ch 16 — Trust Under the Microscope**, deferring every open-item detail there.
+closes the loop on the problem framing of [**Ch 1 — The Problem Domain**](01_problem_domain.md); it tells
+the *why* behind the emit-only artifact realized in [**Ch 11 — The Trust Model &
+Report Output**](11_trust_model_and_output.md); it traces the beta-header lesson whose mechanics live in [**Ch 10
+— Verification II**](10_verification_grounding.md) and whose still-live cousin (the 300k header) belongs to
+[**Ch 6 — Batch Processing**](06_batch_processing.md) and [**Ch 12 — Configuration, Models & Token
+Economics**](12_configuration_and_models.md); and it draws its road ahead directly from the audits anatomized in
+[**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md), deferring every open-item detail there.
 
 ## Key takeaways
 

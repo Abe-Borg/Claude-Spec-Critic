@@ -186,8 +186,8 @@ moving target that depends on a cycle the document itself rarely states.**
 There is one more honest wrinkle, and it sets the tone for the whole book. The
 pinned editions are how the tool defines ground truth — the reviewer and
 verifier are told to check claims against *these* editions and to flag drift away
-from them (see **Ch 12 — Configuration, Models & Token Economics** for how the
-cycle is modeled, and **Ch 5 — The Review Engine** for how it reaches the prompt).
+from them (see [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md) for how the
+cycle is modeled, and [**Ch 5 — The Review Engine**](05_review_engine.md) for how it reaches the prompt).
 But the source file that holds those editions does not pretend they are
 infallible. Its own comments call them "a best-effort snapshot at the time the
 cycle was integrated" and instruct an engineer to **verify each string against
@@ -195,7 +195,7 @@ the California Building Standards Commission's published adoption matrix before
 relying on it.** The tool's own ground truth ships with a *verify-me* caveat.
 That candor is not a weakness in the documentation; it is the trust posture of
 the entire system, stated in miniature. We'll see it again, formalized, in
-**Ch 16 — Trust Under the Microscope**.
+[**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md).
 
 ## 4. Why human review is unforgiving: the pain
 
@@ -244,7 +244,7 @@ code — they look like this:
 | **Duplicate or empty section** | A heading repeated, or a section header with no body beneath it | Signals copy-paste damage or an unfinished edit; ambiguous requirements invite RFIs |
 | **Inconsistent file naming** | A filename's CSI number disagrees with the section number inside | A filing/organization defect that confuses everyone downstream, including the AHJ |
 
-A useful way to read that table — and a thread **Ch 4 — Input** picks up in
+A useful way to read that table — and a thread [**Ch 4 — Input**](04_input.md) picks up in
 detail — is that the classes split by *how certain* the judgment is. Some are
 mechanical and local: a `TODO:`, an empty heading, a duplicated paragraph, a
 filename mismatch can be found by a deterministic check with no model and no
@@ -291,12 +291,12 @@ downstream:
    filename mismatches — are caught by deterministic, no-API detectors that run
    *before* any model is consulted. They never guess, because their rules are
    exact, and they keep the expensive probabilistic machinery from being asked
-   questions it doesn't need to answer. (**Ch 4 — Input** owns these.)
+   questions it doesn't need to answer. ([**Ch 4 — Input**](04_input.md) owns these.)
 
 2. **Never accept a positive verdict on the model's word alone.** When the tool
    does claim a finding is confirmed or corrected, that claim must be *grounded*
    in a real source — a citation the system can show was actually retrieved, not
-   one the model produced from memory. (**Ch 10 — Verification II** is built
+   one the model produced from memory. ([**Ch 10 — Verification II**](10_verification_grounding.md) is built
    entirely around this; the important caveat, foreshadowed here, is that
    grounding proves the *source is real*, not that the source proves the claim.)
 
@@ -328,8 +328,8 @@ This was not always the shape. An earlier version of Spec Critic carried a full
 calculation. **Version 3.0.0 removed all of it** — the locator, the spec editor,
 the apply machinery, the GUI "apply" dialogs, and the confidence gating whose only
 purpose was to decide whether to auto-edit. The story of *why* that machinery was
-torn out, and what the team learned from running it, belongs to **Ch 17 —
-Evolution & Lessons.** But the *reason it stays out* is pure domain logic, and it
+torn out, and what the team learned from running it, belongs to [**Ch 17 —
+Evolution & Lessons.**](17_evolution_and_lessons.md) But the *reason it stays out* is pure domain logic, and it
 belongs here:
 
 ```
@@ -379,21 +379,21 @@ about how sure it is.**
 Everything the later chapters describe is a mechanism for making that honesty
 concrete and visible rather than rhetorical. The deterministic detectors exist so
 the certain things are answered with certainty and never muddied by a model
-(**Ch 4 — Input**). Grounded verification exists so a positive verdict has to
-point at a real, retrieved source (**Ch 10 — Verification II**). The trust model
+([**Ch 4 — Input**](04_input.md)). Grounded verification exists so a positive verdict has to
+point at a real, retrieved source ([**Ch 10 — Verification II**](10_verification_grounding.md)). The trust model
 labels every finding with one of nine honest statuses — including frank labels for
 "the verifier ran but couldn't ground this," "two capable models read real
 sources and *disagreed*," and "verification failed for an operational reason" —
-so the report never flattens uncertainty into a false binary (**Ch 11 — The Trust
-Model & Report Output**). The emit-only stance keeps an accountable human in the
+so the report never flattens uncertainty into a false binary ([**Ch 11 — The Trust
+Model & Report Output**](11_trust_model_and_output.md)). The emit-only stance keeps an accountable human in the
 loop. And when a verdict still looks wrong, a forensic trace lets you reconstruct
 exactly what the model saw — while the project's own audits, the subject of
-**Ch 16 — Trust Under the Microscope**, deliberately surface the system's edges
+[**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md), deliberately surface the system's edges
 rather than bury them, in the same spirit as that "verify-me" caveat on the pinned
 editions.
 
-That is the problem, the stakes, and the posture. **Ch 2 — Architecture at a
-Glance** is where the posture becomes structure: it draws the map of subsystems
+That is the problem, the stakes, and the posture. [**Ch 2 — Architecture at a
+Glance**](02_architecture.md) is where the posture becomes structure: it draws the map of subsystems
 and the core data objects — chief among them the `Finding`, the unit of currency
 that is born in review, gathers a grounded verdict, and arrives at the report
 carrying everything a human needs to decide whether to trust it. We have argued

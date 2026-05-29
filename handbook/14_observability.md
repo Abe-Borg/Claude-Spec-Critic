@@ -69,7 +69,7 @@ to turn off any other Spec Critic flag already knows how to turn off tracing:
 
 The capture level is read at *run start*, not import time, so a GUI checkbox that
 just flipped the env var takes effect on the next run without a process restart
-(see **Ch 13 — The Desktop GUI & Its Controller Architecture** for the widgets).
+(see [**Ch 13 — The Desktop GUI & Its Controller Architecture**](13_gui.md) for the widgets).
 Deep mode is treated as a stronger signal of operator intent than the main flag:
 if `SPEC_CRITIC_TRACE_DEEP` is truthy, tracing is enabled even if
 `SPEC_CRITIC_TRACE` says disable.
@@ -188,11 +188,11 @@ Events are an open, tagged vocabulary. The ones worth knowing:
 The last several rows are the load-bearing ones for trust debugging. A
 `grounding_outcome` event is the trace's record of the **grounding invariant** in
 action — the rule that a `CONFIRMED` / `CORRECTED` verdict requires at least one
-cited URL the search or fetch tool actually retrieved (see **Ch 10 — Verification
-II: How We Check & Judge**). An `escalation_decision` paired with a
+cited URL the search or fetch tool actually retrieved (see [**Ch 10 — Verification
+II: How We Check & Judge**](10_verification_grounding.md)). An `escalation_decision` paired with a
 `verification_escalation` span is how a `VERIFIED_CONTESTED` finding — two capable
 models grounding *different* verdicts — becomes visible after the fact (the
-routing that produced it is **Ch 9 — Verification I: How We Decide to Check**).
+routing that produced it is [**Ch 9 — Verification I: How We Decide to Check**](09_verification_routing.md)).
 When the report shows a verdict you distrust, these events are where you go to see
 the evidence the model stood on.
 
@@ -346,7 +346,7 @@ The second observability artifact is the `DiagnosticsReport` (`diagnostics.py`),
 and the first thing to be clear about is what it is **not**. It is not the Word
 report's "Run Diagnostics banner." That banner lives in the exported `.docx`,
 faces the reviewer, and is derived from `Finding` / `VerificationResult` fields by
-`report_exporter` (see **Ch 11 — The Trust Model & Report Output**). The
+`report_exporter` (see [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md)). The
 `DiagnosticsReport` is an *in-memory operational log* the pipeline builds as it
 runs and can dump as text — an engineer's instrument, not a deliverable. They share
 the spirit of "how did this run go?" but neither their data path nor their
@@ -441,7 +441,7 @@ be left on by default — which is exactly what Spec Critic does.
 ## Design tensions and an honest edge
 
 The silo guarantee is strong, but it is not flawless, and the audit
-(**Ch 16 — Trust Under the Microscope: The Audits**) names the gap precisely.
+([**Ch 16 — Trust Under the Microscope: The Audits**](16_trust_under_the_microscope.md)) names the gap precisely.
 
 **P2-4 — the delayed recorder reset.** The `TraceRecorder` is a process-global
 singleton. On a normal run it is installed at start and cleared at completion. But
@@ -478,17 +478,17 @@ scrub runs rather than assuming it blankets every byte on disk.
 Observability is the one subsystem that touches every other without being touched
 back. It draws lines outward in four directions:
 
-- To **Ch 13 — The Desktop GUI & Its Controller Architecture**: the tracing
+- To [**Ch 13 — The Desktop GUI & Its Controller Architecture**](13_gui.md): the tracing
   checkboxes, the "Show folder" and "Open viewer" buttons. Ch 13 owns the widgets;
   this chapter owns what they observe.
-- To **Ch 11 — The Trust Model & Report Output**: the *distinct* Run Diagnostics
+- To [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md): the *distinct* Run Diagnostics
   banner in the Word report. The banner is a deliverable derived from findings; the
   `DiagnosticsReport` is the in-memory ops log.
-- To **Ch 9 — Verification I** and **Ch 10 — Verification II**: the routing,
+- To [**Ch 9 — Verification I**](09_verification_routing.md) and [**Ch 10 — Verification II**](10_verification_grounding.md): the routing,
   grounding, and escalation decisions whose `grounding_outcome`,
   `escalation_decision`, and `budget_exhausted_marker` events the trace records.
   This chapter describes the *observation*; those chapters describe the *observed*.
-- To **Ch 16 — Trust Under the Microscope**: audit finding P2-4, the delayed
+- To [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md): audit finding P2-4, the delayed
   recorder reset.
 
 ---

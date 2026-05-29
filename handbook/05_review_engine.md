@@ -36,7 +36,7 @@ great deal for trust.
 
 ## 1. The unit of currency: `Finding` and `EditProposal`
 
-**Ch 2 — Architecture at a Glance** introduced the `Finding` as the pipeline's
+[**Ch 2 — Architecture at a Glance**](02_architecture.md) introduced the `Finding` as the pipeline's
 unit of currency and showed it accumulating context as it travels. This is where
 we open it up. The `Finding` dataclass lives in `review/reviewer.py`, and its
 field list reads like a sediment record of the program's history — newer fields
@@ -52,8 +52,8 @@ At birth a finding carries the essentials a reviewer would write on a markup:
   field a finding cannot live without; an empty `issue` is dropped at parse time.
 - **`codeReference`** — the applicable clause or standard (`CBC §1705.13`), or
   `None`. This field matters more than it looks: downstream, a non-empty
-  `codeReference` forces a finding onto the web-verification path (see **Ch 9 —
-  Verification I**).
+  `codeReference` forces a finding onto the web-verification path (see [**Ch 9 —
+  Verification I**](09_verification_routing.md)).
 - **`confidence`** — a 0.0–1.0 score, clamped into range by the parser.
 
 Then come the *edit* fields, and here the data model carries an explicit scar.
@@ -101,8 +101,8 @@ accessor** that papers over the difference:
 > the report or the sidecar.
 
 This accessor is load-bearing for the whole "emit, don't apply" stance that runs
-through the book. The report rendering (**Ch 11 — The Trust Model & Report
-Output**) and the edit sidecar both route through `as_edit_proposal()`, so they
+through the book. The report rendering ([**Ch 11 — The Trust Model & Report
+Output**](11_trust_model_and_output.md)) and the edit sidecar both route through `as_edit_proposal()`, so they
 see exactly the same answer whether the proposal arrived through the new schema
 slot or was reconstructed from a legacy resume payload. Nothing in this codebase
 *applies* the proposal — `as_edit_proposal()` is where the emitted edit
@@ -113,10 +113,10 @@ A handful of remaining fields are filled in by *later* stages but belong to the
 data model, so they are worth naming here:
 
 - **`verification: VerificationResult | None`** — starts `None`. A finding
-  arrives un-adjudicated and accumulates its verdict downstream (**Ch 10 —
-  Verification II**).
+  arrives un-adjudicated and accumulates its verdict downstream ([**Ch 10 —
+  Verification II**](10_verification_grounding.md)).
 - **`finding_id`** and **`occurrence_originals`** — stamped at deduplication
-  (**Ch 7 — Orchestration & State**). The id gives the report and sidecar a
+  ([**Ch 7 — Orchestration & State**](07_orchestration.md)). The id gives the report and sidecar a
   stable name to refer to; `occurrence_originals` preserves per-file member
   findings when the same defect is merged across specs.
 - **`demotion_reason`** — the parser's explanation for *why* a finding lost its
@@ -361,8 +361,8 @@ a final restatement of its constraints immediately before it answers.
 
 The two cache breakpoints — on the system block and the tool schema — are
 attached by `system_prompt_with_cache()` and `tools_with_cache()`; the
-`cache_control` mechanics and the 1-hour TTL belong to **Ch 12 — Configuration,
-Models & Token Economics**. What matters here is the *discipline* that keeps those
+`cache_control` mechanics and the 1-hour TTL belong to [**Ch 12 — Configuration,
+Models & Token Economics**](12_configuration_and_models.md). What matters here is the *discipline* that keeps those
 breakpoints meaningful.
 
 **Rule two: all wrapper escaping lives in one module.** A careless hand-rolled
@@ -396,13 +396,13 @@ perturb the sacred prefix:
   / `<row …>` / `<heading …>` so a finding can cite an `evidenceElementId`
   alongside its quoted text. It changes only the *body* of `<spec>` — never the
   prefix — so cache breakpoints stay put whether ids are on or off. The element-id
-  scheme itself is **Ch 4 — Input**'s.
+  scheme itself is [**Ch 4 — Input**](04_input.md)'s.
 - The **`<pre_detected>` block** (`render_pre_detected_block`) summarizes the
   deterministic alerts the pre-screen already found, capped at a few examples per
   rule, with an instruction not to re-report them. It sits at the *end* of the
   user message — again, behind the cached prefix — so that feeding the model its
   own pre-screen results never reshapes the cacheable region. Where those alerts
-  come from is **Ch 4 — Input**'s; how they reach this block is the seam between
+  come from is [**Ch 4 — Input**](04_input.md)'s; how they reach this block is the seam between
   the two chapters.
 
 There is one more place the cache discipline is enforced, and it is a quiet hero:
@@ -414,7 +414,7 @@ place that materializes a review request: `build_review_request()` produces the
 exact kwargs sent to the API, and `build_token_count_request()` produces the same
 shape (minus the pricing-only `cache_control` wrappers) for counting. The path
 that *counts* a request and the path that *sends* it cannot drift, because they
-are the same code. The detailed token-economics story is **Ch 12**'s; the point
+are the same code. The detailed token-economics story is [**Ch 12**](12_configuration_and_models.md)'s; the point
 for *us* is that the builder is what guarantees the prompt you reasoned about in
 this section is byte-for-byte the prompt that ships.
 
@@ -436,24 +436,24 @@ It is worth being precise about what `reviewer.py` does **not** do, because the
 orientation docs describe it loosely as the "streaming" client.[^streaming] The
 per-spec review is not streamed and is not even submitted from this module — it
 rides the **Message Batches API**, and the submit/retrieve call lives in
-`batch.py` (**Ch 6 — Batch Processing**). What `reviewer.py` actually provides is
+`batch.py` ([**Ch 6 — Batch Processing**](06_batch_processing.md)). What `reviewer.py` actually provides is
 a small, reusable **library**: the `Finding` / `EditProposal` / `ReviewResult`
 data model, the client factory, and — the part that earns its keep — the
-**parsers**. Both `batch.py` (review) and `cross_checker.py` (**Ch 8 — Cross-Spec
-Coordination**) import `_parse_findings`, `_extract_json_array`, and `_get_client`
+**parsers**. Both `batch.py` (review) and `cross_checker.py` ([**Ch 8 — Cross-Spec
+Coordination**](08_cross_spec_coordination.md)) import `_parse_findings`, `_extract_json_array`, and `_get_client`
 from `reviewer.py` and call back into them. Centralizing the `Finding` shape *and*
 the code that builds findings from a response is what keeps a coordination finding
 and a per-spec finding structurally identical.
 
-[^streaming]: `CLAUDE.md` and **Ch 2** describe `reviewer.py` as the "Anthropic
+[^streaming]: `CLAUDE.md` and [**Ch 2**](02_architecture.md) describe `reviewer.py` as the "Anthropic
 API client (streaming + tool-use parsing)." That is a fair shorthand for "owns
 the client factory and the parsing," but the literal transport calls live
 elsewhere: review is submitted via the *batch* create/retrieve API in `batch.py`
 (no streaming at all), and the only `client.messages.stream(...)` calls in the
 review/coordination path are in `cross_checker.py` and the verifier. Treat
 `reviewer.py` as the shared parsing library that those callers reuse — exactly
-the kind of code-vs-docs drift the audits exist to surface (see **Ch 16 — Trust
-Under the Microscope**).
+the kind of code-vs-docs drift the audits exist to surface (see [**Ch 16 — Trust
+Under the Microscope**](16_trust_under_the_microscope.md)).
 
 ### The two-path parse, and the salvage net
 
@@ -577,7 +577,7 @@ radius is small — a downstream applier would apply a change that changes nothi
 But it is a genuine correctness edge: the engine's validator certifies as
 actionable an edit that does nothing. The audit's suggestion is to reject or
 demote identical-text edits; until then it is a known gap, surfaced honestly here
-and tracked in **Ch 16 — Trust Under the Microscope**.
+and tracked in [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md).
 
 **Audit P1-4: the prompt content needs a domain expert, not a code reviewer.**
 This is the deepest edge in the chapter, and it is not a bug — it is a limit of

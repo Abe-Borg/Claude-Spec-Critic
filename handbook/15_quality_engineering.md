@@ -56,16 +56,16 @@ we fake?" test, but today every assertion runs offline. That is a feature, not a
 oversight: the cost of a real-call test is exactly the slowness and flakiness the
 hermetic design exists to avoid, so it is paid only on demand.
 
-**GUI tests skip when `tkinter` is missing.** The desktop shell (see **Ch 13 — The
-Desktop GUI & Its Controller Architecture**) imports `tkinter` at module scope, which
+**GUI tests skip when `tkinter` is missing.** The desktop shell (see [**Ch 13 — The
+Desktop GUI & Its Controller Architecture**](13_gui.md)) imports `tkinter` at module scope, which
 is absent in many CI containers. `pytest_ignore_collect` drops a small set of
 GUI-dependent files at collection time when `tkinter` can't be imported, so their
 import errors never abort the run. There is an honest wrinkle here worth flagging,
 because this chapter is about pinning down truth: the set named in `conftest.py`
 (`test_core_regressions.py`, `test_gui_refactor_modules.py`) does not exist in the
 current tree.[^guifiles] The guard outlived the files it guarded — a small fossil of
-the v3.0.0 trimming (foreshadowing **Ch 17 — Evolution & Lessons: The v3.0.0 Pivot
-and the Road Ahead**).
+the v3.0.0 trimming (foreshadowing [**Ch 17 — Evolution & Lessons: The v3.0.0 Pivot
+and the Road Ahead**](17_evolution_and_lessons.md)).
 
 Two more details complete the contract. `pyproject.toml` pins `testpaths = ["tests"]`
 and — importantly — `addopts = "-ra --strict-markers"`. Strict markers turn a
@@ -87,8 +87,8 @@ more weight than its size suggests.
 The production parsers consume objects that look like the Anthropic SDK's Pydantic
 models: attribute access for `message.content`, `message.stop_reason`,
 `message.usage`, `content[i].type`, `content[i].name`, `content[i].input`. But the
-Message Batches retrieval path (see **Ch 6 — Batch Processing: The Message Batches
-Backbone**) can hand back the *same* logical payload as plain dictionaries. A fake
+Message Batches retrieval path (see [**Ch 6 — Batch Processing: The Message Batches
+Backbone**](06_batch_processing.md)) can hand back the *same* logical payload as plain dictionaries. A fake
 that only modeled one shape would leave the other path untested. So every builder
 takes a `dict_shape` flag: pass `dict_shape=False` and you get attribute-accessible
 dataclass stand-ins (`FakeMessage`, `FakeToolUseBlock`, `FakeUsage`); pass
@@ -163,14 +163,14 @@ below maps each cluster to its owning chapter and the contract it locks in.
 
 | Subsystem (owning chapter) | Representative test files | Invariant pinned |
 |---|---|---|
-| Input & detectors (**Ch 4**) | `test_deterministic_checks`, `test_preprocessor_policy`, `test_locally_classified_and_content_loss` | Every deterministic detector fires with a stable `deterministic_rule` id; stale-cycle negation/history phrasing is suppressed; >20% non-text DOCX raises a content-loss warning. |
-| Review, schema & serialization (**Ch 5**) | `test_prompt_serialization` *(marked)*, `test_parse_time_edit_validation`, `test_source_quote_schema` | Wrapper escaping is injection-proof and the cache-breakpoint prefix is byte-stable; invalid EDIT/DELETE/ADD demote to REPORT_ONLY with a `demotion_reason`; empty-quote supportive verdicts demote at parse time. |
-| Orchestration & dedup (**Ch 7**) | `test_dedup_edit_identity`, `test_batch_escalation` | `_deduplicate_findings` preserves per-file `occurrence_originals`; real-time and batch escalation share merge/disagreement logic and preserve VERIFIED_CONTESTED. |
-| Verification routing (**Ch 9**) | `test_web_fetch`, `test_verified_contested`, `test_locally_classified_and_content_loss` | `web_fetch` is attached only for STANDARD/DEEP modes; `models_disagreed` produces VERIFIED_CONTESTED; the local-skip keyword list is tightened (`formatting` removed, `leed` elevated). |
-| Verification grounding & cache (**Ch 10**) | `test_source_grounding_invariant`, `test_source_quote_schema`, `test_cache_visibility`, `test_verification_cache_serialization` | Supportive verdicts without an accepted citation downgrade; the cache refuses to persist them; cache TTL defaults to 60 days; the persisted/skipped field split covers every `VerificationResult` field. |
-| Report, banner, evidence & sidecar (**Ch 11**) | `test_report_status`, `test_diagnostic_banner`, `test_evidence_panel`, `test_edit_sidecar`, `test_unverified_breakdown`, `test_verification_failed_status` | `classify_status`/`classify_edit_action` map verdicts to the nine-label trust model; the diagnostics banner aggregates operational health; the `.edits.json` sidecar carries verdict + status for a downstream applier. |
-| Config, capability & tokens (**Ch 12**) | `test_capability_policy`, `test_token_budgets` *(marked)*, `test_pinned_standards_editions`, `test_env_flag_overrides`, `test_budget_exhaustion` | Haiku/triage phases never carry a `thinking` key; per-phase output caps clamp to the model ceiling; pinned editions reach the prompts; env flags override defaults; budget exhaustion is a sub-label, never a new status. |
-| Tracing & diagnostics (**Ch 14**) | `test_tracing`, `test_verification_token_telemetry` | Trace lifecycle, env-gating, and secret redaction behave; token telemetry round-trips through resume state and the diagnostics summary. |
+| Input & detectors ([**Ch 4**](04_input.md)) | `test_deterministic_checks`, `test_preprocessor_policy`, `test_locally_classified_and_content_loss` | Every deterministic detector fires with a stable `deterministic_rule` id; stale-cycle negation/history phrasing is suppressed; >20% non-text DOCX raises a content-loss warning. |
+| Review, schema & serialization ([**Ch 5**](05_review_engine.md)) | `test_prompt_serialization` *(marked)*, `test_parse_time_edit_validation`, `test_source_quote_schema` | Wrapper escaping is injection-proof and the cache-breakpoint prefix is byte-stable; invalid EDIT/DELETE/ADD demote to REPORT_ONLY with a `demotion_reason`; empty-quote supportive verdicts demote at parse time. |
+| Orchestration & dedup ([**Ch 7**](07_orchestration.md)) | `test_dedup_edit_identity`, `test_batch_escalation` | `_deduplicate_findings` preserves per-file `occurrence_originals`; real-time and batch escalation share merge/disagreement logic and preserve VERIFIED_CONTESTED. |
+| Verification routing ([**Ch 9**](09_verification_routing.md)) | `test_web_fetch`, `test_verified_contested`, `test_locally_classified_and_content_loss` | `web_fetch` is attached only for STANDARD/DEEP modes; `models_disagreed` produces VERIFIED_CONTESTED; the local-skip keyword list is tightened (`formatting` removed, `leed` elevated). |
+| Verification grounding & cache ([**Ch 10**](10_verification_grounding.md)) | `test_source_grounding_invariant`, `test_source_quote_schema`, `test_cache_visibility`, `test_verification_cache_serialization` | Supportive verdicts without an accepted citation downgrade; the cache refuses to persist them; cache TTL defaults to 60 days; the persisted/skipped field split covers every `VerificationResult` field. |
+| Report, banner, evidence & sidecar ([**Ch 11**](11_trust_model_and_output.md)) | `test_report_status`, `test_diagnostic_banner`, `test_evidence_panel`, `test_edit_sidecar`, `test_unverified_breakdown`, `test_verification_failed_status` | `classify_status`/`classify_edit_action` map verdicts to the nine-label trust model; the diagnostics banner aggregates operational health; the `.edits.json` sidecar carries verdict + status for a downstream applier. |
+| Config, capability & tokens ([**Ch 12**](12_configuration_and_models.md)) | `test_capability_policy`, `test_token_budgets` *(marked)*, `test_pinned_standards_editions`, `test_env_flag_overrides`, `test_budget_exhaustion` | Haiku/triage phases never carry a `thinking` key; per-phase output caps clamp to the model ceiling; pinned editions reach the prompts; env flags override defaults; budget exhaustion is a sub-label, never a new status. |
+| Tracing & diagnostics ([**Ch 14**](14_observability.md)) | `test_tracing`, `test_verification_token_telemetry` | Trace lifecycle, env-gating, and secret redaction behave; token telemetry round-trips through resume state and the diagnostics summary. |
 
 The marked rows are the two registered markers in action: `@pytest.mark.token_budget`
 on `test_token_budgets.py` and `@pytest.mark.prompt_serialization` on
@@ -333,7 +333,7 @@ the surgical-edit / auto-apply stack was removed, a wave of tests that existed o
 guard it went too, and the suite was deliberately pared back to the essentials. The
 docs and a guard or two simply lagged the deletions. The full accounting of that pruning —
 what went, and why "remove what only existed for auto-apply" was the right call — belongs
-to **Ch 17 — Evolution & Lessons: The v3.0.0 Pivot and the Road Ahead**.
+to [**Ch 17 — Evolution & Lessons: The v3.0.0 Pivot and the Road Ahead**](17_evolution_and_lessons.md).
 
 The calibration eval's own edge is its size. Nine fixtures is a scoreboard with very few
 rows; it can demonstrate that the grounding invariant fires and that the overconfident
@@ -348,17 +348,17 @@ chooses to read.
 ## How it connects
 
 This chapter is downstream of nearly every other one — it is where their invariants are
-enforced. The detectors of **Ch 4 — Input**, the schemas and serialization of **Ch 5 — The
-Review Engine**, the batch envelope of **Ch 6 — Batch Processing**, the dedup and escalation
-of **Ch 7 — Orchestration & State**, the routing of **Ch 9 — Verification I**, the grounding
-gate and cache of **Ch 10 — Verification II**, the trust labels and sidecar of **Ch 11 — The
-Trust Model & Report Output**, and the token and capability policy of **Ch 12 — Configuration,
-Models & Token Economics** each have a test cluster that pins them. The trace lifecycle and
-redaction tests belong to **Ch 14 — Observability: Tracing & Diagnostics**, including the
+enforced. The detectors of [**Ch 4 — Input**](04_input.md), the schemas and serialization of [**Ch 5 — The
+Review Engine**](05_review_engine.md), the batch envelope of [**Ch 6 — Batch Processing**](06_batch_processing.md), the dedup and escalation
+of [**Ch 7 — Orchestration & State**](07_orchestration.md), the routing of [**Ch 9 — Verification I**](09_verification_routing.md), the grounding
+gate and cache of [**Ch 10 — Verification II**](10_verification_grounding.md), the trust labels and sidecar of [**Ch 11 — The
+Trust Model & Report Output**](11_trust_model_and_output.md), and the token and capability policy of [**Ch 12 — Configuration,
+Models & Token Economics**](12_configuration_and_models.md) each have a test cluster that pins them. The trace lifecycle and
+redaction tests belong to [**Ch 14 — Observability: Tracing & Diagnostics**](14_observability.md), including the
 byte-identical-summary guarantee that chapter owns. The calibration eval's confusion matrix
-and grounding-integrity table are the quantitative cousins of the manual audits in **Ch 16 —
-Trust Under the Microscope: The Audits**. And the story of *why* the suite is the size it is
-— the trimming of everything that only existed to gate auto-apply — is **Ch 17**'s to tell.
+and grounding-integrity table are the quantitative cousins of the manual audits in [**Ch 16 —
+Trust Under the Microscope: The Audits**](16_trust_under_the_microscope.md). And the story of *why* the suite is the size it is
+— the trimming of everything that only existed to gate auto-apply — is [**Ch 17**](17_evolution_and_lessons.md)'s to tell.
 
 ## Key takeaways
 
@@ -398,7 +398,7 @@ Trust Under the Microscope: The Audits**. And the story of *why* the suite is th
 [^count]: Counted as `def test_` definitions across the 26 files in the working tree
     (≈396). pytest's collected item count can differ slightly if any test is parametrized,
     and the figure will move as the suite evolves; treat it as the order of magnitude, not a
-    fixed constant. The deliberate reduction from a larger pre-v3.0.0 suite is **Ch 17**'s story.
+    fixed constant. The deliberate reduction from a larger pre-v3.0.0 suite is [**Ch 17**](17_evolution_and_lessons.md)'s story.
 
 [^bothgreen]: This is in mild tension with `evals/calibration/README.md`, which says "both
     [harnesses] should be green before shipping a tuning change." As the fixtures and scorer are

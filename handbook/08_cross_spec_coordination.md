@@ -1,6 +1,6 @@
 # Cross-Spec Coordination
 
-The per-spec review in **Ch 5 — The Review Engine** reads one document at a time
+The per-spec review in [**Ch 5 — The Review Engine**](05_review_engine.md) reads one document at a time
 and reads it well. It will catch a stale code cycle in the HVAC section, a
 placeholder the editor forgot to fill in the plumbing section, a fan schedule
 that contradicts itself. But there is an entire class of defect it is
@@ -71,7 +71,7 @@ The heart of the subsystem is `run_cross_check`. For a normally-sized project it
 is a single streaming call to Claude — not a batch submission. This is a
 deliberate departure from the rest of the heavy model work, which rides the
 Message Batches API (the full batch story, and the table that places cross-check
-against the other phases, is **Ch 6 — Batch Processing**). Two reasons make the
+against the other phases, is [**Ch 6 — Batch Processing**](06_batch_processing.md)). Two reasons make the
 synchronous call the right shape here. First, coordination is *one* call (or, for
 large projects, a small handful of chunk calls) rather than a fan-out of twenty
 independent per-spec requests, so the batch API's throughput-and-cost advantage
@@ -92,7 +92,7 @@ critical path between two other steps.
   enabled and a spec carries a paragraph map, the body is rendered with one
   id-tagged element per paragraph/row/heading (`render_spec_with_ids`) so the
   model can cite a stable id like `p7` or `t0r2` in a finding. The escaping and
-  element-id rendering belong to **Ch 5 — The Review Engine**; the coordination
+  element-id rendering belong to [**Ch 5 — The Review Engine**](05_review_engine.md); the coordination
   pass is a consumer of them.
 - An `<already_identified>` block listing the per-spec findings, each as a short
   `<prior>` entry stamped with severity, file, section, and — when present — the
@@ -199,7 +199,7 @@ only the per-spec findings that originate inside the chunk's files — showing a
 plumbing chunk the HVAC chunk's findings would be noise, not signal. The chunk
 calls nest under a shared tracing span (the `_trace_parent` plumbing in
 `run_cross_check`) so the forensic trace shows one cross-check parent with a
-child per chunk; observability is **Ch 14 — Observability**'s territory.
+child per chunk; observability is [**Ch 14 — Observability**](14_observability.md)'s territory.
 
 ### Labeling and synthesis
 
@@ -221,7 +221,7 @@ the failures are recorded faithfully in the per-chunk summary text (and the
 tally line), but the headline status is the optimistic one. The data is honest;
 the summary is the place a careful reviewer reads to see that most of the project
 was, in fact, not coordinated. How that status and summary surface in the report
-and the Run Diagnostics banner is **Ch 11 — The Trust Model & Report Output**'s
+and the Run Diagnostics banner is [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md)'s
 story; here it is enough to know how the status is computed and where the full
 truth is written.
 
@@ -269,7 +269,7 @@ and a `25`-series integrated-automation spec is, on a chunked project, split
 across the HVAC chunk and the controls chunk — the very seam the comment hoped to
 keep intact. The intent in the comment outran the prefix logic that implements
 it. This is a small, concrete instance of the broader heuristic edge, and it is
-one the audit chapter (**Ch 16 — Trust Under the Microscope**) revisits.
+one the audit chapter ([**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md)) revisits.
 
 ### Sequential, not parallel: a documentation-drift story
 
@@ -293,8 +293,8 @@ in sequence means each phase owns the findings uncontended while it executes. Th
 "parallel" annotation, had it ever been true, would have been the more dangerous
 arrangement. The drift is the kind of thing the audits exist to catch, and it is
 called out here so the next reader trusts the sequence diagram in the code over
-the prose in the doc. (The detail is revisited in **Ch 16 — Trust Under the
-Microscope**.)
+the prose in the doc. (The detail is revisited in [**Ch 16 — Trust Under the
+Microscope**](16_trust_under_the_microscope.md).)
 
 ### The traceability gap: coordination findings reach the sidecar with no id
 
@@ -305,8 +305,8 @@ called. Cross-check findings never pass through dedup; they are appended to the
 result set later, in `finalize_batch_result`, with a plain
 `all_findings.extend(...)`. So every coordination finding carries
 `finding_id = ""`, and that empty id flows straight into the machine-readable
-edit sidecar (the `<report-stem>.edits.json` feed described in **Ch 11 — The
-Trust Model & Report Output**).
+edit sidecar (the `<report-stem>.edits.json` feed described in [**Ch 11 — The
+Trust Model & Report Output**](11_trust_model_and_output.md)).
 
 The consequence is specifically a traceability one, not a crash: the report does
 not key by id, so nothing breaks on screen. But a downstream applier that keys,
@@ -316,7 +316,7 @@ coordination edit across re-runs. And because cross-check findings skip dedup
 entirely, duplicate coordination findings raised in different CSI chunks are
 never collapsed (the same defect surfacing in both `div_22` and `general`, for
 instance). Both halves of the gap — id assignment and dedup — are owned by the
-pipeline spine, so the fix belongs to **Ch 7 — Orchestration & State**, not here;
+pipeline spine, so the fix belongs to [**Ch 7 — Orchestration & State**](07_orchestration.md), not here;
 the contained remedy is to run cross-check findings through the same
 id-stamping (and ideally the same dedup) the review findings already get. This
 chapter's job is to name the consequence so it isn't a surprise: coordination
@@ -326,24 +326,24 @@ edits are real, they reach the sidecar, and today they reach it anonymously.
 
 - **Upstream — what feeds it.** The per-spec findings that populate the
   `<already_identified>` context, and the element-id-tagged spec rendering and
-  escaping the corpus relies on, come from **Ch 5 — The Review Engine** and are
-  assembled by the spine in **Ch 7 — Orchestration & State**. Cross-check filters
+  escaping the corpus relies on, come from [**Ch 5 — The Review Engine**](05_review_engine.md) and are
+  assembled by the spine in [**Ch 7 — Orchestration & State**](07_orchestration.md). Cross-check filters
   out DISPUTED review findings from its input context before running.
 - **The synchronous-call choice.** Why coordination streams synchronously instead
   of riding a batch — and the table placing it against every other phase — is
-  **Ch 6 — Batch Processing**.
+  [**Ch 6 — Batch Processing**](06_batch_processing.md).
 - **Downstream — verifying what it finds.** Coordination findings are themselves
   run through verification (a separate batch, sequentially, after the pass);
-  routing and grounding are **Ch 9 — Verification I** and **Ch 10 — Verification
-  II**.
+  routing and grounding are [**Ch 9 — Verification I**](09_verification_routing.md) and [**Ch 10 — Verification
+  II**](10_verification_grounding.md).
 - **The dedup / finding-id fix.** The empty-`finding_id` and no-dedup gap (P1-1)
-  is repaired in the pipeline spine — **Ch 7 — Orchestration & State**.
+  is repaired in the pipeline spine — [**Ch 7 — Orchestration & State**](07_orchestration.md).
 - **Presentation.** The coordination section of the Word report, the chunk labels
   carried in `section`, and the cross-check status in the Run Diagnostics banner
-  are **Ch 11 — The Trust Model & Report Output**.
+  are [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md).
 - **The audits.** The chunking-completeness limitation (TRUST P1-3), the
   parallel-vs-sequential drift (STRUCTURAL P2-3), and the traceability gap
-  (STRUCTURAL P1-1) are all revisited in **Ch 16 — Trust Under the Microscope**.
+  (STRUCTURAL P1-1) are all revisited in [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md).
 
 ## Key takeaways
 
@@ -375,4 +375,4 @@ edits are real, they reach the sidecar, and today they reach it anonymously.
 - **Coordination findings reach the sidecar anonymously (P1-1).** They skip dedup
   and id-stamping, so each carries `finding_id = ""` — a downstream-applier
   traceability gap (collisions, no cross-run handle, un-collapsed chunk
-  duplicates) whose fix belongs to the spine in **Ch 7 — Orchestration & State**.
+  duplicates) whose fix belongs to the spine in [**Ch 7 — Orchestration & State**](07_orchestration.md).

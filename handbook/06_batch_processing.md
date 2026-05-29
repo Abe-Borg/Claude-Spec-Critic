@@ -5,7 +5,7 @@ at first glance, like a usability mistake. Spec Critic embraces it on purpose.
 Every per-spec review in this product — and every initial verification verdict
 — leaves the user's machine, sits in Anthropic's batch queue alongside other
 people's work, and comes back somewhere between forty-five minutes and two
-hours later. There is no synchronous review path. **Ch 3 — A Run, End to End**
+hours later. There is no synchronous review path. [**Ch 3 — A Run, End to End**](03_end_to_end_flow.md)
 set that scene and called the run "asynchronous, batch-centric, walk-away."
 This chapter is where that phrase earns its mechanics: the thin wrapper that
 turns a list of specs into a batch, the bounded poller that watches it without
@@ -53,14 +53,14 @@ where:
 | Phase | Uses batch? | Output cap | Extended 300k eligible? | `custom_id` / notes |
 |---|---|---|---|---|
 | **Review** (per-spec) | **Yes — the only path** | 128k baseline | **Yes**, when a spec's input ≥ 200k tokens | `review__{sanitized}__{idx}` |
-| **Cross-spec coordination** | No — synchronous streaming | 96k | No | one streamed call; see **Ch 8 — Cross-Spec Coordination** |
+| **Cross-spec coordination** | No — synchronous streaming | 96k | No | one streamed call; see [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
 | **Verification** (initial wave) | Yes — batch waves | 16k | No | `verify__{idx}`; small unresolved tails flip to real time |
-| **Verification** (retry / continuation) | Yes — follow-up waves | 16k | No | see **Ch 10 — Verification II** |
-| **Triage** (opt-in Haiku pre-pass) | No — synchronous call | 8k | No | one call over short inputs; see **Ch 9 — Verification I** |
+| **Verification** (retry / continuation) | Yes — follow-up waves | 16k | No | see [**Ch 10 — Verification II**](10_verification_grounding.md) |
+| **Triage** (Haiku pre-pass) | No — synchronous call | 8k | No | one call over short inputs; see [**Ch 9 — Verification I**](09_verification_routing.md) |
 
 The output caps are the centralized per-phase budgets from
-`api_config._PHASE_OUTPUT_BUDGET` (full configuration story in **Ch 12 —
-Configuration, Models & Token Economics**). What matters at this layer is the
+`api_config._PHASE_OUTPUT_BUDGET` (full configuration story in [**Ch 12 —
+Configuration, Models & Token Economics**](12_configuration_and_models.md)). What matters at this layer is the
 last column: only review is ever big enough to need the 300k extended-output
 path, and only review goes through the beta endpoint. Verification verdicts are
 one or two sentences; their 16k cap sits so far below every model's base ceiling
@@ -113,8 +113,8 @@ assigning ids. The `custom_id` it stamps — `verify__{batch_idx}` — uses the
 its original index, rides in the request map under `finding_idx`, so when the
 verdict comes back the pipeline writes it to the correct finding regardless of
 how the batch was ordered. (The write-back mechanics and why dedup must run
-before verification belong to **Ch 7 — Orchestration & State** and **Ch 10 —
-Verification II**; here it is enough to see that the `custom_id` is a shipping
+before verification belong to [**Ch 7 — Orchestration & State**](07_orchestration.md) and [**Ch 10 —
+Verification II**](10_verification_grounding.md); here it is enough to see that the `custom_id` is a shipping
 label, not the contents.)
 
 ### Shaping `params`, and where transport headers actually live
@@ -122,10 +122,10 @@ label, not the contents.)
 Spec Critic does not hand-build the `params` body. Both the batch path and the
 (verification) real-time path route through one central request builder so the
 two can never drift — `build_review_request` for reviews (its contents are
-**Ch 5 — The Review Engine**'s territory: system prompt, paragraph map,
+[**Ch 5 — The Review Engine**](05_review_engine.md)'s territory: system prompt, paragraph map,
 structured tool, thinking, the works) and `select_routing` →
 `build_verification_request` for verification (the routing dimensions are
-**Ch 9 — Verification I**'s). The batch wrapper's job is narrower: take the
+[**Ch 9 — Verification I**](09_verification_routing.md)'s). The batch wrapper's job is narrower: take the
 built body, attach it as `params`, and record a `request_map` entry keyed by the
 `custom_id` so results can be reconciled later.
 
@@ -149,7 +149,7 @@ habit, and it is worth being precise about its current state. The code comment
 still names "web_fetch beta on STANDARD/DEEP modes," but web_fetch is a *server
 tool*, it is generally available, and it takes **no** `anthropic-beta` header
 anymore — attaching one was the cause of a production crash whose full story
-belongs to **Ch 10 — Verification II** and **Ch 17 — Evolution & Lessons**.
+belongs to [**Ch 10 — Verification II**](10_verification_grounding.md) and [**Ch 17 — Evolution & Lessons**](17_evolution_and_lessons.md).
 Today the verification request builder attaches no web_fetch header, so the
 merged union is normally empty and no `extra_headers` are forwarded at all. The
 seam remains as the *correct place* to forward any future transport header —
@@ -162,7 +162,7 @@ header. It does not.
 `poll_batch` is a one-line status read: it retrieves the batch and repackages
 `request_counts` into a `BatchStatus` — `processing / succeeded / errored /
 canceled / expired`, plus a derived `total` and the `progress_pct` the GUI's
-progress bar consumes (the UI wiring is **Ch 13 — The Desktop GUI**'s).
+progress bar consumes (the UI wiring is [**Ch 13 — The Desktop GUI**](13_gui.md)'s).
 
 `retrieve_review_results` is where results come home. It iterates the batch's
 results, and for each one looks the `custom_id` up in the job's `request_map`. A
@@ -180,7 +180,7 @@ requests it submitted. Everything else is classified honestly:
   or, failing that, falls back to a text-mode JSON parse. Truncated or
   malformed JSON is *salvaged* rather than discarded — the fallback parser's
   backward bracket search recovers a usable findings array from a response that
-  was cut mid-stream (the parser itself is **Ch 5 — The Review Engine**'s, and
+  was cut mid-stream (the parser itself is [**Ch 5 — The Review Engine**](05_review_engine.md)'s, and
   the STRUCTURAL_AUDIT confirms this salvage path as verified-clean). A parse
   that still fails yields a `ReviewResult` with `parse_status="parse_error"` and
   the raw text retained for diagnostics.
@@ -198,7 +198,7 @@ not. `retrieve_verification_results_detailed` returns the *raw* result envelopes
 keyed by `custom_id` and stops there, because grounding a verdict against its
 cited sources is a delicate, invariant-laden decision that must be identical on
 the batch path and the real-time path. That single parser lives in the verifier
-(**Ch 10 — Verification II**), and the batch layer refuses to second-guess it. A
+([**Ch 10 — Verification II**](10_verification_grounding.md)), and the batch layer refuses to second-guess it. A
 legacy text-only verification parser once lived in `batch.py`; it was removed
 precisely because it pre-dated structured tool use and would have misclassified
 a `tool_use` stop as a failure.
@@ -280,8 +280,8 @@ simply stops watching it.
 This is the concrete meaning of "never hang the UI forever." Detaching frees the
 worker thread and hands a decision back up the stack — the caller can surface
 "still running, check back later" to the user rather than presenting a frozen
-window (what the GUI does with a detached outcome is **Ch 13 — The Desktop
-GUI**'s story). It is a deliberate refusal to conflate *"I have stopped
+window (what the GUI does with a detached outcome is [**Ch 13 — The Desktop
+GUI**](13_gui.md)'s story). It is a deliberate refusal to conflate *"I have stopped
 watching"* with *"the work has stopped."* A fourth exit, `user_canceled`, is
 checked at the top of every loop iteration against a `cancel_event`, so a
 reviewer who changes their mind gets out promptly.
@@ -380,8 +380,8 @@ required when still gated." Both halves of that assumption were wrong: the
 feature was already GA and needed no header, and an *unrecognized* `anthropic-beta`
 value is not silently ignored — the API rejects it with HTTP 400. The result was
 that every request on the common verification path crashed at submit until the
-header was removed (the full incident is **Ch 10 — Verification II** and **Ch 17
-— Evolution & Lessons**).
+header was removed (the full incident is [**Ch 10 — Verification II**](10_verification_grounding.md) and [**Ch 17
+— Evolution & Lessons**](17_evolution_and_lessons.md)).
 
 The **TRUST_AUDIT** files the 300k header under P0-4 as *the same risk class*.
 If Anthropic ever retires or renames `output-300k-2026-03-24`, then every
@@ -399,8 +399,8 @@ gated for the *misconfiguration* case. Its fragility is that it trusts a dated
 string to remain valid forever, with a presence check standing in for an
 acceptance check it cannot perform. The remedy the audit suggests — degrade to
 128k rather than hard-fail if the header is rejected — is the kind of resilience
-the rest of this layer already shows elsewhere, and **Ch 12 — Configuration,
-Models & Token Economics** is where that policy would be tuned. Until then, the
+the rest of this layer already shows elsewhere, and [**Ch 12 — Configuration,
+Models & Token Economics**](12_configuration_and_models.md) is where that policy would be tuned. Until then, the
 honest statement is: the 300k path works, and it is one retired beta string away
 from breaking every large run.
 
@@ -428,12 +428,12 @@ The reconciliation against the *submitted set* — iterating the request map,
 turning every missing or error-bearing result into a visible entry in the
 diagnostics' `truncated_specs`, and firing a **repair batch** that retries the
 failures before the run is declared done — lives in `collect_review_batch_results`
-in **Ch 7 — Orchestration & State**. The STRUCTURAL_AUDIT confirms that this
+in [**Ch 7 — Orchestration & State**](07_orchestration.md). The STRUCTURAL_AUDIT confirms that this
 reconciliation is sound at the *data* layer (no result is lost), while flagging
 separately that *surfacing* those failures prominently in the final Word report
 is a known gap (its P0-1). The verification analogue — waves, the real-time
 fallback for a shrunken tail, and per-finding `VERIFICATION_FAILED` marking — is
-**Ch 10 — Verification II**'s. The TRUST_AUDIT's P1-2 names the standing
+[**Ch 10 — Verification II**](10_verification_grounding.md)'s. The TRUST_AUDIT's P1-2 names the standing
 requirement that spans both: when a batch partially fails or is canceled, the
 affected items must end up clearly marked, never silently dropped from the report
 or sidecar. The batch layer upholds its end of that contract by classifying
@@ -448,24 +448,24 @@ stay where the context to make them lives.
 ## How this connects
 
 - **Upstream — what fills the requests.** Review request bodies (system prompt,
-  paragraph map, structured tool, thinking) are built in **Ch 5 — The Review
-  Engine**; verification request bodies and their routing in **Ch 9 —
-  Verification I**. The batch layer carries these bodies as opaque `params`.
+  paragraph map, structured tool, thinking) are built in [**Ch 5 — The Review
+  Engine**](05_review_engine.md); verification request bodies and their routing in [**Ch 9 —
+  Verification I**](09_verification_routing.md). The batch layer carries these bodies as opaque `params`.
 - **Downstream — what acts on the results.** Review reconciliation and the repair
-  batch are **Ch 7 — Orchestration & State**. The verification wave loop, the
-  grounding parser, and the real-time fallback are **Ch 10 — Verification II**.
+  batch are [**Ch 7 — Orchestration & State**](07_orchestration.md). The verification wave loop, the
+  grounding parser, and the real-time fallback are [**Ch 10 — Verification II**](10_verification_grounding.md).
 - **Sideways — the synchronous phases.** Cross-spec coordination streams
-  synchronously (**Ch 8 — Cross-Spec Coordination**); the optional Haiku triage
-  pre-pass is a single synchronous call (**Ch 9 — Verification I**).
+  synchronously ([**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md)); the Haiku triage
+  pre-pass is a single synchronous call ([**Ch 9 — Verification I**](09_verification_routing.md)).
 - **Configuration.** Output caps, the beta-header constant, the model-capability
-  whitelist, and the 200k threshold are all **Ch 12 — Configuration, Models &
-  Token Economics**.
+  whitelist, and the 200k threshold are all [**Ch 12 — Configuration, Models &
+  Token Economics**](12_configuration_and_models.md).
 - **Presentation.** The `progress_cb` and `BatchStatus.progress_pct` drive the
   GUI progress bar; what the UI does with a detached or failed `PollOutcome` is
-  **Ch 13 — The Desktop GUI**.
+  [**Ch 13 — The Desktop GUI**](13_gui.md).
 - **The cautionary tale.** The web-fetch beta-header crash that makes P0-4 more
-  than theoretical is told in full in **Ch 10 — Verification II** and **Ch 17 —
-  Evolution & Lessons**.
+  than theoretical is told in full in [**Ch 10 — Verification II**](10_verification_grounding.md) and [**Ch 17 —
+  Evolution & Lessons**](17_evolution_and_lessons.md).
 
 ## Key takeaways
 
@@ -487,7 +487,7 @@ stay where the context to make them lives.
   or a no-progress stall. It never hangs the worker thread forever.
 - **The layer is an honest courier.** It classifies every result —
   ok / incomplete / parse_error / errored / absent — and drops nothing.
-  Reconciliation, repair, and report-surfacing belong to **Ch 7** and **Ch 10**.
+  Reconciliation, repair, and report-surfacing belong to [**Ch 7**](07_orchestration.md) and [**Ch 10**](10_verification_grounding.md).
 - **The 300k path is one stale string from breaking.** `output-300k-2026-03-24`
   is hardcoded and guarded only by a *presence* check, not an *acceptance* check
   — the same risk class as the web-fetch header that already crashed this

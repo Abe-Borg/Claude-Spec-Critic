@@ -49,10 +49,10 @@ chapter live.
 ```
 
 `ExtractedSpec` and `PreprocessResult` were both introduced as part of the data
-model in **Ch 2 — Architecture at a Glance**; this chapter owns their full
-detail. Everything downstream — the review prompt (**Ch 5 — The Review
-Engine**), the routing decisions (**Ch 9 — Verification I**), the report
-(**Ch 11 — The Trust Model & Report Output**) — consumes what these three files
+model in [**Ch 2 — Architecture at a Glance**](02_architecture.md); this chapter owns their full
+detail. Everything downstream — the review prompt ([**Ch 5 — The Review
+Engine**](05_review_engine.md)), the routing decisions ([**Ch 9 — Verification I**](09_verification_routing.md)), the report
+([**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md)) — consumes what these three files
 produce.
 
 ## From `.docx` to `ExtractedSpec`
@@ -186,7 +186,7 @@ emit-but-don't-apply stance the book keeps returning to (the surgical write-back
 stack was removed in v3.0.0). Ids exist so an edit *instruction* can name its
 target precisely; locating and applying it is a separate, future program's job.
 The full story of how ids ride into the report and the JSON sidecar belongs to
-**Ch 11 — The Trust Model & Report Output**.
+[**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md).
 
 ## The content-loss warning: knowing what you can't see
 
@@ -223,7 +223,7 @@ The warning is a **per-spec** signal, not a per-drawing count: one spec with thr
 embedded objects is one affected file. It rides on `ExtractedSpec.extraction_warnings`
 all the way to the report, where the Run Diagnostics banner counts the number of
 affected specs and shades the row red when any are present. That rendering is
-**Ch 11**'s territory; what matters here is the principle — the system tells the
+[**Ch 11**](11_trust_model_and_output.md)'s territory; what matters here is the principle — the system tells the
 reviewer *what it could not see* rather than pretending it saw everything.
 
 ## The extraction cache: never re-parse, never serve stale
@@ -275,8 +275,8 @@ served a stale extraction in any realistic case." The cache is also intentionall
 **process-local and not persisted** — crash recovery is the resume-state
 subsystem's job, and persisting extracted text would force a sensitive-data
 retention decision the cache deliberately avoids. (The same module also holds a
-token-count cache used by the preflight; its semantics belong to **Ch 12 —
-Configuration, Models & Token Economics**.)
+token-count cache used by the preflight; its semantics belong to [**Ch 12 —
+Configuration, Models & Token Economics**](12_configuration_and_models.md).)
 
 ## The deterministic pre-screen
 
@@ -390,8 +390,8 @@ deterministic detector — a `placeholder`, a `template_marker`, a
 `duplicate_paragraph` — can be *locally skipped* during verification, because
 there is nothing on the web to check about a `[TBD]` placeholder. Branching on a
 known id is robust in a way that keyword-sniffing the human-readable `type` string
-is not. How those ids actually steer the local-skip routing is **Ch 9 —
-Verification I**; what this chapter guarantees is that the id exists and means
+is not. How those ids actually steer the local-skip routing is [**Ch 9 —
+Verification I**](09_verification_routing.md); what this chapter guarantees is that the id exists and means
 exactly one thing.
 
 It is also worth stating plainly: this module **detects, it never modifies.** The
@@ -444,7 +444,7 @@ outdated reference — which is why the audit rates it low. It is the same shape
 trade-off as everywhere else in this layer: a conservative recognizer that errs
 toward silence, with the model as the backstop.
 
-Both of these are tracked in **Ch 16 — Trust Under the Microscope**, where the
+Both of these are tracked in [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md), where the
 extraction-completeness item and the audit's verification-first approach to it are
 discussed in full. The pattern to take away is the one that defines the whole
 input layer: *be certain about what you can see, and honest about what you can't.*
@@ -452,22 +452,22 @@ input layer: *be certain about what you can see, and honest about what you can't
 ## How it connects
 
 - **Upstream:** nothing — this *is* the front door. The orchestrator
-  (`extract_multiple_specs_cached` → `preprocess_spec`) is sequenced in **Ch 7 —
-  Orchestration & State** and shown in motion in **Ch 3 — A Run, End to End**.
-- **The data shapes** (`ExtractedSpec`, `PreprocessResult`) were mapped in **Ch 2
-  — Architecture at a Glance**; this chapter owns their detail.
+  (`extract_multiple_specs_cached` → `preprocess_spec`) is sequenced in [**Ch 7 —
+  Orchestration & State**](07_orchestration.md) and shown in motion in [**Ch 3 — A Run, End to End**](03_end_to_end_flow.md).
+- **The data shapes** (`ExtractedSpec`, `PreprocessResult`) were mapped in [**Ch 2
+  — Architecture at a Glance**](02_architecture.md); this chapter owns their detail.
 - **The review** consumes the flattened `content` and the element-id map to build
-  its prompt → **Ch 5 — The Review Engine**.
+  its prompt → [**Ch 5 — The Review Engine**](05_review_engine.md).
 - **Verification routing** reads the public `deterministic_rule` ids to decide
-  local-skips → **Ch 9 — Verification I**.
+  local-skips → [**Ch 9 — Verification I**](09_verification_routing.md).
 - **The report** renders detector alerts under a "(deterministic check)" heading
-  and surfaces the content-loss count in the Run Diagnostics banner → **Ch 11 —
-  The Trust Model & Report Output**.
+  and surfaces the content-loss count in the Run Diagnostics banner → [**Ch 11 —
+  The Trust Model & Report Output**](11_trust_model_and_output.md).
 - **The active code cycle** that the stale/invalid detectors compare against
-  (`CALIFORNIA_2025`, with its CBC year and ASCE 7 edition) is defined in **Ch 12
-  — Configuration, Models & Token Economics**.
+  (`CALIFORNIA_2025`, with its CBC year and ASCE 7 edition) is defined in [**Ch 12
+  — Configuration, Models & Token Economics**](12_configuration_and_models.md).
 - **The known gaps** (extraction completeness, ASCE 7 pre-2005) are audited in
-  **Ch 16 — Trust Under the Microscope**.
+  [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md).
 
 ## Key takeaways
 
