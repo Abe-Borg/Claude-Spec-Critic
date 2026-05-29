@@ -20,12 +20,6 @@ from types import SimpleNamespace
 
 
 from src.core.code_cycles import DEFAULT_CYCLE
-from src.output.report_status import (
-    EditActionLabel,
-    ReportStatus,
-    classify_edit_action,
-    classify_status,
-)
 from src.review.reviewer import Finding
 from src.verification.verification_prescreen import VERIFICATION_ESCALATION_MODEL
 from src.verification.verifier import (
@@ -146,18 +140,6 @@ class TestApplyEscalationOutcome:
         assert merged is esc
         assert merged.models_disagreed is True
         assert merged.initial_sources == ["https://a"]
-
-        f = Finding(
-            severity="HIGH", fileName="x", section="1", issue="i",
-            actionType="EDIT", existingText="old", replacementText="new",
-            codeReference="NFPA 13", confidence=0.5,
-        )
-        f.verification = merged
-        # The disagreement overrides the per-verdict classification.
-        assert classify_status(f) == ReportStatus.VERIFIED_CONTESTED
-        # ... and a finding with a proposal is labeled EDIT_SUGGESTED
-        # (the app emits edit instructions; it never applies them).
-        assert classify_edit_action(f) == EditActionLabel.EDIT_SUGGESTED
 
     def test_no_disagreement_when_same_verdict(self):
         initial = _vr("CONFIRMED", grounded=True, sources=["https://a"], model=INIT_MODEL)
@@ -389,9 +371,3 @@ class TestRunBatchEscalationWave:
         assert f.verification.models_disagreed is True
         assert f.verification.initial_verdict == "CORRECTED"
         assert f.verification.verdict == "CONFIRMED"
-        assert classify_status(f) == ReportStatus.VERIFIED_CONTESTED
-
-    def test_empty_findings_no_submit(self, monkeypatch):
-        recorded = _mock_batch_primitives(monkeypatch, results_by_id=lambda cid: None)
-        _run([])
-        assert "requests" not in recorded

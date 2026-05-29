@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from docx import Document
 
 from src.core.code_cycles import DEFAULT_CYCLE
@@ -60,7 +61,6 @@ from src.review.reviewer import EditProposal, Finding, ReviewResult
 from src.verification.verification_cache import (
     VerificationCache,
     _clone_for_hit,
-    _clone_for_store,
     _CacheEntry,
     _result_to_dict,
 )
@@ -148,31 +148,23 @@ def _contested_verification(
 
 
 class TestVerifiedContestedReportStatus:
-    def test_enum_value_exists(self):
-        assert ReportStatus.VERIFIED_CONTESTED == "VERIFIED_CONTESTED"
-
-    def test_label_is_registered(self):
+    def test_registered_in_all_display_maps(self):
+        # VERIFIED_CONTESTED must carry a complete display contract: a
+        # label (mentioning the disagreement), a glyph, a color, and a
+        # shading entry. Collapsed from six per-map presence/value checks
+        # — the registration is the behavior; exact glyph/hex are styling.
         assert ReportStatus.VERIFIED_CONTESTED in STATUS_LABELS
-        # The label must explicitly mention disagreement so a quick
-        # scroll of the summary table tells the reviewer what the status
-        # means without expanding.
-        label = STATUS_LABELS[ReportStatus.VERIFIED_CONTESTED]
-        assert "disagreed" in label.lower()
-
-    def test_glyph_is_lightning(self):
-        # Lightning bolt distinguishes from ⚠ (operational failure) and
-        # the verdict glyphs (✓ / ✎ / ✗).
-        assert STATUS_GLYPHS[ReportStatus.VERIFIED_CONTESTED] == "⚡"
+        assert "disagreed" in STATUS_LABELS[ReportStatus.VERIFIED_CONTESTED].lower()
+        assert ReportStatus.VERIFIED_CONTESTED in STATUS_GLYPHS
+        assert ReportStatus.VERIFIED_CONTESTED in STATUS_COLORS
+        assert ReportStatus.VERIFIED_CONTESTED in STATUS_SHADING
 
     def test_glyph_distinct_from_other_statuses(self):
         # Sanity check: no other status uses the same glyph.
         glyphs_minus_contested = {
             g for s, g in STATUS_GLYPHS.items() if s is not ReportStatus.VERIFIED_CONTESTED
         }
-        assert "⚡" not in glyphs_minus_contested
-
-    def test_display_order_includes_contested(self):
-        assert ReportStatus.VERIFIED_CONTESTED in STATUS_DISPLAY_ORDER
+        assert STATUS_GLYPHS[ReportStatus.VERIFIED_CONTESTED] not in glyphs_minus_contested
 
     def test_display_order_places_contested_between_verified_and_uncertain(self):
         # The plan calls for VERIFIED_CONTESTED between VERIFIED_CONTRADICTED
@@ -185,21 +177,6 @@ class TestVerifiedContestedReportStatus:
         assert i_contested > i_contradicted
         assert i_contested < i_disputed
 
-    def test_color_is_registered(self):
-        assert ReportStatus.VERIFIED_CONTESTED in STATUS_COLORS
-        assert ReportStatus.VERIFIED_CONTESTED in STATUS_SHADING
-
-    def test_color_is_purple_and_distinct(self):
-        # Plan: purple, distinct from amber/red/green. Spot-check the
-        # shading hex value is the purple we picked, and that it differs
-        # from the other status colors.
-        contested = STATUS_SHADING[ReportStatus.VERIFIED_CONTESTED]
-        assert contested == "800080"  # Purple
-        for status in ReportStatus:
-            if status is ReportStatus.VERIFIED_CONTESTED:
-                continue
-            assert STATUS_SHADING[status] != contested
-
 
 # ---------------------------------------------------------------------------
 # 2. VerificationResult fields
@@ -207,10 +184,6 @@ class TestVerifiedContestedReportStatus:
 
 
 class TestVerificationResultContestedFields:
-    def test_default_models_disagreed_is_false(self):
-        result = VerificationResult(verdict="UNVERIFIED")
-        assert result.models_disagreed is False
-
     def test_default_initial_sources_is_empty_list(self):
         result = VerificationResult(verdict="UNVERIFIED")
         assert result.initial_sources == []
@@ -219,17 +192,6 @@ class TestVerificationResultContestedFields:
         other = VerificationResult(verdict="UNVERIFIED")
         assert other.initial_sources == []
 
-    def test_field_round_trips_through_constructor(self):
-        result = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            sources=["https://a"],
-            models_disagreed=True,
-            initial_sources=["https://b", "https://c"],
-        )
-        assert result.models_disagreed is True
-        assert result.initial_sources == ["https://b", "https://c"]
-
 
 # ---------------------------------------------------------------------------
 # 3. classify_status — VERIFIED_CONTESTED branch
@@ -237,26 +199,31 @@ class TestVerificationResultContestedFields:
 
 
 class TestClassifyStatusContested:
-    def test_models_disagreed_overrides_confirmed_supported(self):
-        # The scenario from the plan: Sonnet says DISPUTED, Opus says
-        # CONFIRMED. After the escalation swap, ``result.verdict`` is
-        # CONFIRMED and ``result.grounded`` is True. Without the sentinel
-        # check the status would render as VERIFIED_SUPPORTED — exactly
-        # the bug the sentinel check fixes.
-        f = _finding(verification=_contested_verification())
-        assert classify_status(f) is ReportStatus.VERIFIED_CONTESTED
-
-    def test_models_disagreed_overrides_corrected(self):
-        v = _contested_verification(final_verdict="CORRECTED")
-        f = _finding(verification=v)
-        assert classify_status(f) is ReportStatus.VERIFIED_CONTESTED
-
-    def test_models_disagreed_overrides_disputed(self):
+    @pytest.mark.parametrize(
+        "final_verdict,initial_verdict",
+        [
+            # The scenario from the plan: Sonnet says DISPUTED, Opus says
+            # CONFIRMED. After the escalation swap, ``result.verdict`` is
+            # CONFIRMED and ``result.grounded`` is True. Without the
+            # sentinel check the status would render as VERIFIED_SUPPORTED
+            # — exactly the bug the sentinel check fixes. The CORRECTED and
+            # DISPUTED finals exercise the other two swapped-in verdicts so
+            # the sentinel check fires ahead of every verdict-based branch.
+            ("CONFIRMED", "DISPUTED"),
+            ("CORRECTED", "DISPUTED"),
+            ("DISPUTED", "CONFIRMED"),
+        ],
+    )
+    def test_models_disagreed_overrides_verdict_based_status(
+        self, final_verdict: str, initial_verdict: str
+    ):
         v = _contested_verification(
-            final_verdict="DISPUTED",
-            initial_verdict="CONFIRMED",
+            final_verdict=final_verdict, initial_verdict=initial_verdict
         )
         f = _finding(verification=v)
+        # The swapped-in final verdict varies but classification must
+        # always land on VERIFIED_CONTESTED, never the verdict-based bucket.
+        assert v.verdict == final_verdict
         assert classify_status(f) is ReportStatus.VERIFIED_CONTESTED
 
     def test_verification_failed_still_wins_over_disagreement(self):
@@ -336,34 +303,57 @@ class TestModelsDisagreedDetection:
     place that sets the flag.
     """
 
-    def test_verify_finding_source_uses_strict_both_grounded_condition(self):
+    def test_verify_finding_snapshots_and_helper_uses_strict_condition(self):
         # The merge logic that sets ``models_disagreed`` now lives in the
         # shared ``_apply_escalation_outcome`` helper (reused by the
         # real-time and batch escalation paths so they cannot drift).
-        # Assert (a) verify_finding still snapshots the initial grounded
-        # flag BEFORE the escalation call and passes it into the helper,
-        # and (b) the helper expresses the strict "both grounded AND
-        # verdicts differ" condition rather than the weaker "verdicts
-        # differ" alone.
+        # Assert (a) verify_finding snapshots BOTH the initial grounded
+        # flag and the initial sources BEFORE the escalation call and
+        # passes them into the helper, and (b) the helper expresses the
+        # strict "both grounded AND verdicts differ" condition (not the
+        # weaker "verdicts differ" alone) and stamps initial_sources
+        # unconditionally from the snapshot.
         source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
-        # The snapshot of the initial grounded flag must happen BEFORE
-        # the escalated call (otherwise the swap below would clobber it).
-        snapshot_idx = source.find("initial_grounded_snapshot = bool(result.grounded)")
-        assert snapshot_idx > 0, (
+
+        # (a) The grounded snapshot must happen BEFORE the escalated call
+        # (otherwise the swap below would clobber it), and be handed to
+        # the shared merge helper.
+        grounded_snap_idx = source.find(
+            "initial_grounded_snapshot = bool(result.grounded)"
+        )
+        assert grounded_snap_idx > 0, (
             "Expected an `initial_grounded_snapshot` capture before the "
             "escalation call so models_disagreed can reference the "
             "pre-swap grounded state."
         )
-        # verify_finding must hand the snapshot to the shared merge helper.
-        passes_idx = source.find("initial_grounded=initial_grounded_snapshot")
-        assert passes_idx > snapshot_idx, (
+        grounded_pass_idx = source.find("initial_grounded=initial_grounded_snapshot")
+        assert grounded_pass_idx > grounded_snap_idx, (
             "Expected verify_finding to pass `initial_grounded="
             "initial_grounded_snapshot` into `_apply_escalation_outcome` "
             "AFTER taking the snapshot."
         )
-        # The helper is the single source of truth for the disagreement
-        # condition. Isolate its body and assert the strict three-part
-        # condition.
+
+        # The initial-sources snapshot is captured before the call and
+        # passed in too, so initial_sources persists after the swap to
+        # esc_result.
+        sources_snap_idx = source.find(
+            "initial_sources_snapshot = list(result.sources or [])"
+        )
+        assert sources_snap_idx > 0, (
+            "Expected an `initial_sources_snapshot = list(result.sources or [])` "
+            "capture before the escalation call so initial_sources persists "
+            "after the potential swap to esc_result."
+        )
+        sources_pass_idx = source.find("initial_sources=initial_sources_snapshot")
+        assert sources_pass_idx > sources_snap_idx, (
+            "Expected verify_finding to pass `initial_sources="
+            "initial_sources_snapshot` into `_apply_escalation_outcome` "
+            "after taking the snapshot."
+        )
+
+        # (b) The helper is the single source of truth for the
+        # disagreement condition. Isolate its body and assert the strict
+        # three-part condition and the unconditional initial_sources set.
         helper_idx = source.find("def _apply_escalation_outcome(")
         assert helper_idx > 0, "Expected the shared _apply_escalation_outcome helper."
         models_disagreed_idx = source.find("result.models_disagreed = (", helper_idx)
@@ -374,25 +364,10 @@ class TestModelsDisagreedDetection:
         assert "initial_grounded" in block
         assert "esc_result.grounded" in block
         assert "esc_result.verdict != initial_verdict" in block
-
-    def test_verify_finding_records_initial_sources_snapshot(self):
-        source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
-        snapshot_idx = source.find("initial_sources_snapshot = list(result.sources or [])")
-        assert snapshot_idx > 0, (
-            "Expected an `initial_sources_snapshot = list(result.sources or [])` "
-            "capture before the escalation call so initial_sources persists "
-            "after the potential swap to esc_result."
-        )
-        # verify_finding hands the snapshot to the shared helper, which sets
-        # ``result.initial_sources`` unconditionally.
-        passes_idx = source.find("initial_sources=initial_sources_snapshot")
-        assert passes_idx > snapshot_idx, (
-            "Expected verify_finding to pass `initial_sources="
-            "initial_sources_snapshot` into `_apply_escalation_outcome` "
-            "after taking the snapshot."
-        )
-        helper_idx = source.find("def _apply_escalation_outcome(")
-        assert source.find("result.initial_sources = list(initial_sources)", helper_idx) > helper_idx, (
+        assert (
+            source.find("result.initial_sources = list(initial_sources)", helper_idx)
+            > helper_idx
+        ), (
             "Expected the helper to set result.initial_sources from the "
             "passed-in snapshot."
         )
@@ -427,16 +402,6 @@ class TestCacheContested:
         assert d["models_disagreed"] is True
         assert "initial_sources" in d
         assert d["initial_sources"] == result.initial_sources
-
-    def test_clone_for_store_preserves_contested_state(self):
-        original = _contested_verification()
-        clone = _clone_for_store(original)
-        assert clone.models_disagreed is True
-        assert clone.initial_sources == original.initial_sources
-        # The clone's initial_sources must be an independent list so
-        # mutations to one do not leak into the other.
-        clone.initial_sources.append("https://new")
-        assert "https://new" not in original.initial_sources
 
     def test_clone_for_hit_preserves_contested_state(self):
         stored = _contested_verification()

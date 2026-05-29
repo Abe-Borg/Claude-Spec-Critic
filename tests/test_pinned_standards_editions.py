@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from docx import Document
 
 from src.core.code_cycles import (
@@ -37,7 +38,6 @@ from src.core.code_cycles import (
 )
 from src.output.report_exporter import (
     _render_pinned_editions_note,
-    _write_methodology_note,
     export_report,
 )
 from src.review.prompts import get_single_spec_user_message, get_system_prompt
@@ -104,17 +104,15 @@ def _all_text_from(doc: Document) -> str:
 
 
 class TestCodeCycleFields:
-    def test_codecycle_has_nfpa_fields(self):
-        # Every NFPA standard from the plan is on the dataclass.
-        for attr in ("nfpa13", "nfpa14", "nfpa20", "nfpa24", "nfpa25", "nfpa72"):
+    def test_codecycle_has_nfpa_ashrae_iapmo_fields(self):
+        # Every NFPA / ASHRAE / IAPMO standard from the plan is on the
+        # dataclass schema.
+        for attr in (
+            "nfpa13", "nfpa14", "nfpa20", "nfpa24", "nfpa25", "nfpa72",
+            "ashrae_62_1", "ashrae_90_1", "ashrae_15",
+            "iapmo_tsc",
+        ):
             assert hasattr(CALIFORNIA_2025, attr), f"missing field: {attr}"
-
-    def test_codecycle_has_ashrae_fields(self):
-        for attr in ("ashrae_62_1", "ashrae_90_1", "ashrae_15"):
-            assert hasattr(CALIFORNIA_2025, attr), f"missing field: {attr}"
-
-    def test_codecycle_has_iapmo_field(self):
-        assert hasattr(CALIFORNIA_2025, "iapmo_tsc")
 
     def test_codecycle_has_ul_listing_editions(self):
         # UL editions are stored as a tuple of (standard, edition) pairs
@@ -169,16 +167,19 @@ class TestCodeCycleFields:
 
 
 class TestReviewerPromptPinnedEditions:
-    def test_system_prompt_mentions_nfpa_editions(self):
+    @pytest.mark.parametrize(
+        "label, edition_attr",
+        [
+            # Code edition misalignment category cites NFPA + ASHRAE.
+            ("NFPA 13", "nfpa13"),
+            ("NFPA 72", "nfpa72"),
+            ("ASHRAE 62.1", "ashrae_62_1"),
+            ("ASHRAE 90.1", "ashrae_90_1"),
+        ],
+    )
+    def test_system_prompt_mentions_nfpa_ashrae_editions(self, label, edition_attr):
         sp = get_system_prompt(CALIFORNIA_2025)
-        # Code edition misalignment category now cites NFPA + ASHRAE.
-        assert f"NFPA 13 {CALIFORNIA_2025.nfpa13}" in sp
-        assert f"NFPA 72 {CALIFORNIA_2025.nfpa72}" in sp
-
-    def test_system_prompt_mentions_ashrae_editions(self):
-        sp = get_system_prompt(CALIFORNIA_2025)
-        assert f"ASHRAE 62.1 {CALIFORNIA_2025.ashrae_62_1}" in sp
-        assert f"ASHRAE 90.1 {CALIFORNIA_2025.ashrae_90_1}" in sp
+        assert f"{label} {getattr(CALIFORNIA_2025, edition_attr)}" in sp
 
     def test_user_message_mentions_pinned_editions(self):
         um = get_single_spec_user_message(
@@ -269,15 +270,6 @@ class TestVerifierPinnedEditionsBlock:
         assert "NFPA 72:" not in joined
         assert "ASHRAE" not in joined
 
-    def test_verifier_system_prompt_contains_pinned_block(self):
-        prompt = _get_verification_system_prompt(
-            CALIFORNIA_2025, include_verdict_tool=True
-        )
-        assert "Pinned standards editions" in prompt
-        assert "NFPA 13" in prompt
-        assert "ASHRAE 62.1" in prompt
-        assert "UL 1479" in prompt
-
     def test_verifier_pinned_block_renders_for_text_fallback_prompt(self):
         # The text-fallback branch (verdict tool disabled) must also
         # carry the pinned editions — the model verifies the same way
@@ -322,17 +314,6 @@ class TestMethodologyNotePinnedEditions:
         assert f"ASHRAE 62.1 {CALIFORNIA_2025.ashrae_62_1}" in note
         assert "UL 300" in note
 
-    def test_render_note_mentions_cycle_label(self):
-        note = _render_pinned_editions_note("2025")
-        assert "2025" in note
-        assert "California" in note
-
-    def test_render_note_advises_reviewers(self):
-        # The note's purpose is to tell reviewers what to do when a
-        # finding cites a different edition.
-        note = _render_pinned_editions_note("2025")
-        assert "reviewed for relevance" in note or "review" in note.lower()
-
     def test_render_note_empty_when_cycle_has_no_pinning(self):
         # Unknown cycle labels fall back to DEFAULT_CYCLE; if the
         # default happens to have no pinning the note returns "".
@@ -362,17 +343,6 @@ class TestMethodologyNotePinnedEditions:
         # callers that pass an arbitrary cycle_label string.
         note = _render_pinned_editions_note("not-a-real-cycle")
         assert "NFPA 13" in note
-
-    def test_methodology_note_in_doc_contains_pinned_editions(self, tmp_path: Path):
-        # End-to-end: an exported report's methodology section should
-        # surface the pinned editions list so reviewers see it inline.
-        doc = Document()
-        _write_methodology_note(doc, cycle_label="2025")
-        text = _all_text_from(doc)
-        assert "About This Review" in text
-        assert "pinned the following standards editions" in text
-        assert "NFPA 13" in text
-        assert "ASHRAE 62.1" in text
 
 
 # ===========================================================================

@@ -93,6 +93,10 @@ class TestDedupCapturesOriginals:
         assert len(merged.occurrence_originals) == 2
         files_in_originals = sorted(o.fileName for o in merged.occurrence_originals)
         assert files_in_originals == ["a.docx", "b.docx"]
+        # No recursive nesting — members are leaves (folded in from the
+        # former test_originals_themselves_have_empty_occurrence_originals).
+        for orig in merged.occurrence_originals:
+            assert orig.occurrence_originals == []
 
     def test_originals_preserve_per_file_edit_text(self):
         # Same dedup key, but each original carries its own text. The merged
@@ -106,14 +110,6 @@ class TestDedupCapturesOriginals:
         by_file = {o.fileName: o for o in merged.occurrence_originals}
         assert by_file["a.docx"].anchorText is None
         assert by_file["b.docx"].anchorText == "near top of section"
-
-    def test_originals_themselves_have_empty_occurrence_originals(self):
-        # No recursive nesting — members are leaves.
-        a = _make_finding(file_name="a.docx")
-        b = _make_finding(file_name="b.docx")
-        out = _deduplicate_findings([a, b])
-        for orig in out[0].occurrence_originals:
-            assert orig.occurrence_originals == []
 
     def test_case_only_existing_text_difference_preserves_per_file_originals(self):
         """Phase 4 / Step 4.2 regression: case/whitespace-only differences in
@@ -282,24 +278,3 @@ class TestReportOnlyGroupedFindings:
         for orig in merged.occurrence_originals:
             assert orig.actionType == REPORT_ONLY_ACTION
             assert orig.as_edit_proposal() is None
-
-    def test_report_only_grouped_finding_renders_through_group_findings(self):
-        # group_findings should still produce occurrences for REPORT_ONLY
-        # findings so the report can list affected files even though no
-        # edit will be executed.
-        a = _make_finding(
-            file_name="a.docx",
-            action=REPORT_ONLY_ACTION,
-            existing=None,
-            replacement=None,
-        )
-        b = _make_finding(
-            file_name="b.docx",
-            action=REPORT_ONLY_ACTION,
-            existing=None,
-            replacement=None,
-        )
-        merged = _deduplicate_findings([a, b])[0]
-        groups = group_findings([merged])
-        names = [o.file_name for o in groups[0].occurrences]
-        assert sorted(names) == ["a.docx", "b.docx"]

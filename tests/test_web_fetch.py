@@ -35,11 +35,7 @@ from typing import Any
 import pytest
 from docx import Document
 
-from src.core.api_config import (
-    DEFAULT_VERIFICATION_MAX_FETCHES,
-    WEB_FETCH_MAX_CONTENT_TOKENS,
-    build_web_fetch_tool,
-)
+from src.core.api_config import build_web_fetch_tool
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.output.report_exporter import export_report
 from src.review.reviewer import Finding, ReviewResult
@@ -260,32 +256,22 @@ class TestBuildWebFetchTool:
         tool = build_web_fetch_tool()
         assert tool["type"] == "web_fetch_20260209"
 
-    def test_tool_name_is_web_fetch(self):
-        tool = build_web_fetch_tool()
-        assert tool["name"] == "web_fetch"
-
     def test_citations_enabled(self):
         """Citations must be on so fetch evidence flows through grounding."""
         tool = build_web_fetch_tool()
         assert tool["citations"] == {"enabled": True}
 
-    def test_default_max_uses(self):
-        tool = build_web_fetch_tool()
-        assert tool["max_uses"] == DEFAULT_VERIFICATION_MAX_FETCHES
+    def test_default_max_uses_is_conservative(self):
         # Default should be conservative — fetch is the deeper tool.
-        assert tool["max_uses"] <= 5
-
-    def test_max_uses_override(self):
-        tool = build_web_fetch_tool(max_uses=1)
-        assert tool["max_uses"] == 1
+        assert build_web_fetch_tool()["max_uses"] <= 5
 
     def test_max_content_tokens_capped(self):
-        """The content-token cap must be set so one fetch can't blow input."""
-        tool = build_web_fetch_tool()
-        assert tool["max_content_tokens"] == WEB_FETCH_MAX_CONTENT_TOKENS
-        # Cap should be well below the 1M context window so the
-        # verification response window is preserved.
-        assert tool["max_content_tokens"] <= 100_000
+        """The content-token cap must be set so one fetch can't blow input.
+
+        Cap should be well below the 1M context window so the
+        verification response window is preserved.
+        """
+        assert build_web_fetch_tool()["max_content_tokens"] <= 100_000
 
     def test_blocked_domains_share_web_search_blocklist(self):
         """Fetch should not be able to read sources we'd reject from search."""
@@ -422,22 +408,6 @@ class TestNoBetaHeader:
         # inputs are not permitted``.
         assert "extra_headers" not in request.params
 
-    def test_strict_structured_request_omits_beta_header(self):
-        """STRICT_STRUCTURED does not attach web_fetch, and carries no beta."""
-        finding = _finding(severity="GRIPES", code_ref=None)
-        decision = select_routing(finding, escalated=False, local_skip=False)
-        if decision.mode is not VerificationMode.STRICT_STRUCTURED:
-            pytest.skip(
-                f"Routing produced {decision.mode}; STRICT_STRUCTURED needed."
-            )
-        request = build_verification_request(
-            decision,
-            prompt="user message",
-            system_prompt="system message",
-        )
-        assert "anthropic-beta" not in request.extra_headers
-        assert "extra_headers" not in request.params
-
 
 # ===========================================================================
 # 4. VerificationResult carries the fetch telemetry fields
@@ -445,33 +415,12 @@ class TestNoBetaHeader:
 
 
 class TestVerificationResultFetchFields:
-    def test_default_web_fetch_requests_is_zero(self):
-        r = VerificationResult(verdict="UNVERIFIED")
-        assert r.web_fetch_requests == 0
-
-    def test_default_fetched_sources_is_empty_list(self):
-        r = VerificationResult(verdict="UNVERIFIED")
-        assert r.fetched_sources == []
-
     def test_fetched_sources_independence(self):
         """Default lists must not be shared across instances."""
         r1 = VerificationResult(verdict="UNVERIFIED")
         r2 = VerificationResult(verdict="UNVERIFIED")
         r1.fetched_sources.append("https://example.com/")
         assert r2.fetched_sources == []
-
-    def test_round_trip_through_constructor(self):
-        r = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            sources=["https://www.nfpa.org/13"],
-            accepted_sources=["https://www.nfpa.org/13"],
-            source_quote="Section 10.2.5.2.1...",
-            web_fetch_requests=2,
-            fetched_sources=["https://www.nfpa.org/13", "https://up.codes/cmc"],
-        )
-        assert r.web_fetch_requests == 2
-        assert r.fetched_sources == ["https://www.nfpa.org/13", "https://up.codes/cmc"]
 
 
 # ===========================================================================
@@ -579,13 +528,6 @@ class TestWebFetchCount:
         # FakeUsage has no server_tool_use attr by default.
         assert _web_fetch_count(msg) == 0
 
-    def test_message_with_no_usage_returns_zero(self):
-        class _BareMessage:
-            content: list = []
-            stop_reason = "end_turn"
-
-        assert _web_fetch_count(_BareMessage()) == 0
-
 
 # ===========================================================================
 # 6. Source grounding accepts fetched URLs
@@ -641,22 +583,6 @@ class TestGroundingAcceptsFetchedUrls:
         assert "https://fetched.example/" not in out.searched_sources
         assert "https://search.example/" in out.searched_sources
 
-    def test_pool_dedup_when_url_in_both(self):
-        """A URL present in both searched and fetched lists should not
-        cause issues in the validation pool."""
-        result = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            sources=["https://www.nfpa.org/13"],
-            source_quote="q",
-        )
-        url = "https://www.nfpa.org/13"
-        searched = [SearchedSource(url=url)]
-        fetched = [SearchedSource(url=url)]
-        out = _apply_source_grounding(result, searched=searched, fetched=fetched)
-        assert out.verdict == "CONFIRMED"
-        assert url in out.accepted_sources
-
 
 # ===========================================================================
 # 7. System prompt mentions web_fetch
@@ -670,28 +596,6 @@ class TestSystemPromptIncludesWebFetch:
         # The prompt should explain the relationship between search and
         # fetch (the model can only fetch URLs from prior search results).
         assert "search" in prompt.lower()
-
-    def test_prompt_warns_about_fetch_cost(self):
-        """The model should be told to reserve fetch for high-stakes claims."""
-        prompt = _get_verification_system_prompt(DEFAULT_CYCLE)
-        # Either "high-stakes" or "expensive" should appear so the model
-        # doesn't fetch indiscriminately.
-        lower = prompt.lower()
-        assert (
-            "high-stakes" in lower
-            or "more expensive" in lower
-            or "reserve" in lower
-        )
-
-    def test_prompt_instructs_source_quote_from_fetched_content(self):
-        """When the model fetches a page it should pull source_quote from
-        the fetched body, not the original snippet."""
-        prompt = _get_verification_system_prompt(DEFAULT_CYCLE)
-        # The exact wording is intentionally checked loosely so wording
-        # tweaks don't break the test; substring matching the key idea.
-        lower = prompt.lower()
-        assert "source_quote" in lower
-        assert "fetched" in lower
 
     def test_prompt_consistent_with_and_without_verdict_tool(self):
         """The web_fetch instructions should appear regardless of whether

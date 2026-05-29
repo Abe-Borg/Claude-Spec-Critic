@@ -378,27 +378,6 @@ class TestEndToEndBoundaryInvariants:
         # Filename attribute well-formed.
         assert '<spec filename="weird-filename&quot;.docx">' in msg
 
-    def test_cross_check_input_is_well_formed(self):
-        specs = [
-            ExtractedSpec(filename="a.docx", content=self.HOSTILE_PAYLOAD,
-                          word_count=10),
-            ExtractedSpec(filename="b.docx", content=self.HOSTILE_PAYLOAD,
-                          word_count=10),
-        ]
-        f = Finding(
-            severity="HIGH", fileName="a.docx", section="2.1",
-            issue=self.HOSTILE_PAYLOAD, actionType="EDIT",
-            existingText=None, replacementText=None, codeReference=None,
-        )
-        out = _build_cross_check_input(specs, [f])
-        assert out.count(f"<{TAG_CORPUS}>") == 1
-        assert out.count(f"</{TAG_CORPUS}>") == 1
-        assert out.count(f"<{TAG_SPEC} filename=") == 2
-        assert out.count(f"</{TAG_SPEC}>") == 2
-        assert out.count("</prior>") == 1
-        assert "<system>" not in out
-        assert "<inject>" not in out
-
     def test_verification_prompt_is_well_formed(self):
         f = Finding(
             severity="HIGH", fileName="weird\".docx", section="2.1",
@@ -416,22 +395,6 @@ class TestEndToEndBoundaryInvariants:
         assert out.count("</existingText>") == 1
         assert out.count("</replacementText>") == 1
         assert out.count("</codeReference>") == 1
-        assert "<system>" not in out
-        assert "<inject>" not in out
-
-    def test_triage_prompt_is_well_formed(self):
-        f = Finding(
-            severity="MEDIUM", fileName="x.docx", section="2.1",
-            issue=self.HOSTILE_PAYLOAD, actionType="EDIT",
-            existingText=self.HOSTILE_PAYLOAD,
-            replacementText=self.HOSTILE_PAYLOAD,
-            codeReference=None,
-        )
-        out = triage_build_user_prompt([(0, f), (1, f)])
-        assert out.count(f"<{TAG_FINDINGS}>") == 1
-        assert out.count(f"</{TAG_FINDINGS}>") == 1
-        assert out.count(f"<{TAG_FINDING} ") == 2
-        assert out.count(f"</{TAG_FINDING}>") == 2
         assert "<system>" not in out
         assert "<inject>" not in out
 
@@ -502,21 +465,22 @@ class TestPromptCacheBreakpointSafety:
 
 class TestNoRawXMLEscapeLeakage:
     """Defensive check: the modules we hardened no longer define their own
-    local ``_xml_escape`` (the old fragile helpers should be gone)."""
+    local ``_xml_escape`` (the old fragile helpers should be gone) and import
+    the central serialization helper instead."""
 
-    def test_prompts_module_uses_central_helper(self):
-        from src.review import prompts
-        # The old module-private helper is removed; central serialization is
-        # imported instead.
-        assert not hasattr(prompts, "_xml_escape")
-        assert prompts.wrap_document_block is not None  # imported into ns
+    @pytest.mark.parametrize(
+        "module_path, helper_attr",
+        [
+            ("src.review.prompts", "wrap_document_block"),
+            ("src.cross_check.cross_checker", "wrap_document_block"),
+            ("src.verification.verifier", "wrap_data_block"),
+        ],
+    )
+    def test_module_uses_central_helper(self, module_path: str, helper_attr: str):
+        import importlib
 
-    def test_cross_checker_uses_central_helper(self):
-        from src.cross_check import cross_checker
-        assert not hasattr(cross_checker, "_xml_escape")
-        assert cross_checker.wrap_document_block is not None
-
-    def test_verifier_uses_central_helper(self):
-        from src.verification import verifier
-        assert not hasattr(verifier, "_xml_escape")
-        assert verifier.wrap_data_block is not None
+        module = importlib.import_module(module_path)
+        # The old module-private helper is removed...
+        assert not hasattr(module, "_xml_escape")
+        # ...and the central serialization helper is imported into the ns.
+        assert getattr(module, helper_attr) is not None

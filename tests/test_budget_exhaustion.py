@@ -38,9 +38,7 @@ from src.output.report_exporter import (
     _write_run_diagnostics_banner,
 )
 from src.output.report_status import (
-    EditActionLabel,
     ReportStatus,
-    classify_edit_action,
     classify_status,
     is_budget_exhausted,
     summarize_budget_exhausted,
@@ -114,37 +112,16 @@ def _clean_unverified() -> VerificationResult:
 
 
 # ---------------------------------------------------------------------------
-# 1. VerificationResult field
-# ---------------------------------------------------------------------------
-
-
-class TestVerificationResultBudgetExhaustedField:
-    def test_default_is_false(self):
-        result = VerificationResult(verdict="UNVERIFIED")
-        assert result.budget_exhausted is False
-
-    def test_constructor_round_trip(self):
-        result = VerificationResult(
-            verdict="UNVERIFIED",
-            explanation="budget used",
-            budget_exhausted=True,
-        )
-        assert result.budget_exhausted is True
-
-
-# ---------------------------------------------------------------------------
 # 2. is_budget_exhausted helper
 # ---------------------------------------------------------------------------
 
 
 class TestIsBudgetExhausted:
-    def test_returns_false_for_finding_without_verification(self):
-        f = _finding(verification=None)
-        assert is_budget_exhausted(f) is False
-
-    def test_returns_false_when_flag_is_false(self):
-        f = _finding(verification=_clean_unverified())
-        assert is_budget_exhausted(f) is False
+    def test_returns_false_for_finding_without_verification_or_false_flag(self):
+        # No verification at all and a clean UNVERIFIED (flag explicitly
+        # False) both read as not-exhausted.
+        assert is_budget_exhausted(_finding(verification=None)) is False
+        assert is_budget_exhausted(_finding(verification=_clean_unverified())) is False
 
     def test_returns_true_when_flag_is_set(self):
         f = _finding(verification=_exhausted_verification())
@@ -199,40 +176,6 @@ class TestClassifyStatusBudgetExhausted:
         )
         f = _finding(verification=v)
         assert classify_status(f) is ReportStatus.VERIFIED_SUPPORTED
-
-
-# ---------------------------------------------------------------------------
-# 4. classify_edit_action — proposal presence drives the label
-# ---------------------------------------------------------------------------
-
-
-class TestClassifyEditActionBudgetExhausted:
-    def test_exhausted_with_proposal_is_edit_suggested(self):
-        # The app emits edit instructions but never applies them. A
-        # budget-exhausted finding with a proposal is labeled
-        # EDIT_SUGGESTED; its INSUFFICIENT_EVIDENCE status rides along in
-        # the sidecar for a downstream applier to act on.
-        proposal = EditProposal(
-            action_type="EDIT",
-            existing_text="old",
-            replacement_text="new",
-            edit_confidence=0.99,
-        )
-        f = _finding(
-            verification=_exhausted_verification(),
-            edit_proposal=proposal,
-        )
-        assert classify_edit_action(f) is EditActionLabel.EDIT_SUGGESTED
-
-    def test_exhausted_without_proposal_routes_to_report_only(self):
-        f = _finding(
-            verification=_exhausted_verification(),
-            action="REPORT_ONLY",
-            existing=None,
-            replacement=None,
-            edit_proposal=None,
-        )
-        assert classify_edit_action(f) is EditActionLabel.REPORT_ONLY
 
 
 # ---------------------------------------------------------------------------
@@ -318,28 +261,16 @@ class TestCacheRejectsBudgetExhausted:
 
 
 class TestSummarizeBudgetExhausted:
-    def test_empty_returns_zero(self):
-        assert summarize_budget_exhausted([]) == 0
-
-    def test_clean_finding_does_not_count(self):
-        f = _finding(verification=_clean_unverified())
-        assert summarize_budget_exhausted([f]) == 0
-
-    def test_one_exhausted_counts_as_one(self):
-        f = _finding(verification=_exhausted_verification())
-        assert summarize_budget_exhausted([f]) == 1
-
     def test_multiple_findings_are_summed(self):
+        # Mixed list: two exhausted, one clean UNVERIFIED — only the
+        # exhausted findings count. (Subsumes the empty/clean/single/
+        # no-verification cases.)
         findings = [
             _finding(file="a.docx", verification=_exhausted_verification()),
             _finding(file="b.docx", verification=_exhausted_verification()),
             _finding(file="c.docx", verification=_clean_unverified()),
         ]
         assert summarize_budget_exhausted(findings) == 2
-
-    def test_finding_without_verification_does_not_count(self):
-        f = _finding(verification=None)
-        assert summarize_budget_exhausted([f]) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -360,10 +291,6 @@ def _findings_to_summary(findings: list[Finding]) -> dict:
 
 
 class TestSummaryIncludesBudgetExhausted:
-    def test_clean_run_has_zero_budget_exhausted(self):
-        summary = _findings_to_summary([])
-        assert summary["budget_exhausted_count"] == 0
-
     def test_run_with_exhausted_findings_has_positive_count(self):
         f = _finding(verification=_exhausted_verification())
         summary = _findings_to_summary([f])

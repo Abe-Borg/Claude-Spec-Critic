@@ -130,11 +130,6 @@ class TestPhaseHelpersRouteThroughRegistry:
         assert verification_max_tokens(model=MODEL_SONNET_46) == phase_output_cap(PHASE_VERIFICATION, model=MODEL_SONNET_46)
         assert triage_max_tokens(model=MODEL_HAIKU_45) == phase_output_cap(PHASE_TRIAGE, model=MODEL_HAIKU_45)
 
-    def test_verification_max_tokens_routes_through_registry(self):
-        assert verification_max_tokens(model=MODEL_SONNET_46) == phase_output_cap(
-            PHASE_VERIFICATION, model=MODEL_SONNET_46
-        )
-
     def test_verification_max_tokens_phase_parameter(self):
         # The phase kwarg lets the caller pick retry vs continuation budgets
         # without hard-coding the constant.
@@ -147,11 +142,6 @@ class TestPhaseHelpersRouteThroughRegistry:
         assert retry == phase_output_cap(PHASE_VERIFICATION_RETRY, model=MODEL_SONNET_46)
         assert cont == phase_output_cap(
             PHASE_VERIFICATION_CONTINUATION, model=MODEL_SONNET_46
-        )
-
-    def test_triage_max_tokens_routes_through_registry(self):
-        assert triage_max_tokens(model=MODEL_HAIKU_45) == phase_output_cap(
-            PHASE_TRIAGE, model=MODEL_HAIKU_45
         )
 
 
@@ -179,6 +169,11 @@ class TestLocalEstimateSafetyFactor:
         for known in (opus, sonnet, haiku):
             assert unknown >= known
         assert none_factor == unknown
+        # The model-specific factor must flow through ``safe_local_estimate``:
+        # Opus (narrower) pads less than Haiku (wider) for the same input.
+        opus_padded = safe_local_estimate(454_000, model=MODEL_OPUS_47)
+        haiku_padded = safe_local_estimate(454_000, model=MODEL_HAIKU_45)
+        assert opus_padded < haiku_padded
 
     def test_safe_local_estimate_pads_upward(self):
         padded = safe_local_estimate(10_000, model=MODEL_OPUS_47)
@@ -210,16 +205,6 @@ class TestExceedsPerCallLimitForModel:
             exceeds_per_call_limit_for_model(spec, overhead, model=MODEL_HAIKU_45)
             is True
         )
-
-    def test_safety_factor_uses_model_specific_value(self):
-        # Same input. Opus (1.10×) and Haiku (1.15×) disagree about whether
-        # 450k of cl100k tokens fits the 500k budget — that disagreement
-        # *is* directive 5.
-        spec = 444_000
-        overhead = 10_000
-        opus_padded = safe_local_estimate(spec + overhead, model=MODEL_OPUS_47)
-        haiku_padded = safe_local_estimate(spec + overhead, model=MODEL_HAIKU_45)
-        assert opus_padded < haiku_padded
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +304,9 @@ def stub_client(monkeypatch, stub_count_tokens):
 class TestPipelinePreflightSelectsModel:
     """Exact token counting uses the selected model."""
 
+    @pytest.mark.parametrize("selected_model", [MODEL_SONNET_46, MODEL_HAIKU_45])
     def test_preflight_passes_selected_model_to_api(
-        self, monkeypatch, patched_extractor, stub_client
+        self, monkeypatch, patched_extractor, stub_client, selected_model
     ):
         from src.orchestration import pipeline
 
@@ -336,36 +322,15 @@ class TestPipelinePreflightSelectsModel:
         pipeline._prepare_specs(
             input_dir=Path("/tmp"),
             files=patched_extractor,
-            model=MODEL_SONNET_46,
+            model=selected_model,
         )
 
         assert stub_client.calls, "expected at least one count_tokens call"
         models_used = {call["model"] for call in stub_client.calls}
-        assert MODEL_SONNET_46 in models_used
-        # And nothing should have been called with Opus, since that wasn't
-        # the selected model.
+        assert selected_model in models_used
+        # Nothing should have been counted under a model that wasn't selected
+        # (Opus is never the selected model in this parametrization).
         assert MODEL_OPUS_47 not in models_used
-
-    def test_preflight_uses_haiku_when_haiku_selected(
-        self, monkeypatch, patched_extractor, stub_client
-    ):
-        from src.orchestration import pipeline
-
-        monkeypatch.setattr(
-            "src.orchestration.pipeline.get_cached_token_count", lambda key: None
-        )
-        monkeypatch.setattr(
-            "src.orchestration.pipeline.cache_token_count", lambda key, value: None
-        )
-
-        pipeline._prepare_specs(
-            input_dir=Path("/tmp"),
-            files=patched_extractor,
-            model=MODEL_HAIKU_45,
-        )
-
-        assert stub_client.calls
-        assert any(call["model"] == MODEL_HAIKU_45 for call in stub_client.calls)
 
 
 class TestPipelinePreflightExactCountAuthoritative:

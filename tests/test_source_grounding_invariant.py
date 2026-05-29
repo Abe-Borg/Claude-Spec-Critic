@@ -79,55 +79,38 @@ def _finding(
 class TestEnforceGroundingInvariantWithAcceptedCitations:
     """Direct unit tests of :func:`_enforce_grounding_invariant`."""
 
-    def test_confirmed_with_accepted_citation_stays_confirmed(self):
+    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED"])
+    def test_verified_verdict_with_accepted_citation_survives(self, verdict: str):
         r = VerificationResult(
-            verdict="CONFIRMED",
+            verdict=verdict,
             grounded=True,
             accepted_sources=["https://dgs.ca.gov/example"],
             sources=["https://dgs.ca.gov/example"],
+            correction="2025 CBC, not 2019" if verdict == "CORRECTED" else None,
         )
         out = _enforce_grounding_invariant(r)
-        assert out.verdict == "CONFIRMED"
+        assert out.verdict == verdict
         assert out.grounded is True
+        if verdict == "CORRECTED":
+            # CORRECTED's correction text must survive the invariant pass.
+            assert out.correction == "2025 CBC, not 2019"
 
-    def test_corrected_with_accepted_citation_stays_corrected(self):
-        r = VerificationResult(
-            verdict="CORRECTED",
-            grounded=True,
-            accepted_sources=["https://dgs.ca.gov/example"],
-            sources=["https://dgs.ca.gov/example"],
-            correction="2025 CBC, not 2019",
-        )
-        out = _enforce_grounding_invariant(r)
-        assert out.verdict == "CORRECTED"
-        assert out.grounded is True
-        assert out.correction == "2025 CBC, not 2019"
-
-    def test_confirmed_with_empty_sources_downgrades(self):
+    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED"])
+    def test_verified_verdict_with_empty_sources_downgrades(self, verdict: str):
         """No accepted citation AND no legacy sources → UNVERIFIED."""
         r = VerificationResult(
-            verdict="CONFIRMED",
+            verdict=verdict,
             grounded=True,  # search blocks succeeded
             accepted_sources=[],
             sources=[],
+            correction="The standard is 2025." if verdict == "CORRECTED" else None,
         )
         out = _enforce_grounding_invariant(r)
         assert out.verdict == "UNVERIFIED"
-        assert out.grounded is False
+        if verdict == "CONFIRMED":
+            assert out.grounded is False
         # The explanation has to say WHY so reviewers can audit the
         # downgrade rather than seeing a silent UNVERIFIED.
-        assert "no accepted external citation" in out.explanation.lower()
-
-    def test_corrected_with_empty_sources_downgrades(self):
-        r = VerificationResult(
-            verdict="CORRECTED",
-            grounded=True,
-            accepted_sources=[],
-            sources=[],
-            correction="The standard is 2025.",
-        )
-        out = _enforce_grounding_invariant(r)
-        assert out.verdict == "UNVERIFIED"
         assert "no accepted external citation" in out.explanation.lower()
 
     def test_legacy_sources_alone_satisfies_invariant(self):
@@ -215,32 +198,23 @@ class TestProductionGroundingFlow:
         out = _apply_source_grounding(r, searched=searched)
         return _enforce_grounding_invariant(out)
 
-    def test_confirmed_with_accepted_citation_survives(self):
+    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED"])
+    def test_verified_verdict_with_accepted_citation_survives(self, verdict: str):
         r = VerificationResult(
-            verdict="CONFIRMED",
+            verdict=verdict,
             sources=["https://dgs.ca.gov/page"],
             grounded=True,
+            correction="2025 cycle, not 2019." if verdict == "CORRECTED" else None,
         )
         searched = [SearchedSource(url="https://dgs.ca.gov/page", title="DGS")]
         out = self._run_chain(r, searched)
-        assert out.verdict == "CONFIRMED"
+        assert out.verdict == verdict
         assert out.accepted_sources == ["https://dgs.ca.gov/page"]
         assert out.rejected_sources == []
         # Public ``sources`` is replaced by accepted_sources only.
         assert out.sources == ["https://dgs.ca.gov/page"]
-
-    def test_corrected_with_accepted_citation_survives(self):
-        r = VerificationResult(
-            verdict="CORRECTED",
-            sources=["https://dgs.ca.gov/page"],
-            grounded=True,
-            correction="2025 cycle, not 2019.",
-        )
-        searched = [SearchedSource(url="https://dgs.ca.gov/page")]
-        out = self._run_chain(r, searched)
-        assert out.verdict == "CORRECTED"
-        assert out.correction == "2025 cycle, not 2019."
-        assert out.accepted_sources == ["https://dgs.ca.gov/page"]
+        if verdict == "CORRECTED":
+            assert out.correction == "2025 cycle, not 2019."
 
     def test_confirmed_with_only_invented_source_downgrades(self):
         """Every cited URL missing from search results → downgrade."""
@@ -264,42 +238,38 @@ class TestProductionGroundingFlow:
             or "no accepted external citation" in explanation
         )
 
-    def test_confirmed_with_no_citations_downgrades_via_invariant(self):
+    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED"])
+    def test_verified_verdict_with_no_citations_downgrades_via_invariant(
+        self, verdict: str
+    ):
         """Search ran successfully but the model emitted no citations.
 
-        Before the strengthened invariant this slipped through: ``_apply_source_grounding``
-        does not touch the verdict when ``cited_sources`` is empty, and
-        ``_enforce_grounding_invariant`` only checked ``grounded``. The
-        strengthened invariant catches it.
+        Before the strengthened invariant this slipped through:
+        ``_apply_source_grounding`` does not touch the verdict when
+        ``cited_sources`` is empty, and ``_enforce_grounding_invariant``
+        only checked ``grounded``. The strengthened invariant catches it
+        for both verified verdicts.
         """
         r = VerificationResult(
-            verdict="CONFIRMED",
+            verdict=verdict,
             sources=[],
             grounded=True,
             explanation="Looks fine.",
+            correction="should be 2025" if verdict == "CORRECTED" else None,
         )
         searched = [SearchedSource(url="https://dgs.ca.gov/page")]
         out = self._run_chain(r, searched)
         assert out.verdict == "UNVERIFIED"
-        assert out.grounded is False
-        assert "no accepted external citation" in out.explanation.lower()
-        # Searched sources are still recorded for diagnostics.
-        assert out.searched_sources == ["https://dgs.ca.gov/page"]
-
-    def test_corrected_with_no_citations_downgrades(self):
-        r = VerificationResult(
-            verdict="CORRECTED",
-            sources=[],
-            grounded=True,
-            correction="should be 2025",
-        )
-        searched = [SearchedSource(url="https://dgs.ca.gov/page")]
-        out = self._run_chain(r, searched)
-        assert out.verdict == "UNVERIFIED"
-        # The correction field is preserved on the result even when the
-        # verdict is downgraded — diagnostics may want to see what the
-        # model intended.
-        assert out.correction == "should be 2025"
+        if verdict == "CONFIRMED":
+            assert out.grounded is False
+            assert "no accepted external citation" in out.explanation.lower()
+            # Searched sources are still recorded for diagnostics.
+            assert out.searched_sources == ["https://dgs.ca.gov/page"]
+        else:
+            # The correction field is preserved on the result even when
+            # the verdict is downgraded — diagnostics may want to see
+            # what the model intended.
+            assert out.correction == "should be 2025"
 
 
 # ===========================================================================
@@ -352,40 +322,27 @@ class TestVerificationCacheInvariant:
         source_quote bump) only tighten the invariant further."""
         assert _CACHE_SCHEMA_VERSION >= 2
 
-    def test_cache_put_refuses_source_less_confirmed(self):
+    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED"])
+    def test_cache_put_refuses_source_less_verified_verdict(self, verdict: str):
         cache = VerificationCache()
         f = _finding()
-        # Source-less CONFIRMED — would have been stored under the old
-        # rule ("grounded is enough"). Now silently refused.
+        # Source-less verified verdict — would have been stored under the
+        # old rule ("grounded is enough"). Now silently refused for both
+        # CONFIRMED and CORRECTED.
         cache.put(
             f,
             cycle=DEFAULT_CYCLE,
             result=VerificationResult(
-                verdict="CONFIRMED",
+                verdict=verdict,
                 grounded=True,
                 accepted_sources=[],
                 sources=[],
+                correction="It's 2025" if verdict == "CORRECTED" else None,
             ),
         )
         assert cache.get(f, cycle=DEFAULT_CYCLE) is None
         # The miss counter increments on get; put-rejection is silent.
         assert cache.stats()["size"] == 0
-
-    def test_cache_put_refuses_source_less_corrected(self):
-        cache = VerificationCache()
-        f = _finding()
-        cache.put(
-            f,
-            cycle=DEFAULT_CYCLE,
-            result=VerificationResult(
-                verdict="CORRECTED",
-                grounded=True,
-                accepted_sources=[],
-                sources=[],
-                correction="It's 2025",
-            ),
-        )
-        assert cache.get(f, cycle=DEFAULT_CYCLE) is None
 
     def test_cache_put_accepts_source_bearing_confirmed(self):
         cache = VerificationCache()
@@ -589,35 +546,22 @@ class TestReportClassificationGuards:
     flowing through the invariant (e.g. a future code path, a test).
     """
 
-    def test_confirmed_no_accepted_sources_renders_as_insufficient_evidence(
-        self,
+    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED"])
+    def test_verified_verdict_no_accepted_sources_renders_as_insufficient_evidence(
+        self, verdict: str
     ):
         from src.output.report_status import ReportStatus, classify_status
 
         # Hand-construct a result that violates the invariant — as if a
         # bug let it slip through. The classifier should still refuse to
-        # promote it to VERIFIED_SUPPORTED.
+        # promote either verified verdict to VERIFIED_SUPPORTED.
         f = _finding()
         f.verification = VerificationResult(
-            verdict="CONFIRMED",
+            verdict=verdict,
             grounded=True,
             accepted_sources=[],
             sources=[],
-        )
-        assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
-
-    def test_corrected_no_accepted_sources_renders_as_insufficient_evidence(
-        self,
-    ):
-        from src.output.report_status import ReportStatus, classify_status
-
-        f = _finding()
-        f.verification = VerificationResult(
-            verdict="CORRECTED",
-            grounded=True,
-            accepted_sources=[],
-            sources=[],
-            correction="2025 cycle.",
+            correction="2025 cycle." if verdict == "CORRECTED" else None,
         )
         assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
 

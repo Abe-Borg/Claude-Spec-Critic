@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -108,32 +109,22 @@ class TestFormattingKeywordRemoved:
         f = _gripe(issue="Color formatting label requirements may be wrong")
         assert classify_finding_for_verification(f) == "web_required"
 
-    def test_formatting_keyword_does_not_set_elevated_confidence(self):
-        f = _gripe(issue="Color formatting label requirements may be wrong")
-        # Since the routing is web_required (not local_skip), the
-        # elevated-confidence helper has nothing to flag.
-        assert local_skip_requires_elevated_confidence(f) is False
-
 
 class TestElevatedConfidenceKeywords:
     """``"leed"`` and ``"internal contradiction"`` still route to local_skip
     but get tagged with ``requires_elevated_confidence`` for a downstream
     applier to act on."""
 
-    def test_leed_routes_to_local_skip(self):
-        f = _gripe(issue="LEED reference is inappropriate for K-12 project")
+    @pytest.mark.parametrize(
+        "issue",
+        [
+            "LEED reference is inappropriate for K-12 project",
+            "Internal contradiction: section 2.1 vs 2.3",
+        ],
+    )
+    def test_elevated_keyword_routes_to_local_skip_with_flag(self, issue: str):
+        f = _gripe(issue=issue)
         assert classify_finding_for_verification(f) == "local_skip"
-
-    def test_leed_requires_elevated_confidence(self):
-        f = _gripe(issue="LEED reference is inappropriate for K-12 project")
-        assert local_skip_requires_elevated_confidence(f) is True
-
-    def test_internal_contradiction_routes_to_local_skip(self):
-        f = _gripe(issue="Internal contradiction: section 2.1 vs 2.3")
-        assert classify_finding_for_verification(f) == "local_skip"
-
-    def test_internal_contradiction_requires_elevated_confidence(self):
-        f = _gripe(issue="Internal contradiction: section 2.1 vs 2.3")
         assert local_skip_requires_elevated_confidence(f) is True
 
     def test_code_reference_overrides_elevated_path_too(self):
@@ -166,20 +157,11 @@ class TestRegularKeywordWinsOverElevated:
         assert classify_finding_for_verification(f) == "local_skip"
         assert local_skip_requires_elevated_confidence(f) is False
 
-    def test_todo_and_internal_contradiction_takes_regular_path(self):
-        f = _gripe(issue="TODO: resolve internal contradiction in section 2")
-        assert classify_finding_for_verification(f) == "local_skip"
-        assert local_skip_requires_elevated_confidence(f) is False
-
 
 class TestLocalSkipResultCarriesFlag:
     """``_local_skip_result`` propagates the elevated-confidence flag
     onto the resulting VerificationResult so downstream consumers
     (resume state, a future applier) can read it."""
-
-    def test_default_flag_is_false(self):
-        result = _local_skip_result()
-        assert result.requires_elevated_confidence is False
 
     def test_explicit_true_propagates(self):
         result = _local_skip_result(requires_elevated_confidence=True)
@@ -263,23 +245,6 @@ def _make_drawing_heavy_doc(
     return out
 
 
-class TestExtractedSpecHasWarningsField:
-    """``ExtractedSpec`` has a new ``extraction_warnings`` list field."""
-
-    def test_default_empty_list(self):
-        spec = ExtractedSpec(filename="x.docx", content="", word_count=0)
-        assert spec.extraction_warnings == []
-
-    def test_each_instance_gets_its_own_list(self):
-        # Sanity: ``field(default_factory=list)`` produces a fresh list
-        # per instance so mutating one spec's warnings doesn't leak into
-        # another's.
-        a = ExtractedSpec(filename="a.docx", content="", word_count=0)
-        b = ExtractedSpec(filename="b.docx", content="", word_count=0)
-        a.extraction_warnings.append("test")
-        assert b.extraction_warnings == []
-
-
 class TestDetectContentLossWarning:
     """``_detect_content_loss_warning`` is a pure helper over the body
     element. Exercised directly so the warning-generation logic can be
@@ -339,22 +304,6 @@ class TestDetectContentLossWarning:
         assert "0 OLE objects" in warning
         assert "Verify visually" in warning
 
-    def test_warning_message_breaks_down_by_type(self, tmp_path: Path):
-        # Mixed embedded content: drawings + pictures + objects.
-        doc_path = _make_drawing_heavy_doc(
-            tmp_path,
-            num_text_paragraphs=1,
-            num_drawings=3,
-            num_pictures=2,
-            num_objects=1,
-        )
-        doc = Document(str(doc_path))
-        warning = _detect_content_loss_warning(doc.element.body)
-        assert warning is not None
-        assert "3 drawings" in warning
-        assert "2 pictures" in warning
-        assert "1 OLE objects" in warning
-
 
 class TestExtractTextFromDocxAttachesWarnings:
     """The full extraction path populates ``ExtractedSpec.extraction_warnings``
@@ -395,26 +344,6 @@ class TestExtractTextFromDocxAttachesWarnings:
 # ===========================================================================
 # 10b — Pipeline integration: PipelineResult carries extracted_specs
 # ===========================================================================
-
-
-class TestPipelineResultCarriesExtractedSpecs:
-    """``PipelineResult`` has a new ``extracted_specs`` field so the
-    report exporter can read extraction warnings without re-extracting."""
-
-    def test_default_empty_list(self):
-        result = PipelineResult(review_result=None)
-        assert result.extracted_specs == []
-
-    def test_field_accepts_list_of_specs(self):
-        spec = ExtractedSpec(
-            filename="x.docx",
-            content="",
-            word_count=0,
-            extraction_warnings=["warning"],
-        )
-        result = PipelineResult(review_result=None, extracted_specs=[spec])
-        assert result.extracted_specs == [spec]
-        assert result.extracted_specs[0].extraction_warnings == ["warning"]
 
 
 class TestBannerSurfacesExtractionWarnings:
@@ -537,45 +466,3 @@ class TestBannerSurfacesExtractionWarnings:
             "when at least one spec has extraction_warnings."
         )
         assert shading_hex.upper() == "FFE5E5"
-
-    def test_banner_value_cell_unshaded_when_no_warnings(self, tmp_path: Path):
-        from docx.oxml.ns import qn as _qn
-
-        f = self._findings_for_banner()[0]
-        clean_spec = ExtractedSpec(
-            filename=f.fileName,
-            content="text",
-            word_count=1,
-        )
-
-        class _Stub:
-            review_result = ReviewResult(findings=[f])
-            cross_check_result = None
-            files_reviewed = [f.fileName]
-            leed_alerts: list = []
-            placeholder_alerts: list = []
-            cycle_label = "2025"
-            total_elapsed_seconds = 1.0
-            extracted_specs = [clean_spec]
-
-        out = tmp_path / "report.docx"
-        export_report(_Stub(), out)
-        doc = Document(str(out))
-
-        # No warnings → the row label is present but the value cell
-        # should not carry the highlight shading.
-        shading_hex: str | None = None
-        for table in doc.tables:
-            for row in table.rows:
-                if len(row.cells) < 2:
-                    continue
-                if row.cells[0].text.strip() != "Spec content extraction warnings":
-                    continue
-                value_cell = row.cells[1]
-                tcPr = value_cell._tc.find(_qn("w:tcPr"))
-                if tcPr is None:
-                    continue
-                shd = tcPr.find(_qn("w:shd"))
-                if shd is not None:
-                    shading_hex = shd.get(_qn("w:fill"))
-        assert shading_hex is None

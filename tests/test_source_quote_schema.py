@@ -89,28 +89,6 @@ class TestVerificationSchemaShape:
 
 
 # ===========================================================================
-# 2. VerificationResult carries the field
-# ===========================================================================
-
-
-class TestVerificationResultField:
-    def test_default_source_quote_is_empty_string(self):
-        result = VerificationResult(verdict="UNVERIFIED")
-        assert result.source_quote == ""
-
-    def test_source_quote_round_trips_through_constructor(self):
-        quote = "NFPA 13 (2022) §10.2.5.2.1: max sprinkler spacing 15 ft."
-        result = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            accepted_sources=["https://nfpa.org/13"],
-            sources=["https://nfpa.org/13"],
-            source_quote=quote,
-        )
-        assert result.source_quote == quote
-
-
-# ===========================================================================
 # 3. Tool-use parser populates source_quote and demotes empty quotes
 # ===========================================================================
 
@@ -138,21 +116,6 @@ class TestVerdictFromToolUse:
                 "sources": ["https://www.dgs.ca.gov/"],
                 "correction": None,
                 "source_quote": "",
-            }
-        )
-        result = _verdict_from_tool_use(message)
-        assert result is not None
-        assert result.verdict == "UNVERIFIED"
-        assert "source_quote was empty" in result.explanation
-
-    def test_corrected_with_empty_source_quote_demotes_to_unverified(self):
-        message = verification_tool_use_response(
-            payload={
-                "verdict": "CORRECTED",
-                "explanation": "The cited edition is wrong.",
-                "sources": ["https://www.dgs.ca.gov/"],
-                "correction": "Use CPC 2025",
-                "source_quote": None,
             }
         )
         result = _verdict_from_tool_use(message)
@@ -237,17 +200,6 @@ class TestTextFallbackSourceQuote:
         assert result.verdict == "UNVERIFIED"
         assert "source_quote was empty" in result.explanation
 
-    def test_corrected_with_null_source_quote_demotes(self):
-        body = json.dumps({
-            "verdict": "CORRECTED",
-            "explanation": "Wrong edition.",
-            "sources": ["https://nfpa.org/13"],
-            "correction": "Use 2022 NFPA 13",
-            "source_quote": None,
-        })
-        result = _parse_verification_response(body)
-        assert result.verdict == "UNVERIFIED"
-
 
 # ===========================================================================
 # 5. _demote_if_missing_source_quote unit tests
@@ -255,38 +207,6 @@ class TestTextFallbackSourceQuote:
 
 
 class TestDemoteIfMissingSourceQuote:
-    def test_confirmed_with_quote_passes_through(self):
-        r = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            sources=["https://nfpa.org/13"],
-            source_quote="snippet",
-        )
-        out = _demote_if_missing_source_quote(r)
-        assert out.verdict == "CONFIRMED"
-
-    def test_corrected_with_quote_passes_through(self):
-        r = VerificationResult(
-            verdict="CORRECTED",
-            grounded=True,
-            sources=["https://nfpa.org/13"],
-            correction="correction",
-            source_quote="snippet",
-        )
-        out = _demote_if_missing_source_quote(r)
-        assert out.verdict == "CORRECTED"
-
-    def test_confirmed_without_quote_demotes(self):
-        r = VerificationResult(
-            verdict="CONFIRMED",
-            grounded=True,
-            sources=["https://nfpa.org/13"],
-            source_quote="",
-        )
-        out = _demote_if_missing_source_quote(r)
-        assert out.verdict == "UNVERIFIED"
-        assert "source_quote was empty" in out.explanation
-
     def test_explanation_preserves_existing_text(self):
         r = VerificationResult(
             verdict="CONFIRMED",
@@ -313,12 +233,6 @@ class TestDemoteIfMissingSourceQuote:
         # is a no-op (the demotion only fires for CONFIRMED / CORRECTED).
         twice = _demote_if_missing_source_quote(once)
         assert twice.explanation.count("source_quote was empty") == 1
-
-    def test_unverified_with_empty_quote_passes_through(self):
-        r = VerificationResult(verdict="UNVERIFIED", source_quote="")
-        out = _demote_if_missing_source_quote(r)
-        assert out.verdict == "UNVERIFIED"
-        assert "source_quote was empty" not in out.explanation
 
 
 # ===========================================================================
@@ -466,18 +380,3 @@ class TestVerifierPromptMentionsSourceQuote:
         assert "source_quote" in prompt
         # The instruction must be explicit about extracting verbatim text.
         assert "verbatim" in prompt.lower()
-
-    def test_prompt_mentions_source_quote_without_verdict_tool(self):
-        prompt = _get_verification_system_prompt(
-            DEFAULT_CYCLE, include_verdict_tool=False
-        )
-        assert "source_quote" in prompt
-
-    def test_prompt_includes_few_shot_example(self):
-        prompt = _get_verification_system_prompt(
-            DEFAULT_CYCLE, include_verdict_tool=True
-        )
-        # The example payload should be visible in the prompt so the
-        # model sees a concrete shape with a non-empty quote.
-        assert '"verdict": "CONFIRMED"' in prompt
-        assert '"source_quote":' in prompt

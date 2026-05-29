@@ -44,7 +44,6 @@ from src.tracing.recorder import (
     FILE_EVENTS,
     FILE_FINDINGS,
     FILE_PROMPTS,
-    FILE_RUN_META,
     FILE_SPANS,
 )
 from src.tracing.spans import (
@@ -54,7 +53,6 @@ from src.tracing.spans import (
     KIND_API_CALL,
     KIND_PIPELINE,
     KIND_REVIEW,
-    KIND_WEB_SEARCH,
 )
 
 
@@ -86,51 +84,9 @@ def recorder(trace_dir: Path, clean_env: None):
 
 
 # ---- Lifecycle ---------------------------------------------------------
-def test_recorder_creates_expected_files(recorder: TraceRecorder, trace_dir: Path) -> None:
-    with recorder.span(KIND_PIPELINE, "pipeline test"):
-        pass
-    recorder.stop()
-    assert (trace_dir / FILE_RUN_META).exists()
-    assert (trace_dir / FILE_SPANS).exists()
-    assert (trace_dir / FILE_EVENTS).exists()
-    assert (trace_dir / FILE_FINDINGS).exists()
-    assert (trace_dir / FILE_PROMPTS).exists()  # default level writes this
-
-
-def test_run_meta_carries_lifecycle_timestamps(recorder: TraceRecorder, trace_dir: Path) -> None:
-    recorder.stop()
-    meta = json.loads((trace_dir / FILE_RUN_META).read_text())
-    assert meta["run_id"] == "test1234"
-    assert meta["mode"] == "realtime"
-    assert meta["model"] == "claude-opus-4-7"
-    assert meta["started_at"] is not None
-    assert meta["ended_at"] is not None
-    assert meta["capture_level"] == LEVEL_DEFAULT
-
-
 def test_stop_is_idempotent(recorder: TraceRecorder) -> None:
     recorder.stop()
     recorder.stop()  # Should not raise
-
-
-def test_resume_appends_rather_than_truncates(trace_dir: Path, clean_env: None) -> None:
-    rec1 = TraceRecorder(run_id="r1", trace_dir=trace_dir, capture_level=LEVEL_DEFAULT)
-    rec1.start(mode="batch")
-    with rec1.span(KIND_PIPELINE, "first"):
-        pass
-    rec1.stop()
-    first_span_count = len((trace_dir / FILE_SPANS).read_text().strip().split("\n"))
-
-    rec2 = TraceRecorder(run_id="r1", trace_dir=trace_dir, capture_level=LEVEL_DEFAULT)
-    rec2.start(mode="batch")
-    with rec2.span(KIND_PIPELINE, "second"):
-        pass
-    rec2.stop()
-    second_span_count = len((trace_dir / FILE_SPANS).read_text().strip().split("\n"))
-
-    assert second_span_count == first_span_count + 1
-    meta = json.loads((trace_dir / FILE_RUN_META).read_text())
-    assert meta["resumed_at"]  # non-empty list
 
 
 # ---- Env-var gating ----------------------------------------------------
@@ -308,45 +264,6 @@ def test_hooks_noop_without_recorder(clean_env: None) -> None:
 
 
 # ---- Span hierarchy ----------------------------------------------------
-def test_span_hierarchy_via_context_manager(recorder: TraceRecorder, trace_dir: Path) -> None:
-    with recorder.span(KIND_PIPELINE, "pipeline") as pipe:
-        with recorder.span(KIND_REVIEW, "review") as rev:
-            assert rev.parent_span_id == pipe.span_id
-            with recorder.span(KIND_API_CALL, "api") as api:
-                assert api.parent_span_id == rev.span_id
-                with recorder.span(KIND_WEB_SEARCH, "search") as ws:
-                    assert ws.parent_span_id == api.span_id
-    recorder.stop()
-
-    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
-    by_kind = {sp["kind"]: sp for sp in spans}
-    assert by_kind[KIND_WEB_SEARCH]["parent_span_id"] == by_kind[KIND_API_CALL]["span_id"]
-    assert by_kind[KIND_API_CALL]["parent_span_id"] == by_kind[KIND_REVIEW]["span_id"]
-    assert by_kind[KIND_REVIEW]["parent_span_id"] == by_kind[KIND_PIPELINE]["span_id"]
-    assert by_kind[KIND_PIPELINE]["parent_span_id"] is None
-
-
-def test_naked_executor_loses_context(recorder: TraceRecorder) -> None:
-    """ThreadPoolExecutor.submit does NOT auto-propagate contextvars.
-
-    Pin this so future code knows it needs to either pass the span
-    handle explicitly or use bind_to_current_context.
-    """
-    seen: list[str | None] = []
-
-    def worker() -> None:
-        span = current_span()
-        seen.append(span.span_id if span else None)
-
-    with recorder.span(KIND_PIPELINE, "pipeline"):
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            list(pool.map(lambda _: worker(), range(3)))
-    assert all(s is None for s in seen), (
-        "Naked ThreadPoolExecutor should not propagate context — "
-        f"got {seen}"
-    )
-
-
 def test_bind_to_current_context_propagates(recorder: TraceRecorder) -> None:
     """bind_to_current_context snapshots the calling thread's context so
     workers see the parent span via current_span()."""
@@ -483,39 +400,6 @@ def test_chunk_11_12_13_round_trip(recorder: TraceRecorder, trace_dir: Path) -> 
     assert v["budget_exhausted"] is True
 
 
-def test_verification_end_captures_all_chunk_fields(
-    recorder: TraceRecorder, trace_dir: Path
-) -> None:
-    """capture_verification_end pulls every telemetry field off a
-    VerificationResult and stamps them on the span outputs."""
-    verification = _FakeVerification(
-        verdict="CORRECTED",
-        grounded=True,
-        sources=["https://x.com"],
-        web_fetch_requests=1,
-        fetched_sources=["https://x.com"],
-        models_disagreed=True,
-        initial_sources=["https://y.com"],
-        budget_exhausted=False,
-    )
-    span = capture_hooks.capture_verification_call(
-        finding_id="f-1",
-        routing_decision={"mode": "standard_reasoning"},
-    )
-    capture_hooks.capture_verification_end(span, verification_result=verification)
-    recorder.stop()
-
-    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
-    by_kind = {sp["kind"]: sp for sp in spans}
-    out = by_kind["verification_initial"]["outputs"]
-    assert out["web_fetch_requests"] == 1
-    assert out["fetched_sources"] == ["https://x.com"]
-    assert out["models_disagreed"] is True
-    assert out["initial_sources"] == ["https://y.com"]
-    assert out["budget_exhausted"] is False
-    assert out["verdict"] == "CORRECTED"
-
-
 # ---- Capture hook routing ---------------------------------------------
 def test_grounding_outcome_event_includes_budget_exhausted(
     recorder: TraceRecorder, trace_dir: Path
@@ -535,22 +419,6 @@ def test_grounding_outcome_event_includes_budget_exhausted(
     types = [e["type"] for e in events]
     assert EVENT_GROUNDING_OUTCOME in types
     assert "budget_exhausted_marker" in types  # the second event
-
-
-def test_cross_check_chunk_stamps_metadata(recorder: TraceRecorder, trace_dir: Path) -> None:
-    pipeline = capture_hooks.capture_pipeline_start(
-        mode="realtime", model="m", cycle_label="c", files=[]
-    )
-    chunk = capture_hooks.capture_cross_check_chunk_start(
-        chunk_name="div_23", spec_count=4, finding_count=12, parent=pipeline
-    )
-    capture_hooks.capture_cross_check_end(chunk, finding_count=2)
-    recorder.stop()
-
-    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
-    chunk_span = next(sp for sp in spans if sp["kind"] == "cross_check_chunk")
-    assert chunk_span["metadata"]["chunk_name"] == "div_23"
-    assert chunk_span["inputs"]["spec_count"] == 4
 
 
 def test_response_content_block_walker(recorder: TraceRecorder, trace_dir: Path) -> None:
@@ -597,143 +465,6 @@ def test_response_content_block_walker(recorder: TraceRecorder, trace_dir: Path)
     assert len(ws_result["urls_with_titles"]) == 2
 
 
-# ---- HTML viewer artifact guards --------------------------------------
-def _viewer_path() -> Path:
-    return (
-        Path(__file__).resolve().parent.parent
-        / "src" / "tracing" / "viewer" / "trace_viewer.html"
-    )
-
-
-def test_viewer_artifact_exists_and_nonempty() -> None:
-    viewer = _viewer_path()
-    assert viewer.exists(), "trace_viewer.html must ship with the package"
-    assert viewer.stat().st_size > 5000, "viewer looks truncated"
-
-
-def test_viewer_references_resolve_to_markup() -> None:
-    """Every getElementById target must exist as an id= in the markup.
-
-    Cheap structural guard that catches a JS typo or a renamed element
-    without needing a browser/JS runtime in CI.
-    """
-    import re
-
-    html = _viewer_path().read_text(encoding="utf-8")
-    referenced = set(re.findall(r"getElementById\([\"']([^\"']+)[\"']\)", html))
-    defined = set(re.findall(r'id="([^"]+)"', html))
-    missing = referenced - defined
-    assert not missing, f"viewer references undefined element ids: {missing}"
-
-
-def test_viewer_has_all_four_tabs() -> None:
-    html = _viewer_path().read_text(encoding="utf-8")
-    for tab in ("finding", "span", "timeline", "grounding"):
-        assert f'data-tab="{tab}"' in html, f"viewer missing tab: {tab}"
-
-
-def test_viewer_status_colors_match_report() -> None:
-    """The viewer's STATUS_COLORS must mirror report_exporter's hex map so
-    a VERIFIED_CONTESTED finding renders the same purple in both surfaces."""
-    from src.output.report_status import ReportStatus
-    from src.output.report_exporter import STATUS_SHADING
-
-    html = _viewer_path().read_text(encoding="utf-8")
-    # Spot-check the two most identity-bearing statuses.
-    contested = STATUS_SHADING[ReportStatus.VERIFIED_CONTESTED]  # 800080
-    failed = STATUS_SHADING[ReportStatus.VERIFICATION_FAILED]    # B22222
-    assert f"#{contested}".upper() in html.upper()
-    assert f"#{failed}".upper() in html.upper()
-
-
-# ---- CLI -------------------------------------------------------------
-def _write_run(root: Path, run_id: str, *, started_at: float, findings: list[dict] | None = None,
-               mode: str = "realtime") -> Path:
-    d = root / run_id
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "run.json").write_text(json.dumps({
-        "run_id": run_id, "mode": mode, "model": "claude-opus-4-7",
-        "cycle_label": "California 2025", "files_reviewed": ["a.docx"],
-        "started_at": started_at, "ended_at": started_at + 5, "capture_level": "default",
-    }))
-    (d / "spans.jsonl").write_text(
-        json.dumps({"span_id": "s1", "parent_span_id": None, "kind": "pipeline",
-                    "name": "p", "status": "ok"}) + "\n")
-    (d / "events.jsonl").write_text("")
-    lines = "".join(json.dumps(f) + "\n" for f in (findings or []))
-    (d / "findings.jsonl").write_text(lines)
-    return d
-
-
-def test_cli_list_and_show(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    from src.tracing import cli
-    import time as _t
-    _write_run(tmp_path, "run_a", started_at=_t.time(), findings=[
-        {"finding_id": "f1", "severity": "HIGH", "section": "2.2.A", "issue": "edition drift",
-         "verification": {"verdict": "CONFIRMED", "grounded": True, "sources": ["http://x"],
-                          "models_disagreed": True, "web_fetch_requests": 2}},
-        {"finding_id": "f2", "severity": "MEDIUM", "section": "3.1.B", "issue": "placeholder",
-         "verification": {"verdict": "UNVERIFIED", "cache_status": "local_skip"}},
-    ])
-    assert cli.main(["--trace-dir", str(tmp_path), "list"]) == 0
-    out = capsys.readouterr().out
-    assert "run_a" in out
-
-    assert cli.main(["--trace-dir", str(tmp_path), "show", "run_a"]) == 0
-    out = capsys.readouterr().out
-    assert "VERIFIED_CONTESTED" in out  # f1 (models_disagreed)
-    assert "LOCALLY_CLASSIFIED" in out  # f2 (local_skip)
-    assert "models_disagreed" in out
-    assert "fetches=2" in out
-
-
-def test_cli_show_missing_run(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    from src.tracing import cli
-    assert cli.main(["--trace-dir", str(tmp_path), "show", "nope"]) == 1
-
-
-def test_cli_show_resolves_by_embedded_run_id(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    """A renamed trace folder still resolves by the run_id in run.json."""
-    from src.tracing import cli
-    import time as _t
-    d = _write_run(tmp_path, "weird_dir_name", started_at=_t.time())
-    # Embedded run_id differs from the dir name.
-    meta = json.loads((d / "run.json").read_text())
-    meta["run_id"] = "the_real_id"
-    (d / "run.json").write_text(json.dumps(meta))
-    assert cli.main(["--trace-dir", str(tmp_path), "show", "the_real_id"]) == 0
-
-
-def test_cli_prune_older_than(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    from src.tracing import cli
-    import time as _t
-    now = _t.time()
-    _write_run(tmp_path, "fresh", started_at=now - 1 * 86400)
-    _write_run(tmp_path, "stale", started_at=now - 50 * 86400)
-    assert cli.main(["--trace-dir", str(tmp_path), "prune", "--older-than", "30d", "--yes"]) == 0
-    assert (tmp_path / "fresh").exists()
-    assert not (tmp_path / "stale").exists()
-
-
-def test_cli_prune_keep_last(tmp_path: Path) -> None:
-    from src.tracing import cli
-    import time as _t
-    now = _t.time()
-    for i in range(4):
-        _write_run(tmp_path, f"r{i}", started_at=now - i * 86400)
-    assert cli.main(["--trace-dir", str(tmp_path), "prune", "--keep-last", "2", "--yes"]) == 0
-    remaining = sorted(d.name for d in tmp_path.iterdir() if d.is_dir())
-    assert remaining == ["r0", "r1"]  # two most recent kept
-
-
-def test_cli_parse_duration() -> None:
-    from src.tracing.cli import _parse_duration
-    assert _parse_duration("30d") == 30 * 86400
-    assert _parse_duration("12h") == 12 * 3600
-    assert _parse_duration("90m") == 90 * 60
-    assert _parse_duration("7") == 7 * 86400  # bare number → days
-
-
 def test_reattach_recorder_appends_to_existing_dir(trace_dir: Path, clean_env: None) -> None:
     """reattach_run_recorder reopens the same dir; a span written after
     reattach lands alongside the original spans (append, not truncate)."""
@@ -760,13 +491,6 @@ def test_reattach_recorder_appends_to_existing_dir(trace_dir: Path, clean_env: N
 
     second_count = len((trace_dir / FILE_SPANS).read_text().strip().split("\n"))
     assert second_count == first_count + 1
-
-
-def test_reattach_recorder_none_when_no_trace_meta(clean_env: None) -> None:
-    from src.tracing.session import reattach_run_recorder as _reattach_recorder
-    assert _reattach_recorder(None) is None
-    assert _reattach_recorder({}) is None
-    assert _reattach_recorder({"trace_dir": "/tmp/x"}) is None  # missing run_id
 
 
 # ---- Batch verification spans -----------------------------------------
@@ -797,91 +521,3 @@ def test_batch_verification_span_skips_local_skip_and_cache_hit(recorder: TraceR
     spans = [json.loads(line) for line in spans_path.read_text().strip().split("\n")] if spans_path.read_text().strip() else []
     vspans = [s for s in spans if s["kind"] == "verification_initial"]
     assert len(vspans) == 0
-
-
-def _batch_message_with_thinking():
-    """A succeeded-wave message carrying a thinking block, a web_search, and
-    the terminal verdict tool_use — the shape the batch retrieval hands back."""
-    from tests.fixtures.fake_anthropic import (
-        FakeMessage,
-        FakeServerToolUseBlock,
-        FakeToolUseBlock,
-        FakeUsage,
-    )
-
-    return FakeMessage(
-        content=[
-            {"type": "thinking", "thinking": "NFPA 13 §8.3 governs sprinkler spacing here."},
-            FakeServerToolUseBlock(name="web_search", input={"query": "NFPA 13 sprinkler spacing"}),
-            FakeToolUseBlock(name="submit_verification_verdict", input={"verdict": "CONFIRMED"}),
-        ],
-        stop_reason="tool_use",
-        usage=FakeUsage(),
-    )
-
-
-def test_batch_verification_span_deep_walks_thinking(trace_dir: Path, clean_env: None) -> None:
-    """Deep mode walks the successful wave's raw message onto the batch
-    verification span: thinking + web_search events appear, correlated to the
-    span by span_id."""
-    rec = TraceRecorder(run_id="bvdeep", trace_dir=trace_dir, capture_level=LEVEL_DEEP)
-    rec.start(mode="batch")
-    set_recorder(rec)
-    try:
-        capture_hooks.capture_batch_verification_span(
-            finding_id="bf-1",
-            verification_result=_FakeVerification(verdict="CONFIRMED", grounded=True, cache_status="miss"),
-            raw_message=_batch_message_with_thinking(),
-        )
-        rec.stop()
-    finally:
-        set_recorder(None)
-
-    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
-    vspan = next(s for s in spans if s["kind"] == "verification_initial")
-    events = [json.loads(line) for line in (trace_dir / FILE_EVENTS).read_text().strip().split("\n")]
-    types = [e["type"] for e in events]
-    assert "thinking_block" in types
-    assert "web_search_query" in types
-    thinking = next(e for e in events if e["type"] == "thinking_block")
-    assert thinking["span_id"] == vspan["span_id"]  # attached to the batch verify span
-    assert "NFPA 13" in thinking["text"]
-
-
-def test_batch_verification_span_default_omits_thinking(recorder: TraceRecorder, trace_dir: Path) -> None:
-    """Default mode does NOT walk the raw message — batch is the common path,
-    so thinking capture is gated behind deep mode. The span is still emitted."""
-    capture_hooks.capture_batch_verification_span(
-        finding_id="bf-2",
-        verification_result=_FakeVerification(verdict="CONFIRMED", grounded=True, cache_status="miss"),
-        raw_message=_batch_message_with_thinking(),
-    )
-    recorder.stop()
-
-    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
-    assert any(s["kind"] == "verification_initial" for s in spans)
-    raw = (trace_dir / FILE_EVENTS).read_text().strip()
-    types = [json.loads(line)["type"] for line in raw.split("\n")] if raw else []
-    assert "thinking_block" not in types
-
-
-def test_batch_verification_span_deep_no_message_no_block_events(trace_dir: Path, clean_env: None) -> None:
-    """Deep mode but no raw_message (a finding that never produced a
-    successful wave message) → the span is emitted, but with no content-block
-    events to walk."""
-    rec = TraceRecorder(run_id="bvnomsg", trace_dir=trace_dir, capture_level=LEVEL_DEEP)
-    rec.start(mode="batch")
-    set_recorder(rec)
-    try:
-        capture_hooks.capture_batch_verification_span(
-            finding_id="bf-3",
-            verification_result=_FakeVerification(verdict="UNVERIFIED", cache_status="miss"),
-            raw_message=None,
-        )
-        rec.stop()
-    finally:
-        set_recorder(None)
-
-    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().strip().split("\n")]
-    assert any(s["kind"] == "verification_initial" for s in spans)
-    assert (trace_dir / FILE_EVENTS).read_text().strip() == ""

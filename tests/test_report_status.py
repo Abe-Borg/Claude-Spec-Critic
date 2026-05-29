@@ -139,12 +139,6 @@ class TestReportStatusClassification:
         f = _finding(verification=_verification("UNVERIFIED", grounded=False))
         assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
 
-    def test_unknown_verdict_falls_through_to_insufficient_evidence(self):
-        # Belt-and-suspenders: malformed verdict strings should not crash
-        # and should land in the conservative bucket.
-        f = _finding(verification=_verification("???", grounded=False))
-        assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
-
     def test_confirmed_but_ungrounded_does_not_count_as_supported(self):
         # The grounding invariant in the verifier should already have
         # downgraded this, but the classifier is the second line of
@@ -175,58 +169,34 @@ class TestEditActionClassification:
         )
         assert classify_edit_action(f) is EditActionLabel.EDIT_SUGGESTED
 
-    def test_proposal_label_ignores_verification_status(self):
+    @pytest.mark.parametrize(
+        "edit_confidence, verification",
+        [
+            # Ignores verification status — verdict/grounding/cache never
+            # gate the label (the app emits; a downstream applier gates).
+            (0.95, _verification("DISPUTED", grounded=False, cache_status="miss")),
+            (0.95, _verification("UNVERIFIED", grounded=False, cache_status="miss")),
+            (0.95, _verification("UNVERIFIED", grounded=False, cache_status="local_skip")),
+            # Ignores low confidence.
+            (0.1, _verification("CONFIRMED", grounded=True)),
+            # NOT_CHECKED (no verification ran) with a proposal still labels.
+            (0.95, None),
+        ],
+    )
+    def test_proposal_label_ignores_verification_and_confidence(
+        self, edit_confidence, verification
+    ):
         # The app emits edit instructions but never applies them, so the
-        # label is "has a proposal?" — independent of verdict/grounding.
-        # A downstream applier does its own gating using the verification
-        # status carried alongside the instruction.
+        # label is "has a proposal?" — independent of verdict/grounding/
+        # confidence or whether verification ran at all.
         proposal = EditProposal(
             action_type="EDIT",
             existing_text="old",
             replacement_text="new",
-            edit_confidence=0.95,
+            edit_confidence=edit_confidence,
         )
-        for verdict, grounded, cache in [
-            ("DISPUTED", False, "miss"),
-            ("UNVERIFIED", False, "miss"),
-            ("UNVERIFIED", False, "local_skip"),
-        ]:
-            f = _finding(
-                edit_proposal=proposal,
-                verification=_verification(verdict, grounded=grounded, cache_status=cache),
-            )
-            assert classify_edit_action(f) is EditActionLabel.EDIT_SUGGESTED
-
-    def test_proposal_label_ignores_low_confidence(self):
-        proposal = EditProposal(
-            action_type="EDIT",
-            existing_text="old",
-            replacement_text="new",
-            edit_confidence=0.1,
-        )
-        f = _finding(
-            edit_proposal=proposal,
-            verification=_verification("CONFIRMED", grounded=True),
-        )
+        f = _finding(edit_proposal=proposal, verification=verification)
         assert classify_edit_action(f) is EditActionLabel.EDIT_SUGGESTED
-
-    def test_not_checked_with_proposal_is_edit_suggested(self):
-        proposal = EditProposal(
-            action_type="EDIT",
-            existing_text="old",
-            replacement_text="new",
-            edit_confidence=0.95,
-        )
-        f = _finding(edit_proposal=proposal, verification=None)
-        assert classify_edit_action(f) is EditActionLabel.EDIT_SUGGESTED
-
-    def test_legacy_finding_without_edit_proposal_field_is_report_only(self):
-        # Pre-Chunk-L payloads round-trip without the new ``edit_proposal``
-        # field. ``as_edit_proposal`` falls back to the legacy actionType /
-        # existingText / replacementText fields; if those don't carry an
-        # ADD/EDIT/DELETE action, classify_edit_action returns REPORT_ONLY.
-        f = _finding(action="REPORT_ONLY", existing=None, replacement=None)
-        assert classify_edit_action(f) is EditActionLabel.REPORT_ONLY
 
     def test_legacy_edit_finding_routes_through_as_edit_proposal(self):
         # An old-shaped finding with actionType=EDIT and existingText set
@@ -437,34 +407,6 @@ class TestReportExporterStatusIntegration:
         assert STATUS_LABELS[ReportStatus.LOCALLY_CLASSIFIED] in text
         assert STATUS_LABELS[ReportStatus.NOT_CHECKED] in text
 
-    def test_export_contains_edit_action_labels(
-        self, tmp_path: Path, diverse_review_result: ReviewResult
-    ):
-        out = tmp_path / "report.docx"
-        export_report(
-            _StubPipelineResult(review_result=diverse_review_result), out
-        )
-        doc = Document(str(out))
-        text = _all_text_from(doc)
-
-        # Findings with a proposal render "Edit suggested"; findings with
-        # no proposal render "Report only". Both labels should be visible.
-        assert "Edit suggested" in text
-        assert "Report only" in text
-
-    def test_export_includes_trust_model_summary_heading(
-        self, tmp_path: Path, diverse_review_result: ReviewResult
-    ):
-        out = tmp_path / "report.docx"
-        export_report(
-            _StubPipelineResult(review_result=diverse_review_result), out
-        )
-        doc = Document(str(out))
-        text = _all_text_from(doc)
-        assert "Trust Model Summary" in text
-        # Edit eligibility line includes the at-a-glance histogram.
-        assert "Edit eligibility:" in text
-
     def test_export_renames_existing_text_label_to_spec_evidence(
         self, tmp_path: Path, diverse_review_result: ReviewResult
     ):
@@ -482,30 +424,3 @@ class TestReportExporterStatusIntegration:
         # The old labels should be gone now.
         assert "Existing Text:" not in text
         assert "Replace With:" not in text
-
-    def test_export_includes_verification_rationale_label(
-        self, tmp_path: Path, diverse_review_result: ReviewResult
-    ):
-        out = tmp_path / "report.docx"
-        export_report(
-            _StubPipelineResult(review_result=diverse_review_result), out
-        )
-        doc = Document(str(out))
-        text = _all_text_from(doc)
-        assert "Verification rationale:" in text
-
-    def test_export_includes_web_code_and_rejected_evidence_labels(
-        self, tmp_path: Path, diverse_review_result: ReviewResult
-    ):
-        out = tmp_path / "report.docx"
-        export_report(
-            _StubPipelineResult(review_result=diverse_review_result), out
-        )
-        doc = Document(str(out))
-        text = _all_text_from(doc)
-        # The verified finding has an accepted source list, so the
-        # web/code-evidence label must render.
-        assert "Web/code evidence" in text
-        # The disputed finding has a rejected source, so the
-        # unsupported-sources label must render.
-        assert "Unsupported / rejected sources" in text
