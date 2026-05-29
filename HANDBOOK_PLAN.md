@@ -358,6 +358,8 @@ Keep diagrams legible in plain text.
 - `HANDBOOK_PLAN.md` (this file) — at repo root.
 - `handbook_prompts/ch00_preface.md` … `handbook_prompts/ch17_evolution_and_lessons.md`
   — one prompt per chapter agent (18 files), at repo root in `handbook_prompts/`.
+- `handbook_prompts/wave_d_assembly.md` — the **Wave D** assembly &
+  consistency-pass prompt (run by an editor agent *after* all chapters exist).
 
 The chapter agents, when run, produce `handbook/<NN>_<slug>.md` (18 chapter
 files), which the assembly pass stitches into the final handbook.
