@@ -301,9 +301,10 @@ class VerificationResult:
     # Input / output token counts for the verification request that produced
     # this result, read from ``message.usage``. Used only for operational
     # diagnostics (the per-phase token totals in the run diagnostics) — not
-    # verdict semantics. Like the other runtime-telemetry fields they default
-    # to 0 and round-trip through resume state and the verification cache so
-    # legacy rows load without them; no cache schema bump is required.
+    # verdict semantics. Not persisted by the verification cache (see
+    # ``verification_cache._SKIPPED_FIELDS``): a cache hit replays the verdict,
+    # not the token cost of the original request, so these default to 0 on a
+    # replayed result.
     input_tokens: int = 0
     output_tokens: int = 0
 
