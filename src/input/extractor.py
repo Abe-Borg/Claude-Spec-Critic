@@ -25,7 +25,7 @@ class ParagraphMapping:
     cell_index: int | None
     section_index: int | None = None
     container_type: str | None = None
-    # Chunk K1: stable, deterministic element identifier scoped to a single
+    # Stable, deterministic element identifier scoped to a single
     # extracted document. The format is human-readable so a finding that
     # cites it can be debugged at a glance: ``p<body_index>`` for body
     # paragraphs, ``t<table>r<row>`` for table-cell rows, ``s<n>h<i>`` /
@@ -33,7 +33,7 @@ class ParagraphMapping:
     # for the synthetic header/footer delimiter. The id is stable within a
     # single extraction run; for cross-run stability the document_id of the
     # owning ``ExtractedSpec`` should also be checked. Empty string for
-    # legacy mappings constructed by tests that predate Chunk K.
+    # legacy mappings constructed by tests that predate element ids.
     element_id: str = ""
     # Section heading text the element belongs to (best-effort). Surfacing
     # this lets a downstream applier disambiguate identical text in
@@ -49,13 +49,13 @@ class ExtractedSpec:
     source_path: str = ""
     source_format: str = ""
     paragraph_map: list[ParagraphMapping] | None = None
-    # Chunk K1: stable, human-debuggable document identifier. Defaults to
+    # Stable, human-debuggable document identifier. Defaults to
     # the filename without extension; when filenames could collide the
     # caller can override. Element ids are only unique inside a single
     # document, so a downstream applier pairs ``(document_id, element_id)``
     # when it disambiguates findings that cite an id.
     document_id: str = ""
-    # Chunk 10 / Trust Upgrade: warnings emitted during text extraction
+    # Warnings emitted during text extraction
     # that the report banner surfaces so reviewers can spot specs where
     # text content may not have been fully captured (drawing-heavy
     # documents, embedded objects, etc.). Empty list by default; populated
@@ -69,7 +69,7 @@ class ExtractedSpec:
 def _derive_document_id(filename: str) -> str:
     """Return a stable, human-readable document id for ``filename``.
 
-    Chunk K1 keeps ids debuggable: the filename without its extension is
+    Ids stay debuggable: the filename without its extension is
     enough as a per-run identifier and reads cleanly in logs. Callers that
     expect cross-run stability across renames should override
     ``ExtractedSpec.document_id`` themselves.
@@ -82,7 +82,7 @@ def _derive_document_id(filename: str) -> str:
 def _is_heading_paragraph(text: str) -> bool:
     """Heuristic match for a CSI / DSA spec heading paragraph.
 
-    Chunk K1 needs a cheap, deterministic section attribution so the
+    A cheap, deterministic section attribution lets the
     paragraph map can carry a ``section_id`` without re-walking the doc.
     The heuristic only has to be close enough that downstream prompts and
     reports can group paragraphs by section. False positives are harmless
@@ -104,7 +104,7 @@ def _is_heading_paragraph(text: str) -> bool:
     return False
 
 
-# Chunk 10 / Trust Upgrade: threshold above which a spec is flagged as
+# Threshold above which a spec is flagged as
 # drawing-heavy. The pipeline writes the raw count and the proportion into
 # the warning message so reviewers can see why the spec was flagged
 # (drawings, embedded pictures, OLE objects). 20% is conservative; a
@@ -118,7 +118,7 @@ _CONTENT_LOSS_WARNING_THRESHOLD = 0.20
 def _detect_content_loss_warning(body) -> str | None:
     """Return a content-loss warning string for ``body`` or ``None`` if clean.
 
-    Chunk 10 / Trust Upgrade: counts how many direct children of
+    Counts how many direct children of
     ``<w:body>`` (paragraphs and tables) contain at least one descendant
     ``<w:drawing>``, ``<w:pict>``, or ``<w:object>`` element. When that
     proportion exceeds :data:`_CONTENT_LOSS_WARNING_THRESHOLD`, the spec
@@ -188,7 +188,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     paragraphs: list[str] = []
     paragraph_map: list[ParagraphMapping] = []
     table_counter = 0
-    # Chunk K1: track the most recently seen heading paragraph so each
+    # Track the most recently seen heading paragraph so each
     # element below it can carry a ``section_id``. Reset to empty when the
     # extractor crosses a top-level "PART ..." boundary so subsequent
     # subheadings nest under the right ancestor.
@@ -289,7 +289,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
             f"(map_chars={len(reconstructed)}, content_chars={len(content)})."
         )
 
-    # Chunk 10 / Trust Upgrade: scan the body for embedded drawings /
+    # Scan the body for embedded drawings /
     # pictures / objects. When the proportion of non-text elements
     # exceeds the threshold, the spec is likely drawing-heavy and text-
     # only extraction may have missed reviewable content. The warning

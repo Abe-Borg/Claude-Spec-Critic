@@ -6,7 +6,7 @@ the gauge value with the exact API count when it returns. All UI updates
 go through ``_dispatch_if_current``-style callbacks so a stale background
 pass cannot overwrite fresher state.
 
-Chunk D2.2: the exact-token-count refresh is debounced via a Tk ``after``
+The exact-token-count refresh is debounced via a Tk ``after``
 timer so that rapid sequential file changes (multiple drops, a quick
 re-browse) collapse into a single outbound API call. The cl100k_base
 estimate stays visible during the debounce window; only the final state
@@ -23,7 +23,7 @@ from ..review.prompts import get_system_prompt
 from ..core.tokenizer import count_tokens, exceeds_per_call_limit
 
 
-# Chunk D2.2: 300–500 ms recommended by the delta plan. 400 ms balances
+# 300–500 ms recommended by the delta plan. 400 ms balances
 # perceived responsiveness against absorbing typical file-toggle bursts;
 # the existing project-context typing debounce (``_context_debounce_id``)
 # uses 300 ms, and a slightly longer window here covers file-load churn
@@ -117,7 +117,7 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
     on screen while we wait. Falls back silently to the local estimate
     when the API call fails or returns None.
 
-    Chunk D2.2: the actual API-call thread launch is debounced through
+    The actual API-call thread launch is debounced through
     ``app.after``. Each invocation cancels any pending timer and
     reschedules ``EXACT_TOKEN_REFRESH_DEBOUNCE_MS`` later, so a burst of
     rapid file changes produces at most one outbound API call after the
@@ -126,7 +126,7 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
     starting. Stale-result protection inside ``dispatch`` (the
     ``_analysis_epoch`` guard) is unchanged.
 
-    Chunk E directive 2: ``count_tokens`` is called with the same model the
+    ``count_tokens`` is called with the same model the
     review will run against. The GUI exposes the selected model via
     ``app._get_selected_model`` when available; otherwise we fall back to
     ``REVIEW_MODEL_DEFAULT`` so headless and partially-initialized callers
@@ -159,7 +159,7 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
                 biggest_spec.filename,
                 project_context=project_context,
                 cycle=cycle,
-                # Chunk K2: the GUI token gauge must measure the real
+                # The GUI token gauge must measure the real
                 # request, so id-tagged element overhead is reflected.
                 paragraph_map=biggest_spec.paragraph_map,
             )

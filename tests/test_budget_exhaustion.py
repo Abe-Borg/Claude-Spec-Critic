@@ -1,6 +1,6 @@
-"""Chunk 13 tests — budget-exhaustion sentinel + banner counter.
+"""Tests for the budget-exhaustion sentinel + banner counter.
 
-Chunk 13 of the Trust Upgrade adds a per-finding sentinel that fires
+A per-finding sentinel fires
 when the verifier consumed its full mode-scaled web_search budget
 without producing a grounded verdict. The contract has five surfaces:
 
@@ -166,7 +166,7 @@ class TestIsBudgetExhausted:
 
 class TestClassifyStatusBudgetExhausted:
     def test_budget_exhausted_classifies_as_insufficient_evidence(self):
-        # Chunk 13: no new top-level ReportStatus — exhausted findings
+        # No new top-level ReportStatus — exhausted findings
         # stay on INSUFFICIENT_EVIDENCE. The sub-label is a rendering
         # concern, not a trust-level one.
         f = _finding(verification=_exhausted_verification())

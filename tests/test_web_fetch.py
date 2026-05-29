@@ -1,6 +1,6 @@
-"""Chunk 11 tests — web_fetch capability for verification.
+"""Tests for web_fetch capability for verification.
 
-Chunk 11 of the Trust Upgrade adds the ``web_fetch`` server tool to the
+This work adds the ``web_fetch`` server tool to the
 STANDARD_REASONING and DEEP_REASONING verification modes so the verifier
 can pull the full text of a URL when a search snippet is insufficient.
 The contract has five surfaces:

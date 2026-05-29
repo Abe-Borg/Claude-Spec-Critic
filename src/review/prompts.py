@@ -64,7 +64,8 @@ _EDITABILITY_CLAUSE = (
 # Stable, cacheable few-shot examples. The examples must not vary with per-spec
 # content — they are part of the cached system-prompt prefix (keyed by cycle).
 # They must NOT mention ``evidenceElementId`` or ``<para id="…">`` — those are
-# per-request concepts pinned by ``test_system_prompt_unchanged_after_chunk_k``.
+# per-request concepts; the cached system prefix is pinned by
+# ``test_system_prompt_constant_and_does_not_embed_specs``.
 _REVIEW_EXAMPLES = """\
 Example 1 — valid EDIT (stale code-cycle reference):
 {

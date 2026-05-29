@@ -32,7 +32,7 @@ Prompt references in span `inputs` are `{ref: hash, kind}` (default) or
 
 - **By Finding** (primary): finding list → lifecycle (review span that
   produced it → verification spans → grounding) → verdict with every
-  Chunk 11-13 field. Finding↔span correlation is by `finding_id`
+  verification telemetry field. Finding↔span correlation is by `finding_id`
   (`metadata.finding_id` / `inputs.finding_id` on verification spans;
   `outputs.findings[].finding_id` on review spans). See `spansForFinding`.
 - **By Span**: raw `parent_span_id` tree, chronologically sorted, with

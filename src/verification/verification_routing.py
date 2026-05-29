@@ -1,4 +1,4 @@
-"""Chunk 4 — unified verification routing and request construction.
+"""Unified verification routing and request construction.
 
 Single source of truth for verification request construction. Real-time
 verification (:mod:`src.verifier._run_verification_call`), batch verification
@@ -20,7 +20,7 @@ kwargs through this module so that:
 Why this exists
 ---------------
 
-Before Chunk 4, the verification routing decision lived in three places:
+Previously, the verification routing decision lived in three places:
 
 * ``verifier._run_verification_call`` — real-time path. Calls
   ``select_verification_mode`` + ``mode_policy``, applies the mode's
@@ -106,14 +106,14 @@ from .verification_profiles import (
     classify_finding_profile,
     profile_max_uses,
 )
-from .verification_router import (
+from .verification_prescreen import (
     classify_finding_for_verification,
     initial_verification_model,
     local_skip_enabled,
 )
 
 
-# Chunk 6: default max continuation count for the real-time path drops
+# Default max continuation count for the real-time path drops
 # from the legacy 5 to 2. The deep-reasoning override (4) lives in
 # :mod:`retry_policy.max_continuations_for_mode` and is applied by
 # :func:`select_routing` after the mode is selected, so a single map
@@ -251,7 +251,7 @@ class VerificationRoutingDecision:
         """Rebuild a decision from a previously-serialized dict.
 
         Unknown / missing fields fall back to safe defaults so a legacy
-        ``request_contexts`` entry (pre-Chunk-4) does not crash the wave
+        ``request_contexts`` entry from an older version does not crash the wave
         parser — the caller can detect "no decision was stored" by the
         presence of the ``routing`` key, and use this constructor only
         when the key is present.
@@ -461,7 +461,7 @@ def select_routing(
         profile=profile,
     )
 
-    # Chunk 6: derive the per-mode continuation cap from the centralized
+    # Derive the per-mode continuation cap from the centralized
     # policy when the caller did not override it. Default modes get 2
     # (drops from the legacy 5); DEEP_REASONING gets 4 so a legitimate
     # CRITICAL CALIFORNIA_AHJ finding still has room to converge.
@@ -505,7 +505,7 @@ def build_verification_tools_from_decision(
     helper, so a decision built with one value remains internally
     consistent even if the env toggle flips mid-flight.
 
-    Chunk 11 / Trust Upgrade: STANDARD_REASONING and DEEP_REASONING modes
+    STANDARD_REASONING and DEEP_REASONING modes
     additionally get the ``web_fetch`` server tool so the verifier can
     pull the full text of a URL when a search snippet is insufficient.
     STRICT_STRUCTURED and LOCAL_SKIP intentionally omit web_fetch —
@@ -543,7 +543,7 @@ def build_verification_tools_from_decision(
         web_tool_list[0]["max_uses"] = decision.web_search_max_uses
 
     out: list[dict] = list(web_tool_list)
-    # Chunk 11: attach web_fetch only for modes that benefit from a
+    # Attach web_fetch only for modes that benefit from a
     # deeper read. The mode set is small and closed; future modes that
     # want fetch should be added here. Web fetch is generally available and
     # needs no beta header, so the tool is attached unconditionally for
@@ -618,7 +618,7 @@ def build_verification_request(
 ) -> VerificationRequest:
     """Build a verification request split into API body + transport headers.
 
-    Chunk 4 invariant: every verification request (real-time initial,
+    Invariant: every verification request (real-time initial,
     batch initial, batch retry, batch continuation) routes through this
     function. The decision encodes the policy; the rendered ``prompt``
     and ``system_prompt`` flow in from the caller (the verifier already
@@ -685,7 +685,7 @@ def build_verification_request(
     # so the gate here is the union of (mode allows, model supports).
     if decision.thinking_enabled:
         apply_thinking_config(params, model=decision.model, phase=decision.cache_phase)
-    # Effort: paired with thinking per Chunk D1.2. The helper is model-
+    # Effort: paired with thinking. The helper is model-
     # aware and phase-aware on its own; we always call it (the helper
     # omits ``output_config`` for unsupported models).
     apply_effort_config(params, model=decision.model, phase=decision.cache_phase)

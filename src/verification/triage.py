@@ -1,6 +1,6 @@
 """Haiku-based verification triage classifier.
 
-The keyword classifier in :mod:`verification_router` skips findings whose
+The keyword classifier in :mod:`verification_prescreen` skips findings whose
 text contains placeholder/LEED/typo/duplicate-paragraph keywords. That's
 correct but blunt: a finding like "Section 2.2.B specifies 5 ft pipe spacing
 but Section 4.1.A specifies 8 ft" is internally verifiable from the spec
@@ -110,7 +110,7 @@ _TRIAGE_SYSTEM_PROMPT = (
 def _build_user_prompt(findings_batch: list[tuple[int, Finding]]) -> str:
     """Render Haiku triage input.
 
-    Chunk G: every field body and attribute value flows through
+    Every field body and attribute value flows through
     :mod:`prompt_serialization` so a finding whose ``issue`` /
     ``existingText`` / ``replacementText`` contains literal
     ``</finding>`` (or other reserved characters) cannot close the

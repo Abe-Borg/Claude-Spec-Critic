@@ -477,24 +477,24 @@ function renderFindingDetail(findingId) {
   for (const s of verif.sort((a,b)=>(a.started_at||0)-(b.started_at||0))) html += lifecycleRow(s, "");
   html += `</div>`;
 
-  // Verdict / verification summary with Chunk 11-13 fields.
+  // Verdict / verification summary fields.
   html += `<h2 class="font-semibold mt-3 mb-1">Verification</h2>
     <table class="w-full text-xs"><tbody>
     ${vRow("Verdict", v.verdict)}
     ${vRow("Grounded", v.grounded)}
     ${vRow("Model used", v.model_used)}
     ${vRow("Searches", v.web_search_requests)}
-    ${vRow("Full-page fetches (Chunk 11)", v.web_fetch_requests)}
-    ${vRow("Models disagreed (Chunk 12)", v.models_disagreed)}
-    ${vRow("Budget exhausted (Chunk 13)", v.budget_exhausted)}
+    ${vRow("Full-page fetches", v.web_fetch_requests)}
+    ${vRow("Models disagreed", v.models_disagreed)}
+    ${vRow("Budget exhausted", v.budget_exhausted)}
     ${vRow("Verification failed", v.verification_failed)}
     ${vRow("Cache status", v.cache_status)}
     </tbody></table>`;
   if (v.source_quote) html += `<div class="mt-2 text-xs"><span class="text-slate-500">Source quote:</span>
     <span class="italic">“${esc(v.source_quote)}”</span></div>`;
   html += sourcesBlock("Accepted sources", v.accepted_sources || v.sources);
-  html += sourcesBlock("Initial verifier sources (Chunk 12)", v.initial_sources);
-  html += sourcesBlock("Full-text fetched (Chunk 11)", v.fetched_sources);
+  html += sourcesBlock("Initial verifier sources", v.initial_sources);
+  html += sourcesBlock("Full-text fetched", v.fetched_sources);
   html += jsonBlock(v.structured_payload, "structured payload");
   mid.innerHTML = html;
   document.getElementById("rightPane").innerHTML = hint("Select a lifecycle span to inspect its spans / events");

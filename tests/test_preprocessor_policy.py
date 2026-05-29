@@ -1,9 +1,9 @@
-"""Chunk D4 tests: preprocessor disposition policy + stale-reference suppression.
+"""Tests for preprocessor disposition policy + stale-reference suppression.
 
-Two independent chunks land in this file because they share the same module
+Two independent features land in this file because they share the same module
 (``preprocessor.py``) and prompt builder (``prompts.py``) surface area:
 
-* **Chunk D4.1** — feed the deterministic preprocessor's alerts into the LLM
+* **Pre-detected alerts** — feed the deterministic preprocessor's alerts into the LLM
   prompt via a compact ``<pre_detected>`` block so the model knows what was
   already detected locally and does not duplicate those items as new
   findings. The block must be:
@@ -11,13 +11,13 @@ Two independent chunks land in this file because they share the same module
     1. compact (count + small example list per rule, no whole-alert dump);
     2. boundary-safe (hostile match payloads cannot close the wrapper);
     3. byte-stable with the legacy message when no alerts are supplied
-       (so the prompt-cache breakpoint invariant from Chunk G holds);
+       (so the prompt-cache breakpoint invariant holds);
     4. toggleable via ``SPEC_CRITIC_PRE_DETECTED_ALERTS=0``;
     5. filtered by filename so a multi-spec project never leaks one spec's
        alerts into another spec's prompt;
     6. wired through the batch path (``submit_review_batch``).
 
-* **Chunk D4.2** — add context-aware suppression for the stale-code-cycle
+* **Stale-cycle suppression** — add context-aware suppression for the stale-code-cycle
   detector so obvious negated / historical phrasings ("previously per the
   2019 CBC", "shall not follow the 2019 CBC approach", etc.) stop showing
   up as preflight alerts. Active stale references ("Comply with 2019 CBC"
@@ -58,7 +58,7 @@ def _alert(filename: str, rule: str, match: str, *, atype: str | None = None) ->
 
 
 # ---------------------------------------------------------------------------
-# Chunk D4.1: render_pre_detected_block helper
+# render_pre_detected_block helper
 # ---------------------------------------------------------------------------
 
 
@@ -199,7 +199,7 @@ class TestGetSingleSpecUserMessageWithAlerts:
         assert block_open > spec_close
 
     def test_cache_prefix_invariant_holds_with_and_without_alerts(self) -> None:
-        # Chunk G's TestPromptCacheBreakpointSafety pins the prefix before
+        # TestPromptCacheBreakpointSafety pins the prefix before
         # ``<spec ``. Adding a pre_detected block at the END must not change
         # that prefix.
         without = get_single_spec_user_message(
@@ -236,7 +236,7 @@ class TestGetSingleSpecUserMessageWithAlerts:
         assert "placeholder" not in msg
 
 # ---------------------------------------------------------------------------
-# Chunk D4.1: pipeline plumbing
+# pipeline plumbing
 # ---------------------------------------------------------------------------
 
 
@@ -256,7 +256,7 @@ def stub_count_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("src.core.tokenizer.count_tokens", _fake_count)
     monkeypatch.setattr("src.orchestration.pipeline.count_tokens", _fake_count, raising=False)
-    # Chunk 3: ``src.batch`` no longer imports ``count_tokens`` directly —
+    # ``src.batch`` no longer imports ``count_tokens`` directly —
     # every batch token count is computed inside the central review
     # request builder. Patch the binding there so the per-spec
     # extended-output gating and the local preflight estimate don't trip
@@ -406,7 +406,7 @@ class TestBatchSubmissionFeedsAlerts:
 
 
 # ---------------------------------------------------------------------------
-# Chunk D4.2: stale-cycle context suppression
+# stale-cycle context suppression
 # ---------------------------------------------------------------------------
 
 

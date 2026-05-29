@@ -1,4 +1,4 @@
-"""Chunk 3 — central review request builder.
+"""Central review request builder.
 
 Single source of truth for review API request construction. Batch
 review (:mod:`src.batch`) and the token preflight in
@@ -8,7 +8,7 @@ this module so the shape they count is the shape they send.
 Why this exists
 ---------------
 
-Before Chunk 3, review request shapes were constructed independently by
+Previously, review request shapes were constructed independently by
 ``batch.submit_review_batch`` (batch submission) and
 ``pipeline._prepare_specs`` (exact-count preflight).
 
@@ -117,11 +117,11 @@ class BuiltReviewRequest:
 def build_user_message(spec: ReviewRequestSpec) -> str:
     """Materialize the per-spec user message exactly as it will be sent.
 
-    Includes the ``<pre_detected>`` alert block (Chunk D4.1) when
+    Includes the ``<pre_detected>`` alert block when
     ``pre_detected_alerts`` is supplied and the env toggle is on, the
-    id-tagged paragraph rendering (Chunk K2) when ``paragraph_map`` is
+    id-tagged paragraph rendering when ``paragraph_map`` is
     supplied and ids are enabled, and the optional repair-batch
-    instruction suffix (Chunk D2's review repair path).
+    instruction suffix (the review repair path).
     """
     user_message = get_single_spec_user_message(
         spec.spec_content,
@@ -147,7 +147,7 @@ def _resolve_extended_output(
     The decision combines model capability with the local cl100k_base
     count of the actual request shape — small batches stay on the 128k
     cap, large batches lift to 300k. Reading the capability from the
-    central registry lets Sonnet 4.6 use the path correctly (Chunk 1).
+    central registry lets Sonnet 4.6 use the path correctly.
     """
     if spec.force_allow_extended_output is not None:
         return bool(spec.force_allow_extended_output)
@@ -211,7 +211,7 @@ def build_review_request(spec: ReviewRequestSpec) -> BuiltReviewRequest:
     surrounding fields on :class:`BuiltReviewRequest` are kept so
     callers can introspect the shape without re-running the builder.
 
-    Chunk 3 invariant: every call site that submits a review request
+    Invariant: every call site that submits a review request
     routes through this function. If a future change adds a new
     request-shape contributor (a new tool, a new beta header, a new
     sampling param), this is the one place it lands so token preflight

@@ -1,7 +1,6 @@
-"""Chunk N tests: report trust-model statuses.
+"""Tests for report trust-model statuses.
 
-Plan section "Chunk N — Report Trust Model Improvements". The chunk
-defines two closed enums (``ReportStatus`` and ``EditActionLabel``) that
+This work defines two closed enums (``ReportStatus`` and ``EditActionLabel``) that
 every finding maps to for display, plus the four evidence concepts
 (spec evidence, web/code evidence, verification rationale, unsupported
 sources) that the report exporter has to surface distinctly.
@@ -89,7 +88,7 @@ def _verification(
     rejected: list[dict] | None = None,
     correction: str | None = None,
 ) -> VerificationResult:
-    # Chunk 5: a grounded CONFIRMED/CORRECTED requires at least one
+    # A grounded CONFIRMED/CORRECTED requires at least one
     # accepted external citation. Default to a representative one so
     # individual tests focused on status / edit-action classification
     # do not have to thread sources through every call.
@@ -111,7 +110,7 @@ def _verification(
 
 
 # ---------------------------------------------------------------------------
-# classify_status — every branch (Chunk N Directive 1)
+# classify_status — every branch
 # ---------------------------------------------------------------------------
 
 class TestReportStatusClassification:
@@ -155,7 +154,7 @@ class TestReportStatusClassification:
 
 
 # ---------------------------------------------------------------------------
-# classify_edit_action — every branch (Chunk N Directive 4)
+# classify_edit_action — every branch
 # ---------------------------------------------------------------------------
 
 class TestEditActionClassification:
@@ -469,7 +468,7 @@ class TestReportExporterStatusIntegration:
     def test_export_renames_existing_text_label_to_spec_evidence(
         self, tmp_path: Path, diverse_review_result: ReviewResult
     ):
-        # Chunk N Directive 3: spec evidence is distinct from web/code
+        # Spec evidence is distinct from web/code
         # evidence and verification rationale. The label rename makes
         # the four concepts explicit.
         out = tmp_path / "report.docx"

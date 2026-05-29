@@ -1,6 +1,6 @@
-"""Chunk 5 tests — cache-replay visibility (age badge + TTL default + hint).
+"""Tests for cache-replay visibility (age badge + TTL default + hint).
 
-Chunk 5 of the Trust Upgrade surfaces cache-replay information so a
+This work surfaces cache-replay information so a
 reviewer can spot stale verdicts at a glance and force re-verification
 when needed. The contract has four surfaces:
 
@@ -260,7 +260,7 @@ class TestCacheTtlDefault:
         assert cache_ttl_days() == 14
 
     def test_malformed_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch):
-        # Chunk 5 / Trust Upgrade: previous behavior fell back to 0 for
+        # Previous behavior fell back to 0 for
         # malformed values, which silently disabled expiry on any typo.
         # New behavior falls back to the 60-day default so a typo never
         # turns the cache into a permanent database by accident.
@@ -329,7 +329,7 @@ class TestCacheEntryAgeDays:
         assert _cache_entry_age_days(vr) is None
 
     def test_returns_none_for_legacy_zero_timestamp(self):
-        # Legacy resume payloads predating Chunk 5 have
+        # Legacy resume payloads predating cache-age tracking have
         # cache_entry_created_ts=0.0. The badge is suppressed (rather
         # than rendered as a nonsense epoch-1970 age).
         vr = VerificationResult(
@@ -361,9 +361,9 @@ class TestCacheEntryAgeDays:
 
 
 class TestReportBadgeRendering:
-    # Chunk 6 / Trust Upgrade: the badge format is "Cache replay — Nd
-    # old" (em-dash, age suffix). The Run Diagnostics banner introduced
-    # in Chunk 6 also surfaces a "Cache replays" row, so assertions key
+    # The badge format is "Cache replay — Nd old" (em-dash, age
+    # suffix). The Run Diagnostics banner also surfaces a "Cache
+    # replays" row, so assertions key
     # off the em-dash + age form rather than the bare "Cache replay"
     # substring to avoid colliding with the banner label.
     _BADGE_PREFIX = "Cache replay — "

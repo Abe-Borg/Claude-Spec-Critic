@@ -1,6 +1,6 @@
-"""Chunk 7 / Trust Upgrade tests — pinned standards editions.
+"""Tests for pinned standards editions.
 
-The Trust Upgrade Chunk 7 pins the NFPA, ASHRAE, IAPMO, and UL editions
+Pins the NFPA, ASHRAE, IAPMO, and UL editions
 adopted by California for the current cycle. The contract spans four
 surfaces:
 
@@ -387,7 +387,7 @@ class TestExportedReportPinnedEditions:
         out = tmp_path / "report.docx"
         export_report(_StubPipelineResult(review_result=result), out)
         text = _all_text_from(Document(str(out)))
-        # The methodology paragraph appended by Chunk 7 must surface in
+        # The pinned-editions methodology paragraph must surface in
         # the final exported document.
         assert "pinned the following standards editions" in text
         # Cross-check that at least one pinned standard actually appears.
@@ -402,6 +402,6 @@ class TestExportedReportPinnedEditions:
 class TestDefaultCycleInvariant:
     def test_default_cycle_is_california_2025(self):
         # Plan invariant from CLAUDE.md §1: California 2025 is the only
-        # supported cycle. Chunk 7 must not introduce a new cycle.
+        # supported cycle. Pinned editions must not introduce a new cycle.
         assert DEFAULT_CYCLE is CALIFORNIA_2025
         assert list(AVAILABLE_CYCLES.keys()) == ["2025"]

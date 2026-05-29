@@ -17,7 +17,6 @@ from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,
 )
 
-# Chunk L / plan section "Separate Findings From Edit Proposals":
 # ``REPORT_ONLY`` is the explicit "no edit proposal" action type. Findings
 # tagged this way are surfaced in the report but never produce edit
 # candidates, so coordination/code findings that have no clean textual
@@ -42,8 +41,7 @@ def validate_edit_shape(
 ) -> str | None:
     """Return a demotion reason if action-specific fields are missing, else None.
 
-    Chunk 7 / plan section "Validate edit proposals at parse time": every
-    executable edit must satisfy action-specific field requirements before
+    Every executable edit must satisfy action-specific field requirements before
     it leaves the parser. The four rules are:
 
     * ``EDIT``   — non-empty ``existing_text`` and ``replacement_text``.
@@ -86,7 +84,7 @@ def validate_edit_shape(
 class EditProposal:
     """An optional, separate, high-confidence action derived from a finding.
 
-    Chunk L / plan section 5: the previous schema forced every finding into
+    The previous schema forced every finding into
     an edit shape (action / existingText / replacementText / ...). Many
     findings — coordination problems, constructability concerns, code
     interpretation questions — have no clean textual fix, so the model was
@@ -138,15 +136,14 @@ class Finding:
     # instead of falling back to brittle prefix/suffix text heuristics.
     anchorText: str | None = None
     insertPosition: str | None = None  # "before" | "after" | None
-    # Chunk K3 / plan section "Stable Document IDs": optional pointer to
+    # Optional pointer to
     # the paragraph / row / heading id (see ``ParagraphMapping.element_id``).
     # A downstream applier can prefer this id when it is non-empty and
     # revalidate the exact-text quote against the live element before
     # applying any edit. Empty string is the legacy fallback (text-based
     # matching).
     evidenceElementId: str | None = None
-    # Chunk L / plan section "Separate Findings From Edit Proposals":
-    # the optional structured edit half. Findings with no clean textual fix
+    # The optional structured edit half. Findings with no clean textual fix
     # leave this None and set ``actionType = "REPORT_ONLY"`` (or leave the
     # legacy fields blank). Report rendering and the edit-instruction
     # sidecar route through :meth:`as_edit_proposal` so they see the same
@@ -159,8 +156,7 @@ class Finding:
     # string is the legacy path (finding constructed outside the dedup
     # helper).
     finding_id: str = ""
-    # Chunk 7 / plan section "Validate edit proposals at parse time":
-    # when the parser demotes an EDIT / DELETE / ADD action to REPORT_ONLY
+    # When the parser demotes an EDIT / DELETE / ADD action to REPORT_ONLY
     # because action-specific fields were missing, it stamps the short
     # reason here so diagnostics, the report's demoted-edits section, and
     # the edit-instruction sidecar can explain *why* the proposal was
@@ -170,8 +166,7 @@ class Finding:
     # REPORT_ONLY emission, or an unknown action coerced to REPORT_ONLY
     # without a per-action shape requirement to cite.
     demotion_reason: str | None = None
-    # Chunk 8 / plan section "Separate report deduplication from
-    # executable edit identity": when ``_deduplicate_findings`` collapses
+    # When ``_deduplicate_findings`` collapses
     # findings from multiple files into one representative, the original
     # per-file member findings are retained here. Edit execution looks up
     # the matching original by ``fileName`` so the representative's
@@ -179,14 +174,14 @@ class Finding:
     # ``evidenceElementId`` / ``edit_proposal`` are never fanned out
     # across files that may have different exact text. Singletons leave
     # this empty (the finding *is* its own original); legacy resume
-    # payloads (pre-Chunk-8) also load empty, in which case a downstream
+    # payloads from older versions also load empty, in which case a downstream
     # applier sees only the representative's own per-file text.
     occurrence_originals: list["Finding"] = field(default_factory=list)
 
     def as_edit_proposal(self) -> EditProposal | None:
         """Return the structured edit proposal for this finding, if any.
 
-        Chunk L accessor. When ``edit_proposal`` is set, it is the
+        When ``edit_proposal`` is set, it is the
         authoritative answer. Otherwise the legacy fields are inspected:
         an actionType of ADD / EDIT / DELETE materializes an ``EditProposal``
         on the fly so older callers (resume-state loads, ad-hoc test
@@ -195,7 +190,7 @@ class Finding:
         returns ``None`` so consumers can branch cleanly on
         "does this finding have a proposal?".
 
-        Chunk 7 extension: validate action-specific shape requirements
+        Also validates action-specific shape requirements
         before returning a proposal. A Finding constructed with an
         EDIT/ADD/DELETE action but missing required fields (e.g.,
         ``actionType="EDIT"`` with ``existingText=None``) returns None
@@ -253,7 +248,7 @@ class ReviewResult:
     stop_reason: str | None = None
     parse_status: str | None = None
     cross_check_status: str | None = None
-    # Chunk 2: when the model invoked the ``submit_review_findings`` tool,
+    # When the model invoked the ``submit_review_findings`` tool,
     # this is the raw parsed tool input (the dict the model sent through
     # the schema). Held in memory so diagnostics can preserve the actual
     # structured payload instead of relying on ``raw_response``, which is
@@ -339,7 +334,7 @@ def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[l
         end_idx = text.rfind("]", 0, end_idx)
 
     if text.strip() == "[]":
-        # Chunk 2: a literal empty-array body is a legitimate "no findings"
+        # A literal empty-array body is a legitimate "no findings"
         # response, not thinking. Storing ``"[]"`` as the thinking text was
         # a bug that polluted the report's analysis-summary field.
         return [], ""
@@ -355,7 +350,7 @@ def _parse_findings(data: list) -> list[Finding]:
         sev = str(item.get("severity", "")).strip().upper()
         if sev not in {"CRITICAL", "HIGH", "MEDIUM", "GRIPES"}:
             continue
-        # Chunk L: actionType is no longer forced to "EDIT". A finding that
+        # actionType is no longer forced to "EDIT". A finding that
         # has no clean textual fix can declare ``REPORT_ONLY`` (or leave the
         # field blank, treated as REPORT_ONLY) and skip the edit slot
         # entirely. Anything outside the EDIT/ADD/DELETE/REPORT_ONLY set
@@ -381,7 +376,7 @@ def _parse_findings(data: list) -> list[Finding]:
         position = str(position_raw).strip().lower() if position_raw is not None else None
         if position not in {"before", "after"}:
             position = None
-        # Chunk K3: ``evidenceElementId`` is optional. Normalize to None on
+        # ``evidenceElementId`` is optional. Normalize to None on
         # empty / null so downstream "id is truthy" checks remain simple.
         evidence_raw = item.get("evidenceElementId")
         evidence_id: str | None
@@ -397,14 +392,13 @@ def _parse_findings(data: list) -> list[Finding]:
             if item.get("replacementText") is not None
             else None
         )
-        # Chunk L: build the structured EditProposal alongside the legacy
+        # Build the structured EditProposal alongside the legacy
         # fields. When the action is REPORT_ONLY the proposal is None and
         # we zero out the edit-shaped legacy fields so a stale quote from a
         # model that filled them in anyway cannot accidentally produce an
         # edit candidate downstream.
         #
-        # Chunk 7 / plan section "Validate edit proposals at parse time":
-        # if the model claims EDIT/DELETE/ADD but omits an action-specific
+        # If the model claims EDIT/DELETE/ADD but omits an action-specific
         # required field, demote the finding to REPORT_ONLY *here*, stamp
         # a clear ``demotion_reason``, and clear every executable edit
         # field. Downstream consumers (the report and the edit-instruction

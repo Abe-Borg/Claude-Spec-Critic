@@ -92,8 +92,8 @@ def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
 # (≤10%) but can be larger for structured spec text full of section
 # numbers, table cells, and unicode punctuation. Without a safety factor
 # the local estimate looks reassuring even when the real Claude count
-# would breach the per-call budget — directive 4 of Chunk E calls this
-# out as "local tokenizer estimates no longer create false confidence."
+# would breach the per-call budget — the goal is that local tokenizer
+# estimates no longer create false confidence.
 #
 # The multipliers below are intentionally conservative. They are only
 # consulted on the fallback path when the Anthropic ``count_tokens``

@@ -263,7 +263,8 @@ def capture_verification_end(
 ) -> None:
     """Close a verification span with the full VerificationResult fields.
 
-    Captures all five Chunks 11-13 telemetry fields explicitly so the
+    Captures all five disagreement / web_fetch / budget-exhaustion
+    telemetry fields explicitly so the
     trace can reconstruct VERIFIED_CONTESTED, budget exhaustion, and
     fetched-source grounding without re-walking events.
     """
@@ -709,22 +710,22 @@ def _verification_outputs(verification: Any, *, deep: bool) -> dict[str, Any]:
         "escalation_reason": g("escalation_reason", "") or "",
         "initial_model": g("initial_model", "") or "",
         "initial_verdict": g("initial_verdict", "") or "",
-        # Chunk 12 disagreement surfacing
+        # Disagreement surfacing
         "models_disagreed": bool(g("models_disagreed", False)),
         "initial_sources": list(g("initial_sources", []) or []),
-        # Chunk 11 web_fetch
+        # web_fetch telemetry
         "web_fetch_requests": int(g("web_fetch_requests", 0) or 0),
         "fetched_sources": list(g("fetched_sources", []) or []),
-        # Chunk 13 budget exhaustion
+        # Budget exhaustion
         "budget_exhausted": bool(g("budget_exhausted", False)),
         # Operational-failure sentinel
         "verification_failed": bool(g("verification_failed", False)),
-        # Source-quote evidence (Chunk 2)
+        # Source-quote evidence
         "source_quote": g("source_quote", "") or "",
         # Cache telemetry
         "cache_status": g("cache_status", "none") or "none",
         "cache_entry_created_ts": float(g("cache_entry_created_ts", 0.0) or 0.0),
-        # Elevated-confidence flag (Chunk 10)
+        # Elevated-confidence flag
         "requires_elevated_confidence": bool(g("requires_elevated_confidence", False)),
     }
     # Structured payload — traces are the place to keep the full thing,

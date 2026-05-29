@@ -1,8 +1,8 @@
-"""Chunk 10 tests — LOCALLY_CLASSIFIED tightening + DOCX content-loss warning.
+"""Tests for LOCALLY_CLASSIFIED tightening + DOCX content-loss warning.
 
-Chunk 10 of the Trust Upgrade has two unrelated surfaces:
+This work has two unrelated surfaces:
 
-* **10a — Tighten local-skip keywords.** The router used to drop a
+* **Tighten local-skip keywords.** The router used to drop a
   GRIPES finding through the ``"formatting"`` keyword into ``local_skip``;
   that keyword is too broad (a real CMC formatting requirement could
   match) and is removed outright. ``"leed"`` and ``"internal
@@ -12,7 +12,7 @@ Chunk 10 of the Trust Upgrade has two unrelated surfaces:
   can raise the bar for the residual-risk classes without paying for
   verification that wouldn't add evidence.
 
-* **10b — DOCX content-loss warning.** A drawing-heavy spec (more than
+* **DOCX content-loss warning.** A drawing-heavy spec (more than
   20% of body children carrying ``<w:drawing>`` / ``<w:pict>`` /
   ``<w:object>`` elements) produces a warning on
   ``ExtractedSpec.extraction_warnings`` so the run-diagnostics banner
@@ -46,7 +46,7 @@ from src.output.report_status import (
     summarize_statuses,
 )
 from src.review.reviewer import EditProposal, Finding, ReviewResult
-from src.verification.verification_router import (
+from src.verification.verification_prescreen import (
     classify_finding_for_verification,
     local_skip_requires_elevated_confidence,
 )
@@ -102,7 +102,7 @@ def _finding_with_local_skip_verification(
 class TestFormattingKeywordRemoved:
     """``"formatting"`` is too broad — a real CMC formatting requirement
     (e.g. "label valves per ASME A13.1 color formatting") could match
-    and silently bypass verification. Chunk 10 removes it outright."""
+    and silently bypass verification. The keyword is removed outright."""
 
     def test_formatting_keyword_routes_to_web_required(self):
         f = _gripe(issue="Color formatting label requirements may be wrong")
@@ -418,11 +418,10 @@ class TestPipelineResultCarriesExtractedSpecs:
 
 
 class TestBannerSurfacesExtractionWarnings:
-    """The Run Diagnostics banner (Chunk 6) counts specs with non-empty
-    extraction warnings. The slot was reserved in Chunk 6; Chunk 10
-    populates ``ExtractedSpec.extraction_warnings`` from the extractor
-    and wires ``extracted_specs`` through the PipelineResult so the
-    banner row reflects real data."""
+    """The Run Diagnostics banner counts specs with non-empty
+    extraction warnings. ``ExtractedSpec.extraction_warnings`` is
+    populated from the extractor and ``extracted_specs`` is wired
+    through the PipelineResult so the banner row reflects real data."""
 
     def _findings_for_banner(self) -> list[Finding]:
         # Need at least one finding so the report exporter has something
@@ -492,8 +491,7 @@ class TestBannerSurfacesExtractionWarnings:
         # End-to-end: a PipelineResult with extraction_warnings produces
         # a red-highlighted "Spec content extraction warnings" row in
         # the exported report's banner. The shading is the same
-        # FFE5E5 light-red the verification-failure row uses (Chunk 6
-        # established the highlight wiring).
+        # FFE5E5 light-red the verification-failure row uses.
         from docx.oxml.ns import qn as _qn
 
         f = self._findings_for_banner()[0]

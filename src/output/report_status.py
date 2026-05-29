@@ -29,7 +29,7 @@ from typing import Final, Iterable
 
 
 # ---------------------------------------------------------------------------
-# Closed enums (Chunk N Directive 1 & 4)
+# Closed enums
 # ---------------------------------------------------------------------------
 
 class ReportStatus(str, Enum):
@@ -55,7 +55,7 @@ class ReportStatus(str, Enum):
     # Reserved for precondition / parser failures that require a human to
     # look at the finding before it can be trusted.
     MANUAL_REVIEW_REQUIRED = "MANUAL_REVIEW_REQUIRED"
-    # Chunk 3 / Trust Upgrade: the verifier attempted to run but failed
+    # The verifier attempted to run but failed
     # operationally (rate limit, server error, network failure, parse
     # error, batch cancellation, INVALID_REQUEST). Distinct from
     # INSUFFICIENT_EVIDENCE — that status means "verifier ran cleanly
@@ -63,7 +63,7 @@ class ReportStatus(str, Enum):
     # nothing was checked." Operators need the distinction so they can
     # re-run the failures rather than treating them as verifier silence.
     VERIFICATION_FAILED = "VERIFICATION_FAILED"
-    # Chunk 12 / Trust Upgrade: the initial verifier (Sonnet) and the
+    # The initial verifier (Sonnet) and the
     # escalation verifier (Opus) returned different verdicts AND both
     # passes were grounded (each had at least one accepted citation).
     # Distinct from VERIFIED_SUPPORTED / VERIFIED_CONTRADICTED because
@@ -116,7 +116,7 @@ STATUS_GLYPHS: Final[dict[ReportStatus, str]] = {
     ReportStatus.NOT_CHECKED: "—",
     ReportStatus.MANUAL_REVIEW_REQUIRED: "!",
     ReportStatus.VERIFICATION_FAILED: "⚠",
-    # Chunk 12 / Trust Upgrade: lightning bolt signals "two verifiers,
+    # Lightning bolt signals "two verifiers,
     # different verdicts." Distinct from ⚠ (operational failure) and
     # the verdict glyphs (✓ / ✎ / ✗).
     ReportStatus.VERIFIED_CONTESTED: "⚡",
@@ -146,13 +146,13 @@ def classify_status(finding) -> ReportStatus:
     Rules in priority order (first match wins):
 
     1. No ``verification`` → ``NOT_CHECKED``.
-    2. ``verification_failed`` sentinel set → ``VERIFICATION_FAILED``
-       (Chunk 3 / Trust Upgrade). Surfaces operational failures (rate
+    2. ``verification_failed`` sentinel set → ``VERIFICATION_FAILED``.
+       Surfaces operational failures (rate
        limit, server error, parse error, INVALID_REQUEST, etc.) so
        reports can show them under a dedicated warning glyph instead of
        quietly conflating them with cleanly-UNVERIFIED claims.
-    3. ``models_disagreed`` sentinel set → ``VERIFIED_CONTESTED``
-       (Chunk 12 / Trust Upgrade). Set when the initial and escalated
+    3. ``models_disagreed`` sentinel set → ``VERIFIED_CONTESTED``.
+       Set when the initial and escalated
        passes returned different verdicts and BOTH were grounded.
        Placed above the verdict-based branches so a CONFIRMED+grounded
        final verdict that disagreed with the initial DISPUTED still
@@ -170,7 +170,7 @@ def classify_status(finding) -> ReportStatus:
        CONFIRMED/CORRECTED with no accepted citation, unknown verdict
        strings) → ``INSUFFICIENT_EVIDENCE``.
 
-    Chunk 5 — the explicit accepted-citation check on rules 5/6 is
+    The explicit accepted-citation check on rules 5/6 is
     belt-and-suspenders for the case where a finding reaches the report
     without going through :func:`src.verifier._enforce_grounding_invariant`
     (e.g. a future call site that bypasses the verifier wrapper, or a
@@ -182,21 +182,21 @@ def classify_status(finding) -> ReportStatus:
     verification = getattr(finding, "verification", None)
     if verification is None:
         return ReportStatus.NOT_CHECKED
-    # Chunk 3: operational-failure sentinel beats the verdict-based
+    # Operational-failure sentinel beats the verdict-based
     # branches below. A finding whose verifier crashed must not be
     # reported as INSUFFICIENT_EVIDENCE (which implies the verifier ran
     # and found nothing). The sentinel is only set on transient failures
     # so it's safe to short-circuit here.
     if bool(getattr(verification, "verification_failed", False)):
         return ReportStatus.VERIFICATION_FAILED
-    # Chunk 12: models-disagreed sentinel beats the verdict-based
+    # Models-disagreed sentinel beats the verdict-based
     # branches below. The verifier only sets this when the initial and
     # escalated passes BOTH grounded their verdicts AND reached
     # different conclusions, so the result represents a real
     # disagreement worth surfacing. A swap during escalation could
     # leave ``verdict`` looking CONFIRMED-and-grounded — without this
     # short-circuit the report would render VERIFIED_SUPPORTED and hide
-    # the disagreement, which is exactly the bug Chunk 12 fixes.
+    # the disagreement.
     if bool(getattr(verification, "models_disagreed", False)):
         return ReportStatus.VERIFIED_CONTESTED
     if getattr(verification, "cache_status", "") == _LOCAL_SKIP:
@@ -219,7 +219,7 @@ def classify_status(finding) -> ReportStatus:
 def is_budget_exhausted(finding) -> bool:
     """Return True when the verifier consumed its full search budget.
 
-    Chunk 13 / Trust Upgrade. Surfaces the actionable signal that an
+    Surfaces the actionable signal that an
     operator could grant more budget by raising the finding's severity
     (severity-tiered budgets in ``api_config._SEVERITY_MAX_USES``). The
     verifier sets ``VerificationResult.budget_exhausted=True`` whenever
@@ -245,7 +245,7 @@ def is_budget_exhausted(finding) -> bool:
 def summarize_budget_exhausted(findings: Iterable) -> int:
     """Return the count of findings whose verifier exhausted its budget.
 
-    Chunk 13 / Trust Upgrade. Used by the Run Diagnostics banner so a
+    Used by the Run Diagnostics banner so a
     reviewer can see at a glance how many findings hit the search
     budget without resolving — actionable input for "should I re-run
     these at higher severity?" The flag round-trips through resume
@@ -320,7 +320,7 @@ def edit_action_label(action: EditActionLabel | str) -> str:
 # uncertain — matches the reading order on the report.
 # VERIFICATION_FAILED sits next to NOT_CHECKED / MANUAL_REVIEW_REQUIRED
 # (operational tail) so the supportive block stays compact at the top.
-# VERIFIED_CONTESTED (Chunk 12) sits between VERIFIED_CONTRADICTED and
+# VERIFIED_CONTESTED sits between VERIFIED_CONTRADICTED and
 # DISPUTED — it's a verified-with-caveat verdict (the disagreement
 # itself is the caveat) so it reads naturally next to the other
 # verified buckets, before the uncertain block (LOCALLY_CLASSIFIED,

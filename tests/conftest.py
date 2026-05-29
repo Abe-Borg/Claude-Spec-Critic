@@ -1,6 +1,6 @@
 """Shared pytest configuration for the Spec Critic test suite.
 
-Chunk A baseline: keep tests hermetic by default.
+Keep tests hermetic by default.
 
 - Tests must never need a real ``ANTHROPIC_API_KEY``. The reviewer/verifier
   client cache reads the env var lazily, so we set a sentinel value before

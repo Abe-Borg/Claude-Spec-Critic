@@ -57,7 +57,7 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # leak through. Bumping the version drops every v1 cache file on first
 # load; users get fresh verifications under the new invariant.
 #
-# v3 — Chunk 2 / Trust Upgrade. Adds ``source_quote`` (the verbatim snippet
+# v3 — adds ``source_quote`` (the verbatim snippet
 # the model said it read) to every entry. v2 entries don't carry the
 # quote, so silently reusing them would produce CONFIRMED / CORRECTED
 # hits whose report rendering has no source_quote to show — a regression
@@ -151,7 +151,7 @@ _DEFAULT_CACHE_TTL_DAYS = 60
 def cache_ttl_days() -> int:
     """Age-based pruning in days. Default 60 days.
 
-    Chunk 5 / Trust Upgrade: the default is 60 days, balancing reuse
+    The default is 60 days, balancing reuse
     against staleness for code references that may have new amendments
     or interpretations published quarterly. A cached "current edition is
     NFPA 13-2022" verdict older than two months may be wrong if the
@@ -233,7 +233,7 @@ class VerificationCache:
         # want to share *grounded* verdicts across findings.
         if not getattr(result, "grounded", False):
             return
-        # Chunk 3 / Trust Upgrade: refuse to cache operational-failure
+        # Refuse to cache operational-failure
         # results. The ``verification_failed`` sentinel marks UNVERIFIED
         # results that came from a transient cause (rate limit, server
         # error, network failure, parse error, INVALID_REQUEST,
@@ -245,7 +245,7 @@ class VerificationCache:
         # grounded+failed result directly.
         if bool(getattr(result, "verification_failed", False)):
             return
-        # Chunk 13 / Trust Upgrade: refuse to cache budget-exhausted
+        # Refuse to cache budget-exhausted
         # results. The ``budget_exhausted`` sentinel marks UNVERIFIED
         # outcomes where the verifier consumed its full mode-scaled
         # web_search budget without producing a grounded verdict.
@@ -479,7 +479,7 @@ _SKIPPED_FIELDS = frozenset({
     # they never reach the cache in the first place.
     "requires_elevated_confidence",
     # Escalation history. A cache hit replays the final verdict and the
-    # Chunk 12 ``models_disagreed`` / ``initial_sources`` signal, but not
+    # ``models_disagreed`` / ``initial_sources`` signal, but not
     # the full before/after escalation trace — preserved behavior from the
     # original projections.
     "escalation_attempted",
@@ -560,7 +560,7 @@ def _clone_for_store(result: "VerificationResult") -> "VerificationResult":
 def _clone_for_hit(entry: _CacheEntry) -> "VerificationResult":
     """Clone a stored result for a cache hit.
 
-    Chunk 5 / Trust Upgrade: stamps ``cache_entry_created_ts`` from the
+    Stamps ``cache_entry_created_ts`` from the
     sidecar ``_CacheEntry.created_ts`` so the report can render the cache-age
     badge ("Cache replay — Nd old") without re-reading the cache file. The
     age field lives on ``VerificationResult`` as runtime telemetry —

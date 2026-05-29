@@ -1,11 +1,11 @@
-"""Chunk 4 tests: per-finding evidence panel in the report.
+"""Tests for the per-finding evidence panel in the report.
 
-Trust Upgrade plan section "Chunk 4 — Per-Finding Evidence Panel in Report".
+Plan section "Per-Finding Evidence Panel in Report".
 Every finding with a verification result renders an evidence panel under
 the Sources Heading 4 containing:
 
 - Verifier model / verification mode / search budget
-- Source quote (verbatim from web_search snippet, Chunk 2 schema)
+- Source quote (verbatim from web_search snippet)
 - Verifier rationale (moved here from above the heading)
 - Escalation history (when applicable)
 - Web/code evidence + rejected source URLs
@@ -193,9 +193,9 @@ class TestEvidencePanelRendering:
     def test_renders_rationale_inside_evidence_panel(
         self, tmp_path: Path, review_with_verification
     ):
-        # Chunk 4: rationale moves from above the Sources heading to
-        # under it (next to the source quote). The label is preserved
-        # so Chunk N tests still pass.
+        # Rationale moves from above the Sources heading to under it
+        # (next to the source quote). The label is preserved so the
+        # report trust-model tests still pass.
         out = tmp_path / "report.docx"
         export_report(_StubPipelineResult(review_result=review_with_verification), out)
         text = _all_text_from(Document(str(out)))

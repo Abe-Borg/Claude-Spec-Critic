@@ -189,7 +189,7 @@ def classify_finding_profile(finding) -> VerificationProfile:
        internal contradiction) → ``INTERNAL_COORDINATION``. This is
        checked first because findings with these signals never need
        external grounding regardless of any other text. The
-       :mod:`verification_router` ``local_skip`` classifier already
+       :mod:`verification_prescreen` ``local_skip`` classifier already
        handles the *GRIPES* subset of these; the profile classifier
        extends the same logic to higher-severity findings so the
        verifier's web-search ``max_uses`` is throttled even when

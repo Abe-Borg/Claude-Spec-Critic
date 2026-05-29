@@ -1,6 +1,6 @@
-"""Chunk O tests: deterministic checks expansion.
+"""Tests for deterministic checks expansion.
 
-Plan section "Chunk O — Deterministic Checks Expansion". The chunk:
+This work:
 
 * adds three new deterministic detectors to ``preprocessor.py`` —
   ``detect_unresolved_template_markers``, ``detect_invalid_code_cycle_strings``,
@@ -43,7 +43,7 @@ from src.input.preprocessor import (
     preprocess_spec,
 )
 from src.review.reviewer import Finding
-from src.verification.verification_router import classify_finding_for_verification
+from src.verification.verification_prescreen import classify_finding_for_verification
 
 
 # ---------------------------------------------------------------------------

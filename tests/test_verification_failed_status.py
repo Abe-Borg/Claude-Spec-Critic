@@ -1,6 +1,6 @@
-"""Chunk 3 tests — VERIFICATION_FAILED status + verification_failed sentinel.
+"""Tests for VERIFICATION_FAILED status + verification_failed sentinel.
 
-Chunk 3 of the Trust Upgrade adds operational-failure visibility so the
+This work adds operational-failure visibility so the
 report can distinguish "verifier broke" from "verifier ran but found
 nothing." The contract has five surfaces:
 
@@ -299,7 +299,7 @@ class TestCacheRejectsFailedResults:
 
     def test_clean_grounded_result_is_still_cached(self):
         # Sanity: the new guard does not block normal grounded
-        # verdicts. Without it the earlier Chunk 2 cache tests would
+        # verdicts. Without it the earlier source_quote cache tests would
         # already catch this, but explicit coverage anchors the
         # invariant.
         cache = VerificationCache()

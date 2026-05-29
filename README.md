@@ -147,7 +147,7 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 | `spans.jsonl` | One line per closed span. Spans nest via `parent_span_id` — `pipeline` → `review` / `cross_check` / `verification_initial` → `api_call` → `web_search`. |
 | `events.jsonl` | One line per event, keyed by `span_id`. Types include `thinking_block`, `tool_use`, `web_search_query`, `web_search_result`, `pause_turn`, `parse_attempt`, `grounding_outcome`, `escalation_decision`, `budget_exhausted_marker`. |
 | `prompts.jsonl` | Default-level only: content-deduped prompts referenced by SHA-256 hash from span `inputs`. Deep mode inlines prompts on each span instead. |
-| `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every Chunk 11-13 verification field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted). |
+| `findings.jsonl` | One line per finding at terminal state, snapshotted at run end. Carries every verification telemetry field (web_fetch_requests, fetched_sources, models_disagreed, initial_sources, budget_exhausted). |
 
 ### Env vars
 
