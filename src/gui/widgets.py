@@ -326,6 +326,15 @@ class AnimatedButton(ctk.CTkButton):
         self._pulse_active = False; self._state = "complete"
         self.configure(text="\u2713 Complete", fg_color=COLORS["success"], hover_color=COLORS["success"], state="disabled")
         self._glow_active = True; self._animate_glow(0)
+    def set_complete_with_errors(self):
+        # Partial-failure terminal state: the run finished but one or more
+        # specs failed review (or another non-fatal error occurred). Amber
+        # plus a warning glyph (matching the warning log style) so it is
+        # plainly distinct from the green check-mark "Complete" state -- a
+        # partially-failed run must never present the same terminal state
+        # as a clean one. No celebratory glow.
+        self._pulse_active = self._glow_active = False; self._state = "complete_with_errors"
+        self.configure(text="\u26a0 Completed with errors", fg_color=COLORS["warning"], hover_color=COLORS["warning"], state="disabled")
     def _animate_glow(self, step):
         if not self._glow_active or self._state != "complete": return
         if step >= 15: self.configure(fg_color=COLORS["success"]); self._glow_active = False; return

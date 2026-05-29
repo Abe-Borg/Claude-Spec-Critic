@@ -27,6 +27,16 @@ one place the program can mislead, and it's exactly what the user must be able t
 ## P0 — A partially-failed review can look like a complete, clean one
 
 ### P0-1 — Review-stage failures are not surfaced in the exported report or the UI terminal state
+> **RESOLVED** (branch `claude/kind-volta-FE6gt`). `finalize_batch_result` now carries
+> `truncated_specs` onto the new `PipelineResult.failed_review_specs`. The exported report surfaces
+> it three ways (a red "Specs that failed review (not reviewed)" banner row + naming recovery hint,
+> a corrected "Files Reviewed: {reviewed} of {submitted}" title line, and a red bullet annotation),
+> and `on_review_complete` routes a partial failure to the amber `set_complete_with_errors()` button
+> state + a `warning`-level diagnostics finalize (never bare `success`). This also resolves **P1-3**
+> (the review-repair miss path lands in `truncated_specs`, which now flows to the banner row).
+> Covered by `tests/test_failed_review_surfacing.py` (data plane + report) and
+> `tests/test_review_complete_terminal_state.py` (GUI terminal state, tkinter-gated). See the
+> "Review-stage failure surfacing" invariant in `CLAUDE.md`.
 - **Where:**
   - `src/orchestration/pipeline.py:907-958` (`collect_review_batch_results`) — failures are *correctly*
     recorded: a missing/incomplete/parse-error/errored result becomes an entry in `errors` **and**
@@ -85,6 +95,9 @@ one place the program can mislead, and it's exactly what the user must be able t
   receives exactly one terminal `VerificationResult`.
 
 ### P1-3 — Confirm the review *repair* batch's misses feed the P0-1 surfacing
+> **RESOLVED via P0-1.** A spec that fails both the original and the repair batch stays in
+> `truncated_specs`, which now flows through `PipelineResult.failed_review_specs` into the banner
+> row / title-line / bullet annotation. No separate change was needed.
 - **Where:** `_recover_retryable_review_batch_results` (`pipeline.py:808-892`). On repair-poll detach it
   logs "{N} item(s) will appear as failed in the report" and returns the originals (which stay in
   `truncated_specs`).

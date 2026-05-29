@@ -120,6 +120,13 @@ def start_review(app) -> None:
 def on_review_complete(app, result) -> None:
     app.progress_bar.set(1.0)
     app._last_result = result
+    # Tracks whether any spec failed review so the terminal UI state (the
+    # run button + the finalized diagnostics level) reflects a partial
+    # failure instead of presenting the same green "success" as a fully-
+    # clean run. ``rv.error`` is the spec-error summary set by
+    # ``collect_review_batch_results`` whenever any spec truncated /
+    # parse-errored / errored / returned nothing.
+    has_review_errors = False
     if result.review_result:
         rv = result.review_result
         has_review_errors = bool(rv.error)
@@ -146,15 +153,33 @@ def on_review_complete(app, result) -> None:
         export_status = app._export_report_to_file(result)
         if export_status == "canceled":
             app.log.log_warning("Export canceled; results are still available in memory.")
-            app._finalize_diagnostics("finalization", "info", "Run completed after export canceled")
+            app._finalize_diagnostics(
+                "finalization",
+                "warning" if has_review_errors else "info",
+                "Run completed with review errors after export canceled"
+                if has_review_errors
+                else "Run completed after export canceled",
+            )
         elif export_status == "error":
             app.log.log_warning("Export failed.")
             app._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
         elif export_status == "success":
-            app._finalize_diagnostics("finalization", "success", "Run completed successfully")
+            if has_review_errors:
+                app._finalize_diagnostics(
+                    "finalization",
+                    "warning",
+                    "Run completed with errors — one or more specs failed review",
+                )
+            else:
+                app._finalize_diagnostics("finalization", "success", "Run completed successfully")
     if not result.review_result:
         app._finalize_diagnostics("finalization", "success", "Run completed successfully")
-    app.run_button.set_complete()
+    # Partial failure gets a distinct amber terminal state; a clean run
+    # keeps the celebratory green check-mark.
+    if has_review_errors:
+        app.run_button.set_complete_with_errors()
+    else:
+        app.run_button.set_complete()
     app.after(2500, app._reset_ui)
 
 

@@ -31,7 +31,11 @@ def _tkinter_available() -> bool:
 # (common in CI / containers without the python3-tk system package). The files
 # import ``src.gui`` / ``src.batch_controller`` at module scope, so collection
 # fails outright otherwise. When tkinter is installed, these files run normally.
-_GUI_DEPENDENT_TESTS = {"test_core_regressions.py", "test_gui_refactor_modules.py"}
+_GUI_DEPENDENT_TESTS = {
+    "test_core_regressions.py",
+    "test_gui_refactor_modules.py",
+    "test_review_complete_terminal_state.py",
+}
 
 
 def pytest_ignore_collect(collection_path, config):
