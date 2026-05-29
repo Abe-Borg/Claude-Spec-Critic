@@ -300,20 +300,37 @@ def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
 # ---------------------------------------------------------------------------
 
 def _write_title_block(doc: Document, review, files_reviewed: list[str],
-                       cycle_label: str = "2025") -> None:
+                       cycle_label: str = "2025",
+                       failed_review_count: int = 0) -> None:
     """Write the report title and metadata.
 
     Uses separate paragraphs instead of \\n within runs to ensure
     reliable rendering across all Word versions and viewers.
+
+    When ``failed_review_count`` > 0 the "Files Reviewed" line reports
+    "{reviewed} of {submitted} ({failed} failed review)" so the metadata
+    cannot read as a clean complete run when some specs never produced a
+    review. A clean run keeps the original "Files Reviewed: {N}" form
+    byte-for-byte.
     """
     title = doc.add_heading("Spec Critic — M&P Specification Review Report", level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    submitted = len(files_reviewed)
+    if failed_review_count > 0:
+        reviewed = max(0, submitted - failed_review_count)
+        files_reviewed_line = (
+            f"Files Reviewed: {reviewed} of {submitted} "
+            f"({failed_review_count} failed review)"
+        )
+    else:
+        files_reviewed_line = f"Files Reviewed: {submitted}"
 
     # Metadata as separate centered paragraphs (not \n in a single para)
     meta_lines = [
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"Model: {review.model}",
-        f"Files Reviewed: {len(files_reviewed)}",
+        files_reviewed_line,
         f"Code Cycle: California {cycle_label}",
     ]
 
@@ -330,11 +347,25 @@ def _write_title_block(doc: Document, review, files_reviewed: list[str],
 # Files reviewed
 # ---------------------------------------------------------------------------
 
-def _write_files_reviewed(doc: Document, files_reviewed: list[str]) -> None:
-    """Write the files reviewed section with a bullet list."""
+def _write_files_reviewed(doc: Document, files_reviewed: list[str],
+                          failed_review_specs: set[str] | None = None) -> None:
+    """Write the files reviewed section with a bullet list.
+
+    Any filename in ``failed_review_specs`` is annotated in red with a
+    "— review failed (not reviewed)" suffix so the per-file list stays
+    honest: a spec that failed review is visually distinct from one that
+    was reviewed clean.
+    """
+    failed = set(failed_review_specs or ())
     doc.add_heading("Files Reviewed", level=1)
     for filename in files_reviewed:
-        doc.add_paragraph(filename, style='List Bullet')
+        if filename in failed:
+            para = doc.add_paragraph(style='List Bullet')
+            run = para.add_run(f"{filename} — review failed (not reviewed)")
+            run.bold = True
+            run.font.color.rgb = RGBColor(192, 0, 0)
+        else:
+            doc.add_paragraph(filename, style='List Bullet')
 
 
 
@@ -412,6 +443,20 @@ def _summarize_run_diagnostics(
         if (getattr(finding, "demotion_reason", None) or "").strip()
     )
 
+    # Specs that failed review (not reviewed). Sourced from
+    # ``PipelineResult.failed_review_specs`` (carried from
+    # ``CollectedBatchState.truncated_specs``). This is the headline
+    # honesty signal: a spec whose review truncated / parse-errored /
+    # errored produces zero findings, exactly like a genuinely-clean
+    # spec — so the banner must call it out explicitly or a partially-
+    # failed run reads as fully clean. Defensive ``getattr`` keeps legacy
+    # callers and test doubles (which may not set the field) at 0.
+    failed_review_specs = [
+        str(name)
+        for name in (getattr(pipeline_result, "failed_review_specs", None) or [])
+    ]
+    failed_review_count = len(failed_review_specs)
+
     # Extraction warnings. Looks for an
     # ``extracted_specs`` attribute on the pipeline result with per-spec
     # ``extraction_warnings`` lists. Resolves to 0 when no specs carry
@@ -457,6 +502,8 @@ def _summarize_run_diagnostics(
     return {
         "edit_suggested": edit_suggested,
         "report_only": report_only,
+        "failed_review_count": failed_review_count,
+        "failed_review_specs": failed_review_specs,
         "verification_failed": verification_failed,
         "cache_replay_count": cache_replay_count,
         "oldest_cache_age_days": oldest_age_days,
@@ -508,6 +555,10 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     oldest_age = summary.get("oldest_cache_age_days")
     cross_check = summary.get("cross_check")
     budget_exhausted_count = int(summary.get("budget_exhausted_count", 0) or 0)
+    failed_review_specs = list(summary.get("failed_review_specs", []) or [])
+    failed_review_count = int(
+        summary.get("failed_review_count", len(failed_review_specs)) or 0
+    )
 
     # Build row tuples: (label, value, highlight). ``highlight=True``
     # paints the value cell with light-red shading + dark-red text so
@@ -516,6 +567,21 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         ("Edit suggested", str(summary.get("edit_suggested", 0)), False),
         ("Report-only", str(summary.get("report_only", 0)), False),
     ]
+
+    # Specs that failed review (not reviewed). THE headline honesty row:
+    # a spec whose review truncated / parse-errored / errored produces
+    # zero findings, indistinguishable from a genuinely-clean spec, so it
+    # is called out explicitly and highlighted red when > 0. Placed at the
+    # top of the operational-health rows because "did we actually review
+    # everything we said we did?" is the first question a reviewer of a
+    # compliance tool must be able to answer.
+    rows.append(
+        (
+            "Specs that failed review (not reviewed)",
+            str(failed_review_count),
+            failed_review_count > 0,
+        )
+    )
 
     # Cache replays: when there are any, show oldest age too so a
     # reviewer doesn't have to expand each Sources panel to find the
@@ -614,6 +680,34 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         value_run.font.size = Pt(10)
         if highlight:
             value_run.font.color.rgb = RGBColor(192, 0, 0)
+
+    # --- Failed-review recovery hint ---
+    # The headline trust signal: name the specs that were NOT reviewed so
+    # a reviewer cannot mistake a partially-failed run for a clean one.
+    # Rendered first (above the verification/budget hints) and in
+    # failure-red, matching the ⚠ glyph used on the per-spec GUI log line.
+    # The cause/remedy differs from a verification failure: these specs
+    # never produced findings at all, so the absence of findings carries
+    # no information about whether the spec is compliant.
+    if failed_review_count > 0:
+        names = ", ".join(failed_review_specs) if failed_review_specs else "(names unavailable)"
+        plural = failed_review_count != 1
+        hint_para = doc.add_paragraph()
+        hint_para.paragraph_format.space_before = Pt(6)
+        hint_para.paragraph_format.space_after = Pt(8)
+        hint_run = hint_para.add_run(
+            f"⚠ {failed_review_count} spec{'s' if plural else ''} failed "
+            f"review and {'were' if plural else 'was'} NOT reviewed: {names}. "
+            f"{'Their' if plural else 'Its'} review truncated, failed to "
+            f"parse, or errored, so {'they' if plural else 'it'} produced no "
+            "findings — the absence of findings does NOT mean "
+            f"{'they are' if plural else 'it is'} compliant. Re-run "
+            f"{'these specs' if plural else 'this spec'} individually to "
+            "obtain a review."
+        )
+        hint_run.font.size = Pt(10)
+        hint_run.font.italic = True
+        hint_run.font.color.rgb = RGBColor(192, 0, 0)
 
     # --- Failure recovery hint ---
     # The re-run-failed-only mechanism is deferred; for now we just
@@ -1987,11 +2081,19 @@ def export_report(
 
     # Build the report
     cycle_label = getattr(pipeline_result, "cycle_label", "2025") or "2025"
+    # Specs whose review failed/truncated (never produced findings).
+    # Defensive getattr keeps legacy callers / test doubles at empty.
+    failed_review_specs = [
+        str(name)
+        for name in (getattr(pipeline_result, "failed_review_specs", None) or [])
+    ]
+    failed_review_count = len(failed_review_specs)
     _write_title_block(
         doc,
         review,
         pipeline_result.files_reviewed,
         cycle_label=cycle_label,
+        failed_review_count=failed_review_count,
     )
 
     # Run Diagnostics banner. Renders right
@@ -2009,7 +2111,11 @@ def export_report(
     )
     _write_run_diagnostics_banner(doc, run_diagnostics)
 
-    _write_files_reviewed(doc, pipeline_result.files_reviewed)
+    _write_files_reviewed(
+        doc,
+        pipeline_result.files_reviewed,
+        failed_review_specs=set(failed_review_specs),
+    )
     cross_check_status = getattr(cross_check, "cross_check_status", None) if cross_check else None
     cross_check_reason = ""
     if cross_check and cross_check_status == "skipped":

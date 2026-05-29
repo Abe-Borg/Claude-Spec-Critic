@@ -111,6 +111,16 @@ def _persist_verification_cache(cache: VerificationCache, *, log: LogFn = _noop_
 class PipelineResult:
     review_result: Optional[ReviewResult]
     files_reviewed: list[str] = field(default_factory=list)
+    # Subset of ``files_reviewed`` whose individual review failed
+    # (truncated / parse-error / errored / no result) and therefore
+    # produced zero findings. Sourced from
+    # ``CollectedBatchState.truncated_specs`` in ``finalize_batch_result``.
+    # Carried onto the result so the exported report can distinguish a
+    # spec that *failed* review (0 findings because it never completed)
+    # from a genuinely-clean spec (0 findings because it has no issues) —
+    # the two are otherwise indistinguishable in the final artifact, which
+    # is the single honesty gap this field closes. Empty on a clean run.
+    failed_review_specs: list[str] = field(default_factory=list)
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
@@ -1110,6 +1120,10 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
     return PipelineResult(
         review_result=state.review_result,
         files_reviewed=state.files_reviewed,
+        # Specs whose review failed/truncated ride through to the report
+        # so the Run Diagnostics banner and the "Files Reviewed" count can
+        # flag them as not-actually-reviewed.
+        failed_review_specs=list(state.truncated_specs),
         leed_alerts=state.leed_alerts,
         placeholder_alerts=state.placeholder_alerts,
         cross_check_result=state.cross_check_result,
