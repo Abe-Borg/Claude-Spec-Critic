@@ -159,13 +159,6 @@ class TestEvidencePanelRendering:
         )
         return ReviewResult(findings=[verified])
 
-    def test_renders_verifier_model(self, tmp_path: Path, review_with_verification):
-        out = tmp_path / "report.docx"
-        export_report(_StubPipelineResult(review_result=review_with_verification), out)
-        text = _all_text_from(Document(str(out)))
-        assert "Verifier model:" in text
-        assert "claude-sonnet-4-6" in text
-
     def test_renders_verification_mode(self, tmp_path: Path, review_with_verification):
         out = tmp_path / "report.docx"
         export_report(_StubPipelineResult(review_result=review_with_verification), out)
@@ -182,13 +175,6 @@ class TestEvidencePanelRendering:
         # 4 of them. The exact "N of M" string should appear.
         assert "Search budget used:" in text
         assert "4 of 8 searches used" in text
-
-    def test_renders_source_quote(self, tmp_path: Path, review_with_verification):
-        out = tmp_path / "report.docx"
-        export_report(_StubPipelineResult(review_result=review_with_verification), out)
-        text = _all_text_from(Document(str(out)))
-        assert "Source quote" in text
-        assert "fire sprinklers in all K-12 facilities" in text
 
     def test_renders_rationale_inside_evidence_panel(
         self, tmp_path: Path, review_with_verification
@@ -298,41 +284,40 @@ class TestEscalationHistoryRendering:
 class TestEvidencePanelSuccessCriteria:
     """Mirrors the success criteria from the chunk plan."""
 
-    def test_confirmed_finding_shows_source_quote_and_verifier_model(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        "verdict, correction, source_quote, model_used",
+        [
+            (
+                "CONFIRMED",
+                None,
+                "CBC §1234 explicitly requires fire sprinklers.",
+                "claude-sonnet-4-6",
+            ),
+            (
+                "CORRECTED",
+                "Replace with 2025 CBC",
+                "The 2025 CBC supersedes the 2019 cycle.",
+                "claude-opus-4-7",
+            ),
+        ],
+    )
+    def test_grounded_finding_shows_source_quote_and_verifier_model(
+        self, tmp_path: Path, verdict, correction, source_quote, model_used
     ):
-        confirmed = _finding(
+        # Both source quote and verifier model must appear in the output
+        # for any grounded CONFIRMED / CORRECTED finding.
+        f = _finding(
             verification=_verification(
-                verdict="CONFIRMED",
-                source_quote="CBC §1234 explicitly requires fire sprinklers.",
-                model_used="claude-sonnet-4-6",
+                verdict=verdict,
+                correction=correction,
+                source_quote=source_quote,
+                model_used=model_used,
             ),
         )
         out = tmp_path / "report.docx"
         export_report(
-            _StubPipelineResult(review_result=ReviewResult(findings=[confirmed])), out
+            _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
         )
         text = _all_text_from(Document(str(out)))
-        # Both source quote and verifier model must appear in the
-        # output for any CONFIRMED finding.
-        assert "CBC §1234 explicitly requires fire sprinklers." in text
-        assert "claude-sonnet-4-6" in text
-
-    def test_corrected_finding_shows_source_quote_and_verifier_model(
-        self, tmp_path: Path
-    ):
-        corrected = _finding(
-            verification=_verification(
-                verdict="CORRECTED",
-                correction="Replace with 2025 CBC",
-                source_quote="The 2025 CBC supersedes the 2019 cycle.",
-                model_used="claude-opus-4-7",
-            ),
-        )
-        out = tmp_path / "report.docx"
-        export_report(
-            _StubPipelineResult(review_result=ReviewResult(findings=[corrected])), out
-        )
-        text = _all_text_from(Document(str(out)))
-        assert "The 2025 CBC supersedes the 2019 cycle." in text
-        assert "claude-opus-4-7" in text
+        assert source_quote in text
+        assert model_used in text

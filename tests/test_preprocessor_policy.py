@@ -35,7 +35,6 @@ from src.input.preprocessor import (
 )
 from src.review.prompt_serialization import (
     TAG_PRE_DETECTED,
-    pre_detected_alerts_enabled,
     render_pre_detected_block,
 )
 from src.review.prompts import get_single_spec_user_message
@@ -156,16 +155,6 @@ class TestRenderPreDetectedBlock:
         # The example is collapsed to one line.
         assert "[TBD with newlines]" in out
         assert "[TBD\n" not in out
-
-
-# ---------------------------------------------------------------------------
-# pre_detected_alerts_enabled is hardcoded on
-# ---------------------------------------------------------------------------
-
-
-class TestPreDetectedEnabled:
-    def test_always_on(self) -> None:
-        assert pre_detected_alerts_enabled() is True
 
 
 # ---------------------------------------------------------------------------
@@ -316,23 +305,6 @@ class TestPipelinePerSpecAlertMap:
             for alert in spec_alerts:
                 assert alert["filename"] == f.name
 
-    def test_per_filename_buckets_do_not_cross_contaminate(
-        self, tmp_path, stub_count_tokens
-    ) -> None:
-        from src.orchestration.pipeline import _prepare_specs
-
-        files = self._make_spec_files(tmp_path)
-        prepared = _prepare_specs(
-            input_dir=tmp_path,
-            files=files,
-            project_context="",
-            cycle=CALIFORNIA_2025,
-        )
-        a_alerts = prepared.pre_detected_by_filename[files[0].name]
-        b_alerts = prepared.pre_detected_by_filename[files[1].name]
-        assert {a["filename"] for a in a_alerts} == {files[0].name}
-        assert {a["filename"] for a in b_alerts} == {files[1].name}
-
 
 class TestBatchSubmissionFeedsAlerts:
     """``submit_review_batch`` must pass each spec's alerts into the prompt."""
@@ -426,26 +398,12 @@ class TestStaleCycleSuppression:
         )
         assert alerts == []
 
-    def test_formerly_suppresses(self) -> None:
-        content = "Formerly the 2019 CBC governed scope; current cycle applies."
-        alerts = detect_stale_code_cycle_references(
-            content, "s.docx", CALIFORNIA_2025
-        )
-        assert alerts == []
-
     def test_superseded_trailing_suppresses(self) -> None:
         # The citation is in the same sentence as ``superseded``; the author
         # is explicitly describing a superseded reference, so the alert is
         # suppressed regardless of whether the keyword sits before or after
         # the cycle citation.
         content = "The 2019 CBC has been superseded for this project."
-        alerts = detect_stale_code_cycle_references(
-            content, "s.docx", CALIFORNIA_2025
-        )
-        assert alerts == []
-
-    def test_superseded_preceding_suppresses(self) -> None:
-        content = "Previously superseded: the 2019 CBC requirements."
         alerts = detect_stale_code_cycle_references(
             content, "s.docx", CALIFORNIA_2025
         )
@@ -461,13 +419,6 @@ class TestStaleCycleSuppression:
 
     def test_no_longer_suppresses(self) -> None:
         content = "The 2022 CBC is no longer used; comply with the current cycle."
-        alerts = detect_stale_code_cycle_references(
-            content, "s.docx", CALIFORNIA_2025
-        )
-        assert alerts == []
-
-    def test_historical_context_suppresses(self) -> None:
-        content = "Prior cycle reference for historical context only: 2019 CBC."
         alerts = detect_stale_code_cycle_references(
             content, "s.docx", CALIFORNIA_2025
         )

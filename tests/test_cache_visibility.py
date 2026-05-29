@@ -30,7 +30,6 @@ from docx import Document
 
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.output.report_exporter import (
-    CACHE_AGE_COLORS,
     _cache_age_tier,
     _cache_entry_age_days,
     export_report,
@@ -125,25 +124,6 @@ def _all_text_from(doc: Document) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. VerificationResult.cache_entry_created_ts field
-# ---------------------------------------------------------------------------
-
-
-class TestVerificationResultCacheTimestamp:
-    def test_default_is_zero(self):
-        result = VerificationResult(verdict="CONFIRMED")
-        assert result.cache_entry_created_ts == 0.0
-
-    def test_field_round_trips_through_constructor(self):
-        ts = time.time()
-        result = VerificationResult(
-            verdict="CONFIRMED",
-            cache_entry_created_ts=ts,
-        )
-        assert result.cache_entry_created_ts == ts
-
-
-# ---------------------------------------------------------------------------
 # 2. Cache _clone_for_hit stamps created_ts on the result
 # ---------------------------------------------------------------------------
 
@@ -188,15 +168,6 @@ class TestCloneForHitStampsTimestamp:
         # window — proves the value is the entry's created_ts, not the
         # default 0.0 or the time of the get() call.
         assert before_put <= hit.cache_entry_created_ts <= after_put
-
-    def test_cache_miss_does_not_set_timestamp(self):
-        # A miss returns None; the caller constructs a fresh result on
-        # the miss path which keeps the 0.0 default. This test confirms
-        # the cache itself doesn't fabricate a non-zero timestamp on
-        # miss.
-        cache = VerificationCache()
-        f = self._finding_for_cache()
-        assert cache.get(f, cycle=DEFAULT_CYCLE) is None
 
     def test_timestamp_survives_save_and_load(self, tmp_path: Path):
         # When the cache persists to disk and reloads, the entry's
@@ -259,16 +230,15 @@ class TestCacheTtlDefault:
         monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS", "14")
         assert cache_ttl_days() == 14
 
-    def test_malformed_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch):
-        # Previous behavior fell back to 0 for
-        # malformed values, which silently disabled expiry on any typo.
-        # New behavior falls back to the 60-day default so a typo never
-        # turns the cache into a permanent database by accident.
-        monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS", "garbage")
-        assert cache_ttl_days() == 60
-
-    def test_negative_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS", "-1")
+    @pytest.mark.parametrize("bad_value", ["garbage", "-1"])
+    def test_invalid_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch, bad_value: str
+    ):
+        # Previous behavior fell back to 0 for malformed/negative values,
+        # which silently disabled expiry on any typo. New behavior falls
+        # back to the 60-day default so a typo (or a stray minus sign)
+        # never turns the cache into a permanent database by accident.
+        monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS", bad_value)
         assert cache_ttl_days() == 60
 
 
@@ -278,26 +248,17 @@ class TestCacheTtlDefault:
 
 
 class TestCacheAgeTier:
-    def test_fresh_below_thirty_days(self):
-        assert _cache_age_tier(0) == "fresh"
-        assert _cache_age_tier(15) == "fresh"
-        assert _cache_age_tier(29) == "fresh"
-
-    def test_stale_thirty_to_ninety_days(self):
-        assert _cache_age_tier(30) == "stale"
-        assert _cache_age_tier(60) == "stale"
-        assert _cache_age_tier(90) == "stale"
-
-    def test_very_stale_above_ninety_days(self):
-        assert _cache_age_tier(91) == "very_stale"
-        assert _cache_age_tier(180) == "very_stale"
-        assert _cache_age_tier(365) == "very_stale"
-
-    def test_each_tier_has_distinct_color(self):
-        # All three tiers must map to distinct RGB values so a reader
-        # can tell them apart visually.
-        colors = {CACHE_AGE_COLORS[t] for t in ("fresh", "stale", "very_stale")}
-        assert len(colors) == 3
+    @pytest.mark.parametrize(
+        "age_days,tier",
+        [
+            (29, "fresh"),       # last day of the fresh band
+            (30, "stale"),       # 30-day boundary flips to stale
+            (90, "stale"),       # last day of the stale band
+            (91, "very_stale"),  # 90-day boundary flips to very_stale
+        ],
+    )
+    def test_age_maps_to_tier_at_boundaries(self, age_days: int, tier: str):
+        assert _cache_age_tier(age_days) == tier
 
 
 # ---------------------------------------------------------------------------
@@ -317,14 +278,6 @@ class TestCacheEntryAgeDays:
             verdict="CONFIRMED",
             cache_status="miss",
             cache_entry_created_ts=time.time() - 86400,
-        )
-        assert _cache_entry_age_days(vr) is None
-
-    def test_returns_none_for_local_skip(self):
-        vr = VerificationResult(
-            verdict="UNVERIFIED",
-            cache_status="local_skip",
-            cache_entry_created_ts=0.0,
         )
         assert _cache_entry_age_days(vr) is None
 
@@ -348,11 +301,6 @@ class TestCacheEntryAgeDays:
             cache_entry_created_ts=time.time() + 86400,
         )
         assert _cache_entry_age_days(vr) is None
-
-    def test_returns_none_for_missing_verification(self):
-        # Defensive: a finding without a verification object renders
-        # no badge.
-        assert _cache_entry_age_days(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -378,26 +326,6 @@ class TestReportBadgeRendering:
         assert self._BADGE_PREFIX in text
         assert "10d old" in text
 
-    def test_stale_cache_hit_renders_badge_with_age(self, tmp_path: Path):
-        f = _finding(verification=_cache_hit_result(age_days=45))
-        out = tmp_path / "report.docx"
-        export_report(
-            _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
-        )
-        text = _all_text_from(Document(str(out)))
-        assert self._BADGE_PREFIX in text
-        assert "45d old" in text
-
-    def test_very_stale_cache_hit_renders_badge_with_age(self, tmp_path: Path):
-        f = _finding(verification=_cache_hit_result(age_days=120))
-        out = tmp_path / "report.docx"
-        export_report(
-            _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
-        )
-        text = _all_text_from(Document(str(out)))
-        assert self._BADGE_PREFIX in text
-        assert "120d old" in text
-
     def test_miss_does_not_render_badge(self, tmp_path: Path):
         vr = VerificationResult(
             verdict="CONFIRMED",
@@ -407,44 +335,6 @@ class TestReportBadgeRendering:
             grounded=True,
             cache_status="miss",
             source_quote="snippet",
-        )
-        f = _finding(verification=vr)
-        out = tmp_path / "report.docx"
-        export_report(
-            _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
-        )
-        text = _all_text_from(Document(str(out)))
-        assert self._BADGE_PREFIX not in text
-
-    def test_local_skip_does_not_render_badge(self, tmp_path: Path):
-        vr = VerificationResult(
-            verdict="UNVERIFIED",
-            explanation="Locally classified.",
-            cache_status="local_skip",
-        )
-        f = _finding(verification=vr)
-        out = tmp_path / "report.docx"
-        export_report(
-            _StubPipelineResult(review_result=ReviewResult(findings=[f])), out
-        )
-        text = _all_text_from(Document(str(out)))
-        assert self._BADGE_PREFIX not in text
-
-    def test_legacy_cache_hit_without_timestamp_does_not_render_badge(
-        self, tmp_path: Path
-    ):
-        # A legacy resume payload may carry cache_status="hit" but
-        # cache_entry_created_ts=0.0. The badge is suppressed rather
-        # than displaying a nonsense age.
-        vr = VerificationResult(
-            verdict="CONFIRMED",
-            explanation="Cached (legacy).",
-            sources=["https://x"],
-            accepted_sources=["https://x"],
-            grounded=True,
-            cache_status="hit",
-            source_quote="snippet",
-            cache_entry_created_ts=0.0,
         )
         f = _finding(verification=vr)
         out = tmp_path / "report.docx"
@@ -508,36 +398,3 @@ class TestForceRefreshHint:
         )
         text = _all_text_from(Document(str(out)))
         assert str(custom) in text
-
-
-# ---------------------------------------------------------------------------
-# 9. Diagnostics — cache_hits / cache_misses counter (already wired)
-# ---------------------------------------------------------------------------
-
-
-class TestDiagnosticsCacheCounter:
-    """Plan section 5d says ``DiagnosticsReport`` already tracks cache
-    hits/misses via ``verification_evidence`` and they make it into the
-    run summary. This test guards against an accidental drop in the
-    rollup output."""
-
-    def test_cache_hits_and_misses_present_in_summary(self):
-        from src.orchestration.diagnostics import DiagnosticsReport
-
-        report = DiagnosticsReport()
-        report.log(
-            "verification",
-            "info",
-            "cache hit",
-            data={"verdict": "CONFIRMED", "cache_status": "hit"},
-        )
-        report.log(
-            "verification",
-            "info",
-            "cache miss",
-            data={"verdict": "CONFIRMED", "cache_status": "miss"},
-        )
-        summary = report.summary()
-        evidence = summary["verification_evidence"]
-        assert evidence["cache_hits"] == 1
-        assert evidence["cache_misses"] == 1

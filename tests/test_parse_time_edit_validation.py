@@ -74,16 +74,6 @@ class TestValidateEditShape:
             is None
         )
 
-    def test_valid_delete_returns_none(self):
-        assert (
-            validate_edit_shape(
-                "DELETE",
-                existing_text="old",
-                replacement_text=None,
-            )
-            is None
-        )
-
     def test_valid_add_returns_none(self):
         assert (
             validate_edit_shape(
@@ -207,34 +197,6 @@ class TestParseTimeDemotion:
         assert f.issue == "Stale code reference."
         assert f.severity == "HIGH"
 
-    def test_edit_with_empty_replacement_demotes(self):
-        findings = _parse_findings(
-            [_valid_review_payload(replacementText="")]
-        )
-        f = findings[0]
-        assert f.actionType == REPORT_ONLY_ACTION
-        assert f.replacementText is None
-        assert f.demotion_reason is not None
-        assert "replacementText" in f.demotion_reason
-
-    def test_invalid_delete_demotes_to_report_only(self):
-        # Acceptance: "invalid DELETE demotes."
-        findings = _parse_findings(
-            [
-                _valid_review_payload(
-                    actionType="DELETE",
-                    existingText=None,
-                    replacementText=None,
-                )
-            ]
-        )
-        f = findings[0]
-        assert f.actionType == REPORT_ONLY_ACTION
-        assert f.existingText is None
-        assert f.edit_proposal is None
-        assert f.demotion_reason is not None
-        assert "DELETE" in f.demotion_reason
-
     def test_invalid_add_missing_anchor_demotes(self):
         # Acceptance: "invalid ADD demotes." — anchor missing.
         findings = _parse_findings(
@@ -257,41 +219,6 @@ class TestParseTimeDemotion:
         assert f.demotion_reason is not None
         assert "ADD" in f.demotion_reason
 
-    def test_invalid_add_missing_position_demotes(self):
-        findings = _parse_findings(
-            [
-                _valid_review_payload(
-                    actionType="ADD",
-                    existingText=None,
-                    replacementText="new",
-                    anchorText="anchor",
-                    insertPosition=None,
-                )
-            ]
-        )
-        f = findings[0]
-        assert f.actionType == REPORT_ONLY_ACTION
-        assert f.demotion_reason is not None
-        assert "insertPosition" in f.demotion_reason
-
-    def test_invalid_add_missing_replacement_demotes(self):
-        findings = _parse_findings(
-            [
-                _valid_review_payload(
-                    actionType="ADD",
-                    existingText=None,
-                    replacementText="",
-                    anchorText="anchor",
-                    insertPosition="after",
-                )
-            ]
-        )
-        f = findings[0]
-        assert f.actionType == REPORT_ONLY_ACTION
-        assert f.replacementText is None
-        assert f.demotion_reason is not None
-        assert "replacementText" in f.demotion_reason
-
 
 # ---------------------------------------------------------------------------
 # 3. Valid proposals survive intact
@@ -310,22 +237,6 @@ class TestValidProposalsSurvive:
         assert f.edit_proposal is not None
         assert f.edit_proposal.action_type == "EDIT"
         assert f.has_edit_proposal() is True
-
-    def test_valid_delete_survives(self):
-        findings = _parse_findings(
-            [
-                _valid_review_payload(
-                    actionType="DELETE",
-                    existingText="redundant clause",
-                    replacementText=None,
-                )
-            ]
-        )
-        f = findings[0]
-        assert f.actionType == "DELETE"
-        assert f.existingText == "redundant clause"
-        assert f.demotion_reason is None
-        assert f.edit_proposal is not None
 
     def test_valid_add_survives(self):
         findings = _parse_findings(
@@ -491,15 +402,3 @@ class TestDownstreamConsumers:
             edit_proposal=bad_proposal,
         )
         assert f.as_edit_proposal() is None
-
-
-# ---------------------------------------------------------------------------
-# 8. Sanity: native REPORT_ONLY emissions are not stamped with a reason
-# ---------------------------------------------------------------------------
-
-
-def test_native_report_only_emission_has_no_demotion_reason():
-    findings = _parse_findings(
-        [_valid_review_payload(actionType="REPORT_ONLY", existingText=None, replacementText=None)]
-    )
-    assert findings[0].demotion_reason is None

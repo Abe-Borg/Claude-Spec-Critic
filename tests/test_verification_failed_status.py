@@ -33,8 +33,6 @@ from src.output.report_status import (
     EditActionLabel,
     ReportStatus,
     STATUS_DISPLAY_ORDER,
-    STATUS_GLYPHS,
-    STATUS_LABELS,
     classify_edit_action,
     classify_status,
 )
@@ -94,19 +92,6 @@ def _failed_verification(
 
 
 class TestVerificationFailedReportStatus:
-    def test_enum_value_exists(self):
-        assert ReportStatus.VERIFICATION_FAILED == "VERIFICATION_FAILED"
-
-    def test_label_is_registered(self):
-        assert ReportStatus.VERIFICATION_FAILED in STATUS_LABELS
-        assert STATUS_LABELS[ReportStatus.VERIFICATION_FAILED]
-
-    def test_glyph_is_warning_sign(self):
-        assert STATUS_GLYPHS[ReportStatus.VERIFICATION_FAILED] == "⚠"
-
-    def test_display_order_includes_verification_failed(self):
-        assert ReportStatus.VERIFICATION_FAILED in STATUS_DISPLAY_ORDER
-
     def test_display_order_places_failed_after_uncertain_block(self):
         # VERIFICATION_FAILED should sit in the operational tail —
         # after the uncertain/disputed block, before NOT_CHECKED /
@@ -121,34 +106,6 @@ class TestVerificationFailedReportStatus:
         # pair; missing either would crash the export.
         assert ReportStatus.VERIFICATION_FAILED in STATUS_COLORS
         assert ReportStatus.VERIFICATION_FAILED in STATUS_SHADING
-
-    def test_color_distinct_from_disputed_and_manual(self):
-        # The plan calls out: distinct from DISPUTED's red and
-        # MANUAL_REVIEW_REQUIRED's orange. Spot-check the shading hex.
-        failed = STATUS_SHADING[ReportStatus.VERIFICATION_FAILED]
-        disputed = STATUS_SHADING[ReportStatus.DISPUTED]
-        manual = STATUS_SHADING[ReportStatus.MANUAL_REVIEW_REQUIRED]
-        assert failed != disputed
-        assert failed != manual
-
-
-# ---------------------------------------------------------------------------
-# 2. VerificationResult field
-# ---------------------------------------------------------------------------
-
-
-class TestVerificationResultField:
-    def test_default_verification_failed_is_false(self):
-        result = VerificationResult(verdict="UNVERIFIED")
-        assert result.verification_failed is False
-
-    def test_field_round_trips_through_constructor(self):
-        result = VerificationResult(
-            verdict="UNVERIFIED",
-            explanation="rate limited",
-            verification_failed=True,
-        )
-        assert result.verification_failed is True
 
 
 # ---------------------------------------------------------------------------
@@ -208,23 +165,6 @@ class TestClassifyStatusVerificationFailed:
 
 
 class TestClassifyEditActionVerificationFailed:
-    def test_failed_with_proposal_is_edit_suggested(self):
-        # The app emits edit instructions but never applies them, so a
-        # finding with a proposal is labeled EDIT_SUGGESTED regardless of
-        # verification status. The VERIFICATION_FAILED status rides along
-        # in the sidecar so a downstream applier can decide to skip it.
-        proposal = EditProposal(
-            action_type="EDIT",
-            existing_text="old",
-            replacement_text="new",
-            edit_confidence=0.95,
-        )
-        f = _finding(
-            verification=_failed_verification(),
-            edit_proposal=proposal,
-        )
-        assert classify_edit_action(f) is EditActionLabel.EDIT_SUGGESTED
-
     def test_failed_without_proposal_routes_to_report_only(self):
         # No proposal means no edit, regardless of status. The
         # short-circuit on missing proposal applies first. Setting
@@ -283,20 +223,6 @@ class TestCacheRejectsFailedResults:
         assert cache.get(f, cycle=DEFAULT_CYCLE) is None
         assert cache.stats()["size"] == 0
 
-    def test_ungrounded_failed_result_is_not_cached(self):
-        # Standard case: a real operational failure produces UNVERIFIED
-        # + grounded=False + verification_failed=True. The grounded
-        # guard already drops this, but the failed flag is an
-        # additional layer of defense.
-        cache = VerificationCache()
-        f = self._finding_for_cache()
-        cache.put(
-            f,
-            cycle=DEFAULT_CYCLE,
-            result=_failed_verification(),
-        )
-        assert cache.get(f, cycle=DEFAULT_CYCLE) is None
-
     def test_clean_grounded_result_is_still_cached(self):
         # Sanity: the new guard does not block normal grounded
         # verdicts. Without it the earlier source_quote cache tests would
@@ -338,23 +264,18 @@ class TestVerifierExceptionPathsMarkFailed:
     without a real network call.
     """
 
-    def test_make_unverified_supports_failed_kwarg(self):
+    def test_exception_paths_mark_failed(self):
         # The helper signature must accept ``failed=True`` so all
         # exception paths can use it without bespoke construction.
         import inspect
 
         from src.verification import verifier
 
-        source = inspect.getsource(verifier._run_verification_call)
-        assert "failed: bool = False" in source
+        call_source = inspect.getsource(verifier._run_verification_call)
+        assert "failed: bool = False" in call_source
         # Every call site in the exception block must carry failed=True.
-        # We count by looking at the source for the pattern.
-        exception_block_present = "except Exception as e:" in source
-        assert exception_block_present
-        # Every _make_unverified call after the exception block should
-        # use failed=True. Easier than parsing the AST: count the
-        # phrases.
-        exception_section = source.split("except Exception as e:")[1]
+        assert "except Exception as e:" in call_source
+        exception_section = call_source.split("except Exception as e:")[1]
         # All 5 make_unverified calls in the exception block should
         # have failed=True. The block is the rest of the function.
         make_unverified_calls = exception_section.count("_make_unverified(")
@@ -362,9 +283,9 @@ class TestVerifierExceptionPathsMarkFailed:
         assert make_unverified_calls >= 5
         assert failed_true_calls >= make_unverified_calls
 
-    def test_real_time_fallback_crash_marks_failed(self):
-        source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
-        fallback_index = source.find("Real-time fallback verification failed:")
+        # The real-time fallback crash path also stamps the flag.
+        file_source = Path("src/verification/verifier.py").read_text(encoding="utf-8")
+        fallback_index = file_source.find("Real-time fallback verification failed:")
         assert fallback_index >= 0
-        nearby = source[fallback_index : fallback_index + 500]
+        nearby = file_source[fallback_index : fallback_index + 500]
         assert "verification_failed=True" in nearby

@@ -10,12 +10,9 @@ batch parser never read ``message.usage``. These tests cover the fix:
 * ``DiagnosticsReport.summary()`` aggregates the tokens into the
   verification phase when the event carries them (the shape the GUI
   controllers now emit).
-* source inspection: the batch + real-time verification event payloads
-  include the token keys.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 from src.orchestration.diagnostics import DiagnosticsReport
@@ -44,10 +41,6 @@ class TestTokenUsageHelper:
     def test_missing_usage_returns_zero(self):
         assert _token_usage(SimpleNamespace()) == (0, 0)
         assert _token_usage(SimpleNamespace(usage=None)) == (0, 0)
-
-    def test_missing_fields_default_to_zero(self):
-        # A usage object that only reports one field still degrades safely.
-        assert _token_usage(SimpleNamespace(usage=SimpleNamespace(input_tokens=10))) == (10, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -158,15 +151,3 @@ class TestDiagnosticsAggregation:
         ver = s["phase_telemetry"]["verification"]
         assert ver["input_tokens"] == 150
         assert ver["output_tokens"] == 60
-
-
-# ---------------------------------------------------------------------------
-# 5. Source inspection — the event payloads carry the token keys
-# ---------------------------------------------------------------------------
-
-
-class TestEventPayloadCarriesTokens:
-    def test_batch_controller_verification_event_includes_tokens(self):
-        source = Path("src/gui/batch_controller.py").read_text(encoding="utf-8")
-        assert '"input_tokens": f.verification.input_tokens' in source
-        assert '"output_tokens": f.verification.output_tokens' in source

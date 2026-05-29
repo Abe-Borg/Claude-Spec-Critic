@@ -12,6 +12,8 @@ unsupported parameters off the wire.
 """
 from __future__ import annotations
 
+import pytest
+
 from src.core.api_config import (
     MODEL_HAIKU_45,
     MODEL_OPUS_47,
@@ -50,26 +52,26 @@ class TestThinkingConfigFor:
 
 
 class TestApplyThinkingConfig:
-    def test_omits_key_for_haiku(self) -> None:
-        kwargs: dict = {"model": MODEL_HAIKU_45, "max_tokens": 1000}
-        result = apply_thinking_config(kwargs, model=MODEL_HAIKU_45, phase=PHASE_TRIAGE)
+    @pytest.mark.parametrize(
+        "model, phase",
+        [
+            # Haiku never carries thinking (API would reject it).
+            (MODEL_HAIKU_45, PHASE_TRIAGE),
+            # Unknown models degrade to safe defaults.
+            ("claude-mystery", PHASE_REVIEW),
+            # Phase-level opt-out wins over a capable model.
+            (MODEL_OPUS_47, PHASE_TRIAGE),
+        ],
+    )
+    def test_omits_key(self, model: str, phase: str) -> None:
+        kwargs: dict = {"model": model, "max_tokens": 1000}
+        result = apply_thinking_config(kwargs, model=model, phase=phase)
         assert "thinking" not in result
 
     def test_adds_key_for_opus(self) -> None:
         kwargs: dict = {"model": MODEL_OPUS_47, "max_tokens": 1000}
         result = apply_thinking_config(kwargs, model=MODEL_OPUS_47, phase=PHASE_REVIEW)
         assert result["thinking"] == {"type": "adaptive"}
-
-    def test_omits_key_for_unknown_model(self) -> None:
-        kwargs: dict = {"model": "claude-mystery", "max_tokens": 1000}
-        result = apply_thinking_config(kwargs, model="claude-mystery", phase=PHASE_REVIEW)
-        assert "thinking" not in result
-
-    def test_omits_key_for_triage_phase_on_opus(self) -> None:
-        """Phase-level opt-out wins over model capability."""
-        kwargs: dict = {"model": MODEL_OPUS_47}
-        result = apply_thinking_config(kwargs, model=MODEL_OPUS_47, phase=PHASE_TRIAGE)
-        assert "thinking" not in result
 
     def test_never_sets_thinking_to_none(self) -> None:
         """Anthropic API rejects ``thinking=null``; the key must be omitted

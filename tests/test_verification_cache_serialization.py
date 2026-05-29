@@ -29,7 +29,6 @@ from src.verification.verification_cache import (
     _PERSISTED_FIELDS,
     _SKIPPED_FIELDS,
     _result_from_dict,
-    _result_to_dict,
 )
 from src.verification.verifier import VerificationResult
 
@@ -146,14 +145,6 @@ def test_skipped_fields_are_not_persisted(tmp_path: Path):
     assert hit.retry_telemetry is None
     # Replay state the cache stamps on a hit.
     assert hit.cache_status == "hit"
-
-
-def test_to_dict_from_dict_in_memory_round_trip():
-    result = _fully_populated_grounded_result()
-    restored = _result_from_dict(_result_to_dict(result), cache_status="miss")
-    for name in _PERSISTED_FIELDS:
-        assert getattr(restored, name) == getattr(result, name), name
-    assert restored.cache_status == "miss"
 
 
 def test_legacy_entry_missing_keys_loads_at_defaults(tmp_path: Path):

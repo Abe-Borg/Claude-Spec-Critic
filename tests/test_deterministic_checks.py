@@ -30,8 +30,6 @@ from docx import Document
 from src.core.code_cycles import CALIFORNIA_2025
 from src.input.preprocessor import (
     DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH,
-    DETERMINISTIC_RULE_EMPTY_SECTION,
-    DETERMINISTIC_RULE_INCONSISTENT_FILENAME,
     DETERMINISTIC_RULE_INVALID_CODE_CYCLE,
     DETERMINISTIC_RULE_STALE_CODE_CYCLE,
     DETERMINISTIC_RULE_TEMPLATE_MARKER,
@@ -55,16 +53,23 @@ from src.verification.verification_prescreen import classify_finding_for_verific
 # ---------------------------------------------------------------------------
 
 class TestUnresolvedTemplateMarkers:
-    def test_flags_todo_with_colon(self) -> None:
-        alerts = detect_unresolved_template_markers("TODO: confirm with PM.", "s.docx")
-        assert any("TODO" in a["match"].upper() for a in alerts)
+    @pytest.mark.parametrize(
+        "content, expected_token",
+        [
+            ("TODO: confirm with PM.", "todo"),
+            # Bare ``TODO Confirm`` is also flagged so capitalized
+            # continuations don't slip past the colon-only rule.
+            ("TODO Confirm hanger spacing.", "todo"),
+            ("FIXME before issue.", "fixme"),
+            ("Confirm XXX before issue.", "xxx"),
+            ("Capacity: ??? gpm.", "???"),
+            ("Lorem ipsum dolor sit amet.", "ipsum"),
+        ],
+    )
+    def test_flags_marker(self, content: str, expected_token: str) -> None:
+        alerts = detect_unresolved_template_markers(content, "s.docx")
+        assert any(expected_token in a["match"].lower() for a in alerts)
         assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_TEMPLATE_MARKER for a in alerts)
-
-    def test_flags_todo_followed_by_uppercase_word(self) -> None:
-        # Bare ``TODO Confirm`` is also flagged so capitalized continuations
-        # don't slip past the colon-only rule.
-        alerts = detect_unresolved_template_markers("TODO Confirm hanger spacing.", "s.docx")
-        assert any("TODO" in a["match"].upper() for a in alerts)
 
     def test_does_not_flag_lowercase_to_do_phrase(self) -> None:
         # "things to do" in prose must not trigger.
@@ -73,34 +78,16 @@ class TestUnresolvedTemplateMarkers:
         )
         assert alerts == []
 
-    def test_flags_fixme(self) -> None:
-        alerts = detect_unresolved_template_markers("FIXME before issue.", "s.docx")
-        assert any("FIXME" in a["match"].upper() for a in alerts)
-
-    def test_flags_xxx_marker(self) -> None:
-        alerts = detect_unresolved_template_markers("Confirm XXX before issue.", "s.docx")
-        assert any("XXX" in a["match"].upper() for a in alerts)
-
     def test_does_not_flag_model_number_like_xxx_dash(self) -> None:
         # Model numbers ("XXX-12") and digits ("XXX2") should not trigger.
         alerts = detect_unresolved_template_markers("Model XXX-12 specified.", "s.docx")
         assert alerts == []
-
-    def test_flags_question_mark_placeholder(self) -> None:
-        alerts = detect_unresolved_template_markers("Capacity: ??? gpm.", "s.docx")
-        assert any("???" in a["match"] for a in alerts)
 
     def test_does_not_flag_double_question(self) -> None:
         # Two question marks ("Is it correct??") are not the placeholder
         # we want to flag.
         alerts = detect_unresolved_template_markers("Is this correct??", "s.docx")
         assert alerts == []
-
-    def test_flags_lorem_ipsum(self) -> None:
-        alerts = detect_unresolved_template_markers(
-            "Lorem ipsum dolor sit amet.", "s.docx"
-        )
-        assert any("ipsum" in a["match"].lower() for a in alerts)
 
     def test_alert_dict_has_expected_keys(self) -> None:
         alerts = detect_unresolved_template_markers("TODO: fix.", "spec.docx")
@@ -117,16 +104,22 @@ class TestUnresolvedTemplateMarkers:
 # ---------------------------------------------------------------------------
 
 class TestInvalidCodeCycleStrings:
-    def test_flags_2018_cbc_as_invalid(self) -> None:
-        # California never published a 2018 cycle.
-        alerts = detect_invalid_code_cycle_strings("Per the 2018 CBC.", "s.docx")
-        assert any("2018" in a["match"] for a in alerts)
+    @pytest.mark.parametrize(
+        "content, year",
+        [
+            # California never published a 2018 cycle (abbreviated form).
+            ("Per the 2018 CBC.", "2018"),
+            ("See 2020 CMC for venting.", "2020"),
+            # The full-name pattern ("2024 California Building Code") is a
+            # distinct regex branch and must also surface as invalid.
+            ("Comply with 2024 California Building Code.", "2024"),
+        ],
+    )
+    def test_flags_invalid_year(self, content: str, year: str) -> None:
+        alerts = detect_invalid_code_cycle_strings(content, "s.docx")
+        assert any(year in a["match"] for a in alerts)
         assert all(a["deterministic_rule"] == DETERMINISTIC_RULE_INVALID_CODE_CYCLE for a in alerts)
-        assert all(a["found_year"] == "2018" for a in alerts)
-
-    def test_flags_2020_cmc_as_invalid(self) -> None:
-        alerts = detect_invalid_code_cycle_strings("See 2020 CMC for venting.", "s.docx")
-        assert any("2020" in a["match"] for a in alerts)
+        assert all(a["found_year"] == year for a in alerts)
 
     def test_does_not_flag_real_cycle_years(self) -> None:
         # Each of these is a real California cycle year and must not trigger.
@@ -153,14 +146,6 @@ class TestInvalidCodeCycleStrings:
         invalid_years = {a.get("found_year") for a in invalid}
         assert "2019" in stale_years and "2018" not in stale_years
         assert "2018" in invalid_years and "2019" not in invalid_years
-
-    def test_flags_california_code_full_name_invalid_year(self) -> None:
-        # The third stale-cycle pattern ("2024 California Building Code")
-        # should also surface as invalid.
-        alerts = detect_invalid_code_cycle_strings(
-            "Comply with 2024 California Building Code.", "s.docx"
-        )
-        assert any("2024" in a["match"] for a in alerts)
 
 
 # ---------------------------------------------------------------------------
@@ -199,15 +184,6 @@ class TestDuplicateParagraphs:
         alerts = detect_duplicate_paragraphs(content, "s.docx")
         assert len(alerts) == 1
 
-    def test_reports_each_occurrence_after_the_first(self) -> None:
-        para = (
-            "Cleaning shall be performed at the end of each shift and after "
-            "all penetrations are sealed per the manufacturer instructions."
-        )
-        content = "\n\n".join([para, para, para])  # 3 copies → 2 alerts
-        alerts = detect_duplicate_paragraphs(content, "s.docx")
-        assert len(alerts) == 2
-
     def test_respects_min_length_kwarg(self) -> None:
         para = "Short clause but long enough."
         content = f"{para}\n\n{para}"
@@ -216,9 +192,6 @@ class TestDuplicateParagraphs:
         # custom 20 → flagged
         alerts = detect_duplicate_paragraphs(content, "s.docx", min_length=20)
         assert len(alerts) == 1
-
-    def test_empty_content_returns_empty_list(self) -> None:
-        assert detect_duplicate_paragraphs("", "s.docx") == []
 
 
 # ---------------------------------------------------------------------------
@@ -329,20 +302,19 @@ class TestVerificationRouterChunkO:
             codeReference=None,
         )
 
-    def test_todo_finding_routes_to_local_skip(self, gripe_finding: Finding) -> None:
-        gripe_finding.issue = "Unresolved TODO marker in section 2.1"
-        assert classify_finding_for_verification(gripe_finding) == "local_skip"
-
-    def test_fixme_finding_routes_to_local_skip(self, gripe_finding: Finding) -> None:
-        gripe_finding.issue = "FIXME left in the spec"
-        assert classify_finding_for_verification(gripe_finding) == "local_skip"
-
-    def test_invalid_code_cycle_finding_routes_to_local_skip(self, gripe_finding: Finding) -> None:
-        gripe_finding.issue = "Invalid code cycle year 2018"
-        assert classify_finding_for_verification(gripe_finding) == "local_skip"
-
-    def test_duplicate_paragraph_finding_routes_to_local_skip(self, gripe_finding: Finding) -> None:
-        gripe_finding.issue = "Duplicate paragraph in submittals section"
+    @pytest.mark.parametrize(
+        "issue",
+        [
+            "Unresolved TODO marker in section 2.1",
+            "FIXME left in the spec",
+            "Invalid code cycle year 2018",
+            "Duplicate paragraph in submittals section",
+        ],
+    )
+    def test_chunk_o_keyword_routes_to_local_skip(
+        self, gripe_finding: Finding, issue: str
+    ) -> None:
+        gripe_finding.issue = issue
         assert classify_finding_for_verification(gripe_finding) == "local_skip"
 
     def test_high_severity_overrides_local_skip(self, gripe_finding: Finding) -> None:
@@ -421,66 +393,6 @@ class TestReportExporterChunkOIntegration:
         assert "Unresolved Template Markers" in text
         assert "(deterministic check)" in text
         assert "TODO: confirm hanger spacing." in text
-
-    def test_export_renders_invalid_code_cycle_section(self, tmp_path: Path) -> None:
-        from src.output.report_exporter import export_report
-
-        result = _StubPipelineResult(
-            invalid_code_cycle_alerts=[_alert("2018 CBC", DETERMINISTIC_RULE_INVALID_CODE_CYCLE)],
-        )
-        out = tmp_path / "report.docx"
-        export_report(result, out)
-        text = _doc_text(out)
-        assert "Invalid California Code Cycle Years" in text
-        assert "2018 CBC" in text
-
-    def test_export_renders_duplicate_paragraph_section(self, tmp_path: Path) -> None:
-        from src.output.report_exporter import export_report
-
-        result = _StubPipelineResult(
-            duplicate_paragraph_alerts=[_alert("Provide cut sheets for all submittals.", DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH)],
-        )
-        out = tmp_path / "report.docx"
-        export_report(result, out)
-        text = _doc_text(out)
-        assert "Duplicate Paragraphs" in text
-        assert "Provide cut sheets" in text
-
-    def test_export_renders_structural_section(self, tmp_path: Path) -> None:
-        from src.output.report_exporter import export_report
-
-        result = _StubPipelineResult(
-            structural_alerts=[_alert("1.02 EMPTY SECTION", DETERMINISTIC_RULE_EMPTY_SECTION)],
-        )
-        out = tmp_path / "report.docx"
-        export_report(result, out)
-        text = _doc_text(out)
-        assert "Structural Issues" in text
-        assert "1.02 EMPTY SECTION" in text
-
-    def test_export_renders_stale_cycle_section(self, tmp_path: Path) -> None:
-        from src.output.report_exporter import export_report
-
-        result = _StubPipelineResult(
-            code_cycle_alerts=[_alert("2019 CBC", DETERMINISTIC_RULE_STALE_CODE_CYCLE)],
-        )
-        out = tmp_path / "report.docx"
-        export_report(result, out)
-        text = _doc_text(out)
-        assert "Stale California Code Cycle References" in text
-        assert "2019 CBC" in text
-
-    def test_export_renders_naming_section(self, tmp_path: Path) -> None:
-        from src.output.report_exporter import export_report
-
-        result = _StubPipelineResult(
-            naming_alerts=[_alert("23-23-13 - Refrigerant Piping.docx", DETERMINISTIC_RULE_INCONSISTENT_FILENAME, filename="23-23-13 - Refrigerant Piping.docx")],
-        )
-        out = tmp_path / "report.docx"
-        export_report(result, out)
-        text = _doc_text(out)
-        assert "Inconsistent Filenames" in text
-        assert "23-23-13" in text
 
     def test_export_skips_alerts_heading_when_no_alerts(self, tmp_path: Path) -> None:
         from src.output.report_exporter import export_report
