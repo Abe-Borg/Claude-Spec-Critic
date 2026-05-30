@@ -145,10 +145,17 @@ correct internal verdict can still produce an incomplete or under-applied extern
 
 ## P2 — Minor / completeness / hardening (note, low urgency)
 
-- **P2-1 — ASCE 7 pre-2005 stale editions missed.** `preprocessor.py:386-396`,
-  `_ASCE7_PLAUSIBLE_EDITIONS = {"05","10","16","22"}`. Genuinely old editions (7-93/95/98/99/02) are
-  `not in` the plausible set → skipped → **not flagged**. Deterministic-layer completeness gap only
-  (the LLM review likely still catches it); no wrong findings produced. Low.
+- **P2-1 — ASCE 7 pre-2005 stale editions missed.** ✅ **RESOLVED** (branch `claude/asce7-stale-editions`).
+  Two distinct gaps, both fixed: (1) `_ASCE7_PLAUSIBLE_EDITIONS` recognized only `{05,10,16,22}`, so the
+  genuinely old *real* editions `{88,93,95,98,02}` hit `edition not in …` → skipped → never flagged — the
+  set is now the full published edition history (still a whitelist, so a stray capture like `ASCE 7-42` is
+  still ignored). (2) The staleness comparison was century-naive — `int("98") >= int("22")` treated the
+  1998 edition as *newer* than 2022 — so even a recognized pre-2000 edition would have been skipped; a new
+  `_asce7_edition_year` helper widens the two-digit capture to a full year (pivot at 80: ≥80 → 1900s, else
+  2000s) before comparison. Suppression of descriptive/historical phrasings and the already-recognized
+  editions are unchanged. Regression coverage: `tests/test_asce7_stale_editions.py` (year-widening,
+  every old edition flagged, current edition + stray number + suppressed cases not flagged); a mutation
+  back to the old set/comparison fails the six pre-2005 cases.
 - **P2-2 — `safe_local_estimate` not clamped ≥ 1.0.** `tokenizer.py:126-128`. Defaults are all ≥1.10,
   so fine as configured; a future sub-1.0 misconfig would turn the safety pad into a danger pad. Pure
   hardening; also note exact API counts (`pipeline.py:531`) are the authoritative gate, so impact is small.

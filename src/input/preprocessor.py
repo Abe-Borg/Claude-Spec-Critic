@@ -242,7 +242,26 @@ _STALE_CYCLE_PATTERNS: tuple[re.Pattern, ...] = (
 # ASCE 7 edition references. Only flag editions older than the cycle's
 # nominal ASCE 7 edition (e.g. 7-10 / 7-05 when cycle says 7-22).
 _ASCE7_PATTERN = re.compile(r"\bASCE[\s-]*7[\s-]*(\d{2})\b", flags=re.IGNORECASE)
-_ASCE7_PLAUSIBLE_EDITIONS = {"05", "10", "16", "22"}
+# Real, published ASCE 7 editions (two-digit). Acts as a recognition
+# whitelist so a stray two-digit capture like "ASCE 7-42" is ignored while
+# every genuine edition older than the cycle's nominal one is still flagged.
+# Previously only {05,10,16,22} were recognized, so genuinely old references
+# (7-88/93/95/98/02) silently escaped the deterministic check — TRUST_AUDIT
+# P2-1. Verify against ASCE's published edition history before extending.
+_ASCE7_PLAUSIBLE_EDITIONS = {"88", "93", "95", "98", "02", "05", "10", "16", "22"}
+
+
+def _asce7_edition_year(two_digit: str) -> int:
+    """Widen a two-digit ASCE 7 edition to its full publication year.
+
+    ASCE 7 editions span 1988–2022, so a naive two-digit comparison inverts
+    across the century boundary: ``int("98") >= int("22")`` would treat the
+    1998 edition as *newer* than 2022 and skip it (TRUST_AUDIT P2-1). Editions
+    ``>= 80`` are 1900s, the rest 2000s — a safe pivot given ASCE 7 began at
+    7-88 and no plausible future edition reaches 7-80.
+    """
+    yr = int(two_digit)
+    return 1900 + yr if yr >= 80 else 2000 + yr
 
 
 # Terms that, when they appear shortly *before* a stale-cycle match,
@@ -386,12 +405,15 @@ def detect_stale_code_cycle_references(
     target_asce = re.sub(r"\D", "", cycle.asce7 or "")
     if target_asce and len(target_asce) >= 2:
         target_asce_yr = target_asce[-2:]
+        target_asce_year = _asce7_edition_year(target_asce_yr)
         for match in _ASCE7_PATTERN.finditer(content):
             edition = match.group(1)
+            # Century-aware comparison: a 1998 edition is older than 2022 even
+            # though ``98 > 22`` numerically. Unknown two-digit captures (not a
+            # real edition) are ignored to avoid flagging stray numbers.
             if (
                 edition not in _ASCE7_PLAUSIBLE_EDITIONS
-                or edition == target_asce_yr
-                or int(edition) >= int(target_asce_yr)
+                or _asce7_edition_year(edition) >= target_asce_year
             ):
                 continue
             span = (match.start(), match.end())
