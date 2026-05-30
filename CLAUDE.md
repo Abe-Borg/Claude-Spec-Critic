@@ -110,8 +110,11 @@ src/
   → tokenizer.count_tokens + count_tokens_via_api   (preflight)
   → batch.submit_review_batch
   → pipeline._deduplicate_findings                  (full-text SHA-256 keys)
-  → cross_checker.run_chunked_cross_check           (parallel with verification by default)
   → verifier.verify_findings / verify_findings_batch
+  → cross_checker.run_chunked_cross_check           (sequential after verification; uses verified
+                                                     verdicts as input — DISPUTED findings are
+                                                     filtered out of the "already identified" context)
+  → verifier.verify_findings_batch                  (second pass: cross-check findings)
   → pipeline.finalize_batch_result
   → report_exporter.export_report
   → edit_sidecar.write_edit_instructions_sidecar  (JSON feed for a future applier)
