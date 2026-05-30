@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,
     assert_extended_output_allowed,
     extract_cache_usage,
+    output_cap_for_model,
 )
 from ..review.structured_schemas import (
     REVIEW_TOOL_NAME,
@@ -25,6 +27,8 @@ from ..review.structured_schemas import (
     verification_verdict_tool,
 )
 from ..tracing import capture_hooks as _trace
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -59,6 +63,89 @@ class BatchStatus:
 
 def _sanitize_custom_id(filename: str, max_len: int = 50) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", Path(filename).stem if "." in filename else filename)[:max_len]
+
+
+# The 300k extended-output beta header (``output-300k-2026-03-24``) is pinned
+# in api_config. Betas get retired/renamed, and an *unrecognized* anthropic-beta
+# value is rejected by the API with HTTP 400 — the exact failure mode the
+# retired ``web-fetch-2026-02-09`` header caused on the common path (see
+# CLAUDE.md "Web-fetch for follow-up reads"). The review batch is the only
+# 300k-beta call site. Rather than let a retired header crash every large-input
+# (>=200k-token) run at submit, the submit helper degrades gracefully: it clamps
+# the extended requests back to the model's standard ceiling and re-submits on
+# the non-beta path. Output may truncate on very large specs, which the existing
+# review-stage failure surfacing already reports — strictly better than a crash.
+
+
+def _is_beta_header_rejection(exc: Exception) -> bool:
+    """True iff ``exc`` is the API rejecting the ``anthropic-beta`` header.
+
+    The signature is an HTTP 400 whose message names the header, e.g.
+    ``invalid_request_error: Unexpected value(s) "output-300k-2026-03-24" for
+    the anthropic-beta header``. Match on the header name (the strong signal)
+    and refuse to treat a non-400 as a header rejection, so unrelated errors
+    are never swallowed by the fallback. When the status code can't be read
+    (duck-typed/mocked exceptions), fall back to the message signature alone.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    if status is not None and status != 400:
+        return False
+    message = getattr(exc, "message", None)
+    text = (message if isinstance(message, str) else str(exc)).lower()
+    return "anthropic-beta" in text or ("beta" in text and "header" in text)
+
+
+def _clamp_requests_to_model_ceiling(batch_requests: list[dict], *, model: str) -> None:
+    """Clamp each request's ``max_tokens`` to ``model``'s standard ceiling.
+
+    Used on the beta-rejection fallback: without the 300k beta a request asking
+    for >128k output would itself be rejected, so the extended requests must
+    drop to the non-beta ceiling before re-submission. Non-extended requests are
+    already at/below the ceiling, so the clamp is a no-op for them.
+    """
+    for req in batch_requests:
+        params = req.get("params") if isinstance(req, dict) else None
+        if not isinstance(params, dict):
+            continue
+        requested = params.get("max_tokens")
+        if isinstance(requested, int):
+            params["max_tokens"] = output_cap_for_model(model, requested=requested)
+
+
+def _create_review_batch(
+    client, batch_requests: list[dict], *, use_beta: bool, model: str
+) -> tuple[Any, bool]:
+    """Submit the review batch, degrading gracefully on a beta-header rejection.
+
+    Returns ``(message_batch, used_beta)``. When ``use_beta`` is True the 300k
+    extended-output beta is attempted first; if the API rejects the header
+    (retired/renamed), the requests are clamped to the model ceiling and
+    re-submitted on the non-beta path so a stale header degrades output rather
+    than crashing the whole run. Any error that is NOT a beta-header rejection
+    propagates unchanged.
+    """
+    if use_beta:
+        try:
+            mb = client.beta.messages.batches.create(
+                requests=batch_requests, betas=[BATCH_OUTPUT_BETA]
+            )
+            return mb, True
+        except Exception as exc:
+            if not _is_beta_header_rejection(exc):
+                raise
+            _log.warning(
+                "Extended-output beta header %r was rejected by the API (%s). "
+                "Falling back to the standard output ceiling for this review "
+                "batch — large specs may have their review output truncated. "
+                "Update BATCH_OUTPUT_BETA if the beta was renamed.",
+                BATCH_OUTPUT_BETA,
+                exc,
+            )
+            _clamp_requests_to_model_ceiling(batch_requests, model=model)
+    mb = client.messages.batches.create(requests=batch_requests)
+    return mb, False
 
 
 def submit_review_batch(
@@ -117,15 +204,16 @@ def submit_review_batch(
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}
 
     use_beta = any_extended_output and hasattr(client, "beta")
-    create_fn = client.beta.messages.batches.create if use_beta else client.messages.batches.create
-    kwargs: dict[str, Any] = {"requests": batch_requests}
-    if use_beta:
-        kwargs["betas"] = [BATCH_OUTPUT_BETA]
-    mb = create_fn(**kwargs)
+    # ``used_beta`` reflects whether the beta path actually succeeded — the
+    # graceful fallback flips it to False after clamping, so the trace note
+    # records what really happened rather than what was attempted.
+    mb, used_beta = _create_review_batch(
+        client, batch_requests, use_beta=use_beta, model=model
+    )
     _trace.capture_note(
         None, "review batch submitted",
         batch_id=mb.id, request_count=len(batch_requests),
-        extended_output_beta=use_beta,
+        extended_output_beta=used_beta,
     )
     return BatchJob(batch_id=mb.id, job_type="review", request_map=request_map, created_at=time.time())
 
