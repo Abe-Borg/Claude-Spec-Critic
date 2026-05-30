@@ -197,9 +197,12 @@ def reset_ui(app) -> None:
     app.progress_bar.pack_forget()
     app.is_processing = False
     app._batch_submission = None
-    # Stop a reattached trace recorder if a resume bailed out early (e.g.
-    # invalid resume state) before any terminal path could stop it.
-    # Idempotent — the normal completion paths stop it in their own
-    # finally blocks, so a double-stop here is a no-op.
+    # Defensive idempotent net. Every terminal worker path now stops the
+    # recorder synchronously on its own thread — submit-failure and
+    # poll-failure stop it inline, collect stops it in a finally — so by the
+    # time this delayed reset runs the recorder is already stopped and the
+    # global cleared (``_stop_recorder(None)`` is then a no-op). This stays
+    # as a last-resort net in case a future path reaches reset_ui without
+    # having torn the recorder down. (STRUCTURAL_AUDIT P2-4.)
     _stop_recorder(getattr(app, "_trace_recorder", None))
     app._trace_recorder = None
