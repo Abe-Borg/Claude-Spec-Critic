@@ -14,14 +14,18 @@ Model identifiers may be overridden via env vars:
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Iterable
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Model identifiers (centralized)
 # ---------------------------------------------------------------------------
 
+MODEL_OPUS_48 = "claude-opus-4-8"
 MODEL_OPUS_47 = "claude-opus-4-7"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
 MODEL_HAIKU_45 = "claude-haiku-4-5"
@@ -45,8 +49,11 @@ VERIFICATION_ESCALATION_MODEL = os.environ.get(
 TRIAGE_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_TRIAGE_MODEL", MODEL_HAIKU_45)
 
 
-# Convenience sets for output-cap dispatch.
-OPUS_MODELS = frozenset({MODEL_OPUS_47})
+# Convenience sets for output-cap dispatch. Every Opus family member shares
+# the 128k output ceiling and the high-effort escalation tier, so newer Opus
+# ids must be listed here too (not just in ``_MODEL_CAPABILITIES``) or they
+# fall through to the Sonnet 64k ceiling / medium effort.
+OPUS_MODELS = frozenset({MODEL_OPUS_48, MODEL_OPUS_47})
 HAIKU_MODELS = frozenset({MODEL_HAIKU_45})
 
 
@@ -203,7 +210,10 @@ def assert_extended_output_allowed(*, max_tokens: int, betas: Iterable[str] | No
 # IDs fall through to ``_DEFAULT_CAPABILITIES``, which disables every
 # capability flag — intentional. Stripping a feature from a future model is
 # strictly safer than sending an invalid request that fails deep in the
-# request lifecycle.
+# request lifecycle. The degradation is no longer silent, though: an
+# unrecognized id logs one WARNING (see :func:`model_capabilities`) so a
+# stale whitelist that quietly under-powers a newer/better model is visible
+# to the operator rather than hidden.
 
 
 @dataclass(frozen=True)
@@ -223,6 +233,21 @@ class ModelCapabilities:
 
 
 _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    MODEL_OPUS_48: ModelCapabilities(
+        # Claude Opus 4.8 capability profile per Anthropic's "What's new in
+        # Claude Opus 4.8" and the models overview: 1M-token context window on
+        # the Claude API, 128k max output, the ``output-300k-2026-03-24`` batch
+        # beta (shared with Opus 4.7 / 4.6 and Sonnet 4.6), extended/adaptive
+        # thinking, and the ``effort`` parameter (default high). Identical
+        # profile to Opus 4.7 — registered explicitly so selecting it via
+        # ``SPEC_CRITIC_*_MODEL`` unlocks full capabilities instead of falling
+        # through to the conservative unknown-model defaults.
+        supports_adaptive_thinking=True,
+        max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
+        supports_extended_output_beta=True,
+        context_window=1_000_000,
+        supports_effort=True,
+    ),
     MODEL_OPUS_47: ModelCapabilities(
         supports_adaptive_thinking=True,
         max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
@@ -269,9 +294,50 @@ _DEFAULT_CAPABILITIES = ModelCapabilities(
 )
 
 
+# Falling through to ``_DEFAULT_CAPABILITIES`` keeps a misconfigured
+# ``SPEC_CRITIC_*_MODEL`` from constructing an invalid request, but the
+# degradation used to be *silent*: an operator who pinned a newer/better model
+# than the whitelist knew about got quietly smaller requests (no extended
+# thinking, no effort tuning, a 64k output cap instead of 128k/300k, a 200k
+# context window instead of 1M, no batch extended-output beta) with no signal
+# anywhere. We now emit one WARNING per unrecognized id so the quality loss is
+# visible. Deduped via a module-level set because ``model_capabilities`` sits
+# on a per-request hot path and must not spam the log.
+_WARNED_UNKNOWN_MODELS: set[str] = set()
+
+
+def _warn_unknown_model(model: str) -> None:
+    """Emit a one-time WARNING that ``model`` fell through to safe defaults."""
+    if model in _WARNED_UNKNOWN_MODELS:
+        return
+    _WARNED_UNKNOWN_MODELS.add(model)
+    _log.warning(
+        "Model id %r is not in the capability whitelist (_MODEL_CAPABILITIES "
+        "in src/core/api_config.py); degrading to conservative defaults: no "
+        "adaptive thinking, no effort tuning, %s-token output cap, %s-token "
+        "context window, no 300k extended-output beta. If this is a "
+        "known-good model, add it to the whitelist to unlock its full "
+        "capabilities.",
+        model,
+        f"{_DEFAULT_CAPABILITIES.max_output_tokens:,}",
+        f"{_DEFAULT_CAPABILITIES.context_window:,}",
+    )
+
+
 def model_capabilities(model: str) -> ModelCapabilities:
-    """Return the capability record for ``model`` (or safe defaults)."""
-    return _MODEL_CAPABILITIES.get(model, _DEFAULT_CAPABILITIES)
+    """Return the capability record for ``model`` (or safe defaults).
+
+    Known ids resolve from ``_MODEL_CAPABILITIES``. Unknown ids fall through
+    to ``_DEFAULT_CAPABILITIES`` *and* trigger a one-time WARNING (see
+    :func:`_warn_unknown_model`) so the conservative degradation is never
+    silent — the failure mode the trust audit (P0-3) flagged, where a
+    deliberately-selected newer model gets quietly worse requests.
+    """
+    caps = _MODEL_CAPABILITIES.get(model)
+    if caps is not None:
+        return caps
+    _warn_unknown_model(model)
+    return _DEFAULT_CAPABILITIES
 
 
 def model_supports_adaptive_thinking(model: str) -> bool:
