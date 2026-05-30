@@ -598,6 +598,24 @@ def run_chunked_cross_check(
     preserved in each finding's ``section``. When the input fits, it
     delegates to the original :func:`run_cross_check` so behavior is
     unchanged for small projects.
+
+    **Known limitation — cross-division coordination across chunks (TRUST_AUDIT
+    P1-3).** Each chunk is cross-checked *in isolation*: a single
+    :func:`run_cross_check` call sees only one chunk's specs. Coordination
+    conflicts that span two *different* CSI divisions therefore can only be
+    found when those divisions land in the **same** chunk. The predefined
+    groups are disjoint by division (21 / 22 / 23 / 25+01), so a conflict
+    between, e.g., a Division 22 plumbing spec and a Division 23 HVAC spec is
+    **not detectable once chunking is active** — the two specs never appear in
+    the same API call. This is an intentional tractability trade-off for
+    megaprojects (the alternative is the prior all-or-nothing ``skipped``),
+    not a bug, but it means a chunked run is a *within-discipline* coordination
+    pass. It is surfaced to the operator via the chunking log line below; small
+    projects (input within ``CROSS_CHECK_RECOMMENDED_MAX``) take the single
+    un-chunked path and have no such limitation. Findings themselves are never
+    dropped or mis-attributed across chunks: every spec lands in exactly one
+    chunk (singletons pool into ``"general"``), and each finding keeps its own
+    chunk label (see :func:`_group_specs_by_chunk` / :func:`_label_finding_with_chunk`).
     """
     if len(specs) < 2:
         return run_cross_check(
@@ -641,7 +659,9 @@ def run_chunked_cross_check(
     log(
         f"Cross-check input ({total_tokens:,} tokens) exceeds "
         f"{CROSS_CHECK_RECOMMENDED_MAX:,}. Chunking into "
-        f"{len(chunks)} CSI division group(s).",
+        f"{len(chunks)} CSI division group(s). Note: chunked cross-check is a "
+        "within-discipline pass — coordination conflicts spanning two CSI "
+        "divisions in different chunks are not analyzed.",
         level="info",
     )
 
