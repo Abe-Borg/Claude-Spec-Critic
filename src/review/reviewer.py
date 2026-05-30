@@ -44,7 +44,8 @@ def validate_edit_shape(
     Every executable edit must satisfy action-specific field requirements before
     it leaves the parser. The four rules are:
 
-    * ``EDIT``   — non-empty ``existing_text`` and ``replacement_text``.
+    * ``EDIT``   — non-empty ``existing_text`` and ``replacement_text`` that
+      are not byte-for-byte identical (an identical pair is a no-op edit).
     * ``DELETE`` — non-empty ``existing_text``.
     * ``ADD``    — non-empty ``anchor_text`` and ``replacement_text``, plus
       ``insert_position`` in ``{"before", "after"}``.
@@ -63,6 +64,16 @@ def validate_edit_shape(
             return "EDIT action missing required existingText"
         if not (replacement_text and replacement_text.strip()):
             return "EDIT action missing required replacementText"
+        # Reject a no-op EDIT: replacementText byte-for-byte identical to
+        # existingText would reach the sidecar as an instruction a downstream
+        # applier executes to no effect (find X, replace with the same X).
+        # Demote to REPORT_ONLY so the finding's prose still surfaces but no
+        # empty edit instruction is emitted. Exact equality only — a case- or
+        # whitespace-only delta is not byte-equal and is intentionally allowed
+        # through, since some are genuine fixes (defined-term capitalization,
+        # spacing corrections).
+        if existing_text == replacement_text:
+            return "EDIT action is a no-op (existingText equals replacementText)"
         return None
     if norm == "DELETE":
         if not (existing_text and existing_text.strip()):
