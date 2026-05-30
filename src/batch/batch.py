@@ -198,7 +198,7 @@ def submit_review_batch(
             else None
         )
         assert_extended_output_allowed(
-            max_tokens=built.params["max_tokens"], betas=betas
+            max_tokens=built.params["max_tokens"], betas=betas, model=model
         )
         batch_requests.append({"custom_id": custom_id, "params": built.params})
         request_map[custom_id] = {"filename": spec.filename, "index": idx, "type": "review"}

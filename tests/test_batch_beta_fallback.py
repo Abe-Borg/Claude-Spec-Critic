@@ -20,11 +20,13 @@ from types import SimpleNamespace
 import pytest
 
 from src.core.api_config import (
+    BATCH_MAX_OUTPUT_TOKENS,
     BATCH_OUTPUT_BETA,
     MAX_OUTPUT_TOKENS_OPUS,
     MAX_OUTPUT_TOKENS_SONNET,
     MODEL_OPUS_47,
     MODEL_SONNET_46,
+    assert_extended_output_allowed,
 )
 import src.batch.batch as B
 from src.batch.batch import (
@@ -243,3 +245,67 @@ class TestSubmitReviewBatchWiring:
         plain_call = client.plain_batches.calls[0]
         assert "betas" not in plain_call
         assert plain_call["requests"][0]["params"]["max_tokens"] == MAX_OUTPUT_TOKENS_OPUS
+
+
+# ---------------------------------------------------------------------------
+# TRUST_AUDIT P2-3: assert_extended_output_allowed threshold is model-derived
+# ---------------------------------------------------------------------------
+
+
+class TestAssertExtendedOutputAllowed:
+    """The fail-fast guard's threshold is the *selected model's* baseline
+    output ceiling, not a hardcoded 128k. Sonnet's baseline is 64k, so a
+    64k-128k Sonnet request without the beta — which the API would reject —
+    must now be caught at the call site. Opus behavior is unchanged, and an
+    omitted model falls back to the 128k Opus ceiling so the guard never
+    over-fires on a legitimate sub-ceiling request."""
+
+    def test_opus_300k_without_beta_raises(self):
+        with pytest.raises(ValueError, match="beta header"):
+            assert_extended_output_allowed(
+                max_tokens=BATCH_MAX_OUTPUT_TOKENS, betas=None, model=MODEL_OPUS_47
+            )
+
+    def test_opus_300k_with_beta_ok(self):
+        # No raise: the beta is present.
+        assert_extended_output_allowed(
+            max_tokens=BATCH_MAX_OUTPUT_TOKENS,
+            betas=[BATCH_OUTPUT_BETA],
+            model=MODEL_OPUS_47,
+        )
+
+    def test_opus_at_baseline_ceiling_ok(self):
+        # 128k == Opus baseline ceiling: no beta needed.
+        assert_extended_output_allowed(
+            max_tokens=MAX_OUTPUT_TOKENS_OPUS, betas=None, model=MODEL_OPUS_47
+        )
+
+    def test_sonnet_above_its_64k_baseline_without_beta_raises(self):
+        # The core P2-3 fix: 100k is below the old 128k threshold but ABOVE
+        # Sonnet's 64k baseline, so the beta is required — the old guard let
+        # this slip through to an API rejection.
+        with pytest.raises(ValueError, match="beta header"):
+            assert_extended_output_allowed(
+                max_tokens=100_000, betas=None, model=MODEL_SONNET_46
+            )
+
+    def test_sonnet_at_its_baseline_ok(self):
+        assert_extended_output_allowed(
+            max_tokens=MAX_OUTPUT_TOKENS_SONNET, betas=None, model=MODEL_SONNET_46
+        )
+
+    def test_sonnet_above_baseline_with_beta_ok(self):
+        assert_extended_output_allowed(
+            max_tokens=100_000, betas=[BATCH_OUTPUT_BETA], model=MODEL_SONNET_46
+        )
+
+    def test_omitted_model_falls_back_to_opus_ceiling(self):
+        # Backward-compatible: with no model, the threshold is the 128k Opus
+        # ceiling, so a 100k request does NOT over-fire.
+        assert_extended_output_allowed(max_tokens=100_000, betas=None, model=None)
+
+    def test_omitted_model_still_catches_300k_without_beta(self):
+        with pytest.raises(ValueError, match="beta header"):
+            assert_extended_output_allowed(
+                max_tokens=BATCH_MAX_OUTPUT_TOKENS, betas=None, model=None
+            )

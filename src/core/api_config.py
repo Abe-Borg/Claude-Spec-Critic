@@ -180,20 +180,37 @@ def verification_max_tokens(*, model: str = VERIFICATION_MODEL_DEFAULT, phase: s
     return phase_output_cap(phase, model=model)
 
 
-def assert_extended_output_allowed(*, max_tokens: int, betas: Iterable[str] | None) -> None:
-    """Guard against 300k output without the required beta header.
+def assert_extended_output_allowed(
+    *, max_tokens: int, betas: Iterable[str] | None, model: str | None = None
+) -> None:
+    """Guard against extended output without the required beta header.
 
-    The Anthropic API rejects 300k output when the extended-output beta is
-    not set, but the failure surfaces deep in the request lifecycle. Plan
-    Sprint 2 item 8: fail fast at the call site instead.
+    The Anthropic API rejects output above a model's baseline ceiling when
+    the extended-output beta is not set, but the failure surfaces deep in the
+    request lifecycle. Plan Sprint 2 item 8: fail fast at the call site instead.
+
+    The threshold is the *selected model's* baseline (non-beta) output ceiling
+    (TRUST_AUDIT P2-3), derived from the single :func:`output_cap_for_model`
+    source of truth — Opus 128k, Sonnet/Haiku 64k. Passing ``model`` makes the
+    guard correct for Sonnet (whose 64k baseline is below the old hardcoded
+    128k threshold, so a 64k–128k Sonnet request without the beta would have
+    slipped past). When ``model`` is omitted the guard falls back to the
+    highest baseline ceiling (Opus 128k) so it never *over*-fires on a
+    legitimate sub-ceiling request — the API stays the backstop for that case.
     """
-    if max_tokens <= MAX_OUTPUT_TOKENS_OPUS:
+    ceiling = (
+        output_cap_for_model(model, requested=BATCH_MAX_OUTPUT_TOKENS)
+        if model
+        else MAX_OUTPUT_TOKENS_OPUS
+    )
+    if max_tokens <= ceiling:
         return
     beta_set = set(betas or ())
     if BATCH_OUTPUT_BETA not in beta_set:
         raise ValueError(
-            f"Requested max_tokens={max_tokens:,} requires beta header "
-            f"'{BATCH_OUTPUT_BETA}'. Refusing to submit without it."
+            f"Requested max_tokens={max_tokens:,} exceeds the baseline output "
+            f"ceiling ({ceiling:,}" + (f" for model '{model}'" if model else "") + ") "
+            f"and requires beta header '{BATCH_OUTPUT_BETA}'. Refusing to submit without it."
         )
 
 

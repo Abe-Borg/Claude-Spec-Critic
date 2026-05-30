@@ -316,6 +316,28 @@ class TestSummarizeRunDiagnostics:
         summary = _findings_to_summary([], cross_check_result=None)
         assert summary["cross_check"] is None
 
+    def test_cross_check_state_carries_chunk_failure_counts(self):
+        # A "completed" chunked pass that had a failed/skipped chunk carries
+        # the counts so the renderer can flag the partially-incomplete pass
+        # (TRUST_AUDIT P1-3 follow-up).
+        cc = ReviewResult(
+            findings=[],
+            cross_check_status="completed",
+            chunk_failures=1,
+            chunk_skips=2,
+        )
+        summary = _findings_to_summary([], cross_check_result=cc)
+        assert summary["cross_check"]["chunk_failures"] == 1
+        assert summary["cross_check"]["chunk_skips"] == 2
+
+    def test_cross_check_chunk_counts_default_zero(self):
+        # A non-chunked result (no chunk fields set) reports 0 — the banner
+        # row stays unhighlighted, identical to before.
+        cc = ReviewResult(findings=[], cross_check_status="completed")
+        summary = _findings_to_summary([], cross_check_result=cc)
+        assert summary["cross_check"]["chunk_failures"] == 0
+        assert summary["cross_check"]["chunk_skips"] == 0
+
 
 # ---------------------------------------------------------------------------
 # 2. Banner rendering — section heading + labels
@@ -456,3 +478,35 @@ class TestBannerHighlights:
         )
         # No shading element means we did not apply the highlight.
         assert shading is None
+
+    def test_partial_chunk_failure_reds_the_coordination_row(self, tmp_path: Path):
+        # A "completed" chunked pass with a failed chunk must NOT read as a
+        # clean green row — it is highlighted red and annotated "not analyzed"
+        # so the operator sees that a division's coordination did not run
+        # (TRUST_AUDIT P1-3 follow-up).
+        f = _finding(verification=_verified_supported())
+        cc = ReviewResult(findings=[], cross_check_status="completed", chunk_failures=1)
+        out = tmp_path / "report.docx"
+        export_report(
+            _StubPipelineResult(review_result=ReviewResult(findings=[f]), cross_check_result=cc),
+            out,
+        )
+        doc = Document(str(out))
+        shading = self._value_cell_shading_for_label(doc, "Cross-spec coordination")
+        assert shading is not None
+        assert shading.upper() == "FFE5E5"
+        assert "not analyzed" in _all_text_from(doc)
+
+    def test_completed_chunked_pass_without_failures_not_red(self, tmp_path: Path):
+        # A fully-completed pass (no failed/skipped chunks) stays unhighlighted.
+        f = _finding(verification=_verified_supported())
+        cc = ReviewResult(findings=[], cross_check_status="completed", chunk_failures=0)
+        out = tmp_path / "report.docx"
+        export_report(
+            _StubPipelineResult(review_result=ReviewResult(findings=[f]), cross_check_result=cc),
+            out,
+        )
+        doc = Document(str(out))
+        shading = self._value_cell_shading_for_label(doc, "Cross-spec coordination")
+        assert shading is None
+        assert "not analyzed" not in _all_text_from(doc)

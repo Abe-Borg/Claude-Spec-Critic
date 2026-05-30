@@ -708,6 +708,16 @@ def run_chunked_cross_check(
     findings, summary_text, status = _synthesize_chunk_findings(
         chunk_results, fallback_model=model, cycle=cycle, log=log,
     )
+    # Surface partially-incomplete chunked passes (TRUST_AUDIT P1-3 follow-up):
+    # when status is "completed" because ≥1 chunk produced findings, a chunk
+    # that failed/skipped means that division's coordination did not run. The
+    # counts ride to the Run Diagnostics banner so the operator sees it instead
+    # of a falsely-clean green row. Mirrors the status rule in
+    # ``_synthesize_chunk_findings`` (failed = not completed and not skipped).
+    chunk_skips = sum(1 for _cid, r in chunk_results if r.cross_check_status == "skipped")
+    chunk_failures = sum(
+        1 for _cid, r in chunk_results if r.cross_check_status not in ("completed", "skipped")
+    )
     combined = ReviewResult(
         findings=findings,
         thinking=summary_text,
@@ -716,6 +726,8 @@ def run_chunked_cross_check(
         output_tokens=aggregate_out,
         elapsed_seconds=time.time() - started,
         cross_check_status=status,
+        chunk_failures=chunk_failures,
+        chunk_skips=chunk_skips,
     )
     _trace.capture_cross_check_end(
         trace_cross, finding_count=len(findings), status=status,
