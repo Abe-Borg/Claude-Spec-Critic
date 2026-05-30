@@ -150,7 +150,27 @@ one place the program can mislead, and it's exactly what the user must be able t
 
 ## P2 — Minor / hardening / doc drift
 
-- **P2-1 — Continuation cap off-by-one.** `verifier.py:2844` uses `if continuation_counts[key] > cap`
+- **P2-1 — Continuation cap off-by-one.**
+  > **RESOLVED — false alarm** (branch `claude/clever-albattani-1VETz`). Read both continuation paths
+  > end-to-end: the `> cap` check (now `verifier.py:2861`) is *correct*, and the suggested `>=` would be
+  > the regression. It gives the batch wave loop **exact parity** with the real-time pause-turn loop's
+  > budget. Real-time (`verifier.py:1697`) runs `for _ in range(max_continuations + 1)` — one initial call
+  > plus up to `max_continuations` resumes — submitting a resume for pause #k iff `k <= cap` and going
+  > terminal on pause #(cap+1). The batch loop increments `continuation_counts[stable_key]` on each
+  > observed pause and submits a follow-up wave iff `k > cap` is False, i.e. iff `k <= cap` — the
+  > **identical rule**. So a pause-turn-only finding rides `cap + 1` waves (one initial + `cap`
+  > continuations), the same number of attempts real-time allows; `>=` would cut the batch path to one
+  > *fewer* continuation than real-time. Decisive corroboration that the cap is the real-time budget
+  > ported in (not a tighter-than-`max_waves` early exit): `DEEP_MAX_CONTINUATIONS = 4 > MAX_VERIFICATION_WAVES
+  > = 3` — a deep cap above the wave cap would be nonsensical under the "tighter bound" reading. The only
+  > real defect was the *secondary* comment ("so a pause-turn-only finding cannot eat all three waves"),
+  > which misdescribed the behavior; it (and the primary comment) are corrected to state the parity
+  > explicitly. No logic change. Locked in by `tests/test_batch_continuation_cap.py` (a finding pausing
+  > every wave gets exactly `cap` follow-up waves and terminates via the cap with `observed=cap+1` — the
+  > count assertion fails under `>=` — plus an honesty check that the terminal classifies as
+  > INSUFFICIENT_EVIDENCE, not VERIFICATION_FAILED or budget-exhausted).
+
+  `verifier.py:2844` uses `if continuation_counts[key] > cap`
   (not `>=`), so a finding can consume `cap + 1` waves before termination. Bounded by `max_waves`, no data
   loss. Low.
 - **P2-2 — `finding_id` truncated to 12 hex (48 bits).** `pipeline.py:346`. Collision negligible at the
