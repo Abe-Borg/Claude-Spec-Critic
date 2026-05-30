@@ -4,6 +4,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
+from docx.oxml import parse_xml
 from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph
@@ -29,11 +30,14 @@ class ParagraphMapping:
     # extracted document. The format is human-readable so a finding that
     # cites it can be debugged at a glance: ``p<body_index>`` for body
     # paragraphs, ``t<table>r<row>`` for table-cell rows, ``s<n>h<i>`` /
-    # ``s<n>f<i>`` for section header / footer paragraphs, and ``meta<n>``
-    # for the synthetic header/footer delimiter. The id is stable within a
-    # single extraction run; for cross-run stability the document_id of the
-    # owning ``ExtractedSpec`` should also be checked. Empty string for
-    # legacy mappings constructed by tests that predate element ids.
+    # ``s<n>f<i>`` for section header / footer paragraphs, ``tb<box>p<para>``
+    # for text-box paragraphs, ``fn<id>p<para>`` / ``en<id>p<para>`` for
+    # footnote / endnote paragraphs, and ``meta:hf`` / ``meta:tb`` /
+    # ``meta:fn`` / ``meta:en`` for the synthetic delimiter that precedes
+    # each supplemental block. The id is stable within a single extraction
+    # run; for cross-run stability the document_id of the owning
+    # ``ExtractedSpec`` should also be checked. Empty string for legacy
+    # mappings constructed by tests that predate element ids.
     element_id: str = ""
     # Section heading text the element belongs to (best-effort). Surfacing
     # this lets a downstream applier disambiguate identical text in
@@ -173,6 +177,163 @@ def _detect_content_loss_warning(body) -> str | None:
     )
 
 
+# Footnotes and endnotes live in their own package parts (``word/footnotes.xml``
+# / ``word/endnotes.xml``), not under ``<w:body>``, so the body walk never
+# reaches them. The parts are identified by their OOXML content type. Word
+# seeds every document that has the part with structural notes (``separator``
+# / ``continuationSeparator``) that carry no authored text; those are skipped
+# by their ``w:type`` so an empty ``[Footnote -1]`` label never reaches review.
+_FOOTNOTES_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"
+)
+_ENDNOTES_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"
+)
+_STRUCTURAL_NOTE_TYPES = {"separator", "continuationSeparator", "continuationNotice"}
+
+
+def _collect_textbox_mappings(body, doc) -> list[ParagraphMapping]:
+    """Extract text authored inside drawing / VML text boxes.
+
+    Text-box text is stored in ``<w:txbxContent>`` elements nested inside
+    ``<w:drawing>`` (modern DrawingML) or ``<w:pict>`` (legacy VML) runs.
+    ``Paragraph.text`` does not descend into them, so the plain body walk
+    silently drops a requirement authored in a callout / sidebar text box —
+    a "miss a real problem" gap (TRUST_AUDIT P0-6). This collects every text
+    box in document order and emits one mapping per non-empty text-box
+    paragraph. A nested text box is reached by the same descendant search
+    and its parent's ``Paragraph.text`` does not include it, so each box is
+    captured exactly once (no duplication, no miss).
+    """
+    txbx_qn = qn("w:txbxContent")
+    p_qn = qn("w:p")
+    mappings: list[ParagraphMapping] = []
+    for box_index, txbx in enumerate(body.findall(".//" + txbx_qn)):
+        for para_index, para_el in enumerate(txbx.findall(p_qn)):
+            text = Paragraph(para_el, doc).text.strip()
+            if not text:
+                continue
+            mappings.append(
+                ParagraphMapping(
+                    body_index=-1,
+                    element_type="textbox",
+                    text=f"[Text Box] {text}",
+                    table_index=None,
+                    row_index=None,
+                    cell_index=None,
+                    container_type="textbox",
+                    element_id=f"tb{box_index}p{para_index}",
+                    section_id="",
+                )
+            )
+    return mappings
+
+
+def _collect_note_mappings(
+    doc_part,
+    *,
+    content_type: str,
+    note_tag: str,
+    label: str,
+    id_prefix: str,
+) -> list[ParagraphMapping]:
+    """Extract footnote / endnote text from the package part of ``content_type``.
+
+    Footnotes and endnotes are not under ``<w:body>``; they hang off the
+    document part by relationship. The part is located by content type
+    (relationship ids are not stable), parsed defensively, and walked for
+    ``<w:footnote>`` / ``<w:endnote>`` elements. Structural notes
+    (``separator`` etc.) are skipped by ``w:type``. Returns one mapping per
+    non-empty note paragraph, or an empty list when the part is absent (the
+    common case) or unreadable — body text is the primary deliverable and a
+    malformed notes part must never sink the whole extraction.
+    """
+    note_part = None
+    for rel in doc_part.rels.values():
+        if rel.is_external:
+            continue
+        target = rel.target_part
+        if getattr(target, "content_type", None) == content_type:
+            note_part = target
+            break
+    if note_part is None:
+        return []
+    try:
+        root = parse_xml(note_part.blob)
+    except Exception:
+        return []
+
+    element_type = label.lower()
+    w_p = qn("w:p")
+    w_t = qn("w:t")
+    w_id = qn("w:id")
+    w_type = qn("w:type")
+    mappings: list[ParagraphMapping] = []
+    for note in root.findall(qn(note_tag)):
+        if note.get(w_type) in _STRUCTURAL_NOTE_TYPES:
+            continue
+        note_id = note.get(w_id) or "?"
+        for para_index, para_el in enumerate(note.findall(w_p)):
+            text = "".join(
+                t.text for t in para_el.findall(".//" + w_t) if t.text
+            ).strip()
+            if not text:
+                continue
+            mappings.append(
+                ParagraphMapping(
+                    body_index=-1,
+                    element_type=element_type,
+                    text=f"[{label} {note_id}] {text}",
+                    table_index=None,
+                    row_index=None,
+                    cell_index=None,
+                    container_type=element_type,
+                    element_id=f"{id_prefix}{note_id}p{para_index}",
+                    section_id="",
+                )
+            )
+    return mappings
+
+
+def _append_supplemental_block(
+    paragraphs: list[str],
+    paragraph_map: list[ParagraphMapping],
+    *,
+    delimiter: str,
+    delimiter_id: str,
+    container_type: str,
+    entries: list[ParagraphMapping],
+) -> None:
+    """Append a labeled block (delimiter + its entries) to both the flat text
+    list and the paragraph map, in lockstep.
+
+    Supplemental content (text boxes, footnotes, endnotes, headers/footers)
+    does not flow inline in ``<w:body>``, so each kind is rendered as its own
+    labeled block after the body. Appending to ``paragraphs`` and
+    ``paragraph_map`` together preserves the reconstruction invariant (the
+    map's text must join back to ``content``). A no-op when ``entries`` is
+    empty, so a spec with none of a given kind produces byte-identical output.
+    """
+    if not entries:
+        return
+    paragraph_map.append(
+        ParagraphMapping(
+            body_index=-1,
+            element_type="meta",
+            text=delimiter,
+            table_index=None,
+            row_index=None,
+            cell_index=None,
+            container_type=container_type,
+            element_id=delimiter_id,
+            section_id="",
+        )
+    )
+    paragraphs.append(delimiter)
+    paragraph_map.extend(entries)
+    paragraphs.extend(entry.text for entry in entries)
+
+
 def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     if not filepath.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
@@ -259,25 +420,58 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                     )
                 )
 
-    if header_footer_entries:
-        delimiter = "===== HEADER/FOOTER CONTENT ====="
-        paragraph_map.append(
-            ParagraphMapping(
-                body_index=-1,
-                element_type="meta",
-                text=delimiter,
-                table_index=None,
-                row_index=None,
-                cell_index=None,
-                section_index=None,
-                container_type="header_footer",
-                element_id="meta:hf",
-                section_id="",
-            )
-        )
-        paragraph_map.extend(header_footer_entries)
-        paragraphs.append(delimiter)
-        paragraphs.extend(entry.text for entry in header_footer_entries)
+    # Supplemental content that python-docx's body walk does not surface:
+    # text boxes (text nested in <w:txbxContent> inside drawings / VML) and
+    # footnotes / endnotes (separate package parts). A requirement authored
+    # in any of these would otherwise be invisible to the reviewer — a
+    # silent "miss a real problem" gap (TRUST_AUDIT P0-6). Each kind is
+    # rendered as its own labeled block after the body (mirroring the
+    # header/footer block); the blocks no-op when their source is absent, so
+    # a spec with none of them produces byte-identical output to before.
+    _append_supplemental_block(
+        paragraphs,
+        paragraph_map,
+        delimiter="===== TEXT BOX CONTENT =====",
+        delimiter_id="meta:tb",
+        container_type="textbox",
+        entries=_collect_textbox_mappings(doc.element.body, doc),
+    )
+    _append_supplemental_block(
+        paragraphs,
+        paragraph_map,
+        delimiter="===== FOOTNOTE CONTENT =====",
+        delimiter_id="meta:fn",
+        container_type="footnote",
+        entries=_collect_note_mappings(
+            doc.part,
+            content_type=_FOOTNOTES_CONTENT_TYPE,
+            note_tag="w:footnote",
+            label="Footnote",
+            id_prefix="fn",
+        ),
+    )
+    _append_supplemental_block(
+        paragraphs,
+        paragraph_map,
+        delimiter="===== ENDNOTE CONTENT =====",
+        delimiter_id="meta:en",
+        container_type="endnote",
+        entries=_collect_note_mappings(
+            doc.part,
+            content_type=_ENDNOTES_CONTENT_TYPE,
+            note_tag="w:endnote",
+            label="Endnote",
+            id_prefix="en",
+        ),
+    )
+    _append_supplemental_block(
+        paragraphs,
+        paragraph_map,
+        delimiter="===== HEADER/FOOTER CONTENT =====",
+        delimiter_id="meta:hf",
+        container_type="header_footer",
+        entries=header_footer_entries,
+    )
 
     content = "\n\n".join(paragraphs)
     reconstructed = "\n\n".join(m.text for m in paragraph_map)
