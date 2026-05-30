@@ -179,6 +179,30 @@ class TestLocalEstimateSafetyFactor:
         padded = safe_local_estimate(10_000, model=MODEL_OPUS_47)
         assert 10_000 < padded < 13_000
 
+    def test_subunity_registry_factor_is_clamped_to_one(self, monkeypatch):
+        """A sub-1.0 entry must never shrink the estimate (danger-pad guard).
+
+        The factor is documented as a safety multiplier >= 1.0. If a bad
+        value (a typo, or a misguided attempt to trim the margin) lands in
+        the registry, the clamp keeps the padded estimate from dropping
+        below the raw local count — which would undercount the Claude token
+        total and let an over-budget spec slip through the fallback gate.
+        """
+        import src.core.tokenizer as tok
+
+        monkeypatch.setitem(tok._LOCAL_SAFETY_FACTORS, "claude-typo-0-5", 0.5)
+        assert local_estimate_safety_factor("claude-typo-0-5") == 1.0
+        # Padded estimate must not undercount the raw input.
+        assert safe_local_estimate(100_000, model="claude-typo-0-5") >= 100_000
+
+    def test_subunity_default_factor_is_clamped(self, monkeypatch):
+        """The unknown-model fallback is clamped too, not just registry hits."""
+        import src.core.tokenizer as tok
+
+        monkeypatch.setattr(tok, "_DEFAULT_LOCAL_SAFETY_FACTOR", 0.9)
+        assert local_estimate_safety_factor("claude-unknown-9000") == 1.0
+        assert safe_local_estimate(50_000, model="claude-unknown-9000") >= 50_000
+
 
 class TestExceedsPerCallLimitForModel:
     """The local fallback gate uses the safety factor."""

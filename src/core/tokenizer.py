@@ -119,8 +119,17 @@ def local_estimate_safety_factor(model: str | None) -> float:
     models fall back to ``_DEFAULT_LOCAL_SAFETY_FACTOR`` (the widest
     margin) so a future model never silently sails through a budget
     check that would have been blocked under a known model.
+
+    The ``≥ 1.0`` floor is *enforced*, not merely assumed: a sub-1.0 entry
+    slipping into ``_LOCAL_SAFETY_FACTORS`` (a typo, or a misguided attempt
+    to trim the margin) would turn the safety pad into a *danger pad* — it
+    would shrink the estimate below the raw local count, undercount the
+    Claude token total, and let an over-budget spec sail through the
+    fallback gate. Clamping here honors the contract for every caller, not
+    just :func:`safe_local_estimate`.
     """
-    return _LOCAL_SAFETY_FACTORS.get(model or "", _DEFAULT_LOCAL_SAFETY_FACTOR)
+    factor = _LOCAL_SAFETY_FACTORS.get(model or "", _DEFAULT_LOCAL_SAFETY_FACTOR)
+    return max(1.0, factor)
 
 
 def safe_local_estimate(local_tokens: int, *, model: str | None) -> int:
