@@ -148,9 +148,15 @@ correct internal verdict can still produce an incomplete or under-applied extern
   `_ASCE7_PLAUSIBLE_EDITIONS = {"05","10","16","22"}`. Genuinely old editions (7-93/95/98/99/02) are
   `not in` the plausible set → skipped → **not flagged**. Deterministic-layer completeness gap only
   (the LLM review likely still catches it); no wrong findings produced. Low.
-- **P2-2 — `safe_local_estimate` not clamped ≥ 1.0.** `tokenizer.py:126-128`. Defaults are all ≥1.10,
-  so fine as configured; a future sub-1.0 misconfig would turn the safety pad into a danger pad. Pure
-  hardening; also note exact API counts (`pipeline.py:531`) are the authoritative gate, so impact is small.
+- **P2-2 — `safe_local_estimate` not clamped ≥ 1.0.** ✅ **RESOLVED** (branch `claude/clamp-safety-factor`).
+  `local_estimate_safety_factor` now returns `max(1.0, factor)`, so the docstring's "≥ 1.0" contract is
+  *enforced* rather than merely assumed — a sub-1.0 entry slipping into `_LOCAL_SAFETY_FACTORS` (or a
+  sub-1.0 `_DEFAULT_LOCAL_SAFETY_FACTOR`) can no longer shrink the estimate below the raw local count and
+  turn the safety pad into a danger pad. Clamping at the source covers every caller, not just
+  `safe_local_estimate`. Regression coverage in `tests/test_token_budgets.py` (`TestLocalEstimateSafetyFactor`):
+  an injected 0.5 registry factor and a 0.9 default both clamp to 1.0 and never undercount; a mutation
+  removing the clamp fails both. (Exact API counts remain the authoritative gate, so this was always
+  low-impact — pure hardening of the fallback path.)
 - **P2-3 — `assert_extended_output_allowed` compares to `MAX_OUTPUT_TOKENS_OPUS` regardless of model**
   (`api_config.py:183`). Now that Sonnet 4.6 also has the 300k beta, glance at whether the threshold
   constant should be model-derived. Likely benign.
