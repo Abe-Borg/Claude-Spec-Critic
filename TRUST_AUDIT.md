@@ -101,6 +101,7 @@ correct internal verdict can still produce an incomplete or under-applied extern
   the identical grounding partition + invariant as real-time, including the continuation/retry sub-paths.
 
 ### P0-6 — Extraction completeness: is any spec text silently NOT reviewed?
+- **✅ RESOLVED (text boxes + footnotes/endnotes)** (branch `claude/bold-faraday-itPv3`): empirically confirmed the gap (an in-memory `.docx` with a DrawingML text box, a VML text box, a footnote, and an endnote round-tripped through `extract_text_from_docx` captured **none** of them — only the body). Fixed by extracting all three as labeled blocks after the body: `_collect_textbox_mappings` pulls every `<w:txbxContent>` (DrawingML `wps:txbx` **and** legacy VML `v:textbox`) from the body via descendant search; `_collect_note_mappings` locates the `word/footnotes.xml` / `word/endnotes.xml` package parts **by content type** (relationship ids aren't stable), parses them defensively, and skips the structural `separator`/`continuationSeparator` notes by `w:type`. Each kind renders as its own block (`===== TEXT BOX CONTENT =====` / `FOOTNOTE` / `ENDNOTE`) through the shared `_append_supplemental_block`, which the existing header/footer block was refactored onto so all four supplemental sources share one lockstep `paragraphs`/`paragraph_map` append. The reconstruction invariant is preserved (verified by `extract_text_from_docx` itself, which raises on mismatch) and new stable element ids are minted (`tb<box>p<para>`, `fn<id>p<para>`, `en<id>p<para>`, with `meta:tb`/`meta:fn`/`meta:en` delimiters). A spec with none of these is byte-identical to before (every collector no-ops on absence). **Headers/footers were already extracted** (lines 238-280 pre-change), so that sub-worry was already closed. Regression coverage: `tests/test_extraction_supplemental_content.py` (17 tests: DrawingML/VML capture, text box in a table cell, mixed text+box no-dup, multi-box ordering/ids, footnote/endnote capture + separator exclusion + ids, absent/empty/malformed parts graceful, reconstruction invariant, unique ids, block order, word-count). A mutation stubbing both collectors fails 11/17. **Remaining (deliberately out of scope, lower frequency):** SmartArt / grouped-shape text (`a:t` runs in `wpg:grpSp` / diagram parts), text boxes anchored *inside* headers/footers (the header/footer walk reads `container.paragraphs.text`, which doesn't descend into a `txbxContent`), and tables nested inside a text box or note (only direct-child `<w:p>` are read). The content-loss warning is intentionally unchanged: a now-extracted text box still counts toward the drawing proportion, which over-warns slightly in the safe ("verify visually") direction.
 - **Where:** `src/input/extractor.py:197+` (`extract_text_from_docx` iterates `doc.element.body` children
   for `}p` and tables only). Content-loss warning (`_detect_content_loss_warning` :119-173) covers
   drawing/picture/OLE-heavy specs but **not** text-bearing parts outside the body.
@@ -145,10 +146,11 @@ correct internal verdict can still produce an incomplete or under-applied extern
 
 ## P2 — Minor / completeness / hardening (note, low urgency)
 
-- **P2-1 — ASCE 7 pre-2005 stale editions missed.** `preprocessor.py:386-396`,
-  `_ASCE7_PLAUSIBLE_EDITIONS = {"05","10","16","22"}`. Genuinely old editions (7-93/95/98/99/02) are
-  `not in` the plausible set → skipped → **not flagged**. Deterministic-layer completeness gap only
-  (the LLM review likely still catches it); no wrong findings produced. Low.
+- **P2-1 — ASCE 7 pre-2005 stale editions missed.** ✅ **RESOLVED** (commit `115b9ea`, PR #240, branch
+  `claude/asce7-stale-editions`). `_ASCE7_PLAUSIBLE_EDITIONS` now spans `{"88","93","95","98","02","05",
+  "10","16","22"}`, so the genuinely-old editions that were previously `not in` the set (and thus skipped)
+  now flag via `DETERMINISTIC_RULE_STALE_ASCE7`. Coverage in `tests/test_asce7_stale_editions.py` (22 tests).
+  (The ✅ marker was missing from this doc even though the fix had merged — corrected here.)
 - **P2-2 — `safe_local_estimate` not clamped ≥ 1.0.** ✅ **RESOLVED** (branch `claude/clamp-safety-factor`).
   `local_estimate_safety_factor` now returns `max(1.0, factor)`, so the docstring's "≥ 1.0" contract is
   *enforced* rather than merely assumed — a sub-1.0 entry slipping into `_LOCAL_SAFETY_FACTORS` (or a
