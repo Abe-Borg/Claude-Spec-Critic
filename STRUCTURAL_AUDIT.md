@@ -155,11 +155,20 @@ one place the program can mislead, and it's exactly what the user must be able t
   loss. Low.
 - **P2-2 — `finding_id` truncated to 12 hex (48 bits).** `pipeline.py:346`. Collision negligible at the
   typical <100 findings/run scale. Noted, not actionable.
-- **P2-3 — Stale doc: "parallel" cross-check vs verification.** `CLAUDE.md` (high-level flow) says
-  cross-check runs "parallel with verification by default," but the batch flow read as **sequential**
-  (review → verify → cross-check → verify-cross-check, `batch_controller.py`). Sequential is *safer* (no
-  shared-`Finding` race), so this is reassuring — but confirm and fix the doc. **If** a parallel path does
-  exist somewhere, re-check that the two passes don't mutate shared `Finding` objects concurrently.
+- **P2-3 — Stale doc: "parallel" cross-check vs verification.**
+  > **RESOLVED** (branch `claude/awesome-fermat-y7ACu`). Confirmed end-to-end that the batch flow is
+  > strictly **sequential** (review → dedup → verify → cross-check → verify-cross-check → finalize,
+  > in `batch_controller.collect_batch_results`). No parallel cross-check / verification path exists
+  > anywhere — the only `ThreadPoolExecutor` use in the verification stack is for parallel
+  > finding-level verification *within a single wave* (`verifier.py:2927`), not for cross-check.
+  > Cross-check *must* run after verification because `run_cross_check_for_batch` actively filters out
+  > findings whose verification verdict is `DISPUTED` from the "already identified" context
+  > (`pipeline.py:1062-1066`). Fixed the high-level flow in `CLAUDE.md` to: (a) put
+  > `verifier.verify_findings_batch` before `cross_checker.run_chunked_cross_check`, (b) replace
+  > "parallel with verification by default" with "sequential after verification" + a note on the
+  > DISPUTED-filter dependency, and (c) add the second-pass cross-check verification step that was
+  > missing entirely. No production code change needed — no shared-mutation test required because the
+  > two passes never run concurrently.
 - **P2-4 — TraceRecorder global singleton reset is delayed.** `recorder.py:548` global, reset in `reset_ui`
   ~2.5s after completion (`review_run_controller.py:179`). A user starting a second run inside that window
   could have run-1's late worker threads enqueue trace events into run-2's recorder. **Tracing/diagnostics

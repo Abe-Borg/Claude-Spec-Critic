@@ -91,15 +91,7 @@ def show_about_dialog(parent) -> None:
             "finding that lists all affected files. Per-file edit occurrences are "
             "preserved internally so multi-file edits can target every affected spec."
         )),
-        ("5.  Cross-Spec Coordination  (optional)", (
-            "If enabled, a separate Sonnet 4.6 call analyzes the full text of all your "
-            "specs together using the 1M token context window. It catches contradictions "
-            "between specs, missing cross-references, scope gaps and overlaps, "
-            "inconsistent equipment data, and division-of-work conflicts. Large projects "
-            "are chunked by CSI division (21 / 22 / 23 / Controls) and merged. Cross-check "
-            "runs in parallel with verification to reduce wall-clock time."
-        )),
-        ("6.  Verification", (
+        ("5.  Verification", (
             "Every finding that needs external grounding is checked in a secondary AI "
             "pass with web search. The default verifier is Claude Sonnet 4.6 (faster and "
             "cheaper); Opus 4.7 is used as an escalation model for Critical/High "
@@ -111,6 +103,17 @@ def show_about_dialog(parent) -> None:
             "issues (placeholders, duplicates, internal contradictions, LEED, template "
             "markers) are resolved locally without web search and reported as Locally "
             "classified. This is an AI-assisted check, not a substitute for engineer review."
+        )),
+        ("6.  Cross-Spec Coordination  (optional)", (
+            "If enabled, a separate Sonnet 4.6 call analyzes the full text of all your "
+            "specs together using the 1M token context window. It catches contradictions "
+            "between specs, missing cross-references, scope gaps and overlaps, "
+            "inconsistent equipment data, and division-of-work conflicts. Large projects "
+            "are chunked by CSI division (21 / 22 / 23 / Controls) and merged. Cross-check "
+            "runs after verification so it can use verified verdicts as context (Disputed "
+            "review findings are filtered out of the “already identified” list it sees). "
+            "Any coordination findings it produces are then put through their own verification "
+            "pass before the report is exported."
         )),
         ("7.  Edit Instruction Labels", (
             "Each finding is labeled in the report as Edit suggested, Report only, "

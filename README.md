@@ -20,8 +20,8 @@ Configured for the **California 2025 code cycle** by default (`src/core/code_cyc
 2. **Local Pre-Screening** — Deterministic detectors run before any API call: LEED, placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 3. **Per-Spec Review** — Each spec sent to Claude Opus 4.7 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
 4. **Deduplication** — Identical findings consolidated across specs; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text.
-5. **Cross-Spec Coordination** *(optional)* — Chunked by CSI division (21 / 22 / 23 / Controls / 25 + 01) on large projects. Runs in parallel with verification.
-6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 4.6 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 4.7. Persistent on-disk cache.
+5. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 4.6 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 4.7. Persistent on-disk cache.
+6. **Cross-Spec Coordination** *(optional)* — Runs after verification using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). Chunked by CSI division (21 / 22 / 23 / Controls / 25 + 01) on large projects. Its own coordination findings are then put through a second verification pass.
 7. **Report + Edit Sidecar** — A Word report is exported with every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar lists each finding's edit proposal for a downstream applier. Spec Critic does not modify spec documents.
 
 ## Edit Instructions (Emit-Only)
