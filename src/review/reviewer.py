@@ -259,6 +259,17 @@ class ReviewResult:
     stop_reason: str | None = None
     parse_status: str | None = None
     cross_check_status: str | None = None
+    # Chunked cross-check telemetry (in-memory; 0 for non-chunked runs).
+    # When a large project is cross-checked per CSI division, a chunk can
+    # fail or skip while others complete — the overall ``cross_check_status``
+    # is still ``"completed"`` (≥1 chunk produced findings), which would
+    # otherwise hide that a division's coordination did not run. These counts
+    # let the Run Diagnostics banner flag a partially-incomplete pass
+    # (TRUST_AUDIT P1-3 follow-up). ``chunk_failures`` = chunks that errored;
+    # ``chunk_skips`` = chunks skipped (e.g. a single division too large to
+    # cross-check). Both default 0 so non-chunked results are unaffected.
+    chunk_failures: int = 0
+    chunk_skips: int = 0
     # When the model invoked the ``submit_review_findings`` tool,
     # this is the raw parsed tool input (the dict the model sent through
     # the schema). Held in memory so diagnostics can preserve the actual

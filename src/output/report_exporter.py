@@ -480,6 +480,11 @@ def _summarize_run_diagnostics(
         cross_check_state = {
             "status": cc_status,
             "finding_count": len(getattr(cross_check_result, "findings", []) or []),
+            # Chunked-pass telemetry: chunks that failed / skipped while the
+            # overall status is still "completed" (TRUST_AUDIT P1-3 follow-up).
+            # Defensive getattr keeps non-chunked results / test doubles at 0.
+            "chunk_failures": int(getattr(cross_check_result, "chunk_failures", 0) or 0),
+            "chunk_skips": int(getattr(cross_check_result, "chunk_skips", 0) or 0),
             "reason": (
                 getattr(cross_check_result, "thinking", "")
                 if cc_status == "skipped"
@@ -651,7 +656,19 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             cc_highlight = True
         else:
             cc_value = f"{cc_count} finding{'s' if cc_count != 1 else ''}"
-            cc_highlight = False
+            # A "completed" chunked pass can still have left a division
+            # un-analyzed (a failed/skipped chunk). Flag it red so the green
+            # finding count doesn't read as a clean, complete pass.
+            incomplete = int(cross_check.get("chunk_failures", 0) or 0) + int(
+                cross_check.get("chunk_skips", 0) or 0
+            )
+            if incomplete:
+                cc_value += (
+                    f" — {incomplete} chunk{'s' if incomplete != 1 else ''} not analyzed"
+                )
+                cc_highlight = True
+            else:
+                cc_highlight = False
         rows.append(("Cross-spec coordination", cc_value, cc_highlight))
 
     # Render as a 2-column table. Label cells get a light-gray

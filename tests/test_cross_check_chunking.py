@@ -254,6 +254,50 @@ class TestPartialChunkFailure:
         # The failure is tallied in the summary, not silently swallowed.
         assert "1 completed, 1 failed" in combined.thinking
 
+    def test_combined_result_carries_chunk_failure_count(self, monkeypatch):
+        # The failed chunk is counted on the combined result so the report
+        # banner can flag the partially-incomplete pass (P1-3 follow-up).
+        _force_chunking(monkeypatch)
+
+        def fake_run_cross_check(specs, _existing, **_kwargs):
+            filenames = {s.filename for s in specs}
+            if any(f.startswith("22") for f in filenames):
+                return _chunk_result("completed", findings=[_finding("22 11 00 - Water.docx")])
+            return _chunk_result("failed", error="boom")
+
+        monkeypatch.setattr(cc, "run_cross_check", fake_run_cross_check)
+        specs = [
+            _spec("22 11 00 - Water.docx"),
+            _spec("22 13 00 - Sanitary.docx"),
+            _spec("23 05 00 - HVAC.docx"),
+            _spec("23 07 00 - Insulation.docx"),
+        ]
+        combined = run_chunked_cross_check(specs, [], cycle=DEFAULT_CYCLE)
+        assert combined.cross_check_status == "completed"
+        assert combined.chunk_failures == 1
+        assert combined.chunk_skips == 0
+
+    def test_combined_result_counts_skipped_chunks(self, monkeypatch):
+        _force_chunking(monkeypatch)
+
+        def fake_run_cross_check(specs, _existing, **_kwargs):
+            filenames = {s.filename for s in specs}
+            if any(f.startswith("22") for f in filenames):
+                return _chunk_result("completed", findings=[_finding("22 11 00 - Water.docx")])
+            return _chunk_result("skipped", thinking="division too large")
+
+        monkeypatch.setattr(cc, "run_cross_check", fake_run_cross_check)
+        specs = [
+            _spec("22 11 00 - Water.docx"),
+            _spec("22 13 00 - Sanitary.docx"),
+            _spec("23 05 00 - HVAC.docx"),
+            _spec("23 07 00 - Insulation.docx"),
+        ]
+        combined = run_chunked_cross_check(specs, [], cycle=DEFAULT_CYCLE)
+        assert combined.cross_check_status == "completed"
+        assert combined.chunk_skips == 1
+        assert combined.chunk_failures == 0
+
     def test_surviving_finding_keeps_its_own_division_label(self, monkeypatch):
         # No mis-attribution: the Division 22 finding is labeled Division 22,
         # never Division 23 (the chunk that failed).
