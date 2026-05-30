@@ -2718,12 +2718,16 @@ def collect_verification_batch_results(
     # failures and INVALID_REQUEST become terminal-unverified earlier
     # than the global wave cap.
     failure_tracker = BatchWaveFailureTracker()
-    # Per-finding continuation counter. The wave loop has its own
-    # ``MAX_VERIFICATION_WAVES`` cap, but the real-time path's
-    # continuation cap (2 by default) is the more direct budget signal —
-    # a finding that pause_turns its way through three waves has spent
-    # the same number of pause/resume rounds the real-time path would
-    # have allowed in one call, and the next wave is unlikely to help.
+    # Per-finding continuation counter, keyed by stable original custom_id.
+    # The wave loop has its own ``MAX_VERIFICATION_WAVES`` cap, but the
+    # continuation cap (``decision.max_continuations``: 2 default / 4 deep)
+    # is the per-finding pause/resume budget ported from the real-time path
+    # so the two paths give a pause-turn-only finding the SAME number of
+    # attempts. The real-time loop runs ``range(max_continuations + 1)`` —
+    # one initial call plus up to ``max_continuations`` resumes — and the
+    # batch loop mirrors that exactly via the ``> cap`` check below (see the
+    # parity note there). The next wave is unlikely to help once the budget
+    # is spent.
     continuation_counts: dict[str, int] = {}
     # Deep-mode tracing: retain each finding's final successful wave message
     # so the post-hoc batch verification span can walk its thinking / tool
@@ -2824,10 +2828,10 @@ def collect_verification_batch_results(
                     failure_tracker.record(stable_key, fc)
                     needs_retry.append(outcome)
             elif outcome.classification == "continue":
-                # Continuations consume the per-finding pause-turn
-                # budget. The wave loop bounds them through the same
-                # cap the real-time path uses (2 default / 4 deep) so a
-                # pause-turn-only finding cannot eat all three waves.
+                # Count this pause. ``continuation_counts[stable_key]`` is
+                # the number of waves this finding has pause_turned on so
+                # far, this one included: the initial wave's pause makes it
+                # 1, and each subsequent resumed wave's pause increments it.
                 continuation_counts[stable_key] = (
                     continuation_counts.get(stable_key, 0) + 1
                 )
@@ -2841,6 +2845,19 @@ def collect_verification_batch_results(
                 if cap <= 0:
                     from .retry_policy import DEFAULT_MAX_CONTINUATIONS as _dmc
                     cap = _dmc
+                # ``>`` (NOT ``>=``) is deliberate — it gives the batch path
+                # exact parity with the real-time loop's
+                # ``range(max_continuations + 1)`` budget. Real-time submits
+                # a resume for pause #k iff k <= cap and goes terminal on
+                # pause #(cap+1); submitting a follow-up wave here on the
+                # same rule means a pause-turn-only finding rides up to
+                # ``cap + 1`` waves (one initial + ``cap`` continuations)
+                # before terminating — the SAME number of attempts real-time
+                # allows. ``>=`` would cut the batch path to one fewer
+                # continuation than real-time. The cap is separately clamped
+                # by ``MAX_VERIFICATION_WAVES`` (3); DEEP's cap of 4 > 3 is
+                # intentional — it is the real-time budget, not a
+                # tighter-than-max_waves early exit. (STRUCTURAL_AUDIT P2-1.)
                 if continuation_counts[stable_key] > cap:
                     finding.verification = VerificationResult(
                         verdict="UNVERIFIED",
