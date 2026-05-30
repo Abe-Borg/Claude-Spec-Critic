@@ -2825,9 +2825,14 @@ def collect_verification_batch_results(
                     needs_retry.append(outcome)
             elif outcome.classification == "continue":
                 # Continuations consume the per-finding pause-turn
-                # budget. The wave loop bounds them through the same
-                # cap the real-time path uses (2 default / 4 deep) so a
-                # pause-turn-only finding cannot eat all three waves.
+                # budget. The wave loop bounds them through the same cap
+                # the real-time path uses (2 default / 4 deep): a finding
+                # may be resubmitted across at most ``cap`` follow-up waves
+                # after its initial wave before going terminal-UNVERIFIED.
+                # This mirrors the real-time loop's
+                # ``range(max_continuations + 1)`` budget in
+                # ``_run_verification_call`` (1 initial call + ``cap``
+                # pause/resume rounds).
                 continuation_counts[stable_key] = (
                     continuation_counts.get(stable_key, 0) + 1
                 )
@@ -2841,6 +2846,15 @@ def collect_verification_batch_results(
                 if cap <= 0:
                     from .retry_policy import DEFAULT_MAX_CONTINUATIONS as _dmc
                     cap = _dmc
+                # ``> cap`` (not ``>=``) is deliberate. The counter is
+                # incremented *above* before this check, so it only reaches
+                # ``cap + 1`` after the initial wave plus ``cap``
+                # resubmissions — the same total call budget the real-time
+                # path allows (initial call + ``cap`` pause/resume rounds).
+                # Using ``>=`` here would terminate one resume early and
+                # make batch verification stricter than real-time.
+                # (STRUCTURAL_AUDIT P2-1: confirmed correct, not an
+                # off-by-one. Locked by tests/test_batch_continuation_cap.py.)
                 if continuation_counts[stable_key] > cap:
                     finding.verification = VerificationResult(
                         verdict="UNVERIFIED",
