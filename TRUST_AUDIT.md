@@ -27,6 +27,7 @@ correct internal verdict can still produce an incomplete or under-applied extern
 ## P0 — Highest priority (directly affects correctness/completeness of emitted edits, or trust in input)
 
 ### P0-1 — Multi-file findings emit only ONE edit instruction (sidecar under-emission)  ⟵ strongest finding
+- **✅ RESOLVED** (commit `144d13a`): `edit_sidecar.build_edit_instructions` now wires `group_findings()` + `executable_finding()` to emit one sidecar entry **per affected file** (schema v3), each with its own `fileName` / `evidenceElementId` / `edit_proposal`; `group_findings()` is no longer test-only. See CLAUDE.md "FindingGroup vs FindingOccurrence" / "Edit instructions are emitted, not applied".
 - **Where:** `src/output/edit_sidecar.py:43-63` (`_finding_entry`), `src/orchestration/pipeline.py:349-422` (`_deduplicate_findings`, merge sets `fileName=files[0]` at :400), `group_findings()`/`FindingOccurrence` at `pipeline.py:260-301`.
 - **Observed (confirmed):** When dedup collapses the same defect across N specs (common for templated
   DSA master specs), the merged Finding carries `affected_files=[a,b,c]` and `occurrence_originals`.
@@ -46,6 +47,7 @@ correct internal verdict can still produce an incomplete or under-applied extern
   wired into `edit_sidecar.py`/`report_exporter.py` or deleted as dead code.
 
 ### P0-2 — Per-file `anchorText` / `evidenceElementId` collapse to representative on merge (subset of P0-1, but distinct correctness risk)
+- **✅ RESOLVED** (commit `144d13a`, same per-occurrence fan-out as P0-1): per-file `anchorText` / `insertPosition` / `evidenceElementId` now survive the merge via `occurrence_originals` and reach the sidecar per affected file (`has_per_file_original` flags borrowed locators).
 - **Where:** `pipeline.py:_dedup_key` (:319-327) vs the merge block (:398-421).
 - **Observed:** The dedup key includes `existingText`/`replacementText` digests, so merged members
   share **identical edit text** (good — no wrong-text risk). BUT `anchorText`, `insertPosition`, and
@@ -58,6 +60,7 @@ correct internal verdict can still produce an incomplete or under-applied extern
   is fixed by the same per-occurrence fan-out as P0-1.
 
 ### P0-3 — Model-capability whitelist goes stale → silently degrades a *newer/better* model
+- **✅ RESOLVED** (branch `claude/nice-gauss-TtDyR`): of the three "dig into" questions — (2) `claude-opus-4-8` added to both `_MODEL_CAPABILITIES` and `OPUS_MODELS` with docs-confirmed flags (adaptive thinking, 128k output, `output-300k-2026-03-24` batch beta, 1M context, `effort`), so selecting it no longer degrades; (3) unknown ids now emit one deduped `WARNING` from `model_capabilities` naming the conservative fallback caps, so the whitelist going stale is no longer silent. (1) Default models left at Opus 4.7 — confirmed still valid/available against Anthropic's current model list, so no availability problem; the 4.7→4.8 *default* bump is a deployment/cost decision deferred to the user (env var `SPEC_CRITIC_*_MODEL` now selects 4.8 cleanly). Regression coverage: `tests/test_capability_policy.py` (`TestOpus48Whitelisted`, `TestUnknownModelWarnsLoudly`).
 - **Where:** `src/core/api_config.py:225-274` (`_MODEL_CAPABILITIES`, `_DEFAULT_CAPABILITIES`, `model_capabilities`). Whitelist = `opus-4-7`, `sonnet-4-6`, `haiku-4-5` only.
 - **Observed (confirmed):** Any unknown id (including `claude-opus-4-8`, the current model — this very
   session runs on it) falls to `_DEFAULT_CAPABILITIES`, which sets `supports_adaptive_thinking=False`,
