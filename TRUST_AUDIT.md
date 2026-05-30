@@ -116,9 +116,15 @@ correct internal verdict can still produce an incomplete or under-applied extern
 
 ## P1 — Correctness, lower frequency or impact (confirm, fix if real)
 
-- **P1-1 — `validate_edit_shape` allows a no-op EDIT.** `src/review/structured_schemas.py` (~:34-80):
-  no check that `existingText != replacementText`. A model EDIT with identical text passes validation
-  and reaches the sidecar as a no-op instruction. Confirm frequency; consider rejecting/demoting.
+- **P1-1 — `validate_edit_shape` allows a no-op EDIT.** ✅ **RESOLVED** (branch `claude/reject-noop-edit-shape`).
+  Note: the helper actually lives in `src/review/reviewer.py` (`validate_edit_shape`), not
+  `structured_schemas.py` — the audit's path was stale. It now returns a demotion reason for an EDIT whose
+  `existingText` is byte-for-byte identical to `replacementText`, so the finding demotes to REPORT_ONLY and
+  no no-op instruction reaches the report or the sidecar. Both the parse-time path (`_parse_findings`) and
+  the defensive `Finding.as_edit_proposal()` accessor route through the helper, so parser output and
+  directly-constructed/legacy findings are both covered. Exact-equality only (case/whitespace-only deltas are
+  legitimate fixes and pass). Coverage in `tests/test_parse_time_edit_validation.py` (unit + parse-time +
+  `as_edit_proposal` paths).
 - **P1-2 — Batch partial-failure surfacing.** `src/verification/retry_policy.py`, `src/batch/batch_runtime.py`,
   `pipeline.finalize_batch_result`. Verify that when a batch partially fails or is canceled, the
   affected findings are clearly marked (`VERIFICATION_FAILED` / `NOT_CHECKED`) and **never silently

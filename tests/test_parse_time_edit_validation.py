@@ -108,6 +108,35 @@ class TestValidateEditShape:
         assert reason is not None
         assert "replacementText" in reason
 
+    def test_noop_edit_demotes(self):
+        # existingText byte-for-byte identical to replacementText is a no-op
+        # edit — find X, replace with the same X. It must demote, not pass.
+        reason = validate_edit_shape(
+            "EDIT", existing_text="per CPC 2022", replacement_text="per CPC 2022"
+        )
+        assert reason is not None
+        assert "no-op" in reason
+
+    def test_edit_differing_only_by_case_survives(self):
+        # Exact-equality scope is deliberate: a case-only delta can be a
+        # genuine fix (defined-term capitalization), so it is NOT a no-op.
+        assert (
+            validate_edit_shape(
+                "EDIT", existing_text="shall", replacement_text="Shall"
+            )
+            is None
+        )
+
+    def test_edit_differing_only_by_whitespace_survives(self):
+        # Likewise a whitespace delta (e.g. spacing correction) is not
+        # byte-equal and is intentionally allowed through.
+        assert (
+            validate_edit_shape(
+                "EDIT", existing_text="NFPA13", replacement_text="NFPA 13"
+            )
+            is None
+        )
+
     def test_delete_missing_existing_text_demotes(self):
         reason = validate_edit_shape(
             "DELETE", existing_text=None, replacement_text=None
@@ -194,6 +223,26 @@ class TestParseTimeDemotion:
         assert "EDIT" in f.demotion_reason
         assert "existingText" in f.demotion_reason
         # The finding itself is preserved (issue, severity, file).
+        assert f.issue == "Stale code reference."
+        assert f.severity == "HIGH"
+
+    def test_noop_edit_demotes_to_report_only(self):
+        # A no-op EDIT (replacementText == existingText) must demote end to
+        # end so no empty edit instruction reaches the report or the sidecar,
+        # while the finding's prose is preserved as REPORT_ONLY.
+        findings = _parse_findings(
+            [_valid_review_payload(replacementText="per CPC 2022")]
+        )
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.actionType == REPORT_ONLY_ACTION
+        assert f.existingText is None
+        assert f.replacementText is None
+        assert f.edit_proposal is None
+        assert f.has_edit_proposal() is False
+        assert f.demotion_reason is not None
+        assert "no-op" in f.demotion_reason
+        # The underlying finding is still surfaced.
         assert f.issue == "Stale code reference."
         assert f.severity == "HIGH"
 
@@ -375,6 +424,24 @@ class TestDownstreamConsumers:
         )
         assert legacy.as_edit_proposal() is None
         assert legacy.has_edit_proposal() is False
+
+    def test_as_edit_proposal_rejects_noop_edit(self):
+        # The sidecar and report gate on as_edit_proposal(); a directly
+        # constructed no-op EDIT (bypassing the parser, e.g. a legacy resume
+        # payload) must not leak a no-op instruction into either.
+        noop = Finding(
+            severity="MEDIUM",
+            fileName="spec.docx",
+            section="3.0",
+            issue="Reworded but identical.",
+            actionType="EDIT",
+            existingText="install per manufacturer instructions",
+            replacementText="install per manufacturer instructions",
+            codeReference=None,
+            confidence=0.6,
+        )
+        assert noop.as_edit_proposal() is None
+        assert noop.has_edit_proposal() is False
 
     def test_explicit_proposal_with_invalid_shape_is_rejected(self):
         # Even when ``edit_proposal`` is set explicitly, an invalid shape
