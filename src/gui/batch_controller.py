@@ -135,6 +135,17 @@ def poll_and_collect_thread(app, run_epoch: int) -> None:
             f"Batch polling stopped: {reason}. Batch ID {app._batch_submission.job.batch_id} "
             "may still be running remotely."
         )
+        # Terminal failure for this run: there is no collect phase to hand
+        # off to (and thus no ``_do_collect`` finally to reach), so stop the
+        # trace recorder here on the worker thread — mirroring the
+        # submit-failure path above. ``on_review_error`` resets
+        # ``is_processing`` immediately without scheduling ``reset_ui``, so
+        # without this the recorder would leak: its writer thread never gets
+        # the shutdown sentinel (run trace left unflushed) and it stays the
+        # installed module-global recorder while a fresh run is already
+        # permitted to start. (STRUCTURAL_AUDIT P2-4.)
+        _stop_recorder(getattr(app, "_trace_recorder", None))
+        app._trace_recorder = None
         app._dispatch_if_current(run_epoch, lambda m=msg: app._on_review_error(m))
         return
     app._dispatch_if_current(run_epoch, lambda: app.log.log_success("Batch complete — collecting results..."))

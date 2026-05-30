@@ -169,7 +169,25 @@ one place the program can mislead, and it's exactly what the user must be able t
   > DISPUTED-filter dependency, and (c) add the second-pass cross-check verification step that was
   > missing entirely. No production code change needed — no shared-mutation test required because the
   > two passes never run concurrently.
-- **P2-4 — TraceRecorder global singleton reset is delayed.** `recorder.py:548` global, reset in `reset_ui`
+- **P2-4 — TraceRecorder global singleton reset is delayed.**
+  > **RESOLVED** (branch `claude/youthful-volta-94Wwd`). The literal "reset in `reset_ui` ~2.5s after
+  > completion" framing was already stale: the `reset_ui` stop is a redundant net, and the two main
+  > terminal paths tear the recorder down *synchronously on their own worker thread* — the
+  > submit-failure `except` (`batch_controller.py:80-81`) inline, and the collect path in
+  > `_do_collect`'s `finally` (`:365-366`). Both predate this audit (the finally landed in the original
+  > tracing commit `016636b`), so the normal run never relied on the delayed reset. Tracing every
+  > terminal path surfaced the **one real gap** P2-4's concern points at: the **poll-failure / detach**
+  > branch in `poll_and_collect_thread` dispatched `on_review_error` (which resets `is_processing`
+  > immediately, *without* scheduling `reset_ui`) and so had **no teardown at all** — leaking run-1's
+  > recorder (writer thread never sent its shutdown sentinel → trace left unflushed) and leaving it
+  > installed as the module-global while a fresh run was already permitted to start over it. The fix
+  > stops + clears the recorder on the poll worker thread before dispatching the error, mirroring the
+  > submit-failure path, and refreshes the now-stale `reset_ui` comment (the resume/durable-state
+  > subsystem it referenced was removed in `6a083a8`). Tracing/diagnostics only — never findings or the
+  > report. Covered by `tests/test_trace_recorder_teardown.py` (poll-failure + detach tear down and
+  > clear the global; the success path leaves the recorder for the collect phase; no-recorder teardown
+  > is a safe no-op; GUI-gated like the other GUI tests).
+  `recorder.py:548` global, reset in `reset_ui`
   ~2.5s after completion (`review_run_controller.py:179`). A user starting a second run inside that window
   could have run-1's late worker threads enqueue trace events into run-2's recorder. **Tracing/diagnostics
   only — never findings or the report.** Low; fix by nulling/stopping the recorder synchronously at
