@@ -67,12 +67,12 @@ CALIFORNIA_2025 = CodeCycle(
     # Triennial / Intervening cycle. Verify these strings against the
     # currently published matrix before relying on them; they are a
     # best-effort snapshot at the time the cycle was integrated.
-    nfpa13="2022 with California Amendments",
+    nfpa13="2025 with California Amendments",
     nfpa14="2019",
     nfpa20="2022 with California Amendments",
     nfpa24="2022",
     nfpa25="2020 with California Amendments",
-    nfpa72="2022 with California Amendments",
+    nfpa72="2025 with California Amendments",
     # ASHRAE editions referenced by Title 24 Part 6 (Energy) and CMC for
     # ventilation and refrigeration safety.
     ashrae_62_1="2022",
