@@ -71,7 +71,7 @@ CALIFORNIA_2025 = CodeCycle(
     nfpa14="2019",
     nfpa20="2022 with California Amendments",
     nfpa24="2022",
-    nfpa25="2013 with California Amendments",
+    nfpa25="2020 with California Amendments",
     nfpa72="2025 with California Amendments",
     # ASHRAE editions referenced by Title 24 Part 6 (Energy) and CMC for
     # ventilation and refrigeration safety.
