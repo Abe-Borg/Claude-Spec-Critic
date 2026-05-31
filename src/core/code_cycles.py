@@ -75,7 +75,7 @@ CALIFORNIA_2025 = CodeCycle(
     nfpa72="2025 with California Amendments",
     # ASHRAE editions referenced by Title 24 Part 6 (Energy) and CMC for
     # ventilation and refrigeration safety.
-    ashrae_62_1="2022",
+    ashrae_62_1="2019",
     ashrae_90_1="2022",
     ashrae_15="2022",
     # Uniform Plumbing Code trade-standards companion (IAPMO).
