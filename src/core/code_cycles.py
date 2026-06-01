@@ -171,8 +171,8 @@ CALIFORNIA_2025 = CodeCycle(
             source="California Fire Code 2025, Ch. 80",
         ),
         StandardEdition(
-            "NFPA 25", "2020", ca_amended=True, note="California Edition",
-            source="California Fire Code 2025, Ch. 80",
+            "NFPA 25", "2013", ca_amended=True, note="California Edition",
+            source="California Fire Code 2025, Ch. 80 (NFPA 25-2011 as amended, published as the 2013 California Edition; Title 19 CCR Sec. 904)",
         ),
         StandardEdition(
             "NFPA 72", "2025", ca_amended=True,
