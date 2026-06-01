@@ -572,37 +572,14 @@ def _pinned_standards_lines(cycle: CodeCycle) -> list[str]:
     pinned-standards field is empty, the block degrades to an empty
     list and the prompt skips it entirely.
     """
-    entries: list[tuple[str, str]] = []
-    if cycle.nfpa13:
-        entries.append(("NFPA 13", cycle.nfpa13))
-    if cycle.nfpa14:
-        entries.append(("NFPA 14", cycle.nfpa14))
-    if cycle.nfpa20:
-        entries.append(("NFPA 20", cycle.nfpa20))
-    if cycle.nfpa24:
-        entries.append(("NFPA 24", cycle.nfpa24))
-    if cycle.nfpa25:
-        entries.append(("NFPA 25", cycle.nfpa25))
-    if cycle.nfpa72:
-        entries.append(("NFPA 72", cycle.nfpa72))
-    if cycle.ashrae_62_1:
-        entries.append(("ASHRAE 62.1", cycle.ashrae_62_1))
-    if cycle.ashrae_90_1:
-        entries.append(("ASHRAE 90.1", cycle.ashrae_90_1))
-    if cycle.ashrae_15:
-        entries.append(("ASHRAE 15", cycle.ashrae_15))
-    if cycle.iapmo_tsc:
-        entries.append(("IAPMO Uniform Plumbing TSC", cycle.iapmo_tsc))
-    for standard, edition in cycle.ul_listing_editions:
-        if edition:
-            entries.append((standard, edition))
+    entries = [std for std in cycle.standards if std.edition]
     if not entries:
         return []
     lines: list[str] = [
         "Pinned standards editions for this cycle:",
         "",
     ]
-    lines.extend(f"- {standard}: {edition}" for standard, edition in entries)
+    lines.extend(f"- {std.name}: {std.edition_phrase}" for std in entries)
     lines.extend(
         [
             "",

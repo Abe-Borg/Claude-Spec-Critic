@@ -1,26 +1,20 @@
 """Tests for pinned standards editions.
 
-Pins the NFPA, ASHRAE, IAPMO, and UL editions
-adopted by California for the current cycle. The contract spans four
-surfaces:
+Pins the NFPA, ASHRAE, IAPMO, and UL editions adopted by California for the
+current cycle. The contract spans four surfaces:
 
-* ``CodeCycle`` carries the new edition fields, with ``CALIFORNIA_2025``
-  populated with the adoption matrix.
-* The reviewer system prompt and user message reference the pinned
-  editions so the model knows which editions to compare against.
-* The verifier system prompt renders a "Pinned standards editions"
-  block before the search budget, with explicit instructions to flag
-  edition drift.
-* The methodology note in the exported report enumerates the pinned
-  editions so reviewers see which editions drove the verdicts.
+* ``CodeCycle`` carries the pinned editions in a single ``standards`` tuple of
+  :class:`StandardEdition` (replacing the legacy flat ``nfpa13`` … fields), with
+  ``CALIFORNIA_2025`` populated from the adoption matrix.
+* The reviewer system prompt and user message reference the pinned editions so
+  the model knows which editions to compare against.
+* The verifier system prompt renders a "Pinned standards editions" block before
+  the search budget, with explicit instructions to flag edition drift.
+* The methodology note in the exported report enumerates the pinned editions so
+  reviewers see which editions drove the verdicts.
 
-This module covers the plan's success criteria:
-
-* The verifier system prompt contains the pinned editions.
-* A test finding citing NFPA 13 receives a verdict that references the
-  correct adopted edition (covered by the prompt-content assertions;
-  end-to-end model behavior is exercised in the eval harness).
-* The report methodology note enumerates the pinned editions.
+The editions for the fire-protection standards (NFPA 13/14/20/24/25/72) are
+locked to the California Fire Code 2025, Chapter 80 adoption table.
 """
 from __future__ import annotations
 
@@ -35,6 +29,7 @@ from src.core.code_cycles import (
     CALIFORNIA_2025,
     CodeCycle,
     DEFAULT_CYCLE,
+    StandardEdition,
 )
 from src.output.report_exporter import (
     _render_pinned_editions_note,
@@ -64,6 +59,20 @@ def _finding(file: str = "test.docx") -> Finding:
         replacementText="2025 CBC",
         codeReference="CBC §1234",
         confidence=0.8,
+    )
+
+
+def _bare_cycle(label: str = "bare") -> CodeCycle:
+    """A cycle with the code years populated but no pinned standards."""
+    return CodeCycle(
+        label=label,
+        cbc="2025",
+        cmc="2025",
+        cpc="2025",
+        energy_code="2025",
+        calgreen="2025",
+        asce7="7-22",
+        asce7_previous="7-16",
     )
 
 
@@ -99,87 +108,115 @@ def _all_text_from(doc: Document) -> str:
 
 
 # ===========================================================================
-# 1. CodeCycle dataclass carries the new fields
+# 1. StandardEdition rendering
+# ===========================================================================
+
+
+class TestStandardEditionRender:
+    def test_plain_edition_renders_year_only(self):
+        std = StandardEdition("NFPA 14", "2024")
+        assert std.edition_phrase == "2024"
+        assert std.description == "NFPA 14 2024"
+
+    def test_ca_amended_renders_one_directional_phrase(self):
+        # The phrasing must make clear California amends the standard, not the
+        # reverse — "<edition>, as amended by California".
+        std = StandardEdition("NFPA 13", "2025", ca_amended=True)
+        assert std.edition_phrase == "2025, as amended by California"
+        assert std.description == "NFPA 13 2025, as amended by California"
+
+    def test_ca_edition_note_renders_inline(self):
+        std = StandardEdition("NFPA 25", "2013", ca_amended=True, note="California Edition")
+        assert std.edition_phrase == "2013 California Edition"
+
+    def test_note_without_amendment_renders_parenthetical(self):
+        std = StandardEdition("UL 300", "2005", note="revised")
+        assert std.edition_phrase == "2005 (revised)"
+
+    def test_is_verified_reflects_source(self):
+        assert StandardEdition("NFPA 13", "2025", source="CFC 2025, Ch. 80").is_verified
+        assert not StandardEdition("ASHRAE 90.1", "2022", source="UNVERIFIED: confirm").is_verified
+        # No source at all is treated as not verified.
+        assert not StandardEdition("X", "1").is_verified
+
+
+# ===========================================================================
+# 2. CodeCycle carries the standards collection
 # ===========================================================================
 
 
 class TestCodeCycleFields:
-    def test_codecycle_has_nfpa_ashrae_iapmo_fields(self):
-        # Every NFPA / ASHRAE / IAPMO standard from the plan is on the
-        # dataclass schema.
-        for attr in (
-            "nfpa13", "nfpa14", "nfpa20", "nfpa24", "nfpa25", "nfpa72",
-            "ashrae_62_1", "ashrae_90_1", "ashrae_15",
-            "iapmo_tsc",
+    def test_codecycle_has_standards_for_each_org(self):
+        names = {std.name for std in CALIFORNIA_2025.standards}
+        for required in (
+            "NFPA 13", "NFPA 14", "NFPA 20", "NFPA 24", "NFPA 25", "NFPA 72",
+            "ASHRAE 62.1", "ASHRAE 90.1", "ASHRAE 15",
+            "IAPMO Uniform Plumbing TSC",
+            "UL 300", "UL 555", "UL 555S", "UL 268", "UL 1479",
         ):
-            assert hasattr(CALIFORNIA_2025, attr), f"missing field: {attr}"
+            assert required in names, f"missing pinned standard: {required}"
 
-    def test_codecycle_has_ul_listing_editions(self):
-        # UL editions are stored as a tuple of (standard, edition) pairs
-        # (not a dict) so the dataclass stays hashable under frozen=True.
-        assert isinstance(CALIFORNIA_2025.ul_listing_editions, tuple)
-        # Every UL standard from the plan is present.
-        standards = {s for s, _ in CALIFORNIA_2025.ul_listing_editions}
-        assert "UL 300" in standards
-        assert "UL 555" in standards
-        assert "UL 555S" in standards
-        assert "UL 268" in standards
-        assert "UL 1479" in standards
+    def test_nfpa_editions_match_cfc_2025_chapter_80(self):
+        # Locks in the fact-checked corrections against the California Fire
+        # Code 2025, Chapter 80 referenced-standards table.
+        expected = {
+            "NFPA 13": "2025",
+            "NFPA 14": "2024",
+            "NFPA 20": "2025",
+            "NFPA 24": "2025",
+            "NFPA 25": "2013",
+            "NFPA 72": "2025",
+        }
+        for name, edition in expected.items():
+            std = CALIFORNIA_2025.standard(name)
+            assert std is not None, f"missing {name}"
+            assert std.edition == edition, f"{name} expected {edition}, got {std.edition}"
 
-    def test_codecycle_is_hashable(self):
-        # Frozen dataclasses with hashable fields should remain hashable.
-        # Switching ul_listing_editions to a tuple-of-tuples preserves this
-        # because a dict field would break __hash__.
+    def test_standards_is_hashable_tuple(self):
+        # Frozen dataclass + tuple of frozen StandardEdition stays hashable.
+        assert isinstance(CALIFORNIA_2025.standards, tuple)
         assert hash(CALIFORNIA_2025) == hash(CALIFORNIA_2025)
-        # Round-trip through a set / dict key works.
         assert CALIFORNIA_2025 in {CALIFORNIA_2025}
 
     def test_california_2025_has_nonempty_pinned_editions(self):
-        # The adoption matrix is populated — pinning isn't merely a
-        # schema change with no data.
-        assert CALIFORNIA_2025.nfpa13
-        assert CALIFORNIA_2025.nfpa72
-        assert CALIFORNIA_2025.ashrae_62_1
-        assert CALIFORNIA_2025.ashrae_90_1
-        assert CALIFORNIA_2025.ul_listing_editions
+        assert CALIFORNIA_2025.standards
+        assert CALIFORNIA_2025.standard("NFPA 13") is not None
+        assert CALIFORNIA_2025.standard("NFPA 72") is not None
 
-    def test_codecycle_field_defaults_are_empty(self):
-        # A future cycle that doesn't populate these defaults should
-        # still construct fine.
-        c = CodeCycle(
-            label="future",
-            cbc="2028",
-            cmc="2028",
-            cpc="2028",
-            energy_code="2028",
-            calgreen="2028",
-            asce7="7-22",
-            asce7_previous="7-16",
-        )
-        assert c.nfpa13 == ""
-        assert c.ashrae_62_1 == ""
-        assert c.ul_listing_editions == ()
+    def test_edition_phrase_lookup(self):
+        assert CALIFORNIA_2025.edition_phrase("NFPA 13") == "2025, as amended by California"
+        assert CALIFORNIA_2025.edition_phrase("NFPA 14") == "2024"
+        assert CALIFORNIA_2025.edition_phrase("NFPA 25") == "2013 California Edition"
+        # Missing standard yields an empty string so callers can fall back.
+        assert CALIFORNIA_2025.edition_phrase("NFPA 9999") == ""
+
+    def test_default_cycle_has_no_pinned_standards(self):
+        # A future cycle that doesn't populate standards still constructs fine.
+        c = _bare_cycle("future")
+        assert c.standards == ()
+        assert c.edition_phrase("NFPA 13") == ""
+
+    def test_unverified_standards_surface(self):
+        # The provenance flag is queryable; the ASHRAE energy editions and the
+        # UL listings are deliberately marked UNVERIFIED pending code confirmation.
+        unverified = {std.name for std in CALIFORNIA_2025.unverified_standards()}
+        assert "ASHRAE 90.1" in unverified
+        assert "NFPA 13" not in unverified
 
 
 # ===========================================================================
-# 2. Reviewer system prompt + user message reference pinned editions
+# 3. Reviewer system prompt + user message reference pinned editions
 # ===========================================================================
 
 
 class TestReviewerPromptPinnedEditions:
     @pytest.mark.parametrize(
-        "label, edition_attr",
-        [
-            # Code edition misalignment category cites NFPA + ASHRAE.
-            ("NFPA 13", "nfpa13"),
-            ("NFPA 72", "nfpa72"),
-            ("ASHRAE 62.1", "ashrae_62_1"),
-            ("ASHRAE 90.1", "ashrae_90_1"),
-        ],
+        "label",
+        ["NFPA 13", "NFPA 72", "ASHRAE 62.1", "ASHRAE 90.1"],
     )
-    def test_system_prompt_mentions_nfpa_ashrae_editions(self, label, edition_attr):
+    def test_system_prompt_mentions_nfpa_ashrae_editions(self, label):
         sp = get_system_prompt(CALIFORNIA_2025)
-        assert f"{label} {getattr(CALIFORNIA_2025, edition_attr)}" in sp
+        assert f"{label} {CALIFORNIA_2025.edition_phrase(label)}" in sp
 
     def test_user_message_mentions_pinned_editions(self):
         um = get_single_spec_user_message(
@@ -191,89 +228,55 @@ class TestReviewerPromptPinnedEditions:
         assert "ASHRAE 90.1" in um
 
     def test_system_prompt_stable_across_calls(self):
-        # Cache breakpoint invariant — adding pinned editions must keep
-        # the prompt byte-stable across calls.
+        # Cache breakpoint invariant — the prompt must be byte-stable across calls.
         assert get_system_prompt(CALIFORNIA_2025) == get_system_prompt(CALIFORNIA_2025)
 
     def test_system_prompt_changes_when_pinned_edition_changes(self):
-        # Two cycles that differ only in pinned NFPA 13 edition should
+        # Two cycles that differ only in the pinned NFPA 13 edition should
         # produce different system prompts.
-        alt = replace(CALIFORNIA_2025, nfpa13="2025 edition")
-        sp_a = get_system_prompt(CALIFORNIA_2025)
-        sp_b = get_system_prompt(alt)
-        assert sp_a != sp_b
+        alt = replace(
+            CALIFORNIA_2025,
+            standards=(StandardEdition("NFPA 13", "2099"),),
+        )
+        assert get_system_prompt(CALIFORNIA_2025) != get_system_prompt(alt)
 
 
 # ===========================================================================
-# 3. Verifier system prompt block
+# 4. Verifier system prompt block
 # ===========================================================================
 
 
 class TestVerifierPinnedEditionsBlock:
-    def test_pinned_lines_render_each_populated_field(self):
-        lines = _pinned_standards_lines(CALIFORNIA_2025)
-        joined = "\n".join(lines)
-        # Header is present.
+    def test_pinned_lines_render_each_populated_standard(self):
+        joined = "\n".join(_pinned_standards_lines(CALIFORNIA_2025))
         assert "Pinned standards editions" in joined
-        # Each populated field appears with its label.
-        assert f"NFPA 13: {CALIFORNIA_2025.nfpa13}" in joined
-        assert f"NFPA 72: {CALIFORNIA_2025.nfpa72}" in joined
-        assert f"ASHRAE 62.1: {CALIFORNIA_2025.ashrae_62_1}" in joined
-        assert f"ASHRAE 90.1: {CALIFORNIA_2025.ashrae_90_1}" in joined
-        # IAPMO TSC + UL editions surface too.
+        assert "NFPA 13: 2025, as amended by California" in joined
+        assert "NFPA 72: 2025, as amended by California" in joined
+        assert "ASHRAE 62.1: 2019" in joined
+        assert "ASHRAE 90.1: 2022" in joined
         assert "IAPMO Uniform Plumbing TSC" in joined
         assert "UL 300:" in joined
         assert "UL 555:" in joined
 
     def test_pinned_lines_include_drift_instruction(self):
-        lines = _pinned_standards_lines(CALIFORNIA_2025)
-        joined = "\n".join(lines)
-        # The plan requires the prompt to explicitly tell the model to
-        # flag a different edition than the one pinned.
+        joined = "\n".join(_pinned_standards_lines(CALIFORNIA_2025))
         assert "flag" in joined.lower()
         assert "edition" in joined.lower()
 
     def test_pinned_lines_empty_when_no_editions(self):
-        # A cycle with no pinned standards renders an empty block so
-        # the prompt doesn't make a claim that isn't true.
-        bare = CodeCycle(
-            label="bare",
-            cbc="2025",
-            cmc="2025",
-            cpc="2025",
-            energy_code="2025",
-            calgreen="2025",
-            asce7="7-22",
-            asce7_previous="7-16",
-        )
-        assert _pinned_standards_lines(bare) == []
+        assert _pinned_standards_lines(_bare_cycle()) == []
 
-    def test_pinned_lines_skip_empty_fields(self):
-        # A partial cycle (only NFPA 13 populated) renders only that
-        # field — empty fields are silently dropped.
+    def test_pinned_lines_skip_unpinned_standards(self):
         partial = replace(
-            CodeCycle(
-                label="partial",
-                cbc="2025",
-                cmc="2025",
-                cpc="2025",
-                energy_code="2025",
-                calgreen="2025",
-                asce7="7-22",
-                asce7_previous="7-16",
-            ),
-            nfpa13="2022",
+            _bare_cycle("partial"),
+            standards=(StandardEdition("NFPA 13", "2022"),),
         )
-        lines = _pinned_standards_lines(partial)
-        joined = "\n".join(lines)
+        joined = "\n".join(_pinned_standards_lines(partial))
         assert "NFPA 13: 2022" in joined
         assert "NFPA 72:" not in joined
         assert "ASHRAE" not in joined
 
     def test_verifier_pinned_block_renders_for_text_fallback_prompt(self):
-        # The text-fallback branch (verdict tool disabled) must also
-        # carry the pinned editions — the model verifies the same way
-        # regardless of which branch it ends up in.
         prompt = _get_verification_system_prompt(
             CALIFORNIA_2025, include_verdict_tool=False
         )
@@ -281,8 +284,6 @@ class TestVerifierPinnedEditionsBlock:
         assert "NFPA 13" in prompt
 
     def test_verifier_pinned_block_before_search_budget(self):
-        # Pinned editions render before the search budget so the model
-        # reads them while still framing its first query.
         prompt = _get_verification_system_prompt(
             CALIFORNIA_2025, include_verdict_tool=True
         )
@@ -293,60 +294,37 @@ class TestVerifierPinnedEditionsBlock:
         assert pinned_idx < budget_idx
 
     def test_verifier_prompt_stable_across_calls(self):
-        # Cache breakpoint invariant — the verifier system prompt must
-        # remain byte-stable across calls so cache breakpoints land in
-        # the same place.
         a = _get_verification_system_prompt(CALIFORNIA_2025, include_verdict_tool=True)
         b = _get_verification_system_prompt(CALIFORNIA_2025, include_verdict_tool=True)
         assert a == b
 
 
 # ===========================================================================
-# 4. Methodology note enumerates pinned editions
+# 5. Methodology note enumerates pinned editions
 # ===========================================================================
 
 
 class TestMethodologyNotePinnedEditions:
     def test_render_note_includes_all_populated_editions(self):
         note = _render_pinned_editions_note("2025")
-        # Each populated edition appears in the rendered note.
-        assert f"NFPA 13 {CALIFORNIA_2025.nfpa13}" in note
-        assert f"ASHRAE 62.1 {CALIFORNIA_2025.ashrae_62_1}" in note
+        assert "NFPA 13 2025, as amended by California" in note
+        assert "ASHRAE 62.1 2019" in note
         assert "UL 300" in note
 
     def test_render_note_empty_when_cycle_has_no_pinning(self):
-        # Unknown cycle labels fall back to DEFAULT_CYCLE; if the
-        # default happens to have no pinning the note returns "".
-        # We can't test that directly with CALIFORNIA_2025 (which is
-        # the default and IS populated), but we can verify the empty
-        # branch by stubbing AVAILABLE_CYCLES via the dataclass.
-        bare = CodeCycle(
-            label="bare",
-            cbc="2025",
-            cmc="2025",
-            cpc="2025",
-            energy_code="2025",
-            calgreen="2025",
-            asce7="7-22",
-            asce7_previous="7-16",
-        )
-        # Inject a fake "bare" cycle for the duration of this test.
-        AVAILABLE_CYCLES["__test_bare__"] = bare
+        AVAILABLE_CYCLES["__test_bare__"] = _bare_cycle()
         try:
             assert _render_pinned_editions_note("__test_bare__") == ""
         finally:
             AVAILABLE_CYCLES.pop("__test_bare__", None)
 
     def test_render_note_unknown_label_falls_back_to_default(self):
-        # An unknown label should not crash — it should use DEFAULT_CYCLE
-        # which is CALIFORNIA_2025 (populated). This protects future
-        # callers that pass an arbitrary cycle_label string.
         note = _render_pinned_editions_note("not-a-real-cycle")
         assert "NFPA 13" in note
 
 
 # ===========================================================================
-# 5. End-to-end report export carries pinned editions
+# 6. End-to-end report export carries pinned editions
 # ===========================================================================
 
 
@@ -357,21 +335,16 @@ class TestExportedReportPinnedEditions:
         out = tmp_path / "report.docx"
         export_report(_StubPipelineResult(review_result=result), out)
         text = _all_text_from(Document(str(out)))
-        # The pinned-editions methodology paragraph must surface in
-        # the final exported document.
         assert "pinned the following standards editions" in text
-        # Cross-check that at least one pinned standard actually appears.
         assert "NFPA 13" in text
 
 
 # ===========================================================================
-# 6. DEFAULT_CYCLE remains California 2025 (regression guard)
+# 7. DEFAULT_CYCLE remains California 2025 (regression guard)
 # ===========================================================================
 
 
 class TestDefaultCycleInvariant:
     def test_default_cycle_is_california_2025(self):
-        # Plan invariant from CLAUDE.md §1: California 2025 is the only
-        # supported cycle. Pinned editions must not introduce a new cycle.
         assert DEFAULT_CYCLE is CALIFORNIA_2025
         assert list(AVAILABLE_CYCLES.keys()) == ["2025"]

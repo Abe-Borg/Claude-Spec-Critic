@@ -902,33 +902,12 @@ def _render_pinned_editions_note(cycle_label: str) -> str:
     note degrades gracefully.
     """
     cycle: CodeCycle = AVAILABLE_CYCLES.get(cycle_label, DEFAULT_CYCLE)
-    entries: list[tuple[str, str]] = []
-    if cycle.nfpa13:
-        entries.append(("NFPA 13", cycle.nfpa13))
-    if cycle.nfpa14:
-        entries.append(("NFPA 14", cycle.nfpa14))
-    if cycle.nfpa20:
-        entries.append(("NFPA 20", cycle.nfpa20))
-    if cycle.nfpa24:
-        entries.append(("NFPA 24", cycle.nfpa24))
-    if cycle.nfpa25:
-        entries.append(("NFPA 25", cycle.nfpa25))
-    if cycle.nfpa72:
-        entries.append(("NFPA 72", cycle.nfpa72))
-    if cycle.ashrae_62_1:
-        entries.append(("ASHRAE 62.1", cycle.ashrae_62_1))
-    if cycle.ashrae_90_1:
-        entries.append(("ASHRAE 90.1", cycle.ashrae_90_1))
-    if cycle.ashrae_15:
-        entries.append(("ASHRAE 15", cycle.ashrae_15))
-    if cycle.iapmo_tsc:
-        entries.append(("IAPMO Uniform Plumbing TSC", cycle.iapmo_tsc))
-    for standard, edition in cycle.ul_listing_editions:
-        if edition:
-            entries.append((standard, edition))
+    entries = [std for std in cycle.standards if std.edition]
     if not entries:
         return ""
-    rendered = ", ".join(f"{standard} {edition}" for standard, edition in entries)
+    # Join with semicolons because an individual description can itself contain a
+    # comma (e.g. "NFPA 13 2025, as amended by California").
+    rendered = "; ".join(std.description for std in entries)
     return (
         f"This review pinned the following standards editions per the {cycle_label} "
         f"California cycle: {rendered}. Findings referencing other editions should "

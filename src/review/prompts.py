@@ -129,10 +129,10 @@ def get_system_prompt(cycle: CodeCycle) -> str:
         calgreen=cycle.calgreen,
         asce7=cycle.asce7,
         asce7_prev=cycle.asce7_previous,
-        nfpa13=cycle.nfpa13 or "current edition",
-        nfpa72=cycle.nfpa72 or "current edition",
-        ashrae_62_1=cycle.ashrae_62_1 or "current edition",
-        ashrae_90_1=cycle.ashrae_90_1 or "current edition",
+        nfpa13=cycle.edition_phrase("NFPA 13") or "current edition",
+        nfpa72=cycle.edition_phrase("NFPA 72") or "current edition",
+        ashrae_62_1=cycle.edition_phrase("ASHRAE 62.1") or "current edition",
+        ashrae_90_1=cycle.edition_phrase("ASHRAE 90.1") or "current edition",
     )
     return f"""You are a specification reviewer for mechanical and plumbing disciplines. The project context is California K-12 education facilities under DSA jurisdiction.
 
@@ -238,12 +238,17 @@ def get_single_spec_user_message(
 
     final_task_block = _render_final_task_block(use_ids=use_ids)
 
+    nfpa13 = cycle.edition_phrase("NFPA 13") or "current edition"
+    nfpa72 = cycle.edition_phrase("NFPA 72") or "current edition"
+    ashrae_62_1 = cycle.edition_phrase("ASHRAE 62.1") or "current edition"
+    ashrae_90_1 = cycle.edition_phrase("ASHRAE 90.1") or "current edition"
+
     return (
         "Review the following specification document for a California K-12 project under DSA jurisdiction.\n\n"
         f"Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, "
         f"Energy Code {cycle.energy_code}, CALGreen {cycle.calgreen}, ASCE {cycle.asce7}, "
-        f"NFPA 13 {cycle.nfpa13 or 'current edition'}, NFPA 72 {cycle.nfpa72 or 'current edition'}, "
-        f"ASHRAE 62.1 {cycle.ashrae_62_1 or 'current edition'}, ASHRAE 90.1 {cycle.ashrae_90_1 or 'current edition'}.\n\n"
+        f"NFPA 13 {nfpa13}, NFPA 72 {nfpa72}, "
+        f"ASHRAE 62.1 {ashrae_62_1}, ASHRAE 90.1 {ashrae_90_1}.\n\n"
         "Reminders:\n"
         "- Review every section in the file.\n"
         "- Submit findings via the submit_review_findings tool.\n"
