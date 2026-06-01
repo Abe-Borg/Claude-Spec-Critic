@@ -133,6 +133,33 @@ class CodeCycle:
         """Standards whose edition has not been confirmed against the published code."""
         return tuple(std for std in self.standards if not std.is_verified)
 
+    def edition_summary_lines(self) -> list[str]:
+        """One ``"- NFPA 13: 2025, as amended by California"`` bullet per standard.
+
+        Emits a line for each pinned standard with a non-empty edition, in
+        declaration order. This is the colon/bullet rendering used by the
+        verifier prompt's "Pinned standards editions" block. Stable per cycle
+        (no per-spec input), so it is safe inside a cached prefix.
+        """
+        return [
+            f"- {std.name}: {std.edition_phrase}"
+            for std in self.standards
+            if std.edition
+        ]
+
+    def edition_inline_phrase(self) -> str:
+        """Comma-joined ``"NFPA 13 2025, as amended by California, ASHRAE 15 2022"``.
+
+        Renders every pinned standard with a non-empty edition as one inline
+        phrase (each entry is :attr:`StandardEdition.description`). Used by the
+        reviewer prompt, where editions are named inside running prose rather
+        than a bullet list — the space form keeps ``"<name> <edition_phrase>"``
+        intact. Returns ``""`` when the cycle pins no editions.
+        """
+        return ", ".join(
+            std.description for std in self.standards if std.edition
+        )
+
 
 # ---------------------------------------------------------------------------
 # California 2025 cycle (Title 24, effective January 1, 2026)
