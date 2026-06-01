@@ -25,6 +25,8 @@ from ..core.api_config import (
     PHASE_VERIFICATION_CONTINUATION,
     PHASE_VERIFICATION_RETRY,
     VERIFICATION_MODEL_DEFAULT as VERIFICATION_MODEL,
+    cache_diagnostics_params,
+    extract_cache_diagnostics,
     model_supports_adaptive_thinking,
     verification_max_tokens,
 )
@@ -1671,6 +1673,15 @@ def _run_verification_call(
             # as a continuation that did not converge.
             search_budget_ceiling = max(1, int(decision.web_search_max_uses) * 2)
             continuation_count = 0
+            # Prompt-cache diagnostics (beta, opt-in) diff each continuation
+            # against the prior turn's response: the system prompt + tools +
+            # initial user message form a stable cached prefix that each
+            # ``pause_turn`` resume should hit. ``None`` on the first call (no
+            # prior message) and whenever the feature is disabled, in which
+            # case the helpers below are exact no-ops and the request shape is
+            # byte-identical to before. Reset per attempt — a retry restarts
+            # the message list, so its first call has no prior id to diff.
+            prev_message_id: str | None = None
             for _ in range(max_continuations + 1):
                 # --- Streaming API required for web search server tool ---
                 # ``extra_headers`` is forwarded as an SDK transport kwarg
@@ -1678,8 +1689,15 @@ def _run_verification_call(
                 # because the same params dict shape is also used by the
                 # batch path, where the API rejects unknown body keys.
                 stream_call_kwargs = dict(stream_kwargs)
-                if extra_headers:
-                    stream_call_kwargs["extra_headers"] = extra_headers
+                call_headers = dict(extra_headers) if extra_headers else {}
+                # Opt-in cache diagnostics: returns (None, None) unless enabled
+                # AND a prior message id exists, so the common path adds nothing.
+                diag_body, diag_headers = cache_diagnostics_params(prev_message_id)
+                if diag_body is not None:
+                    stream_call_kwargs["extra_body"] = diag_body
+                    call_headers.update(diag_headers or {})
+                if call_headers:
+                    stream_call_kwargs["extra_headers"] = call_headers
                 with client.messages.stream(
                     messages=messages,
                     **stream_call_kwargs,
@@ -1689,6 +1707,12 @@ def _run_verification_call(
                 # Tracing: emit content-block events (thinking / tool_use /
                 # web_search / web_fetch) on the parent verification span.
                 _trace.capture_response_content_blocks(trace_parent, response)
+                # Tracing: when cache diagnostics was requested, record the
+                # response-side divergence report (no-ops when absent/disabled).
+                _trace.capture_cache_diagnostics(
+                    trace_parent, diagnostics=extract_cache_diagnostics(response)
+                )
+                prev_message_id = getattr(response, "id", None)
                 stop_reason = getattr(response, "stop_reason", None)
                 stop_class = classify_verification_stop_reason(stop_reason)
                 # ``tool_use`` is a successful terminal state when the model

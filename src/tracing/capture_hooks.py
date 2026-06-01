@@ -29,6 +29,7 @@ from .recorder import (
 )
 from .spans import (
     EVENT_BUDGET_EXHAUSTED,
+    EVENT_CACHE_DIAGNOSTICS,
     EVENT_CACHE_HIT,
     EVENT_CACHE_MISS,
     EVENT_CONTINUATION_RESUME,
@@ -375,6 +376,24 @@ def capture_continuation_resume(handle: SpanHandle | None, *, continuation_index
     if recorder is None:
         return
     recorder.add_event(handle, EVENT_CONTINUATION_RESUME, continuation_index=continuation_index)
+
+
+@_safe
+def capture_cache_diagnostics(handle: SpanHandle | None, *, diagnostics: Any) -> None:
+    """Record a beta prompt-cache ``diagnostics`` object on the span.
+
+    ``diagnostics`` is the response-side object returned when a request carries
+    ``diagnostics.previous_message_id`` under the ``cache-diagnosis-2026-04-07``
+    beta (see ``api_config.extract_cache_diagnostics``). No-ops on a falsy
+    value so a call that did not request — or did not receive — diagnostics
+    stamps no event.
+    """
+    if not diagnostics:
+        return
+    recorder = _get()
+    if recorder is None:
+        return
+    recorder.add_event(handle, EVENT_CACHE_DIAGNOSTICS, diagnostics=diagnostics)
 
 
 @_safe

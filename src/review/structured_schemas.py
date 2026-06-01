@@ -13,6 +13,7 @@ JSON-schema final response.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 
@@ -283,16 +284,39 @@ _VERIFICATION_TOOL_NAME = "submit_verification_verdict"
 _TRIAGE_TOOL_NAME = "submit_triage_classifications"
 
 
+ENV_STRICT_TOOL_USE = "SPEC_CRITIC_STRICT_TOOL_USE"
+_STRICT_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
+
+
 def _strict_enabled() -> bool:
     """Whether to attach ``"strict": true`` to tool definitions.
 
-    Off. The same era of API restrictions that block forcing tool_choice
-    with adaptive thinking may also reject strict mode under thinking.
-    The schemas are authored to be strict-compatible (every property
-    required, nullable for optional, no oneOf/anyOf) so flipping this on
-    is a one-line code change with no schema rework needed.
+    Strict tool use grammar-constrains the model's tool input to the declared
+    JSON Schema, eliminating the malformed-/truncated-payload failure mode the
+    tagged-JSON text fallback parsers exist to absorb — and which, on the
+    review path, otherwise surfaces as a "failed review" spec that emits zero
+    findings. The review / cross-check / verification / triage schemas are all
+    authored to be strict-compatible (every property required, optionals
+    nullable, no ``oneOf``/``anyOf``), so toggling this needs no schema rework.
+
+    Default OFF, opt-in via ``SPEC_CRITIC_STRICT_TOOL_USE`` (any truthy,
+    non-disable value; rollback with ``=0`` / ``false`` / ``no`` / ``off``).
+    It is off by default for one specific reason: this codebase cannot confirm
+    from its hermetic test harness that ``strict: true`` is accepted *together
+    with adaptive thinking* on the live API (forcing ``tool_choice`` under
+    thinking IS rejected, and strict mode is an adjacent grammar constraint
+    whose interaction is unverified here). Defaulting it on would risk a hard
+    HTTP 400 at batch/stream submit on every run — contrary to this codebase's
+    standing rule that a misconfiguration yields a safe request, never an API
+    rejection. Enable it after a one-batch smoke test against the live API;
+    the tagged-JSON text fallback parsers stay reachable either way as
+    defense-in-depth.
     """
-    return False
+    raw = os.environ.get(ENV_STRICT_TOOL_USE)
+    if raw is None:
+        return False
+    val = raw.strip().lower()
+    return val != "" and val not in _STRICT_DISABLE_TOKENS
 
 
 def review_findings_tool() -> dict[str, Any]:

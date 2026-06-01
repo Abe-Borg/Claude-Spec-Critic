@@ -62,6 +62,7 @@ EVENT_CONTINUATION_RESUME = "continuation_resume"
 EVENT_PARSE_ATTEMPT = "parse_attempt"
 EVENT_CACHE_HIT = "cache_hit"
 EVENT_CACHE_MISS = "cache_miss"
+EVENT_CACHE_DIAGNOSTICS = "cache_diagnostics"  # beta prompt-cache divergence report
 EVENT_ESCALATION_DECISION = "escalation_decision"
 EVENT_GROUNDING_OUTCOME = "grounding_outcome"
 EVENT_BUDGET_EXHAUSTED = "budget_exhausted_marker"
