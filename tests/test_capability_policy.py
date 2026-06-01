@@ -190,3 +190,68 @@ class TestUnknownModelWarnsLoudly:
             ):
                 model_capabilities(model)
         assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+# ---------------------------------------------------------------------------
+# Effort policy — review/cross-check use xhigh; verification stays bounded
+# ---------------------------------------------------------------------------
+
+
+class TestEffortPolicy:
+    """Per-phase effort levels. Review and cross-check moved to ``xhigh``
+    (Anthropic's recommended starting point for coding/agentic work on Opus
+    4.7/4.8); verification stays medium (Sonnet) / high (Opus escalation) so
+    the verdict envelope doesn't balloon."""
+
+    def test_review_uses_xhigh(self) -> None:
+        assert effort_config_for(model=MODEL_OPUS_48, phase=api_config.PHASE_REVIEW) == {
+            "effort": "xhigh"
+        }
+
+    def test_cross_check_uses_xhigh(self) -> None:
+        assert effort_config_for(
+            model=MODEL_SONNET_46, phase=api_config.PHASE_CROSS_CHECK
+        ) == {"effort": "xhigh"}
+
+    def test_sonnet_verification_stays_medium(self) -> None:
+        # The xhigh bump must not leak into verification — the initial pass is
+        # a bounded verdict, not deep reasoning.
+        assert effort_config_for(
+            model=MODEL_SONNET_46, phase=PHASE_VERIFICATION
+        ) == {"effort": "medium"}
+
+    def test_opus_escalation_stays_high(self) -> None:
+        assert effort_config_for(
+            model=MODEL_OPUS_48, phase=PHASE_VERIFICATION
+        ) == {"effort": "high"}
+
+    def test_haiku_omits_effort_everywhere(self) -> None:
+        # Haiku does not support effort; the helper must omit the field.
+        assert effort_config_for(model=MODEL_HAIKU_45, phase=api_config.PHASE_REVIEW) is None
+
+
+# ---------------------------------------------------------------------------
+# Default models track the newest Opus generation (4.8)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultModelsAreOpus48:
+    """Review and verification-escalation default to Opus 4.8 — same
+    capability profile as 4.7 (pinned equal above) at same-or-better pricing.
+    Pinned so a future model bump is a deliberate, reviewed edit."""
+
+    def test_review_default_is_opus_48(self) -> None:
+        # Holds when SPEC_CRITIC_REVIEW_MODEL is unset (the test harness env).
+        assert api_config.REVIEW_MODEL_DEFAULT == MODEL_OPUS_48
+
+    def test_escalation_default_is_opus_48(self) -> None:
+        assert api_config.VERIFICATION_ESCALATION_MODEL == MODEL_OPUS_48
+
+    def test_initial_verifier_still_sonnet(self) -> None:
+        # Escalation only fires when initial != escalation model; keep them
+        # distinct so the escalation tier stays meaningful.
+        assert api_config.VERIFICATION_MODEL_DEFAULT == MODEL_SONNET_46
+        assert api_config.VERIFICATION_MODEL_DEFAULT != api_config.VERIFICATION_ESCALATION_MODEL
+
+    def test_cross_check_still_sonnet(self) -> None:
+        assert api_config.CROSS_CHECK_MODEL_DEFAULT == MODEL_SONNET_46

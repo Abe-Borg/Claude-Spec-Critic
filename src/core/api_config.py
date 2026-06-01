@@ -5,10 +5,10 @@ beta headers, web-search tool configuration, and request-shape policy
 (prompt caching, adaptive thinking, effort).
 
 Model identifiers may be overridden via env vars:
-    SPEC_CRITIC_REVIEW_MODEL                — review (default Opus 4.7).
+    SPEC_CRITIC_REVIEW_MODEL                — review (default Opus 4.8).
     SPEC_CRITIC_VERIFICATION_MODEL          — verification initial pass
                                               (default Sonnet 4.6).
-    SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL — escalation (default Opus 4.7).
+    SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL — escalation (default Opus 4.8).
     SPEC_CRITIC_TRIAGE_MODEL                — verification triage
                                               (default Haiku 4.5).
 """
@@ -30,9 +30,13 @@ MODEL_OPUS_47 = "claude-opus-4-7"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
 MODEL_HAIKU_45 = "claude-haiku-4-5"
 
-# Verification routes through Sonnet first and reserves Opus for escalation
-# on CRITICAL/HIGH UNVERIFIED findings.
-REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_47)
+# Review runs on the current Opus flagship; verification routes through
+# Sonnet first and reserves Opus for escalation on CRITICAL/HIGH UNVERIFIED
+# findings. Defaults track the newest Opus generation (4.8) — its capability
+# profile is identical to 4.7 (already whitelisted) at same-or-better
+# first-party pricing, so the bump is a strict upgrade. Override any of
+# these via the matching ``SPEC_CRITIC_*_MODEL`` env var.
+REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_48)
 CROSS_CHECK_MODEL_DEFAULT = MODEL_SONNET_46
 VERIFICATION_MODEL_DEFAULT = os.environ.get(
     "SPEC_CRITIC_VERIFICATION_MODEL", MODEL_SONNET_46
@@ -40,7 +44,7 @@ VERIFICATION_MODEL_DEFAULT = os.environ.get(
 
 # Model used when escalating a low-confidence/high-severity verification.
 VERIFICATION_ESCALATION_MODEL = os.environ.get(
-    "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_47
+    "SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL", MODEL_OPUS_48
 )
 
 # Verification triage pre-pass (triage.classify_findings_with_haiku) decides
@@ -426,9 +430,13 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 #
 # The Anthropic API accepts an ``output_config.effort`` parameter on
 # supported models. The value tunes how eagerly the model produces tokens
-# and how aggressively it pursues tool calls. The four documented levels
-# are ``low`` / ``medium`` / ``high`` / ``xhigh`` (plus ``max``); we don't
-# use ``max`` because it overshoots the verification verdict envelope.
+# and how aggressively it pursues tool calls. The documented levels are
+# ``low`` / ``medium`` / ``high`` / ``xhigh`` (plus ``max``). The review and
+# cross-check phases use ``xhigh`` — Anthropic recommends it as the starting
+# point for coding/agentic work on Opus 4.7/4.8, and per-spec review is the
+# deepest-reasoning phase in the pipeline. We still don't use ``max`` (it
+# overshoots without a measured benefit for this workload), and verification
+# stays at medium/high so the verdict envelope doesn't balloon.
 #
 # Effort is a request-policy decision, not a prompt one. Centralizing it
 # here keeps every request site (review / batch review / cross-check /
@@ -440,20 +448,21 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 #
 # - Sonnet verification (PHASE_VERIFICATION{,_RETRY,_CONTINUATION}): medium.
 # - Opus verification (i.e. escalation): high.
-# - Opus/Sonnet deep review (PHASE_REVIEW, PHASE_CROSS_CHECK): high.
+# - Opus/Sonnet deep review (PHASE_REVIEW, PHASE_CROSS_CHECK): xhigh.
 # - Triage (Haiku): omit (Haiku does not support effort).
 # - Unknown model: omit.
 
 EFFORT_MEDIUM = "medium"
 EFFORT_HIGH = "high"
+EFFORT_XHIGH = "xhigh"
 
 # Phases whose request paths route through ``output_config.effort``. Triage
 # is intentionally omitted — it defaults to Haiku which does not support
 # effort, and the workload is a small classification pass that does not
 # benefit from elevated effort.
 _PHASE_DEFAULT_EFFORT: dict[str, str] = {
-    PHASE_REVIEW: EFFORT_HIGH,
-    PHASE_CROSS_CHECK: EFFORT_HIGH,
+    PHASE_REVIEW: EFFORT_XHIGH,
+    PHASE_CROSS_CHECK: EFFORT_XHIGH,
     PHASE_VERIFICATION: EFFORT_MEDIUM,
     PHASE_VERIFICATION_RETRY: EFFORT_MEDIUM,
     PHASE_VERIFICATION_CONTINUATION: EFFORT_MEDIUM,
@@ -831,3 +840,91 @@ def extract_cache_usage(usage) -> dict[str, int]:
         "cache_creation_input_tokens": int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
         "cache_read_input_tokens": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Cache diagnostics (beta, opt-in observability)
+# ---------------------------------------------------------------------------
+#
+# The ``cache-diagnosis-2026-04-07`` beta lets a request carry a
+# ``diagnostics.previous_message_id`` and receive a ``diagnostics`` object on
+# the response that fingerprints the current and previous request and reports
+# the first point of prompt-prefix divergence — i.e. *why* a cache hit did not
+# occur. It is a debugging aid for the cache-breakpoint-stability invariant
+# this app cares about, NOT a request-shape change, so it stays default-off and
+# is requested only when an operator is actively investigating a miss.
+#
+# Constraints worth remembering at the call site:
+#   - First-party Claude API only (unavailable on Bedrock / Vertex).
+#   - Needs a *previous* message id to diff against, so it produces signal only
+#     on sequential same-prefix synchronous calls (the verification
+#     continuation loop), never on the Batch API (batch items have no prior
+#     message id to reference).
+
+ENV_CACHE_DIAGNOSTICS = "SPEC_CRITIC_CACHE_DIAGNOSTICS"
+CACHE_DIAGNOSTICS_BETA = "cache-diagnosis-2026-04-07"
+
+# Mirrors the disable-token convention used by the tracing / cache modules.
+_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
+
+
+def cache_diagnostics_enabled() -> bool:
+    """Whether to request prompt-cache diagnostics. Default OFF.
+
+    Opt-in via ``SPEC_CRITIC_CACHE_DIAGNOSTICS`` set to any truthy,
+    non-disable value. Off by default because it is a beta, first-party-only
+    observability feature that only an operator chasing a cache miss needs;
+    leaving it off keeps the request byte-identical to today.
+    """
+    raw = os.environ.get(ENV_CACHE_DIAGNOSTICS)
+    if raw is None:
+        return False
+    val = raw.strip().lower()
+    return val != "" and val not in _DISABLE_TOKENS
+
+
+def cache_diagnostics_params(
+    previous_message_id: str | None,
+) -> tuple[dict | None, dict | None]:
+    """Return ``(extra_body, extra_headers)`` to request cache diagnostics.
+
+    Returns ``(None, None)`` unless cache diagnostics is enabled AND a
+    ``previous_message_id`` is supplied — the feature is meaningless without a
+    prior message to diff against, so an isolated call cleanly no-ops.
+
+    The body param rides the SDK ``extra_body`` seam and the beta rides
+    ``extra_headers`` (``anthropic-beta``) so this stays correct on SDK
+    versions that do not yet model ``diagnostics`` natively — the same
+    transport-seam discipline the verification request builder already uses.
+    """
+    if not previous_message_id or not cache_diagnostics_enabled():
+        return None, None
+    extra_body = {"diagnostics": {"previous_message_id": previous_message_id}}
+    extra_headers = {"anthropic-beta": CACHE_DIAGNOSTICS_BETA}
+    return extra_body, extra_headers
+
+
+def extract_cache_diagnostics(message) -> dict | None:
+    """Pull the beta ``diagnostics`` object off a response message, if present.
+
+    Defensive by construction: the SDK ``Message`` model is configured
+    ``extra="allow"``, so an unmodeled ``diagnostics`` field round-trips as an
+    attribute. Returns ``None`` when absent (the common case, or the feature
+    disabled) or on any access/serialization error — a diagnostics read must
+    never sink a verification.
+    """
+    try:
+        diag = getattr(message, "diagnostics", None)
+    except Exception:
+        return None
+    if diag is None:
+        return None
+    if isinstance(diag, dict):
+        return diag
+    dumper = getattr(diag, "model_dump", None)
+    if callable(dumper):
+        try:
+            return dumper()
+        except Exception:
+            return None
+    return None
