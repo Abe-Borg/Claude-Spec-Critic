@@ -101,7 +101,11 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
-            "description": "0..1 confidence in the finding.",
+            "description": (
+                "0..1 confidence in the finding. >=0.85: directly evidenced by "
+                "quoted spec text and unambiguous. 0.60-0.84: well-supported but "
+                "contextual or interpretive. <0.60: weak or indirect evidence."
+            ),
         },
         "anchorText": {
             "type": ["string", "null"],

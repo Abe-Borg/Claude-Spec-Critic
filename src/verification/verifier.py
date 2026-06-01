@@ -572,14 +572,14 @@ def _pinned_standards_lines(cycle: CodeCycle) -> list[str]:
     pinned-standards field is empty, the block degrades to an empty
     list and the prompt skips it entirely.
     """
-    entries = [std for std in cycle.standards if std.edition]
+    entries = cycle.edition_summary_lines()
     if not entries:
         return []
     lines: list[str] = [
         "Pinned standards editions for this cycle:",
         "",
     ]
-    lines.extend(f"- {std.name}: {std.edition_phrase}" for std in entries)
+    lines.extend(entries)
     lines.extend(
         [
             "",
@@ -613,7 +613,7 @@ def _get_verification_system_prompt(
         "Your job is to verify or dispute a single finding using web search evidence.",
         "",
         "Use web search before rendering a verdict.",
-        "Do not speculate; if evidence is weak or ambiguous, return UNVERIFIED.",
+        "Do not speculate. Render CONFIRMED or CORRECTED only when a source you actually retrieved supports the claim; otherwise return UNVERIFIED.",
         "Do not invent URLs. Leave sources as [] if reliable references are unavailable.",
         "",
         f"Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc},",
@@ -658,7 +658,7 @@ def _get_verification_system_prompt(
         "When tier 1-3 sources don't have what you need, search the broader web.",
         "When a regulatory source conflicts with a manufacturer datasheet, treat the",
         "regulatory source as authoritative.",
-        "Any credible primary source is better than returning UNVERIFIED.",
+        "Search diligently for a primary source, but when none of the sources you retrieved supports the claim, return UNVERIFIED rather than guessing — an ungrounded CONFIRMED is downgraded to UNVERIFIED anyway, so a guess only wastes the call.",
         "",
     ]
     if include_verdict_tool:
