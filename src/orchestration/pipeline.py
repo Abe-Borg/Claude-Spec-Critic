@@ -584,7 +584,10 @@ def _run_exact_token_preflight(
             )
 
 
-def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT) -> _PreparedSpecs:
+def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT, preflight: bool = True) -> _PreparedSpecs:
+    # ``preflight=False`` skips the token-size gates (exact + local). Used by
+    # the resume path: the batch already passed preflight at submit time, so a
+    # large spec must not raise here and block recovery of an in-flight batch.
     spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
     if not spec_files:
         raise FileNotFoundError(f"No specification files found in: {input_dir}")
@@ -713,7 +716,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     # than by raw spec body length, so reordering files cannot cause a
     # smaller raw spec to bypass exact-count when its wrapper / alerts
     # make the real request larger.
-    if token_count_preflight_enabled() and request_specs:
+    if preflight and token_count_preflight_enabled() and request_specs:
         _run_exact_token_preflight(
             request_specs,
             model=model,
@@ -727,21 +730,22 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     # from masking a real overage; the gate uses the *full* request shape
     # (system + materialized user message with pre_detected alerts) so it
     # does not undercount when alerts dominate the request body.
-    safety = local_estimate_safety_factor(model)
-    for spec, rs in zip(specs, request_specs):
-        total_local = estimate_local_request_tokens(rs)
-        # The exceeds-limit helper compares (spec + overhead) against the
-        # recommended max with the safety factor. We feed it ``total_local``
-        # as the spec component and zero overhead so the existing helper
-        # still applies the model-aware safety factor to the full count.
-        if exceeds_per_call_limit_for_model(total_local, 0, model=model):
-            padded = safe_local_estimate(total_local, model=model)
-            raise ValueError(
-                f"Spec '{spec.filename}' is too large for a single API call: "
-                f"~{total_local:,} cl100k tokens (×{safety:.2f} safety factor "
-                f"for {model} → ~{padded:,}) exceeds recommended max "
-                f"{RECOMMENDED_MAX:,}."
-            )
+    if preflight:
+        safety = local_estimate_safety_factor(model)
+        for spec, rs in zip(specs, request_specs):
+            total_local = estimate_local_request_tokens(rs)
+            # The exceeds-limit helper compares (spec + overhead) against the
+            # recommended max with the safety factor. We feed it ``total_local``
+            # as the spec component and zero overhead so the existing helper
+            # still applies the model-aware safety factor to the full count.
+            if exceeds_per_call_limit_for_model(total_local, 0, model=model):
+                padded = safe_local_estimate(total_local, model=model)
+                raise ValueError(
+                    f"Spec '{spec.filename}' is too large for a single API call: "
+                    f"~{total_local:,} cl100k tokens (×{safety:.2f} safety factor "
+                    f"for {model} → ~{padded:,}) exceeds recommended max "
+                    f"{RECOMMENDED_MAX:,}."
+                )
 
     cache_stats = extraction_cache_stats()
     if cache_stats["hits"]:
@@ -867,15 +871,28 @@ def _recover_retryable_review_batch_results(
         return results_by_request
 
     cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
+    # Resolve each retryable request's spec by FILENAME first. The positional
+    # index is only reliable in the normal submit flow, where request_map is
+    # built from the same prepared_specs list (index ⇄ position). On the resume
+    # path prepared_specs is RE-extracted and can diverge from the persisted
+    # indices — directory-sort order, or a spec that now extracts to empty text
+    # being dropped shifts later positions — so a positional lookup would repair
+    # (and mis-attribute) the wrong spec. Filename keying is order-independent;
+    # the index stays as a fallback for any legacy entry without a filename.
+    by_filename = {s.filename: s for s in submission.prepared_specs}
     repair_specs: list[ExtractedSpec] = []
     repair_id_map: dict[str, str] = {}
     for rid in retryable_request_ids:
         meta = submission.job.request_map.get(rid) or {}
-        spec_index = meta.get("index")
-        if not isinstance(spec_index, int) or spec_index < 0 or spec_index >= len(submission.prepared_specs):
-            log(f"Review repair skipped for {rid}: original spec index is unavailable.", level="warning")
+        filename = meta.get("filename")
+        spec = by_filename.get(filename) if isinstance(filename, str) else None
+        if spec is None:
+            spec_index = meta.get("index")
+            if isinstance(spec_index, int) and 0 <= spec_index < len(submission.prepared_specs):
+                spec = submission.prepared_specs[spec_index]
+        if spec is None:
+            log(f"Review repair skipped for {rid}: original spec is unavailable.", level="warning")
             continue
-        spec = submission.prepared_specs[spec_index]
         repair_specs.append(spec)
         repair_id_map[spec.filename] = rid
 
@@ -1187,4 +1204,178 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         # extraction warnings instead of crashing.
         extracted_specs=list(prepared_specs),
     )
+
+
+def reconstruct_batch_submission(
+    *,
+    batch_id: str,
+    request_map: dict,
+    review_request_ids: list[str],
+    files_reviewed: list[str],
+    input_dir: str | None,
+    files: list[str] | None,
+    model: str,
+    project_context: str,
+    cycle: CodeCycle,
+    cross_check_enabled: bool,
+    created_at: float,
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+) -> BatchSubmission:
+    """Rebuild a :class:`BatchSubmission` for an already-submitted review batch.
+
+    The counterpart to :func:`start_batch_review` for the resume / recovery
+    path: it does NOT submit anything — the batch is already running remotely.
+    ``request_map`` / ``review_request_ids`` are restored verbatim from the
+    persisted state, so review-result collection
+    (:func:`collect_review_batch_results`) is fully decoupled from the local
+    files — a detached batch's findings come back even if every source file was
+    moved or deleted.
+
+    When the source files are still present they are re-extracted
+    (deterministic + content-cached, so this reproduces the bodies the model
+    actually reviewed) to repopulate ``prepared_specs`` and the deterministic
+    alert lists, which re-enables cross-spec coordination, the review-repair
+    fallback, extraction-warning surfacing, and ``<pre_detected>`` rendering.
+    Re-extraction runs with ``preflight=False`` (the batch already cleared the
+    token gate at submit) and is best-effort: any failure (missing/renamed
+    files, parse error) degrades to a findings-only recovery with a warning,
+    never an exception.
+    """
+    job = BatchJob(
+        batch_id=batch_id,
+        job_type="review",
+        request_map=dict(request_map or {}),
+        created_at=created_at,
+    )
+    prepared_specs: list[ExtractedSpec] | None = None
+    # Eight DISTINCT empty lists (not a chained alias) so a future ``.append``
+    # on one can't corrupt the others; the re-extract success branch reassigns
+    # each from ``prepared.*``.
+    leed, placeholder, code_cycle, structural, naming, template, invalid, dup = (
+        [], [], [], [], [], [], [], [],
+    )
+
+    resolved_files = [Path(f) for f in files] if files else None
+    if resolved_files and all(p.exists() for p in resolved_files):
+        # ``_prepare_specs`` discovers files only when ``files`` is None; with an
+        # explicit list it ignores ``input_dir``, so fall back to the files'
+        # parent when the original input_dir wasn't captured.
+        extract_dir = Path(input_dir) if input_dir else resolved_files[0].parent
+        try:
+            prepared = _prepare_specs(
+                input_dir=extract_dir,
+                files=resolved_files,
+                project_context=project_context,
+                log=log,
+                progress=progress,
+                cycle=cycle,
+                model=model,
+                preflight=False,
+            )
+            prepared_specs = prepared.specs
+            leed = prepared.leed_alerts
+            placeholder = prepared.placeholder_alerts
+            code_cycle = prepared.code_cycle_alerts
+            structural = prepared.structural_alerts
+            naming = prepared.naming_alerts
+            template = prepared.template_marker_alerts
+            invalid = prepared.invalid_code_cycle_alerts
+            dup = prepared.duplicate_paragraph_alerts
+            if {s.filename for s in prepared.specs} != set(files_reviewed):
+                log(
+                    "Resumed spec set differs from the originally reviewed files; "
+                    "review findings are unaffected but cross-check may be inconsistent.",
+                    level="warning",
+                )
+        except Exception as exc:  # noqa: BLE001 — recovery must never crash on re-extract
+            prepared_specs = None
+            log(
+                f"Could not re-extract source specs for resume ({exc}); recovering "
+                "review findings without cross-check / extraction context.",
+                level="warning",
+            )
+    elif files:
+        log(
+            "Original spec files were not found; recovering review findings only "
+            "(cross-check and extraction context are unavailable).",
+            level="warning",
+        )
+
+    return BatchSubmission(
+        job=job,
+        files_reviewed=list(files_reviewed or []),
+        review_request_ids=list(review_request_ids or []),
+        leed_alerts=leed,
+        placeholder_alerts=placeholder,
+        model=model,
+        project_context=project_context,
+        prepared_specs=prepared_specs,
+        cycle_label=cycle.label,
+        cross_check_enabled=cross_check_enabled,
+        code_cycle_alerts=code_cycle,
+        structural_alerts=structural,
+        naming_alerts=naming,
+        template_marker_alerts=template,
+        invalid_code_cycle_alerts=invalid,
+        duplicate_paragraph_alerts=dup,
+        trace_span_id="",
+    )
+
+
+def run_batch_collection_headless(
+    submission: BatchSubmission,
+    *,
+    cache: VerificationCache | None = None,
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+) -> PipelineResult:
+    """Collect → verify → cross-check → finalize a submitted batch, headlessly.
+
+    The synchronous, UI-free counterpart to
+    :func:`src.gui.batch_controller.collect_batch_results`: it runs the exact
+    same orchestration sequence (review collection, finding verification,
+    cross-spec coordination, cross-check verification, finalize) with plain
+    ``log`` / ``progress`` callbacks instead of Tk dispatch and per-finding
+    diagnostics. Used by the standalone recovery tool
+    (``scripts/recover_batch.py``) and any other non-GUI driver.
+
+    Assumes the review batch has already ended — poll first (e.g. via
+    :func:`src.batch.batch_runtime.poll_batch_bounded`) if it may still be
+    processing. When ``cache`` is not supplied this owns cache creation and
+    persistence; pass one to share a cache across calls.
+    """
+    owns_cache = cache is None
+    if cache is None:
+        cache = _make_verification_cache(log=log)
+    cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
+
+    review_state = collect_review_batch_results(submission, log=log)
+
+    verifiable = list(review_state.review_result.findings) if review_state.review_result else []
+    if verifiable:
+        job = start_batch_verification(verifiable, cycle=cycle, log=log, progress=progress, cache=cache)
+        if job is not None:
+            collect_batch_verification_results(job, verifiable, cycle=cycle, log=log, progress=progress, cache=cache)
+
+    review_state = run_cross_check_for_batch(
+        review_state,
+        specs=submission.prepared_specs,
+        project_context=submission.project_context,
+        cycle=cycle,
+        log=log,
+    )
+    cross_findings = (
+        list(review_state.cross_check_result.findings)
+        if (review_state.cross_check_result and review_state.cross_check_result.findings)
+        else []
+    )
+    if cross_findings:
+        cc_job = start_batch_verification(cross_findings, cycle=cycle, log=log, progress=progress, cache=cache)
+        if cc_job is not None:
+            collect_batch_verification_results(cc_job, cross_findings, cycle=cycle, log=log, progress=progress, cache=cache)
+
+    if owns_cache:
+        _persist_verification_cache(cache, log=log)
+    return finalize_batch_result(review_state)
 

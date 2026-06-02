@@ -225,9 +225,12 @@ def show_usage_dialog(parent) -> None:
         )),
         ("7.  Run the Review", (
             "Click Submit Batch. "
-            "The activity log shows progress. You can close "
-            "the app and reopen it later — the pending batch state is saved "
-            "and you will be prompted to resume."
+            "The activity log shows progress. The batch runs on Anthropic's "
+            "servers (up to ~24h), so you can close the app or lose your "
+            "connection without losing the work — the batch is saved, and on "
+            "next launch you'll be prompted to resume polling and finish the "
+            "run. You can also recover a batch from a terminal with "
+            "scripts/recover_batch.py."
         )),
         ("8.  Review the Results", (
             "Findings are grouped by severity (Critical, High, Medium, "

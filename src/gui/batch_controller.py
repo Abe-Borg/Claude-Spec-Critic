@@ -16,11 +16,22 @@ delegating methods so existing test/legacy call paths still work.
 """
 from __future__ import annotations
 
+import os
 import threading
+from pathlib import Path
+from tkinter import messagebox
 
+from .. import __version__
 from ..batch.batch import BatchStatus
 from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from ..core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
+from ..orchestration.batch_resume import (
+    PendingBatch,
+    clear_pending_batch,
+    load_pending_batch,
+    save_pending_batch,
+)
+from ..orchestration.diagnostics import DiagnosticsReport
 from ..orchestration.pipeline import (
     BatchSubmission,
     collect_batch_verification_results,
@@ -70,6 +81,19 @@ def submit_batch_thread(app, run_epoch: int) -> None:
                 "batch_id": submission.job.batch_id,
                 "files_queued": len(submission.files_reviewed),
             })
+        # Persist enough state to reconnect to this batch if the poller
+        # detaches (closed app, lost network, no-progress / max-elapsed
+        # timeout). The batch keeps running remotely; on next launch the user
+        # is offered to resume it. Best-effort — never block the run.
+        save_pending_batch(
+            PendingBatch.from_submission(
+                submission,
+                input_dir=app.input_dir,
+                files=app._selected_files_for_review,
+                run_id=diag.run_id if diag is not None else "",
+                app_version=__version__,
+            )
+        )
         app._dispatch_if_current(run_epoch, lambda: on_batch_submitted(app, submission))
     except Exception as e:
         import traceback
@@ -162,6 +186,11 @@ def collect_batch_results(app) -> None:
                 raise RuntimeError("No active batch submission to collect.")
             cycle = AVAILABLE_CYCLES.get(getattr(app._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
 
+            # NOTE: this collect → verify → cross-check → verify → finalize
+            # sequence is mirrored, UI-free, by
+            # ``pipeline.run_batch_collection_headless`` (used by the recovery
+            # tool). Keep the two stage orders in lockstep; a future refactor
+            # should collapse them onto one shared core (see PR discussion).
             if diag:
                 diag.log("batch_collect", "step", "Collecting review batch results")
             review_state = collect_review_batch_results(
@@ -363,6 +392,12 @@ def collect_batch_results(app) -> None:
             if diag:
                 diag.log("finalization", "step", "Finalizing batch results")
             final_result = finalize_batch_result(review_state)
+            # The run finished start-to-report, so the saved pending-batch
+            # state is no longer needed — drop it so the next launch doesn't
+            # offer to resume an already-collected batch. Only the success path
+            # clears it: a detach / collect error leaves it on disk so the user
+            # can still resume.
+            clear_pending_batch()
             app._dispatch_if_current(run_epoch, lambda r=final_result: app._on_review_complete(r))
         except Exception as e:
             import traceback
@@ -377,3 +412,135 @@ def collect_batch_results(app) -> None:
             app._trace_recorder = None
 
     threading.Thread(target=_do_collect, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Resume / reconnect to a detached batch
+# ---------------------------------------------------------------------------
+
+
+def offer_batch_resume(app) -> None:
+    """Offer to resume an unfinished batch persisted by a prior session.
+
+    Called shortly after startup. If a pending-batch state file exists, prompt
+    the user to resume polling for its results (the batch kept running remotely)
+    or discard it. A no-op when there is no pending batch or a run is already in
+    flight.
+    """
+    if getattr(app, "is_processing", False):
+        return
+    pending = load_pending_batch()
+    if pending is None:
+        return
+    n = len(pending.files_reviewed)
+    spec_word = "spec" if n == 1 else "specs"
+    when = ""
+    if pending.submitted_at:
+        from datetime import datetime
+        when = datetime.fromtimestamp(pending.submitted_at).strftime("%b %d, %I:%M %p")
+    detail = f"submitted {when}" if when else "from a previous session"
+    resume = messagebox.askyesno(
+        "Resume unfinished batch?",
+        f"An unfinished batch review {detail} was found "
+        f"({n} {spec_word}).\n\n"
+        "The batch most likely finished on Anthropic's servers. Resume polling "
+        "and finish the run (verification, cross-check, and report)?\n\n"
+        "Choose No to discard it.",
+    )
+    if not resume:
+        clear_pending_batch()
+        app.log.log("Discarded the unfinished batch.", level="muted")
+        return
+    start_batch_resume(app, pending)
+
+
+def start_batch_resume(app, pending: PendingBatch) -> None:
+    """Set up the run lifecycle for a resumed batch, then reconnect and poll.
+
+    Mirrors ``review_run_controller.start_review``'s lifecycle setup
+    (diagnostics report, UI processing state, API key in env) but, instead of
+    submitting a new batch, reconstructs the :class:`BatchSubmission` for the
+    already-submitted one on a worker thread and re-enters the existing
+    poll -> collect path via ``on_batch_submitted``.
+    """
+    if getattr(app, "is_processing", False):
+        return
+    key = app.api_key_entry.get().strip()
+    if not key:
+        messagebox.showerror(
+            "API key required",
+            "Enter your Anthropic API key, then resume the batch.",
+        )
+        return
+    os.environ["ANTHROPIC_API_KEY"] = key
+
+    app._selected_cycle_label = pending.cycle_label
+    app._project_context_for_review = pending.project_context
+    app._cross_check_for_review = pending.cross_check_enabled
+    app._selected_files_for_review = [Path(f) for f in pending.files]
+    if pending.input_dir:
+        app.input_dir = pending.input_dir
+
+    app.is_processing = True
+    app.run_button.set_processing()
+    app.run_button.configure(text="Resuming...")
+    app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
+    app.progress_bar.set(0.4)
+    app.progress_bar.configure(mode="determinate")
+
+    diag_kwargs = dict(
+        mode="batch",
+        model=pending.model,
+        cycle_label=pending.cycle_label,
+        files_selected=list(pending.files_reviewed),
+        project_context_tokens=0,
+        cross_check_enabled=pending.cross_check_enabled,
+    )
+    # Reuse the original run id (when known) so the trace recorder appends to
+    # the original run rather than starting a disconnected one; otherwise let
+    # DiagnosticsReport mint a fresh id.
+    if pending.run_id:
+        diag_kwargs["run_id"] = pending.run_id
+    app._diagnostics_report = DiagnosticsReport(**diag_kwargs)
+    app._diagnostics_report.log(
+        "init", "info",
+        f"Resuming batch {pending.batch_id} ({len(pending.files_reviewed)} files)",
+    )
+    app.diagnostics_button.configure(state="disabled")
+    app.log.log("─" * 40, level="muted", timestamp=False, paced=False)
+    app.log.log_step(f"Resuming batch {pending.batch_id}...")
+
+    run_epoch = app._next_run_epoch()
+    threading.Thread(
+        target=lambda: _resume_reconstruct_thread(app, pending, run_epoch),
+        daemon=True,
+    ).start()
+
+
+def _resume_reconstruct_thread(app, pending: PendingBatch, run_epoch: int) -> None:
+    diag = app._diagnostics_report
+    app._trace_recorder = _maybe_start_recorder(
+        run_id=diag.run_id if diag is not None else (pending.run_id or "no_run_id"),
+        mode="batch",
+        model=pending.model,
+        cycle_label=pending.cycle_label,
+        files=app._selected_files_for_review,
+    )
+    try:
+        submission = pending.to_submission(
+            log=app._make_diag_log("batch_resume", run_epoch),
+            progress=app._make_diag_progress("batch_resume", run_epoch),
+        )
+        # Re-enter the standard poll -> collect path: on_batch_submitted stores
+        # the submission, flips the UI to "Polling...", and starts polling.
+        app._dispatch_if_current(run_epoch, lambda: on_batch_submitted(app, submission))
+    except Exception as e:
+        import traceback
+        err = f"{e}\n{traceback.format_exc()}"
+        if diag:
+            diag.log("batch_resume", "error", f"Resume failed: {e}", {"traceback": traceback.format_exc()})
+        # No collect phase will run, so stop the recorder here (mirrors the
+        # submit-failure path) and surface the error.
+        _stop_recorder(getattr(app, "_trace_recorder", None))
+        app._trace_recorder = None
+        app._dispatch_if_current(run_epoch, lambda m=err: app._on_review_error(m))
