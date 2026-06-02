@@ -871,15 +871,28 @@ def _recover_retryable_review_batch_results(
         return results_by_request
 
     cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
+    # Resolve each retryable request's spec by FILENAME first. The positional
+    # index is only reliable in the normal submit flow, where request_map is
+    # built from the same prepared_specs list (index ⇄ position). On the resume
+    # path prepared_specs is RE-extracted and can diverge from the persisted
+    # indices — directory-sort order, or a spec that now extracts to empty text
+    # being dropped shifts later positions — so a positional lookup would repair
+    # (and mis-attribute) the wrong spec. Filename keying is order-independent;
+    # the index stays as a fallback for any legacy entry without a filename.
+    by_filename = {s.filename: s for s in submission.prepared_specs}
     repair_specs: list[ExtractedSpec] = []
     repair_id_map: dict[str, str] = {}
     for rid in retryable_request_ids:
         meta = submission.job.request_map.get(rid) or {}
-        spec_index = meta.get("index")
-        if not isinstance(spec_index, int) or spec_index < 0 or spec_index >= len(submission.prepared_specs):
-            log(f"Review repair skipped for {rid}: original spec index is unavailable.", level="warning")
+        filename = meta.get("filename")
+        spec = by_filename.get(filename) if isinstance(filename, str) else None
+        if spec is None:
+            spec_index = meta.get("index")
+            if isinstance(spec_index, int) and 0 <= spec_index < len(submission.prepared_specs):
+                spec = submission.prepared_specs[spec_index]
+        if spec is None:
+            log(f"Review repair skipped for {rid}: original spec is unavailable.", level="warning")
             continue
-        spec = submission.prepared_specs[spec_index]
         repair_specs.append(spec)
         repair_id_map[spec.filename] = rid
 

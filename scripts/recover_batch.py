@@ -202,8 +202,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    _log("Batch finished. Collecting results and finishing the run...", level="success")
-    result = run_batch_collection_headless(submission, log=_log, progress=_progress)
+    terminal_status = outcome.terminal_status or "ended"
+    if terminal_status != "ended":
+        # poll_batch_bounded reports `expired` / `failed` / `canceled` as
+        # terminal too — those won't have usable results, so flag it and avoid
+        # silently exporting an empty report as if the run succeeded.
+        _log(
+            f"Batch ended with status '{terminal_status}' — results may be "
+            "incomplete or unavailable.",
+            level="warning",
+        )
+    else:
+        _log("Batch finished. Collecting results and finishing the run...", level="success")
+
+    try:
+        result = run_batch_collection_headless(submission, log=_log, progress=_progress)
+    except Exception as exc:  # noqa: BLE001 — keep state on any collection failure
+        _log(f"Could not collect results for batch {batch_id}: {exc}", level="error")
+        _log("Saved pending-batch state kept — re-run this tool to retry.", level="info")
+        return 2
 
     output_path = Path(ns.output).expanduser() if ns.output else _default_output_path(batch_id)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,10 +246,22 @@ def main(argv: list[str] | None = None) -> int:
             level="warning",
         )
 
+    # Only drop saved state when the recovery actually produced results — an
+    # expired / all-failed batch keeps its state so the user can retry rather
+    # than losing the only handle to it.
+    n_specs = len(submission.review_request_ids)
+    recovered_ok = terminal_status == "ended" and (n_specs == 0 or len(result.failed_review_specs) < n_specs)
     if had_saved_state and not ns.keep_state:
-        clear_pending_batch()
-        _log("Cleared saved pending-batch state.", level="info")
-    return 0
+        if recovered_ok:
+            clear_pending_batch()
+            _log("Cleared saved pending-batch state.", level="info")
+        else:
+            _log(
+                "Kept saved pending-batch state — recovery produced no usable "
+                "findings.",
+                level="warning",
+            )
+    return 0 if recovered_ok else 2
 
 
 if __name__ == "__main__":
