@@ -67,6 +67,7 @@ from src.gui.batch_controller import (
     on_batch_submitted,
     poll_and_collect_thread,
     poll_batch,
+    recover_batch_dialog,
     submit_batch_thread,
     update_poll_progress,
 )
@@ -233,6 +234,15 @@ class SpecReviewApp(_CTkDnDRoot):
             command=self._open_diagnostics_window, state="disabled",
         )
         self.diagnostics_button.pack(fill="x", pady=(8, 0))
+        self.recover_button = ctk.CTkButton(
+            c, text="Recover batch…", height=32,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"],
+            command=self._recover_batch_dialog,
+        )
+        self.recover_button.pack(fill="x", pady=(8, 0))
 
     def _create_inputs_card(self, parent):
         self.inputs_card = ctk.CTkFrame(parent, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -561,6 +571,9 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _maybe_offer_batch_resume(self):
         offer_batch_resume(self)
+
+    def _recover_batch_dialog(self):
+        recover_batch_dialog(self)
 
 
 def main():

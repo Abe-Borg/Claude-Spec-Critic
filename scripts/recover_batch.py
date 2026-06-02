@@ -63,6 +63,14 @@ def _progress(_pct: float, msg: str) -> None:
         _log(msg, level="info")
 
 
+def _is_not_found(exc: Exception) -> bool:
+    """True for an Anthropic 'batch not found' (typo'd / expired id)."""
+    if getattr(exc, "status_code", None) == 404:
+        return True
+    text = str(exc).lower()
+    return "not_found" in text or "not found" in text
+
+
 def _ensure_api_key(parser: argparse.ArgumentParser) -> None:
     if os.environ.get("ANTHROPIC_API_KEY", "").strip():
         return
@@ -178,7 +186,18 @@ def main(argv: list[str] | None = None) -> int:
 
     _ensure_api_key(parser)
 
-    submission, had_saved_state = _build_submission(parser, ns)
+    try:
+        submission, had_saved_state = _build_submission(parser, ns)
+    except Exception as exc:  # noqa: BLE001 — turn API errors into a clean message
+        if _is_not_found(exc):
+            _log(
+                f"Batch '{ns.batch_id}' was not found. Double-check the id (they "
+                "look like msgbatch_…, case-sensitive); it may also have expired "
+                "(results are kept ~29 days).",
+                level="error",
+            )
+            return 2
+        raise
     batch_id = submission.job.batch_id
 
     _log(f"Polling batch {batch_id} until it finishes (Ctrl-C to stop)...", level="step")
