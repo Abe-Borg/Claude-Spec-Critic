@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import json
 import time
+import types
 from pathlib import Path
 
 from docx import Document
 
 from src.batch.batch import BatchJob
+from src.batch.batch_runtime import PollOutcome
 from src.orchestration import batch_resume as br
 from src.orchestration import pipeline as pl
 from src.orchestration.batch_resume import (
@@ -277,6 +279,107 @@ class TestThinSubmission:
         # unrecognized custom id is ignored, not mapped
         assert "garbage__9" not in sub.job.request_map
         assert sub.prepared_specs is None  # no files → findings-only
+
+    def test_recovers_real_filename_from_supplied_files(self, monkeypatch, tmp_path):
+        # The custom id carries the SANITIZED stem; with the real file supplied,
+        # the thin path must map it back to the real filename so the failed-spec
+        # cross-check exclusion and the filename-keyed repair fallback match.
+        real_name = "22 11 16 - Water.docx"
+        path = tmp_path / real_name
+        doc = Document()
+        doc.add_paragraph("PART 1 - GENERAL")
+        doc.add_paragraph("Provide copper tubing per applicable code.")
+        doc.save(str(path))
+        # custom id for this file at index 0 (sanitizer keeps hyphens, maps
+        # other non-alphanumerics to "_"): "review__22_11_16_-_Water__0".
+        results = [
+            FakeBatchResult(custom_id="review__22_11_16_-_Water__0", result=FakeBatchResultEnvelope(type="succeeded")),
+        ]
+        import src.batch.batch as batch_mod
+        monkeypatch.setattr(batch_mod, "_get_client", lambda: _FakeClient(results))
+
+        sub = thin_submission_from_batch_results(
+            "msgbatch_X",
+            model="claude-opus-4-7",
+            input_dir=str(tmp_path),
+            files=[str(path)],
+            cross_check_enabled=True,
+        )
+        cid = "review__22_11_16_-_Water__0"
+        assert sub.job.request_map[cid]["filename"] == real_name  # real name, not the stem
+        assert sub.files_reviewed == [real_name]
+        # Files exist → re-extraction populated specs with the matching name, so
+        # no drift and cross-check can run.
+        assert sub.prepared_specs is not None
+        assert sub.prepared_specs[0].filename == real_name
+
+
+class TestRepairFallbackResolvesByFilename:
+    """Fix for the resume misalignment: the review-repair fallback must select
+    the retryable spec by FILENAME, so a re-extracted prepared_specs in a
+    different order than the persisted request_map indices never repairs (and
+    mis-attributes) the wrong spec."""
+
+    def _spec(self, name):
+        return types.SimpleNamespace(filename=name, content=f"body of {name}")
+
+    def test_repair_picks_spec_by_filename_not_position(self, monkeypatch):
+        specA, specB, specC = self._spec("A.docx"), self._spec("B.docx"), self._spec("C.docx")
+        # prepared_specs RE-EXTRACTED in a DIFFERENT order than the submit
+        # indices below (index 1 == B, but prepared[1] == A).
+        prepared = [specC, specA, specB]
+        job = BatchJob(
+            batch_id="X",
+            job_type="review",
+            request_map={
+                "review__a__0": {"filename": "A.docx", "index": 0, "type": "review"},
+                "review__b__1": {"filename": "B.docx", "index": 1, "type": "review"},
+                "review__c__2": {"filename": "C.docx", "index": 2, "type": "review"},
+            },
+            created_at=0.0,
+        )
+        sub = BatchSubmission(
+            job=job,
+            files_reviewed=["A.docx", "B.docx", "C.docx"],
+            review_request_ids=["review__a__0", "review__b__1", "review__c__2"],
+            model="m",
+            prepared_specs=prepared,
+        )
+        ok = ReviewResult(findings=[], parse_status="ok")
+        bad = ReviewResult(findings=[], parse_status="parse_error", error="truncated")
+        results = {"review__a__0": ok, "review__b__1": bad, "review__c__2": ok}
+
+        captured: dict = {}
+
+        def fake_submit(repair_specs, **_kw):
+            captured["specs"] = list(repair_specs)
+            return BatchJob(
+                batch_id="repair",
+                job_type="review",
+                request_map={"review__r__0": {"filename": repair_specs[0].filename, "index": 0, "type": "review"}},
+                created_at=0.0,
+            )
+
+        monkeypatch.setattr(pl, "submit_review_batch", fake_submit)
+        monkeypatch.setattr(pl, "poll_batch_bounded", lambda *a, **k: PollOutcome(terminal=True, terminal_status="ended"))
+        monkeypatch.setattr(
+            pl, "preprocess_spec",
+            lambda content, filename, *, cycle: types.SimpleNamespace(
+                leed_alerts=[], placeholder_alerts=[], code_cycle_alerts=[],
+                structural_alerts=[], template_marker_alerts=[],
+                invalid_code_cycle_alerts=[], duplicate_paragraph_alerts=[],
+            ),
+        )
+        monkeypatch.setattr(
+            pl, "retrieve_review_results",
+            lambda job, *, model: {"review__r__0": ReviewResult(findings=[], parse_status="ok")},
+        )
+
+        from src.orchestration.pipeline import _recover_retryable_review_batch_results
+        _recover_retryable_review_batch_results(sub, dict(results), log=lambda *a, **k: None)
+
+        # The repaired spec is B (filename match), NOT prepared[1] == A.
+        assert [s.filename for s in captured["specs"]] == ["B.docx"]
 
 
 # ===========================================================================

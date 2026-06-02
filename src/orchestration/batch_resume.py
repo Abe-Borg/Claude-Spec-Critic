@@ -246,7 +246,7 @@ def thin_submission_from_batch_results(
     are supplied they are re-extracted to additionally enable cross-spec
     coordination; otherwise it is a findings-only recovery.
     """
-    from ..batch.batch import _get_client
+    from ..batch.batch import _get_client, _sanitize_custom_id
 
     client = _get_client()
     indexed: list[tuple[int, str, str]] = []  # (index, custom_id, stem)
@@ -258,13 +258,26 @@ def thin_submission_from_batch_results(
         indexed.append((idx, result.custom_id, stem))
     indexed.sort(key=lambda t: t[0])
 
+    # When real source files are supplied, recover each item's REAL filename by
+    # re-applying the same sanitizer the submit path used to mint the custom id
+    # (``review__<sanitize(stem)>__<idx>``). Storing the real filename (not the
+    # lossy sanitized stem) keeps request_map['filename'] equal to the
+    # re-extracted spec's filename, so the failed-spec cross-check exclusion and
+    # the filename-keyed review-repair fallback both match. Falls back to the
+    # stem when no supplied file sanitizes to it (findings-only recovery).
+    real_by_key: dict[str, str] = {}
+    for f in files or []:
+        name = Path(f).name
+        real_by_key.setdefault(_sanitize_custom_id(name), name)
+
     request_map: dict[str, Any] = {}
     review_request_ids: list[str] = []
-    parsed_stems: list[str] = []
+    resolved_names: list[str] = []
     for idx, custom_id, stem in indexed:
-        request_map[custom_id] = {"filename": stem, "index": idx, "type": "review"}
+        name = real_by_key.get(stem, stem)
+        request_map[custom_id] = {"filename": name, "index": idx, "type": "review"}
         review_request_ids.append(custom_id)
-        parsed_stems.append(stem)
+        resolved_names.append(name)
 
     if not request_map:
         log(
@@ -273,10 +286,7 @@ def thin_submission_from_batch_results(
             level="warning",
         )
 
-    # When real files are supplied, label with their real names so the
-    # re-extraction drift check in reconstruct_batch_submission compares like
-    # for like; otherwise fall back to the (sanitized) stems parsed above.
-    files_reviewed = [Path(f).name for f in files] if files else parsed_stems
+    files_reviewed = resolved_names
 
     return reconstruct_batch_submission(
         batch_id=batch_id,
