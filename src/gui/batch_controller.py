@@ -30,6 +30,7 @@ from ..orchestration.batch_resume import (
     clear_pending_batch,
     load_pending_batch,
     save_pending_batch,
+    thin_submission_from_batch_results,
 )
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..orchestration.pipeline import (
@@ -455,13 +456,119 @@ def offer_batch_resume(app) -> None:
 
 
 def start_batch_resume(app, pending: PendingBatch) -> None:
-    """Set up the run lifecycle for a resumed batch, then reconnect and poll.
+    """Resume an unfinished batch persisted by a prior session."""
+    _begin_reconnect_run(
+        app,
+        reconstruct_fn=lambda log, progress: pending.to_submission(log=log, progress=progress),
+        model=pending.model,
+        cycle_label=pending.cycle_label,
+        project_context=pending.project_context,
+        cross_check_enabled=pending.cross_check_enabled,
+        files_for_review=[Path(f) for f in pending.files],
+        input_dir=pending.input_dir,
+        run_id=pending.run_id,
+        files_reviewed_label=list(pending.files_reviewed),
+        batch_label=pending.batch_id,
+        verb="Resuming",
+    )
 
-    Mirrors ``review_run_controller.start_review``'s lifecycle setup
-    (diagnostics report, UI processing state, API key in env) but, instead of
-    submitting a new batch, reconstructs the :class:`BatchSubmission` for the
-    already-submitted one on a worker thread and re-enters the existing
-    poll -> collect path via ``on_batch_submitted``.
+
+def recover_batch_dialog(app) -> None:
+    """Prompt for a batch id and recover it (poll -> collect -> verify -> report).
+
+    The manual counterpart to the startup resume prompt: recovers a batch the
+    app never saved — one submitted before resume state existed, from another
+    machine, or whose state file was lost. The findings come back regardless of
+    local files; if spec files are currently checked they are reused so cross-
+    spec coordination can run, otherwise it is a findings-only recovery.
+    """
+    if getattr(app, "is_processing", False):
+        messagebox.showinfo(
+            "Busy", "A run is already in progress — wait for it to finish, then recover."
+        )
+        return
+    from tkinter import simpledialog
+
+    batch_id = simpledialog.askstring(
+        "Recover batch",
+        "Enter the batch id to recover (it looks like msgbatch_…):",
+        parent=app,
+    )
+    if not batch_id or not batch_id.strip():
+        return
+    batch_id = batch_id.strip()
+
+    try:
+        selected = app.file_list_panel.get_selected_files()
+    except Exception:
+        selected = []
+    files = [Path(f) for f in (selected or [])]
+    file_strs = [str(f) for f in files]
+    input_dir = str(files[0].parent) if files else ""
+    cycle_label = DEFAULT_CYCLE.label
+    cycle = AVAILABLE_CYCLES.get(cycle_label, DEFAULT_CYCLE)
+    project_context = app._get_project_context() if hasattr(app, "_get_project_context") else ""
+    cross_check_enabled = bool(files) and bool(
+        getattr(app, "_cross_check_var", None) and app._cross_check_var.get()
+    )
+    if not files:
+        app.log.log(
+            "No spec files selected — recovering findings only (select the source "
+            "files first to include cross-spec coordination).",
+            level="muted",
+        )
+
+    def _reconstruct(log, progress):
+        return thin_submission_from_batch_results(
+            batch_id,
+            model=MODEL_OPUS_47,
+            input_dir=input_dir or None,
+            files=file_strs or None,
+            cross_check_enabled=cross_check_enabled,
+            cycle=cycle,
+            project_context=project_context,
+            log=log,
+            progress=progress,
+        )
+
+    _begin_reconnect_run(
+        app,
+        reconstruct_fn=_reconstruct,
+        model=MODEL_OPUS_47,
+        cycle_label=cycle_label,
+        project_context=project_context,
+        cross_check_enabled=cross_check_enabled,
+        files_for_review=files,
+        input_dir=input_dir,
+        files_reviewed_label=[f.name for f in files],
+        batch_label=batch_id,
+        verb="Recovering",
+    )
+
+
+def _begin_reconnect_run(
+    app,
+    *,
+    reconstruct_fn,
+    model: str,
+    cycle_label: str,
+    project_context: str,
+    cross_check_enabled: bool,
+    files_for_review: list,
+    input_dir: str = "",
+    run_id: str = "",
+    files_reviewed_label: list | None = None,
+    batch_label: str = "",
+    verb: str = "Resuming",
+) -> None:
+    """Shared lifecycle for reconnecting to an already-submitted batch.
+
+    Mirrors ``review_run_controller.start_review``'s setup (diagnostics report,
+    UI processing state, API key in env) but, instead of submitting a new batch,
+    runs ``reconstruct_fn(log, progress) -> BatchSubmission`` on a worker thread
+    and re-enters the existing poll -> collect path via ``on_batch_submitted``.
+    Used by both the startup resume prompt and the manual "Recover batch…"
+    action.
     """
     if getattr(app, "is_processing", False):
         return
@@ -469,78 +576,86 @@ def start_batch_resume(app, pending: PendingBatch) -> None:
     if not key:
         messagebox.showerror(
             "API key required",
-            "Enter your Anthropic API key, then resume the batch.",
+            "Enter your Anthropic API key, then try again.",
         )
         return
     os.environ["ANTHROPIC_API_KEY"] = key
 
-    app._selected_cycle_label = pending.cycle_label
-    app._project_context_for_review = pending.project_context
-    app._cross_check_for_review = pending.cross_check_enabled
-    app._selected_files_for_review = [Path(f) for f in pending.files]
-    if pending.input_dir:
-        app.input_dir = pending.input_dir
+    app._selected_cycle_label = cycle_label
+    app._project_context_for_review = project_context
+    app._cross_check_for_review = cross_check_enabled
+    app._selected_files_for_review = list(files_for_review or [])
+    if input_dir:
+        app.input_dir = input_dir
 
     app.is_processing = True
     app.run_button.set_processing()
-    app.run_button.configure(text="Resuming...")
+    app.run_button.configure(text=f"{verb}...")
     app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
     app.progress_bar.set(0.4)
     app.progress_bar.configure(mode="determinate")
 
     diag_kwargs = dict(
         mode="batch",
-        model=pending.model,
-        cycle_label=pending.cycle_label,
-        files_selected=list(pending.files_reviewed),
+        model=model,
+        cycle_label=cycle_label,
+        files_selected=list(files_reviewed_label or []),
         project_context_tokens=0,
-        cross_check_enabled=pending.cross_check_enabled,
+        cross_check_enabled=cross_check_enabled,
     )
     # Reuse the original run id (when known) so the trace recorder appends to
     # the original run rather than starting a disconnected one; otherwise let
     # DiagnosticsReport mint a fresh id.
-    if pending.run_id:
-        diag_kwargs["run_id"] = pending.run_id
+    if run_id:
+        diag_kwargs["run_id"] = run_id
     app._diagnostics_report = DiagnosticsReport(**diag_kwargs)
-    app._diagnostics_report.log(
-        "init", "info",
-        f"Resuming batch {pending.batch_id} ({len(pending.files_reviewed)} files)",
-    )
+    app._diagnostics_report.log("init", "info", f"{verb} batch {batch_label}")
     app.diagnostics_button.configure(state="disabled")
     app.log.log("─" * 40, level="muted", timestamp=False, paced=False)
-    app.log.log_step(f"Resuming batch {pending.batch_id}...")
+    app.log.log_step(f"{verb} batch {batch_label}...")
 
     run_epoch = app._next_run_epoch()
     threading.Thread(
-        target=lambda: _resume_reconstruct_thread(app, pending, run_epoch),
+        target=lambda: _reconnect_worker(
+            app, reconstruct_fn, model, cycle_label, run_id, run_epoch, batch_label
+        ),
         daemon=True,
     ).start()
 
 
-def _resume_reconstruct_thread(app, pending: PendingBatch, run_epoch: int) -> None:
+def _reconnect_worker(app, reconstruct_fn, model, cycle_label, run_id, run_epoch, batch_label) -> None:
     diag = app._diagnostics_report
     app._trace_recorder = _maybe_start_recorder(
-        run_id=diag.run_id if diag is not None else (pending.run_id or "no_run_id"),
+        run_id=diag.run_id if diag is not None else (run_id or "no_run_id"),
         mode="batch",
-        model=pending.model,
-        cycle_label=pending.cycle_label,
+        model=model,
+        cycle_label=cycle_label,
         files=app._selected_files_for_review,
     )
     try:
-        submission = pending.to_submission(
-            log=app._make_diag_log("batch_resume", run_epoch),
-            progress=app._make_diag_progress("batch_resume", run_epoch),
+        submission = reconstruct_fn(
+            app._make_diag_log("batch_resume", run_epoch),
+            app._make_diag_progress("batch_resume", run_epoch),
         )
         # Re-enter the standard poll -> collect path: on_batch_submitted stores
         # the submission, flips the UI to "Polling...", and starts polling.
         app._dispatch_if_current(run_epoch, lambda: on_batch_submitted(app, submission))
     except Exception as e:
         import traceback
-        err = f"{e}\n{traceback.format_exc()}"
+        tb = traceback.format_exc()
+        msg = str(e)
+        if getattr(e, "status_code", None) == 404 or "not_found" in msg.lower() or "not found" in msg.lower():
+            friendly = (
+                f"Batch '{batch_label}' was not found. Double-check the id (they "
+                "look like msgbatch_…); it may also have expired (results are kept "
+                "~29 days)."
+            )
+        else:
+            friendly = f"Recovery failed: {e}"
         if diag:
-            diag.log("batch_resume", "error", f"Resume failed: {e}", {"traceback": traceback.format_exc()})
+            diag.log("batch_resume", "error", friendly, {"traceback": tb})
         # No collect phase will run, so stop the recorder here (mirrors the
         # submit-failure path) and surface the error.
         _stop_recorder(getattr(app, "_trace_recorder", None))
         app._trace_recorder = None
-        app._dispatch_if_current(run_epoch, lambda m=err: app._on_review_error(m))
+        app._dispatch_if_current(run_epoch, lambda m=friendly: app._on_review_error(m))
