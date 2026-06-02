@@ -18,9 +18,9 @@ Configured for the **California 2025 code cycle** by default (`src/core/code_cyc
 
 1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers. Cached by file hash. Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …).
 2. **Local Pre-Screening** — Deterministic detectors run before any API call: LEED, placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
-3. **Per-Spec Review** — Each spec sent to Claude Opus 4.7 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
+3. **Per-Spec Review** — Each spec sent to Claude Opus 4.8 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
 4. **Deduplication** — Identical findings consolidated across specs; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text.
-5. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 4.6 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 4.7. Persistent on-disk cache.
+5. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 4.6 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 4.8. Persistent on-disk cache.
 6. **Cross-Spec Coordination** *(optional)* — Runs after verification using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). Chunked by CSI division (21 / 22 / 23 / Controls / 25 + 01) on large projects. Its own coordination findings are then put through a second verification pass.
 7. **Report + Edit Sidecar** — A Word report is exported with every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar lists each finding's edit proposal for a downstream applier. Spec Critic does not modify spec documents.
 
@@ -48,10 +48,10 @@ All reviews submit via the Message Batches API — queued at 50% cost savings, t
 
 Defaults (all overridable via env var; see `api_config.py`):
 
-- Review: Claude Opus 4.7
+- Review: Claude Opus 4.8
 - Cross-check: Claude Sonnet 4.6
 - Verification (initial): Claude Sonnet 4.6
-- Verification (escalation / deep-reasoning): Claude Opus 4.7
+- Verification (escalation / deep-reasoning): Claude Opus 4.8
 - Synthesis / Triage: Claude Haiku 4.5
 
 Unknown model ids degrade to safe defaults via `api_config.model_capabilities(...)` — a misconfigured `SPEC_CRITIC_*_MODEL` env var produces a smaller request rather than an API rejection.

@@ -246,11 +246,10 @@ def thin_submission_from_batch_results(
     are supplied they are re-extracted to additionally enable cross-spec
     coordination; otherwise it is a findings-only recovery.
     """
-    from ..batch.batch import _get_client, _sanitize_custom_id
+    from ..batch.batch import _collect_batch_results_with_retry, _sanitize_custom_id
 
-    client = _get_client()
     indexed: list[tuple[int, str, str]] = []  # (index, custom_id, stem)
-    for result in client.messages.batches.results(batch_id):
+    for result in _collect_batch_results_with_retry(batch_id).values():
         parsed = _parse_review_custom_id(getattr(result, "custom_id", ""))
         if parsed is None:
             continue

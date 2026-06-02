@@ -1281,7 +1281,7 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
     trail that a reviewer can answer "why did the verifier reach this
     verdict?" without leaving the report:
 
-    - Verifier model (Sonnet 4.6 / Opus 4.7 / local).
+    - Verifier model (Sonnet 4.6 / Opus 4.8 / local).
     - Verification mode (LOCAL_SKIP / STRICT_STRUCTURED / STANDARD_REASONING
       / DEEP_REASONING) in human-readable form.
     - Search budget used ("N of M searches used") computed from

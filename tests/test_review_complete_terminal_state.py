@@ -78,7 +78,7 @@ def _make_app(export_status: str = "success") -> _Recorder:
 
 
 def _result(*, error: str | None) -> object:
-    rv = ReviewResult(findings=[], error=error, model="claude-opus-4-7")
+    rv = ReviewResult(findings=[], error=error, model="claude-opus-4-8")
 
     class _Result:
         review_result = rv

@@ -82,7 +82,7 @@ class FakeMessage:
     content: list[Any]
     stop_reason: str = "end_turn"
     usage: FakeUsage = field(default_factory=FakeUsage)
-    model: str = "claude-opus-4-7"
+    model: str = "claude-opus-4-8"
     id: str = "msg_fake_1"
     role: str = "assistant"
     type: str = "message"

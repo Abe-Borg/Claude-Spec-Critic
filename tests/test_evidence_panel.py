@@ -239,7 +239,7 @@ class TestEscalationHistoryRendering:
             severity="CRITICAL",
             verification=_verification(
                 verdict="CONFIRMED",
-                model_used="claude-opus-4-7",
+                model_used="claude-opus-4-8",
                 verification_mode="deep_reasoning",
                 escalation_attempted=True,
                 initial_verdict="UNVERIFIED",
@@ -256,7 +256,7 @@ class TestEscalationHistoryRendering:
         assert "Escalation history:" in text
         assert "UNVERIFIED" in text
         assert "claude-sonnet-4-6" in text
-        assert "claude-opus-4-7" in text
+        assert "claude-opus-4-8" in text
         assert "ungrounded_critical_high" in text
         # When the escalation changed the verdict, the panel must flag
         # the disagreement.
@@ -297,7 +297,7 @@ class TestEvidencePanelSuccessCriteria:
                 "CORRECTED",
                 "Replace with 2025 CBC",
                 "The 2025 CBC supersedes the 2019 cycle.",
-                "claude-opus-4-7",
+                "claude-opus-4-8",
             ),
         ],
     )

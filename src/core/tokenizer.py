@@ -5,8 +5,8 @@ Uses tiktoken with cl100k_base for approximate preflight estimates.
 These counts are used for guardrails, not exact billing.
 
 Token limits (v2.3.0):
-    - Claude Opus 4.7 context window: 1,000,000 tokens
-    - Opus 4.7 max output: 128,000 tokens
+    - Claude Opus 4.8 context window: 1,000,000 tokens
+    - Opus 4.8 max output: 128,000 tokens
     - Sonnet 4.6 max output: 64,000 tokens
     - Per-spec recommended input limit: 500,000 tokens
       (practical limit — individual specs are reviewed one at a time)
@@ -36,7 +36,7 @@ _log = logging.getLogger(__name__)
 # Model limits
 # ---------------------------------------------------------------------------
 
-# Claude Opus 4.7 context window (1M tokens, no beta header required).
+# Claude Opus 4.8 context window (1M tokens, no beta header required).
 MAX_CONTEXT_TOKENS = 1_000_000
 
 
@@ -103,7 +103,7 @@ _DEFAULT_LOCAL_SAFETY_FACTOR = 1.20  # unknown models — widest margin
 _LOCAL_SAFETY_FACTORS: dict[str, float] = {
     # Opus / Sonnet share Claude's main tokenizer; the cl100k_base
     # undercount is small but non-zero.
-    "claude-opus-4-7": 1.10,
+    "claude-opus-4-8": 1.10,
     "claude-sonnet-4-6": 1.10,
     # Haiku 4.5 tokenization tends to undercount cl100k a bit more on
     # structured construction-spec text in practice. Pad more.

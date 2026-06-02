@@ -26,15 +26,12 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 MODEL_OPUS_48 = "claude-opus-4-8"
-MODEL_OPUS_47 = "claude-opus-4-7"
 MODEL_SONNET_46 = "claude-sonnet-4-6"
 MODEL_HAIKU_45 = "claude-haiku-4-5"
 
 # Review runs on the current Opus flagship; verification routes through
 # Sonnet first and reserves Opus for escalation on CRITICAL/HIGH UNVERIFIED
-# findings. Defaults track the newest Opus generation (4.8) — its capability
-# profile is identical to 4.7 (already whitelisted) at same-or-better
-# first-party pricing, so the bump is a strict upgrade. Override any of
+# findings. Defaults track the newest Opus generation (4.8). Override any of
 # these via the matching ``SPEC_CRITIC_*_MODEL`` env var.
 REVIEW_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_48)
 CROSS_CHECK_MODEL_DEFAULT = MODEL_SONNET_46
@@ -57,7 +54,7 @@ TRIAGE_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_TRIAGE_MODEL", MODEL_HAIKU_45
 # the 128k output ceiling and the high-effort escalation tier, so newer Opus
 # ids must be listed here too (not just in ``_MODEL_CAPABILITIES``) or they
 # fall through to the Sonnet 64k ceiling / medium effort.
-OPUS_MODELS = frozenset({MODEL_OPUS_48, MODEL_OPUS_47})
+OPUS_MODELS = frozenset({MODEL_OPUS_48})
 HAIKU_MODELS = frozenset({MODEL_HAIKU_45})
 
 
@@ -258,18 +255,10 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         # Claude Opus 4.8 capability profile per Anthropic's "What's new in
         # Claude Opus 4.8" and the models overview: 1M-token context window on
         # the Claude API, 128k max output, the ``output-300k-2026-03-24`` batch
-        # beta (shared with Opus 4.7 / 4.6 and Sonnet 4.6), extended/adaptive
-        # thinking, and the ``effort`` parameter (default high). Identical
-        # profile to Opus 4.7 — registered explicitly so selecting it via
-        # ``SPEC_CRITIC_*_MODEL`` unlocks full capabilities instead of falling
-        # through to the conservative unknown-model defaults.
-        supports_adaptive_thinking=True,
-        max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
-        supports_extended_output_beta=True,
-        context_window=1_000_000,
-        supports_effort=True,
-    ),
-    MODEL_OPUS_47: ModelCapabilities(
+        # beta (shared with Sonnet 4.6), extended/adaptive thinking, and the
+        # ``effort`` parameter (default high). Registered explicitly so
+        # selecting it via ``SPEC_CRITIC_*_MODEL`` unlocks full capabilities
+        # instead of falling through to the conservative unknown-model defaults.
         supports_adaptive_thinking=True,
         max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
         supports_extended_output_beta=True,
@@ -433,7 +422,7 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 # and how aggressively it pursues tool calls. The documented levels are
 # ``low`` / ``medium`` / ``high`` / ``xhigh`` (plus ``max``). The review and
 # cross-check phases use ``xhigh`` — Anthropic recommends it as the starting
-# point for coding/agentic work on Opus 4.7/4.8, and per-spec review is the
+# point for coding/agentic work on Opus 4.8, and per-spec review is the
 # deepest-reasoning phase in the pipeline. We still don't use ``max`` (it
 # overshoots without a measured benefit for this workload), and verification
 # stays at medium/high so the verdict envelope doesn't balloon.

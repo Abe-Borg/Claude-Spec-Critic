@@ -76,7 +76,7 @@ def recorder(trace_dir: Path, clean_env: None):
         capture_level=LEVEL_DEFAULT,
         spec_critic_version="2.11.0",
     )
-    rec.start(mode="realtime", model="claude-opus-4-7", cycle_label="California 2025")
+    rec.start(mode="realtime", model="claude-opus-4-8", cycle_label="California 2025")
     set_recorder(rec)
     yield rec
     rec.stop()
@@ -294,7 +294,7 @@ def test_diagnostics_summary_unaffected_by_tracing(monkeypatch: pytest.MonkeyPat
 
     # Without tracing
     monkeypatch.setenv(ENV_TRACE, "0")
-    rep1 = DiagnosticsReport(run_id="abc123", mode="realtime", model="claude-opus-4-7")
+    rep1 = DiagnosticsReport(run_id="abc123", mode="realtime", model="claude-opus-4-8")
     rep1.log("review", "info", "did a thing")
     summary1 = json.dumps(rep1.summary(), sort_keys=True)
 
@@ -306,7 +306,7 @@ def test_diagnostics_summary_unaffected_by_tracing(monkeypatch: pytest.MonkeyPat
     try:
         with rec.span(KIND_PIPELINE, "pipe"):
             pass
-        rep2 = DiagnosticsReport(run_id="abc123", mode="realtime", model="claude-opus-4-7")
+        rep2 = DiagnosticsReport(run_id="abc123", mode="realtime", model="claude-opus-4-8")
         rep2.log("review", "info", "did a thing")
         summary2 = json.dumps(rep2.summary(), sort_keys=True)
     finally:

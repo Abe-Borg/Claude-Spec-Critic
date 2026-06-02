@@ -13,8 +13,7 @@ if TYPE_CHECKING:
 from anthropic import Anthropic
 
 from ..core.api_config import (
-    MODEL_OPUS_47 as MODEL_OPUS_47,  # re-exported for batch/resume/GUI importers
-    REVIEW_MODEL_DEFAULT,
+    REVIEW_MODEL_DEFAULT,  # re-exported for batch/resume/GUI importers
 )
 
 # ``REPORT_ONLY`` is the explicit "no edit proposal" action type. Findings

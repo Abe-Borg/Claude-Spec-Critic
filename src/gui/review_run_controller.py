@@ -18,7 +18,7 @@ from tkinter import messagebox
 
 from ..core.code_cycles import DEFAULT_CYCLE
 from ..orchestration.diagnostics import DiagnosticsReport
-from ..review.reviewer import MODEL_OPUS_47
+from ..review.reviewer import REVIEW_MODEL_DEFAULT
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from ..tracing.session import (
     start_run_recorder,
@@ -100,7 +100,7 @@ def start_review(app) -> None:
 
     app._diagnostics_report = DiagnosticsReport(
         mode="batch",
-        model=MODEL_OPUS_47,
+        model=REVIEW_MODEL_DEFAULT,
         cycle_label=app._selected_cycle_label,
         files_selected=[p.name for p in selected_files],
         project_context_tokens=app._project_context_tokens,
@@ -112,7 +112,7 @@ def start_review(app) -> None:
     )
     app.diagnostics_button.configure(state="disabled")
 
-    app.log.log_step(f"Submitting {num_specs} files for batch review (Opus 4.7)...")
+    app.log.log_step(f"Submitting {num_specs} files for batch review (Opus 4.8)...")
     run_epoch = app._next_run_epoch()
     threading.Thread(target=app._submit_batch_thread, args=(run_epoch,), daemon=True).start()
 
