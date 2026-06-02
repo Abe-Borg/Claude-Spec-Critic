@@ -63,6 +63,7 @@ from src.core.api_key_store import load_api_key_from_file
 from src.gui.about_usage_dialogs import show_about_dialog, show_usage_dialog
 from src.gui.batch_controller import (
     collect_batch_results,
+    offer_batch_resume,
     on_batch_submitted,
     poll_and_collect_thread,
     poll_batch,
@@ -558,11 +559,19 @@ class SpecReviewApp(_CTkDnDRoot):
     def _show_usage_dialog(self):
         show_usage_dialog(self)
 
+    def _maybe_offer_batch_resume(self):
+        offer_batch_resume(self)
+
 
 def main():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
-    SpecReviewApp().mainloop()
+    app = SpecReviewApp()
+    # After the window is up, offer to resume an unfinished batch from a prior
+    # session (closed app / detached poller). Scheduled on the event loop so the
+    # prompt appears once the UI is interactive.
+    app.after(600, app._maybe_offer_batch_resume)
+    app.mainloop()
 
 
 if __name__ == "__main__":
