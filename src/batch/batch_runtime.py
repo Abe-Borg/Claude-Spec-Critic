@@ -56,7 +56,22 @@ def _progressive_poll_interval(
     return max(base, min(cap, interval))
 
 
-DEFAULT_REVIEW_POLL_POLICY = PollPolicy()
+# Review batches carry the system's largest inputs (full spec docs) and its
+# largest outputs (up to 128k / 300k tokens of deep-reasoning review), so they
+# are the slowest batches to land their first completion. The Batches API can
+# take up to 24h and frequently returns *every* item in one late burst, so
+# "0 completed so far" is a normal interim state, not a stall. The bare 30-min
+# no-progress default tripped on legitimate large runs — a 32-spec batch
+# detached at ~31 min with 0/32 done while the remote batch was still
+# processing — abandoning the run; 30 min is also shorter than the GUI's own
+# "45 min to 2 hrs" expectation. Mirror the verification policy: bound the
+# review poll by max_elapsed (4h), not by an early no-progress trip. The
+# trade-off is slower detection of a genuinely wedged batch (4h vs 30 min),
+# which is acceptable: detach is non-destructive (the batch keeps running
+# remotely) and the user can cancel at any time.
+DEFAULT_REVIEW_POLL_POLICY = PollPolicy(
+    max_no_progress_seconds=4 * 3600,
+)
 DEFAULT_VERIFICATION_POLL_POLICY = PollPolicy(
     max_no_progress_seconds=4 * 3600,
 )
