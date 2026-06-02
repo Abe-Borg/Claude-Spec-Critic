@@ -270,8 +270,8 @@ class EnhancedLog(ctk.CTkFrame):
         for level, color in LOG_COLORS.items(): inner_text.tag_configure(level, foreground=color)
 
     def _toggle(self, event=None): self.collapse() if self._expanded else self.expand()
-    def expand(self): self._expanded = True; self.expand_label.configure(text="\u25bc"); self.pack_propagate(True); self.content_container.pack(fill="both", expand=True)
-    def collapse(self): self._expanded = False; self.expand_label.configure(text="\u25b6"); self.content_container.pack_forget(); self.configure(height=self._COLLAPSED_HEIGHT); self.pack_propagate(False)
+    def expand(self): self._expanded = True; self.expand_label.configure(text="\u25bc"); self.pack_propagate(True); self.content_container.pack(fill="both", expand=True); self.pack(fill="both", expand=True)
+    def collapse(self): self._expanded = False; self.expand_label.configure(text="\u25b6"); self.content_container.pack_forget(); self.configure(height=self._COLLAPSED_HEIGHT); self.pack_propagate(False); self.pack(fill="x", expand=False)
 
     def _queue_log(self, msg, level, ts, delay):
         self._log_queue.append((msg, level, ts, delay))
