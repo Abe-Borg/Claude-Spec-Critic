@@ -427,6 +427,15 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 # overshoots without a measured benefit for this workload), and verification
 # stays at medium/high so the verdict envelope doesn't balloon.
 #
+# ``xhigh`` is Opus-4.8-only. Sonnet 4.6's supported set is
+# ``{low, medium, high, max}`` — it rejects ``xhigh`` at submit with a 400
+# ("This model does not support effort level 'xhigh'"). So ``supports_effort``
+# being a coarse boolean is not enough: a phase that defaults to ``xhigh`` but
+# runs on Sonnet (the cross-check phase always does; review does when
+# ``SPEC_CRITIC_REVIEW_MODEL`` is overridden) must clamp down to ``high`` or
+# the request fails. :func:`effort_config_for` does this clamp via
+# :func:`_clamp_effort_for_model`.
+#
 # Effort is a request-policy decision, not a prompt one. Centralizing it
 # here keeps every request site (review / batch review / cross-check /
 # verification / retry / continuation) reaching for the same lever via
@@ -437,7 +446,9 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 #
 # - Sonnet verification (PHASE_VERIFICATION{,_RETRY,_CONTINUATION}): medium.
 # - Opus verification (i.e. escalation): high.
-# - Opus/Sonnet deep review (PHASE_REVIEW, PHASE_CROSS_CHECK): xhigh.
+# - Opus deep review (PHASE_REVIEW, PHASE_CROSS_CHECK): xhigh.
+# - Sonnet deep review (cross-check always; review when overridden): xhigh is
+#   Opus-only, so the clamp drops it to high.
 # - Triage (Haiku): omit (Haiku does not support effort).
 # - Unknown model: omit.
 
@@ -467,6 +478,29 @@ _VERIFICATION_PHASES: frozenset[str] = frozenset(
     }
 )
 
+# Effort levels only Opus 4.8 accepts. Sonnet 4.6's supported set is
+# ``{low, medium, high, max}``; it rejects ``xhigh`` at submit with a 400
+# ("This model does not support effort level 'xhigh'"). Membership in this set
+# is the trigger for :func:`_clamp_effort_for_model` to downgrade to ``high``
+# on a non-Opus model. Keep it in sync with the levels Anthropic gates to the
+# Opus tier — adding a future Opus-only level here makes every phase clamp it
+# automatically on Sonnet.
+_OPUS_ONLY_EFFORT_LEVELS: frozenset[str] = frozenset({EFFORT_XHIGH})
+
+
+def _clamp_effort_for_model(level: str, model: str) -> str:
+    """Clamp an effort ``level`` down to what ``model`` accepts.
+
+    ``xhigh`` is Opus-4.8-only; on any non-Opus model it falls back to
+    ``high`` — the deepest level Sonnet 4.6 accepts (we don't use ``max``).
+    Every other level passes through unchanged. This is what keeps the
+    cross-check phase (``xhigh`` default, but always Sonnet) from 400-ing at
+    submit, and protects a Sonnet-overridden review phase the same way.
+    """
+    if level in _OPUS_ONLY_EFFORT_LEVELS and model not in OPUS_MODELS:
+        return EFFORT_HIGH
+    return level
+
 
 def effort_config_for(*, model: str, phase: str) -> dict | None:
     """Return the ``output_config`` dict for ``(model, phase)``, or ``None``.
@@ -479,7 +513,9 @@ def effort_config_for(*, model: str, phase: str) -> dict | None:
 
     Otherwise returns ``{"effort": <level>}`` where the level is ``high``
     for Opus on a verification phase (the escalation tier) or the phase
-    default from :data:`_PHASE_DEFAULT_EFFORT`.
+    default from :data:`_PHASE_DEFAULT_EFFORT`, clamped to what ``model``
+    supports (``xhigh`` → ``high`` on non-Opus models — see
+    :func:`_clamp_effort_for_model`).
     """
     if not model_supports_effort(model):
         return None
@@ -494,7 +530,7 @@ def effort_config_for(*, model: str, phase: str) -> dict | None:
     level = _PHASE_DEFAULT_EFFORT.get(phase)
     if level is None:
         return None
-    return {"effort": level}
+    return {"effort": _clamp_effort_for_model(level, model)}
 
 
 def apply_effort_config(kwargs: dict, *, model: str, phase: str) -> dict:
