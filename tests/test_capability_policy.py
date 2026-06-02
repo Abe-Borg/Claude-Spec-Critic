@@ -191,20 +191,18 @@ class TestUnknownModelWarnsLoudly:
 
 
 class TestEffortPolicy:
-    """Per-phase effort levels. Review and cross-check moved to ``xhigh``
+    """Per-phase effort levels. Review and cross-check default to ``xhigh``
     (Anthropic's recommended starting point for coding/agentic work on Opus
     4.8); verification stays medium (Sonnet) / high (Opus escalation) so
-    the verdict envelope doesn't balloon."""
+    the verdict envelope doesn't balloon. ``xhigh`` is Opus-only, so any phase
+    that defaults to it clamps to ``high`` on a non-Opus model (see
+    ``TestXhighClampsOnNonOpus``)."""
 
     def test_review_uses_xhigh(self) -> None:
+        # Review defaults to Opus 4.8, which accepts xhigh.
         assert effort_config_for(model=MODEL_OPUS_48, phase=api_config.PHASE_REVIEW) == {
             "effort": "xhigh"
         }
-
-    def test_cross_check_uses_xhigh(self) -> None:
-        assert effort_config_for(
-            model=MODEL_SONNET_46, phase=api_config.PHASE_CROSS_CHECK
-        ) == {"effort": "xhigh"}
 
     def test_sonnet_verification_stays_medium(self) -> None:
         # The xhigh bump must not leak into verification — the initial pass is
@@ -221,6 +219,58 @@ class TestEffortPolicy:
     def test_haiku_omits_effort_everywhere(self) -> None:
         # Haiku does not support effort; the helper must omit the field.
         assert effort_config_for(model=MODEL_HAIKU_45, phase=api_config.PHASE_REVIEW) is None
+
+
+# ---------------------------------------------------------------------------
+# xhigh is Opus-only — every phase clamps it to high on a non-Opus model
+# ---------------------------------------------------------------------------
+
+
+class TestXhighClampsOnNonOpus:
+    """Regression: ``xhigh`` is an Opus-4.8-only effort level. Sonnet 4.6
+    rejects it at submit with HTTP 400 ("This model does not support effort
+    level 'xhigh'. Supported levels: high, low, max, medium."). Because the
+    cross-check phase defaults to ``xhigh`` but *always* runs on Sonnet 4.6
+    (``CROSS_CHECK_MODEL_DEFAULT``), every cross-spec coordination pass used to
+    400 at submit and produce zero findings. ``effort_config_for`` must clamp
+    ``xhigh`` down to ``high`` on any non-Opus model."""
+
+    def test_cross_check_on_sonnet_clamps_to_high(self) -> None:
+        # The bug: this used to return {"effort": "xhigh"} → 400 on Sonnet.
+        assert effort_config_for(
+            model=MODEL_SONNET_46, phase=api_config.PHASE_CROSS_CHECK
+        ) == {"effort": "high"}
+
+    def test_cross_check_default_model_does_not_400(self) -> None:
+        # Pin the real wiring: the phase's default model must never be asked
+        # for an effort level it rejects. Guards against someone flipping
+        # CROSS_CHECK_MODEL_DEFAULT back to a non-xhigh model without the clamp.
+        cfg = effort_config_for(
+            model=api_config.CROSS_CHECK_MODEL_DEFAULT,
+            phase=api_config.PHASE_CROSS_CHECK,
+        )
+        assert cfg is not None
+        assert cfg["effort"] != "xhigh"
+
+    def test_review_on_sonnet_override_clamps_to_high(self) -> None:
+        # Latent variant: SPEC_CRITIC_REVIEW_MODEL=sonnet would otherwise 400.
+        assert effort_config_for(
+            model=MODEL_SONNET_46, phase=api_config.PHASE_REVIEW
+        ) == {"effort": "high"}
+
+    def test_opus_keeps_xhigh_on_both_deep_phases(self) -> None:
+        # Opus 4.8 accepts xhigh — the clamp must not strip it.
+        for phase in (api_config.PHASE_REVIEW, api_config.PHASE_CROSS_CHECK):
+            assert effort_config_for(model=MODEL_OPUS_48, phase=phase) == {
+                "effort": "xhigh"
+            }
+
+    def test_clamp_helper_is_targeted(self) -> None:
+        # Only xhigh is clamped, and only off-Opus; other levels pass through.
+        assert api_config._clamp_effort_for_model("xhigh", MODEL_SONNET_46) == "high"
+        assert api_config._clamp_effort_for_model("xhigh", MODEL_OPUS_48) == "xhigh"
+        assert api_config._clamp_effort_for_model("high", MODEL_SONNET_46) == "high"
+        assert api_config._clamp_effort_for_model("medium", MODEL_SONNET_46) == "medium"
 
 
 # ---------------------------------------------------------------------------
