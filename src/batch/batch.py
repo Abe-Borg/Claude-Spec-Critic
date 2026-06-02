@@ -225,10 +225,66 @@ def poll_batch(batch_id: str) -> BatchStatus:
     return BatchStatus(status=batch.processing_status, processing=counts.processing, succeeded=counts.succeeded, errored=counts.errored, canceled=counts.canceled, expired=counts.expired, total=(counts.processing + counts.succeeded + counts.errored + counts.canceled + counts.expired))
 
 
-def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewResult]:
+def _collect_batch_results_with_retry(batch_id: str, *, log=None) -> dict[str, Any]:
+    """Stream a batch's results into a ``{custom_id: result}`` dict, retrying
+    the whole stream on connection-class failures.
+
+    ``client.messages.batches.results()`` opens a single long-lived chunked
+    HTTPS download and parses it row-by-row. A mid-stream drop — the
+    ``incomplete chunked read`` / ``peer closed connection`` family raised by
+    httpx/httpcore when a proxy, firewall, or the server closes the connection
+    before the final chunk — aborts the iteration and discards all partial
+    progress. The SDK's own ``max_retries`` does not cover this: it retries
+    acquiring the response, not a body that drops mid-stream.
+
+    The results stream is not resumable, so each retry re-issues the request
+    and rebuilds the dict from scratch (idempotent — results are keyed by
+    ``custom_id``). Retryable classes (CONNECTION / SERVER_ERROR / RATE_LIMIT,
+    via :func:`classify_exception`) back off per the shared realtime retry
+    policy and retry; anything else propagates unchanged.
+
+    A re-issued stream restarts from byte zero, so this recovers a transient
+    blip but cannot beat a middlebox that severs *every* attempt at a fixed
+    duration shorter than the full download — that needs a network/proxy
+    timeout fix, surfaced via the warning log here.
+    """
+    from ..verification.retry_policy import (
+        DEFAULT_REALTIME_RETRY_POLICY as _POLICY,
+        classify_exception,
+        compute_backoff_seconds,
+        is_retryable_failure_class,
+    )
+
     client = _get_client()
+    attempts = max(1, _POLICY.max_attempts)
+    for attempt in range(attempts):
+        try:
+            results: dict[str, Any] = {}
+            for result in client.messages.batches.results(batch_id):
+                results[result.custom_id] = result
+            return results
+        except Exception as exc:  # noqa: BLE001 — classified, re-raised if terminal
+            failure_class = classify_exception(exc)
+            if attempt + 1 >= attempts or not is_retryable_failure_class(failure_class):
+                raise
+            wait = compute_backoff_seconds(
+                _POLICY, attempt=attempt, failure_class=failure_class
+            )
+            msg = (
+                f"Batch results download interrupted ({failure_class.value}); "
+                f"re-fetching in {wait:.0f}s (attempt {attempt + 2}/{attempts})"
+            )
+            if log is not None:
+                log(msg, level="warning")
+            else:
+                logging.getLogger(__name__).warning(msg)
+            time.sleep(wait)
+    return {}  # unreachable: the loop returns on success or raises on the final attempt
+
+
+def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewResult]:
     results: dict[str, ReviewResult] = {}
-    for result in client.messages.batches.results(job.batch_id):
+    for result in _collect_batch_results_with_retry(job.batch_id).values():
         custom_id = result.custom_id
         if custom_id not in job.request_map:
             continue
@@ -329,13 +385,8 @@ def _extract_api_error_message(error_obj) -> str:
 
 
 def retrieve_verification_results_detailed(job: BatchJob) -> dict[str, Any]:
-    client = _get_client()
-    results: dict[str, Any] = {}
-    for result in client.messages.batches.results(job.batch_id):
-        if result.custom_id not in job.request_map:
-            continue
-        results[result.custom_id] = result
-    return results
+    raw = _collect_batch_results_with_retry(job.batch_id)
+    return {cid: r for cid, r in raw.items() if cid in job.request_map}
 
 
 def verification_request_includes_verdict_tool() -> bool:

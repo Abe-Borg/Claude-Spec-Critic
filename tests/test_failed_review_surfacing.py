@@ -113,7 +113,7 @@ class TestDataPlane:
             job=job,
             files_reviewed=["A.docx", "B.docx", "C.docx"],
             review_request_ids=["review__a__0", "review__b__1", "review__c__2"],
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             # No prepared specs => the repair batch is skipped (it needs the
             # original extracted specs), so the truncated result stays
             # truncated instead of triggering a real API call.
@@ -221,7 +221,7 @@ class TestReportRendering:
             review_result=ReviewResult(
                 findings=[_finding(file="A.docx")],
                 error="1 spec(s) had errors: B.docx: Review response truncated",
-                model="claude-opus-4-7",
+                model="claude-opus-4-8",
             ),
             files_reviewed=["A.docx", "B.docx", "C.docx"],
             failed_review_specs=["B.docx"],
@@ -231,7 +231,7 @@ class TestReportRendering:
     def _clean_result(self) -> PipelineResult:
         return PipelineResult(
             review_result=ReviewResult(
-                findings=[_finding(file="A.docx")], model="claude-opus-4-7"
+                findings=[_finding(file="A.docx")], model="claude-opus-4-8"
             ),
             files_reviewed=["A.docx", "B.docx", "C.docx"],
             cycle_label="2025",

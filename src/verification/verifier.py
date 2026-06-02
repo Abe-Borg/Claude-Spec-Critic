@@ -196,7 +196,7 @@ class VerificationResult:
     # from the swapped-in escalated result's ``sources``. Populated
     # alongside ``models_disagreed`` (and the existing ``initial_*``
     # fields) so the report's evidence panel can render "Sonnet 4.6:
-    # DISPUTED, citing {initial_sources}. Opus 4.7: CONFIRMED, citing
+    # DISPUTED, citing {initial_sources}. Opus 4.8: CONFIRMED, citing
     # {sources}." inline for VERIFIED_CONTESTED findings. Empty list
     # for results that never escalated or that escalated without
     # producing a real disagreement.

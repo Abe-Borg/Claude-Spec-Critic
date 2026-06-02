@@ -104,7 +104,7 @@ def _finding(
 def _contested_verification(
     *,
     final_verdict: str = "CONFIRMED",
-    final_model: str = "claude-opus-4-7",
+    final_model: str = "claude-opus-4-8",
     initial_verdict: str = "DISPUTED",
     initial_model: str = "claude-sonnet-4-6",
     final_sources: list[str] | None = None,
@@ -567,9 +567,9 @@ class TestContestedEvidencePanelRendering:
         )
         text = _all_text_from(Document(str(out)))
         # Both verifier model identifiers must appear inline so a
-        # reviewer sees "Sonnet 4.6: DISPUTED → Opus 4.7: CONFIRMED."
+        # reviewer sees "Sonnet 4.6: DISPUTED → Opus 4.8: CONFIRMED."
         assert "claude-sonnet-4-6" in text
-        assert "claude-opus-4-7" in text
+        assert "claude-opus-4-8" in text
         assert "DISPUTED" in text  # initial verdict
         assert "CONFIRMED" in text  # final verdict
 
@@ -600,7 +600,7 @@ class TestContestedEvidencePanelRendering:
             sources=["https://opus-source"],
             accepted_sources=["https://opus-source"],
             grounded=True,
-            model_used="claude-opus-4-7",
+            model_used="claude-opus-4-8",
             escalated=True,
             cache_status="miss",
             web_search_requests=5,

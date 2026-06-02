@@ -79,7 +79,7 @@ def show_about_dialog(parent) -> None:
             "mismatches. These alerts are flagged locally and don’t cost any tokens."
         )),
         ("3.  Per-Spec Review", (
-            "Each specification is sent individually to Claude Opus 4.7. "
+            "Each specification is sent individually to Claude Opus 4.8. "
             "Claude checks for code compliance issues (CBC, CMC, CPC, "
             "Energy Code, CALGreen), DSA-specific requirements, outdated standards, "
             "coordination problems, and constructability concerns. Each finding is "
@@ -94,7 +94,7 @@ def show_about_dialog(parent) -> None:
         ("5.  Verification", (
             "Every finding that needs external grounding is checked in a secondary AI "
             "pass with web search. The default verifier is Claude Sonnet 4.6 (faster and "
-            "cheaper); Opus 4.7 is used as an escalation model for Critical/High "
+            "cheaper); Opus 4.8 is used as an escalation model for Critical/High "
             "findings the first pass couldn’t ground (Unverified or no usable "
             "web evidence). Verdicts are Confirmed, Corrected, Disputed, or "
             "Unverified — a verdict cannot be marked Confirmed or Corrected unless the "
@@ -206,7 +206,7 @@ def show_usage_dialog(parent) -> None:
         )),
         ("4.  Batch Processing", (
             "All specs are queued and processed through the Batch API on Claude "
-            f"Opus 4.7 at 50% cost savings, with results {_BATCH_TIMING_COPY}."
+            f"Opus 4.8 at 50% cost savings, with results {_BATCH_TIMING_COPY}."
         )),
         ("5.  Enable Cross-Spec Coordination (Optional)", (
             "Check this option to run a separate coordination analysis that "

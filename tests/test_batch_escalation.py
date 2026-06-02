@@ -85,7 +85,7 @@ def _vr(verdict, *, grounded, sources=None, model="") -> VerificationResult:
 class TestApplyEscalationOutcome:
     def test_swaps_in_grounded_escalated_result(self):
         initial = _vr("UNVERIFIED", grounded=False, model=INIT_MODEL)
-        esc = _vr("CONFIRMED", grounded=True, sources=["https://x"], model="claude-opus-4-7")
+        esc = _vr("CONFIRMED", grounded=True, sources=["https://x"], model="claude-opus-4-8")
         merged = _apply_escalation_outcome(
             initial_result=initial,
             esc_result=esc,
@@ -108,7 +108,7 @@ class TestApplyEscalationOutcome:
 
     def test_keeps_initial_when_escalation_ungrounded(self):
         initial = _vr("DISPUTED", grounded=True, sources=["https://a"], model=INIT_MODEL)
-        esc = _vr("UNVERIFIED", grounded=False, model="claude-opus-4-7")
+        esc = _vr("UNVERIFIED", grounded=False, model="claude-opus-4-8")
         merged = _apply_escalation_outcome(
             initial_result=initial,
             esc_result=esc,
@@ -127,7 +127,7 @@ class TestApplyEscalationOutcome:
 
     def test_models_disagreed_when_both_grounded_and_verdicts_differ(self):
         initial = _vr("CORRECTED", grounded=True, sources=["https://a"], model=INIT_MODEL)
-        esc = _vr("CONFIRMED", grounded=True, sources=["https://b"], model="claude-opus-4-7")
+        esc = _vr("CONFIRMED", grounded=True, sources=["https://b"], model="claude-opus-4-8")
         merged = _apply_escalation_outcome(
             initial_result=initial,
             esc_result=esc,
@@ -143,7 +143,7 @@ class TestApplyEscalationOutcome:
 
     def test_no_disagreement_when_same_verdict(self):
         initial = _vr("CONFIRMED", grounded=True, sources=["https://a"], model=INIT_MODEL)
-        esc = _vr("CONFIRMED", grounded=True, sources=["https://b"], model="claude-opus-4-7")
+        esc = _vr("CONFIRMED", grounded=True, sources=["https://b"], model="claude-opus-4-8")
         merged = _apply_escalation_outcome(
             initial_result=initial,
             esc_result=esc,
@@ -158,7 +158,7 @@ class TestApplyEscalationOutcome:
 
     def test_initial_sources_recorded_even_for_noncontested(self):
         initial = _vr("UNVERIFIED", grounded=False, model=INIT_MODEL)
-        esc = _vr("CONFIRMED", grounded=True, sources=["https://x"], model="claude-opus-4-7")
+        esc = _vr("CONFIRMED", grounded=True, sources=["https://x"], model="claude-opus-4-8")
         merged = _apply_escalation_outcome(
             initial_result=initial,
             esc_result=esc,

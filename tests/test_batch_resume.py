@@ -59,7 +59,7 @@ def _submission(batch_id: str = "msgbatch_TEST") -> BatchSubmission:
         job=job,
         files_reviewed=["22 11 16 - Water.docx"],
         review_request_ids=["review__a__0"],
-        model="claude-opus-4-7",
+        model="claude-opus-4-8",
         project_context="K-12 DSA project",
         cycle_label=DEFAULT_CYCLE.label,
         cross_check_enabled=True,
@@ -171,7 +171,7 @@ class TestReconstruct:
             files_reviewed=["a.docx"],
             input_dir="/gone",
             files=["/gone/a.docx"],
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             project_context="",
             cycle=DEFAULT_CYCLE,
             cross_check_enabled=True,
@@ -199,7 +199,7 @@ class TestReconstruct:
             files_reviewed=[path.name],
             input_dir=str(tmp_path),
             files=[str(path)],
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             project_context="",
             cycle=DEFAULT_CYCLE,
             cross_check_enabled=True,
@@ -225,7 +225,7 @@ class TestReconstruct:
             files_reviewed=["a-different-name.docx"],  # ≠ extracted "actual.docx"
             input_dir=str(tmp_path),
             files=[str(path)],
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             project_context="",
             cycle=DEFAULT_CYCLE,
             cross_check_enabled=True,
@@ -272,7 +272,7 @@ class TestThinSubmission:
         import src.batch.batch as batch_mod
         monkeypatch.setattr(batch_mod, "_get_client", lambda: _FakeClient(results))
 
-        sub = thin_submission_from_batch_results("msgbatch_X", model="claude-opus-4-7")
+        sub = thin_submission_from_batch_results("msgbatch_X", model="claude-opus-4-8")
         assert sub.review_request_ids == ["review__AAA__0", "review__BBB__1"]
         assert sub.job.request_map["review__AAA__0"]["index"] == 0
         assert sub.job.request_map["review__BBB__1"]["index"] == 1
@@ -300,7 +300,7 @@ class TestThinSubmission:
 
         sub = thin_submission_from_batch_results(
             "msgbatch_X",
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             input_dir=str(tmp_path),
             files=[str(path)],
             cross_check_enabled=True,

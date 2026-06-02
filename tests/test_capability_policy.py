@@ -19,7 +19,6 @@ import pytest
 from src.core import api_config
 from src.core.api_config import (
     MODEL_HAIKU_45,
-    MODEL_OPUS_47,
     MODEL_OPUS_48,
     MODEL_SONNET_46,
     OPUS_MODELS,
@@ -51,7 +50,7 @@ class TestThinkingConfigFor:
 
     def test_triage_phase_returns_none_even_on_capable_model(self) -> None:
         """Phase-level opt-out wins over model capability."""
-        assert thinking_config_for(model=MODEL_OPUS_47, phase=PHASE_TRIAGE) is None
+        assert thinking_config_for(model=MODEL_OPUS_48, phase=PHASE_TRIAGE) is None
         assert thinking_config_for(model=MODEL_SONNET_46, phase=PHASE_TRIAGE) is None
 
     def test_unknown_model_returns_none(self) -> None:
@@ -72,7 +71,7 @@ class TestApplyThinkingConfig:
             # Unknown models degrade to safe defaults.
             ("claude-mystery", PHASE_REVIEW),
             # Phase-level opt-out wins over a capable model.
-            (MODEL_OPUS_47, PHASE_TRIAGE),
+            (MODEL_OPUS_48, PHASE_TRIAGE),
         ],
     )
     def test_omits_key(self, model: str, phase: str) -> None:
@@ -81,8 +80,8 @@ class TestApplyThinkingConfig:
         assert "thinking" not in result
 
     def test_adds_key_for_opus(self) -> None:
-        kwargs: dict = {"model": MODEL_OPUS_47, "max_tokens": 1000}
-        result = apply_thinking_config(kwargs, model=MODEL_OPUS_47, phase=PHASE_REVIEW)
+        kwargs: dict = {"model": MODEL_OPUS_48, "max_tokens": 1000}
+        result = apply_thinking_config(kwargs, model=MODEL_OPUS_48, phase=PHASE_REVIEW)
         assert result["thinking"] == {"type": "adaptive"}
 
     def test_never_sets_thinking_to_none(self) -> None:
@@ -114,11 +113,6 @@ class TestOpus48Whitelisted:
         assert caps.supports_effort is True
         assert caps.context_window == 1_000_000
         assert caps.max_output_tokens == 128_000
-
-    def test_matches_opus_47_profile(self) -> None:
-        """Docs confirm an identical profile to Opus 4.7; pin the equality so
-        a future edit to one record can't silently diverge from the other."""
-        assert model_capabilities(MODEL_OPUS_48) == model_capabilities(MODEL_OPUS_47)
 
     def test_in_opus_models_set(self) -> None:
         """Membership drives the 128k output ceiling and the high-effort
@@ -184,7 +178,6 @@ class TestUnknownModelWarnsLoudly:
         with caplog.at_level(logging.WARNING):
             for model in (
                 MODEL_OPUS_48,
-                MODEL_OPUS_47,
                 MODEL_SONNET_46,
                 MODEL_HAIKU_45,
             ):
@@ -200,7 +193,7 @@ class TestUnknownModelWarnsLoudly:
 class TestEffortPolicy:
     """Per-phase effort levels. Review and cross-check moved to ``xhigh``
     (Anthropic's recommended starting point for coding/agentic work on Opus
-    4.7/4.8); verification stays medium (Sonnet) / high (Opus escalation) so
+    4.8); verification stays medium (Sonnet) / high (Opus escalation) so
     the verdict envelope doesn't balloon."""
 
     def test_review_uses_xhigh(self) -> None:
@@ -236,9 +229,9 @@ class TestEffortPolicy:
 
 
 class TestDefaultModelsAreOpus48:
-    """Review and verification-escalation default to Opus 4.8 — same
-    capability profile as 4.7 (pinned equal above) at same-or-better pricing.
-    Pinned so a future model bump is a deliberate, reviewed edit."""
+    """Review and verification-escalation default to Opus 4.8, the flagship
+    Opus generation. Pinned so a future model bump is a deliberate, reviewed
+    edit."""
 
     def test_review_default_is_opus_48(self) -> None:
         # Holds when SPEC_CRITIC_REVIEW_MODEL is unset (the test harness env).

@@ -24,7 +24,7 @@ from src.core.api_config import (
     BATCH_OUTPUT_BETA,
     MAX_OUTPUT_TOKENS_OPUS,
     MAX_OUTPUT_TOKENS_SONNET,
-    MODEL_OPUS_47,
+    MODEL_OPUS_48,
     MODEL_SONNET_46,
     assert_extended_output_allowed,
 )
@@ -133,7 +133,7 @@ class TestClampRequests:
             {"custom_id": "a", "params": {"max_tokens": 300_000}},
             {"custom_id": "b", "params": {"max_tokens": 50_000}},
         ]
-        _clamp_requests_to_model_ceiling(reqs, model=MODEL_OPUS_47)
+        _clamp_requests_to_model_ceiling(reqs, model=MODEL_OPUS_48)
         assert reqs[0]["params"]["max_tokens"] == MAX_OUTPUT_TOKENS_OPUS
         assert reqs[1]["params"]["max_tokens"] == 50_000  # already below ceiling
 
@@ -145,7 +145,7 @@ class TestClampRequests:
     def test_tolerates_missing_or_malformed_params(self):
         reqs = [{"custom_id": "a"}, {"custom_id": "b", "params": {}}, "garbage"]
         # Must not raise.
-        _clamp_requests_to_model_ceiling(reqs, model=MODEL_OPUS_47)
+        _clamp_requests_to_model_ceiling(reqs, model=MODEL_OPUS_48)
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +158,7 @@ class TestCreateReviewBatch:
         client = FakeClient(beta_create=_ok_batch, plain_create=_ok_batch)
         reqs = [{"custom_id": "a", "params": {"max_tokens": 300_000}}]
         mb, used_beta = _create_review_batch(
-            client, reqs, use_beta=True, model=MODEL_OPUS_47
+            client, reqs, use_beta=True, model=MODEL_OPUS_48
         )
         assert used_beta is True
         assert mb.id == "batch_ok"
@@ -175,7 +175,7 @@ class TestCreateReviewBatch:
         )
         reqs = [{"custom_id": "a", "params": {"max_tokens": 300_000}}]
         mb, used_beta = _create_review_batch(
-            client, reqs, use_beta=True, model=MODEL_OPUS_47
+            client, reqs, use_beta=True, model=MODEL_OPUS_48
         )
         # Fell back: non-beta submit, beta flag now False, run survives.
         assert used_beta is False
@@ -194,7 +194,7 @@ class TestCreateReviewBatch:
         client = FakeClient(beta_create=_raise_other, plain_create=_ok_batch)
         reqs = [{"custom_id": "a", "params": {"max_tokens": 300_000}}]
         with pytest.raises(FakeBadRequest):
-            _create_review_batch(client, reqs, use_beta=True, model=MODEL_OPUS_47)
+            _create_review_batch(client, reqs, use_beta=True, model=MODEL_OPUS_48)
         # Did NOT silently fall back to the non-beta path.
         assert client.plain_batches.calls == []
 
@@ -202,7 +202,7 @@ class TestCreateReviewBatch:
         client = FakeClient(beta_create=_ok_batch, plain_create=_ok_batch)
         reqs = [{"custom_id": "a", "params": {"max_tokens": 100_000}}]
         mb, used_beta = _create_review_batch(
-            client, reqs, use_beta=False, model=MODEL_OPUS_47
+            client, reqs, use_beta=False, model=MODEL_OPUS_48
         )
         assert used_beta is False
         assert client.beta_batches.calls == []
@@ -221,7 +221,7 @@ class TestSubmitReviewBatchWiring:
         """Force every spec to the extended-output path with ``max_tokens``."""
         built = SimpleNamespace(
             allow_extended_output=True,
-            params={"max_tokens": max_tokens, "model": MODEL_OPUS_47},
+            params={"max_tokens": max_tokens, "model": MODEL_OPUS_48},
         )
         monkeypatch.setattr(B, "build_review_request", lambda spec: built)
         return built
@@ -235,7 +235,7 @@ class TestSubmitReviewBatchWiring:
         monkeypatch.setattr(B, "_get_client", lambda: client)
 
         specs = [SimpleNamespace(filename="23 21 13.docx", content="x", paragraph_map=None)]
-        job = submit_review_batch(specs, model=MODEL_OPUS_47)
+        job = submit_review_batch(specs, model=MODEL_OPUS_48)
 
         # The run produced a usable BatchJob instead of crashing at submit.
         assert job.batch_id == "batch_recovered"
@@ -263,7 +263,7 @@ class TestAssertExtendedOutputAllowed:
     def test_opus_300k_without_beta_raises(self):
         with pytest.raises(ValueError, match="beta header"):
             assert_extended_output_allowed(
-                max_tokens=BATCH_MAX_OUTPUT_TOKENS, betas=None, model=MODEL_OPUS_47
+                max_tokens=BATCH_MAX_OUTPUT_TOKENS, betas=None, model=MODEL_OPUS_48
             )
 
     def test_opus_300k_with_beta_ok(self):
@@ -271,13 +271,13 @@ class TestAssertExtendedOutputAllowed:
         assert_extended_output_allowed(
             max_tokens=BATCH_MAX_OUTPUT_TOKENS,
             betas=[BATCH_OUTPUT_BETA],
-            model=MODEL_OPUS_47,
+            model=MODEL_OPUS_48,
         )
 
     def test_opus_at_baseline_ceiling_ok(self):
         # 128k == Opus baseline ceiling: no beta needed.
         assert_extended_output_allowed(
-            max_tokens=MAX_OUTPUT_TOKENS_OPUS, betas=None, model=MODEL_OPUS_47
+            max_tokens=MAX_OUTPUT_TOKENS_OPUS, betas=None, model=MODEL_OPUS_48
         )
 
     def test_sonnet_above_its_64k_baseline_without_beta_raises(self):

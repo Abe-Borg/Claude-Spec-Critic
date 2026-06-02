@@ -44,7 +44,7 @@ from ..orchestration.pipeline import (
     _make_verification_cache,
     _persist_verification_cache,
 )
-from ..review.reviewer import MODEL_OPUS_47
+from ..review.reviewer import REVIEW_MODEL_DEFAULT
 from .review_run_controller import _maybe_start_recorder, _stop_recorder
 
 _BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
@@ -59,7 +59,7 @@ def submit_batch_thread(app, run_epoch: int) -> None:
     app._trace_recorder = _maybe_start_recorder(
         run_id=diag.run_id if diag is not None else "no_run_id",
         mode="batch",
-        model=MODEL_OPUS_47,
+        model=REVIEW_MODEL_DEFAULT,
         cycle_label=app._selected_cycle_label,
         files=app._selected_files_for_review,
     )
@@ -71,7 +71,7 @@ def submit_batch_thread(app, run_epoch: int) -> None:
             input_dir=app.input_dir,
             files=app._selected_files_for_review,
             project_context=app._project_context_for_review,
-            model=MODEL_OPUS_47,
+            model=REVIEW_MODEL_DEFAULT,
             cycle=AVAILABLE_CYCLES.get(app._selected_cycle_label, DEFAULT_CYCLE),
             cross_check_enabled=app._cross_check_for_review,
             log=app._make_diag_log("batch_submit", run_epoch),
@@ -521,7 +521,7 @@ def recover_batch_dialog(app) -> None:
     def _reconstruct(log, progress):
         return thin_submission_from_batch_results(
             batch_id,
-            model=MODEL_OPUS_47,
+            model=REVIEW_MODEL_DEFAULT,
             input_dir=input_dir or None,
             files=file_strs or None,
             cross_check_enabled=cross_check_enabled,
@@ -534,7 +534,7 @@ def recover_batch_dialog(app) -> None:
     _begin_reconnect_run(
         app,
         reconstruct_fn=_reconstruct,
-        model=MODEL_OPUS_47,
+        model=REVIEW_MODEL_DEFAULT,
         cycle_label=cycle_label,
         project_context=project_context,
         cross_check_enabled=cross_check_enabled,

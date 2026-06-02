@@ -194,7 +194,7 @@ class SpecReviewApp(_CTkDnDRoot):
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._show_usage_dialog,
         ).pack(side="right", padx=(0, 8), pady=(4, 0))
-        ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.7", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.8", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
 
         # --- Accessibility row: sits between header and inputs card ---
         accessibility_bar = ctk.CTkFrame(c, fg_color="transparent")

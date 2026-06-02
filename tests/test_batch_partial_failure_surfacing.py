@@ -119,7 +119,7 @@ class TestPartialFailureSurvivesToReportAndSidecar:
             job=job,
             files_reviewed=["22 11 00 - Water.docx"],
             review_request_ids=["review__a__0"],
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             prepared_specs=None,
         )
 
