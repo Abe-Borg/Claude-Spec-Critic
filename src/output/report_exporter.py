@@ -6,7 +6,7 @@ Generates a formatted .docx report from a PipelineResult:
     - Files reviewed list
     - Summary table (severity counts) with colored cell shading
     - LEED and placeholder alerts
-    - Per-spec findings grouped by severity, sorted by confidence
+    - Per-spec findings grouped by severity, then by spec file, then confidence
     - Verification verdicts and corrections inline with findings
     - Cross-spec coordination findings (if cross-check was enabled)
 
@@ -1887,7 +1887,7 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _write_findings_section(doc: Document, review) -> None:
-    """Write per-spec findings grouped by severity, sorted by confidence.
+    """Write per-spec findings grouped by severity, then spec file, then confidence.
 
     Uses heading hierarchy for Word-native collapse support:
     - Title (level 0): "Findings"
@@ -1895,6 +1895,10 @@ def _write_findings_section(doc: Document, review) -> None:
     - Heading 3: Individual finding header (collapsible)
     - Normal: Finding body content
 
+    Within a severity group, findings are grouped by spec file so one spec's
+    issues stay contiguous (the prior confidence-only sort scattered a single
+    spec's findings across the whole severity block); confidence orders the
+    findings within each file.
     """
     doc.add_heading("Findings", level=0)
 
@@ -1910,10 +1914,13 @@ def _write_findings_section(doc: Document, review) -> None:
     finding_number = 0  # Running counter across all severities
 
     for severity in SEVERITY_ORDER:
+        # Group by spec file (the fileName prefix is the CSI section number,
+        # so a lexical sort yields CSI order), then confidence descending.
+        # Keeps one spec's findings contiguous instead of interleaving every
+        # spec by confidence across the severity block.
         severity_findings = sorted(
             [f for f in review.findings if f.severity == severity],
-            key=lambda f: f.confidence,
-            reverse=True,
+            key=lambda f: (f.fileName or "", -f.confidence),
         )
         if not severity_findings:
             continue
@@ -1970,11 +1977,14 @@ def _write_cross_check_section(doc: Document, cross_check_result) -> None:
     if status in ("skipped", "failed"):
         return
 
-    # Sort by severity then confidence
+    # Sort by severity, then group by spec file (fileName prefix is the CSI
+    # section number, so a lexical sort yields CSI order), then confidence
+    # descending — mirrors _write_findings_section so a spec's coordination
+    # findings stay contiguous instead of scattering by confidence.
     severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
     sorted_findings = sorted(
         cross_check_result.findings,
-        key=lambda f: (severity_rank.get(f.severity, 99), -f.confidence),
+        key=lambda f: (severity_rank.get(f.severity, 99), f.fileName or "", -f.confidence),
     )
 
     for idx, finding in enumerate(sorted_findings, 1):
