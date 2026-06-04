@@ -408,15 +408,19 @@ batch state is saved and you will be prompted to resume,"* and the batch flow no
 honors that promise. A submitted review batch persists its reconnect state to
 `~/.spec_critic/pending_batch.json` (`orchestration/batch_resume.py`); on startup
 the GUI calls `offer_batch_resume` to detect a still-running detached batch and
-prompt the user to rejoin it, and a manual **Recover batch…** button
-(`recover_batch_dialog`) lets the user reconnect to a batch by id at any time.
-Recovery re-polls → collects → verifies → cross-checks → reports without
-re-submitting or re-paying for the review; the persisted state carries the batch's
-`request_map` verbatim (so results return even if the source files moved) and
-re-extracts spec bodies deterministically rather than storing them. The same path
-backs the standalone `scripts/recover_batch.py`. (An earlier version of this
-chapter flagged the dialog's resume promise as drift the UI did not keep — that
-gap is now closed.)
+prompt the user to rejoin it from that saved state — which already holds the
+`request_map`, so it can poll a batch that is still in flight. A manual **Recover
+batch…** button (`recover_batch_dialog`) covers the batch the app never saved —
+one submitted before resume state existed, from another machine, or whose state
+file was lost — by entering its id; that id-only path rebuilds the `request_map`
+by *listing the batch's results* (`thin_submission_from_batch_results`), so it
+requires the batch to have **ended** first. Either way, recovery re-polls →
+collects → verifies → cross-checks → reports without re-submitting or re-paying for
+the review; the saved state carries the `request_map` verbatim (so results return
+even if the source files moved) and the project-context text, and re-extracts spec
+bodies deterministically rather than storing them. The same machinery backs the
+standalone `scripts/recover_batch.py`. (An earlier version of this chapter flagged
+the dialog's resume promise as drift the UI did not keep — that gap is now closed.)
 
 ## How it connects
 

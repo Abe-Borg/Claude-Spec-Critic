@@ -44,7 +44,7 @@ own gating.
 
 All reviews submit via the Message Batches API — queued at 50% cost savings, typical turnaround ~45 min – 2 hrs (24 hrs max). The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header) and triggers only for inputs ≥200k tokens.
 
-A submitted review batch keeps running on Anthropic's servers even if the app closes or the network drops. Spec Critic persists the small amount of state needed to reconnect (the batch id and its request map; spec bodies are re-extracted rather than stored), so an interrupted run can be finished without re-submitting or re-paying for the review — via the GUI **Recover batch…** action or the standalone `scripts/recover_batch.py`. The state file lives at `~/.spec_critic/pending_batch.json` (override with `SPEC_CRITIC_PENDING_BATCH_PATH`).
+A submitted review batch keeps running on Anthropic's servers even if the app closes or the network drops. Spec Critic persists the small amount of state needed to reconnect — the batch id, its request map, and your project-context text (which can include text extracted from attached `.docx`/`.pdf` context files); the spec bodies themselves are re-extracted rather than stored — so an interrupted run can be finished without re-submitting or re-paying for the review. The startup resume prompt rejoins a still-running batch from that saved state; the manual **Recover batch…** action (and `scripts/recover_batch.py`) recover a batch by id even with no saved state, rebuilding the request map from the batch's results — which requires the batch to have **ended** first. The state file lives at `~/.spec_critic/pending_batch.json` (override with `SPEC_CRITIC_PENDING_BATCH_PATH`).
 
 ## Model Stack
 
