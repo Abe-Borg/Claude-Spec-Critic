@@ -1,0 +1,273 @@
+"""Multi-folder file accumulation in the file-selection controller.
+
+Locks in the behavior that lets a user load specs from more than one
+folder: each Browse / drag-and-drop action *accumulates* onto the existing
+selection (de-duped by resolved path) instead of replacing it, and the
+Clear button is the explicit reset.
+
+Hermetic: ``file_selection_controller`` imports ``filedialog`` lazily and
+the package ``__init__`` re-exports ``main`` lazily, so this module loads
+without ``tkinter`` / ``customtkinter``. A small ``FakeApp`` stands in for
+the real ``SpecReviewApp`` so no Tk root is needed.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from src.gui.file_selection_controller import (
+    apply_selected_specs,
+    clear_selection,
+    merge_selected_specs,
+)
+
+
+# --------------------------------------------------------------------------
+# Test doubles
+# --------------------------------------------------------------------------
+class _FakeLog:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+        self.steps: list[str] = []
+
+    def log_warning(self, msg: str) -> None:
+        self.warnings.append(msg)
+
+    def log_step(self, msg: str) -> None:
+        self.steps.append(msg)
+
+    def log(self, msg: str, level: str = "info") -> None:  # pragma: no cover
+        pass
+
+
+class _FakeEntry:
+    def __init__(self) -> None:
+        self.text = ""
+
+    def delete(self, start, end) -> None:
+        self.text = ""
+
+    def insert(self, index, value) -> None:
+        self.text = value
+
+
+class _FakePanel:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+
+
+class _FakeGauge:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+
+
+class _FakeButton:
+    def __init__(self) -> None:
+        self.state = "normal"
+
+    def configure(self, state=None, **_) -> None:
+        if state is not None:
+            self.state = state
+
+
+class _FakeApp:
+    """Minimal stand-in exercising only what the controller touches."""
+
+    def __init__(self) -> None:
+        self.log = _FakeLog()
+        self.input_dir_entry = _FakeEntry()
+        self.file_list_panel = _FakePanel()
+        self.token_gauge = _FakeGauge()
+        self.run_button = _FakeButton()
+        self.input_dir = None
+        self._selected_files: list[Path] = []
+        self._loaded_file_data: list = ["stale"]
+        self._extracted_specs: list = ["stale"]
+        self._analysis_epoch = 0
+        self._exact_token_refresh_timer_id = None
+        self.analyzed_with: list[list[Path]] = []
+        self.after_cancelled: list = []
+
+    # The controller calls these app methods.
+    def _analyze_tokens(self, paths) -> None:
+        self.analyzed_with.append(list(paths))
+
+    def after_cancel(self, timer_id) -> None:
+        self.after_cancelled.append(timer_id)
+
+
+def _docx(folder: str, name: str) -> Path:
+    return Path(f"/{folder}/{name}.docx")
+
+
+# --------------------------------------------------------------------------
+# merge_selected_specs (pure)
+# --------------------------------------------------------------------------
+def test_merge_unions_across_folders_preserving_order():
+    a = [_docx("folderA", "s1"), _docx("folderA", "s2")]
+    b = [_docx("folderB", "s3"), _docx("folderB", "s4")]
+    assert merge_selected_specs(a, b) == a + b
+
+
+def test_merge_dedups_exact_duplicates_keeping_first_position():
+    a = [_docx("folderA", "s1"), _docx("folderA", "s2")]
+    b = [_docx("folderA", "s1"), _docx("folderB", "s3")]
+    merged = merge_selected_specs(a, b)
+    assert merged == [
+        _docx("folderA", "s1"),
+        _docx("folderA", "s2"),
+        _docx("folderB", "s3"),
+    ]
+
+
+def test_merge_into_empty_is_just_new():
+    new = [_docx("folderA", "s1")]
+    assert merge_selected_specs([], new) == new
+
+
+def test_merge_does_not_mutate_inputs():
+    a = [_docx("folderA", "s1")]
+    b = [_docx("folderB", "s2")]
+    merge_selected_specs(a, b)
+    assert a == [_docx("folderA", "s1")]
+    assert b == [_docx("folderB", "s2")]
+
+
+def test_merge_dedups_same_file_via_two_spellings(tmp_path):
+    """``..`` / symlink spellings of one file collapse via resolve()."""
+    real = tmp_path / "spec.docx"
+    real.write_text("x")
+    alt = tmp_path / "sub" / ".." / "spec.docx"
+    merged = merge_selected_specs([real], [alt])
+    assert len(merged) == 1
+
+
+# --------------------------------------------------------------------------
+# apply_selected_specs (accumulation)
+# --------------------------------------------------------------------------
+def test_second_folder_accumulates_not_replaces():
+    app = _FakeApp()
+    folder_a = [_docx("folderA", "s1"), _docx("folderA", "s2")]
+    folder_b = [_docx("folderB", "s3")]
+
+    apply_selected_specs(app, folder_a)
+    assert app._selected_files == folder_a
+
+    apply_selected_specs(app, folder_b)
+    # The regression guard: folder A's files survive the second selection.
+    assert app._selected_files == folder_a + folder_b
+    # Re-analysis runs on the full merged set.
+    assert app.analyzed_with[-1] == folder_a + folder_b
+    assert app.input_dir_entry.text == "3 files selected"
+
+
+def test_reselecting_existing_files_is_a_noop():
+    app = _FakeApp()
+    folder_a = [_docx("folderA", "s1"), _docx("folderA", "s2")]
+    apply_selected_specs(app, folder_a)
+    analyses_before = len(app.analyzed_with)
+
+    # Drop the exact same files again.
+    apply_selected_specs(app, list(folder_a))
+
+    assert app._selected_files == folder_a
+    assert len(app.analyzed_with) == analyses_before  # no re-analysis
+    assert any("No new files added" in w for w in app.log.warnings)
+
+
+def test_partial_overlap_adds_only_new_files():
+    app = _FakeApp()
+    apply_selected_specs(app, [_docx("folderA", "s1")])
+    apply_selected_specs(app, [_docx("folderA", "s1"), _docx("folderB", "s2")])
+    assert app._selected_files == [_docx("folderA", "s1"), _docx("folderB", "s2")]
+    assert app.analyzed_with[-1] == [_docx("folderA", "s1"), _docx("folderB", "s2")]
+
+
+def test_single_file_entry_shows_full_path():
+    app = _FakeApp()
+    apply_selected_specs(app, [_docx("folderA", "only")])
+    assert app.input_dir_entry.text == str(_docx("folderA", "only"))
+    assert app.input_dir == Path("/folderA")
+
+
+def test_unsupported_only_selection_warns_and_keeps_state():
+    app = _FakeApp()
+    apply_selected_specs(app, [_docx("folderA", "s1")])
+    state_before = list(app._selected_files)
+    analyses_before = len(app.analyzed_with)
+
+    apply_selected_specs(app, [Path("/folderB/notes.txt"), Path("/folderB/img.png")])
+
+    assert app._selected_files == state_before
+    assert len(app.analyzed_with) == analyses_before
+    assert any("No supported" in w for w in app.log.warnings)
+
+
+def test_mixed_selection_keeps_only_supported():
+    app = _FakeApp()
+    apply_selected_specs(
+        app, [_docx("folderA", "s1"), Path("/folderA/readme.txt")]
+    )
+    assert app._selected_files == [_docx("folderA", "s1")]
+
+
+# --------------------------------------------------------------------------
+# clear_selection (Clear button)
+# --------------------------------------------------------------------------
+def test_clear_resets_everything():
+    app = _FakeApp()
+    apply_selected_specs(app, [_docx("folderA", "s1"), _docx("folderB", "s2")])
+    epoch_before = app._analysis_epoch
+
+    clear_selection(app)
+
+    assert app._selected_files == []
+    assert app.input_dir is None
+    assert app.input_dir_entry.text == ""
+    assert app._loaded_file_data == []
+    assert app._extracted_specs == []
+    assert app.file_list_panel.reset_calls >= 1
+    assert app.token_gauge.reset_calls >= 1
+    assert app.run_button.state == "disabled"
+    # Epoch bumped so an in-flight analysis can't repopulate the panel.
+    assert app._analysis_epoch > epoch_before
+    assert any("Cleared file selection" in s for s in app.log.steps)
+
+
+def test_clear_cancels_pending_exact_token_timer():
+    app = _FakeApp()
+    apply_selected_specs(app, [_docx("folderA", "s1")])
+    app._exact_token_refresh_timer_id = "timer-123"
+
+    clear_selection(app)
+
+    assert "timer-123" in app.after_cancelled
+    assert app._exact_token_refresh_timer_id is None
+
+
+def test_clear_when_empty_is_idempotent_and_quiet():
+    app = _FakeApp()
+    clear_selection(app)
+    assert app._selected_files == []
+    # No "Cleared" message when nothing was loaded.
+    assert not any("Cleared file selection" in s for s in app.log.steps)
+
+
+def test_can_load_again_after_clear():
+    app = _FakeApp()
+    apply_selected_specs(app, [_docx("folderA", "s1")])
+    clear_selection(app)
+    apply_selected_specs(app, [_docx("folderB", "s2")])
+    assert app._selected_files == [_docx("folderB", "s2")]
+    assert app.analyzed_with[-1] == [_docx("folderB", "s2")]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(pytest.main([__file__, "-v"]))
