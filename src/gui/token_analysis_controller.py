@@ -31,6 +31,22 @@ from ..core.tokenizer import count_tokens, exceeds_per_call_limit
 EXACT_TOKEN_REFRESH_DEBOUNCE_MS = 400
 
 
+def resolve_initial_selection(paths, prior_selection):
+    """Decide each file's initial checkbox state for a (re)load of the panel.
+
+    A path present in ``prior_selection`` keeps its prior checked state, so a
+    user's deselection survives an *accumulation* reload (loading another
+    folder re-analyzes the full merged list and rebuilds every row). A
+    genuinely-new path — one not in ``prior_selection`` — defaults to selected
+    (``True``). On the first load ``prior_selection`` is empty, so every file
+    defaults selected, matching the original behavior.
+
+    Returns a ``{path: bool}`` map covering exactly ``paths``.
+    """
+    prior = prior_selection or {}
+    return {p: prior.get(p, True) for p in paths}
+
+
 def analyze_tokens(app, file_paths) -> None:
     if not file_paths:
         app.log.log_warning("No supported files found")
@@ -44,6 +60,12 @@ def analyze_tokens(app, file_paths) -> None:
     # safe.
     project_context = app._get_project_context()
     cycle = DEFAULT_CYCLE
+
+    # Snapshot the current checkbox state (on the UI thread, before the worker
+    # clears + rebuilds the panel) so an accumulation reload doesn't silently
+    # re-select files the user had unchecked. Genuinely-new files still default
+    # to selected. See resolve_initial_selection.
+    prior_selection = app.file_list_panel.selection_state_by_path()
 
     # Stale-result guard: bump and capture the analysis epoch. A newer
     # analysis bumps the epoch; older threads see their captured value
@@ -84,7 +106,11 @@ def analyze_tokens(app, file_paths) -> None:
                 max_per_file = max(d["tokens"] for d in file_data)
                 largest_call = overhead + max_per_file
                 per_file_limit_exceeded = exceeds_per_call_limit(max_per_file, overhead)
-                _dispatch_if_current(lambda fd=file_data: app.file_list_panel.load_files(fd))
+                initial_selection = resolve_initial_selection(
+                    [d["path"] for d in file_data], prior_selection
+                )
+                _dispatch_if_current(lambda fd=file_data, sel=initial_selection:
+                    app.file_list_panel.load_files(fd, selection=sel))
                 _dispatch_if_current(lambda lc=largest_call, fc=len(file_data): app.token_gauge.update_gauge(lc, fc))
                 _dispatch_if_current(lambda lc=largest_call: app.log.log_success(f"Token analysis complete: largest spec call ~{lc:,} tokens"))
                 if per_file_limit_exceeded:
