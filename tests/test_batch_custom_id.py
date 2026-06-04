@@ -47,3 +47,22 @@ def test_ids_unique_even_when_stems_truncate_to_same_prefix():
 def test_sanitize_respects_passed_max_len():
     # The stem helper honors the computed budget rather than the default 50.
     assert len(_sanitize_custom_id("x" * 200, max_len=10)) == 10
+
+
+@pytest.mark.parametrize("idx", [0, 9, 999, 9999])
+def test_low_index_stem_matches_legacy_default_50(idx):
+    # Resume compatibility: the bare-batch recovery path
+    # (orchestration/batch_resume.recover_from_bare_batch_id) re-sanitizes local
+    # filenames with the default 50 and matches them against the parsed
+    # custom_id stem. For every realistic index (< 10000) the submitted stem must
+    # therefore stay byte-identical to the legacy 50-char truncation, or the
+    # real-filename recovery silently falls back to the truncated stem.
+    long_name = (
+        "23 09 00 Instrumentation and Control for HVAC narrative "
+        "section FINAL rev C.docx"
+    )
+    assert len(_sanitize_custom_id(long_name)) == 50  # guard: the cap actually bites
+    cid = _review_custom_id(long_name, idx)
+    stem = cid[len("review__"): -len(f"__{idx}")]
+    assert stem == _sanitize_custom_id(long_name)  # legacy default max_len=50
+    assert len(cid) <= _MAX
