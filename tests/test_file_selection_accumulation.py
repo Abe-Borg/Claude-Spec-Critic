@@ -22,6 +22,10 @@ from src.gui.file_selection_controller import (
     merge_selected_specs,
 )
 from src.gui.token_analysis_controller import resolve_initial_selection
+from src.gui.token_analysis_controller import (
+    CallMetrics,
+    compute_call_metrics,
+)
 
 
 # --------------------------------------------------------------------------
@@ -317,6 +321,56 @@ def test_prior_entries_absent_from_new_list_are_dropped():
     prior = {a: False, b: True}
     # Only ``a`` is in the new list; ``b`` simply doesn't appear.
     assert resolve_initial_selection([a], prior) == {a: False}
+
+
+# --------------------------------------------------------------------------
+# compute_call_metrics (gauge / run-button / over-limit from CHECKED files)
+# --------------------------------------------------------------------------
+# Regression guard: after a reload preserves an unchecked oversized file, the
+# gauge / Review-button / "too large" warning must reflect only the checked
+# files — otherwise Review stays disabled (and keeps warning) about a file
+# that won't be reviewed until the user toggles a box. exceeds_per_call_limit
+# fires when overhead + tokens > 500_000.
+_OVERHEAD = 1_000
+
+
+def _fd(name: str, tokens: int) -> dict:
+    return {"path": _docx("folderA", name), "filename": f"{name}.docx", "tokens": tokens}
+
+
+def test_metrics_empty_selection_zeros_and_disables():
+    assert compute_call_metrics([], _OVERHEAD) == CallMetrics(0, 0, False, [])
+
+
+def test_metrics_all_under_limit():
+    data = [_fd("a", 10_000), _fd("b", 50_000)]
+    assert compute_call_metrics(data, _OVERHEAD) == CallMetrics(_OVERHEAD + 50_000, 2, False, [])
+
+
+def test_metrics_flags_oversized_selected_file():
+    data = [_fd("a", 10_000), _fd("big", 600_000)]
+    m = compute_call_metrics(data, _OVERHEAD)
+    assert m.per_file_limit_exceeded is True
+    assert m.over_files == ["big.docx"]
+    assert m.largest_call == _OVERHEAD + 600_000
+    assert m.file_count == 2
+
+
+def test_metrics_ignores_unchecked_oversized_file():
+    # The feedback scenario: the oversized file is unchecked, so it isn't in
+    # selected_data — Review must not stay disabled and nothing should warn.
+    selected = [_fd("a", 10_000), _fd("b", 50_000)]  # big.docx (unchecked) omitted
+    m = compute_call_metrics(selected, _OVERHEAD)
+    assert m.per_file_limit_exceeded is False
+    assert m.over_files == []
+    assert m.file_count == 2
+
+
+def test_metrics_lists_every_oversized_selected_file():
+    data = [_fd("big1", 700_000), _fd("ok", 10_000), _fd("big2", 800_000)]
+    m = compute_call_metrics(data, _OVERHEAD)
+    assert m.per_file_limit_exceeded is True
+    assert sorted(m.over_files) == ["big1.docx", "big2.docx"]
 
 
 if __name__ == "__main__":  # pragma: no cover

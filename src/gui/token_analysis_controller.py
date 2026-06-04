@@ -16,6 +16,7 @@ pays for an exact ``count_tokens`` call. Stale-result protection inside
 from __future__ import annotations
 
 import threading
+from typing import NamedTuple
 
 from ..core.code_cycles import DEFAULT_CYCLE
 from ..input.extractor import ExtractedSpec, extract_text
@@ -45,6 +46,43 @@ def resolve_initial_selection(paths, prior_selection):
     """
     prior = prior_selection or {}
     return {p: prior.get(p, True) for p in paths}
+
+
+class CallMetrics(NamedTuple):
+    """Gauge / run-button / over-limit inputs derived from the selected files."""
+    largest_call: int
+    file_count: int
+    per_file_limit_exceeded: bool
+    over_files: list  # filenames whose own per-call size exceeds the limit
+
+
+def compute_call_metrics(selected_data, overhead) -> CallMetrics:
+    """Derive the gauge / run-button / over-limit metrics from the *selected*
+    (checked) files only.
+
+    Shared by ``analyze_tokens`` (right after a panel reload) and
+    ``on_file_selection_change`` (on a checkbox toggle) so the two never
+    drift: an unchecked file — including a deselection preserved across an
+    accumulation reload — must not count toward the largest single-call
+    estimate, the per-call-limit warning, or the Review-button gate. An empty
+    selection yields zeroed metrics, so Review disables and nothing warns.
+
+    ``selected_data`` items are the loaded file dicts (each with ``tokens`` /
+    ``filename``); ``overhead`` is the system-prompt + project-context token
+    cost shared by every per-spec call.
+    """
+    fc = len(selected_data)
+    if fc == 0:
+        return CallMetrics(0, 0, False, [])
+    max_per_file = max(d["tokens"] for d in selected_data)
+    largest_call = overhead + max_per_file
+    exceeded = exceeds_per_call_limit(max_per_file, overhead)
+    over_files = (
+        [d["filename"] for d in selected_data if exceeds_per_call_limit(d["tokens"], overhead)]
+        if exceeded
+        else []
+    )
+    return CallMetrics(largest_call, fc, exceeded, over_files)
 
 
 def analyze_tokens(app, file_paths) -> None:
@@ -103,33 +141,38 @@ def analyze_tokens(app, file_paths) -> None:
                 _dispatch_if_current(lambda fd=file_data, es=extracted_specs, st=sys_tokens, ct=ctx_tokens:
                     app._set_file_data(fd, es, st, ct))
                 overhead = sys_tokens + ctx_tokens
-                max_per_file = max(d["tokens"] for d in file_data)
-                largest_call = overhead + max_per_file
-                per_file_limit_exceeded = exceeds_per_call_limit(max_per_file, overhead)
                 initial_selection = resolve_initial_selection(
                     [d["path"] for d in file_data], prior_selection
                 )
                 _dispatch_if_current(lambda fd=file_data, sel=initial_selection:
                     app.file_list_panel.load_files(fd, selection=sel))
-                _dispatch_if_current(lambda lc=largest_call, fc=len(file_data): app.token_gauge.update_gauge(lc, fc))
-                _dispatch_if_current(lambda lc=largest_call: app.log.log_success(f"Token analysis complete: largest spec call ~{lc:,} tokens"))
-                if per_file_limit_exceeded:
-                    over_files = [d["filename"] for d in file_data if exceeds_per_call_limit(d["tokens"], overhead)]
-                    _dispatch_if_current(lambda of=over_files: app.log.log_warning(
+                # Gauge / run-button / over-limit reflect only the *checked*
+                # files, so a preserved-unchecked oversized file doesn't keep
+                # Review disabled (or keep warning) until the user toggles a
+                # box. Same computation as on_file_selection_change.
+                selected_data = [d for d in file_data if initial_selection.get(d["path"], True)]
+                metrics = compute_call_metrics(selected_data, overhead)
+                _dispatch_if_current(lambda m=metrics: app.token_gauge.update_gauge(m.largest_call, m.file_count))
+                if metrics.file_count > 0:
+                    _dispatch_if_current(lambda lc=metrics.largest_call: app.log.log_success(
+                        f"Token analysis complete: largest spec call ~{lc:,} tokens"))
+                if metrics.over_files:
+                    _dispatch_if_current(lambda of=metrics.over_files: app.log.log_warning(
                         f"File too large for single API call: {', '.join(of)}"
                     ))
-                _dispatch_if_current(lambda b=per_file_limit_exceeded: app.run_button.configure(
-                    state="disabled" if b else "normal"
+                _dispatch_if_current(lambda m=metrics: app.run_button.configure(
+                    state="normal" if (m.file_count > 0 and not m.per_file_limit_exceeded) else "disabled"
                 ))
-                _dispatch_if_current(lambda b=per_file_limit_exceeded: app.file_list_panel.set_over_limit(b))
-                # After the cl100k_base estimate, kick off an exact
-                # Anthropic count_tokens call for the largest spec and
-                # re-render the gauge with the exact value. The local
-                # estimate stays visible while the API call is in flight.
-                refresh_exact_token_count(
-                    app, file_data, extracted_specs, project_context, cycle,
-                    sys_tokens, ctx_tokens, _dispatch_if_current,
-                )
+                _dispatch_if_current(lambda m=metrics: app.file_list_panel.set_over_limit(m.per_file_limit_exceeded))
+                # After the cl100k_base estimate, kick off an exact Anthropic
+                # count_tokens call for the largest *selected* spec and
+                # re-render the gauge with the exact value. The local estimate
+                # stays visible while the API call is in flight.
+                if metrics.file_count > 0:
+                    refresh_exact_token_count(
+                        app, selected_data, extracted_specs, project_context, cycle,
+                        sys_tokens, ctx_tokens, _dispatch_if_current,
+                    )
         except Exception as e:
             _dispatch_if_current(lambda err=e: app.log.log_error(f"Analysis failed: {err}"))
 
@@ -240,18 +283,13 @@ def on_file_selection_change(app) -> None:
         getattr(app, "_system_prompt_tokens", 0)
         + getattr(app, "_project_context_tokens", 0)
     )
-    fc = len(selected_data)
-    if fc > 0:
-        max_per_file = max(d["tokens"] for d in selected_data)
-        largest_call = overhead + max_per_file
-        per_file_exceeded = exceeds_per_call_limit(max_per_file, overhead)
-    else:
-        largest_call = 0
-        per_file_exceeded = False
-    app.token_gauge.update_gauge(largest_call, fc)
-    app.run_button.configure(state="normal" if (fc > 0 and not per_file_exceeded) else "disabled")
-    app.file_list_panel.set_over_limit(per_file_exceeded)
-    if fc > 0 and getattr(app, "_extracted_specs", None):
+    metrics = compute_call_metrics(selected_data, overhead)
+    app.token_gauge.update_gauge(metrics.largest_call, metrics.file_count)
+    app.run_button.configure(
+        state="normal" if (metrics.file_count > 0 and not metrics.per_file_limit_exceeded) else "disabled"
+    )
+    app.file_list_panel.set_over_limit(metrics.per_file_limit_exceeded)
+    if metrics.file_count > 0 and getattr(app, "_extracted_specs", None):
         refresh_exact_token_count(
             app, selected_data, app._extracted_specs,
             app._get_project_context(), DEFAULT_CYCLE,
