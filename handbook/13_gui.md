@@ -95,6 +95,11 @@ The seven controllers, each in one paragraph:
   de-duped by resolved path), so a user can load specs from more than one folder
   — the native file dialog only multi-selects within a single folder, so this is
   the only way to span folders. Re-selecting already-loaded files is a no-op.
+  Because loading another folder re-analyzes the *full* merged list (which
+  rebuilds the `FileListPanel`), `token_analysis_controller.resolve_initial_selection`
+  preserves the user's existing checkbox choices across the reload — a file the
+  user unchecked stays unchecked, only genuinely-new files default to selected —
+  so accumulation can't silently pull a deselected spec back into the review.
   The **Clear** button (`clear_selection`) is the explicit reset; it bumps the
   analysis epoch and cancels the pending exact-token debounce so an in-flight
   background analysis can't repopulate the just-cleared panel. It deliberately
@@ -146,7 +151,7 @@ The seven controllers, each in one paragraph:
 |---|---|---|
 | `file_selection_controller` | Choose / validate / normalize / accumulate spec files | `browse_for_specs`, `parse_dropped_paths`, `merge_selected_specs`, `apply_selected_specs`, `clear_selection`, `clear_file_state` |
 | `context_controller` | Project-context text + attachments | `get_project_context`, `on_context_change`, `attach_context_files`, `open_context_modal` |
-| `token_analysis_controller` | Preflight token counts in the gauge | `analyze_tokens`, `refresh_exact_token_count`, `on_file_selection_change` |
+| `token_analysis_controller` | Preflight token counts in the gauge; preserve selection across reload | `analyze_tokens`, `resolve_initial_selection`, `refresh_exact_token_count`, `on_file_selection_change` |
 | `review_run_controller` | Run lifecycle + epoch guard | `validate_inputs`, `next_run_epoch`, `dispatch_if_current`, `start_review`, `on_review_complete`, `on_review_error`, `reset_ui` |
 | `batch_controller` | Submit / poll / collect / verify / finalize | `submit_batch_thread`, `on_batch_submitted`, `poll_batch`, `poll_and_collect_thread`, `collect_batch_results` |
 | `report_controller` | Export report + edit sidecar | `export_report_to_file` |

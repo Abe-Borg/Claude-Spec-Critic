@@ -193,14 +193,20 @@ class FileListPanel(ctk.CTkFrame):
         self.file_list = ctk.CTkScrollableFrame(self.content_container, fg_color=COLORS["bg_input"], corner_radius=4, height=150)
         self.file_list.pack(fill="both", expand=True, padx=16, pady=(0, 12)); self.pack_forget()
 
-    def load_files(self, file_data):
+    def load_files(self, file_data, selection=None):
+        # ``selection`` is an optional {path: is_checked} map (built by
+        # resolve_initial_selection) so a user's deselections survive an
+        # accumulation reload. Missing/None entries default to checked, so
+        # any other caller keeps the original "all selected" behavior.
+        sel = selection or {}
         for w in self.file_list.winfo_children(): w.destroy()
         self._file_data.clear()
         for data in file_data:
-            var = ctk.BooleanVar(value=True); var.trace_add("write", lambda *a: self._on_checkbox_change())
+            checked = bool(sel.get(data["path"], True))
+            var = ctk.BooleanVar(value=checked); var.trace_add("write", lambda *a: self._on_checkbox_change())
             row = ctk.CTkFrame(self.file_list, fg_color="transparent"); row.pack(fill="x", pady=2)
             ctk.CTkCheckBox(row, text="", variable=var, width=24, height=24, checkbox_width=18, checkbox_height=18, corner_radius=4, border_width=2, fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"], border_color=COLORS["border"], checkmark_color=COLORS["text_primary"]).pack(side="left")
-            nl = ctk.CTkLabel(row, text=data["filename"], font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_secondary"], anchor="w")
+            nl = ctk.CTkLabel(row, text=data["filename"], font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_secondary"] if checked else COLORS["text_muted"], anchor="w")
             nl.pack(side="left", padx=(8, 0), fill="x", expand=True)
             ctk.CTkLabel(row, text=f"{data['tokens']:,}", font=ctk.CTkFont(family="Consolas", size=10), text_color=COLORS["text_muted"], width=60, anchor="e").pack(side="right", padx=(8, 4))
             self._file_data.append({"path": data["path"], "filename": data["filename"], "tokens": data["tokens"], "var": var, "name_label": nl})
@@ -208,6 +214,14 @@ class FileListPanel(ctk.CTkFrame):
         if self._pack_after: self.pack(fill="x", pady=(16, 0), after=self._pack_after)
         else: self.pack(fill="x", pady=(16, 0))
         self._expanded = False; self.expand_label.configure(text="\u25b6")
+
+    def selection_state_by_path(self):
+        """Snapshot ``{path: is_checked}`` for the currently-loaded files.
+
+        Captured before an accumulation reload so resolve_initial_selection
+        can preserve the user's checkbox choices across the rebuild. Empty
+        when nothing is loaded."""
+        return {d["path"]: d["var"].get() for d in self._file_data}
 
     def get_selected_files(self): return [d["path"] for d in self._file_data if d["var"].get()]
     def get_selected_count(self): return sum(1 for d in self._file_data if d["var"].get())

@@ -21,6 +21,7 @@ from src.gui.file_selection_controller import (
     clear_selection,
     merge_selected_specs,
 )
+from src.gui.token_analysis_controller import resolve_initial_selection
 
 
 # --------------------------------------------------------------------------
@@ -267,6 +268,55 @@ def test_can_load_again_after_clear():
     apply_selected_specs(app, [_docx("folderB", "s2")])
     assert app._selected_files == [_docx("folderB", "s2")]
     assert app.analyzed_with[-1] == [_docx("folderB", "s2")]
+
+
+# --------------------------------------------------------------------------
+# resolve_initial_selection (checkbox-state preservation across reload)
+# --------------------------------------------------------------------------
+# Regression guard: because loading another folder re-analyzes the *full*
+# merged list and FileListPanel.load_files rebuilds every row, a naive reload
+# would reset all checkboxes to checked — silently re-selecting a file the
+# user had unchecked and pulling it into the review. resolve_initial_selection
+# is the seam that preserves the prior state while defaulting new files on.
+def test_unchecked_file_survives_accumulation_reload():
+    a, b, c = _docx("folderA", "s1"), _docx("folderA", "s2"), _docx("folderB", "s3")
+    prior = {a: True, b: False}  # user unchecked B...
+    merged = [a, b, c]           # ...then loaded folder B (adds C)
+    assert resolve_initial_selection(merged, prior) == {a: True, b: False, c: True}
+
+
+def test_first_load_defaults_all_selected():
+    a, b = _docx("folderA", "s1"), _docx("folderA", "s2")
+    assert resolve_initial_selection([a, b], {}) == {a: True, b: True}
+
+
+def test_none_prior_treated_as_empty():
+    a = _docx("folderA", "s1")
+    assert resolve_initial_selection([a], None) == {a: True}
+
+
+def test_mixed_prior_states_preserved_and_new_default_on():
+    a, b, c, d = (
+        _docx("folderA", "s1"),
+        _docx("folderA", "s2"),
+        _docx("folderB", "s3"),
+        _docx("folderB", "s4"),
+    )
+    prior = {a: False, b: True}  # a unchecked, b checked
+    merged = [a, b, c, d]
+    assert resolve_initial_selection(merged, prior) == {
+        a: False,
+        b: True,
+        c: True,
+        d: True,
+    }
+
+
+def test_prior_entries_absent_from_new_list_are_dropped():
+    a, b = _docx("folderA", "s1"), _docx("folderA", "s2")
+    prior = {a: False, b: True}
+    # Only ``a`` is in the new list; ``b`` simply doesn't appear.
+    assert resolve_initial_selection([a], prior) == {a: False}
 
 
 if __name__ == "__main__":  # pragma: no cover
