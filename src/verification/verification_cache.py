@@ -63,7 +63,15 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # hits whose report rendering has no source_quote to show — a regression
 # against the new invariant. Bumping the version drops every v2 cache
 # file on first load; users get fresh verifications under the new shape.
-_CACHE_SCHEMA_VERSION = 3
+#
+# v4 — folds a pinned-standards-edition fingerprint into ``make_cache_key``
+# (see :func:`_standards_fingerprint`). v3 keys were computed without it, so
+# a v3 file's keys can never collide with a v4 lookup anyway — but the entries
+# would linger as dead weight until the TTL pruned them, and more importantly a
+# v3 entry was grounded against whatever editions were pinned at write time with
+# no record of which. Bumping drops every v3 file on first load so the cache
+# repopulates with edition-fingerprinted keys.
+_CACHE_SCHEMA_VERSION = 4
 
 # Cache-key claim digest length (hex chars). 24 hex chars = 96 bits of entropy,
 # enough that two distinct claims colliding is astronomically unlikely even
@@ -104,23 +112,52 @@ def _claim_summary(finding) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _standards_fingerprint(cycle) -> str:
+    """Digest of the cycle's pinned-standard editions, for the cache key.
+
+    Folded into ``make_cache_key`` so that correcting an edition string *within*
+    a cycle (e.g. fixing an ASHRAE edition that was wrong) invalidates the
+    verdicts that were grounded against the *old* edition, even though
+    ``cycle.label`` is unchanged. Built from ``edition_summary_lines()`` — the
+    same stable, declaration-ordered render the verifier prompt pins — so the
+    fingerprint tracks the editions the model actually reasoned against. It
+    deliberately ignores provenance-only metadata (``StandardEdition.source`` /
+    the UNVERIFIED flag): confirming that an already-correct edition was right
+    all along does not change the verification question, so those entries should
+    stay warm. Returns ``""`` for a cycle that exposes no editions (degrades to
+    the prior label-only behavior for test doubles / standards-less cycles).
+    """
+    lines = getattr(cycle, "edition_summary_lines", None)
+    rendered = "\n".join(lines()) if callable(lines) else ""
+    return _digest(rendered)
+
+
 def make_cache_key(finding, *, cycle: CodeCycle) -> str:
     """Build a stable cache key for a finding under a given code cycle.
 
-    The key includes the normalized cycle label, action type, code reference,
-    and a digest of the finding claim summary. It intentionally does *not*
-    include the verifier model: the cache is keyed by the grounded verification
-    question and code-cycle semantics, while ``VerificationResult.model_used``
-    is stored only as provenance. Changing verifier models therefore reuses
-    compatible grounded cache entries; delete ``default_cache_path()`` (or point
-    ``SPEC_CRITIC_CACHE_PATH`` at a new file) when a fresh model pass is
-    required.
+    The key includes the normalized cycle label, a fingerprint of the cycle's
+    pinned-standard editions, the action type, the code reference, and a digest
+    of the finding claim summary. It intentionally does *not* include the
+    verifier model: the cache is keyed by the grounded verification question and
+    code-cycle semantics, while ``VerificationResult.model_used`` is stored only
+    as provenance. Changing verifier models therefore reuses compatible grounded
+    cache entries.
+
+    The standards fingerprint (``_standards_fingerprint``) is the lever that
+    closes a latent footgun: the cycle *label* alone ("2025") does not change
+    when an edition string *inside* the cycle is corrected, so before this was
+    added a fix to a pinned edition left every verdict grounded against the old
+    edition silently cached. Folding the rendered editions into the key means an
+    edition correction now produces fresh keys, re-grounding the affected
+    findings against the corrected edition. (Switching cycles still invalidates
+    too, since the label leads the key.)
     """
     code_ref = _normalize(getattr(finding, "codeReference", "")) or "_no_ref"
     action = _normalize(getattr(finding, "actionType", "")) or "_no_action"
     cycle_label = _normalize(getattr(cycle, "label", "")) or "_no_cycle"
+    std_fp = _standards_fingerprint(cycle) or "_no_std"
     claim = _claim_summary(finding)
-    return f"{cycle_label}|{action}|{code_ref}|{_digest(claim)}"
+    return f"{cycle_label}|{std_fp}|{action}|{code_ref}|{_digest(claim)}"
 
 
 # Canonical "disable" tokens for boolean env-var flags. Anything else —

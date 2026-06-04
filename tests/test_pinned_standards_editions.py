@@ -135,7 +135,7 @@ class TestStandardEditionRender:
 
     def test_is_verified_reflects_source(self):
         assert StandardEdition("NFPA 13", "2025", source="CFC 2025, Ch. 80").is_verified
-        assert not StandardEdition("ASHRAE 90.1", "2022", source="UNVERIFIED: confirm").is_verified
+        assert not StandardEdition("ASHRAE 90.1", "2019", source="UNVERIFIED: confirm").is_verified
         # No source at all is treated as not verified.
         assert not StandardEdition("X", "1").is_verified
 
@@ -253,7 +253,7 @@ class TestVerifierPinnedEditionsBlock:
         assert "NFPA 13: 2025, as amended by California" in joined
         assert "NFPA 72: 2025, as amended by California" in joined
         assert "ASHRAE 62.1: 2019" in joined
-        assert "ASHRAE 90.1: 2022" in joined
+        assert "ASHRAE 90.1: 2019" in joined
         assert "IAPMO Uniform Plumbing TSC" in joined
         assert "UL 300:" in joined
         assert "UL 555:" in joined
@@ -348,3 +348,22 @@ class TestDefaultCycleInvariant:
     def test_default_cycle_is_california_2025(self):
         assert DEFAULT_CYCLE is CALIFORNIA_2025
         assert list(AVAILABLE_CYCLES.keys()) == ["2025"]
+
+
+# ===========================================================================
+# 8. Provenance doc stays in sync with the UNVERIFIED set
+# ===========================================================================
+
+
+class TestStandardsProvenanceDoc:
+    def test_provenance_doc_names_every_unverified_standard(self):
+        # docs/standards_provenance.md is the human-readable companion to the
+        # one-line ``source`` strings. Lock it to the code so an entry can't go
+        # UNVERIFIED without a provenance row (and vice-versa).
+        doc = Path(__file__).resolve().parents[1] / "docs" / "standards_provenance.md"
+        assert doc.exists(), "docs/standards_provenance.md is missing"
+        text = doc.read_text(encoding="utf-8")
+        for std in CALIFORNIA_2025.unverified_standards():
+            assert std.name in text, (
+                f"standards_provenance.md omits UNVERIFIED standard: {std.name}"
+            )
