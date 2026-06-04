@@ -90,9 +90,16 @@ The seven controllers, each in one paragraph:
   parses the platform-specific drop payload (`parse_dropped_paths` handles
   brace-quoted paths with spaces via `Tk.splitlist`, falling back to `shlex`),
   filters to supported extensions (`.docx`), records the parent directory, paints
-  the entry field, and kicks off token analysis. It deliberately does *not* own
-  the `FileListPanel` widget — that stays on the app; the controller just
-  normalizes paths and notifies.
+  the entry field, and kicks off token analysis. Selections **accumulate** rather
+  than replace: each Browse / drop unions onto the existing list (`merge_selected_specs`,
+  de-duped by resolved path), so a user can load specs from more than one folder
+  — the native file dialog only multi-selects within a single folder, so this is
+  the only way to span folders. Re-selecting already-loaded files is a no-op.
+  The **Clear** button (`clear_selection`) is the explicit reset; it bumps the
+  analysis epoch and cancels the pending exact-token debounce so an in-flight
+  background analysis can't repopulate the just-cleared panel. It deliberately
+  does *not* own the `FileListPanel` widget — that stays on the app; the controller
+  just normalizes paths and notifies.
 
 - **`context_controller`** owns the Project Context box — the free-text paragraph
   that ships with every API call. It manages the placeholder/focus dance
@@ -137,7 +144,7 @@ The seven controllers, each in one paragraph:
 
 | Controller | Responsibility | Key entry points |
 |---|---|---|
-| `file_selection_controller` | Choose / validate / normalize spec files | `browse_for_specs`, `parse_dropped_paths`, `apply_selected_specs`, `clear_file_state` |
+| `file_selection_controller` | Choose / validate / normalize / accumulate spec files | `browse_for_specs`, `parse_dropped_paths`, `merge_selected_specs`, `apply_selected_specs`, `clear_selection`, `clear_file_state` |
 | `context_controller` | Project-context text + attachments | `get_project_context`, `on_context_change`, `attach_context_files`, `open_context_modal` |
 | `token_analysis_controller` | Preflight token counts in the gauge | `analyze_tokens`, `refresh_exact_token_count`, `on_file_selection_change` |
 | `review_run_controller` | Run lifecycle + epoch guard | `validate_inputs`, `next_run_epoch`, `dispatch_if_current`, `start_review`, `on_review_complete`, `on_review_error`, `reset_ui` |

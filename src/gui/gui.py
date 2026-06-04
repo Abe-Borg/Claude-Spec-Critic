@@ -93,6 +93,7 @@ from src.gui.file_selection_controller import (
     apply_selected_specs,
     browse_for_specs,
     clear_file_state,
+    clear_selection,
     parse_dropped_paths,
     set_file_data,
 )
@@ -275,6 +276,7 @@ class SpecReviewApp(_CTkDnDRoot):
         self.input_dir_entry.grid(row=0, column=0, sticky="ew")
         bkw = {"height": 36, "font": ctk.CTkFont(size=_UI_FONT_SIZE), "fg_color": COLORS["bg_input"], "hover_color": COLORS["border"], "border_width": 1, "border_color": COLORS["border"], "text_color": COLORS["text_secondary"]}
         ctk.CTkButton(ef, text="Browse", width=70, command=self._browse_files, **bkw).grid(row=0, column=1, padx=(8, 0))
+        ctk.CTkButton(ef, text="Clear", width=60, command=self._clear_files, **bkw).grid(row=0, column=2, padx=(8, 0))
         self._register_specs_drop_target()
 
         # --- Row 2: Project Context ---
@@ -468,6 +470,9 @@ class SpecReviewApp(_CTkDnDRoot):
         paths = browse_for_specs(self)
         if paths:
             apply_selected_specs(self, paths)
+
+    def _clear_files(self):
+        clear_selection(self)
 
     def _register_specs_drop_target(self):
         if DND_FILES is None:
