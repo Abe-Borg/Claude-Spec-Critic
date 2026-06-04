@@ -85,6 +85,35 @@ def compute_call_metrics(selected_data, overhead) -> CallMetrics:
     return CallMetrics(largest_call, fc, exceeded, over_files)
 
 
+def select_biggest_spec(file_data, extracted_specs):
+    """Return the ExtractedSpec for the largest-by-tokens entry in file_data.
+
+    Matches on the unique ``source_path`` rather than the basename:
+    accumulated folders can hold two files with the same basename (a
+    CSI-numbered spec reused across projects), so a filename match could
+    resolve to the wrong — possibly unchecked — duplicate and refresh the
+    gauge with the exact count of a file that won't be reviewed, re-introducing
+    the misleading post-reload gauge behavior. Falls back to a basename match
+    only when no source-path match exists (e.g. a spec built without a
+    ``source_path``). Returns None for empty input or no match.
+    """
+    if not file_data:
+        return None
+    biggest = max(file_data, key=lambda d: d["tokens"])
+    biggest_path = str(biggest.get("path", ""))
+    spec = next(
+        (s for s in extracted_specs
+         if getattr(s, "source_path", "") and s.source_path == biggest_path),
+        None,
+    )
+    if spec is None:
+        spec = next(
+            (s for s in extracted_specs if s.filename == biggest.get("filename")),
+            None,
+        )
+    return spec
+
+
 def analyze_tokens(app, file_paths) -> None:
     if not file_paths:
         app.log.log_warning("No supported files found")
@@ -215,8 +244,7 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
         if isinstance(override, str) and override:
             selected_model = override
 
-    biggest = max(file_data, key=lambda d: d["tokens"])
-    biggest_spec = next((s for s in extracted_specs if s.filename == biggest["filename"]), None)
+    biggest_spec = select_biggest_spec(file_data, extracted_specs)
     if biggest_spec is None:
         return
 

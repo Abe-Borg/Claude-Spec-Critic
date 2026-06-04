@@ -25,6 +25,7 @@ from src.gui.token_analysis_controller import resolve_initial_selection
 from src.gui.token_analysis_controller import (
     CallMetrics,
     compute_call_metrics,
+    select_biggest_spec,
 )
 
 
@@ -371,6 +372,61 @@ def test_metrics_lists_every_oversized_selected_file():
     m = compute_call_metrics(data, _OVERHEAD)
     assert m.per_file_limit_exceeded is True
     assert sorted(m.over_files) == ["big1.docx", "big2.docx"]
+
+
+# --------------------------------------------------------------------------
+# select_biggest_spec (disambiguate same-basename files by source_path)
+# --------------------------------------------------------------------------
+# Regression guard: the exact-token refresh looks up the largest *selected*
+# file's spec. Accumulated folders can hold two files with the same basename
+# (e.g. a CSI-numbered spec reused across projects). A basename match could
+# pick the wrong — possibly unchecked — duplicate and refresh the gauge with a
+# file that won't be reviewed. Matching on source_path keeps it unique.
+class _FakeSpec:
+    def __init__(self, filename: str, source_path: str) -> None:
+        self.filename = filename
+        self.source_path = source_path
+
+
+def _sel(folder: str, name: str, tokens: int) -> dict:
+    p = _docx(folder, name)
+    return {"path": p, "filename": f"{name}.docx", "tokens": tokens}
+
+
+def test_select_biggest_spec_disambiguates_same_basename():
+    # Largest selected file is folder B's 230500.docx; folder A's same-basename
+    # duplicate (unchecked, so NOT in file_data) sits earlier in extracted_specs.
+    file_data = [
+        _sel("folderB", "230500", 600_000),
+        _sel("folderC", "260500", 10_000),
+    ]
+    specs = [
+        _FakeSpec("230500.docx", str(_docx("folderA", "230500"))),  # earlier dup
+        _FakeSpec("230500.docx", str(_docx("folderB", "230500"))),  # the selected one
+        _FakeSpec("260500.docx", str(_docx("folderC", "260500"))),
+    ]
+    chosen = select_biggest_spec(file_data, specs)
+    assert chosen.source_path == str(_docx("folderB", "230500"))
+
+
+def test_select_biggest_spec_empty_returns_none():
+    specs = [_FakeSpec("a.docx", "/x/a.docx")]
+    assert select_biggest_spec([], specs) is None
+
+
+def test_select_biggest_spec_falls_back_to_basename_without_source_path():
+    file_data = [_sel("folderA", "a", 5)]
+    specs = [_FakeSpec("a.docx", "")]  # no source_path populated
+    assert select_biggest_spec(file_data, specs).filename == "a.docx"
+
+
+def test_select_biggest_spec_picks_largest_by_tokens():
+    file_data = [_sel("folderA", "small", 10), _sel("folderB", "big", 999)]
+    specs = [
+        _FakeSpec("small.docx", str(_docx("folderA", "small"))),
+        _FakeSpec("big.docx", str(_docx("folderB", "big"))),
+    ]
+    assert select_biggest_spec(file_data, specs).filename == "big.docx"
 
 
 if __name__ == "__main__":  # pragma: no cover
