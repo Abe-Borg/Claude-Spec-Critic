@@ -293,6 +293,15 @@ finishing items can never trip the no-progress detach no matter how long it
 takes; only a genuinely stalled batch, or the absolute four-hour ceiling, ends
 the watch early.
 
+Detaching is not the end of the story for that batch. The remote batch keeps
+running and its results stay retrievable for ~29 days, so a detached run can be
+*reconnected* later: the submit step persists the batch id and its request map to
+disk (`orchestration/batch_resume.py`), and the GUI's startup resume prompt and
+**Recover batch…** action (or the standalone `scripts/recover_batch.py`) finish
+the run without re-submitting or re-paying. Detaching frees the local thread; it
+never strands the work or the API spend. (How the GUI surfaces this is
+[**Ch 13 — The Desktop GUI**](13_gui.md).)
+
 ### What "terminal" actually means
 
 When the batch's `processing_status` normalizes to one of `ended`, `failed`,

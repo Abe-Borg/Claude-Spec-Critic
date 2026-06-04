@@ -39,13 +39,13 @@ human (or a downstream applier) needs to decide whether to trust it. Follow the
 ## 1. The shape of the system: ten packages
 
 `src/` is organized into **ten packages** — eight *functional* packages plus the
-`gui` and `tracing` siblings. The tree holds **58 Python modules** in total: 48
+`gui` and `tracing` siblings. The tree holds **59 Python modules** in total: 49
 application modules and 10 package `__init__.py` files (the `output` package
 ships without one), alongside a root `main.py` launcher and a single
 self-contained HTML trace viewer under `tracing/viewer/`.[^count]
 
-[^count]: `HANDBOOK_PLAN.md` §6 cites "56 source files"; the tree today holds 58
-`.py` files under `src/`. The figure drifted by two as the codebase grew —
+[^count]: `HANDBOOK_PLAN.md` §6 cites "56 source files"; the tree today holds 59
+`.py` files under `src/`. The figure has drifted as the codebase grew —
 exactly the kind of small fact-vs-source gap the audits (see [**Ch 16 — Trust
 Under the Microscope**](16_trust_under_the_microscope.md)) exist to catch. The per-package counts below are
 authoritative as of this writing; verify against the tree if precision matters.
@@ -59,7 +59,7 @@ files, and the chapter that takes it apart in depth.
 | **`input`** (3) | Turn `.docx` files into reviewable text + a stable element-id map, with caching; run the deterministic local detectors. | `extractor.py`, `extraction_cache.py`, `preprocessor.py` | [**Ch 4 — Input**](04_input.md) |
 | **`review`** (5) | The per-spec Claude pass: build the request, define the tool-use schemas, render prompts, parse findings. Defines the `Finding`/`EditProposal`/`ReviewResult` data model. | `reviewer.py`, `review_request_builder.py`, `structured_schemas.py`, `prompts.py`, `prompt_serialization.py` | [**Ch 5 — The Review Engine**](05_review_engine.md) |
 | **`batch`** (2) | The Message Batches API backbone: submit/retrieve wrapper and bounded polling with progressive backoff. | `batch.py`, `batch_runtime.py` | [**Ch 6 — Batch Processing**](06_batch_processing.md) |
-| **`orchestration`** (2) | The spine. Sequences every stage, owns aggregate run state, deduplicates findings, and keeps the in-memory operational diagnostics. | `pipeline.py`, `diagnostics.py` | [**Ch 7 — Orchestration & State**](07_orchestration.md); diagnostics → [**Ch 14 — Observability**](14_observability.md) |
+| **`orchestration`** (3) | The spine. Sequences every stage, owns aggregate run state, deduplicates findings, keeps the in-memory operational diagnostics, and persists pending-batch state for resume / recovery. | `pipeline.py`, `batch_resume.py`, `diagnostics.py` | [**Ch 7 — Orchestration & State**](07_orchestration.md); diagnostics → [**Ch 14 — Observability**](14_observability.md) |
 | **`cross_check`** (1) | The cross-spec coordination pass: find defects that span multiple specs, chunked by CSI division. | `cross_checker.py` | [**Ch 8 — Cross-Spec Coordination**](08_cross_spec_coordination.md) |
 | **`verification`** (9) | The largest functional package. Decide *whether* to check a finding (routing, modes, profiles, triage, prescreen) and *how to check and judge* it (the verifier, source grounding, the claim cache, retry policy). | `verifier.py`, `verification_routing.py`, `verification_modes.py`, `verification_profiles.py`, `verification_prescreen.py`, `triage.py`, `source_grounding.py`, `verification_cache.py`, `retry_policy.py` | [**Ch 9 — Verification I**](09_verification_routing.md) (routing) & [**Ch 10 — Verification II**](10_verification_grounding.md) (checking) |
 | **`output`** (3) | Consume the finished state: classify each finding's trust status & edit label, render the Word report, write the JSON edit sidecar. | `report_status.py`, `report_exporter.py`, `edit_sidecar.py` | [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md) |
@@ -71,7 +71,7 @@ A few orienting notes on the packages that surprise people:
 **`verification` is nearly half the worker code for a reason.** It is split into
 *two questions* that the rest of the book treats as separate chapters. The
 "should we even spend a web search on this?" machinery — prescreen, profiles,
-modes, routing, optional Haiku triage — is one cluster ([**Ch 9**](09_verification_routing.md)). The "go check
+modes, routing, Haiku triage — is one cluster ([**Ch 9**](09_verification_routing.md)). The "go check
 it, and decide what counts as proof" machinery — the verifier itself, source
 grounding, the persistent claim cache, the retry/continuation taxonomy — is the
 other ([**Ch 10**](10_verification_grounding.md)). Nine files sounds heavy until you realize that *grounding a
@@ -507,8 +507,8 @@ has a chapter that opens it up:
 
 - **Ten packages, five tiers.** A `core` foundation; `input` / `review` /
   `batch` / `cross_check` / `verification` workers; an `orchestration` spine; an
-  `output` consumer; a thin `gui` driver; a `tracing` silo. 58 Python modules
-  (48 application + 10 initializers) in `src/`.
+  `output` consumer; a thin `gui` driver; a `tracing` silo. 59 Python modules
+  (49 application + 10 initializers) in `src/`.
 - **The data model is the contract.** A `Finding` is the unit of currency. It is
   born in review (problem + optional `EditProposal`, empty verdict), stamped with
   a `finding_id` and `occurrence_originals` at dedup, and annotated with a

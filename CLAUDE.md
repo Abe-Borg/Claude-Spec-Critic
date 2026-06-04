@@ -18,6 +18,8 @@ Python desktop app (CustomTkinter) for reviewing California K-12 DSA mechanical/
 
 The per-spec review runs through the Message Batches API on Claude Opus 4.8 (the default; override via `SPEC_CRITIC_REVIEW_MODEL`). The 300k extended-output path lifts the batch review output cap for inputs ≥200k tokens (`output-300k-2026-03-24` beta header, batch-only by API design); smaller inputs use the shared baseline cap. Verification also runs as a batch, with a synchronous fallback for small unresolved tails (see "Real-time fallback") and a synchronous cross-spec coordination pass.
 
+A submitted review batch is persisted to disk (`orchestration/batch_resume.py`, default `~/.spec_critic/pending_batch.json`) so a detached or interrupted run can reconnect to the still-running remote batch and finish (re-poll → collect → verify → cross-check → report) without re-submitting or re-paying for the review. The persisted state carries the batch's `request_map` verbatim (so review results return even if the source files moved) but never serializes spec bodies — they are re-extracted deterministically from the recorded inputs. Exposed via the GUI **Recover batch…** action and the standalone `scripts/recover_batch.py`.
+
 ## Source layout
 
 ```
@@ -44,11 +46,12 @@ src/
 # Orchestration / state
 ├── orchestration/
 │   ├── pipeline.py             # Core orchestration + FindingGroup/FindingOccurrence
+│   ├── batch_resume.py         # Persisted pending-batch state for resume / recovery
 │   └── diagnostics.py          # In-memory diagnostics report
 
 # Review
 ├── review/
-│   ├── reviewer.py             # Anthropic API client (streaming + tool-use parsing)
+│   ├── reviewer.py             # Anthropic client factory + Finding model + tool-use/JSON parsing
 │   ├── review_request_builder.py # Central review request shape builder
 │   ├── structured_schemas.py   # Tool-use schemas for review/cross-check/verification
 │   ├── prompts.py              # System + user prompt builders
@@ -68,7 +71,7 @@ src/
 │   ├── verification_routing.py # Unified routing decision + request builder
 │   ├── source_grounding.py     # URL normalization + cited-source validation
 │   ├── retry_policy.py         # Retry, continuation, and batch-failure taxonomy
-│   └── triage.py               # Haiku-based verification triage (opt-in)
+│   └── triage.py               # Haiku-based verification triage (automatic; needs API key)
 
 # Batch
 ├── batch/
@@ -84,7 +87,7 @@ src/
 # Tracing
 ├── tracing/
 │   ├── config.py               # Env-var parsing + capture-level enum
-│   ├── session.py              # TraceSession: per-run directory + run.json writer
+│   ├── session.py              # Recorder lifecycle helpers (start / reattach / stop)
 │   ├── recorder.py             # TraceRecorder: global singleton, start/stop
 │   ├── spans.py                # SpanHandle + span-kind constants
 │   ├── capture_hooks.py        # Defensive integration hooks (never escape to pipeline)
@@ -158,7 +161,7 @@ The instruction prefix in front of `<spec ` must stay byte-identical across call
 `pipeline._prepare_specs` raises `ValueError` when the exact Anthropic count exceeds `RECOMMENDED_MAX`. Earlier behavior was log-only with cl100k as the only hard gate.
 
 ### Model capability whitelist
-`api_config.model_capabilities(model)` is the single source of truth for adaptive-thinking / extended-output / 1M-context eligibility. Whitelist covers Opus 4.8, Sonnet 4.6, Haiku 4.5. Opus 4.8 carries adaptive thinking, 128k output, the `output-300k-2026-03-24` batch beta, 1M context, and `effort` support per Anthropic's published Opus 4.8 capabilities — and like every Opus id it must appear in **both** `_MODEL_CAPABILITIES` **and** `OPUS_MODELS` (the latter drives the 128k output ceiling in `output_cap_for_model` and the high-effort escalation tier in `effort_config_for`; missing from it = silent clamp to the Sonnet 64k ceiling / medium effort). **Unknown model ids degrade to safe defaults that disable every capability flag** — a misconfigured env var produces a smaller request, never an API rejection — but the degradation is **no longer silent**: `model_capabilities` emits one `WARNING` per unrecognized id (deduped via `_WARNED_UNKNOWN_MODELS` so the per-request hot path can't spam the log) naming the conservative caps it fell back to, so a stale whitelist that quietly under-powers a newer/better model (TRUST_AUDIT P0-3) is visible to the operator. The default models now track Opus 4.8: `REVIEW_MODEL_DEFAULT` and `VERIFICATION_ESCALATION_MODEL` both default to Opus 4.8 (at first-party flagship pricing). The initial verifier stays Sonnet 4.6 and cross-check stays Sonnet 4.6 — only the deep-reasoning review and the escalation tier ride the newest Opus. Override any of them via the matching `SPEC_CRITIC_*_MODEL` env var. Haiku phases (triage) never carry the `thinking` key. Effort defaults to `xhigh` for review and cross-check (Anthropic's recommended starting point for coding/agentic work on Opus 4.8 — the deepest-reasoning phases), `high` for the Opus escalation tier, and `medium` for the Sonnet verification initial pass. **`xhigh` is Opus-4.8-only**: Sonnet 4.6's supported set is `{low, medium, high, max}` and it rejects `xhigh` at submit with a 400 (`This model does not support effort level 'xhigh'`). Because `supports_effort` is a coarse boolean (true for both Opus and Sonnet), `effort_config_for` clamps `xhigh` → `high` via `_clamp_effort_for_model` on any non-`OPUS_MODELS` model. This is load-bearing for cross-check, which *defaults* to `xhigh` but **always** runs on Sonnet 4.6 (`CROSS_CHECK_MODEL_DEFAULT`), so without the clamp every cross-spec coordination pass 400'd at submit and produced zero findings; the same clamp also protects a `SPEC_CRITIC_REVIEW_MODEL`-overridden-to-Sonnet review. Locked in by `tests/test_capability_policy.py::TestXhighClampsOnNonOpus`.
+`api_config.model_capabilities(model)` is the single source of truth for adaptive-thinking / extended-output / 1M-context eligibility. Whitelist covers Opus 4.8, Sonnet 4.6, Haiku 4.5. Opus 4.8 carries adaptive thinking, 128k output, the `output-300k-2026-03-24` batch beta, 1M context, and `effort` support per Anthropic's published Opus 4.8 capabilities — and like every Opus id it must appear in **both** `_MODEL_CAPABILITIES` **and** `OPUS_MODELS` (the latter drives the 128k output ceiling in `output_cap_for_model` and the high-effort escalation tier in `effort_config_for`; missing from it = silent clamp to the Sonnet 64k ceiling / medium effort). **Unknown model ids degrade to safe defaults that disable every capability flag** — a misconfigured env var produces a smaller request, never an API rejection — but the degradation is **no longer silent**: `model_capabilities` emits one `WARNING` per unrecognized id (deduped via `_WARNED_UNKNOWN_MODELS` so the per-request hot path can't spam the log) naming the conservative caps it fell back to, so a stale whitelist that quietly under-powers a newer/better model (TRUST_AUDIT P0-3) is visible to the operator. The default models now track Opus 4.8: `REVIEW_MODEL_DEFAULT` and `VERIFICATION_ESCALATION_MODEL` both default to Opus 4.8 (at first-party flagship pricing). The initial verifier stays Sonnet 4.6 and cross-check stays Sonnet 4.6 — only the deep-reasoning review and the escalation tier ride the newest Opus. Override review / the initial verifier / the escalation tier / triage via the matching `SPEC_CRITIC_*_MODEL` env var; **cross-check has no env override** — it is bound directly to `CROSS_CHECK_MODEL_DEFAULT`. Haiku phases (triage) never carry the `thinking` key. Effort defaults to `xhigh` for review and cross-check (Anthropic's recommended starting point for coding/agentic work on Opus 4.8 — the deepest-reasoning phases), `high` for the Opus escalation tier, and `medium` for the Sonnet verification initial pass. **`xhigh` is Opus-4.8-only**: Sonnet 4.6's supported set is `{low, medium, high, max}` and it rejects `xhigh` at submit with a 400 (`This model does not support effort level 'xhigh'`). Because `supports_effort` is a coarse boolean (true for both Opus and Sonnet), `effort_config_for` clamps `xhigh` → `high` via `_clamp_effort_for_model` on any non-`OPUS_MODELS` model. This is load-bearing for cross-check, which *defaults* to `xhigh` but **always** runs on Sonnet 4.6 (`CROSS_CHECK_MODEL_DEFAULT`), so without the clamp every cross-spec coordination pass 400'd at submit and produced zero findings; the same clamp also protects a `SPEC_CRITIC_REVIEW_MODEL`-overridden-to-Sonnet review. Locked in by `tests/test_capability_policy.py::TestXhighClampsOnNonOpus`.
 
 ### Verification cache key
 `cycle_label | standards_fingerprint | actionType | codeReference | sha256(claim_summary)`. Intentionally omits the verifier model — `VerificationResult.model_used` is stored as provenance inside the entry. Switching `SPEC_CRITIC_VERIFICATION_MODEL` does NOT invalidate existing entries; switching the code cycle does. The `standards_fingerprint` (`_standards_fingerprint` → `sha256` of `cycle.edition_summary_lines()`) closes the gap where correcting an *edition string within* a cycle (label unchanged, e.g. fixing an UNVERIFIED ASHRAE edition) left verdicts grounded against the old edition silently cached — an edition change now produces fresh keys and re-grounds. It tracks editions only, not provenance: flipping a `source` off `UNVERIFIED` without changing the edition keeps entries warm (the verification question is unchanged). Claim digest is 24 hex chars; older 16-char entries miss → re-ground → write new 24-char entries (`_CACHE_SCHEMA_VERSION` bump — now v4, the standards-fingerprint bump — drops the legacy shape).
@@ -383,6 +386,7 @@ Model-id overrides plus a handful of operator switches for rollback / cache cont
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `60` days | Age-based pruning on cache load. Explicit `0` restores the legacy "no expiry" behavior; malformed/negative values fall back to the 60-day default so a typo never silently turns the cache into a permanent database. |
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override the on-disk cache file path; `~` and `$VAR` are expanded |
+| `SPEC_CRITIC_PENDING_BATCH_PATH` | `~/.spec_critic/pending_batch.json` | Override the pending-batch state file used for review-batch resume / recovery; `~` and `$VAR` are expanded |
 | `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. Writes a forensic JSONL trace to `~/.spec_critic/traces/<run_id>/`. |
 | `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, batch-verification thinking / tool-use blocks, untruncated raw responses, and inline prompts. Implies trace enabled. |
 | `SPEC_CRITIC_TRACE_DIR` | `~/.spec_critic/traces/` | Override the trace root directory. `~` and `$VAR` are expanded. |
@@ -397,7 +401,7 @@ Hermetic by default — no API key, no network, runs in a few seconds.
 - GUI tests skip at collection time when `tkinter` is unavailable.
 - Markers registered in `pyproject.toml`: `token_budget`, `prompt_serialization`, `network`.
 - Fake Anthropic response builders: `tests/fixtures/fake_anthropic.py` (tool-use, JSON-text fallback, `max_tokens` incomplete; `dict_shape=True` emits plain-dict variants for the batch retrieval path).
-- In-memory DOCX builders: `tests/fixtures/docx_fixtures.py`.
+- DOCX inputs are built inline per test via `python-docx` (`from docx import Document`); there is no shared DOCX-fixture module — `tests/fixtures/` ships only `fake_anthropic.py`.
 
 ---
 

@@ -228,8 +228,8 @@ reviewed by the engineer of record before acting on them." A compliance tool say
 this out loud. The note also embeds the **pinned-editions enumeration**
 (`_render_pinned_editions_note`): a one-paragraph list of exactly which
 NFPA/ASHRAE/IAPMO/UL editions the verifier treated as authoritative for the cycle
-(for `CALIFORNIA_2025`: NFPA 13 "2022 with California Amendments," ASHRAE 90.1
-"2022," and so on — see [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md) for
+(for `CALIFORNIA_2025`: NFPA 13 "2025, as amended by California," NFPA 25 "2013
+California Edition," ASHRAE 90.1 "2019," and so on — see [**Ch 12 — Configuration, Models & Token Economics**](12_configuration_and_models.md) for
 where those strings live). Empty edition fields are silently dropped, so a future cycle that hasn't
 populated them degrades to a shorter note rather than printing blanks.
 
@@ -321,7 +321,11 @@ in-memory object threaded through the run. Don't confuse them.
 
 Each finding is a collapsible block (`_write_finding_entry`), built on Word's
 native heading-collapse so a reviewer can fold away a single finding or an entire
-severity group with no macros. The header line carries the index, severity badge,
+severity group with no macros. Within each severity group, findings are ordered
+so one spec file's issues stay contiguous (sorted lexically by filename, which is
+CSI-section order) and then by descending confidence — a change from the prior
+confidence-only sort that scattered a single spec's findings across the whole
+group. The header line carries the index, severity badge,
 confidence percentage, filename, and section. Immediately beneath it — *before*
 the issue text — comes the **status line**, because the trust-model verdict should
 be the first thing the eye lands on:

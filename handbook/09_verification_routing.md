@@ -574,7 +574,8 @@ where they don't.
   continuation paths can never drift apart — a lesson learned from a real bug where
   the batch path silently disagreed with the telemetry it stamped.
 
-[^triage-optin]: `CLAUDE.md`'s source-file map labels `triage.py` "(opt-in)." In
+[^triage-optin]: `CLAUDE.md`'s source-file map previously labeled `triage.py`
+"(opt-in)"; it now labels it "(automatic; needs API key)," matching the code. In
 the verification layer as wired today there is no dedicated on/off switch: triage
 runs automatically as the third stage of the local-resolution pre-pass whenever
 findings survive the keyword and cache stages and an API key is present. Only its

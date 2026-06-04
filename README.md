@@ -9,7 +9,7 @@ Configured for the **California 2025 code cycle** by default (`src/core/code_cyc
 ## Design Emphasis
 
 - **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` verdicts require at least one cited URL that the `web_search` tool actually retrieved.
-- **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, optional Haiku triage, severity-tiered + profile-aware search budgets, persistent on-disk claim cache.
+- **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, automatic Haiku triage (for eligible findings), severity-tiered + profile-aware search budgets, persistent on-disk claim cache.
 - **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
 - **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
 - **Trust-model report output.** Every finding renders one of nine `ReportStatus` labels (including `VERIFICATION_FAILED` for transient operational errors and `VERIFIED_CONTESTED` when the initial and escalated verifiers disagreed on a grounded verdict) and one of two `EditActionLabel` values (`EDIT_SUGGESTED` / `REPORT_ONLY`) so the report makes uncertainty visible.
@@ -44,15 +44,17 @@ own gating.
 
 All reviews submit via the Message Batches API — queued at 50% cost savings, typical turnaround ~45 min – 2 hrs (24 hrs max). The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header) and triggers only for inputs ≥200k tokens.
 
+A submitted review batch keeps running on Anthropic's servers even if the app closes or the network drops. Spec Critic persists the small amount of state needed to reconnect (the batch id and its request map; spec bodies are re-extracted rather than stored), so an interrupted run can be finished without re-submitting or re-paying for the review — via the GUI **Recover batch…** action or the standalone `scripts/recover_batch.py`. The state file lives at `~/.spec_critic/pending_batch.json` (override with `SPEC_CRITIC_PENDING_BATCH_PATH`).
+
 ## Model Stack
 
-Defaults (all overridable via env var; see `api_config.py`):
+Defaults (each overridable via its `SPEC_CRITIC_*_MODEL` env var **except cross-check**, which is bound directly to `CROSS_CHECK_MODEL_DEFAULT`; see `api_config.py`):
 
 - Review: Claude Opus 4.8
 - Cross-check: Claude Sonnet 4.6
 - Verification (initial): Claude Sonnet 4.6
 - Verification (escalation / deep-reasoning): Claude Opus 4.8
-- Synthesis / Triage: Claude Haiku 4.5
+- Triage: Claude Haiku 4.5
 
 Unknown model ids degrade to safe defaults via `api_config.model_capabilities(...)` — a misconfigured `SPEC_CRITIC_*_MODEL` env var produces a smaller request rather than an API rejection.
 
@@ -70,7 +72,7 @@ Test suite is hermetic by default — no API key, no network. `tests/conftest.py
 pytest -q              # full hermetic suite
 ```
 
-Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`; in-memory DOCX builders in `tests/fixtures/docx_fixtures.py`.
+Test markers: `token_budget`, `prompt_serialization`, `network`. Fake Anthropic response builders live in `tests/fixtures/fake_anthropic.py`; DOCX inputs are built inline per test with `python-docx`.
 
 ## Further Reading
 

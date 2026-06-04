@@ -153,7 +153,7 @@ The seven controllers, each in one paragraph:
 | `context_controller` | Project-context text + attachments | `get_project_context`, `on_context_change`, `attach_context_files`, `open_context_modal` |
 | `token_analysis_controller` | Preflight token counts in the gauge; preserve selection across reload | `analyze_tokens`, `resolve_initial_selection`, `refresh_exact_token_count`, `on_file_selection_change` |
 | `review_run_controller` | Run lifecycle + epoch guard | `validate_inputs`, `next_run_epoch`, `dispatch_if_current`, `start_review`, `on_review_complete`, `on_review_error`, `reset_ui` |
-| `batch_controller` | Submit / poll / collect / verify / finalize | `submit_batch_thread`, `on_batch_submitted`, `poll_batch`, `poll_and_collect_thread`, `collect_batch_results` |
+| `batch_controller` | Submit / poll / collect / verify / finalize; resume / recover a detached batch | `submit_batch_thread`, `on_batch_submitted`, `poll_batch`, `poll_and_collect_thread`, `collect_batch_results`, `offer_batch_resume`, `recover_batch_dialog` |
 | `report_controller` | Export report + edit sidecar | `export_report_to_file` |
 | `diagnostics_controller` | Diagnostics callbacks + window | `make_diag_log`, `make_diag_progress`, `finalize_diagnostics`, `open_diagnostics_window` |
 
@@ -402,16 +402,21 @@ low-severity hardening item (the suggested fix is to null the recorder
 synchronously at completion rather than on the delayed UI reset), and it is
 genuinely cross-run *tracing* hygiene, not a data-plane risk.
 
-**A smaller drift worth noting in its lane.** The static "How to Use" dialog tells
-the user *"You can close the app and reopen it later — the pending batch state is
-saved and you will be prompted to resume."* The batch controller this chapter
-owns, however, documents its flow as **forward-only — "a batch runs
-start-to-report in a single process"** — and there is no resume entry point among
-the run-lifecycle controllers (a vestigial recorder-reattach guard in `reset_ui`
-is the only remaining hint of a once-planned resume path). This is exactly the
-kind of doc-versus-code drift the audits care about: harmless to a run, but a
-promise the current UI does not keep. It belongs on the list of things still being
-reconciled.
+**Resume / recovery: the code caught up to the dialog.** The static "How to Use"
+dialog tells the user *"You can close the app and reopen it later — the pending
+batch state is saved and you will be prompted to resume,"* and the batch flow now
+honors that promise. A submitted review batch persists its reconnect state to
+`~/.spec_critic/pending_batch.json` (`orchestration/batch_resume.py`); on startup
+the GUI calls `offer_batch_resume` to detect a still-running detached batch and
+prompt the user to rejoin it, and a manual **Recover batch…** button
+(`recover_batch_dialog`) lets the user reconnect to a batch by id at any time.
+Recovery re-polls → collects → verifies → cross-checks → reports without
+re-submitting or re-paying for the review; the persisted state carries the batch's
+`request_map` verbatim (so results return even if the source files moved) and
+re-extracts spec bodies deterministically rather than storing them. The same path
+backs the standalone `scripts/recover_batch.py`. (An earlier version of this
+chapter flagged the dialog's resume promise as drift the UI did not keep — that
+gap is now closed.)
 
 ## How it connects
 
