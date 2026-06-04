@@ -287,9 +287,11 @@ class TestGroundingHelpersPreserveQuote:
 # ===========================================================================
 
 
-class TestCacheSchemaV3:
-    def test_schema_version_bumped_to_v3(self):
-        assert _CACHE_SCHEMA_VERSION == 3
+class TestCacheSchema:
+    def test_schema_version_is_v4(self):
+        # Tripwire: bump intentionally (v4 folded a standards-edition fingerprint
+        # into the cache key) and update this assertion in the same change.
+        assert _CACHE_SCHEMA_VERSION == 4
 
     def test_v2_files_are_dropped_on_load(self, tmp_path: Path):
         cache_path = tmp_path / "cache.json"

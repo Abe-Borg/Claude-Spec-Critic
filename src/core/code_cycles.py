@@ -213,41 +213,54 @@ CALIFORNIA_2025 = CodeCycle(
         StandardEdition(
             "ASHRAE 62.1", "2019",
             source=(
-                "UNVERIFIED: the 2025 Title 24 Part 6 draft referenced 62.1-2019, "
-                "but some sources cite 62.1-2022 as adopted. Confirm against the "
-                "published Title 24 Part 6 referenced-standards table."
+                "UNVERIFIED (web-researched 2026-06): the 2025 California Energy "
+                "Code (Title 24 Part 6) references the 2019 edition of 62.1; ASHRAE "
+                "petitioned to update the reference to 62.1-2022 but the adopted "
+                "code stayed at 2019. Pending direct confirmation against the "
+                "published Title 24 Part 6 referenced-standards table. "
+                "See docs/standards_provenance.md."
             ),
         ),
         StandardEdition(
-            "ASHRAE 90.1", "2022",
+            "ASHRAE 90.1", "2019",
             source=(
-                "UNVERIFIED: multiple sources indicate the 2025 Title 24 Part 6 "
-                "references 90.1-2019, not 90.1-2022. Confirm against the published "
-                "Title 24 Part 6 referenced-standards table."
+                "UNVERIFIED (web-researched 2026-06): corrected from 2022 to 2019. "
+                "The 2025 California Energy Code references 90.1-2019 — ASHRAE's own "
+                "comment letter petitioned CA to update the reference to 90.1-2022, "
+                "which confirms the adopted edition is 2019. Pending direct "
+                "confirmation against the published Title 24 Part 6 "
+                "referenced-standards table. See docs/standards_provenance.md."
             ),
         ),
         # --- Plumbing ----------------------------------------------------
         StandardEdition(
             "IAPMO Uniform Plumbing TSC", "2024",
             source=(
-                "UNVERIFIED: CPC 2025 incorporates UPC 2024; the IAPMO installation "
-                "trade-standards companion edition was not independently confirmed."
+                "UNVERIFIED (web-researched 2026-06): CPC 2025 (Title 24 Part 5) is "
+                "based on UPC 2024 per IAPMO/ICC publisher listings (well corroborated); "
+                "the specific IAPMO installation trade-standards companion edition tied "
+                "to that cycle was not independently confirmed. "
+                "See docs/standards_provenance.md."
             ),
         ),
         # --- UL listings -------------------------------------------------
         # Common fire / smoke / firestop listings referenced in M&P specs.
-        # Legacy values retained; CBC 2025 Ch. 35 uses a different edition
-        # notation (e.g. "UL 268A-09") and these were not confirmed there.
+        # Editions below match the 2021 IBC Ch. 35 (CBC 2022 lineage). CBC 2025
+        # is based on the 2024 IBC, whose Ch. 35 table could not be read directly
+        # during research (ICC / UpCodes are paywalled — HTTP 403). Web-snippet
+        # evidence corroborates that the 2024 IBC still cites UL 555-2006 (rev.)
+        # and UL 268-2016, but UL 1479 has newer 2022/2023 editions and is the
+        # most likely to have changed. See docs/standards_provenance.md.
         StandardEdition("UL 300", "2005", note="revised",
-                        source="UNVERIFIED: legacy value; confirm against CBC 2025 Ch. 35"),
+                        source="UNVERIFIED (web-researched 2026-06): 2021-IBC value (UL 300 5th ed. 2005, R2010). Confirm against CBC 2025 Ch. 35."),
         StandardEdition("UL 555", "2006", note="revised",
-                        source="UNVERIFIED: legacy value; confirm against CBC 2025 Ch. 35"),
+                        source="UNVERIFIED (web-researched 2026-06): 2024-IBC snippets cite UL 555-2006 (rev. through Oct 2016). Confirm against CBC 2025 Ch. 35."),
         StandardEdition("UL 555S", "2014", note="revised",
-                        source="UNVERIFIED: legacy value; confirm against CBC 2025 Ch. 35"),
+                        source="UNVERIFIED (web-researched 2026-06): 2021-IBC value (UL 555S-2014). Confirm against CBC 2025 Ch. 35."),
         StandardEdition("UL 268", "2016", note="revised",
-                        source="UNVERIFIED: legacy value; confirm against CBC 2025 Ch. 35"),
+                        source="UNVERIFIED (web-researched 2026-06): 2024-IBC snippets cite UL 268-2016 (rev. through Jul 2016). Confirm against CBC 2025 Ch. 35."),
         StandardEdition("UL 1479", "2015", note="revised",
-                        source="UNVERIFIED: legacy value; confirm against CBC 2025 Ch. 35"),
+                        source="UNVERIFIED (web-researched 2026-06): 2021-IBC value; newer UL 1479-2022/2023 editions exist and the 2024-IBC-based CBC 2025 likely cites a newer one — HIGHEST-RISK entry, verify first. Confirm against CBC 2025 Ch. 35."),
     ),
 )
 

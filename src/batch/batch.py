@@ -61,8 +61,42 @@ class BatchStatus:
     def progress_pct(self) -> float: return (self.completed / self.total * 100) if self.total > 0 else 0.0
 
 
-def _sanitize_custom_id(filename: str, max_len: int = 50) -> str:
+# Historical stem truncation length. Load-bearing beyond the submit path: the
+# bare-batch resume recovery (orchestration/batch_resume.recover_from_bare_batch_id)
+# re-derives each item's real filename by re-sanitizing local names with THIS
+# default and matching the result against the parsed custom-id stem, so the
+# submit path must never emit a stem longer than this or the match silently fails.
+_SANITIZE_DEFAULT_MAX_LEN = 50
+
+
+def _sanitize_custom_id(filename: str, max_len: int = _SANITIZE_DEFAULT_MAX_LEN) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", Path(filename).stem if "." in filename else filename)[:max_len]
+
+
+def _review_custom_id(filename: str, idx: int, *, max_len: int = 64) -> str:
+    """Build a review batch ``custom_id`` guaranteed to be 1..``max_len`` chars.
+
+    Anthropic's Message Batches API requires each ``custom_id`` to be 1-64
+    characters. The id is ``review__{stem}__{idx}``; a 50-char stem plus the
+    fixed ``review__``/``__`` framing and a 5-digit index reaches 65, so the
+    stem budget must be computed *after* the index is known rather than fixed at
+    50. Uniqueness within a batch is carried entirely by ``idx`` (the enumerate
+    index), so truncating two long stems to the same prefix never collides the
+    ids — the trailing ``__{idx}`` differs.
+
+    The stem budget is capped at ``_SANITIZE_DEFAULT_MAX_LEN`` (50) so the
+    submitted stem stays byte-identical to the legacy ``[:50]`` truncation for
+    every index < 10000 (where the 64-char budget would otherwise allow a
+    51-53-char stem). This preserves the bare-batch resume path's filename
+    matching, which re-sanitizes local names with the default 50. The budget
+    only drops below 50 in the 10k+ regime — where the legacy code emitted an
+    over-length (API-rejected) id and so had no recoverable batch to match
+    against anyway.
+    """
+    prefix, suffix = "review__", f"__{idx}"
+    room = max_len - len(prefix) - len(suffix)
+    budget = min(room, _SANITIZE_DEFAULT_MAX_LEN)
+    return f"{prefix}{_sanitize_custom_id(filename, max_len=max(1, budget))}{suffix}"
 
 
 # The 300k extended-output beta header (``output-300k-2026-03-24``) is pinned
@@ -170,7 +204,7 @@ def submit_review_batch(
     request_map = {}
     any_extended_output = False
     for idx, spec in enumerate(specs):
-        custom_id = f"review__{_sanitize_custom_id(spec.filename)}__{idx}"
+        custom_id = _review_custom_id(spec.filename, idx)
         spec_pre_detected = (
             pre_detected_alerts.get(spec.filename) if pre_detected_alerts else None
         )
@@ -499,9 +533,9 @@ def submit_verification_batch(
             "routing": decision.to_dict(),
         }
 
-    # Verification output is capped at 32k, well within both Sonnet and Opus
-    # base ceilings, so the 300k extended-output beta is not needed. Use the
-    # standard batches endpoint.
+    # Verification output is capped at 16k (VERIFICATION_OUTPUT_CAP), well within
+    # both Sonnet and Opus base ceilings, so the 300k extended-output beta is not
+    # needed. Use the standard batches endpoint.
     union_headers = merge_extra_headers(extra_headers_seq)
     create_kwargs: dict[str, Any] = {"requests": reqs}
     if union_headers:

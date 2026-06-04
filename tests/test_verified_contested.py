@@ -60,6 +60,7 @@ from src.output.report_status import (
 from src.review.reviewer import EditProposal, Finding, ReviewResult
 from src.verification.verification_cache import (
     VerificationCache,
+    _CACHE_SCHEMA_VERSION,
     _clone_for_hit,
     _CacheEntry,
     _result_to_dict,
@@ -437,9 +438,10 @@ class TestCacheContested:
         assert replayed.initial_sources
 
     def test_cache_load_legacy_entry_defaults_neutral(self, tmp_path: Path):
-        # A v3 cache entry written before the new keys existed lacks both.
-        # Loading it must not crash and must default the fields to
-        # neutral values so the legacy entry classifies via the
+        # A current-version cache entry whose result dict predates the
+        # models_disagreed / initial_sources keys lacks both (they were added
+        # without their own schema bump). Loading it must not crash and must
+        # default the fields to neutral values so the entry classifies via the
         # verdict-based branches.
         import time as _time
 
@@ -448,7 +450,7 @@ class TestCacheContested:
         path.write_text(
             json.dumps(
                 {
-                    "version": 3,
+                    "version": _CACHE_SCHEMA_VERSION,
                     "saved_at": recent_ts,
                     "entries": {
                         "test_key|EDIT|NFPA 13 §10|abc123": {
