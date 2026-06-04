@@ -12,6 +12,17 @@ replacing it, so a user can load specs from more than one folder. The
 native file dialog only multi-selects within a single folder, so
 accumulation is the only way to span folders. The Clear button
 (``clear_selection``) is the explicit reset.
+
+Accumulation also upholds a **unique-basename** invariant: a candidate whose
+bare filename already belongs to a loaded file (a *different* file reusing
+the name, e.g. ``230500.docx`` from two project folders) is rejected with a
+warning (``filter_name_collisions``). The review/report pipeline keys
+several stages by ``spec.filename`` — deterministic pre-screen alerts, the
+review-repair lookup, failed-spec filtering, and report / edit-sidecar
+grouping — which is unique within one folder but not across folders, so the
+guard keeps those stages from silently mis-attributing or collapsing two
+distinct files. Re-adding the *same* file (same resolved path) is not a
+collision; it stays a silent no-op.
 """
 from __future__ import annotations
 
@@ -94,6 +105,41 @@ def merge_selected_specs(existing: list[Path], new_paths: list[Path]) -> list[Pa
     return merged
 
 
+def filter_name_collisions(
+    existing: list[Path], new_paths: list[Path]
+) -> tuple[list[Path], list[Path]]:
+    """Split ``new_paths`` into ``(accepted, rejected)`` by basename uniqueness.
+
+    A candidate is **rejected** when its bare filename already belongs to an
+    already-loaded file (or to an earlier-accepted candidate in this same
+    batch) but it is a *different* file — i.e. a different resolved path.
+    This upholds the unique-basename invariant the review/report pipeline
+    assumes (it keys pre-screen alerts, the repair lookup, failed-spec
+    filtering, and report / edit-sidecar grouping by ``spec.filename``).
+
+    An **exact-path** re-add (same resolved path as a loaded file or an
+    earlier candidate) is neither accepted nor rejected — it is dropped
+    silently, exactly as ``merge_selected_specs`` would dedup it — so
+    re-dropping the same file never produces a spurious collision warning.
+    ``accepted`` is therefore the set of genuinely-new, name-unique files.
+    """
+    accepted: list[Path] = []
+    rejected: list[Path] = []
+    seen_names = {p.name for p in existing}
+    seen_keys = {_dedup_key(p) for p in existing}
+    for p in new_paths:
+        key = _dedup_key(p)
+        if key in seen_keys:
+            continue  # already loaded (exact path) — silent no-op
+        if p.name in seen_names:
+            rejected.append(p)  # different file reusing a loaded basename
+            continue
+        seen_names.add(p.name)
+        seen_keys.add(key)
+        accepted.append(p)
+    return accepted, rejected
+
+
 def browse_for_specs(parent) -> list[Path]:
     """Open a file picker. Returns selected paths (possibly empty)."""
     # Imported lazily so the module (and its pure path-merge helpers) stays
@@ -113,20 +159,31 @@ def apply_selected_specs(app, candidate_paths: list[Path]) -> None:
     New selections **accumulate** onto any already-loaded files (de-duped
     by resolved path via ``merge_selected_specs``) so a user can load specs
     from more than one folder across multiple Browse / drag-and-drop
-    actions. Re-selecting files already in the set is a no-op (no redundant
-    re-analysis). Use the Clear button (``clear_selection``) to reset.
+    actions. A candidate whose basename collides with an already-loaded
+    file is rejected with a warning (``filter_name_collisions``) to uphold
+    the pipeline's unique-filename invariant. Re-selecting files already in
+    the set is a no-op (no redundant re-analysis). Use the Clear button
+    (``clear_selection``) to reset.
     """
     paths = filter_supported_specs(candidate_paths)
     if not paths:
         app.log.log_warning("No supported .docx files selected")
         return
     existing = list(getattr(app, "_selected_files", None) or [])
-    merged = merge_selected_specs(existing, paths)
+    accepted, name_collisions = filter_name_collisions(existing, paths)
+    if name_collisions:
+        names = ", ".join(dict.fromkeys(p.name for p in name_collisions))
+        app.log.log_warning(
+            f"Skipped — a spec with this name is already loaded "
+            f"(rename to review both): {names}"
+        )
+    merged = merge_selected_specs(existing, accepted)
     added = len(merged) - len(existing)
     if added == 0:
-        # Everything dropped/browsed is already loaded — skip the wipe +
-        # re-extract + re-count churn that re-analysis would trigger.
-        app.log.log_warning("No new files added — already in the selection")
+        # Nothing new to analyze: either every candidate was already loaded
+        # (exact path) or every new one collided on basename (warned above).
+        if not name_collisions:
+            app.log.log_warning("No new files added — already in the selection")
         return
     if existing:
         app.log.log_step(f"Added {added} file(s) — {len(merged)} total")
