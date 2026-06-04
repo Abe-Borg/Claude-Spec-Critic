@@ -49,19 +49,19 @@ economics — a per-spec review reasons over a hundred thousand tokens of dense
 code-referenced prose and wants the strongest model available; a triage
 classification sorts short findings into two buckets and wants the cheapest. So
 the defaults are tiered, and every model id lives as a named constant at the top
-of `api_config.py` (`MODEL_OPUS_47 = "claude-opus-4-7"`, and likewise for
+of `api_config.py` (`MODEL_OPUS_48 = "claude-opus-4-8"`, and likewise for
 `claude-sonnet-4-6` and `claude-haiku-4-5`).
 
 | Phase | Default model | Env override |
 |---|---|---|
-| Review (per-spec) | Opus 4.7 | `SPEC_CRITIC_REVIEW_MODEL` |
+| Review (per-spec) | Opus 4.8 | `SPEC_CRITIC_REVIEW_MODEL` |
 | Cross-spec coordination | Sonnet 4.6 | *(none — see note)* |
 | Verification, initial pass | Sonnet 4.6 | `SPEC_CRITIC_VERIFICATION_MODEL` |
-| Verification, escalation / deep-reasoning | Opus 4.7 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` |
+| Verification, escalation / deep-reasoning | Opus 4.8 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` |
 | Triage | Haiku 4.5 | `SPEC_CRITIC_TRIAGE_MODEL` |
 
 The pattern that produces an override is a single line —
-`os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_47)` — read once at import
+`os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_48)` — read once at import
 time. The rationale behind the *tiering* is economic and is documented inline:
 verification "routes through Sonnet first and reserves Opus for escalation," and
 triage is "shallow classification over short inputs; Haiku fits." Opus is the
@@ -108,7 +108,7 @@ The whitelist covers exactly three models, plus a default for everything else:
 
 | Model id | thinking | effort | 300k extended | context | output ceiling |
 |---|---|---|---|---|---|
-| `claude-opus-4-7` | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
+| `claude-opus-4-8` | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
 | `claude-sonnet-4-6` | ✓ | ✓ | ✓ | 1,000,000 | 64,000 |
 | `claude-haiku-4-5` | ✗ | ✗ | ✗ | 200,000 | 64,000 |
 | **anything else** | ✗ | ✗ | ✗ | 200,000 | 64,000 |
@@ -131,13 +131,15 @@ firmly as it rejects an unsupported feature:
   never carries `thinking` — and it would be stripped anyway because Haiku's flag
   is off. That belt-and-suspenders is deliberate: even if someone overrode triage
   to a thinking-capable model, the phase opt-out still holds.
-- **`effort_config_for(model, phase)`** attaches `output_config.effort` — `high`
-  for the deep phases (review, cross-check) and for Opus on any verification phase
-  (which only happens on escalation), `medium` for Sonnet verification, and
-  *nothing* for triage or any model whose `supports_effort` flag is off. The four
-  usable levels are `low`/`medium`/`high`/`xhigh`; the code deliberately avoids
-  `max` because it "overshoots the verification verdict envelope" — a verifier
-  asked for a one-sentence verdict does not benefit from maximal token eagerness.
+- **`effort_config_for(model, phase)`** attaches `output_config.effort` — `xhigh`
+  for the deep phases (review, cross-check), `high` for Opus on the escalation
+  verification phase, `medium` for Sonnet verification, and *nothing* for triage
+  or any model whose `supports_effort` flag is off. The usable levels are
+  `low`/`medium`/`high`/`xhigh`, and `xhigh` is Opus-4.8-only: because
+  `supports_effort` is a coarse boolean, `effort_config_for` clamps `xhigh`→`high`
+  on any non-Opus model. That clamp is load-bearing for cross-check, which
+  *defaults* to `xhigh` but always runs on Sonnet 4.6 — without it every
+  coordination pass would 400 at submit.
 
 The deeper consequence of the degrade-to-safe default deserves to be made
 concrete, because it is the chapter's central tension and it is *sharper than it
@@ -151,15 +153,18 @@ elif model in HAIKU_MODELS:     ceiling = MAX_OUTPUT_TOKENS_HAIKU   # 64k
 else:                           ceiling = MAX_OUTPUT_TOKENS_SONNET  # 64k
 ```
 
-`OPUS_MODELS` is a frozenset containing exactly one string: `claude-opus-4-7`. So
-the moment an operator points review at a *newer* Opus — say a successor id like
-`claude-opus-4-8`, the example the trust audit uses — that id is in none of the
-known sets. It loses adaptive thinking. It loses `high` effort. It loses the 300k
-extended-output path. And its baseline output cap clamps down to the `else`
-branch: **64,000 tokens**, half of what the listed Opus gets. The operator did
-this *to get better reviews*, and the program silently gave them a weaker,
-smaller request with no warning. We return to this in the closing section — it is
-the most important open question in the module.
+`OPUS_MODELS` is a frozenset of the known Opus ids — currently `claude-opus-4-8`,
+the review and escalation default. The degrade-to-safe tension shows up the moment
+an operator points review at an id that *isn't* in the known sets — say a future
+successor like `claude-opus-4-9`. That id is in none of the known sets. It loses
+adaptive thinking. It loses `xhigh` effort. It loses the 300k extended-output
+path. And its baseline output cap clamps down to the `else` branch: **64,000
+tokens**, half of what a listed Opus gets. The operator did this *to get better
+reviews*, and the program gives them a weaker, smaller request. This *used* to
+happen with no warning at all; the trust-audit fix (P0-3) now emits one `WARNING`
+per unrecognized id naming the conservative caps it fell back to, so the
+under-powering is at least visible. We return to this in the closing section —
+keeping `OPUS_MODELS` current is still the real remedy.
 
 ## Output caps and the extended-output path
 
@@ -247,7 +252,7 @@ local estimate is used as a *budget gate*, it is padded:
 
 | Model | Safety multiplier |
 |---|---|
-| `claude-opus-4-7` | 1.10× |
+| `claude-opus-4-8` | 1.10× |
 | `claude-sonnet-4-6` | 1.10× |
 | `claude-haiku-4-5` | 1.15× |
 | unknown | 1.20× |
@@ -417,9 +422,9 @@ documented, supported way to retune the program without editing code.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPEC_CRITIC_REVIEW_MODEL` | Opus 4.7 | Override the review model |
+| `SPEC_CRITIC_REVIEW_MODEL` | Opus 4.8 | Override the review model |
 | `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 4.6 | Override the verifier initial-pass model |
-| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 4.7 | Override the escalation model |
+| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 4.8 | Override the escalation model |
 | `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Override the triage model |
 | `SPEC_CRITIC_ELEMENT_IDS` | on | Disable to revert to legacy plain-body spec rendering |
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |
@@ -450,34 +455,38 @@ only env parsing that lives in `api_config.py`.
 ## Design tensions & what's still being perfected
 
 This module is the program's safety net, and an honest accounting has to admit
-where the net has holes. Four are worth naming.
+where the net has holes. Four are worth naming — two of them since addressed, kept
+here because the *risk class* is permanent even when a specific instance is patched.
 
-**The sharp edge of safe degradation (audit P0-3).** The same
-degrade-to-safe-defaults mechanism that protects an operator from a typo will
-*silently degrade a genuinely newer, better model*. Set `SPEC_CRITIC_REVIEW_MODEL`
-to a successor id like `claude-opus-4-8` and the program quietly drops adaptive
-thinking, drops `high` effort, drops the 300k extended-output path, and clamps the
-baseline output cap to 64k — because `OPUS_MODELS` is a frozenset of exactly one
-literal id and the capability registry knows exactly three. There is **no
-warning.** The reviewer thinks they upgraded; they downgraded. Two open questions
-follow directly: is `claude-opus-4-7` even still the right default, and should an
-unknown model id *warn loudly* — log a prominent message, surface a banner — rather
-than degrade in silence? The current answer is silence, and for a tool whose
-entire reason to exist is making uncertainty *visible*, silence is the
-uncomfortable choice. Adding a new model to the whitelist is a four-line change
-(register it in `_MODEL_CAPABILITIES`, add it to the relevant family frozenset);
-the work is not hard, it is *remembering to do it* before the default goes stale.
+**The sharp edge of safe degradation (audit P0-3, since addressed).** The same
+degrade-to-safe-defaults mechanism that protects an operator from a typo can also
+*degrade a genuinely newer, better model*. Set `SPEC_CRITIC_REVIEW_MODEL` to an id
+the registry doesn't know — a future successor like `claude-opus-4-9` — and the
+program drops adaptive thinking, drops `xhigh` effort, drops the 300k
+extended-output path, and clamps the baseline output cap to 64k, because
+`OPUS_MODELS` and the capability registry only know the ids they were taught. The
+reviewer thinks they upgraded; they downgraded. This *used* to be the module's most
+uncomfortable hole — the degradation was completely silent, and for a tool whose
+entire reason to exist is making uncertainty *visible*, silence was the wrong
+default. `model_capabilities` now emits one `WARNING` per unrecognized id (deduped
+via `_WARNED_UNKNOWN_MODELS` so the per-request hot path can't spam the log) naming
+the conservative caps it fell back to, so a stale whitelist that under-powers a
+newer model is visible rather than invisible. The deeper remedy is unchanged:
+adding a model to the whitelist is a small change (register it in
+`_MODEL_CAPABILITIES`, add it to the relevant family frozenset), and the work is
+*remembering to do it* before the default goes stale.
 
-**The hardcoded beta header (audit P0-4).** `output-300k-2026-03-24` is a hardcoded
-constant, and `assert_extended_output_allowed` validates only that the header is
-**present**, not that the API still **accepts** it. This is the *exact same risk
-class* as the retired web-fetch header that already crashed this codebase once.
-There is **no graceful fallback to 128k**: if this beta value is ever retired or
-renamed, every large-input (≥200k-token) batch review will raise at submit — the
-guard happily passes a "present" header straight into a 400. The blast radius is
-smaller than the web-fetch incident (only inputs over 200k tokens take this path),
-but the failure mode is identical, and the fix the audit points toward — catch the
-rejection and fall back to the 128k cap rather than crashing — does not yet exist.
+**The hardcoded beta header (audit P0-4, since addressed).** `output-300k-2026-03-24`
+is a hardcoded constant, and an *unrecognized* `anthropic-beta` value is rejected by
+the API with HTTP 400 — the *exact same risk class* as the retired web-fetch header
+that already crashed this codebase once. The blast radius is smaller (only inputs
+over 200k tokens take the 300k path), but the failure mode would be identical. The
+fix the audit pointed toward now exists: `_create_review_batch` attempts the beta
+first and, on a beta-header rejection (`_is_beta_header_rejection` — a 400 naming the
+`anthropic-beta` header), clamps each request's `max_tokens` back to the model's
+standard ceiling (`_clamp_requests_to_model_ceiling`) and re-submits on the non-beta
+path. A retired header now degrades output on very large specs — which the
+review-stage failure surfacing already reports — rather than crashing the whole run.
 
 **Hand-maintained edition strings.** The pinned editions in `CALIFORNIA_2025` are
 *transcribed* from the California Building Standards Commission adoption matrix.

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "spec-critic"
 version = "3.0.0"
 dependencies = [
-    "anthropic",
+    "anthropic>=0.97,<0.98",
     "python-docx",
     "pypdf",
     "pydantic",

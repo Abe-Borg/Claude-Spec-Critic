@@ -628,7 +628,7 @@ The review engine sits in the middle of the pipeline, and its seams are clean:
   is the accessor the report and the edit sidecar call to render or serialize a
   finding's edit; `demotion_reason` feeds the report's demoted-edits view.
 - **Cross-cutting — Ch 12 — Configuration, Models & Token Economics.** The review
-  model default (Opus 4.7), the 128k / 300k-extended output caps, the
+  model default (Opus 4.8), the 128k / 300k-extended output caps, the
   `cache_control` placement, and the `thinking` / effort config are Ch 12's; this
   chapter states *that* the prefix is cached and *why* it must be byte-stable, and
   defers the *how*.

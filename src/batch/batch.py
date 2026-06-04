@@ -65,6 +65,22 @@ def _sanitize_custom_id(filename: str, max_len: int = 50) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", Path(filename).stem if "." in filename else filename)[:max_len]
 
 
+def _review_custom_id(filename: str, idx: int, *, max_len: int = 64) -> str:
+    """Build a review batch ``custom_id`` guaranteed to be 1..``max_len`` chars.
+
+    Anthropic's Message Batches API requires each ``custom_id`` to be 1-64
+    characters. The id is ``review__{stem}__{idx}``; a 50-char stem plus the
+    fixed ``review__``/``__`` framing and a 5-digit index reaches 65, so the
+    stem budget must be computed *after* the index is known rather than fixed at
+    50. Uniqueness within a batch is carried entirely by ``idx`` (the enumerate
+    index), so truncating two long stems to the same prefix never collides the
+    ids — the trailing ``__{idx}`` differs.
+    """
+    prefix, suffix = "review__", f"__{idx}"
+    room = max_len - len(prefix) - len(suffix)
+    return f"{prefix}{_sanitize_custom_id(filename, max_len=max(1, room))}{suffix}"
+
+
 # The 300k extended-output beta header (``output-300k-2026-03-24``) is pinned
 # in api_config. Betas get retired/renamed, and an *unrecognized* anthropic-beta
 # value is rejected by the API with HTTP 400 — the exact failure mode the
@@ -170,7 +186,7 @@ def submit_review_batch(
     request_map = {}
     any_extended_output = False
     for idx, spec in enumerate(specs):
-        custom_id = f"review__{_sanitize_custom_id(spec.filename)}__{idx}"
+        custom_id = _review_custom_id(spec.filename, idx)
         spec_pre_detected = (
             pre_detected_alerts.get(spec.filename) if pre_detected_alerts else None
         )
@@ -499,9 +515,9 @@ def submit_verification_batch(
             "routing": decision.to_dict(),
         }
 
-    # Verification output is capped at 32k, well within both Sonnet and Opus
-    # base ceilings, so the 300k extended-output beta is not needed. Use the
-    # standard batches endpoint.
+    # Verification output is capped at 16k (VERIFICATION_OUTPUT_CAP), well within
+    # both Sonnet and Opus base ceilings, so the 300k extended-output beta is not
+    # needed. Use the standard batches endpoint.
     union_headers = merge_extra_headers(extra_headers_seq)
     create_kwargs: dict[str, Any] = {"requests": reqs}
     if union_headers:

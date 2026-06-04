@@ -353,7 +353,7 @@ panel** (`_write_evidence_panel`) — the audit trail that answers "*why* did th
 verifier reach this verdict?" without the reviewer leaving the report. Its
 contents render in a fixed order:
 
-1. **Verifier model** (e.g. Sonnet 4.6 / Opus 4.7 / local).
+1. **Verifier model** (e.g. Sonnet 4.6 / Opus 4.8 / local).
 2. **Verification mode** in human-readable form (Local skip / Strict structured /
    Standard reasoning / Deep reasoning — the routing dimension owned by [**Ch 9 —
    Verification I: How We Decide to Check**](09_verification_routing.md)).

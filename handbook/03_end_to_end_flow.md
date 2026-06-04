@@ -374,7 +374,7 @@ LIFECYCLE OF ONE FINDING
 ────────────────────────
 extract    ─► paragraph "…NFPA 13, 2019 edition" lands as element p42 in ExtractedSpec   (Ch 4)
 pre-screen ─► deterministic detectors do NOT fire (edition drift ≠ stale CA cycle)        (Ch 4)
-review     ─► Opus 4.7 (batch) raises a Finding via submit_review_findings:               (Ch 5)
+review     ─► Opus 4.8 (batch) raises a Finding via submit_review_findings:               (Ch 5)
               severity=HIGH, codeReference="NFPA 13", actionType=EDIT,
               existingText="2019 edition", replacementText="<adopted edition>", target=p42
 collect    ─► reconciled against the submitted set; spec parsed cleanly                   (Ch 6/7)
