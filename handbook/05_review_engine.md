@@ -445,15 +445,16 @@ from `reviewer.py` and call back into them. Centralizing the `Finding` shape *an
 the code that builds findings from a response is what keeps a coordination finding
 and a per-spec finding structurally identical.
 
-[^streaming]: `CLAUDE.md` and [**Ch 2**](02_architecture.md) describe `reviewer.py` as the "Anthropic
-API client (streaming + tool-use parsing)." That is a fair shorthand for "owns
-the client factory and the parsing," but the literal transport calls live
+[^streaming]: Earlier orientation docs described `reviewer.py` as the "Anthropic
+API client (streaming + tool-use parsing)" — fair shorthand for "owns the client
+factory and the parsing," but imprecise about the transport, which lives
 elsewhere: review is submitted via the *batch* create/retrieve API in `batch.py`
 (no streaming at all), and the only `client.messages.stream(...)` calls in the
-review/coordination path are in `cross_checker.py` and the verifier. Treat
-`reviewer.py` as the shared parsing library that those callers reuse — exactly
-the kind of code-vs-docs drift the audits exist to surface (see [**Ch 16 — Trust
-Under the Microscope**](16_trust_under_the_microscope.md)).
+review/coordination path are in `cross_checker.py` and the verifier. `CLAUDE.md`'s
+source-file map has since been corrected to call `reviewer.py` the "Anthropic
+client factory + `Finding` model + tool-use/JSON parsing"; treat it as the shared
+parsing library those callers reuse — the kind of code-vs-docs drift the audits
+exist to surface (see [**Ch 16 — Trust Under the Microscope**](16_trust_under_the_microscope.md)).
 
 ### The two-path parse, and the salvage net
 

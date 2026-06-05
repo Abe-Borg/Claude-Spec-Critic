@@ -165,6 +165,34 @@ are collected here so a human can decide whether to update the *plan/`CLAUDE.md`
 | m | "How to Use" GUI dialog promises run **resume** | Batch flow is forward-only; no resume entry point | Ch 13 |
 | n | calibration `README.md`: "both [evals] should be green" | `fp_overconfident_numeric_swap` is a deliberate miss → calibration runner exits non-zero by design | Ch 15 footnote |
 
+### Reconciliation update (2026-06)
+
+Several of the `CLAUDE.md` drifts catalogued above have since been fixed directly
+in `CLAUDE.md`, and one (m) was closed in the *code*; the chapter footnotes that
+flagged them were updated to match. Current status:
+
+- **b, c, e, f, g — resolved in `CLAUDE.md`.** The high-level-flow line now reads
+  "sequential after verification"; `triage.py` is labeled "(automatic; needs API
+  key)"; `reviewer.py` is described as the client factory + `Finding` model +
+  tool-use/JSON parsing (not "streaming"); `session.py` is described as the recorder
+  lifecycle helpers (the `TraceSession` naming is gone); and the `docx_fixtures.py`
+  line was corrected to "tests build DOCX inline."
+- **m — closed in code.** A review-batch resume / recovery subsystem now exists
+  (`orchestration/batch_resume.py`, the GUI **Recover batch…** action, and
+  `scripts/recover_batch.py`), so the "How to Use" dialog's resume promise is now
+  kept. Ch 6 and Ch 13 were updated.
+- **a, h, k — counts moved.** The tree now holds **59** `.py` files (49 app + 10
+  `__init__`) after `batch_resume.py`; the suite is **49 test files / ~645 `def
+  test_` functions** (was 26 / ~396 at assembly). Ch 2 and Ch 15 were updated.
+- **d — still accurate, now stated in the docs.** The cross-check model has no
+  `SPEC_CRITIC_*` override (`CROSS_CHECK_MODEL_DEFAULT` is bound directly); `README.md`
+  and `CLAUDE.md` now say so explicitly instead of "all overridable."
+- **i, j, l, n and the `conftest.py` guard (h) — unchanged source-side residue**,
+  still as described above.
+
+The historical record in §1–§2 and §5 is left as-authored; only this status note
+and the affected chapter footnotes were updated.
+
 ---
 
 ## 4. Unresolved issues for a human
@@ -180,7 +208,9 @@ are collected here so a human can decide whether to update the *plan/`CLAUDE.md`
   files" figure and the "all overridable" model-stack claim, the
   `docx_fixtures.py` reference, and the `session.py`/`TraceSession` description
   (items b, c, a, d, g, f above). The chapters already document the correct
-  behavior, so the handbook is safe to read today regardless.
+  behavior, so the handbook is safe to read today regardless. **Update (2026-06):**
+  items b, c, e, f, g have since been applied to `CLAUDE.md`, and the resume gap (m)
+  was closed in code — see the *Reconciliation update* at the end of §3.
 
 - **Open *codebase* work (not handbook issues).** The audits' verify-first /
   fix-first items — Structural P0-1 (surface partial failure in the report/UI),

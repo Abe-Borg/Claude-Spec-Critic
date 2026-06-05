@@ -156,7 +156,7 @@ can take `fake_anthropic` as an argument and reach the builders.
 
 ## The test map
 
-The suite is 26 test files holding roughly 396 test functions.[^count] Read top to
+The suite is 49 test files holding roughly 645 test functions.[^count] Read top to
 bottom they look like a grab bag; grouped by the subsystem they protect, they read
 as a near one-to-one mirror of the invariants catalogued in `CLAUDE.md`. The table
 below maps each cluster to its owning chapter and the contract it locks in.
@@ -325,10 +325,11 @@ threat — an opt-in test that calls the real API and asserts the shape still ma
 it is currently unused, so today the mitigation is "a human notices." That is a genuine,
 acknowledged gap.
 
-This chapter has also surfaced two small instances of documentation outrunning the code,
-which is fitting for a chapter about pinning down truth. `CLAUDE.md` §9 names a
-`tests/fixtures/docx_fixtures.py` that does not exist, and `conftest.py` guards two GUI
-test files that are no longer in the tree. Both are residue of the v3.0.0 trimming — when
+This chapter has also surfaced small instances of docs and code lagging the v3.0.0 trim,
+which is fitting for a chapter about pinning down truth. `CLAUDE.md` §9 used to name a
+`tests/fixtures/docx_fixtures.py` that does not exist (now corrected — tests build DOCX
+inline), while `conftest.py` still guards two GUI test files that are no longer in the
+tree. These were residue of the v3.0.0 trimming — when
 the surgical-edit / auto-apply stack was removed, a wave of tests that existed only to
 guard it went too, and the suite was deliberately pared back to the essentials. The
 docs and a guard or two simply lagged the deletions. The full accounting of that pruning —
@@ -367,7 +368,7 @@ Trust Under the Microscope: The Audits**](16_trust_under_the_microscope.md). And
   free. The suite asserts the latter against faithful fakes of the former.
 - **Hermetic by construction.** A sentinel key injected in `conftest.py`, a network marker that
   is registered but unused, a `tkinter`-aware collection skip, and `--strict-markers` together
-  let the whole suite — 26 files, ~396 tests — run offline in seconds. CI runs only
+  let the whole suite — 49 files, ~645 tests — run offline in seconds. CI runs only
   `python -m pytest`.
 - **Faking the failure shapes is the real value.** `fake_anthropic.py` models truncated,
   fallback, and errored responses (and both the attribute and dict forms) so the resilience
@@ -385,18 +386,18 @@ Trust Under the Microscope: The Audits**](16_trust_under_the_microscope.md). And
 
 ---
 
-[^guifiles]: Verified against the working tree: `tests/` contains 26 `test_*.py` files,
+[^guifiles]: Verified against the working tree: `tests/` contains 49 `test_*.py` files,
     and neither `test_core_regressions.py` nor `test_gui_refactor_modules.py` is among
     them, though `conftest.py`'s `_GUI_DEPENDENT_TESTS` still names both. The skip logic is
     harmless (it ignores files that aren't there) but the reference is stale.
 
-[^docxfixtures]: `CLAUDE.md` §9 lists "In-memory DOCX builders: `tests/fixtures/docx_fixtures.py`,"
+[^docxfixtures]: `CLAUDE.md` §9 used to list "In-memory DOCX builders: `tests/fixtures/docx_fixtures.py`,"
     but no such file exists in the tree and nothing imports it. Tests that need a document build
-    one inline with `python-docx`'s `Document()`. Per the handbook's source-over-docs rule, the
-    code is authoritative here; the `CLAUDE.md` line is drift.
+    one inline with `python-docx`'s `Document()`. Per the handbook's source-over-docs rule the code
+    was authoritative here; `CLAUDE.md` §9 has since been corrected to say tests build DOCX inline.
 
-[^count]: Counted as `def test_` definitions across the 26 files in the working tree
-    (≈396). pytest's collected item count can differ slightly if any test is parametrized,
+[^count]: Counted as `def test_` definitions across the 49 files in the working tree
+    (≈645). pytest's collected item count can differ slightly if any test is parametrized,
     and the figure will move as the suite evolves; treat it as the order of magnitude, not a
     fixed constant. The deliberate reduction from a larger pre-v3.0.0 suite is [**Ch 17**](17_evolution_and_lessons.md)'s story.
 
