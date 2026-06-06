@@ -125,6 +125,12 @@ def env(monkeypatch):
     messagebox-call recorder, and an ``extract_calls`` list so a test can assert
     extraction was (or was not) reached.
     """
+    # ``attach_drawings`` writes ``os.environ["ANTHROPIC_API_KEY"]`` (like the
+    # review / recover flows). Pin it via monkeypatch so that write is reverted
+    # at teardown and can't leak the fake key into later tests (e.g.
+    # test_live_capture's sentinel-key guard).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real-do-not-use")
+
     store = {"ctx": ""}
     monkeypatch.setattr(cc, "get_project_context", lambda app: store["ctx"])
     monkeypatch.setattr(cc, "set_context_text", lambda app, text: store.__setitem__("ctx", text))
@@ -222,6 +228,26 @@ def test_attach_drawings_empty_digest_attaches_nothing(env):
     # the sheet error is still surfaced, plus the "no digest" warning
     assert env.rec_["warning"]
     assert "warning" in env.app.log.kinds()
+    assert "success" not in env.app.log.kinds()
+
+
+def test_attach_drawings_all_sheets_failed_attaches_nothing(env):
+    # The engine returns non-empty combined_text even when every sheet fails
+    # (header + failure blockquotes); a 0/N set must still attach nothing.
+    env.set_picker(["/tmp/M-101.pdf"])
+    env.set_extraction(
+        _Ctx(
+            combined_text="## Sheet 1/1: M-101\n\n> [drawing analysis failed: 401]",
+            sheet_count=1,
+            _ok=0,
+            errors=["M-101: 401 invalid x-api-key"],
+        )
+    )
+
+    cc.attach_drawings(env.app)
+
+    assert env.store_["ctx"] == ""  # nothing attached despite non-empty digest text
+    assert env.rec_["warning"]  # sheet errors surfaced
     assert "success" not in env.app.log.kinds()
 
 

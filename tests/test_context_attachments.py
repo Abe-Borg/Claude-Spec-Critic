@@ -173,6 +173,22 @@ def test_build_drawing_attachment_block_empty_digest_returns_empty():
     assert build_drawing_attachment_block(_FakeCtx(combined_text="")) == ""
 
 
+def test_build_drawing_attachment_block_refuses_failure_only_set():
+    # A fully-failed set still has non-empty combined_text — the engine emits a
+    # header + a per-sheet failure blockquote — but nothing actually digested
+    # (ok_sheet_count == 0), so it must attach nothing, not a wall of failures.
+    ctx = _FakeCtx(
+        combined_text=(
+            "# Drawing Set Context Digest\n\n## Sheet 1/1: M-101\n\n"
+            "> [drawing analysis failed for this sheet: 401 invalid x-api-key]"
+        ),
+        sheet_count=1,
+        _ok=0,
+        errors=["M-101: 401 invalid x-api-key"],
+    )
+    assert build_drawing_attachment_block(ctx) == ""
+
+
 # --------------------------------------------------------------------------- #
 # plan_drawing_attachment
 # --------------------------------------------------------------------------- #
@@ -215,6 +231,20 @@ def test_plan_drawing_attachment_empty_digest_not_attachable():
     assert not plan.attachable
     assert plan.merged_context == "keep me"  # existing context preserved
     assert plan.error_lines == ["only sheet failed"]
+
+
+def test_plan_drawing_attachment_failure_only_set_not_attachable():
+    # combined_text non-empty (failure blockquotes) but ok_sheet_count == 0.
+    ctx = _FakeCtx(
+        combined_text="## Sheet 1/1\n\n> [drawing analysis failed: boom]",
+        sheet_count=1,
+        _ok=0,
+        errors=["boom"],
+    )
+    plan = plan_drawing_attachment("keep me", ctx)
+    assert not plan.has_digest and not plan.attachable
+    assert plan.merged_context == "keep me"  # existing context preserved
+    assert plan.error_lines == ["boom"]
 
 
 def test_plan_drawing_attachment_over_cap_not_attachable():

@@ -50,12 +50,18 @@ class DrawingDigestLike(Protocol):
 def build_drawing_attachment_block(ctx: DrawingDigestLike) -> str:
     """Wrap a drawing digest's combined text as a labeled context attachment.
 
-    Returns ``""`` when the digest is empty (a fully-failed set, or no readable
-    pages) so the caller can refuse to attach nothing rather than splice an
-    empty delimiter pair. The label records how many sheets actually digested
+    Returns ``""`` when nothing usable was digested — either no body text, or a
+    **fully-failed set** (``ok_sheet_count == 0``). The engine's
+    ``combined_text`` is non-empty even when every sheet fails (it still emits a
+    header plus a per-sheet failure blockquote), so the gate is ``ok_sheet_count``
+    — *not* body text alone — to stop an attachment of pure failure messages
+    from being spliced into context (the per-sheet errors surface via the GUI
+    warning instead). The label records how many sheets actually digested
     (``ok``/``total``) so the reviewer can see at a glance whether the set was
     fully read.
     """
+    if ctx.ok_sheet_count <= 0:
+        return ""
     body = (getattr(ctx, "combined_text", "") or "").strip()
     if not body:
         return ""
