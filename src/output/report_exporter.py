@@ -468,6 +468,18 @@ def _summarize_run_diagnostics(
         if warnings:
             extraction_warning_count += 1
 
+    # Specs that carried pending Word "Track Changes" markup. Extraction
+    # resolves these to the Accept-All view (insertions kept, deletions
+    # removed); the advisory tells reviewers the spec was read as accept-all
+    # so they can confirm that is the version they meant to review. This is
+    # informational (the spec WAS reviewed), not a failure — surfaced in its
+    # own calm-amber row/hint, distinct from the red content-loss warning row.
+    # Defensive getattr keeps legacy callers / test doubles at 0.
+    tracked_changes_spec_count = 0
+    for spec in extracted_specs:
+        if getattr(spec, "tracked_changes_detected", False):
+            tracked_changes_spec_count += 1
+
     # Cross-check state: None means cross-check was not requested (or
     # disabled); otherwise the status string is "completed" / "skipped" /
     # "failed". The renderer treats "skipped" / "failed" as the actionable
@@ -514,6 +526,7 @@ def _summarize_run_diagnostics(
         "oldest_cache_age_days": oldest_age_days,
         "demotion_count": demotion_count,
         "extraction_warning_count": extraction_warning_count,
+        "tracked_changes_spec_count": tracked_changes_spec_count,
         "cross_check": cross_check_state,
         "budget_exhausted_count": budget_exhausted_count,
     }
@@ -556,6 +569,7 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
 
     verification_failed = int(summary.get("verification_failed", 0) or 0)
     extraction_warnings = int(summary.get("extraction_warning_count", 0) or 0)
+    tracked_changes_spec_count = int(summary.get("tracked_changes_spec_count", 0) or 0)
     cache_count = int(summary.get("cache_replay_count", 0) or 0)
     oldest_age = summary.get("oldest_cache_age_days")
     cross_check = summary.get("cross_check")
@@ -640,6 +654,20 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             budget_exhausted_count > 0,
         )
     )
+
+    # Specs with pending tracked changes (read as accept-all). Informational,
+    # not a failure — the spec WAS reviewed, just resolved to the Accept-All
+    # view — so the row renders neutral (not the red used for problems) and is
+    # only added when > 0, keeping a clean run's banner byte-identical. The
+    # amber hint below the table explains the resolution.
+    if tracked_changes_spec_count > 0:
+        rows.append(
+            (
+                "Specs with tracked changes (read as accept-all)",
+                str(tracked_changes_spec_count),
+                False,
+            )
+        )
 
     # Cross-spec coordination: surface when the pass ran (or didn't).
     # "skipped" / "failed" are the actionable signals the plan calls out;
@@ -776,6 +804,29 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             f"{budget_str}; re-running a lower-severity finding at a higher "
             "severity grants more headroom (CRITICAL findings already "
             "receive the maximum budget)."
+        )
+        hint_run.font.size = Pt(10)
+        hint_run.font.italic = True
+        hint_run.font.color.rgb = RGBColor(204, 132, 0)
+
+    # --- Tracked-changes advisory ---
+    # Not a failure: the spec WAS reviewed, but as the Accept-All-Changes view
+    # (insertions kept, deletions removed). Rendered in the same calm amber as
+    # the budget hint so it reads as informational, distinct from the failure-
+    # red hints above. Prompts the reviewer to confirm the accept-all view is
+    # the one they intend to review (vs. the pre-redline text).
+    if tracked_changes_spec_count > 0:
+        plural = tracked_changes_spec_count != 1
+        hint_para = doc.add_paragraph()
+        hint_para.paragraph_format.space_before = Pt(6)
+        hint_para.paragraph_format.space_after = Pt(8)
+        hint_run = hint_para.add_run(
+            f"{tracked_changes_spec_count} spec{'s' if plural else ''} contained "
+            f"pending tracked changes (Word 'Track Changes'). "
+            f"{'They were' if plural else 'It was'} reviewed as if all changes "
+            "were accepted — insertions kept, deletions removed — i.e. the text "
+            "that will remain once the redline is accepted. Confirm that is the "
+            "version you intend to review."
         )
         hint_run.font.size = Pt(10)
         hint_run.font.italic = True

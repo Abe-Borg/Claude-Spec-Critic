@@ -34,6 +34,7 @@ from docx import Document
 
 from src.output.report_exporter import (
     _summarize_run_diagnostics,
+    _write_run_diagnostics_banner,
     export_report,
 )
 from src.output.report_status import (
@@ -510,3 +511,82 @@ class TestBannerHighlights:
         shading = self._value_cell_shading_for_label(doc, "Cross-spec coordination")
         assert shading is None
         assert "not analyzed" not in _all_text_from(doc)
+
+
+# ---------------------------------------------------------------------------
+# 6. Tracked-changes advisory (specs read as Accept-All)
+# ---------------------------------------------------------------------------
+
+
+class _SpecStub:
+    def __init__(self, tracked: bool):
+        self.tracked_changes_detected = tracked
+        self.extraction_warnings: list[str] = []
+
+
+class _PipelineWithSpecs:
+    """Minimal pipeline-result double carrying extracted specs."""
+
+    def __init__(self, specs: list[_SpecStub]):
+        self.extracted_specs = specs
+        self.failed_review_specs: list[str] = []
+
+
+class TestTrackedChangesAdvisory:
+    def test_count_reflects_flagged_specs(self):
+        pr = _PipelineWithSpecs([_SpecStub(True), _SpecStub(False), _SpecStub(True)])
+        summary = _findings_to_summary([], pipeline_result=pr)
+        assert summary["tracked_changes_spec_count"] == 2
+
+    def test_count_zero_without_specs(self):
+        summary = _findings_to_summary([])
+        assert summary["tracked_changes_spec_count"] == 0
+
+    def test_row_and_hint_render_when_present(self):
+        pr = _PipelineWithSpecs([_SpecStub(True), _SpecStub(True)])
+        summary = _findings_to_summary([], pipeline_result=pr)
+        doc = Document()
+        _write_run_diagnostics_banner(doc, summary)
+        text = _all_text_from(doc)
+        assert "Specs with tracked changes (read as accept-all)" in text
+        assert "2 specs contained pending tracked changes" in text
+        assert "insertions kept, deletions removed" in text
+
+    def test_singular_pluralization(self):
+        pr = _PipelineWithSpecs([_SpecStub(True)])
+        summary = _findings_to_summary([], pipeline_result=pr)
+        doc = Document()
+        _write_run_diagnostics_banner(doc, summary)
+        text = _all_text_from(doc)
+        assert "1 spec contained pending tracked changes" in text
+        assert "It was reviewed as if all changes were accepted" in text
+
+    def test_advisory_absent_when_zero(self):
+        pr = _PipelineWithSpecs([_SpecStub(False)])
+        summary = _findings_to_summary([], pipeline_result=pr)
+        doc = Document()
+        _write_run_diagnostics_banner(doc, summary)
+        text = _all_text_from(doc)
+        # Row and hint are both gated on count > 0 so a clean run is unchanged.
+        assert "read as accept-all" not in text
+        assert "contained pending tracked changes" not in text
+
+    def test_advisory_value_cell_not_red(self):
+        # Informational, not a failure — the row must not carry the red
+        # problem-shading used by verification-failure / extraction-warning rows.
+        from docx.oxml.ns import qn
+
+        pr = _PipelineWithSpecs([_SpecStub(True)])
+        summary = _findings_to_summary([], pipeline_result=pr)
+        doc = Document()
+        _write_run_diagnostics_banner(doc, summary)
+        for table in doc.tables:
+            for row in table.rows:
+                if len(row.cells) < 2:
+                    continue
+                if row.cells[0].text.strip() == "Specs with tracked changes (read as accept-all)":
+                    tcPr = row.cells[1]._tc.find(qn("w:tcPr"))
+                    shd = None if tcPr is None else tcPr.find(qn("w:shd"))
+                    assert shd is None  # no red highlight on an informational row
+                    return
+        raise AssertionError("tracked-changes advisory row not found")
