@@ -600,10 +600,10 @@ class TestTrackedChangesExtraction:
         assert "old" not in spec.content
         assert spec.tracked_changes_detected is True
 
-    def test_tracked_change_in_footnote_extracted_but_flag_stays_false(self, tmp_path: Path):
-        # Revisions inside the footnotes part are still resolved to accept-all,
-        # but the body-only advisory scan does not trip the flag (documented
-        # limitation).
+    def test_tracked_change_in_footnote_extracted_and_flagged(self, tmp_path: Path):
+        # Revisions inside the footnotes part are resolved to accept-all AND
+        # trip the advisory flag — the body here is clean, so the flag must
+        # come from the note-part scan alone.
         blob = (
             '<?xml version="1.0"?><w:footnotes '
             'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -622,9 +622,12 @@ class TestTrackedChangesExtraction:
         spec = extract_text_from_docx(path)
         assert "[Footnote 1] See 2025 code." in spec.content
         assert "2019" not in spec.content
-        assert spec.tracked_changes_detected is False
+        assert spec.tracked_changes_detected is True
 
     def test_tracked_change_in_header(self, tmp_path: Path):
+        # The P2 scenario: a redline confined to a header (clean body) must
+        # still be resolved to accept-all AND trip the advisory flag, since
+        # headers live in a separate package part outside <w:body>.
         doc = Document()
         doc.add_paragraph("Body.")
         header = doc.sections[0].header
@@ -638,6 +641,23 @@ class TestTrackedChangesExtraction:
         spec = extract_text_from_docx(out)
         assert "[Header] Rev B" in spec.content
         assert "Rev A" not in spec.content
+        assert spec.tracked_changes_detected is True
+
+    def test_tracked_change_in_footer_flagged(self, tmp_path: Path):
+        # Same as the header case, for footers.
+        doc = Document()
+        doc.add_paragraph("Body.")
+        footer = doc.sections[0].footer
+        footer.is_linked_to_previous = False
+        inner = _run("Page ") + _del(_run("old ", tag="w:delText")) + _ins(_run("new"))
+        footer.paragraphs[0]._p.getparent().replace(
+            footer.paragraphs[0]._p, parse_xml(_revision_paragraph(inner))
+        )
+        out = tmp_path / "ftr.docx"
+        doc.save(out)
+        spec = extract_text_from_docx(out)
+        assert "[Footer] Page new" in spec.content
+        assert spec.tracked_changes_detected is True
 
     def test_reconstruction_invariant_holds_with_revisions(self, tmp_path: Path):
         path = _build_docx(

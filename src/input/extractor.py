@@ -71,10 +71,11 @@ class ExtractedSpec:
     # (revision) markup at extraction time. The extracted ``content`` is the
     # Accept-All-Changes view (insertions kept, deletions removed); this flag
     # lets the report advise reviewers that the spec was read as accept-all so
-    # they can confirm that is the version they meant to review. Detected from
-    # the document body only (covers body / tables / text boxes); a revision
-    # confined to a footnote/endnote part is still extracted as accept-all but
-    # does not trip this advisory flag. Defaults False (the common case).
+    # they can confirm that is the version they meant to review. Detected across
+    # every surface the extractor reads — the body (incl. tables and text
+    # boxes), section headers/footers, and footnote/endnote parts — so the
+    # advisory fires even when a redline is confined to a header/footer or note.
+    # Defaults False (the common case).
     tracked_changes_detected: bool = False
 
 
@@ -237,6 +238,22 @@ def _collect_textbox_mappings(body) -> list[ParagraphMapping]:
     return mappings
 
 
+def _find_part_by_content_type(doc_part, content_type: str):
+    """Return the related package part of ``content_type`` (or ``None``).
+
+    Relationship ids are not stable across authoring tools, so footnote /
+    endnote parts are located by their OOXML content type. Shared by the
+    note-extraction path and the tracked-change detector.
+    """
+    for rel in doc_part.rels.values():
+        if rel.is_external:
+            continue
+        target = rel.target_part
+        if getattr(target, "content_type", None) == content_type:
+            return target
+    return None
+
+
 def _collect_note_mappings(
     doc_part,
     *,
@@ -256,14 +273,7 @@ def _collect_note_mappings(
     common case) or unreadable — body text is the primary deliverable and a
     malformed notes part must never sink the whole extraction.
     """
-    note_part = None
-    for rel in doc_part.rels.values():
-        if rel.is_external:
-            continue
-        target = rel.target_part
-        if getattr(target, "content_type", None) == content_type:
-            note_part = target
-            break
+    note_part = _find_part_by_content_type(doc_part, content_type)
     if note_part is None:
         return []
     try:
@@ -418,9 +428,42 @@ def _accept_all_cell_text(cell) -> str:
     return "\n".join(_accept_all_paragraph_text(p._p) for p in cell.paragraphs)
 
 
-def _document_has_tracked_changes(body) -> bool:
-    """True when the document body carries any pending tracked-change markup."""
-    return any(body.find(".//" + tag) is not None for tag in _REVISION_MARKER_TAGS)
+def _element_has_tracked_changes(el) -> bool:
+    """True when ``el`` contains any pending tracked-change markup."""
+    return any(el.find(".//" + tag) is not None for tag in _REVISION_MARKER_TAGS)
+
+
+def _document_has_tracked_changes(doc) -> bool:
+    """True when the document carries pending tracked-change markup on any
+    surface the extractor reads.
+
+    The advisory must mirror extraction coverage so a reviewer is always told
+    when *any* extracted text was resolved to the Accept-All view — not just
+    body text. Revision markup can live in three places the extractor reads:
+    the body (including tables and text boxes, all nested under ``<w:body>``),
+    the section headers/footers, and the footnote/endnote package parts. Header/
+    footer and note parts hang off the document by relationship, so the body
+    scan alone misses a redline confined to them (e.g. a revision note in a
+    page header). Parsing of note parts is defensive — an unreadable part never
+    sinks detection, matching ``_collect_note_mappings``.
+    """
+    if _element_has_tracked_changes(doc.element.body):
+        return True
+    for section in doc.sections:
+        for container in (section.header, section.footer):
+            if any(_element_has_tracked_changes(p._p) for p in container.paragraphs):
+                return True
+    for content_type in (_FOOTNOTES_CONTENT_TYPE, _ENDNOTES_CONTENT_TYPE):
+        note_part = _find_part_by_content_type(doc.part, content_type)
+        if note_part is None:
+            continue
+        try:
+            root = parse_xml(note_part.blob)
+        except Exception:
+            continue
+        if _element_has_tracked_changes(root):
+            return True
+    return False
 
 
 def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
@@ -586,10 +629,11 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     if content_loss_warning is not None:
         extraction_warnings.append(content_loss_warning)
 
-    # The body ``content`` above is the Accept-All-Changes view. Flag whether
-    # any pending revision markup was present so the report can advise the
-    # reviewer the spec was read as accept-all (see ``tracked_changes_detected``).
-    tracked_changes_detected = _document_has_tracked_changes(doc.element.body)
+    # The extracted ``content`` above is the Accept-All-Changes view. Flag
+    # whether any pending revision markup was present on any extracted surface
+    # (body, headers/footers, footnote/endnote parts) so the report can advise
+    # the reviewer the spec was read as accept-all (see ``tracked_changes_detected``).
+    tracked_changes_detected = _document_has_tracked_changes(doc)
 
     return ExtractedSpec(
         filename=filepath.name,
