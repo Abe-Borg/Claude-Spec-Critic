@@ -7,7 +7,6 @@ from docx.opc.exceptions import PackageNotFoundError
 from docx.oxml import parse_xml
 from docx.oxml.ns import qn
 from docx.table import Table as DocxTable
-from docx.text.paragraph import Paragraph
 
 SUPPORTED_EXTENSIONS = {".docx"}
 
@@ -68,6 +67,15 @@ class ExtractedSpec:
     # not the total warning count, so a single spec with multiple
     # warnings still counts as one affected file.
     extraction_warnings: list[str] = field(default_factory=list)
+    # True when the source document contained pending Word "Track Changes"
+    # (revision) markup at extraction time. The extracted ``content`` is the
+    # Accept-All-Changes view (insertions kept, deletions removed); this flag
+    # lets the report advise reviewers that the spec was read as accept-all so
+    # they can confirm that is the version they meant to review. Detected from
+    # the document body only (covers body / tables / text boxes); a revision
+    # confined to a footnote/endnote part is still extracted as accept-all but
+    # does not trip this advisory flag. Defaults False (the common case).
+    tracked_changes_detected: bool = False
 
 
 def _derive_document_id(filename: str) -> str:
@@ -192,7 +200,7 @@ _ENDNOTES_CONTENT_TYPE = (
 _STRUCTURAL_NOTE_TYPES = {"separator", "continuationSeparator", "continuationNotice"}
 
 
-def _collect_textbox_mappings(body, doc) -> list[ParagraphMapping]:
+def _collect_textbox_mappings(body) -> list[ParagraphMapping]:
     """Extract text authored inside drawing / VML text boxes.
 
     Text-box text is stored in ``<w:txbxContent>`` elements nested inside
@@ -210,7 +218,7 @@ def _collect_textbox_mappings(body, doc) -> list[ParagraphMapping]:
     mappings: list[ParagraphMapping] = []
     for box_index, txbx in enumerate(body.findall(".//" + txbx_qn)):
         for para_index, para_el in enumerate(txbx.findall(p_qn)):
-            text = Paragraph(para_el, doc).text.strip()
+            text = _accept_all_paragraph_text(para_el).strip()
             if not text:
                 continue
             mappings.append(
@@ -265,7 +273,6 @@ def _collect_note_mappings(
 
     element_type = label.lower()
     w_p = qn("w:p")
-    w_t = qn("w:t")
     w_id = qn("w:id")
     w_type = qn("w:type")
     mappings: list[ParagraphMapping] = []
@@ -274,9 +281,7 @@ def _collect_note_mappings(
             continue
         note_id = note.get(w_id) or "?"
         for para_index, para_el in enumerate(note.findall(w_p)):
-            text = "".join(
-                t.text for t in para_el.findall(".//" + w_t) if t.text
-            ).strip()
+            text = _accept_all_paragraph_text(para_el).strip()
             if not text:
                 continue
             mappings.append(
@@ -334,6 +339,90 @@ def _append_supplemental_block(
     paragraphs.extend(entry.text for entry in entries)
 
 
+# ---------------------------------------------------------------------------
+# Tracked-changes (revision) handling
+# ---------------------------------------------------------------------------
+#
+# When a reviewer leaves Word's "Track Changes" on, edits are stored as
+# revision markup rather than applied to the text:
+#   * <w:ins> wraps inserted runs (kept when changes are accepted),
+#   * <w:del> wraps deleted runs whose text lives in <w:delText> (removed),
+#   * <w:moveTo> / <w:moveFrom> wrap the destination / source of a move.
+# python-docx's ``Paragraph.text`` selects only direct-child <w:r>/<w:hyperlink>
+# runs and reads only <w:t> (never <w:delText>), so it silently drops BOTH
+# inserted text (nested under <w:ins>) and deleted text — a hybrid that matches
+# neither Word's "Accept All Changes" nor "Reject All Changes" view, and a
+# combined edit (delete "2019", insert "2025") collapses to "Comply with  CBC.".
+# We instead reconstruct the Accept-All view: keep insertions and move
+# destinations, drop deletions and move sources. That is the text that will
+# remain once the redline is accepted — i.e. what will actually be issued —
+# computed in memory without modifying the source file.
+_W_R = qn("w:r")
+_W_HYPERLINK = qn("w:hyperlink")
+_W_INS = qn("w:ins")
+_W_DEL = qn("w:del")
+_W_MOVE_FROM = qn("w:moveFrom")
+_W_MOVE_TO = qn("w:moveTo")
+
+# Revision wrappers whose content survives "Accept All Changes" — the walk
+# descends through these to reach the runs they wrap.
+_ACCEPTED_REVISION_WRAPPERS = frozenset({_W_INS, _W_MOVE_TO})
+
+# Any of these anywhere in the document means a reviewer left tracked changes
+# pending (used only for the report advisory, not for text extraction).
+_REVISION_MARKER_TAGS = (_W_INS, _W_DEL, _W_MOVE_FROM, _W_MOVE_TO)
+
+
+def _collect_accept_all_text(container, parts: list[str]) -> None:
+    """Append the Accept-All run/hyperlink text under ``container`` to ``parts``.
+
+    Mirrors python-docx ``CT_P.text`` (which concatenates the ``.text`` of each
+    direct-child ``<w:r>`` / ``<w:hyperlink>``), with one addition: it descends
+    through *accepted* revision wrappers (``<w:ins>`` / ``<w:moveTo>``) to reach
+    the runs they wrap, and skips ``<w:del>`` / ``<w:moveFrom>`` entirely (those
+    disappear on accept). It deliberately does **not** descend into any other
+    container (``<w:smartTag>``, ``<w:sdt>``, ``<w:pPr>``, …), exactly as
+    python-docx does not — so a document with no revision markup yields output
+    byte-identical to ``Paragraph.text``. Run-level text translation (tabs,
+    breaks, no-break hyphens; ``<w:delText>`` excluded) is handled by
+    ``CT_R.text`` / ``CT_Hyperlink.text``.
+    """
+    for child in container:
+        tag = child.tag
+        if not isinstance(tag, str):
+            continue  # comments / processing instructions carry no run text
+        if tag == _W_R or tag == _W_HYPERLINK:
+            parts.append(child.text or "")
+        elif tag in _ACCEPTED_REVISION_WRAPPERS:
+            _collect_accept_all_text(child, parts)
+
+
+def _accept_all_paragraph_text(p_el) -> str:
+    """Return a paragraph element's text as if all tracked changes were accepted.
+
+    See :func:`_collect_accept_all_text`. For a paragraph with no revision
+    markup this equals python-docx ``Paragraph.text``.
+    """
+    parts: list[str] = []
+    _collect_accept_all_text(p_el, parts)
+    return "".join(parts)
+
+
+def _accept_all_cell_text(cell) -> str:
+    """Accept-All text for a whole table cell.
+
+    Matches python-docx ``_Cell.text`` (its paragraphs joined by newlines, not
+    descending into nested tables) but resolves each paragraph through the
+    revision-aware walk.
+    """
+    return "\n".join(_accept_all_paragraph_text(p._p) for p in cell.paragraphs)
+
+
+def _document_has_tracked_changes(body) -> bool:
+    """True when the document body carries any pending tracked-change markup."""
+    return any(body.find(".//" + tag) is not None for tag in _REVISION_MARKER_TAGS)
+
+
 def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     if not filepath.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
@@ -357,8 +446,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
 
     for body_index, child in enumerate(doc.element.body):
         if child.tag.endswith("}p"):
-            para = Paragraph(child, doc)
-            text = para.text.strip()
+            text = _accept_all_paragraph_text(child).strip()
             if text:
                 paragraphs.append(text)
                 if _is_heading_paragraph(text):
@@ -378,7 +466,11 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         elif child.tag.endswith("}tbl"):
             table = DocxTable(child, doc)
             for row_index, row in enumerate(table.rows):
-                row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                row_text = [
+                    cell_text
+                    for cell in row.cells
+                    if (cell_text := _accept_all_cell_text(cell).strip())
+                ]
                 if row_text:
                     joined_text = " | ".join(row_text)
                     paragraphs.append(joined_text)
@@ -400,7 +492,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     for section_index, section in enumerate(doc.sections):
         for container_name, container in (("header", section.header), ("footer", section.footer)):
             for para_index, para in enumerate(container.paragraphs):
-                text = para.text.strip()
+                text = _accept_all_paragraph_text(para._p).strip()
                 if not text:
                     continue
                 prefixed = f"[{container_name.title()}] {text}"
@@ -434,7 +526,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         delimiter="===== TEXT BOX CONTENT =====",
         delimiter_id="meta:tb",
         container_type="textbox",
-        entries=_collect_textbox_mappings(doc.element.body, doc),
+        entries=_collect_textbox_mappings(doc.element.body),
     )
     _append_supplemental_block(
         paragraphs,
@@ -494,6 +586,11 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     if content_loss_warning is not None:
         extraction_warnings.append(content_loss_warning)
 
+    # The body ``content`` above is the Accept-All-Changes view. Flag whether
+    # any pending revision markup was present so the report can advise the
+    # reviewer the spec was read as accept-all (see ``tracked_changes_detected``).
+    tracked_changes_detected = _document_has_tracked_changes(doc.element.body)
+
     return ExtractedSpec(
         filename=filepath.name,
         content=content,
@@ -503,6 +600,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
         paragraph_map=paragraph_map,
         document_id=_derive_document_id(filepath.name),
         extraction_warnings=extraction_warnings,
+        tracked_changes_detected=tracked_changes_detected,
     )
 
 

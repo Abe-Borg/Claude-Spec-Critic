@@ -31,6 +31,7 @@ from docx.oxml import parse_xml
 from src.input.extractor import (
     _ENDNOTES_CONTENT_TYPE,
     _FOOTNOTES_CONTENT_TYPE,
+    _accept_all_paragraph_text,
     extract_text_from_docx,
 )
 
@@ -73,6 +74,70 @@ def _vml_textbox_paragraph(text: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Tracked-changes (revision) fragment builders
+# ---------------------------------------------------------------------------
+
+_W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+
+def _run(text: str, *, tag: str = "w:t") -> str:
+    """A ``<w:r>`` whose text node is ``tag`` (``w:t`` normally, ``w:delText``
+    for deleted runs)."""
+    return f'<w:r><{tag} xml:space="preserve">{text}</{tag}></w:r>'
+
+
+def _ins(inner: str) -> str:
+    """Wrap runs as a tracked insertion (``<w:ins>``)."""
+    return f'<w:ins w:id="1" w:author="A" w:date="2026-01-01T00:00:00Z">{inner}</w:ins>'
+
+
+def _del(inner: str) -> str:
+    """Wrap runs as a tracked deletion (``<w:del>``); inner runs use ``w:delText``."""
+    return f'<w:del w:id="2" w:author="A" w:date="2026-01-01T00:00:00Z">{inner}</w:del>'
+
+
+def _move_from(inner: str) -> str:
+    """Wrap runs as the source of a tracked move (removed on accept)."""
+    return (
+        '<w:moveFrom w:id="3" w:author="A" w:date="2026-01-01T00:00:00Z" '
+        f'w:name="m1">{inner}</w:moveFrom>'
+    )
+
+
+def _move_to(inner: str) -> str:
+    """Wrap runs as the destination of a tracked move (kept on accept)."""
+    return (
+        '<w:moveTo w:id="4" w:author="A" w:date="2026-01-01T00:00:00Z" '
+        f'w:name="m1">{inner}</w:moveTo>'
+    )
+
+
+def _revision_paragraph(inner: str) -> str:
+    """A body ``<w:p>`` (namespace declared once) holding ``inner`` run/revision XML."""
+    return f"<w:p {_W_NS}>{inner}</w:p>"
+
+
+def _drawingml_textbox_with_runs(inner: str) -> str:
+    """A DrawingML text box whose single inner paragraph holds ``inner`` runs.
+
+    Like :func:`_drawingml_textbox_paragraph` but the caller supplies the run /
+    revision XML, so a text box can carry tracked changes.
+    """
+    return (
+        '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        ' xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"'
+        ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        ' xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        "<w:r><w:drawing><wp:inline><a:graphic>"
+        '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">'
+        "<wps:wsp><wps:txbx><w:txbxContent>"
+        f"<w:p>{inner}</w:p>"
+        "</w:txbxContent></wps:txbx></wps:wsp>"
+        "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"
+    )
+
+
 def _notes_xml(root_tag: str, note_tag: str, real_notes: list[tuple[str, str]]) -> bytes:
     """Build a footnotes/endnotes part body.
 
@@ -107,6 +172,7 @@ def _build_docx(
     tmp_path: Path,
     *,
     body_paras: list[str] | None = None,
+    body_xml: list[str] | None = None,
     textbox_xml: list[str] | None = None,
     footnotes: list[tuple[str, str]] | None = None,
     endnotes: list[tuple[str, str]] | None = None,
@@ -114,10 +180,16 @@ def _build_docx(
     filename: str = "spec.docx",
 ) -> Path:
     """Assemble an in-memory .docx with the requested supplemental content and
-    save it to disk so extraction round-trips through the package layer."""
+    save it to disk so extraction round-trips through the package layer.
+
+    ``body_xml`` appends raw body-level elements (e.g. ``<w:p>`` carrying
+    revision markup) after the plain ``body_paras``.
+    """
     doc = Document()
     for text in body_paras or []:
         doc.add_paragraph(text)
+    for xml in body_xml or []:
+        doc.element.body.append(parse_xml(xml))
     for xml in textbox_xml or []:
         doc.element.body.append(parse_xml(xml))
     if footnotes is not None or footnotes_blob is not None:
@@ -376,3 +448,208 @@ class TestSupplementalInvariants:
             )
         )
         assert with_box.word_count > without.word_count
+
+
+# ---------------------------------------------------------------------------
+# Tracked changes (Word revision markup) → Accept-All view
+# ---------------------------------------------------------------------------
+
+
+class TestAcceptAllParagraphHelper:
+    """Unit tests for the revision-aware paragraph walk."""
+
+    def _text(self, inner: str) -> str:
+        return _accept_all_paragraph_text(parse_xml(_revision_paragraph(inner)))
+
+    def test_insertion_kept(self):
+        assert self._text(_run("a ") + _ins(_run("b ")) + _run("c")) == "a b c"
+
+    def test_deletion_dropped(self):
+        assert self._text(_run("a ") + _del(_run("b ", tag="w:delText")) + _run("c")) == "a c"
+
+    def test_combined_delete_then_insert(self):
+        got = self._text(_run("v") + _del(_run("1", tag="w:delText")) + _ins(_run("2")))
+        assert got == "v2"
+
+    def test_move_from_dropped_move_to_kept(self):
+        assert self._text(_move_from(_run("x")) + _move_to(_run("y"))) == "y"
+
+    def test_insertion_of_deletion_nets_to_empty(self):
+        # An inserted run that was then deleted disappears once both are
+        # accepted (the <w:del> inside the <w:ins> is pruned).
+        assert self._text(_ins(_del(_run("gone", tag="w:delText")))) == ""
+
+    def test_clean_paragraph_matches_plain_text(self):
+        assert self._text(_run("plain only")) == "plain only"
+
+    def test_run_level_tab_and_break_translation(self):
+        # Tab / break translation is delegated to CT_R.text, matching
+        # python-docx Paragraph.text fidelity.
+        got = self._text(_run("a") + "<w:r><w:tab/></w:r>" + _run("b"))
+        assert got == "a\tb"
+
+
+class TestTrackedChangesExtraction:
+    def test_body_insertion_included(self, tmp_path: Path):
+        path = _build_docx(
+            tmp_path,
+            body_xml=[
+                _revision_paragraph(
+                    _run("The duct shall be ")
+                    + _ins(_run("galvanized steel "))
+                    + _run("per spec.")
+                )
+            ],
+        )
+        spec = extract_text_from_docx(path)
+        assert spec.content == "The duct shall be galvanized steel per spec."
+        assert spec.tracked_changes_detected is True
+
+    def test_body_deletion_excluded(self, tmp_path: Path):
+        path = _build_docx(
+            tmp_path,
+            body_xml=[
+                _revision_paragraph(
+                    _run("The pipe shall be ")
+                    + _del(_run("copper ", tag="w:delText"))
+                    + _run("type L.")
+                )
+            ],
+        )
+        spec = extract_text_from_docx(path)
+        assert spec.content == "The pipe shall be type L."
+        assert "copper" not in spec.content
+        assert spec.tracked_changes_detected is True
+
+    def test_combined_edition_change_resolves_to_accept_all(self, tmp_path: Path):
+        # The canonical "delete old year, insert new year" redline that today
+        # collapses to "Comply with  CBC." under plain python-docx.
+        path = _build_docx(
+            tmp_path,
+            body_xml=[
+                _revision_paragraph(
+                    _run("Comply with ")
+                    + _del(_run("2019", tag="w:delText"))
+                    + _ins(_run("2025"))
+                    + _run(" CBC.")
+                )
+            ],
+        )
+        spec = extract_text_from_docx(path)
+        assert spec.content == "Comply with 2025 CBC."
+
+    def test_move_keeps_destination_only(self, tmp_path: Path):
+        # A Word move = moveFrom (source, removed) + moveTo (destination, kept).
+        path = _build_docx(
+            tmp_path,
+            body_xml=[
+                _revision_paragraph(_run("A ") + _move_from(_run("moved clause ")) + _run("B.")),
+                _revision_paragraph(_run("C ") + _move_to(_run("moved clause ")) + _run("D.")),
+            ],
+        )
+        spec = extract_text_from_docx(path)
+        assert spec.content == "A B.\n\nC moved clause D."
+        assert spec.content.count("moved clause") == 1
+
+    def test_fully_deleted_paragraph_is_skipped(self, tmp_path: Path):
+        path = _build_docx(
+            tmp_path,
+            body_paras=["Kept paragraph."],
+            body_xml=[_revision_paragraph(_del(_run("all gone", tag="w:delText")))],
+        )
+        spec = extract_text_from_docx(path)
+        assert spec.content == "Kept paragraph."
+        # The empty (fully-deleted) paragraph contributes nothing to the map.
+        assert all(m.text for m in spec.paragraph_map)
+
+    def test_clean_doc_unchanged_and_flag_false(self, tmp_path: Path):
+        path = _build_docx(tmp_path, body_paras=["Plain one.", "Plain two."])
+        spec = extract_text_from_docx(path)
+        assert spec.content == "Plain one.\n\nPlain two."
+        assert spec.tracked_changes_detected is False
+
+    def test_tracked_change_in_table_cell(self, tmp_path: Path):
+        doc = Document()
+        table = doc.add_table(rows=1, cols=1)
+        cell = table.cell(0, 0)
+        inner = _run("Edition: ") + _del(_run("2019", tag="w:delText")) + _ins(_run("2025"))
+        cell.paragraphs[0]._p.getparent().replace(
+            cell.paragraphs[0]._p, parse_xml(_revision_paragraph(inner))
+        )
+        out = tmp_path / "table.docx"
+        doc.save(out)
+        spec = extract_text_from_docx(out)
+        assert "Edition: 2025" in spec.content
+        assert "2019" not in spec.content
+        assert spec.tracked_changes_detected is True
+
+    def test_tracked_change_in_textbox(self, tmp_path: Path):
+        path = _build_docx(
+            tmp_path,
+            body_paras=["Body."],
+            textbox_xml=[
+                _drawingml_textbox_with_runs(
+                    _run("Note: ")
+                    + _del(_run("old ", tag="w:delText"))
+                    + _ins(_run("new"))
+                )
+            ],
+        )
+        spec = extract_text_from_docx(path)
+        assert "[Text Box] Note: new" in spec.content
+        assert "old" not in spec.content
+        assert spec.tracked_changes_detected is True
+
+    def test_tracked_change_in_footnote_extracted_but_flag_stays_false(self, tmp_path: Path):
+        # Revisions inside the footnotes part are still resolved to accept-all,
+        # but the body-only advisory scan does not trip the flag (documented
+        # limitation).
+        blob = (
+            '<?xml version="1.0"?><w:footnotes '
+            'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:footnote w:type="separator" w:id="-1">'
+            "<w:p><w:r><w:separator/></w:r></w:p></w:footnote>"
+            '<w:footnote w:type="continuationSeparator" w:id="0">'
+            "<w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>"
+            '<w:footnote w:id="1"><w:p>'
+            + _run("See ")
+            + _del(_run("2019", tag="w:delText"))
+            + _ins(_run("2025"))
+            + _run(" code.")
+            + "</w:p></w:footnote></w:footnotes>"
+        ).encode("utf-8")
+        path = _build_docx(tmp_path, body_paras=["Body."], footnotes_blob=blob)
+        spec = extract_text_from_docx(path)
+        assert "[Footnote 1] See 2025 code." in spec.content
+        assert "2019" not in spec.content
+        assert spec.tracked_changes_detected is False
+
+    def test_tracked_change_in_header(self, tmp_path: Path):
+        doc = Document()
+        doc.add_paragraph("Body.")
+        header = doc.sections[0].header
+        header.is_linked_to_previous = False
+        inner = _run("Rev ") + _del(_run("A ", tag="w:delText")) + _ins(_run("B"))
+        header.paragraphs[0]._p.getparent().replace(
+            header.paragraphs[0]._p, parse_xml(_revision_paragraph(inner))
+        )
+        out = tmp_path / "hdr.docx"
+        doc.save(out)
+        spec = extract_text_from_docx(out)
+        assert "[Header] Rev B" in spec.content
+        assert "Rev A" not in spec.content
+
+    def test_reconstruction_invariant_holds_with_revisions(self, tmp_path: Path):
+        path = _build_docx(
+            tmp_path,
+            body_paras=["Intro."],
+            body_xml=[
+                _revision_paragraph(
+                    _run("Use ") + _del(_run("2019", tag="w:delText")) + _ins(_run("2025"))
+                )
+            ],
+            textbox_xml=[_drawingml_textbox_with_runs(_run("Box ") + _ins(_run("added")))],
+        )
+        spec = extract_text_from_docx(path)  # raises if the invariant breaks
+        reconstructed = "\n\n".join(m.text for m in spec.paragraph_map)
+        assert reconstructed == spec.content
