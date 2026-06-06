@@ -39,6 +39,7 @@ src/
 │   ├── gui.py                  # CustomTkinter app shell
 │   ├── widgets.py              # Reusable UI components
 │   ├── about_usage_dialogs.py  # About / API-usage dialogs
+│   ├── context_attachment.py   # Pure (tkinter-free) Project Context merge / token-cap / drawing-digest helpers
 │   └── *_controller.py         # 7 thin bridges between widgets and pipeline
 │                               # (batch, context, diagnostics, file_selection,
 │                               #  report, review_run, token_analysis)
@@ -80,9 +81,19 @@ src/
 
 # Spec input
 ├── input/
-│   ├── extractor.py            # DOCX text extraction (parallelized)
+│   ├── extractor.py            # DOCX spec extraction (parallelized) + context attachments (.docx/.pdf/.md/.txt)
 │   ├── extraction_cache.py     # LRU caches for extraction + API token counts
 │   └── preprocessor.py         # Deterministic local detectors
+
+# Drawings (construction-drawing vision → text digest; feeds Project Context)
+├── drawings/
+│   ├── models.py               # dependency-free SheetRef / ImageTile / RenderedSheet
+│   ├── tiling.py               # dependency-free tile geometry (6×6 clip rects + render zoom)
+│   ├── render.py               # PyMuPDF rasterization — the ONLY module importing PyMuPDF (AGPL-3.0)
+│   ├── digest.py               # one sheet → one Opus 4.8 vision request → structured text
+│   ├── pipeline.py             # orchestration: PDFs → sheets → digests → combined text (DrawingContext)
+│   ├── gui.py                  # standalone CustomTkinter window
+│   └── __main__.py             # `python -m src.drawings` launches the standalone analyzer
 
 # Tracing
 ├── tracing/
@@ -156,6 +167,9 @@ The sidecar (schema v3) emits **one entry per affected file**, not one per findi
 
 ### Prompt-cache breakpoint stability
 The instruction prefix in front of `<spec ` must stay byte-identical across calls so cache breakpoints land in the same place. The `<final_task>` block sits *after* the spec body (and after `<pre_detected>` when alerts fire) for this reason. `prompt_serialization.py` is the single source of truth for escaping wrapper attributes/bodies.
+
+### Project Context attachments & drawing digests (text → all phases)
+Project Context is free-text that ships on **every** review, cross-check, AND verification call, so anything spliced into it makes all phases aware of that content at plain-text cost. Two attachment paths feed it, both owned by `gui/context_controller.py` and both funneling through the pure (tkinter-free, hence unit-testable) helpers in `gui/context_attachment.py` so the delimiter shape and the hard `PROJECT_CONTEXT_MAX_TOKENS` (100k) cap stay identical: (1) **file attachments** — `.docx` / `.pdf` (text extracted) and `.md` / `.txt` (read verbatim) via `input/extractor.extract_context_text`; (2) **drawing digests** — the "Attach Drawings…" button runs the `src/drawings` vision engine (`extract_drawing_context`, one Opus 4.8 vision call per sheet → a text `DrawingContext.combined_text`) on a **worker thread** (the digest is slow — minutes for a large set), then splices the digest in as a labeled attachment. The drawing engine is imported **lazily** (single seam `_run_drawing_extraction`) so the controller stays importable without PyMuPDF and tests can inject a fake `DrawingContext`. Both paths **refuse (never truncate)** a merge that would exceed the cap. This is why the digest is plain text: it rides Project Context into review/cross-check/verification untouched, sidestepping the per-phase image caps (Sonnet 1568px / Opus 2576px) — and is frozen before submission, so the cached prefix stays byte-stable. The standalone analyzer `python -m src.drawings` produces the same digest as a saved `.md` for the file-attach path. **Batch resume is not special-cased** — the digest is Project Context text, already persisted verbatim by `orchestration/batch_resume.py`. Locked in by `tests/test_context_attachments.py` (extraction + pure helpers, hermetic) and `tests/test_drawing_context_integration.py` (threaded attach flow; skips without customtkinter).
 
 ### Token preflight raises (not warns)
 `pipeline._prepare_specs` raises `ValueError` when the exact Anthropic count exceeds `RECOMMENDED_MAX`. Earlier behavior was log-only with cl100k as the only hard gate.
@@ -407,4 +421,4 @@ Hermetic by default — no API key, no network, runs in a few seconds.
 
 ## 10) Dependencies
 
-Python 3.11+. Runtime packages: `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic`. Pinned in `requirements.txt`.
+Python 3.11+. Runtime packages: `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic`, `pymupdf`. Pinned in `requirements.txt`. **`pymupdf` is licensed AGPL-3.0** and is isolated to `src/drawings/render.py` (the only module that imports it) precisely so a commercial distribution can swap it for a permissive backend (e.g. pypdfium2 + Pillow) in one file — see that module's docstring.

@@ -14,6 +14,8 @@ them through references on the app object.
 """
 from __future__ import annotations
 
+import os
+import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -21,14 +23,27 @@ import customtkinter as ctk
 
 from ..input.extractor import CONTEXT_ATTACHMENT_EXTENSIONS, extract_context_text
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
+from .context_attachment import (
+    context_within_token_cap,
+    merge_into_context,
+    plan_drawing_attachment,
+    wrap_attachment,
+)
 from .widgets import COLORS
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
 _CONTEXT_FILETYPES = [
-    ("Documents", "*.docx *.pdf"),
+    ("Documents", "*.docx *.pdf *.md *.txt"),
     ("Word Documents", "*.docx"),
     ("PDF Documents", "*.pdf"),
+    ("Markdown / Text", "*.md *.txt"),
+    ("All Files", "*.*"),
+]
+
+# Drawings are PDFs only — each page is one sheet (see ``src/drawings``).
+_DRAWING_FILETYPES = [
+    ("PDF drawings", "*.pdf"),
     ("All Files", "*.*"),
 ]
 
@@ -115,9 +130,7 @@ def extract_context_attachments(paths: list[Path]) -> tuple[str, list[str]]:
         if not text:
             errors.append(f"{path.name}: no extractable text (scanned PDF?)")
             continue
-        sections.append(
-            f"--- BEGIN ATTACHMENT: {path.name} ---\n{text}\n--- END ATTACHMENT: {path.name} ---"
-        )
+        sections.append(wrap_attachment(path.name, text))
     return ("\n\n".join(sections), errors)
 
 
@@ -164,10 +177,10 @@ def attach_context_files(app, target_textbox=None) -> None:
         existing = get_project_context(app)
     else:
         existing = target_textbox.get("1.0", "end").strip()
-    merged = f"{existing}\n\n{combined}" if existing else combined
+    merged = merge_into_context(existing, combined)
 
-    merged_tokens = count_tokens(merged)
-    if merged_tokens > PROJECT_CONTEXT_MAX_TOKENS:
+    merged_tokens, fits = context_within_token_cap(merged)
+    if not fits:
         messagebox.showerror(
             "Project Context too large",
             f"Attaching these file(s) would push Project Context to "
@@ -181,6 +194,166 @@ def attach_context_files(app, target_textbox=None) -> None:
     else:
         target_textbox.delete("1.0", "end")
         target_textbox.insert("1.0", merged)
+
+
+# ---------------------------------------------------------------------------
+# Attach Drawings… — digest construction-drawing PDFs into Project Context
+# ---------------------------------------------------------------------------
+#
+# The drawing engine reads each sheet with Opus 4.8 vision and emits a TEXT
+# digest (``src/drawings``). Splicing that text into ``project_context`` makes
+# every downstream phase — review, cross-check, verification — drawing-aware at
+# plain-text cost, side-stepping the per-phase image caps. The digest pass is a
+# vision call per sheet (minutes for a large set), so it runs on a worker
+# thread; the engine import is lazy so this controller stays importable without
+# PyMuPDF, and so tests can replace extraction with a fake at the seam below.
+
+
+def _run_drawing_extraction(pdfs, *, progress):
+    """Lazy, single-seam bridge to the drawing engine.
+
+    Isolated here (rather than imported at module top) so ``context_controller``
+    imports without PyMuPDF, and so a test can monkeypatch this one function to
+    return a synthetic ``DrawingContext`` — no rendering, no network, no PyMuPDF.
+    """
+    from ..drawings import extract_drawing_context
+
+    return extract_drawing_context(pdfs, progress=progress)
+
+
+def _spawn(target, args) -> None:
+    """Run ``target(*args)`` on a daemon worker thread.
+
+    A one-line indirection that tests monkeypatch to run synchronously, so the
+    threaded attach flow can be exercised deterministically.
+    """
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def attach_drawings(app) -> None:
+    """Pick drawing PDFs, digest them to text off-thread, and merge into context.
+
+    Restricts the picker to PDFs (each page is one sheet), runs the vision
+    digest on a worker thread with progress marshaled back to the UI, then
+    splices the digest into Project Context as a labeled attachment — refused
+    (never truncated) if it would exceed ``PROJECT_CONTEXT_MAX_TOKENS``. Reuses
+    the app-wide ``is_processing`` busy flag so a review / resume / recover can't
+    start mid-digest, and vice versa.
+    """
+    if getattr(app, "is_processing", False) or getattr(app, "_drawings_busy", False):
+        return
+
+    files = filedialog.askopenfilenames(
+        title="Attach drawing PDFs", filetypes=_DRAWING_FILETYPES
+    )
+    if not files:
+        return
+    paths = [Path(f) for f in files]
+    pdfs = [p for p in paths if p.suffix.lower() == ".pdf"]
+    skipped = [p for p in paths if p.suffix.lower() != ".pdf"]
+    if skipped:
+        messagebox.showwarning(
+            "Unsupported files",
+            "Only .pdf drawings can be analyzed. Skipping:\n"
+            + "\n".join(p.name for p in skipped),
+        )
+    if not pdfs:
+        return
+
+    key = app.api_key_entry.get().strip()
+    if not key:
+        messagebox.showerror(
+            "API key required",
+            "Enter your Anthropic API key, then try again — reading drawings is a "
+            "live vision call.",
+        )
+        return
+    os.environ["ANTHROPIC_API_KEY"] = key
+
+    app._drawings_busy = True
+    app.is_processing = True
+    app.log.log_step(
+        f"Analyzing {len(pdfs)} drawing file(s) — one vision call per sheet; "
+        "this can take a few minutes…"
+    )
+    app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
+    app.progress_bar.set(0)
+    app.progress_bar.configure(mode="determinate")
+
+    _spawn(_drawings_worker, (app, pdfs))
+
+
+def _drawings_worker(app, pdfs) -> None:
+    """Worker-thread body: run extraction, marshal the outcome to the UI."""
+
+    def progress(done, total, label):
+        app.after(0, lambda d=done, t=total, l=label: _on_drawings_progress(app, d, t, l))
+
+    try:
+        ctx = _run_drawing_extraction(pdfs, progress=progress)
+    except Exception as exc:  # noqa: BLE001 - surface any unexpected failure
+        app.after(0, lambda e=str(exc): _on_drawings_error(app, e))
+        return
+    app.after(0, lambda: _apply_drawing_result(app, ctx))
+
+
+def _on_drawings_progress(app, done, total, label) -> None:
+    if total:
+        app.progress_bar.set(done / total)
+    app.log.log(f"[{done}/{total}] {label}", level="muted")
+
+
+def _reset_drawings_ui(app) -> None:
+    app._drawings_busy = False
+    app.is_processing = False
+    try:
+        app.progress_bar.pack_forget()
+    except Exception:  # pragma: no cover - defensive; widget may be torn down
+        pass
+
+
+def _on_drawings_error(app, message) -> None:
+    _reset_drawings_ui(app)
+    app.log.log_error(f"Drawing analysis failed: {message}")
+    messagebox.showerror("Drawing analysis failed", message)
+
+
+def _apply_drawing_result(app, ctx) -> None:
+    """Main-thread completion handler: surface errors, merge under the cap."""
+    _reset_drawings_ui(app)
+    plan = plan_drawing_attachment(get_project_context(app), ctx)
+
+    if plan.error_lines:
+        app.log.log_warning(
+            f"{len(plan.error_lines)} drawing sheet(s) could not be analyzed."
+        )
+        messagebox.showwarning(
+            "Some sheets could not be analyzed",
+            "The digest of the readable sheets will still be attached.\n\n"
+            + "\n".join(plan.error_lines[:12]),
+        )
+
+    if not plan.has_digest:
+        app.log.log_warning("No drawing digest was produced; nothing attached.")
+        return
+
+    if not plan.within_cap:
+        messagebox.showerror(
+            "Project Context too large",
+            f"Attaching this drawing digest would push Project Context to "
+            f"{plan.tokens:,} tokens, exceeding the {PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
+            f"Trim the existing context or attach fewer sheets.",
+        )
+        app.log.log_warning(
+            "Drawing digest not attached — would exceed the Project Context token cap."
+        )
+        return
+
+    set_context_text(app, plan.merged_context)
+    app.log.log_success(
+        f"Attached drawing digest: {ctx.ok_sheet_count}/{ctx.sheet_count} "
+        f"sheet(s) from {ctx.file_count} file(s) ({plan.tokens:,} context tokens)."
+    )
 
 
 def open_context_modal(app) -> None:
