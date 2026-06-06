@@ -169,6 +169,76 @@ def count_tokens(text: str) -> int:
     return len(encoder.encode(text))
 
 
+# ---------------------------------------------------------------------------
+# Image / vision token estimation
+# ---------------------------------------------------------------------------
+#
+# Claude bills an image at approximately ``width * height / 750`` tokens (per
+# the vision docs), after any resize down to the model's native resolution, and
+# clamped to a per-model token cap. The published cost tables match
+# ``ceil(w*h/750)`` with no extra padding, so we mirror that exactly:
+#
+#   * Opus 4.7 / 4.8 (high-resolution): up to 4784 tokens, long edge <= 2576 px.
+#   * Other models (Sonnet 4.6 / Haiku 4.5 / unknown): up to 1568 tokens,
+#     long edge <= 1568 px.
+#
+# These are local *estimates* for budgeting (mirroring the documented formula);
+# the authoritative number is still Anthropic's ``count_tokens`` endpoint, which
+# accepts image/document blocks like any other content.
+
+_IMAGE_TOKEN_DIVISOR = 750
+
+_IMAGE_TOKEN_CAP_HIRES = 4784      # Opus 4.7 / 4.8
+_IMAGE_LONG_EDGE_HIRES = 2576
+_IMAGE_TOKEN_CAP_DEFAULT = 1568    # Sonnet 4.6 / Haiku 4.5 / unknown
+_IMAGE_LONG_EDGE_DEFAULT = 1568
+
+
+def _image_caps_for_model(model: str | None) -> tuple[int, int]:
+    """Return ``(token_cap, long_edge_cap_px)`` for ``model``.
+
+    Reads the Opus high-resolution tier from the api_config whitelist so the
+    capability source of truth stays single. Imported lazily to avoid any
+    import-order coupling at module load.
+    """
+    try:
+        from .api_config import OPUS_MODELS
+
+        if model in OPUS_MODELS:
+            return _IMAGE_TOKEN_CAP_HIRES, _IMAGE_LONG_EDGE_HIRES
+    except Exception:  # pragma: no cover - defensive; fall back to safe default
+        pass
+    return _IMAGE_TOKEN_CAP_DEFAULT, _IMAGE_LONG_EDGE_DEFAULT
+
+
+def estimate_image_tokens(width_px: int, height_px: int, *, model: str | None) -> int:
+    """Estimate the billed token cost of one image of ``width_px x height_px``.
+
+    Mirrors the documented vision pricing: resize down so the long edge fits the
+    model's native resolution (preserving aspect ratio), then ``ceil(w*h/750)``,
+    clamped to the per-model token cap. Returns an integer >= 0.
+    """
+    if width_px <= 0 or height_px <= 0:
+        return 0
+    token_cap, long_edge_cap = _image_caps_for_model(model)
+    w = float(width_px)
+    h = float(height_px)
+    longest = max(w, h)
+    if longest > long_edge_cap:
+        scale = long_edge_cap / longest
+        w *= scale
+        h *= scale
+    tokens = math.ceil((w * h) / _IMAGE_TOKEN_DIVISOR)
+    return min(token_cap, tokens)
+
+
+def estimate_image_tokens_total(
+    sizes: list[tuple[int, int]], *, model: str | None
+) -> int:
+    """Sum :func:`estimate_image_tokens` over a list of ``(width, height)`` sizes."""
+    return sum(estimate_image_tokens(w, h, model=model) for w, h in sizes)
+
+
 def count_tokens_via_api(
     *,
     model: str,
