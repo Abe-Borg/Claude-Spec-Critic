@@ -14,7 +14,7 @@ import hashlib
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,
@@ -23,7 +23,7 @@ from ..core.api_config import (
 )
 from ..core.tokenizer import estimate_image_tokens_total
 from .digest_cache import digest_cache_key
-from .models import RenderedSheet, SheetRef
+from .models import ImageTile, RenderedSheet, SheetRef
 
 # Room for adaptive thinking plus a thorough per-sheet digest; stays at/under the
 # ~16k non-streaming-safe ceiling so a single sheet completes well within the
@@ -90,6 +90,19 @@ def _is_transient_error(exc: Exception) -> bool:
     return name in _CONNECTION_ERROR_NAMES or name in _TIMEOUT_ERROR_NAMES
 
 
+def _error_detail_text(exc: Exception) -> str:
+    """Cleaned, HTML-free, truncated message body for an exception.
+
+    Prefers the SDK error's ``.message`` (the API's ``invalid_request_error``
+    text — e.g. *"...prompt is too long..."* or the 32 MB request-size message)
+    over the noisier ``str(exc)`` repr, then tag-strips, whitespace-collapses,
+    and truncates so a wall of HTML never reaches the UI.
+    """
+    msg = getattr(exc, "message", None)
+    text = msg if isinstance(msg, str) and msg.strip() else str(exc)
+    return " ".join(_HTML_TAG_RE.sub(" ", text).split())[:300]
+
+
 def _clean_error(exc: Exception) -> str:
     """Render a concise, HTML-free error string for ``SheetDigest.error``.
 
@@ -97,14 +110,19 @@ def _clean_error(exc: Exception) -> str:
     canonical phrase and drop the body so the dialog (and the failure blockquote
     inside ``combined_text``) shows ``502 bad gateway (server temporarily
     unavailable — try again)`` rather than a wall of ``<html>…cloudflare…``.
-    Connection / timeout errors get a fixed message; anything else is
-    tag-stripped, whitespace-collapsed, and truncated.
+    A 4xx with no canonical phrase (400/413/…) keeps its API message appended —
+    ``HTTP 400: ...prompt is too long...`` — because a client error is permanent
+    and the *reason* is the actionable part (collapsing it to a bare ``HTTP 400``
+    is exactly what hid the 32 MB request-size failure). Connection / timeout
+    errors get a fixed message; anything else is tag-stripped and truncated.
     """
     status = _error_status(exc)
     if status is not None:
         phrase = _STATUS_PHRASES.get(status)
         if phrase is None:
-            return f"HTTP {status}"
+            base = f"HTTP {status}"
+            detail = _error_detail_text(exc)
+            return f"{base}: {detail}" if detail and detail != base else base
         if status >= 500 or status == 429:
             return f"{status} {phrase} (server temporarily unavailable — try again)"
         return f"{status} {phrase}"
@@ -113,7 +131,7 @@ def _clean_error(exc: Exception) -> str:
         return "connection error (network/API unreachable — try again)"
     if name in _TIMEOUT_ERROR_NAMES:
         return "request timed out — try again"
-    text = " ".join(_HTML_TAG_RE.sub(" ", str(exc)).split())
+    text = _error_detail_text(exc)
     return text[:200] if text else name
 
 
@@ -197,13 +215,21 @@ def _text_block(text: str) -> dict:
     return {"type": "text", "text": text}
 
 
-def build_user_content(sheet: RenderedSheet) -> list[dict]:
+def build_user_content_blocks(
+    sheet: RenderedSheet, image_block: "Callable[[ImageTile], dict]"
+) -> list[dict]:
     """Assemble the user-turn content blocks for one sheet.
 
     Order: framing text -> overview image -> (label + tile image) per tile ->
     final task instruction. Keeping the task instruction last places the bulk of
     the imagery before the question, per the vision/PDF best practice, while the
     per-tile labels give the model a coarse placement frame for each crop.
+
+    ``image_block`` builds the content block for one :class:`ImageTile`, so the
+    inline-base64 transport (the real-time digest) and the Files-API transport
+    (the batch digest, which references each uploaded image by ``file_id`` to
+    keep the request body under the 32 MB Messages-API limit) share one
+    byte-stable prompt shape — only the image source differs.
     """
     blocks: list[dict] = [
         _text_block(
@@ -213,7 +239,7 @@ def build_user_content(sheet: RenderedSheet) -> list[dict]:
             f"high-resolution tiles. Read them together as a single sheet."
         ),
         _text_block("OVERVIEW (entire sheet):"),
-        _image_block(sheet.overview.png_bytes),
+        image_block(sheet.overview),
     ]
     for tile in sheet.tiles:
         blocks.append(
@@ -222,9 +248,49 @@ def build_user_content(sheet: RenderedSheet) -> list[dict]:
                 f"{sheet.rows}x{sheet.cols} ({tile.label}):"
             )
         )
-        blocks.append(_image_block(tile.png_bytes))
+        blocks.append(image_block(tile))
     blocks.append(_text_block(_DIGEST_TASK_INSTRUCTION))
     return blocks
+
+
+def build_user_content(sheet: RenderedSheet) -> list[dict]:
+    """Inline-base64 user content for one sheet (the real-time digest transport).
+
+    Thin wrapper over :func:`build_user_content_blocks` that inlines each image
+    as base64. The batch path uses the same builder with a ``file_id`` image
+    block (see :mod:`src.drawings.file_upload`).
+    """
+    return build_user_content_blocks(sheet, lambda t: _image_block(t.png_bytes))
+
+
+def build_digest_request_params(
+    content: list[dict],
+    *,
+    model: str = REVIEW_MODEL_DEFAULT,
+    max_tokens: int = DEFAULT_DIGEST_MAX_TOKENS,
+    use_thinking: bool = True,
+    effort: str | None = DEFAULT_DIGEST_EFFORT,
+) -> dict[str, Any]:
+    """Build the Messages-API request body for one sheet digest.
+
+    The single source of truth for the digest request shape — used by both the
+    real-time path (:func:`digest_sheet`) and the batch path
+    (:mod:`src.drawings.batch_digest`), so the two can't drift on model /
+    thinking / effort. ``thinking`` and ``output_config`` are attached only when
+    the model supports them (Opus 4.8 supports both; an unknown override
+    silently omits them, never producing an API-rejected request).
+    """
+    params: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": DIGEST_SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": content}],
+    }
+    if use_thinking and model_supports_adaptive_thinking(model):
+        params["thinking"] = {"type": "adaptive"}
+    if effort and model_supports_effort(model):
+        params["output_config"] = {"effort": effort}
+    return params
 
 
 @dataclass
@@ -339,16 +405,13 @@ def digest_sheet(
 
         client = _get_client()
 
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": DIGEST_SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": build_user_content(sheet)}],
-    }
-    if use_thinking and model_supports_adaptive_thinking(model):
-        kwargs["thinking"] = {"type": "adaptive"}
-    if effort and model_supports_effort(model):
-        kwargs["output_config"] = {"effort": effort}
+    kwargs = build_digest_request_params(
+        build_user_content(sheet),
+        model=model,
+        max_tokens=max_tokens,
+        use_thinking=use_thinking,
+        effort=effort,
+    )
 
     attempt = 0
     while True:

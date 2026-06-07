@@ -244,7 +244,7 @@ class DrawingAnalyzerApp(_CTkDnDRoot):
         sheets = len(refs)
         files = len({r.pdf_path for r in refs})
         est = estimate_drawing_set_cost(
-            sheets, file_count=files, model=REVIEW_MODEL_DEFAULT
+            sheets, file_count=files, model=REVIEW_MODEL_DEFAULT, batch=True
         )
         cost = (
             f"~${est.total_cost:,.2f} (est.)"
@@ -274,10 +274,11 @@ class DrawingAnalyzerApp(_CTkDnDRoot):
             )
             return
 
-        # Cost-confirm gate — show the estimated spend before the vision calls.
+        # Cost-confirm gate — show the estimated (batch-rate) spend before the
+        # batch is submitted. Nothing is sent until this is confirmed.
         refs = list_sheets(self._pdfs)
         estimate = estimate_drawing_set_cost(
-            len(refs), file_count=len(self._pdfs), model=REVIEW_MODEL_DEFAULT
+            len(refs), file_count=len(self._pdfs), model=REVIEW_MODEL_DEFAULT, batch=True
         )
         if not messagebox.askyesno(
             "Confirm drawing analysis", format_drawing_cost_prompt(estimate)
@@ -303,6 +304,7 @@ class DrawingAnalyzerApp(_CTkDnDRoot):
                 progress=self._progress_from_thread,
                 use_cache=True,
                 synthesize=True,
+                use_batch=True,
             )
         except Exception as exc:  # noqa: BLE001 - surface any unexpected failure
             self.after(0, lambda e=exc: self._on_error(str(e)))

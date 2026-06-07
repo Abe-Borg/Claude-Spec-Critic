@@ -131,77 +131,30 @@ def _combine(sheets: list[SheetDigest], *, file_count: int, overview: str = "") 
     return "\n".join(lines).strip() + "\n"
 
 
-def extract_drawing_context(
-    pdf_paths: list[Path],
+def _digest_sheets_concurrent(
+    paths: list[Path],
     *,
-    rows: int = tiling.DEFAULT_GRID_ROWS,
-    cols: int = tiling.DEFAULT_GRID_COLS,
-    overlap_frac: float = tiling.DEFAULT_OVERLAP_FRAC,
-    model: str = REVIEW_MODEL_DEFAULT,
-    client: Any = None,
-    max_tokens: int = DEFAULT_DIGEST_MAX_TOKENS,
-    use_thinking: bool = True,
-    effort: str | None = DEFAULT_DIGEST_EFFORT,
-    progress: ProgressCallback | None = None,
-    cache: Any = None,
-    use_cache: bool = False,
-    max_workers: int | None = None,
-    synthesize: bool = False,
-    synthesis_model: str | None = None,
-) -> DrawingContext:
-    """Render and digest every sheet in ``pdf_paths`` into one text context.
+    rows: int,
+    cols: int,
+    overlap_frac: float,
+    client: Any,
+    model: str,
+    max_tokens: int,
+    use_thinking: bool,
+    effort: str | None,
+    cache: Any,
+    progress: ProgressCallback | None,
+    total: int,
+    max_workers: int | None,
+) -> list[SheetDigest]:
+    """Real-time path: render sequentially, digest on a bounded thread pool.
 
-    ``progress`` (if given) is invoked as ``progress(done, total, label)`` as
-    each sheet finishes and once at completion, so a GUI can show "k/n".
-    ``client`` is injectable for tests. Per-sheet failures are captured on the
-    returned :class:`DrawingContext` (``errors`` and the failing sheet's
-    ``SheetDigest.error``); they never abort the run.
-
-    Digest caching is opt-in: pass an explicit ``cache``
-    (:class:`~src.drawings.digest_cache.DigestCache`), or ``use_cache=True`` to
-    use the process-wide persistent cache, so an unchanged sheet on a re-run is
-    served without a new vision call. Left off, the engine behaves exactly as
-    before (hermetic tests never touch the on-disk cache).
-
-    Digests run concurrently on up to ``max_workers`` threads (default
-    :data:`DEFAULT_DIGEST_WORKERS`, or ``SPEC_CRITIC_DRAWING_MAX_WORKERS``);
-    rendering stays sequential. Sheets are reassembled in page order, so the
-    output is independent of completion order. ``max_workers=1`` forces fully
-    sequential processing.
-
-    ``synthesize=True`` runs one extra text-only pass after the digests that
-    reconciles them into a "Drawing Set Overview" (cross-sheet references /
-    conflicts), prepended to ``combined_text`` and exposed on
-    ``DrawingContext.synthesis_text``. It is skipped for <2 readable sheets and
-    falls back to the plain per-sheet digests on failure (the failure is
-    recorded in ``errors``). ``synthesis_model`` overrides the synthesis model.
+    Rendering (PyMuPDF, fast, not thread-safe to share) streams on the calling
+    thread; the slow per-sheet digests run concurrently. ``results`` is filled by
+    page index so the assembled order is deterministic, and at most ``workers``
+    rendered sheets are held in flight, bounding memory on a large set.
     """
-    if cache is None and use_cache:
-        from .digest_cache import get_default_digest_cache
-
-        cache = get_default_digest_cache()
-
-    paths = [Path(p) for p in pdf_paths]
-    refs = list_sheets(paths)
-    total = len(refs)
-    file_count = len({r.pdf_path for r in refs})
-
-    if total == 0:
-        if progress is not None:
-            progress(0, 0, "No sheets found")
-        return DrawingContext(
-            combined_text="",
-            file_count=len(paths),
-            sheet_count=0,
-            errors=["No readable PDF pages found in the selected files."],
-        )
-
     workers = _resolve_workers(max_workers, total)
-
-    # Render sequentially (PyMuPDF, fast, not thread-safe to share) but dispatch
-    # the slow per-sheet digests to a bounded pool. ``results`` is filled by
-    # page index so the assembled order is deterministic; at most ``workers``
-    # rendered sheets are held in flight, bounding memory on a large set.
     results: list[SheetDigest | None] = [None] * total
     completed = 0
 
@@ -240,7 +193,148 @@ def extract_drawing_context(
             _collect_one()
 
     # Every slot is now populated (digest_sheet never raises); order preserved.
-    sheets: list[SheetDigest] = [sd for sd in results if sd is not None]
+    return [sd for sd in results if sd is not None]
+
+
+def _digest_sheets_via_batch(
+    paths: list[Path],
+    *,
+    rows: int,
+    cols: int,
+    overlap_frac: float,
+    client: Any,
+    model: str,
+    max_tokens: int,
+    use_thinking: bool,
+    effort: str | None,
+    cache: Any,
+    progress: ProgressCallback | None,
+    total: int,
+) -> list[SheetDigest]:
+    """Batch path: render-stream → Files-API upload → one Message Batch.
+
+    Imported lazily so the real-time path (and a test that never touches batch)
+    doesn't pull in the batch module. The client is resolved here when not
+    injected, since the upload happens at submit time (the real-time path defers
+    client creation to ``digest_sheet``).
+    """
+    from .batch_digest import collect_drawing_batch, submit_drawing_batch
+
+    if client is None:
+        from ..review.reviewer import _get_client
+
+        client = _get_client()
+
+    def _log(msg: str, level: str = "info") -> None:
+        if progress is not None:
+            progress(total, total, msg)
+
+    batch = submit_drawing_batch(
+        iter_rendered_sheets(paths, rows=rows, cols=cols, overlap_frac=overlap_frac),
+        client=client,
+        model=model,
+        max_tokens=max_tokens,
+        use_thinking=use_thinking,
+        effort=effort,
+        cache=cache,
+        progress=progress,
+        total=total,
+    )
+    return collect_drawing_batch(
+        batch, client=client, cache=cache, progress=progress, on_log=_log
+    )
+
+
+def extract_drawing_context(
+    pdf_paths: list[Path],
+    *,
+    rows: int = tiling.DEFAULT_GRID_ROWS,
+    cols: int = tiling.DEFAULT_GRID_COLS,
+    overlap_frac: float = tiling.DEFAULT_OVERLAP_FRAC,
+    model: str = REVIEW_MODEL_DEFAULT,
+    client: Any = None,
+    max_tokens: int = DEFAULT_DIGEST_MAX_TOKENS,
+    use_thinking: bool = True,
+    effort: str | None = DEFAULT_DIGEST_EFFORT,
+    progress: ProgressCallback | None = None,
+    cache: Any = None,
+    use_cache: bool = False,
+    max_workers: int | None = None,
+    synthesize: bool = False,
+    synthesis_model: str | None = None,
+    use_batch: bool = False,
+) -> DrawingContext:
+    """Render and digest every sheet in ``pdf_paths`` into one text context.
+
+    ``progress`` (if given) is invoked as ``progress(done, total, label)`` as
+    each sheet finishes and once at completion, so a GUI can show "k/n".
+    ``client`` is injectable for tests. Per-sheet failures are captured on the
+    returned :class:`DrawingContext` (``errors`` and the failing sheet's
+    ``SheetDigest.error``); they never abort the run.
+
+    Digest caching is opt-in: pass an explicit ``cache``
+    (:class:`~src.drawings.digest_cache.DigestCache`), or ``use_cache=True`` to
+    use the process-wide persistent cache, so an unchanged sheet on a re-run is
+    served without a new vision call. Left off, the engine behaves exactly as
+    before (hermetic tests never touch the on-disk cache).
+
+    Digests run concurrently on up to ``max_workers`` threads (default
+    :data:`DEFAULT_DIGEST_WORKERS`, or ``SPEC_CRITIC_DRAWING_MAX_WORKERS``);
+    rendering stays sequential. Sheets are reassembled in page order, so the
+    output is independent of completion order. ``max_workers=1`` forces fully
+    sequential processing.
+
+    ``synthesize=True`` runs one extra text-only pass after the digests that
+    reconciles them into a "Drawing Set Overview" (cross-sheet references /
+    conflicts), prepended to ``combined_text`` and exposed on
+    ``DrawingContext.synthesis_text``. It is skipped for <2 readable sheets and
+    falls back to the plain per-sheet digests on failure (the failure is
+    recorded in ``errors``). ``synthesis_model`` overrides the synthesis model.
+
+    ``use_batch=True`` digests every (uncached) sheet through the Message
+    Batches API instead of the per-sheet real-time pool — 50% cheaper, and each
+    sheet's images ride as Files-API ``file_id`` references so no request body
+    approaches the 32 MB Messages-API limit (the failure the inline-base64 path
+    hit on dense sheets). The batch is polled to completion on the calling
+    thread; the cross-sheet synthesis still runs as one synchronous text-only
+    call afterward. Caching, page ordering, and per-sheet error capture behave
+    identically to the real-time path.
+    """
+    if cache is None and use_cache:
+        from .digest_cache import get_default_digest_cache
+
+        cache = get_default_digest_cache()
+
+    paths = [Path(p) for p in pdf_paths]
+    refs = list_sheets(paths)
+    total = len(refs)
+    file_count = len({r.pdf_path for r in refs})
+
+    if total == 0:
+        if progress is not None:
+            progress(0, 0, "No sheets found")
+        return DrawingContext(
+            combined_text="",
+            file_count=len(paths),
+            sheet_count=0,
+            errors=["No readable PDF pages found in the selected files."],
+        )
+
+    if use_batch:
+        sheets = _digest_sheets_via_batch(
+            paths, rows=rows, cols=cols, overlap_frac=overlap_frac,
+            client=client, model=model, max_tokens=max_tokens,
+            use_thinking=use_thinking, effort=effort, cache=cache,
+            progress=progress, total=total,
+        )
+    else:
+        sheets = _digest_sheets_concurrent(
+            paths, rows=rows, cols=cols, overlap_frac=overlap_frac,
+            client=client, model=model, max_tokens=max_tokens,
+            use_thinking=use_thinking, effort=effort, cache=cache,
+            progress=progress, total=total, max_workers=max_workers,
+        )
+
     errors: list[str] = []
     in_tok = out_tok = img_tok = 0
     for sd in sheets:

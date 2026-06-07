@@ -307,17 +307,33 @@ def test_attach_drawings_cost_confirm_cancel_aborts(env):
     assert any("cancel" in str(e).lower() for e in env.app.log.entries)
 
 
-def test_attach_drawings_cost_estimate_none_skips_prompt(env, monkeypatch):
-    # A failed sheet-count (None estimate) must NOT block the run — the worker
-    # surfaces the real error. The confirmation prompt is skipped entirely.
+def test_attach_drawings_confirms_even_when_estimate_none(env, monkeypatch):
+    # A failed sheet-count (None estimate) must STILL gate behind the explicit
+    # confirmation — selecting drawings never silently fires a batch. The gate is
+    # shown with a generic message (estimate is None), and only on confirm does
+    # the run proceed.
     env.set_picker(["/tmp/M-101.pdf"])
     env.set_extraction(_Ctx(combined_text="VAV-3 serves Rm 120"))
     monkeypatch.setattr(cc, "_estimate_drawing_cost", lambda pdfs: None)
 
     cc.attach_drawings(env.app)
 
-    assert env.confirm["calls"] == []  # prompt skipped when estimate is None
-    assert env.calls == [[Path("/tmp/M-101.pdf")]]  # run proceeded anyway
+    assert env.confirm["calls"] == [None]  # gate shown even with no estimate
+    assert env.calls == [[Path("/tmp/M-101.pdf")]]  # run proceeded after confirm
+
+
+def test_attach_drawings_estimate_none_cancel_aborts(env, monkeypatch):
+    # And declining that generic gate aborts before any extraction.
+    env.set_picker(["/tmp/M-101.pdf"])
+    env.set_extraction(_Ctx(combined_text="VAV-3 serves Rm 120"))
+    monkeypatch.setattr(cc, "_estimate_drawing_cost", lambda pdfs: None)
+    env.confirm["return"] = False
+
+    cc.attach_drawings(env.app)
+
+    assert env.confirm["calls"] == [None]
+    assert env.calls == []  # extraction never started
+    assert env.store_["ctx"] == ""
 
 
 def test_attach_drawings_no_selection_is_noop(env):
