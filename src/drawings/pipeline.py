@@ -75,6 +75,10 @@ class DrawingContext:
     total_output_tokens: int = 0
     total_image_token_estimate: int = 0
     errors: list[str] = field(default_factory=list)
+    # The cross-sheet synthesis overview (empty when synthesis was off, skipped
+    # for <2 readable sheets, or failed). When present it is also prepended into
+    # ``combined_text`` as the "Drawing Set Overview" section.
+    synthesis_text: str = ""
 
     @property
     def ok_sheet_count(self) -> int:
@@ -90,8 +94,13 @@ def _sheet_header(index: int, total: int, ref) -> str:
     return f"## Sheet {index}/{total}: {ref.display_label}"
 
 
-def _combine(sheets: list[SheetDigest], *, file_count: int) -> str:
-    """Build the combined digest document from per-sheet results."""
+def _combine(sheets: list[SheetDigest], *, file_count: int, overview: str = "") -> str:
+    """Build the combined digest document from per-sheet results.
+
+    When ``overview`` (the cross-sheet synthesis) is non-empty it is inserted as
+    a "Drawing Set Overview" section right after the intro and before the
+    per-sheet sections, so a reviewer reads the reconciled set picture first.
+    """
     total = len(sheets)
     lines: list[str] = [
         "# Drawing Set Context Digest",
@@ -102,6 +111,13 @@ def _combine(sheets: list[SheetDigest], *, file_count: int) -> str:
         f"show._",
         "",
     ]
+    if overview.strip():
+        lines.append("## Drawing Set Overview (cross-sheet synthesis)")
+        lines.append("")
+        lines.append(overview.strip())
+        lines.append("")
+        lines.append("---")
+        lines.append("")
     for i, sd in enumerate(sheets, start=1):
         lines.append(_sheet_header(i, total, sd.ref))
         lines.append("")
@@ -130,6 +146,8 @@ def extract_drawing_context(
     cache: Any = None,
     use_cache: bool = False,
     max_workers: int | None = None,
+    synthesize: bool = False,
+    synthesis_model: str | None = None,
 ) -> DrawingContext:
     """Render and digest every sheet in ``pdf_paths`` into one text context.
 
@@ -150,6 +168,13 @@ def extract_drawing_context(
     rendering stays sequential. Sheets are reassembled in page order, so the
     output is independent of completion order. ``max_workers=1`` forces fully
     sequential processing.
+
+    ``synthesize=True`` runs one extra text-only pass after the digests that
+    reconciles them into a "Drawing Set Overview" (cross-sheet references /
+    conflicts), prepended to ``combined_text`` and exposed on
+    ``DrawingContext.synthesis_text``. It is skipped for <2 readable sheets and
+    falls back to the plain per-sheet digests on failure (the failure is
+    recorded in ``errors``). ``synthesis_model`` overrides the synthesis model.
     """
     if cache is None and use_cache:
         from .digest_cache import get_default_digest_cache
@@ -230,11 +255,30 @@ def extract_drawing_context(
         if sd.error:
             errors.append(f"{sd.ref.display_label}: {sd.error}")
 
+    # Cross-sheet synthesis (one text-only call after all digests). Skipped for
+    # <2 readable sheets; on failure we keep the per-sheet digests and record
+    # the error rather than losing the whole run.
+    synthesis_text = ""
+    if synthesize:
+        if progress is not None:
+            progress(total, total, "Synthesizing set overview")
+        from .synthesis import MIN_SHEETS_FOR_SYNTHESIS, synthesize_drawing_set
+
+        result = synthesize_drawing_set(sheets, client=client, model=synthesis_model)
+        if result.ok:
+            synthesis_text = result.text
+            # The synthesis call is billed, so its tokens belong in the run total.
+            in_tok += result.input_tokens
+            out_tok += result.output_tokens
+        elif result.error and len([s for s in sheets if s.ok]) >= MIN_SHEETS_FOR_SYNTHESIS:
+            # A genuine failure (not the "too few sheets" skip) is worth surfacing.
+            errors.append(f"Cross-sheet synthesis: {result.error}")
+
     if progress is not None:
         progress(total, total, "Done")
 
     return DrawingContext(
-        combined_text=_combine(sheets, file_count=file_count),
+        combined_text=_combine(sheets, file_count=file_count, overview=synthesis_text),
         sheets=sheets,
         file_count=file_count,
         sheet_count=total,
@@ -242,6 +286,7 @@ def extract_drawing_context(
         total_output_tokens=out_tok,
         total_image_token_estimate=img_tok,
         errors=errors,
+        synthesis_text=synthesis_text,
     )
 
 
