@@ -14,8 +14,8 @@ SUPPORTED_EXTENSIONS = {".docx"}
 # Project-context attachments are reviewed as background reference material
 # (not edited by the spec pipeline), so several read-only formats are accepted
 # in addition to DOCX: PDFs, and plain Markdown / text. The Markdown / text
-# path is what lets a drawing-context digest saved by the standalone analyzer
-# (``python -m src.drawings``) be attached as Project Context.
+# path lets reviewers attach external reference notes — for example a
+# drawing-set digest produced by a separate analysis tool — as Project Context.
 CONTEXT_ATTACHMENT_EXTENSIONS = {".docx", ".pdf", ".md", ".txt"}
 
 
@@ -719,9 +719,10 @@ def _extract_pdf_text(filepath: Path) -> str:
 def _extract_plaintext(filepath: Path) -> str:
     """Read a UTF-8 Markdown / plain-text context attachment verbatim.
 
-    Drawing digests saved by the standalone analyzer (``python -m src.drawings``)
-    are Markdown, and reviewers may keep project notes as ``.txt``; both are
-    reference material spliced into ``project_context`` as-is. Undecodable bytes
+    External reference notes (for example a drawing-set digest produced by a
+    separate analysis tool) are often Markdown, and reviewers may keep project
+    notes as ``.txt``; both are reference material spliced into
+    ``project_context`` as-is. Undecodable bytes
     are replaced rather than raising, so one stray byte never sinks the whole
     attachment (the result is reviewed by a human-readable model, not parsed).
     """

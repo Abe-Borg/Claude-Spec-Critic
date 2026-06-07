@@ -1,10 +1,10 @@
 """Model pricing + request cost estimation (USD).
 
 A small, dependency-free pricing table so the app can show a spend estimate
-before launching an expensive run (e.g. the drawing-analysis cost-confirm
-dialog). Rates are USD per million tokens, current as of 2026-06. Image/vision
-input is billed as ordinary input tokens, so no separate image rate is needed;
-the Batch API bills at 50% of standard, exposed via the ``batch=`` flag.
+before launching an expensive run (e.g. a batch review). Rates are USD per
+million tokens, current as of 2026-06. Image/vision input is billed as ordinary
+input tokens, so no separate image rate is needed; the Batch API bills at 50% of
+standard, exposed via the ``batch=`` flag.
 
 **Rates drift — verify against the published pricing before relying on a figure.**
 Unknown model ids return ``None`` from :func:`price_for` /

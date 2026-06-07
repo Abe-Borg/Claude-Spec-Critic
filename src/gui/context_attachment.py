@@ -6,8 +6,7 @@ environment) so the merge + token-cap + attachment-wrapping logic can be unit
 tested without the GUI stack.
 
 These back the synchronous ``.docx`` / ``.pdf`` / ``.md`` / ``.txt`` file-attach
-flow in :mod:`context_controller`. (The "Analyze Drawings…" flow no longer feeds
-Project Context — it saves its digests to disk via :mod:`drawing_export`.)
+flow in :mod:`context_controller`.
 """
 from __future__ import annotations
 
