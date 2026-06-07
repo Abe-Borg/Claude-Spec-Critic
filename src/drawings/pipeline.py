@@ -153,9 +153,14 @@ def extract_drawing_context(
             cache=cache,
         )
         sheets.append(sd)
-        in_tok += sd.input_tokens
-        out_tok += sd.output_tokens
-        img_tok += sd.image_token_estimate
+        # A cached sheet made no API call, so it costs zero tokens *this run*.
+        # Excluding it keeps the run totals honest — a fully-cached re-run
+        # reports ~0 tokens rather than the original (already-paid) usage that
+        # ``SheetDigest`` still carries as provenance.
+        if not sd.cached:
+            in_tok += sd.input_tokens
+            out_tok += sd.output_tokens
+            img_tok += sd.image_token_estimate
         if sd.error:
             errors.append(f"{sd.ref.display_label}: {sd.error}")
         done += 1

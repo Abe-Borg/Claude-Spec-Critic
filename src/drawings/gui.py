@@ -317,8 +317,10 @@ class DrawingAnalyzerApp(_CTkDnDRoot):
             self.save_btn.configure(state="normal")
 
         ok = ctx.ok_sheet_count
+        cached = ctx.cached_sheet_count
+        cached_note = f" ({cached} from cache)" if cached else ""
         msg = (
-            f"Done — {ok}/{ctx.sheet_count} sheet(s) analyzed · "
+            f"Done — {ok}/{ctx.sheet_count} sheet(s) analyzed{cached_note} · "
             f"input {ctx.total_input_tokens:,} tok, output "
             f"{ctx.total_output_tokens:,} tok"
         )

@@ -343,13 +343,18 @@ def test_pipeline_serves_second_run_from_injected_cache(tmp_path):
 
     ctx1 = extract_drawing_context([path], client=client, rows=2, cols=2, cache=cache)
     assert ctx1.ok_sheet_count == 2 and ctx1.cached_sheet_count == 0
+    assert ctx1.total_input_tokens == 200 and ctx1.total_output_tokens == 40
+    assert ctx1.total_image_token_estimate > 0
     calls_after_first = len(client.messages.calls)
     assert calls_after_first == 2
 
-    # Identical second run: every sheet is served from the cache, no new calls.
+    # Identical second run: every sheet is served from the cache, no new calls
+    # and zero billed tokens reported for the run (the cost was already paid).
     ctx2 = extract_drawing_context([path], client=client, rows=2, cols=2, cache=cache)
     assert ctx2.ok_sheet_count == 2 and ctx2.cached_sheet_count == 2
     assert len(client.messages.calls) == calls_after_first
+    assert ctx2.total_input_tokens == 0 and ctx2.total_output_tokens == 0
+    assert ctx2.total_image_token_estimate == 0
     assert "digest body" in ctx2.combined_text
 
 
