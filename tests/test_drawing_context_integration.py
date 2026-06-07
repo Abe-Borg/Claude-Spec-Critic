@@ -17,6 +17,7 @@ headless-CI case), matching the suite's GUI-test convention.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -287,7 +288,7 @@ def test_attach_drawings_cost_confirm_proceeds(env):
     cc.attach_drawings(env.app)
 
     assert env.confirm["calls"]  # the cost gate was consulted
-    assert env.calls == [["/tmp/M-101.pdf"]]  # and the run proceeded
+    assert env.calls == [[Path("/tmp/M-101.pdf")]]  # and the run proceeded
     assert "VAV-3 serves Rm 120" in env.store_["ctx"]
 
 
@@ -316,7 +317,7 @@ def test_attach_drawings_cost_estimate_none_skips_prompt(env, monkeypatch):
     cc.attach_drawings(env.app)
 
     assert env.confirm["calls"] == []  # prompt skipped when estimate is None
-    assert env.calls == [["/tmp/M-101.pdf"]]  # run proceeded anyway
+    assert env.calls == [[Path("/tmp/M-101.pdf")]]  # run proceeded anyway
 
 
 def test_attach_drawings_no_selection_is_noop(env):
