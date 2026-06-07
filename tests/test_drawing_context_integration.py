@@ -48,6 +48,13 @@ class _Ctx:
         return self._ok
 
 
+@dataclass
+class _Estimate:
+    """Minimal stand-in for ``drawings.cost.DrawingCostEstimate`` (no PyMuPDF)."""
+
+    sheet_count: int = 1
+
+
 class _FakeLog:
     def __init__(self):
         self.entries: list[tuple] = []
@@ -142,6 +149,21 @@ def env(monkeypatch):
     monkeypatch.setattr(cc.messagebox, "showerror", lambda *a, **k: rec["error"].append(a))
     monkeypatch.setattr(cc.messagebox, "showinfo", lambda *a, **k: rec["info"].append(a))
 
+    # Cost-confirm gate seams (W4): stub so the flow never touches real PyMuPDF /
+    # ``list_sheets`` or a real Tk dialog (which crashes headless). Default: a
+    # non-None estimate + an auto-"Yes", so existing flows proceed as before. A
+    # test can flip ``confirm["return"]`` to False or re-stub the estimate.
+    confirm = {"return": True, "calls": []}
+    monkeypatch.setattr(
+        cc, "_estimate_drawing_cost", lambda pdfs: _Estimate(len(pdfs))
+    )
+
+    def _fake_confirm(app, estimate):
+        confirm["calls"].append(estimate)
+        return confirm["return"]
+
+    monkeypatch.setattr(cc, "_confirm_drawing_cost", _fake_confirm)
+
     extract_calls: list = []
 
     class NS:
@@ -168,6 +190,7 @@ def env(monkeypatch):
 
     ns.set_picker = set_picker
     ns.set_extraction = set_extraction
+    ns.confirm = confirm
     return ns
 
 
@@ -254,6 +277,46 @@ def test_attach_drawings_all_sheets_failed_attaches_nothing(env):
     assert title == "No sheets could be analyzed"
     assert "nothing was attached" in body
     assert "readable sheets will still be attached" not in body
+
+
+def test_attach_drawings_cost_confirm_proceeds(env):
+    env.set_picker(["/tmp/M-101.pdf"])
+    env.set_extraction(_Ctx(combined_text="VAV-3 serves Rm 120"))
+    # env.confirm["return"] defaults to True (user clicks "Yes").
+
+    cc.attach_drawings(env.app)
+
+    assert env.confirm["calls"]  # the cost gate was consulted
+    assert env.calls == [["/tmp/M-101.pdf"]]  # and the run proceeded
+    assert "VAV-3 serves Rm 120" in env.store_["ctx"]
+
+
+def test_attach_drawings_cost_confirm_cancel_aborts(env):
+    env.set_picker(["/tmp/M-101.pdf"])
+    env.set_extraction(_Ctx(combined_text="VAV-3 serves Rm 120"))
+    env.confirm["return"] = False  # user clicks "No"
+
+    cc.attach_drawings(env.app)
+
+    assert env.confirm["calls"]  # gate consulted
+    assert env.calls == []  # extraction never started
+    assert env.store_["ctx"] == ""  # nothing attached
+    assert env.app.is_processing is False  # UI never went busy
+    assert env.app._drawings_busy is False
+    assert any("cancel" in str(e).lower() for e in env.app.log.entries)
+
+
+def test_attach_drawings_cost_estimate_none_skips_prompt(env, monkeypatch):
+    # A failed sheet-count (None estimate) must NOT block the run — the worker
+    # surfaces the real error. The confirmation prompt is skipped entirely.
+    env.set_picker(["/tmp/M-101.pdf"])
+    env.set_extraction(_Ctx(combined_text="VAV-3 serves Rm 120"))
+    monkeypatch.setattr(cc, "_estimate_drawing_cost", lambda pdfs: None)
+
+    cc.attach_drawings(env.app)
+
+    assert env.confirm["calls"] == []  # prompt skipped when estimate is None
+    assert env.calls == [["/tmp/M-101.pdf"]]  # run proceeded anyway
 
 
 def test_attach_drawings_no_selection_is_noop(env):

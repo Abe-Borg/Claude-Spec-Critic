@@ -51,10 +51,13 @@ def price_for(model: str) -> ModelPrice | None:
     exact = MODEL_PRICING.get(model)
     if exact is not None:
         return exact
-    # Longest matching prefix wins so e.g. a future "...-4-80" can't shadow.
+    # Only a *delimited* variant resolves to a base price — "claude-opus-4-8-fast"
+    # or a dated "...-4-5-20251001", but NOT a different model whose id merely
+    # starts with a known one (e.g. a future "claude-opus-4-80" must stay
+    # unknown → None, not silently priced as 4.8). Longest match wins.
     best_key = ""
     for key in MODEL_PRICING:
-        if model.startswith(key) and len(key) > len(best_key):
+        if model.startswith(key + "-") and len(key) > len(best_key):
             best_key = key
     return MODEL_PRICING[best_key] if best_key else None
 

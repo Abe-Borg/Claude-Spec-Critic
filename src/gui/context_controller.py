@@ -247,6 +247,8 @@ def _estimate_drawing_cost(pdfs):
         from ..drawings.render import list_sheets
 
         sheets = list_sheets([Path(p) for p in pdfs])
+        if not sheets:
+            return None  # nothing to confirm; the worker will report the empty set
         return estimate_drawing_set_cost(
             len(sheets), file_count=len(pdfs), model=REVIEW_MODEL_DEFAULT
         )

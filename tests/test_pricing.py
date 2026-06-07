@@ -35,9 +35,16 @@ def test_price_for_exact_and_unknown():
 
 
 def test_price_for_resolves_suffixed_variant():
-    # Dated / fast variants resolve to the base model's price.
+    # Dated / fast variants (delimited by "-") resolve to the base model's price.
     assert price_for("claude-haiku-4-5-20251001") == MODEL_PRICING["claude-haiku-4-5"]
     assert price_for("claude-opus-4-8-fast") == MODEL_PRICING[OPUS]
+
+
+def test_price_for_requires_delimiter_not_bare_prefix():
+    # A different model that merely starts with a known id must NOT inherit its
+    # price — only a "-"-delimited variant resolves (Codex P2).
+    assert price_for("claude-opus-4-80") is None
+    assert price_for("claude-opus-4-8x") is None
 
 
 def test_friendly_model_name():
