@@ -287,7 +287,7 @@ class SpecReviewApp(_CTkDnDRoot):
         ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
         ctk.CTkButton(ctx_label_frame, text="Expand", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._open_context_modal).pack(anchor="nw", pady=(4, 0))
         ctk.CTkButton(ctx_label_frame, text="Attach Files…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_context_files).pack(anchor="nw", pady=(4, 0))
-        ctk.CTkButton(ctx_label_frame, text="Attach Drawings…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_drawings).pack(anchor="nw", pady=(4, 0))
+        ctk.CTkButton(ctx_label_frame, text="Analyze Drawings…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_drawings).pack(anchor="nw", pady=(4, 0))
         ctx_field_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ctx_field_frame.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=8)
         ctx_field_frame.columnconfigure(0, weight=1)
