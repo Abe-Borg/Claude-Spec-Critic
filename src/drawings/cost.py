@@ -37,6 +37,7 @@ class DrawingCostEstimate:
     input_tokens: int
     output_tokens: int
     total_cost: float | None  # None when the model's pricing is unknown
+    batch: bool = False  # estimate reflects the 50% Batch-API discount
 
 
 def estimate_drawing_set_cost(
@@ -47,13 +48,17 @@ def estimate_drawing_set_cost(
     rows: int = tiling.DEFAULT_GRID_ROWS,
     cols: int = tiling.DEFAULT_GRID_COLS,
     synthesize: bool = True,
+    batch: bool = False,
 ) -> DrawingCostEstimate:
     """Estimate the cost of digesting ``sheet_count`` sheets.
 
     ``synthesize`` mirrors the run: when on (and ≥2 sheets) it adds the
     text-only cross-sheet pass, whose input is roughly the per-sheet digests fed
     back in. Image tokens are folded into ``input_tokens`` (vision is billed as
-    input).
+    input). ``batch=True`` applies the 50% Message Batches discount to the
+    per-sheet digest spend (the dominant cost); the synthesis pass runs
+    synchronously, but folding it in at the batch rate too keeps the estimate
+    deliberately slightly-high rather than under-stated.
     """
     image_tokens = estimate_image_tokens_for_set(
         sheet_count, rows=rows, cols=cols, model=model
@@ -67,7 +72,9 @@ def estimate_drawing_set_cost(
         input_tokens += digest_output + _ASSUMED_PROMPT_TOKENS_PER_SHEET
         output_tokens += _ASSUMED_SYNTHESIS_OUTPUT_TOKENS
 
-    total_cost = estimate_request_cost(input_tokens, output_tokens, model=model)
+    total_cost = estimate_request_cost(
+        input_tokens, output_tokens, model=model, batch=batch
+    )
     return DrawingCostEstimate(
         sheet_count=sheet_count,
         file_count=file_count,
@@ -76,26 +83,40 @@ def estimate_drawing_set_cost(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_cost=total_cost,
+        batch=batch,
     )
 
 
 def format_drawing_cost_prompt(est: DrawingCostEstimate) -> str:
     """Human-readable confirmation message for the cost-confirm dialog."""
     where = f" from {est.file_count} file(s)" if est.file_count else ""
+    how = (
+        "submitted as one Message Batch (≈50% cheaper than real-time)"
+        if est.batch
+        else "one vision call per sheet"
+    )
     lines = [
         f"About to analyze {est.sheet_count} drawing sheet(s){where} with "
-        f"{friendly_model_name(est.model)} vision — one vision call per sheet.",
+        f"{friendly_model_name(est.model)} vision — {how}.",
         "",
         f"Estimated usage: ~{est.input_tokens:,} input tokens "
         f"(~{est.image_tokens:,} from images) / ~{est.output_tokens:,} output.",
     ]
     if est.total_cost is not None:
+        batch_note = " (Batch rate)" if est.batch else ""
         lines.append(
-            f"Estimated cost: ~${est.total_cost:,.2f} — a rough, slightly-high "
-            "estimate; actual cost varies with sheet complexity, and cached "
-            "sheets cost nothing."
+            f"Estimated cost: ~${est.total_cost:,.2f}{batch_note} — a rough, "
+            "slightly-high estimate; actual cost varies with sheet complexity, "
+            "and cached sheets cost nothing."
         )
     else:
         lines.append("Estimated cost: unavailable for this model.")
+    if est.batch:
+        lines += [
+            "",
+            "Nothing is sent until you confirm. The batch runs in the "
+            "background — usually a few minutes, but it can take up to an hour "
+            "(occasionally longer) before the digest is ready to attach.",
+        ]
     lines += ["", "Proceed with the analysis?"]
     return "\n".join(lines)

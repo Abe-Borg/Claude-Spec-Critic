@@ -125,3 +125,22 @@ def test_format_prompt_unknown_model_says_unavailable():
     msg = format_drawing_cost_prompt(est)
     assert "unavailable" in msg
     assert "Proceed" in msg
+
+
+def test_drawing_estimate_batch_halves_cost():
+    full = estimate_drawing_set_cost(10, file_count=2, model=OPUS, batch=False)
+    batch = estimate_drawing_set_cost(10, file_count=2, model=OPUS, batch=True)
+    # Same token math; only the per-token rate is halved by the Batch discount.
+    assert batch.input_tokens == full.input_tokens
+    assert batch.output_tokens == full.output_tokens
+    assert batch.batch is True and full.batch is False
+    assert batch.total_cost == pytest.approx(full.total_cost * BATCH_DISCOUNT)
+
+
+def test_format_prompt_batch_mode_notes_batch_and_latency():
+    est = estimate_drawing_set_cost(8, file_count=3, model=OPUS, batch=True)
+    msg = format_drawing_cost_prompt(est)
+    assert "8 drawing sheet(s)" in msg
+    assert "Batch" in msg  # names the batch submission + rate
+    assert "Nothing is sent until you confirm" in msg
+    assert "Proceed" in msg

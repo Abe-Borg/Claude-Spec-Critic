@@ -250,7 +250,7 @@ def test_digest_sheet_does_not_retry_permanent_error():
 
     def responder(_kw):
         calls["n"] += 1
-        raise _StatusError(400, "bad request")
+        raise _StatusError(400, "request exceeds the maximum allowed size")
 
     sd = digest_sheet(
         _make_sheet(), client=_FakeClient(responder), model=OPUS,
@@ -259,7 +259,9 @@ def test_digest_sheet_does_not_retry_permanent_error():
 
     assert not sd.ok
     assert calls["n"] == 1            # permanent error => no retry
-    assert sd.error == "HTTP 400"
+    # A 4xx keeps its API message — a bare "HTTP 400" is exactly what hid the
+    # real (request-size) cause that broke the inline-base64 path.
+    assert sd.error == "HTTP 400: request exceeds the maximum allowed size"
 
 
 # --------------------------------------------------------------------------- #

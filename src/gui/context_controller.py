@@ -215,11 +215,16 @@ def _run_drawing_extraction(pdfs, *, progress):
     Isolated here (rather than imported at module top) so ``context_controller``
     imports without PyMuPDF, and so a test can monkeypatch this one function to
     return a synthetic ``DrawingContext`` — no rendering, no network, no PyMuPDF.
+
+    Runs in **batch mode** (``use_batch=True``): each sheet is digested through
+    the Message Batches API (50% cheaper) with its images uploaded via the Files
+    API, which keeps every request body under the 32 MB Messages-API limit that
+    failed the real-time inline-base64 path on dense permit sheets.
     """
     from ..drawings import extract_drawing_context
 
     return extract_drawing_context(
-        pdfs, progress=progress, use_cache=True, synthesize=True
+        pdfs, progress=progress, use_cache=True, synthesize=True, use_batch=True
     )
 
 
@@ -250,19 +255,35 @@ def _estimate_drawing_cost(pdfs):
         if not sheets:
             return None  # nothing to confirm; the worker will report the empty set
         return estimate_drawing_set_cost(
-            len(sheets), file_count=len(pdfs), model=REVIEW_MODEL_DEFAULT
+            len(sheets), file_count=len(pdfs), model=REVIEW_MODEL_DEFAULT, batch=True
         )
     except Exception:  # noqa: BLE001 - estimate is advisory; never block the run
         return None
 
 
 def _confirm_drawing_cost(app, estimate) -> bool:
-    """Ask the operator to confirm the estimated spend. Monkeypatched in tests."""
+    """Ask the operator to confirm before any drawings are sent. Monkeypatched in tests.
+
+    This is the explicit gate: nothing is uploaded or submitted until it returns
+    True. It is **always** shown — when the cost estimate is unavailable
+    (``estimate is None``, e.g. the sheet count couldn't be read), a generic
+    confirmation still gates the run, so selecting drawings never silently fires
+    a batch.
+    """
     from ..drawings.cost import format_drawing_cost_prompt
 
-    return messagebox.askyesno(
-        "Confirm drawing analysis", format_drawing_cost_prompt(estimate)
-    )
+    if estimate is None:
+        message = (
+            "About to analyze the selected drawing(s) as a Message Batch "
+            "(≈50% cheaper than real-time). The exact sheet count and cost "
+            "couldn't be estimated up front.\n\n"
+            "Nothing is sent until you confirm. The batch runs in the "
+            "background and may take a few minutes to an hour before the digest "
+            "is ready to attach.\n\nProceed with the analysis?"
+        )
+    else:
+        message = format_drawing_cost_prompt(estimate)
+    return messagebox.askyesno("Confirm drawing analysis", message)
 
 
 def attach_drawings(app) -> None:
@@ -305,19 +326,20 @@ def attach_drawings(app) -> None:
         return
     os.environ["ANTHROPIC_API_KEY"] = key
 
-    # Cost-confirm gate: estimate the spend and let the operator back out before
-    # any (potentially expensive) vision calls. A None estimate (count failed)
-    # skips the prompt and lets the worker surface the real error.
+    # Explicit gate (always shown): estimate the spend and require the operator
+    # to confirm before anything is uploaded or submitted. Selecting drawings
+    # never auto-fires a batch — the confirm IS the "Analyze" button, and it is
+    # shown even when the cost estimate is unavailable (None).
     estimate = _estimate_drawing_cost(pdfs)
-    if estimate is not None and not _confirm_drawing_cost(app, estimate):
+    if not _confirm_drawing_cost(app, estimate):
         app.log.log("Drawing analysis canceled.", level="muted")
         return
 
     app._drawings_busy = True
     app.is_processing = True
     app.log.log_step(
-        f"Analyzing {len(pdfs)} drawing file(s) — one vision call per sheet; "
-        "this can take a few minutes…"
+        f"Submitting {len(pdfs)} drawing file(s) as a batch (one request per "
+        "sheet, ≈50% cheaper); the digest will attach when the batch finishes…"
     )
     app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
     app.progress_bar.set(0)
@@ -374,14 +396,15 @@ def _apply_drawing_result(app, ctx) -> None:
             title = "Some sheets could not be analyzed"
             intro = "The digest of the readable sheets will still be attached."
         else:
-            # Every sheet failed — nothing attaches, so don't promise it will.
-            # All-failed is almost always a transient API/network blip, so point
-            # the operator at a retry rather than at their PDF.
+            # Every sheet failed — nothing attaches, so don't promise it will,
+            # and don't blanket-blame "a temporary issue": the per-sheet reasons
+            # below now carry the real cause. A 5xx/timeout is transient (retry);
+            # a 4xx (e.g. an oversized request) points at the request itself.
             title = "No sheets could be analyzed"
             intro = (
                 "None of the sheets could be analyzed, so nothing was attached.\n"
-                "This usually means a temporary API or network issue — try again "
-                "in a few minutes."
+                "See the reason for each sheet below — errors marked “try again” "
+                "are transient; others indicate the request itself."
             )
         messagebox.showwarning(title, intro + "\n\n" + "\n".join(plan.error_lines[:12]))
 
