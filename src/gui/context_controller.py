@@ -232,6 +232,37 @@ def _spawn(target, args) -> None:
     threading.Thread(target=target, args=args, daemon=True).start()
 
 
+def _estimate_drawing_cost(pdfs):
+    """Lazy seam: count sheets and estimate the run's cost, or None on failure.
+
+    Counting sheets opens the PDFs (PyMuPDF) but does not render — cheap enough
+    for the main thread. Isolated + lazy so the controller imports without
+    PyMuPDF and tests can monkeypatch it. Returns a ``DrawingCostEstimate`` or
+    None (a failed estimate must not block the run — the worker surfaces the
+    real error).
+    """
+    try:
+        from ..core.api_config import REVIEW_MODEL_DEFAULT
+        from ..drawings.cost import estimate_drawing_set_cost
+        from ..drawings.render import list_sheets
+
+        sheets = list_sheets([Path(p) for p in pdfs])
+        return estimate_drawing_set_cost(
+            len(sheets), file_count=len(pdfs), model=REVIEW_MODEL_DEFAULT
+        )
+    except Exception:  # noqa: BLE001 - estimate is advisory; never block the run
+        return None
+
+
+def _confirm_drawing_cost(app, estimate) -> bool:
+    """Ask the operator to confirm the estimated spend. Monkeypatched in tests."""
+    from ..drawings.cost import format_drawing_cost_prompt
+
+    return messagebox.askyesno(
+        "Confirm drawing analysis", format_drawing_cost_prompt(estimate)
+    )
+
+
 def attach_drawings(app) -> None:
     """Pick drawing PDFs, digest them to text off-thread, and merge into context.
 
@@ -271,6 +302,14 @@ def attach_drawings(app) -> None:
         )
         return
     os.environ["ANTHROPIC_API_KEY"] = key
+
+    # Cost-confirm gate: estimate the spend and let the operator back out before
+    # any (potentially expensive) vision calls. A None estimate (count failed)
+    # skips the prompt and lets the worker surface the real error.
+    estimate = _estimate_drawing_cost(pdfs)
+    if estimate is not None and not _confirm_drawing_cost(app, estimate):
+        app.log.log("Drawing analysis canceled.", level="muted")
+        return
 
     app._drawings_busy = True
     app.is_processing = True
