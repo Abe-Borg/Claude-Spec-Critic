@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from src.core.api_config import REVIEW_MODEL_DEFAULT
-from src.drawings.digest import DIGEST_SYSTEM_PROMPT, SheetDigest
-from src.drawings.models import SheetRef
-from src.drawings.synthesis import (
+from drawing_analyzer.core.api_config import REVIEW_MODEL_DEFAULT
+from drawing_analyzer.digest import DIGEST_SYSTEM_PROMPT, SheetDigest
+from drawing_analyzer.models import SheetRef
+from drawing_analyzer.synthesis import (
     SYNTHESIS_SYSTEM_PROMPT,
     SynthesisResult,
     build_synthesis_user_text,
@@ -50,9 +50,9 @@ class _FakeClient:
 
 
 def test_default_synthesis_model_is_opus(monkeypatch):
-    monkeypatch.delenv("SPEC_CRITIC_DRAWING_SYNTHESIS_MODEL", raising=False)
+    monkeypatch.delenv("DRAWING_ANALYZER_SYNTHESIS_MODEL", raising=False)
     assert default_synthesis_model() == REVIEW_MODEL_DEFAULT  # Opus 4.8
-    monkeypatch.setenv("SPEC_CRITIC_DRAWING_SYNTHESIS_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setenv("DRAWING_ANALYZER_SYNTHESIS_MODEL", "claude-sonnet-4-6")
     assert default_synthesis_model() == "claude-sonnet-4-6"
 
 
@@ -205,7 +205,7 @@ def _routing_client(pymupdf_calls: list):
 
 def test_pipeline_synthesize_prepends_overview(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=2)
     calls: list = []
@@ -225,7 +225,7 @@ def test_pipeline_synthesize_prepends_overview(tmp_path):
 
 def test_pipeline_no_synthesis_by_default(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=2)
     calls: list = []
@@ -240,7 +240,7 @@ def test_pipeline_no_synthesis_by_default(tmp_path):
 
 def test_pipeline_synthesis_failure_falls_back(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=2)
 

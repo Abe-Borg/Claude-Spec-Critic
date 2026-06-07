@@ -66,7 +66,7 @@ def upload_sheet_images(client: Any, sheet: RenderedSheet) -> SheetUpload:
     """Upload a sheet's overview + tiles via the Files API; build file-id content.
 
     Returns the user-turn content blocks (image-by-file_id, identical framing to
-    the base64 path via :func:`~src.drawings.digest.build_user_content_blocks`)
+    the base64 path via :func:`~drawing_analyzer.digest.build_user_content_blocks`)
     plus the uploaded ``file_id``s for cleanup. Raises on an upload failure; the
     caller treats the sheet as failed and deletes any ids already uploaded, so a
     partial upload never leaks files.

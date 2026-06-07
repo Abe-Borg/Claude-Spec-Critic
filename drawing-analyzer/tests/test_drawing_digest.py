@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from src.drawings.digest import (
+from drawing_analyzer.digest import (
     DIGEST_SYSTEM_PROMPT,
     SheetDigest,
     _clean_error,
@@ -20,7 +20,7 @@ from src.drawings.digest import (
     build_user_content,
     digest_sheet,
 )
-from src.drawings.models import ImageTile, RenderedSheet, SheetRef
+from drawing_analyzer.models import ImageTile, RenderedSheet, SheetRef
 from tests.fixtures.fake_anthropic import FakeMessage, FakeTextBlock, FakeUsage
 
 OPUS = "claude-opus-4-8"
@@ -271,7 +271,7 @@ def test_digest_sheet_does_not_retry_permanent_error():
 
 def test_pipeline_combines_per_sheet_digests(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=2)
 
@@ -307,7 +307,7 @@ def test_pipeline_combines_per_sheet_digests(tmp_path):
 
 def test_pipeline_records_per_sheet_error_and_continues(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=2)
 
@@ -337,8 +337,8 @@ def test_pipeline_records_per_sheet_error_and_continues(tmp_path):
 
 def test_pipeline_serves_second_run_from_injected_cache(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.digest_cache import DigestCache
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.digest_cache import DigestCache
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=2)
     client = _FakeClient(
@@ -372,23 +372,23 @@ def test_pipeline_serves_second_run_from_injected_cache(tmp_path):
 
 
 def test_resolve_workers_arg_env_default(monkeypatch):
-    from src.drawings.pipeline import DEFAULT_DIGEST_WORKERS, _resolve_workers
+    from drawing_analyzer.pipeline import DEFAULT_DIGEST_WORKERS, _resolve_workers
 
-    monkeypatch.delenv("SPEC_CRITIC_DRAWING_MAX_WORKERS", raising=False)
+    monkeypatch.delenv("DRAWING_ANALYZER_MAX_WORKERS", raising=False)
     assert _resolve_workers(None, 10) == DEFAULT_DIGEST_WORKERS
     assert _resolve_workers(2, 10) == 2
     assert _resolve_workers(8, 3) == 3       # capped at sheet count
     assert _resolve_workers(0, 10) == 1      # floored at 1
     assert _resolve_workers(5, 0) == 1       # no sheets -> still >= 1
-    monkeypatch.setenv("SPEC_CRITIC_DRAWING_MAX_WORKERS", "6")
+    monkeypatch.setenv("DRAWING_ANALYZER_MAX_WORKERS", "6")
     assert _resolve_workers(None, 10) == 6
-    monkeypatch.setenv("SPEC_CRITIC_DRAWING_MAX_WORKERS", "not-a-number")
+    monkeypatch.setenv("DRAWING_ANALYZER_MAX_WORKERS", "not-a-number")
     assert _resolve_workers(None, 10) == DEFAULT_DIGEST_WORKERS  # bad env -> default
 
 
 def test_pipeline_digests_run_concurrently(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=3)
     # The barrier only releases once all three digests are in flight at the same
@@ -407,7 +407,7 @@ def test_pipeline_digests_run_concurrently(tmp_path):
 
 def test_pipeline_parallel_preserves_page_order(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=5)
     client = _FakeClient(
@@ -425,7 +425,7 @@ def test_pipeline_parallel_preserves_page_order(tmp_path):
 
 def test_pipeline_max_workers_one_processes_all(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=3)
     client = _FakeClient(
@@ -442,7 +442,7 @@ def test_pipeline_max_workers_one_processes_all(tmp_path):
 
 def test_list_sheets_splits_pages(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.render import list_sheets
+    from drawing_analyzer.render import list_sheets
 
     path = _make_pdf(pymupdf, tmp_path / "multi.pdf", pages=3)
     refs = list_sheets([path])

@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from src.drawings.batch_digest import collect_drawing_batch, submit_drawing_batch
-from src.drawings.digest_cache import DigestCache
-from src.drawings.file_upload import FILES_API_BETA, upload_sheet_images
-from src.drawings.models import ImageTile, RenderedSheet, SheetRef
+from drawing_analyzer.batch_digest import collect_drawing_batch, submit_drawing_batch
+from drawing_analyzer.digest_cache import DigestCache
+from drawing_analyzer.file_upload import FILES_API_BETA, upload_sheet_images
+from drawing_analyzer.models import ImageTile, RenderedSheet, SheetRef
 from tests.fixtures.fake_anthropic import (
     FakeBatchResult,
     FakeBatchResultEnvelope,
@@ -396,7 +396,7 @@ def test_batch_detach_marks_sheets_and_leaves_files():
 
 def test_pipeline_use_batch_combines_digests(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
-    from src.drawings.pipeline import extract_drawing_context
+    from drawing_analyzer.pipeline import extract_drawing_context
 
     doc = pymupdf.open()
     for i in range(2):

@@ -1,10 +1,10 @@
 """Batch-mode per-sheet drawing digest via the Message Batches API.
 
-The real-time path (:func:`src.drawings.digest.digest_sheet`) sends one
+The real-time path (:func:`drawing_analyzer.digest.digest_sheet`) sends one
 synchronous vision request per sheet. This path instead submits all *uncached*
 sheets as a single Message Batch — 50% cheaper per Anthropic's batch pricing —
 and references each sheet's images by Files-API ``file_id`` (see
-:mod:`src.drawings.file_upload`) so no per-item body approaches the 32 MB
+:mod:`drawing_analyzer.file_upload`) so no per-item body approaches the 32 MB
 Messages-API request limit that broke the inline-base64 path on dense sheets.
 
 Flow::
@@ -26,9 +26,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ..core.api_config import REVIEW_MODEL_DEFAULT
-from ..core.tokenizer import estimate_image_tokens_total
-from ..tracing import capture_hooks as _trace
+from .core.api_config import REVIEW_MODEL_DEFAULT
+from .core.tokenizer import estimate_image_tokens_total
+from . import tracing as _trace
 from .digest import (
     DEFAULT_DIGEST_EFFORT,
     DEFAULT_DIGEST_MAX_TOKENS,

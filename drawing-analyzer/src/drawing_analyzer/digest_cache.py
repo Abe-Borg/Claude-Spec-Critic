@@ -38,19 +38,19 @@ def _env_truthy(value: str | None, *, default: bool) -> bool:
 def default_cache_path() -> Path:
     """On-disk digest-cache location.
 
-    Overridable via ``SPEC_CRITIC_DRAWING_CACHE_PATH`` (``~`` and ``$VAR``
-    expanded); defaults to ``~/.spec_critic/drawing_digest_cache.json``,
+    Overridable via ``DRAWING_ANALYZER_CACHE_PATH`` (``~`` and ``$VAR``
+    expanded); defaults to ``~/.drawing_analyzer/drawing_digest_cache.json``,
     alongside the verification cache.
     """
-    override = os.environ.get("SPEC_CRITIC_DRAWING_CACHE_PATH")
+    override = os.environ.get("DRAWING_ANALYZER_CACHE_PATH")
     if override and override.strip():
         return Path(os.path.expandvars(os.path.expanduser(override.strip())))
-    return Path.home() / ".spec_critic" / "drawing_digest_cache.json"
+    return Path.home() / ".drawing_analyzer" / "drawing_digest_cache.json"
 
 
 def persistence_enabled() -> bool:
     """Whether the default digest cache persists to disk (default on)."""
-    return _env_truthy(os.environ.get("SPEC_CRITIC_DRAWING_CACHE_PERSIST"), default=True)
+    return _env_truthy(os.environ.get("DRAWING_ANALYZER_CACHE_PERSIST"), default=True)
 
 
 def digest_cache_key(

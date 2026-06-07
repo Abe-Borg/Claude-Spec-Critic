@@ -1,11 +1,8 @@
 """Project Context attachment tests: Markdown / text extraction + the pure
 (tkinter-free) merge / token-cap / attachment-wrapping helpers.
 
-These run fully hermetically — no tkinter, no PyMuPDF, no network — because
-``src.gui.context_attachment`` deliberately imports only the tokenizer. The
-drawing flow no longer feeds Project Context (it saves digests to disk); that
-export is covered by ``test_drawing_export.py`` and the GUI wiring by
-``test_drawing_context_integration.py`` (which skips without customtkinter).
+These run fully hermetically — no tkinter, no network — because
+``src.gui.context_attachment`` deliberately imports only the tokenizer.
 """
 from __future__ import annotations
 

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..core.api_config import REVIEW_MODEL_DEFAULT
-from ..core.pricing import estimate_request_cost, friendly_model_name
+from .core.api_config import REVIEW_MODEL_DEFAULT
+from .core.pricing import estimate_request_cost, friendly_model_name
 from . import tiling
 from .pipeline import estimate_image_tokens_for_set
 

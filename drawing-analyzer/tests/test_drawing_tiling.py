@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.drawings import tiling
+from drawing_analyzer import tiling
 
 # E-size sheet in PDF points (landscape 44"x34" * 72 pt/in).
 E_W = 44 * 72

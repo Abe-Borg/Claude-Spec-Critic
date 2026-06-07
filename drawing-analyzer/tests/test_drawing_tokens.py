@@ -6,7 +6,7 @@ per-model token cap.
 """
 from __future__ import annotations
 
-from src.core.tokenizer import estimate_image_tokens, estimate_image_tokens_total
+from drawing_analyzer.core.tokenizer import estimate_image_tokens, estimate_image_tokens_total
 
 OPUS = "claude-opus-4-8"
 SONNET = "claude-sonnet-4-6"

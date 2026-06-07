@@ -73,7 +73,6 @@ from src.gui.batch_controller import (
 )
 from src.gui.context_controller import (
     attach_context_files,
-    attach_drawings,
     context_focus_in,
     context_focus_out,
     do_context_change,
@@ -140,7 +139,6 @@ class SpecReviewApp(_CTkDnDRoot):
         self.configure(fg_color=COLORS["bg_dark"])
         self.input_dir = None
         self.is_processing = False
-        self._drawings_busy = False
         self._project_context_tokens = 0
         self._batch_submission: Optional[BatchSubmission] = None
         self._run_epoch = 0
@@ -287,7 +285,6 @@ class SpecReviewApp(_CTkDnDRoot):
         ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
         ctk.CTkButton(ctx_label_frame, text="Expand", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._open_context_modal).pack(anchor="nw", pady=(4, 0))
         ctk.CTkButton(ctx_label_frame, text="Attach Files…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_context_files).pack(anchor="nw", pady=(4, 0))
-        ctk.CTkButton(ctx_label_frame, text="Analyze Drawings…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_drawings).pack(anchor="nw", pady=(4, 0))
         ctx_field_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ctx_field_frame.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=8)
         ctx_field_frame.columnconfigure(0, weight=1)
@@ -459,9 +456,6 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _attach_context_files(self, target_textbox=None) -> None:
         attach_context_files(self, target_textbox)
-
-    def _attach_drawings(self) -> None:
-        attach_drawings(self)
 
     def _open_context_modal(self):
         open_context_modal(self)

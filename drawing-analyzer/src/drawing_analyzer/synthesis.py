@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from ..core.api_config import (
+from .core.api_config import (
     REVIEW_MODEL_DEFAULT,
     model_supports_adaptive_thinking,
     model_supports_effort,
@@ -44,8 +44,8 @@ MIN_SHEETS_FOR_SYNTHESIS = 2
 
 def default_synthesis_model() -> str:
     """Model for the synthesis pass — Opus 4.8 by default (best coordination
-    reasoning), overridable via ``SPEC_CRITIC_DRAWING_SYNTHESIS_MODEL``."""
-    override = os.environ.get("SPEC_CRITIC_DRAWING_SYNTHESIS_MODEL")
+    reasoning), overridable via ``DRAWING_ANALYZER_SYNTHESIS_MODEL``."""
+    override = os.environ.get("DRAWING_ANALYZER_SYNTHESIS_MODEL")
     if override and override.strip():
         return override.strip()
     return REVIEW_MODEL_DEFAULT
@@ -152,7 +152,7 @@ def synthesize_drawing_set(
         )
 
     if client is None:
-        from ..review.reviewer import _get_client
+        from .client import get_client as _get_client
 
         client = _get_client()
 

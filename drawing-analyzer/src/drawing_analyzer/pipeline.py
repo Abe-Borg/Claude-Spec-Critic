@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from ..core.api_config import REVIEW_MODEL_DEFAULT
-from ..core.tokenizer import estimate_image_tokens
+from .core.api_config import REVIEW_MODEL_DEFAULT
+from .core.tokenizer import estimate_image_tokens
 from . import tiling
 from .digest import (
     DEFAULT_DIGEST_EFFORT,
@@ -40,7 +40,7 @@ ProgressCallback = Callable[[int, int, str], None]
 # in flight cut wall-clock sharply; kept modest so a large set doesn't trip rate
 # limits (transient 429/5xx are retried per-sheet anyway — see digest.py).
 # Override per-call via ``max_workers=`` or globally via
-# ``SPEC_CRITIC_DRAWING_MAX_WORKERS``.
+# ``DRAWING_ANALYZER_MAX_WORKERS``.
 DEFAULT_DIGEST_WORKERS = 4
 
 
@@ -52,7 +52,7 @@ def _resolve_workers(max_workers: int | None, total: int) -> int:
     value falls back to the default rather than raising.
     """
     if max_workers is None:
-        env = os.environ.get("SPEC_CRITIC_DRAWING_MAX_WORKERS")
+        env = os.environ.get("DRAWING_ANALYZER_MAX_WORKERS")
         if env and env.strip():
             try:
                 max_workers = int(env.strip())
@@ -221,7 +221,7 @@ def _digest_sheets_via_batch(
     from .batch_digest import collect_drawing_batch, submit_drawing_batch
 
     if client is None:
-        from ..review.reviewer import _get_client
+        from .client import get_client as _get_client
 
         client = _get_client()
 
@@ -273,13 +273,13 @@ def extract_drawing_context(
     ``SheetDigest.error``); they never abort the run.
 
     Digest caching is opt-in: pass an explicit ``cache``
-    (:class:`~src.drawings.digest_cache.DigestCache`), or ``use_cache=True`` to
+    (:class:`~drawing_analyzer.digest_cache.DigestCache`), or ``use_cache=True`` to
     use the process-wide persistent cache, so an unchanged sheet on a re-run is
     served without a new vision call. Left off, the engine behaves exactly as
     before (hermetic tests never touch the on-disk cache).
 
     Digests run concurrently on up to ``max_workers`` threads (default
-    :data:`DEFAULT_DIGEST_WORKERS`, or ``SPEC_CRITIC_DRAWING_MAX_WORKERS``);
+    :data:`DEFAULT_DIGEST_WORKERS`, or ``DRAWING_ANALYZER_MAX_WORKERS``);
     rendering stays sequential. Sheets are reassembled in page order, so the
     output is independent of completion order. ``max_workers=1`` forces fully
     sequential processing.

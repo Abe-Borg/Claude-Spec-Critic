@@ -6,7 +6,7 @@ which can be saved to a ``.md`` file for use as Project Context in the spec
 reviewer. Runs the analysis on a worker thread so the UI stays responsive, and
 reuses the main app's color palette for a consistent look.
 
-Launch with ``python -m src.drawings``.
+Launch with ``python -m drawing_analyzer``.
 """
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ if TkinterDnD is not None:
 else:  # pragma: no cover - exercised only without tkinterdnd2
     _CTkDnDRoot = ctk.CTk
 
-from ..core.api_config import REVIEW_MODEL_DEFAULT
-from ..core.api_key_store import load_api_key_from_file
-from ..gui.widgets import COLORS
+from .core.api_config import REVIEW_MODEL_DEFAULT
+from .core.api_key_store import load_api_key_from_file
+from .colors import COLORS
 from .cost import estimate_drawing_set_cost, format_drawing_cost_prompt
 from .pipeline import DrawingContext, extract_drawing_context
 from .render import list_sheets

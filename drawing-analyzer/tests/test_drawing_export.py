@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from src.gui import drawing_export as dx
+from drawing_analyzer import export as dx
 
 SRC = "Weld_County_Mechanical_Permit_Set.pdf"
 NOW = datetime(2026, 6, 7, 7, 2, 0)

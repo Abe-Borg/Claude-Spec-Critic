@@ -9,14 +9,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.drawings.digest import DIGEST_PROMPT_VERSION, digest_sheet
-from src.drawings.digest_cache import (
+from drawing_analyzer.digest import DIGEST_PROMPT_VERSION, digest_sheet
+from drawing_analyzer.digest_cache import (
     DigestCache,
     default_cache_path,
     digest_cache_key,
     persistence_enabled,
 )
-from src.drawings.models import ImageTile, RenderedSheet, SheetRef
+from drawing_analyzer.models import ImageTile, RenderedSheet, SheetRef
 from tests.fixtures.fake_anthropic import FakeMessage, FakeTextBlock, FakeUsage
 
 OPUS = "claude-opus-4-8"
@@ -131,14 +131,14 @@ def test_cache_wrong_schema_ignored(tmp_path):
 
 
 def test_default_cache_path_env_override(monkeypatch, tmp_path):
-    monkeypatch.setenv("SPEC_CRITIC_DRAWING_CACHE_PATH", str(tmp_path / "custom.json"))
+    monkeypatch.setenv("DRAWING_ANALYZER_CACHE_PATH", str(tmp_path / "custom.json"))
     assert default_cache_path() == tmp_path / "custom.json"
 
 
 def test_persistence_toggle(monkeypatch):
-    monkeypatch.setenv("SPEC_CRITIC_DRAWING_CACHE_PERSIST", "off")
+    monkeypatch.setenv("DRAWING_ANALYZER_CACHE_PERSIST", "off")
     assert persistence_enabled() is False
-    monkeypatch.setenv("SPEC_CRITIC_DRAWING_CACHE_PERSIST", "1")
+    monkeypatch.setenv("DRAWING_ANALYZER_CACHE_PERSIST", "1")
     assert persistence_enabled() is True
 
 

@@ -16,12 +16,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..core.api_config import (
+from .core.api_config import (
     REVIEW_MODEL_DEFAULT,
     model_supports_adaptive_thinking,
     model_supports_effort,
 )
-from ..core.tokenizer import estimate_image_tokens_total
+from .core.tokenizer import estimate_image_tokens_total
 from .digest_cache import digest_cache_key
 from .models import ImageTile, RenderedSheet, SheetRef
 
@@ -258,7 +258,7 @@ def build_user_content(sheet: RenderedSheet) -> list[dict]:
 
     Thin wrapper over :func:`build_user_content_blocks` that inlines each image
     as base64. The batch path uses the same builder with a ``file_id`` image
-    block (see :mod:`src.drawings.file_upload`).
+    block (see :mod:`drawing_analyzer.file_upload`).
     """
     return build_user_content_blocks(sheet, lambda t: _image_block(t.png_bytes))
 
@@ -275,7 +275,7 @@ def build_digest_request_params(
 
     The single source of truth for the digest request shape — used by both the
     real-time path (:func:`digest_sheet`) and the batch path
-    (:mod:`src.drawings.batch_digest`), so the two can't drift on model /
+    (:mod:`drawing_analyzer.batch_digest`), so the two can't drift on model /
     thinking / effort. ``thinking`` and ``output_config`` are attached only when
     the model supports them (Opus 4.8 supports both; an unknown override
     silently omits them, never producing an API-rejected request).
@@ -369,7 +369,7 @@ def digest_sheet(
     re-attempted up to ``max_retries`` times with exponential backoff (``sleep``
     is injectable so tests don't wait); a permanent failure returns immediately.
 
-    ``cache`` (a :class:`~src.drawings.digest_cache.DigestCache`, or ``None`` to
+    ``cache`` (a :class:`~drawing_analyzer.digest_cache.DigestCache`, or ``None`` to
     disable) is consulted before the API call and written only on a successful,
     non-empty digest — so an unchanged sheet on a re-run is served from cache
     with ``cached=True`` and no token cost. The key folds in the rendered images,
@@ -401,7 +401,7 @@ def digest_sheet(
             )
 
     if client is None:
-        from ..review.reviewer import _get_client
+        from .client import get_client as _get_client
 
         client = _get_client()
 
