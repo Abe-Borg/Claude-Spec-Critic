@@ -33,11 +33,8 @@ else:  # pragma: no cover - exercised only without tkinterdnd2
 from ..core.api_config import REVIEW_MODEL_DEFAULT
 from ..core.api_key_store import load_api_key_from_file
 from ..gui.widgets import COLORS
-from .pipeline import (
-    DrawingContext,
-    estimate_image_tokens_for_set,
-    extract_drawing_context,
-)
+from .cost import estimate_drawing_set_cost, format_drawing_cost_prompt
+from .pipeline import DrawingContext, extract_drawing_context
 from .render import list_sheets
 
 _PDF_FILETYPES = [("PDF drawings", "*.pdf"), ("All files", "*.*")]
@@ -246,11 +243,18 @@ class DrawingAnalyzerApp(_CTkDnDRoot):
         refs = list_sheets(self._pdfs)
         sheets = len(refs)
         files = len({r.pdf_path for r in refs})
-        est = estimate_image_tokens_for_set(sheets, model=REVIEW_MODEL_DEFAULT)
+        est = estimate_drawing_set_cost(
+            sheets, file_count=files, model=REVIEW_MODEL_DEFAULT
+        )
+        cost = (
+            f"~${est.total_cost:,.2f} (est.)"
+            if est.total_cost is not None
+            else "cost n/a"
+        )
         self.summary_label.configure(
             text=(
                 f"{files} file(s), {sheets} sheet(s)  ·  "
-                f"~{est:,} image tokens (est., upper bound)"
+                f"~{est.image_tokens:,} image tokens  ·  {cost}"
             )
         )
 
@@ -268,6 +272,16 @@ class DrawingAnalyzerApp(_CTkDnDRoot):
                 "No ANTHROPIC_API_KEY is set. Set the environment variable or "
                 "save a key file, then reopen this window.",
             )
+            return
+
+        # Cost-confirm gate — show the estimated spend before the vision calls.
+        refs = list_sheets(self._pdfs)
+        estimate = estimate_drawing_set_cost(
+            len(refs), file_count=len(self._pdfs), model=REVIEW_MODEL_DEFAULT
+        )
+        if not messagebox.askyesno(
+            "Confirm drawing analysis", format_drawing_cost_prompt(estimate)
+        ):
             return
 
         self._busy = True
