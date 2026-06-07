@@ -49,6 +49,11 @@ class DrawingContext:
     def ok_sheet_count(self) -> int:
         return sum(1 for s in self.sheets if s.ok)
 
+    @property
+    def cached_sheet_count(self) -> int:
+        """Sheets served from the digest cache (no API call / token cost)."""
+        return sum(1 for s in self.sheets if getattr(s, "cached", False))
+
 
 def _sheet_header(index: int, total: int, ref) -> str:
     return f"## Sheet {index}/{total}: {ref.display_label}"
@@ -91,6 +96,8 @@ def extract_drawing_context(
     use_thinking: bool = True,
     effort: str | None = DEFAULT_DIGEST_EFFORT,
     progress: ProgressCallback | None = None,
+    cache: Any = None,
+    use_cache: bool = False,
 ) -> DrawingContext:
     """Render and digest every sheet in ``pdf_paths`` into one text context.
 
@@ -99,7 +106,18 @@ def extract_drawing_context(
     is injectable for tests. Per-sheet failures are captured on the returned
     :class:`DrawingContext` (``errors`` and the failing sheet's
     ``SheetDigest.error``); they never abort the run.
+
+    Digest caching is opt-in: pass an explicit ``cache``
+    (:class:`~src.drawings.digest_cache.DigestCache`), or ``use_cache=True`` to
+    use the process-wide persistent cache, so an unchanged sheet on a re-run is
+    served without a new vision call. Left off, the engine behaves exactly as
+    before (hermetic tests never touch the on-disk cache).
     """
+    if cache is None and use_cache:
+        from .digest_cache import get_default_digest_cache
+
+        cache = get_default_digest_cache()
+
     paths = [Path(p) for p in pdf_paths]
     refs = list_sheets(paths)
     total = len(refs)
@@ -132,11 +150,17 @@ def extract_drawing_context(
             max_tokens=max_tokens,
             use_thinking=use_thinking,
             effort=effort,
+            cache=cache,
         )
         sheets.append(sd)
-        in_tok += sd.input_tokens
-        out_tok += sd.output_tokens
-        img_tok += sd.image_token_estimate
+        # A cached sheet made no API call, so it costs zero tokens *this run*.
+        # Excluding it keeps the run totals honest — a fully-cached re-run
+        # reports ~0 tokens rather than the original (already-paid) usage that
+        # ``SheetDigest`` still carries as provenance.
+        if not sd.cached:
+            in_tok += sd.input_tokens
+            out_tok += sd.output_tokens
+            img_tok += sd.image_token_estimate
         if sd.error:
             errors.append(f"{sd.ref.display_label}: {sd.error}")
         done += 1

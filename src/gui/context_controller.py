@@ -218,7 +218,7 @@ def _run_drawing_extraction(pdfs, *, progress):
     """
     from ..drawings import extract_drawing_context
 
-    return extract_drawing_context(pdfs, progress=progress)
+    return extract_drawing_context(pdfs, progress=progress, use_cache=True)
 
 
 def _spawn(target, args) -> None:

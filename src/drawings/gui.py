@@ -287,6 +287,7 @@ class DrawingAnalyzerApp(_CTkDnDRoot):
                 pdfs,
                 model=REVIEW_MODEL_DEFAULT,
                 progress=self._progress_from_thread,
+                use_cache=True,
             )
         except Exception as exc:  # noqa: BLE001 - surface any unexpected failure
             self.after(0, lambda e=exc: self._on_error(str(e)))
@@ -316,8 +317,10 @@ class DrawingAnalyzerApp(_CTkDnDRoot):
             self.save_btn.configure(state="normal")
 
         ok = ctx.ok_sheet_count
+        cached = ctx.cached_sheet_count
+        cached_note = f" ({cached} from cache)" if cached else ""
         msg = (
-            f"Done — {ok}/{ctx.sheet_count} sheet(s) analyzed · "
+            f"Done — {ok}/{ctx.sheet_count} sheet(s) analyzed{cached_note} · "
             f"input {ctx.total_input_tokens:,} tok, output "
             f"{ctx.total_output_tokens:,} tok"
         )
