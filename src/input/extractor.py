@@ -1,4 +1,5 @@
-"""Text extraction module for Spec Critic (DOCX-only)."""
+"""Text extraction for Spec Critic specs (DOCX) and Project Context
+attachments (DOCX / PDF / Markdown / plain text)."""
 
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -11,8 +12,11 @@ from docx.table import Table as DocxTable
 SUPPORTED_EXTENSIONS = {".docx"}
 
 # Project-context attachments are reviewed as background reference material
-# (not edited by the spec pipeline), so PDFs are accepted in addition to DOCX.
-CONTEXT_ATTACHMENT_EXTENSIONS = {".docx", ".pdf"}
+# (not edited by the spec pipeline), so several read-only formats are accepted
+# in addition to DOCX: PDFs, and plain Markdown / text. The Markdown / text
+# path is what lets a drawing-context digest saved by the standalone analyzer
+# (``python -m src.drawings``) be attached as Project Context.
+CONTEXT_ATTACHMENT_EXTENSIONS = {".docx", ".pdf", ".md", ".txt"}
 
 
 @dataclass
@@ -712,12 +716,25 @@ def _extract_pdf_text(filepath: Path) -> str:
     return "\n\n".join(pages)
 
 
-def extract_context_text(filepath: Path) -> str:
-    """Extract plain text from a Project Context attachment (.docx or .pdf).
+def _extract_plaintext(filepath: Path) -> str:
+    """Read a UTF-8 Markdown / plain-text context attachment verbatim.
 
-    Returns a plain string suitable for splicing into the project_context
-    prompt block. Unlike ``extract_text``, this does not build a paragraph
-    map — the result is reference material, not an editable spec.
+    Drawing digests saved by the standalone analyzer (``python -m src.drawings``)
+    are Markdown, and reviewers may keep project notes as ``.txt``; both are
+    reference material spliced into ``project_context`` as-is. Undecodable bytes
+    are replaced rather than raising, so one stray byte never sinks the whole
+    attachment (the result is reviewed by a human-readable model, not parsed).
+    """
+    return filepath.read_text(encoding="utf-8", errors="replace")
+
+
+def extract_context_text(filepath: Path) -> str:
+    """Extract plain text from a Project Context attachment.
+
+    Accepts ``.docx`` / ``.pdf`` (text extracted) and ``.md`` / ``.txt`` (read
+    verbatim). Returns a plain string suitable for splicing into the
+    project_context prompt block. Unlike ``extract_text``, this does not build a
+    paragraph map — the result is reference material, not an editable spec.
     """
     filepath = Path(filepath)
     if not filepath.exists():
@@ -727,6 +744,8 @@ def extract_context_text(filepath: Path) -> str:
         return extract_text_from_docx(filepath).content
     if ext == ".pdf":
         return _extract_pdf_text(filepath)
+    if ext in {".md", ".txt"}:
+        return _extract_plaintext(filepath)
     raise ValueError(
         f"Unsupported context attachment format: '{ext}'. "
         f"Supported: {', '.join(sorted(CONTEXT_ATTACHMENT_EXTENSIONS))}"
