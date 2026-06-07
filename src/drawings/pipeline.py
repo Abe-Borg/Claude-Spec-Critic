@@ -49,6 +49,11 @@ class DrawingContext:
     def ok_sheet_count(self) -> int:
         return sum(1 for s in self.sheets if s.ok)
 
+    @property
+    def cached_sheet_count(self) -> int:
+        """Sheets served from the digest cache (no API call / token cost)."""
+        return sum(1 for s in self.sheets if getattr(s, "cached", False))
+
 
 def _sheet_header(index: int, total: int, ref) -> str:
     return f"## Sheet {index}/{total}: {ref.display_label}"
@@ -91,6 +96,8 @@ def extract_drawing_context(
     use_thinking: bool = True,
     effort: str | None = DEFAULT_DIGEST_EFFORT,
     progress: ProgressCallback | None = None,
+    cache: Any = None,
+    use_cache: bool = False,
 ) -> DrawingContext:
     """Render and digest every sheet in ``pdf_paths`` into one text context.
 
@@ -99,7 +106,18 @@ def extract_drawing_context(
     is injectable for tests. Per-sheet failures are captured on the returned
     :class:`DrawingContext` (``errors`` and the failing sheet's
     ``SheetDigest.error``); they never abort the run.
+
+    Digest caching is opt-in: pass an explicit ``cache``
+    (:class:`~src.drawings.digest_cache.DigestCache`), or ``use_cache=True`` to
+    use the process-wide persistent cache, so an unchanged sheet on a re-run is
+    served without a new vision call. Left off, the engine behaves exactly as
+    before (hermetic tests never touch the on-disk cache).
     """
+    if cache is None and use_cache:
+        from .digest_cache import get_default_digest_cache
+
+        cache = get_default_digest_cache()
+
     paths = [Path(p) for p in pdf_paths]
     refs = list_sheets(paths)
     total = len(refs)
@@ -132,6 +150,7 @@ def extract_drawing_context(
             max_tokens=max_tokens,
             use_thinking=use_thinking,
             effort=effort,
+            cache=cache,
         )
         sheets.append(sd)
         in_tok += sd.input_tokens
