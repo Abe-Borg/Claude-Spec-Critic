@@ -26,9 +26,9 @@ from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from .context_attachment import (
     context_within_token_cap,
     merge_into_context,
-    plan_drawing_attachment,
     wrap_attachment,
 )
+from .drawing_export import write_drawing_export
 from .widgets import COLORS
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
@@ -197,16 +197,20 @@ def attach_context_files(app, target_textbox=None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Attach Drawings… — digest construction-drawing PDFs into Project Context
+# Analyze Drawings… — digest construction-drawing PDFs and SAVE them to disk
 # ---------------------------------------------------------------------------
 #
 # The drawing engine reads each sheet with Opus 4.8 vision and emits a TEXT
-# digest (``src/drawings``). Splicing that text into ``project_context`` makes
-# every downstream phase — review, cross-check, verification — drawing-aware at
-# plain-text cost, side-stepping the per-phase image caps. The digest pass is a
-# vision call per sheet (minutes for a large set), so it runs on a worker
-# thread; the engine import is lazy so this controller stays importable without
-# PyMuPDF, and so tests can replace extraction with a fake at the seam below.
+# digest (``src/drawings``): one digest per sheet plus an optional cross-sheet
+# synthesis. This flow writes all of it to a folder the operator chooses (see
+# ``drawing_export``) — per-sheet digests, the synthesis, the combined document,
+# and an index — and deliberately does NOT splice anything into Project Context.
+# Analyzing the drawings and feeding the spec review are decoupled: the operator
+# keeps the artifacts and decides separately what (if anything) to attach. The
+# digest pass is a vision call per sheet (minutes for a large set), so it runs on
+# a worker thread; the engine import is lazy so this controller stays importable
+# without PyMuPDF, and so tests can replace extraction with a fake at the seam
+# below.
 
 
 def _run_drawing_extraction(pdfs, *, progress):
@@ -287,14 +291,15 @@ def _confirm_drawing_cost(app, estimate) -> bool:
 
 
 def attach_drawings(app) -> None:
-    """Pick drawing PDFs, digest them to text off-thread, and merge into context.
+    """Pick drawing PDFs, digest them to text off-thread, and save them to disk.
 
     Restricts the picker to PDFs (each page is one sheet), runs the vision
-    digest on a worker thread with progress marshaled back to the UI, then
-    splices the digest into Project Context as a labeled attachment — refused
-    (never truncated) if it would exceed ``PROJECT_CONTEXT_MAX_TOKENS``. Reuses
-    the app-wide ``is_processing`` busy flag so a review / resume / recover can't
-    start mid-digest, and vice versa.
+    digest on a worker thread with progress marshaled back to the UI, then (in
+    :func:`_apply_drawing_result`) asks where to save and writes every artifact —
+    per-sheet digests, the cross-sheet synthesis, the combined document, and an
+    index. Project Context is left untouched; analyzing drawings and feeding the
+    spec review are decoupled. Reuses the app-wide ``is_processing`` busy flag so
+    a review / resume / recover can't start mid-digest, and vice versa.
     """
     if getattr(app, "is_processing", False) or getattr(app, "_drawings_busy", False):
         return
@@ -339,7 +344,8 @@ def attach_drawings(app) -> None:
     app.is_processing = True
     app.log.log_step(
         f"Submitting {len(pdfs)} drawing file(s) as a batch (one request per "
-        "sheet, ≈50% cheaper); the digest will attach when the batch finishes…"
+        "sheet, ≈50% cheaper); you'll choose where to save the digests when the "
+        "batch finishes…"
     )
     app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
     app.progress_bar.set(0)
@@ -359,7 +365,7 @@ def _drawings_worker(app, pdfs) -> None:
     except Exception as exc:  # noqa: BLE001 - surface any unexpected failure
         app.after(0, lambda e=str(exc): _on_drawings_error(app, e))
         return
-    app.after(0, lambda: _apply_drawing_result(app, ctx))
+    app.after(0, lambda: _apply_drawing_result(app, ctx, pdfs))
 
 
 def _on_drawings_progress(app, done, total, label) -> None:
@@ -383,52 +389,67 @@ def _on_drawings_error(app, message) -> None:
     messagebox.showerror("Drawing analysis failed", message)
 
 
-def _apply_drawing_result(app, ctx) -> None:
-    """Main-thread completion handler: surface errors, merge under the cap."""
+def _apply_drawing_result(app, ctx, pdfs) -> None:
+    """Main-thread completion handler: surface errors, then save artifacts to disk.
+
+    The digest is NOT spliced into Project Context — analysis and the review are
+    decoupled. When at least one sheet was read, ask where to save and write the
+    whole set (per-sheet digests incl. the failed ones, the synthesis, the
+    combined document, and an index) via :func:`drawing_export.write_drawing_export`.
+    """
     _reset_drawings_ui(app)
-    plan = plan_drawing_attachment(get_project_context(app), ctx)
 
-    if plan.error_lines:
-        app.log.log_warning(
-            f"{len(plan.error_lines)} drawing sheet(s) could not be analyzed."
-        )
-        if plan.has_digest:
-            title = "Some sheets could not be analyzed"
-            intro = "The digest of the readable sheets will still be attached."
-        else:
-            # Every sheet failed — nothing attaches, so don't promise it will,
-            # and don't blanket-blame "a temporary issue": the per-sheet reasons
-            # below now carry the real cause. A 5xx/timeout is transient (retry);
-            # a 4xx (e.g. an oversized request) points at the request itself.
-            title = "No sheets could be analyzed"
-            intro = (
-                "None of the sheets could be analyzed, so nothing was attached.\n"
-                "See the reason for each sheet below — errors marked “try again” "
-                "are transient; others indicate the request itself."
-            )
-        messagebox.showwarning(title, intro + "\n\n" + "\n".join(plan.error_lines[:12]))
+    errors = list(getattr(ctx, "errors", None) or [])
+    if errors:
+        app.log.log_warning(f"{len(errors)} drawing sheet(s) could not be analyzed.")
 
-    if not plan.has_digest:
-        app.log.log_warning("No drawing digest was produced; nothing attached.")
-        return
-
-    if not plan.within_cap:
-        messagebox.showerror(
-            "Project Context too large",
-            f"Attaching this drawing digest would push Project Context to "
-            f"{plan.tokens:,} tokens, exceeding the {PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
-            f"Trim the existing context or attach fewer sheets.",
-        )
-        app.log.log_warning(
-            "Drawing digest not attached — would exceed the Project Context token cap."
+    ok = int(getattr(ctx, "ok_sheet_count", 0) or 0)
+    if ok <= 0:
+        # Nothing was successfully read — don't open a save dialog for a set with
+        # no digest content. The per-sheet reasons carry the real cause (a
+        # 5xx/timeout is transient; a 4xx points at the request itself).
+        app.log.log_warning("No drawing digest was produced; nothing to save.")
+        messagebox.showwarning(
+            "No sheets could be analyzed",
+            "None of the sheets could be analyzed, so there is nothing to save.\n"
+            "See the reason for each sheet below — errors marked “try again” are "
+            "transient; others indicate the request itself."
+            + ("\n\n" + "\n".join(errors[:12]) if errors else ""),
         )
         return
 
-    set_context_text(app, plan.merged_context)
-    app.log.log_success(
-        f"Attached drawing digest: {ctx.ok_sheet_count}/{ctx.sheet_count} "
-        f"sheet(s) from {ctx.file_count} file(s) ({plan.tokens:,} context tokens)."
+    parent = filedialog.askdirectory(
+        title="Choose where to save the drawing digests"
     )
+    if not parent:
+        app.log.log("Drawing digest save canceled.", level="muted")
+        return
+
+    try:
+        folder = write_drawing_export(
+            ctx, Path(parent), source_names=[p.name for p in pdfs]
+        )
+    except Exception as exc:  # noqa: BLE001 - a write failure must not crash the app
+        app.log.log_error(f"Saving drawing digests failed: {exc}")
+        messagebox.showerror(
+            "Save failed", f"Could not save the drawing digests:\n\n{exc}"
+        )
+        return
+
+    total = int(getattr(ctx, "sheet_count", 0) or 0)
+    app.log.log_success(
+        f"Saved drawing digests to {folder} — {ok}/{total} sheet(s) analyzed."
+    )
+    summary = (
+        f"Saved {total} sheet file(s) plus the synthesis and combined digest to:\n\n"
+        f"{folder}\n\n{ok}/{total} sheet(s) analyzed successfully."
+    )
+    if errors:
+        summary += (
+            f"\n\n{len(errors)} sheet(s) could not be analyzed — each is saved with "
+            "its error, and they are listed in 00_index.md."
+        )
+    messagebox.showinfo("Drawing digests saved", summary)
 
 
 def open_context_modal(app) -> None:

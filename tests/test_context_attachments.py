@@ -1,16 +1,13 @@
 """Project Context attachment tests: Markdown / text extraction + the pure
-(tkinter-free) merge / token-cap / drawing-digest planning helpers.
+(tkinter-free) merge / token-cap / attachment-wrapping helpers.
 
 These run fully hermetically — no tkinter, no PyMuPDF, no network — because
-``src.gui.context_attachment`` deliberately imports only the tokenizer and a
-drawing digest is duck-typed (see the module docstring). The GUI flow that wires
-these into the threaded "Attach Drawings…" button is covered separately in
+``src.gui.context_attachment`` deliberately imports only the tokenizer. The
+drawing flow no longer feeds Project Context (it saves digests to disk); that
+export is covered by ``test_drawing_export.py`` and the GUI wiring by
 ``test_drawing_context_integration.py`` (which skips without customtkinter).
 """
 from __future__ import annotations
-
-from dataclasses import dataclass, field
-from pathlib import Path
 
 import pytest
 
@@ -19,11 +16,8 @@ from docx import Document
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
 from src.gui import context_attachment as ca
 from src.gui.context_attachment import (
-    DrawingAttachmentPlan,
-    build_drawing_attachment_block,
     context_within_token_cap,
     merge_into_context,
-    plan_drawing_attachment,
     wrap_attachment,
 )
 from src.input.extractor import CONTEXT_ATTACHMENT_EXTENSIONS, extract_context_text
@@ -40,24 +34,6 @@ def _word_tokens(text: str) -> int:
 @pytest.fixture(autouse=True)
 def _stub_tokenizer(monkeypatch):
     monkeypatch.setattr(ca, "count_tokens", _word_tokens)
-
-
-# --------------------------------------------------------------------------- #
-# Fake drawing digest (duck-typed; no PyMuPDF / engine import)
-# --------------------------------------------------------------------------- #
-
-
-@dataclass
-class _FakeCtx:
-    combined_text: str
-    sheet_count: int = 1
-    file_count: int = 1
-    _ok: int = 1
-    errors: list[str] = field(default_factory=list)
-
-    @property
-    def ok_sheet_count(self) -> int:
-        return self._ok
 
 
 # A string comfortably over the 100k-token Project Context cap under the
@@ -153,104 +129,3 @@ def test_context_within_token_cap_rejects_oversized():
     tokens, fits = context_within_token_cap(_OVER_CAP_TEXT)
     assert tokens > PROJECT_CONTEXT_MAX_TOKENS
     assert fits is False
-
-
-# --------------------------------------------------------------------------- #
-# build_drawing_attachment_block
-# --------------------------------------------------------------------------- #
-
-
-def test_build_drawing_attachment_block_labels_counts_and_wraps():
-    ctx = _FakeCtx(combined_text="DIGEST BODY", sheet_count=3, file_count=2, _ok=2)
-    block = build_drawing_attachment_block(ctx)
-    assert block.startswith("--- BEGIN ATTACHMENT: DRAWING DIGEST — 2/3 sheet(s) from 2 file(s) ---")
-    assert block.endswith("--- END ATTACHMENT: DRAWING DIGEST — 2/3 sheet(s) from 2 file(s) ---")
-    assert "DIGEST BODY" in block
-
-
-def test_build_drawing_attachment_block_empty_digest_returns_empty():
-    assert build_drawing_attachment_block(_FakeCtx(combined_text="   ")) == ""
-    assert build_drawing_attachment_block(_FakeCtx(combined_text="")) == ""
-
-
-def test_build_drawing_attachment_block_refuses_failure_only_set():
-    # A fully-failed set still has non-empty combined_text — the engine emits a
-    # header + a per-sheet failure blockquote — but nothing actually digested
-    # (ok_sheet_count == 0), so it must attach nothing, not a wall of failures.
-    ctx = _FakeCtx(
-        combined_text=(
-            "# Drawing Set Context Digest\n\n## Sheet 1/1: M-101\n\n"
-            "> [drawing analysis failed for this sheet: 401 invalid x-api-key]"
-        ),
-        sheet_count=1,
-        _ok=0,
-        errors=["M-101: 401 invalid x-api-key"],
-    )
-    assert build_drawing_attachment_block(ctx) == ""
-
-
-# --------------------------------------------------------------------------- #
-# plan_drawing_attachment
-# --------------------------------------------------------------------------- #
-
-
-def test_plan_drawing_attachment_happy_path_merges_under_cap():
-    ctx = _FakeCtx(combined_text="VAV-3 serves Rm 120", sheet_count=1, file_count=1, _ok=1)
-    plan = plan_drawing_attachment("Existing context.", ctx)
-    assert isinstance(plan, DrawingAttachmentPlan)
-    assert plan.has_digest and plan.within_cap and plan.attachable
-    assert plan.merged_context.startswith("Existing context.\n\n--- BEGIN ATTACHMENT:")
-    assert "VAV-3 serves Rm 120" in plan.merged_context
-    assert plan.tokens == _word_tokens(plan.merged_context)
-    assert plan.error_lines == []
-
-
-def test_plan_drawing_attachment_no_existing_context():
-    ctx = _FakeCtx(combined_text="body")
-    plan = plan_drawing_attachment("", ctx)
-    assert plan.merged_context == plan.block  # no leading separator
-    assert plan.attachable
-
-
-def test_plan_drawing_attachment_carries_sheet_errors():
-    ctx = _FakeCtx(
-        combined_text="partial body",
-        sheet_count=2,
-        _ok=1,
-        errors=["M-102.pdf p2: boom"],
-    )
-    plan = plan_drawing_attachment("", ctx)
-    assert plan.error_lines == ["M-102.pdf p2: boom"]
-    assert plan.attachable  # the readable sheet still attaches
-
-
-def test_plan_drawing_attachment_empty_digest_not_attachable():
-    ctx = _FakeCtx(combined_text="", sheet_count=1, _ok=0, errors=["only sheet failed"])
-    plan = plan_drawing_attachment("keep me", ctx)
-    assert not plan.has_digest
-    assert not plan.attachable
-    assert plan.merged_context == "keep me"  # existing context preserved
-    assert plan.error_lines == ["only sheet failed"]
-
-
-def test_plan_drawing_attachment_failure_only_set_not_attachable():
-    # combined_text non-empty (failure blockquotes) but ok_sheet_count == 0.
-    ctx = _FakeCtx(
-        combined_text="## Sheet 1/1\n\n> [drawing analysis failed: boom]",
-        sheet_count=1,
-        _ok=0,
-        errors=["boom"],
-    )
-    plan = plan_drawing_attachment("keep me", ctx)
-    assert not plan.has_digest and not plan.attachable
-    assert plan.merged_context == "keep me"  # existing context preserved
-    assert plan.error_lines == ["boom"]
-
-
-def test_plan_drawing_attachment_over_cap_not_attachable():
-    ctx = _FakeCtx(combined_text=_OVER_CAP_TEXT, sheet_count=40, file_count=1, _ok=40)
-    plan = plan_drawing_attachment("small existing", ctx)
-    assert plan.has_digest
-    assert not plan.within_cap
-    assert not plan.attachable
-    assert plan.tokens > PROJECT_CONTEXT_MAX_TOKENS
