@@ -16,17 +16,31 @@ Why these numbers
 Claude's vision path caps each image at a per-model token budget *and* a max
 long-edge in pixels (Opus 4.8: 4784 tokens / 2576 px; other models: 1568 /
 1568). Critically, sending **more than 20 images in one request** drops the
-per-image dimension cap to 2000 px on the long edge. A 6x6 sheet is 36 tiles +
-1 overview = 37 images, so the 2000 px cap applies — which is why the default
-target long edge is 2000 px (~273 effective DPI on a 34"x44" E-size sheet, vs.
-~49 DPI for the whole sheet sent as one image).
+*hard* per-image dimension cap to 2000 px on the long edge, and an image that
+**exceeds** that cap is **rejected** (HTTP 400 ``invalid_request_error``), not
+downscaled — unlike the <=20-image case, where an oversized image is silently
+resized. A 6x6 sheet is 36 tiles + 1 overview = 37 images, so the 2000 px hard
+cap applies to every drawing-digest request (Anthropic vision docs, "General
+limits").
+
+We therefore render the long edge a few px *under* the cap, not to it. The
+rasterizer (PyMuPDF) sizes a clipped pixmap by rounding the transformed clip to
+a whole-pixel rectangle — floor the low corner, ceil the high corner (MuPDF
+``fz_round_rect``) — so a tile whose edge doesn't fall on an exact pixel
+boundary after scaling (the common case for interior tiles, whose origins are
+``cell*r - overlap``) comes out at cap+1 px when rendered "to exactly the cap",
+and the whole request is rejected. ``TARGET_LONG_EDGE_PX_MANY_IMAGES`` bakes in
+a small margin so that can't happen (~272 effective DPI on a 34"x44" E-size
+sheet, vs. ~49 DPI for the whole sheet sent as one image; the margin costs
+<0.5% of linear resolution). This failure mode is invisible to the hermetic
+tests because a fake client never rasterizes or serializes the pixmap.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Default grid. A 6x6 split of an E-size sheet lands each tile near the vision
-# cap at ~273 DPI (crisp for 3/32" note text). Overridable per call.
+# Default grid. A 6x6 split of an E-size sheet lands each tile just under the
+# vision cap at ~272 DPI (crisp for 3/32" note text). Overridable per call.
 DEFAULT_GRID_ROWS = 6
 DEFAULT_GRID_COLS = 6
 
@@ -34,11 +48,23 @@ DEFAULT_GRID_COLS = 6
 # straddles a tile boundary still appears whole in at least one tile.
 DEFAULT_OVERLAP_FRAC = 0.08
 
-# Long-edge pixel targets, matching the vision dimension caps. When a request
-# carries >20 images the API clamps each to 2000 px on the long edge; at <=20
-# images Opus accepts up to 2576 px. Rendering to exactly the applicable cap
-# maximizes legibility without paying for pixels the API would discard.
-TARGET_LONG_EDGE_PX_MANY_IMAGES = 2000
+# The API's HARD per-image long-edge cap for a >20-image request. An image
+# whose long edge exceeds this is rejected (HTTP 400), not downscaled — see the
+# module docstring. This is the ceiling, not the render target.
+MANY_IMAGES_LONG_EDGE_CAP_PX = 2000
+
+# Margin subtracted from the cap to pick the render target. The rasterizer
+# rounds a clipped pixmap UP to whole pixels (module docstring), so rendering
+# "to exactly the cap" lands a tile at cap+1 px and trips the rejection. The
+# proven worst-case overshoot is <=1 px per axis; 8 px is generous headroom for
+# any backend/version rounding variance, at <0.5% linear-resolution cost.
+_MANY_IMAGES_RENDER_MARGIN_PX = 8
+
+# Long-edge render targets. Many-image requests render a margin under the hard
+# cap (above); few-image requests use the full Opus native long edge, because
+# at <=20 images the API downscales an oversized image rather than rejecting it
+# (so no margin is needed — an off-by-one there is harmless).
+TARGET_LONG_EDGE_PX_MANY_IMAGES = MANY_IMAGES_LONG_EDGE_CAP_PX - _MANY_IMAGES_RENDER_MARGIN_PX
 TARGET_LONG_EDGE_PX_FEW_IMAGES = 2576
 
 # The >20-images rule is a hard threshold in the vision docs.
@@ -70,9 +96,13 @@ class TileRect:
 
 
 def target_long_edge_px(total_images: int) -> int:
-    """Pick the per-image long-edge target given how many images the request carries.
+    """Pick the per-image long-edge *render target* given the request's image count.
 
-    >20 images forces the 2000 px dimension cap; otherwise Opus accepts 2576 px.
+    >20 images must stay strictly under the hard 2000 px dimension cap (the API
+    rejects anything over it), so this returns ``TARGET_LONG_EDGE_PX_MANY_IMAGES``
+    — a margin below the cap to absorb rasterizer rounding (see module docstring).
+    At <=20 images an oversized image is downscaled rather than rejected, so the
+    full Opus native long edge (``TARGET_LONG_EDGE_PX_FEW_IMAGES``) is safe.
     """
     if total_images > MANY_IMAGES_THRESHOLD:
         return TARGET_LONG_EDGE_PX_MANY_IMAGES

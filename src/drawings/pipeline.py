@@ -395,8 +395,9 @@ def estimate_image_tokens_for_set(
 
     Assumes every image (overview + tiles) lands at the per-model cap, which is
     the worst case for a dense sheet at the target render resolution. Uses the
-    long-edge target the request size implies (>20 images -> 2000 px), so the
-    per-image size fed to the estimator matches what the renderer produces.
+    long-edge target the request size implies (>20 images -> the many-image
+    target, a margin under the 2000 px hard cap), so the per-image size fed to
+    the estimator matches what the renderer produces.
     """
     images_per_sheet = tiling.total_images_for_grid(rows, cols)
     long_edge = tiling.target_long_edge_px(images_per_sheet)
