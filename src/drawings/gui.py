@@ -287,6 +287,7 @@ class DrawingAnalyzerApp(_CTkDnDRoot):
                 pdfs,
                 model=REVIEW_MODEL_DEFAULT,
                 progress=self._progress_from_thread,
+                use_cache=True,
             )
         except Exception as exc:  # noqa: BLE001 - surface any unexpected failure
             self.after(0, lambda e=exc: self._on_error(str(e)))

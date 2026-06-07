@@ -327,6 +327,32 @@ def test_pipeline_records_per_sheet_error_and_continues(tmp_path):
     assert "[drawing analysis failed" in ctx.combined_text
 
 
+def test_pipeline_serves_second_run_from_injected_cache(tmp_path):
+    pymupdf = pytest.importorskip("pymupdf")
+    from src.drawings.digest_cache import DigestCache
+    from src.drawings.pipeline import extract_drawing_context
+
+    path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=2)
+    client = _FakeClient(
+        lambda _kw: FakeMessage(
+            content=[FakeTextBlock(text="digest body")],
+            usage=FakeUsage(input_tokens=100, output_tokens=20),
+        )
+    )
+    cache = DigestCache(None, persist=False)
+
+    ctx1 = extract_drawing_context([path], client=client, rows=2, cols=2, cache=cache)
+    assert ctx1.ok_sheet_count == 2 and ctx1.cached_sheet_count == 0
+    calls_after_first = len(client.messages.calls)
+    assert calls_after_first == 2
+
+    # Identical second run: every sheet is served from the cache, no new calls.
+    ctx2 = extract_drawing_context([path], client=client, rows=2, cols=2, cache=cache)
+    assert ctx2.ok_sheet_count == 2 and ctx2.cached_sheet_count == 2
+    assert len(client.messages.calls) == calls_after_first
+    assert "digest body" in ctx2.combined_text
+
+
 def test_list_sheets_splits_pages(tmp_path):
     pymupdf = pytest.importorskip("pymupdf")
     from src.drawings.render import list_sheets

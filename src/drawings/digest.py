@@ -10,6 +10,7 @@ digest is reference prose for a downstream text-only pipeline.
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 import time
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from ..core.api_config import (
     model_supports_effort,
 )
 from ..core.tokenizer import estimate_image_tokens_total
+from .digest_cache import digest_cache_key
 from .models import RenderedSheet, SheetRef
 
 # Room for adaptive thinking plus a thorough per-sheet digest; stays at/under the
@@ -171,6 +173,12 @@ _DIGEST_TASK_INSTRUCTION = (
     "- <title>` header line."
 )
 
+# Folded into the digest cache key so any edit to the prompt or task instruction
+# re-digests rather than serving a cached read produced under the old prompt.
+DIGEST_PROMPT_VERSION = hashlib.sha256(
+    (DIGEST_SYSTEM_PROMPT + "\x00" + _DIGEST_TASK_INSTRUCTION).encode("utf-8")
+).hexdigest()[:16]
+
 
 def _image_block(png_bytes: bytes) -> dict:
     """A base64 PNG image content block."""
@@ -230,6 +238,10 @@ class SheetDigest:
     image_token_estimate: int = 0
     stop_reason: str | None = None
     error: str | None = None
+    # True when the text was served from the digest cache (no API call). The
+    # token counts on a cache hit are the originally-recorded usage; no new
+    # tokens were billed.
+    cached: bool = False
 
     @property
     def ok(self) -> bool:
@@ -279,6 +291,7 @@ def digest_sheet(
     effort: str | None = DEFAULT_DIGEST_EFFORT,
     max_retries: int = DEFAULT_DIGEST_MAX_RETRIES,
     sleep: Any = time.sleep,
+    cache: Any = None,
 ) -> SheetDigest:
     """Run a single vision request for one sheet and return its text digest.
 
@@ -289,8 +302,37 @@ def digest_sheet(
     reaches the UI. A *transient* failure (:func:`_is_transient_error`) is
     re-attempted up to ``max_retries`` times with exponential backoff (``sleep``
     is injectable so tests don't wait); a permanent failure returns immediately.
+
+    ``cache`` (a :class:`~src.drawings.digest_cache.DigestCache`, or ``None`` to
+    disable) is consulted before the API call and written only on a successful,
+    non-empty digest — so an unchanged sheet on a re-run is served from cache
+    with ``cached=True`` and no token cost. The key folds in the rendered images,
+    the model, the prompt fingerprint, and the output-shaping params.
     """
     image_est = estimate_image_tokens_total(sheet.image_sizes, model=model)
+
+    cache_key: str | None = None
+    if cache is not None:
+        cache_key = digest_cache_key(
+            sheet,
+            model=model,
+            prompt_version=DIGEST_PROMPT_VERSION,
+            max_tokens=max_tokens,
+            effort=effort,
+            use_thinking=use_thinking,
+        )
+        hit = cache.get(cache_key)
+        if hit is not None:
+            return SheetDigest(
+                ref=sheet.ref,
+                text=hit.get("text", ""),
+                input_tokens=int(hit.get("input_tokens", 0) or 0),
+                output_tokens=int(hit.get("output_tokens", 0) or 0),
+                image_token_estimate=image_est,
+                stop_reason=hit.get("stop_reason"),
+                error=None,
+                cached=True,
+            )
 
     if client is None:
         from ..review.reviewer import _get_client
@@ -332,6 +374,20 @@ def digest_sheet(
     error: str | None = None
     if not text:
         error = f"empty digest (stop_reason={stop!r})"
+
+    # Cache only a real, successful digest — never an empty/error result (those
+    # are transient and a re-run should re-attempt them).
+    if cache is not None and cache_key is not None and error is None and text:
+        cache.put(
+            cache_key,
+            {
+                "text": text,
+                "input_tokens": in_tok,
+                "output_tokens": out_tok,
+                "stop_reason": stop,
+                "created_ts": time.time(),
+            },
+        )
 
     return SheetDigest(
         ref=sheet.ref,
