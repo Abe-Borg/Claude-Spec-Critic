@@ -249,6 +249,11 @@ def test_attach_drawings_all_sheets_failed_attaches_nothing(env):
     assert env.store_["ctx"] == ""  # nothing attached despite non-empty digest text
     assert env.rec_["warning"]  # sheet errors surfaced
     assert "success" not in env.app.log.kinds()
+    # All-failed dialog must NOT promise an attachment; it points at a retry.
+    title, body = env.rec_["warning"][0][0], env.rec_["warning"][0][1]
+    assert title == "No sheets could be analyzed"
+    assert "nothing was attached" in body
+    assert "readable sheets will still be attached" not in body
 
 
 def test_attach_drawings_no_selection_is_noop(env):

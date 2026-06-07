@@ -14,6 +14,8 @@ import pytest
 from src.drawings.digest import (
     DIGEST_SYSTEM_PROMPT,
     SheetDigest,
+    _clean_error,
+    _is_transient_error,
     build_user_content,
     digest_sheet,
 )
@@ -157,6 +159,106 @@ def test_digest_sheet_flags_empty_output():
     sd = digest_sheet(_make_sheet(), client=_FakeClient(lambda kw: resp), model=OPUS)
     assert not sd.ok
     assert sd.error is not None and "empty digest" in sd.error
+
+
+# --------------------------------------------------------------------------- #
+# Transient-error classification, sanitization, and retry (Workstream 0)
+# --------------------------------------------------------------------------- #
+
+
+class _StatusError(Exception):
+    """Duck-typed stand-in for anthropic.APIStatusError (carries status_code)."""
+
+    def __init__(self, status_code: int, message: str = ""):
+        super().__init__(message or f"HTTP {status_code}")
+        self.status_code = status_code
+
+
+class APIConnectionError(Exception):
+    """Name matches the SDK class the classifier recognizes by name."""
+
+
+def test_is_transient_error_classification():
+    assert _is_transient_error(_StatusError(502)) is True
+    assert _is_transient_error(_StatusError(503)) is True
+    assert _is_transient_error(_StatusError(429)) is True
+    assert _is_transient_error(APIConnectionError("boom")) is True
+    # Caller errors and unknown plain exceptions are NOT retried.
+    assert _is_transient_error(_StatusError(400)) is False
+    assert _is_transient_error(RuntimeError("nope")) is False
+
+
+def test_clean_error_sanitizes_html_and_status():
+    # The real 502 the operator saw: a full cloudflare HTML page.
+    html = (
+        "<html><head><title>502 Bad Gateway</title></head><body>"
+        "<center><h1>502 Bad Gateway</h1></center><hr><center>cloudflare</center>"
+        "</body></html>"
+    )
+    assert _clean_error(_StatusError(502, html)) == (
+        "502 bad gateway (server temporarily unavailable — try again)"
+    )
+    assert "html" not in _clean_error(_StatusError(502, html)).lower()
+    assert _clean_error(APIConnectionError("x")) == (
+        "connection error (network/API unreachable — try again)"
+    )
+    # Unknown status renders cleanly; generic exceptions are tag-stripped.
+    assert _clean_error(_StatusError(418)) == "HTTP 418"
+    assert _clean_error(RuntimeError("<b>plain</b> message")) == "plain message"
+
+
+def test_digest_sheet_retries_transient_then_succeeds():
+    calls = {"n": 0}
+    slept: list[float] = []
+
+    def responder(_kw):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise _StatusError(502, "<html>502</html>")
+        return FakeMessage(content=[FakeTextBlock(text="recovered digest")])
+
+    sd = digest_sheet(
+        _make_sheet(), client=_FakeClient(responder), model=OPUS,
+        max_retries=2, sleep=slept.append,
+    )
+
+    assert sd.ok and "recovered digest" in sd.text
+    assert calls["n"] == 3            # 1 initial + 2 retries
+    assert slept == [2.0, 4.0]        # exponential backoff between attempts
+
+
+def test_digest_sheet_transient_exhausted_returns_clean_error():
+    calls = {"n": 0}
+
+    def responder(_kw):
+        calls["n"] += 1
+        raise _StatusError(502, "<html><title>502 Bad Gateway</title></html>")
+
+    sd = digest_sheet(
+        _make_sheet(), client=_FakeClient(responder), model=OPUS,
+        max_retries=2, sleep=lambda _s: None,
+    )
+
+    assert not sd.ok
+    assert sd.error == "502 bad gateway (server temporarily unavailable — try again)"
+    assert calls["n"] == 3            # exhausted all attempts
+
+
+def test_digest_sheet_does_not_retry_permanent_error():
+    calls = {"n": 0}
+
+    def responder(_kw):
+        calls["n"] += 1
+        raise _StatusError(400, "bad request")
+
+    sd = digest_sheet(
+        _make_sheet(), client=_FakeClient(responder), model=OPUS,
+        max_retries=3, sleep=lambda _s: None,
+    )
+
+    assert not sd.ok
+    assert calls["n"] == 1            # permanent error => no retry
+    assert sd.error == "HTTP 400"
 
 
 # --------------------------------------------------------------------------- #

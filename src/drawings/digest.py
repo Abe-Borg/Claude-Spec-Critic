@@ -10,6 +10,8 @@ digest is reference prose for a downstream text-only pipeline.
 from __future__ import annotations
 
 import base64
+import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,6 +31,93 @@ DEFAULT_DIGEST_MAX_TOKENS = 16_000
 # Effort for the read. "high" is intelligence-appropriate for dense drawings and
 # is accepted by both Opus and Sonnet (so a model override never 400s on it).
 DEFAULT_DIGEST_EFFORT = "high"
+
+# App-level retries layered ON TOP of the Anthropic SDK's own per-call retries.
+# A drawing run is a long sequence of large vision requests; a transient blip
+# (502/503/connection) on one sheet shouldn't permanently doom that sheet for
+# the whole run, so a failed transient call is re-attempted after a short
+# backoff. Kept small so a genuine outage still ends quickly with a clean error.
+DEFAULT_DIGEST_MAX_RETRIES = 2
+
+# HTTP statuses worth re-attempting: rate limit (429), Anthropic "overloaded"
+# (529), and the 5xx gateway/upstream family that surfaced as the cloudflare
+# "502 Bad Gateway" pages. 4xx other than 429 are caller errors — never retried.
+_TRANSIENT_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
+
+# Short, human-readable phrases for the statuses we surface. The raw exception
+# string for a 5xx is the upstream's full HTML error page (the cloudflare 502
+# body the operator saw dumped into the dialog), so we render a canonical
+# message from the status code instead and discard the HTML entirely.
+_STATUS_PHRASES = {
+    408: "request timeout",
+    409: "conflict",
+    429: "rate limited",
+    500: "internal server error",
+    502: "bad gateway",
+    503: "service unavailable",
+    504: "gateway timeout",
+    529: "overloaded",
+}
+
+# Connection / timeout SDK error classes (matched by name so this module needs
+# no hard import of the anthropic exception types and stays trivially testable).
+_CONNECTION_ERROR_NAMES = frozenset({"APIConnectionError", "ConnectionError"})
+_TIMEOUT_ERROR_NAMES = frozenset({"APITimeoutError", "Timeout", "ReadTimeout"})
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _error_status(exc: Exception) -> int | None:
+    """Return the HTTP status carried by an SDK error, if any (duck-typed)."""
+    status = getattr(exc, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """True when ``exc`` is a retry-worthy transient failure.
+
+    Recognizes both an HTTP status in :data:`_TRANSIENT_STATUSES` and the
+    connection / timeout SDK error classes by name. A plain ``RuntimeError``
+    (what the hermetic tests raise) is *not* transient, so the existing
+    capture-without-retry behavior is preserved and tests never sleep.
+    """
+    status = _error_status(exc)
+    if status is not None and status in _TRANSIENT_STATUSES:
+        return True
+    name = type(exc).__name__
+    return name in _CONNECTION_ERROR_NAMES or name in _TIMEOUT_ERROR_NAMES
+
+
+def _clean_error(exc: Exception) -> str:
+    """Render a concise, HTML-free error string for ``SheetDigest.error``.
+
+    A 5xx surfaces as the upstream's full HTML page; we map the status to a
+    canonical phrase and drop the body so the dialog (and the failure blockquote
+    inside ``combined_text``) shows ``502 bad gateway (server temporarily
+    unavailable — try again)`` rather than a wall of ``<html>…cloudflare…``.
+    Connection / timeout errors get a fixed message; anything else is
+    tag-stripped, whitespace-collapsed, and truncated.
+    """
+    status = _error_status(exc)
+    if status is not None:
+        phrase = _STATUS_PHRASES.get(status)
+        if phrase is None:
+            return f"HTTP {status}"
+        if status >= 500 or status == 429:
+            return f"{status} {phrase} (server temporarily unavailable — try again)"
+        return f"{status} {phrase}"
+    name = type(exc).__name__
+    if name in _CONNECTION_ERROR_NAMES:
+        return "connection error (network/API unreachable — try again)"
+    if name in _TIMEOUT_ERROR_NAMES:
+        return "request timed out — try again"
+    text = " ".join(_HTML_TAG_RE.sub(" ", str(exc)).split())
+    return text[:200] if text else name
+
+
+def _retry_backoff_seconds(attempt: int) -> float:
+    """Exponential backoff before retry ``attempt`` (0-based): 2s, 4s, 8s…"""
+    return 2.0 * (2 ** attempt)
 
 
 DIGEST_SYSTEM_PROMPT = """\
@@ -188,12 +277,18 @@ def digest_sheet(
     max_tokens: int = DEFAULT_DIGEST_MAX_TOKENS,
     use_thinking: bool = True,
     effort: str | None = DEFAULT_DIGEST_EFFORT,
+    max_retries: int = DEFAULT_DIGEST_MAX_RETRIES,
+    sleep: Any = time.sleep,
 ) -> SheetDigest:
     """Run a single vision request for one sheet and return its text digest.
 
     ``client`` is injectable for tests; when ``None`` the shared Anthropic client
     factory is used. Any API/parse failure is captured on ``SheetDigest.error``
-    (never raised) so a set keeps processing the remaining sheets.
+    (never raised) so a set keeps processing the remaining sheets — the message
+    is sanitized by :func:`_clean_error` so an upstream HTML error page never
+    reaches the UI. A *transient* failure (:func:`_is_transient_error`) is
+    re-attempted up to ``max_retries`` times with exponential backoff (``sleep``
+    is injectable so tests don't wait); a permanent failure returns immediately.
     """
     image_est = estimate_image_tokens_total(sheet.image_sizes, model=model)
 
@@ -213,15 +308,22 @@ def digest_sheet(
     if effort and model_supports_effort(model):
         kwargs["output_config"] = {"effort": effort}
 
-    try:
-        resp = client.messages.create(**kwargs)
-    except Exception as exc:  # noqa: BLE001 - report, don't sink the whole set
-        return SheetDigest(
-            ref=sheet.ref,
-            text="",
-            image_token_estimate=image_est,
-            error=str(exc),
-        )
+    attempt = 0
+    while True:
+        try:
+            resp = client.messages.create(**kwargs)
+            break
+        except Exception as exc:  # noqa: BLE001 - report, don't sink the whole set
+            if _is_transient_error(exc) and attempt < max_retries:
+                sleep(_retry_backoff_seconds(attempt))
+                attempt += 1
+                continue
+            return SheetDigest(
+                ref=sheet.ref,
+                text="",
+                image_token_estimate=image_est,
+                error=_clean_error(exc),
+            )
 
     text = _message_text(resp)
     in_tok, out_tok = _message_usage(resp)

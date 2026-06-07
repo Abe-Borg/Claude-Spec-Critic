@@ -327,11 +327,20 @@ def _apply_drawing_result(app, ctx) -> None:
         app.log.log_warning(
             f"{len(plan.error_lines)} drawing sheet(s) could not be analyzed."
         )
-        messagebox.showwarning(
-            "Some sheets could not be analyzed",
-            "The digest of the readable sheets will still be attached.\n\n"
-            + "\n".join(plan.error_lines[:12]),
-        )
+        if plan.has_digest:
+            title = "Some sheets could not be analyzed"
+            intro = "The digest of the readable sheets will still be attached."
+        else:
+            # Every sheet failed — nothing attaches, so don't promise it will.
+            # All-failed is almost always a transient API/network blip, so point
+            # the operator at a retry rather than at their PDF.
+            title = "No sheets could be analyzed"
+            intro = (
+                "None of the sheets could be analyzed, so nothing was attached.\n"
+                "This usually means a temporary API or network issue — try again "
+                "in a few minutes."
+            )
+        messagebox.showwarning(title, intro + "\n\n" + "\n".join(plan.error_lines[:12]))
 
     if not plan.has_digest:
         app.log.log_warning("No drawing digest was produced; nothing attached.")
