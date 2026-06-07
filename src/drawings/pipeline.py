@@ -5,13 +5,17 @@ PDFs into sheets (one per page), renders and digests each sheet independently,
 and concatenates the per-sheet digests into a single text artifact ready to be
 spliced into the spec reviewer's Project Context.
 
-Sheets are processed sequentially here for clarity and deterministic progress
-reporting. Each sheet is fully independent, so a future fast-follow can wrap the
-per-sheet step in a thread pool or the Message Batches API without changing this
-module's contract.
+Rendering (PyMuPDF) runs sequentially on the calling thread — it is fast and the
+PDF backend is not thread-safe to share — while the slow, independent per-sheet
+*digest* (one vision call each) runs on a bounded thread pool, so a large set
+completes in roughly ``1/workers`` of the wall-clock. Results are reassembled in
+page order, so the combined digest and every total are deterministic regardless
+of completion order.
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -27,9 +31,36 @@ from .digest import (
 )
 from .render import iter_rendered_sheets, list_sheets
 
-# ``progress(done, total, label)`` — called once *before* each sheet is digested
-# (done = index already completed) and once when the run finishes (done == total).
+# ``progress(done, total, label)`` — called once as each sheet *finishes*
+# (done = number completed so far, in completion order) and once at the end
+# (done == total, label "Done").
 ProgressCallback = Callable[[int, int, str], None]
+
+# Default per-set digest concurrency. Vision calls are latency-bound, so a few
+# in flight cut wall-clock sharply; kept modest so a large set doesn't trip rate
+# limits (transient 429/5xx are retried per-sheet anyway — see digest.py).
+# Override per-call via ``max_workers=`` or globally via
+# ``SPEC_CRITIC_DRAWING_MAX_WORKERS``.
+DEFAULT_DIGEST_WORKERS = 4
+
+
+def _resolve_workers(max_workers: int | None, total: int) -> int:
+    """Resolve the effective worker count: arg > env > default, clamped sanely.
+
+    Floored at 1 (0/negative would create an invalid pool) and capped at
+    ``total`` (no point spinning up more workers than sheets). A malformed env
+    value falls back to the default rather than raising.
+    """
+    if max_workers is None:
+        env = os.environ.get("SPEC_CRITIC_DRAWING_MAX_WORKERS")
+        if env and env.strip():
+            try:
+                max_workers = int(env.strip())
+            except ValueError:
+                max_workers = DEFAULT_DIGEST_WORKERS
+        else:
+            max_workers = DEFAULT_DIGEST_WORKERS
+    return min(max(1, int(max_workers)), max(1, total))
 
 
 @dataclass
@@ -98,13 +129,14 @@ def extract_drawing_context(
     progress: ProgressCallback | None = None,
     cache: Any = None,
     use_cache: bool = False,
+    max_workers: int | None = None,
 ) -> DrawingContext:
     """Render and digest every sheet in ``pdf_paths`` into one text context.
 
-    ``progress`` (if given) is invoked as ``progress(done, total, label)`` before
-    each sheet and once at completion, so a GUI can show "Sheet k/n". ``client``
-    is injectable for tests. Per-sheet failures are captured on the returned
-    :class:`DrawingContext` (``errors`` and the failing sheet's
+    ``progress`` (if given) is invoked as ``progress(done, total, label)`` as
+    each sheet finishes and once at completion, so a GUI can show "k/n".
+    ``client`` is injectable for tests. Per-sheet failures are captured on the
+    returned :class:`DrawingContext` (``errors`` and the failing sheet's
     ``SheetDigest.error``); they never abort the run.
 
     Digest caching is opt-in: pass an explicit ``cache``
@@ -112,6 +144,12 @@ def extract_drawing_context(
     use the process-wide persistent cache, so an unchanged sheet on a re-run is
     served without a new vision call. Left off, the engine behaves exactly as
     before (hermetic tests never touch the on-disk cache).
+
+    Digests run concurrently on up to ``max_workers`` threads (default
+    :data:`DEFAULT_DIGEST_WORKERS`, or ``SPEC_CRITIC_DRAWING_MAX_WORKERS``);
+    rendering stays sequential. Sheets are reassembled in page order, so the
+    output is independent of completion order. ``max_workers=1`` forces fully
+    sequential processing.
     """
     if cache is None and use_cache:
         from .digest_cache import get_default_digest_cache
@@ -133,17 +171,17 @@ def extract_drawing_context(
             errors=["No readable PDF pages found in the selected files."],
         )
 
-    sheets: list[SheetDigest] = []
-    errors: list[str] = []
-    in_tok = out_tok = img_tok = 0
+    workers = _resolve_workers(max_workers, total)
 
-    done = 0
-    for rendered in iter_rendered_sheets(
-        paths, rows=rows, cols=cols, overlap_frac=overlap_frac
-    ):
-        if progress is not None:
-            progress(done, total, f"Analyzing {rendered.ref.display_label}")
-        sd = digest_sheet(
+    # Render sequentially (PyMuPDF, fast, not thread-safe to share) but dispatch
+    # the slow per-sheet digests to a bounded pool. ``results`` is filled by
+    # page index so the assembled order is deterministic; at most ``workers``
+    # rendered sheets are held in flight, bounding memory on a large set.
+    results: list[SheetDigest | None] = [None] * total
+    completed = 0
+
+    def _run(index: int, rendered) -> tuple[int, SheetDigest]:
+        return index, digest_sheet(
             rendered,
             client=client,
             model=model,
@@ -152,7 +190,35 @@ def extract_drawing_context(
             effort=effort,
             cache=cache,
         )
-        sheets.append(sd)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        in_flight: set = set()
+
+        def _collect_one() -> None:
+            nonlocal completed
+            finished, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                in_flight.discard(fut)
+                index, sd = fut.result()
+                results[index] = sd
+                completed += 1
+                if progress is not None:
+                    progress(completed, total, f"Analyzed {sd.ref.display_label}")
+
+        for index, rendered in enumerate(
+            iter_rendered_sheets(paths, rows=rows, cols=cols, overlap_frac=overlap_frac)
+        ):
+            in_flight.add(executor.submit(_run, index, rendered))
+            while len(in_flight) >= workers:
+                _collect_one()
+        while in_flight:
+            _collect_one()
+
+    # Every slot is now populated (digest_sheet never raises); order preserved.
+    sheets: list[SheetDigest] = [sd for sd in results if sd is not None]
+    errors: list[str] = []
+    in_tok = out_tok = img_tok = 0
+    for sd in sheets:
         # A cached sheet made no API call, so it costs zero tokens *this run*.
         # Excluding it keeps the run totals honest — a fully-cached re-run
         # reports ~0 tokens rather than the original (already-paid) usage that
@@ -163,7 +229,6 @@ def extract_drawing_context(
             img_tok += sd.image_token_estimate
         if sd.error:
             errors.append(f"{sd.ref.display_label}: {sd.error}")
-        done += 1
 
     if progress is not None:
         progress(total, total, "Done")

@@ -7,6 +7,7 @@ pipeline tests render a synthetic PDF and are skipped when PyMuPDF is absent.
 from __future__ import annotations
 
 import base64
+import threading
 from pathlib import Path
 
 import pytest
@@ -308,11 +309,16 @@ def test_pipeline_records_per_sheet_error_and_continues(tmp_path):
 
     path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=2)
 
+    # Serialize the counter so exactly one sheet fails regardless of which
+    # worker thread gets the 2nd call (digests now run concurrently).
     state = {"n": 0}
+    lock = threading.Lock()
 
     def responder(_kw):
-        state["n"] += 1
-        if state["n"] == 2:
+        with lock:
+            state["n"] += 1
+            n = state["n"]
+        if n == 2:
             raise RuntimeError("boom on sheet 2")
         return FakeMessage(content=[FakeTextBlock(text="ok digest")])
 
@@ -356,6 +362,80 @@ def test_pipeline_serves_second_run_from_injected_cache(tmp_path):
     assert ctx2.total_input_tokens == 0 and ctx2.total_output_tokens == 0
     assert ctx2.total_image_token_estimate == 0
     assert "digest body" in ctx2.combined_text
+
+
+# --------------------------------------------------------------------------- #
+# Parallel digest dispatch (Workstream 2a)
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_workers_arg_env_default(monkeypatch):
+    from src.drawings.pipeline import DEFAULT_DIGEST_WORKERS, _resolve_workers
+
+    monkeypatch.delenv("SPEC_CRITIC_DRAWING_MAX_WORKERS", raising=False)
+    assert _resolve_workers(None, 10) == DEFAULT_DIGEST_WORKERS
+    assert _resolve_workers(2, 10) == 2
+    assert _resolve_workers(8, 3) == 3       # capped at sheet count
+    assert _resolve_workers(0, 10) == 1      # floored at 1
+    assert _resolve_workers(5, 0) == 1       # no sheets -> still >= 1
+    monkeypatch.setenv("SPEC_CRITIC_DRAWING_MAX_WORKERS", "6")
+    assert _resolve_workers(None, 10) == 6
+    monkeypatch.setenv("SPEC_CRITIC_DRAWING_MAX_WORKERS", "not-a-number")
+    assert _resolve_workers(None, 10) == DEFAULT_DIGEST_WORKERS  # bad env -> default
+
+
+def test_pipeline_digests_run_concurrently(tmp_path):
+    pymupdf = pytest.importorskip("pymupdf")
+    from src.drawings.pipeline import extract_drawing_context
+
+    path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=3)
+    # The barrier only releases once all three digests are in flight at the same
+    # time — a sequential pipeline would block on the first and time out.
+    barrier = threading.Barrier(3, timeout=8)
+
+    def responder(_kw):
+        barrier.wait()
+        return FakeMessage(content=[FakeTextBlock(text="concurrent ok")])
+
+    ctx = extract_drawing_context(
+        [path], client=_FakeClient(responder), rows=2, cols=2, max_workers=3
+    )
+    assert ctx.ok_sheet_count == 3  # all cleared the barrier => true concurrency
+
+
+def test_pipeline_parallel_preserves_page_order(tmp_path):
+    pymupdf = pytest.importorskip("pymupdf")
+    from src.drawings.pipeline import extract_drawing_context
+
+    path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=5)
+    client = _FakeClient(
+        lambda _kw: FakeMessage(content=[FakeTextBlock(text="body")])
+    )
+    ctx = extract_drawing_context(
+        [path], client=client, rows=2, cols=2, max_workers=4
+    )
+    headers = [l for l in ctx.combined_text.splitlines() if l.startswith("## Sheet ")]
+    assert len(headers) == 5
+    # Page order is preserved even though digests complete out of order.
+    for k, header in enumerate(headers, start=1):
+        assert header.startswith(f"## Sheet {k}/5:")
+
+
+def test_pipeline_max_workers_one_processes_all(tmp_path):
+    pymupdf = pytest.importorskip("pymupdf")
+    from src.drawings.pipeline import extract_drawing_context
+
+    path = _make_pdf(pymupdf, tmp_path / "set.pdf", pages=3)
+    client = _FakeClient(
+        lambda _kw: FakeMessage(content=[FakeTextBlock(text="seq body")])
+    )
+    ctx = extract_drawing_context(
+        [path], client=client, rows=2, cols=2, max_workers=1
+    )
+    assert ctx.ok_sheet_count == 3
+    assert len(client.messages.calls) == 3
+    for k in (1, 2, 3):
+        assert f"## Sheet {k}/3:" in ctx.combined_text
 
 
 def test_list_sheets_splits_pages(tmp_path):
