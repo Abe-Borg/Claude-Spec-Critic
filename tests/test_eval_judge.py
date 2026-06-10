@@ -269,6 +269,41 @@ class TestClassifyExtras:
         assert set(result) == {0}
         assert result[0].classification == "hallucination"
 
+    def test_prompt_includes_matched_context(self) -> None:
+        """duplicate_of_matched is only decidable when the judge sees what
+        was matched — the prompt must carry the defect labels and the matched
+        finding bodies (Codex P2 on #282)."""
+        spec = _spec()
+        findings = [_paraphrased_finding(), _unrelated_finding()]
+        prompt = judge._build_classify_prompt(
+            spec, findings, [1], matched_pairs=[(0, 0)]
+        )
+        assert "<matched_context>" in prompt
+        assert spec.expected_defects[0].label in prompt
+        # The matched finding's body is rendered for reference.
+        assert "water gauge" in prompt
+        # A missed defect renders as context too, marked unmatched.
+        miss_prompt = judge._build_classify_prompt(
+            spec, findings, [1], matched_pairs=[(0, None)]
+        )
+        assert "none (missed)" in miss_prompt
+
+    def test_matched_context_forwarded_to_the_judge_call(self) -> None:
+        client = _FakeClient(_classify_response([]))
+        spec = _spec()
+        findings = [_paraphrased_finding(), _unrelated_finding()]
+        judge.classify_extra_findings(
+            spec,
+            findings,
+            [1],
+            matched_pairs=[(0, 0)],
+            model=MODEL_HAIKU_45,
+            client=client,
+        )
+        sent = client.calls[0]["messages"][0]["content"]
+        assert "<matched_context>" in sent
+        assert spec.expected_defects[0].label in sent
+
     def test_no_extras_short_circuits_without_a_call(self) -> None:
         client = _FakeClient()
         assert (

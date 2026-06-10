@@ -341,17 +341,29 @@ def _classify_extras(
     """Judge-classify findings matched to no defect; fill score telemetry."""
     from . import judge
 
-    matched_ids = {
-        id(hit)
-        for hit in (matcher(d, findings) for d in spec.expected_defects)
-        if hit is not None
-    }
+    # (defect_index, matched finding_index | None) — handed to the judge as
+    # reference context so duplicate_of_matched is actually decidable.
+    index_by_id = {id(f): i for i, f in enumerate(findings)}
+    matched_pairs: list[tuple[int, int | None]] = []
+    matched_ids: set[int] = set()
+    for defect_idx, defect in enumerate(spec.expected_defects):
+        hit = matcher(defect, findings)
+        if hit is None:
+            matched_pairs.append((defect_idx, None))
+            continue
+        matched_pairs.append((defect_idx, index_by_id.get(id(hit))))
+        matched_ids.add(id(hit))
     extra_indices = [i for i, f in enumerate(findings) if id(f) not in matched_ids]
     score.extra_finding_count = len(extra_indices)
     if not extra_indices:
         return
     classifications = judge.classify_extra_findings(
-        spec, findings, extra_indices, model=judge_model, log=log
+        spec,
+        findings,
+        extra_indices,
+        matched_pairs=matched_pairs,
+        model=judge_model,
+        log=log,
     )
     if not classifications:
         return
