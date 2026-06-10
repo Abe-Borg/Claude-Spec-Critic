@@ -36,10 +36,12 @@ from src.output.report_status import (
     EditActionLabel,
     ReportStatus,
     STATUS_LABELS,
+    VERDICT_SUPERSEDES_CONFIDENCE,
     classify_edit_action,
     classify_status,
     summarize_edit_actions,
     summarize_statuses,
+    verdict_supersedes_confidence,
 )
 from src.review.reviewer import EditProposal, Finding, ReviewResult
 from src.verification.verifier import VerificationResult
@@ -145,6 +147,82 @@ class TestReportStatusClassification:
         # defense for tests that construct results by hand.
         f = _finding(verification=_verification("CONFIRMED", grounded=False))
         assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
+
+
+# ---------------------------------------------------------------------------
+# verdict_supersedes_confidence — when the verdict replaces the review %
+# ---------------------------------------------------------------------------
+
+class TestVerdictSupersedesConfidence:
+    """A verdict-bearing status supersedes the pre-verification confidence.
+
+    The report drops the confidence % from a finding's header once
+    verification reached a verdict (supported / contradicted / contested /
+    disputed); for every other status — where the verifier reached no
+    verdict — the % stays the primary signal.
+    """
+
+    def test_verified_supported_supersedes(self):
+        f = _finding(verification=_verification("CONFIRMED", grounded=True))
+        assert verdict_supersedes_confidence(f) is True
+
+    def test_verified_contradicted_supersedes(self):
+        f = _finding(verification=_verification("CORRECTED", grounded=True))
+        assert verdict_supersedes_confidence(f) is True
+
+    def test_disputed_supersedes(self):
+        # A high review confidence next to a DISPUTED verdict is just as
+        # misleading as a low one next to CONFIRMED — the verdict wins.
+        f = _finding(verification=_verification("DISPUTED", grounded=False))
+        assert verdict_supersedes_confidence(f) is True
+
+    def test_contested_supersedes(self):
+        v = VerificationResult(
+            verdict="CONFIRMED",
+            explanation="Initial and escalated verifiers disagreed.",
+            sources=["https://dgs.ca.gov"],
+            grounded=True,
+            models_disagreed=True,
+        )
+        f = _finding(verification=v)
+        # Sanity: this really does classify as contested.
+        assert classify_status(f) is ReportStatus.VERIFIED_CONTESTED
+        assert verdict_supersedes_confidence(f) is True
+
+    def test_not_checked_does_not_supersede(self):
+        f = _finding(verification=None)
+        assert verdict_supersedes_confidence(f) is False
+
+    def test_insufficient_evidence_does_not_supersede(self):
+        f = _finding(verification=_verification("UNVERIFIED", grounded=False))
+        assert verdict_supersedes_confidence(f) is False
+
+    def test_locally_classified_does_not_supersede(self):
+        v = _verification("UNVERIFIED", grounded=False, cache_status="local_skip")
+        f = _finding(verification=v)
+        assert verdict_supersedes_confidence(f) is False
+
+    def test_verification_failed_does_not_supersede(self):
+        v = VerificationResult(
+            verdict="UNVERIFIED",
+            explanation="Rate limited.",
+            sources=[],
+            grounded=False,
+            verification_failed=True,
+        )
+        f = _finding(verification=v)
+        assert classify_status(f) is ReportStatus.VERIFICATION_FAILED
+        assert verdict_supersedes_confidence(f) is False
+
+    def test_set_membership_matches_helper(self):
+        # The exported frozenset is the single source of truth the helper
+        # consults; keep them in lockstep.
+        assert ReportStatus.VERIFIED_SUPPORTED in VERDICT_SUPERSEDES_CONFIDENCE
+        assert ReportStatus.VERIFIED_CONTRADICTED in VERDICT_SUPERSEDES_CONFIDENCE
+        assert ReportStatus.VERIFIED_CONTESTED in VERDICT_SUPERSEDES_CONFIDENCE
+        assert ReportStatus.DISPUTED in VERDICT_SUPERSEDES_CONFIDENCE
+        assert ReportStatus.NOT_CHECKED not in VERDICT_SUPERSEDES_CONFIDENCE
+        assert ReportStatus.INSUFFICIENT_EVIDENCE not in VERDICT_SUPERSEDES_CONFIDENCE
 
 
 # ---------------------------------------------------------------------------
@@ -424,3 +502,84 @@ class TestReportExporterStatusIntegration:
         # The old labels should be gone now.
         assert "Existing Text:" not in text
         assert "Replace With:" not in text
+
+
+# ---------------------------------------------------------------------------
+# Confidence de-emphasis rendering (header suppression + footnote + note)
+# ---------------------------------------------------------------------------
+
+class TestConfidenceDeEmphasisRendering:
+    """The header drops the confidence % once a verdict supersedes it.
+
+    A verified finding's pre-verification confidence is moved off the
+    header (where it reads as the headline trust signal) into a small,
+    labeled footnote on the Status line; an unverified finding keeps the
+    prominent header %.
+    """
+
+    def _build(self) -> ReviewResult:
+        verified_low_conf = _finding(
+            severity="HIGH",
+            file="Section_22_1000.docx",
+            section="2.1",
+            issue="Wrong parenthetical section title",
+            confidence=0.55,  # low review confidence, but verifier confirms it
+            action="REPORT_ONLY",
+            existing=None,
+            replacement=None,
+            verification=_verification("CONFIRMED", grounded=True),
+        )
+        unchecked = _finding(
+            severity="HIGH",
+            file="Section_22_1000.docx",
+            section="2.2",
+            issue="Pre-verification scan finding",
+            confidence=0.42,  # the only trust signal — stays in the header
+            verification=None,
+        )
+        return ReviewResult(
+            findings=[verified_low_conf, unchecked],
+            input_tokens=1000,
+            output_tokens=500,
+            elapsed_seconds=1.0,
+        )
+
+    @staticmethod
+    def _heading3_containing(doc: Document, token: str) -> str:
+        for p in doc.paragraphs:
+            if p.style.name == "Heading 3" and token in p.text:
+                return p.text
+        raise AssertionError(f"no Heading 3 paragraph contains {token!r}")
+
+    def test_verified_header_drops_percent_unverified_keeps_it(self, tmp_path: Path):
+        out = tmp_path / "report.docx"
+        export_report(_StubPipelineResult(review_result=self._build()), out)
+        doc = Document(str(out))
+
+        verified_header = self._heading3_containing(doc, "— 2.1")
+        unchecked_header = self._heading3_containing(doc, "— 2.2")
+
+        # Verified finding: the % is suppressed from the header.
+        assert "55%" not in verified_header
+        # Unverified finding: the % stays prominent in the header.
+        assert "42%" in unchecked_header
+
+    def test_verified_confidence_moves_to_labeled_footnote(self, tmp_path: Path):
+        out = tmp_path / "report.docx"
+        export_report(_StubPipelineResult(review_result=self._build()), out)
+        doc = Document(str(out))
+        text = _all_text_from(doc)
+
+        # The number is preserved, but as an explicitly-labeled
+        # pre-verification footnote rather than the headline %.
+        assert "review confidence 55% (pre-verification)" in text
+
+    def test_methodology_documents_the_distinction(self, tmp_path: Path):
+        out = tmp_path / "report.docx"
+        export_report(_StubPipelineResult(review_result=self._build()), out)
+        doc = Document(str(out))
+        text = _all_text_from(doc)
+
+        # Report-level documentation of confidence-vs-verdict.
+        assert "before verification" in text
+        assert "authoritative trust signal" in text
