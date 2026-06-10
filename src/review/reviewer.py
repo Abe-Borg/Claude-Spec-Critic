@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -299,15 +300,22 @@ def _get_api_key() -> str:
 
 _cached_client: Anthropic | None = None
 _cached_key: str | None = None
+# This factory is shared by the tokenizer, batch, cross-check, triage, and
+# verifier modules, which the GUI drives from different worker threads. The
+# lock keeps the (_cached_client, _cached_key) pair consistent: without it,
+# two threads racing across a runtime API-key change can interleave the two
+# assignments and durably cache a client built for a *different* key.
+_client_lock = threading.Lock()
 
 
 def _get_client() -> Anthropic:
     global _cached_client, _cached_key
     key = _get_api_key()
-    if _cached_client is None or _cached_key != key:
-        _cached_client = Anthropic(api_key=key)
-        _cached_key = key
-    return _cached_client
+    with _client_lock:
+        if _cached_client is None or _cached_key != key:
+            _cached_client = Anthropic(api_key=key)
+            _cached_key = key
+        return _cached_client
 
 
 def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[list, str]:

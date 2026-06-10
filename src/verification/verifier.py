@@ -1306,7 +1306,7 @@ def verify_finding(
 ) -> VerificationResult:
     """Verify a single finding using Claude with web search.
 
-    Uses the streaming API because the web_search_20250305 server tool
+    Uses the streaming API because the web_search_20260209 server tool
     requires streaming — non-streaming messages.create() will fail with
     a "streaming is required" error when server-side tools are active.
 
