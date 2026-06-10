@@ -24,8 +24,12 @@ improvements —
 * ``obscure_product_rating`` — a hard-to-ground manufacturer claim: should
   land a clean UNVERIFIED, not a guessed (and then downgraded) CONFIRMED.
 
-The matching is intentionally coarse (case-insensitive substring) so the
-recall signal is robust to wording. Severity is scored softly (reported,
+The default matching here is coarse (case-insensitive substring) so the
+hermetic path stays free and deterministic. Under ``--live`` capture the
+substring check is superseded by the LLM-as-judge matcher in
+:mod:`evals.judge` — phrasing-robust matching plus classification of extra
+findings — with this substring matcher retained as the per-spec fallback
+whenever the judge is unusable. Severity is scored softly (reported,
 never pass/fail) because the CRITICAL/HIGH/MEDIUM boundary is itself one
 of the things we are measuring.
 """
@@ -228,15 +232,39 @@ class SpecReviewScore:
     severity_match_count: int = 0
     false_positive_count: int = 0
     finding_count: int = 0
+    # Which matcher decided this spec's defect matches: "substring" (the
+    # hermetic default / judge fallback) or "judge" (evals.judge). Recorded
+    # so a capture report never presents mixed-method recall as one number
+    # without saying so.
+    match_method: str = "substring"
+    # Judge classification of extra findings (matched to no defect). Filled
+    # only on judged --live captures; reporting telemetry, never a gate.
+    extra_finding_count: int = 0
+    fp_legitimate: int = 0
+    fp_duplicate: int = 0
+    fp_hallucination: int = 0
 
 
-def score_spec_review(spec: LabeledSpec, findings: list[Any]) -> SpecReviewScore:
+# Matcher protocol: ``(defect, findings) -> matched finding | None``.
+# ``defect_matched`` is the hermetic default; ``evals.judge`` adapts the
+# LLM-as-judge decisions to the same shape via ``matcher_from_matches``.
+Matcher = Any
+
+
+def score_spec_review(
+    spec: LabeledSpec,
+    findings: list[Any],
+    *,
+    matcher: Matcher = defect_matched,
+) -> SpecReviewScore:
     """Score one spec's live findings against its labels.
 
     Recall is matched / expected defects. On a clean spec every emitted
     finding is a false positive. Severity match is counted only for defects
     that were found, and is reported (not gated) so the CRITICAL/HIGH/MEDIUM
-    boundary can be observed rather than enforced.
+    boundary can be observed rather than enforced. ``matcher`` selects the
+    match decision per defect — the substring default keeps this function
+    hermetic; the live capture passes the judge-backed matcher.
     """
     score = SpecReviewScore(
         spec_id=spec.spec_id,
@@ -248,7 +276,7 @@ def score_spec_review(spec: LabeledSpec, findings: list[Any]) -> SpecReviewScore
         score.false_positive_count = len(findings)
         return score
     for defect in spec.expected_defects:
-        hit = defect_matched(defect, findings)
+        hit = matcher(defect, findings)
         if hit is None:
             continue
         score.matched_defect_count += 1
