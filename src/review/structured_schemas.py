@@ -7,10 +7,13 @@
 * The model is *instructed* to call the tool, but with ``auto`` it MAY
   return a plain-text response instead. Callers must therefore keep the
   tagged-JSON text fallback parsers reachable.
-* ``strict: true`` is attached by default (see :func:`_strict_enabled`),
-  grammar-constraining the payload to the schema *when the model calls the
-  tool*. Strict mode makes the payload shape contractual; it does not make
-  the tool call itself contractual — the fallback above still applies.
+* ``strict: true`` is attached by default for models the capability
+  whitelist marks as supporting it (see :func:`_strict_for_model` — env
+  flag AND ``supports_strict_tools``), grammar-constraining the payload to
+  the schema *when the model calls the tool*. Strict mode makes the
+  payload shape contractual; it does not make the tool call itself
+  contractual — the fallback above still applies. Unknown-model overrides
+  degrade to the lenient shape, never a 400.
 
 The schemas stay inside the strict-mode supported subset: every property
 required, optionals nullable, ``additionalProperties: false``, no
@@ -298,7 +301,11 @@ _STRICT_DISABLE_TOKENS = frozenset({"0", "false", "no", "off"})
 
 
 def _strict_enabled() -> bool:
-    """Whether to attach ``"strict": true`` to tool definitions.
+    """Operator env gate for ``strict: true`` on tool definitions.
+
+    This is one of two gates — the other is the per-model capability check
+    in :func:`_strict_for_model`, which the tool builders actually consult
+    (env flag AND model support).
 
     Strict tool use grammar-constrains the model's tool input to the declared
     JSON Schema, eliminating the malformed-/truncated-payload failure mode the
@@ -332,7 +339,29 @@ def _strict_enabled() -> bool:
     return raw.strip().lower() not in _STRICT_DISABLE_TOKENS
 
 
-def review_findings_tool() -> dict[str, Any]:
+def _strict_for_model(model: str | None) -> bool:
+    """Whether to attach ``strict: true`` for a request bound to ``model``.
+
+    Two gates AND together: the operator env flag (:func:`_strict_enabled`)
+    and the model capability whitelist (``supports_strict_tools``). Strict
+    tool use is part of structured outputs, which Anthropic documents for
+    specific models — sending it to an unlisted-but-valid override (e.g.
+    ``SPEC_CRITIC_VERIFICATION_MODEL`` pinned to an older Claude) risks a
+    400 at submit. Routing through ``model_capabilities`` keeps the
+    standing rule intact: a misconfigured model env var produces a smaller
+    safe request, never an API rejection. ``model=None`` (a call site with
+    no model in scope) degrades the same conservative way.
+    """
+    if not _strict_enabled():
+        return False
+    if model is None:
+        return False
+    from ..core.api_config import model_capabilities
+
+    return model_capabilities(model).supports_strict_tools
+
+
+def review_findings_tool(*, model: str | None = None) -> dict[str, Any]:
     tool: dict[str, Any] = {
         "name": _REVIEW_TOOL_NAME,
         "description": (
@@ -341,12 +370,12 @@ def review_findings_tool() -> dict[str, Any]:
         ),
         "input_schema": REVIEW_FINDINGS_SCHEMA,
     }
-    if _strict_enabled():
+    if _strict_for_model(model):
         tool["strict"] = True
     return tool
 
 
-def cross_check_findings_tool() -> dict[str, Any]:
+def cross_check_findings_tool(*, model: str | None = None) -> dict[str, Any]:
     tool: dict[str, Any] = {
         "name": _CROSS_CHECK_TOOL_NAME,
         "description": (
@@ -356,12 +385,12 @@ def cross_check_findings_tool() -> dict[str, Any]:
         ),
         "input_schema": CROSS_CHECK_FINDINGS_SCHEMA,
     }
-    if _strict_enabled():
+    if _strict_for_model(model):
         tool["strict"] = True
     return tool
 
 
-def triage_classifications_tool() -> dict[str, Any]:
+def triage_classifications_tool(*, model: str | None = None) -> dict[str, Any]:
     tool: dict[str, Any] = {
         "name": _TRIAGE_TOOL_NAME,
         "description": (
@@ -371,7 +400,7 @@ def triage_classifications_tool() -> dict[str, Any]:
         ),
         "input_schema": TRIAGE_CLASSIFICATIONS_SCHEMA,
     }
-    if _strict_enabled():
+    if _strict_for_model(model):
         tool["strict"] = True
     return tool
 
@@ -380,7 +409,7 @@ def triage_tool_choice() -> dict[str, Any]:
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 
-def verification_verdict_tool() -> dict[str, Any]:
+def verification_verdict_tool(*, model: str | None = None) -> dict[str, Any]:
     tool: dict[str, Any] = {
         "name": _VERIFICATION_TOOL_NAME,
         "description": (
@@ -390,7 +419,7 @@ def verification_verdict_tool() -> dict[str, Any]:
         ),
         "input_schema": VERIFICATION_VERDICT_SCHEMA,
     }
-    if _strict_enabled():
+    if _strict_for_model(model):
         tool["strict"] = True
     return tool
 

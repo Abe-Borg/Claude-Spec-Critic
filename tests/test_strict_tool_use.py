@@ -1,4 +1,4 @@
-"""Strict tool use is an env-gated, default-ON lever.
+"""Strict tool use is default-ON, gated by env flag AND model capability.
 
 ``strict: true`` grammar-constrains tool input to the declared schema,
 eliminating the malformed-payload failure mode the tagged-JSON fallback
@@ -6,15 +6,25 @@ parsers absorb. It defaults ON: Anthropic's structured-outputs docs list
 strict tool use as compatible with adaptive thinking, streaming, and the
 Message Batches API, and ``tests/test_network_smoke.py::
 test_strict_tool_use_smoke`` sends the exact production strict shape live.
-``SPEC_CRITIC_STRICT_TOOL_USE=0`` is the rollback to the legacy lenient
-shape (see ``structured_schemas._strict_enabled``). These tests pin the
-gate: ``strict: true`` on every tool by default, byte-identical legacy tool
-defs on opt-out.
+
+Two gates AND together (``structured_schemas._strict_for_model``):
+
+* ``SPEC_CRITIC_STRICT_TOOL_USE`` — operator opt-out (``=0`` restores the
+  legacy lenient shape).
+* ``ModelCapabilities.supports_strict_tools`` — strict is only documented
+  for specific models, so an unlisted-but-valid ``SPEC_CRITIC_*_MODEL``
+  override degrades to the lenient shape instead of risking a 400 at
+  submit (the same policy every other optional capability follows).
+
+These tests pin the gate: ``strict: true`` on every tool by default for
+whitelisted models, byte-identical legacy tool defs on opt-out or for
+unknown models.
 """
 from __future__ import annotations
 
 import pytest
 
+from src.core.api_config import MODEL_HAIKU_45, MODEL_OPUS_48, MODEL_SONNET_46
 from src.review import structured_schemas as ss
 from src.review.structured_schemas import (
     ENV_STRICT_TOOL_USE,
@@ -30,6 +40,11 @@ _ALL_TOOL_BUILDERS = (
     verification_verdict_tool,
     triage_classifications_tool,
 )
+
+_WHITELISTED_MODELS = (MODEL_OPUS_48, MODEL_SONNET_46, MODEL_HAIKU_45)
+
+# Valid-looking model id deliberately absent from _MODEL_CAPABILITIES.
+_UNKNOWN_MODEL = "claude-sonnet-4-5"
 
 
 class TestStrictGateDefault:
@@ -51,22 +66,55 @@ class TestStrictGateDefault:
         assert ss._strict_enabled() is True
 
 
-class TestToolsCarryStrictUnlessDisabled:
-    def test_strict_true_by_default(self, monkeypatch) -> None:
+class TestCapabilityGate:
+    def test_whitelisted_models_pass(self, monkeypatch) -> None:
+        monkeypatch.delenv(ENV_STRICT_TOOL_USE, raising=False)
+        for model in _WHITELISTED_MODELS:
+            assert ss._strict_for_model(model) is True, model
+
+    def test_unknown_model_degrades(self, monkeypatch) -> None:
+        # An unlisted-but-valid override must produce the lenient shape,
+        # never a request the API could 400 — same rule as thinking/effort.
+        monkeypatch.delenv(ENV_STRICT_TOOL_USE, raising=False)
+        assert ss._strict_for_model(_UNKNOWN_MODEL) is False
+
+    def test_no_model_degrades(self, monkeypatch) -> None:
+        # A call site with no model in scope gets the conservative shape.
+        monkeypatch.delenv(ENV_STRICT_TOOL_USE, raising=False)
+        assert ss._strict_for_model(None) is False
+
+    def test_env_disable_beats_capability(self, monkeypatch) -> None:
+        monkeypatch.setenv(ENV_STRICT_TOOL_USE, "0")
+        for model in _WHITELISTED_MODELS:
+            assert ss._strict_for_model(model) is False, model
+
+
+class TestToolsCarryStrictUnlessGated:
+    @pytest.mark.parametrize("model", _WHITELISTED_MODELS)
+    def test_strict_true_by_default_on_whitelisted_models(self, monkeypatch, model) -> None:
         monkeypatch.delenv(ENV_STRICT_TOOL_USE, raising=False)
         for builder in _ALL_TOOL_BUILDERS:
-            tool = builder()
-            assert tool.get("strict") is True, f"{builder.__name__} missing strict by default"
+            tool = builder(model=model)
+            assert tool.get("strict") is True, f"{builder.__name__} missing strict for {model}"
             # The schema itself is unchanged — strict is purely additive.
             assert "input_schema" in tool
 
-    def test_no_strict_key_when_disabled(self, monkeypatch) -> None:
+    def test_no_strict_key_when_env_disabled(self, monkeypatch) -> None:
         monkeypatch.setenv(ENV_STRICT_TOOL_USE, "0")
         for builder in _ALL_TOOL_BUILDERS:
-            tool = builder()
+            tool = builder(model=MODEL_OPUS_48)
             # The rollback must restore the byte-identical legacy tool shape —
             # no leftover ``strict`` key, not even ``strict: false``.
             assert "strict" not in tool, f"{builder.__name__} leaked strict when disabled"
+
+    @pytest.mark.parametrize("model", [_UNKNOWN_MODEL, None])
+    def test_no_strict_key_for_unknown_or_missing_model(self, monkeypatch, model) -> None:
+        monkeypatch.delenv(ENV_STRICT_TOOL_USE, raising=False)
+        for builder in _ALL_TOOL_BUILDERS:
+            tool = builder(model=model)
+            assert "strict" not in tool, (
+                f"{builder.__name__} attached strict for unsupported model {model!r}"
+            )
 
 
 class TestSchemasStayInsideStrictSubset:
@@ -95,4 +143,4 @@ class TestSchemasStayInsideStrictSubset:
     @pytest.mark.parametrize("builder", _ALL_TOOL_BUILDERS)
     def test_no_out_of_subset_keywords(self, monkeypatch, builder) -> None:
         monkeypatch.delenv(ENV_STRICT_TOOL_USE, raising=False)
-        self._walk(builder()["input_schema"])
+        self._walk(builder(model=MODEL_OPUS_48)["input_schema"])

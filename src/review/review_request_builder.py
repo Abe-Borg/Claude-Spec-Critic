@@ -175,7 +175,7 @@ def _build_params_from_strings(
 
     use_tool = structured_tool_output_enabled()
     if use_tool:
-        tools = tools_with_cache([review_findings_tool()], phase=PHASE_REVIEW)
+        tools = tools_with_cache([review_findings_tool(model=model)], phase=PHASE_REVIEW)
     else:
         tools = None
 
@@ -271,7 +271,7 @@ def build_token_count_request(
     }
     if built.tools is not None:
         # Recompute the raw tool list without the cache_control block.
-        count_kwargs["tools"] = [review_findings_tool()]
+        count_kwargs["tools"] = [review_findings_tool(model=built.model)]
     return built, count_kwargs
 
 
@@ -288,7 +288,7 @@ def review_request_cache_key(spec: ReviewRequestSpec) -> str:
 
     system_prompt = get_system_prompt(spec.cycle)
     user_message = build_user_message(spec)
-    tools = [review_findings_tool()] if structured_tool_output_enabled() else None
+    tools = [review_findings_tool(model=spec.model)] if structured_tool_output_enabled() else None
     return token_count_cache_key(
         model=spec.model,
         system_prompt=system_prompt,

@@ -230,11 +230,15 @@ a plain-text response instead.
 
 That single fact — "reliably but not contractually" — is why the engine keeps a
 second, text-based parser permanently reachable (`_extract_json_array`, §5).
-Strict tool use is the related-but-separate lever, and it is now ON by default
-(`_strict_enabled()`): unlike forced `tool_choice`, Anthropic documents
-`strict: true` as compatible with adaptive thinking and the Batches API, and the
-live smoke test (`tests/test_network_smoke.py::test_strict_tool_use_smoke`)
-sends the exact production strict shape. Strict mode closes the malformed- and
+Strict tool use is the related-but-separate lever, and it is now ON by default:
+unlike forced `tool_choice`, Anthropic documents `strict: true` as compatible
+with adaptive thinking and the Batches API, and the live smoke test
+(`tests/test_network_smoke.py::test_strict_tool_use_smoke`) sends the exact
+production strict shape. Two gates AND together in `_strict_for_model()`: the
+operator env flag (`_strict_enabled()`) and the model capability whitelist
+(`supports_strict_tools`) — the tool builders take `model=`, and an
+unlisted-but-valid `SPEC_CRITIC_*_MODEL` override degrades to the lenient tool
+shape rather than risking a 400, the same policy as thinking and effort. Strict mode closes the malformed- and
 truncated-payload failure modes — but only for responses that *are* tool calls.
 It does not make the tool call itself contractual, which is precisely the gap
 the fallback parser covers, and `SPEC_CRITIC_STRICT_TOOL_USE=0` restores the

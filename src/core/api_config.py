@@ -248,6 +248,14 @@ class ModelCapabilities:
     # :func:`effort_config_for` must consult this flag before attaching
     # the field. Default ``False`` so unknown models silently omit it.
     supports_effort: bool = False
+    # Whether the model accepts ``strict: true`` on custom tool definitions
+    # (structured outputs / strict tool use). Anthropic documents the
+    # feature for specific models; sending it to one outside that set risks
+    # a 400 at submit. The tool builders in ``structured_schemas`` consult
+    # this flag, so a ``SPEC_CRITIC_*_MODEL`` override to an
+    # unlisted-but-valid model degrades to the lenient tool shape instead
+    # of an API rejection. Default ``False``.
+    supports_strict_tools: bool = False
 
 
 _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
@@ -264,6 +272,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_extended_output_beta=True,
         context_window=1_000_000,
         supports_effort=True,
+        supports_strict_tools=True,
     ),
     MODEL_SONNET_46: ModelCapabilities(
         supports_adaptive_thinking=True,
@@ -275,6 +284,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_extended_output_beta=True,
         context_window=1_000_000,
         supports_effort=True,
+        supports_strict_tools=True,
     ),
     MODEL_HAIKU_45: ModelCapabilities(
         # Anthropic models overview lists Haiku 4.5 without adaptive
@@ -287,6 +297,8 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         # Omit ``output_config.effort`` for Haiku to keep request shapes
         # safe across model swaps (e.g. triage).
         supports_effort=False,
+        # Structured outputs / strict tool use is documented for Haiku 4.5.
+        supports_strict_tools=True,
     ),
 }
 
@@ -301,6 +313,7 @@ _DEFAULT_CAPABILITIES = ModelCapabilities(
     supports_extended_output_beta=False,
     context_window=200_000,
     supports_effort=False,
+    supports_strict_tools=False,
 )
 
 
@@ -325,7 +338,8 @@ def _warn_unknown_model(model: str) -> None:
         "Model id %r is not in the capability whitelist (_MODEL_CAPABILITIES "
         "in src/core/api_config.py); degrading to conservative defaults: no "
         "adaptive thinking, no effort tuning, %s-token output cap, %s-token "
-        "context window, no 300k extended-output beta. If this is a "
+        "context window, no 300k extended-output beta, no strict tool use. "
+        "If this is a "
         "known-good model, add it to the whitelist to unlock its full "
         "capabilities.",
         model,

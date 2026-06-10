@@ -253,7 +253,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
         # routing through ``tools_with_cache`` keeps the policy in one
         # place if a future tuning pass diverges.
         request_kwargs["tools"] = tools_with_cache(
-            [cross_check_findings_tool()], phase=PHASE_CROSS_CHECK
+            [cross_check_findings_tool(model=model)], phase=PHASE_CROSS_CHECK
         )
         request_kwargs["tool_choice"] = cross_check_tool_choice()
 

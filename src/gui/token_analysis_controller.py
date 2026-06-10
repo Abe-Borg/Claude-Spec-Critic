@@ -265,7 +265,7 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
                 model=selected_model,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
-                tools=[review_findings_tool()],
+                tools=[review_findings_tool(model=selected_model)],
             )
             if exact is None:
                 return

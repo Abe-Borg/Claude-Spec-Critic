@@ -437,6 +437,8 @@ def verification_request_includes_verdict_tool() -> bool:
 def build_verification_tools_for_profile(
     profile,
     severity: str | None = None,
+    *,
+    model: str | None = None,
 ) -> list[dict]:
     """Build the verification request tool list (web_search + verdict tool).
 
@@ -460,7 +462,9 @@ def build_verification_tools_for_profile(
     web_tool = build_web_search_tool(max_uses=max_uses)
     tools: list[dict] = [web_tool]
     if verification_request_includes_verdict_tool():
-        tools.append(verification_verdict_tool())
+        # ``model`` gates ``strict: true`` on the verdict tool via the
+        # capability whitelist; None degrades to the lenient shape.
+        tools.append(verification_verdict_tool(model=model))
     return tools
 
 
