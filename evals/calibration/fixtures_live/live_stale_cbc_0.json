@@ -1,0 +1,67 @@
+{
+  "fixture_id": "live_stale_cbc_0",
+  "category": "california_ahj",
+  "severity": "MEDIUM",
+  "description": "Live capture from 23 05 00 - Common HVAC (stale CBC).docx",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "23 05 00 - Common HVAC (stale CBC).docx",
+    "section": "1.03",
+    "issue": "References article cites the superseded 2019 California Building Code edition. The current code cycle for this DSA K-12 project is CBC 2025, so the citation is out of date and should be updated to the current cycle.",
+    "actionType": "EDIT",
+    "existingText": "A. Comply with 2019 CBC Chapter 6 for all mechanical work.",
+    "replacementText": "A. Comply with 2025 CBC Chapter 6 for all mechanical work.",
+    "codeReference": "CBC 2025 (current cycle)",
+    "confidence": 0.95,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "23 05 00 - Common HVAC (stale CBC).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "The 2025 California Building Standards Code (CBC 2025) is the current adopted edition, effective January 1, 2026, and DSA has adopted its provisions for K-12 school projects. Referencing the superseded 2019 CBC edition in project specifications is out of date and must be updated to CBC 2025.",
+    "sources": [
+      "https://codes.iccsafe.org/content/CABC2025P1",
+      "https://www.dgs.ca.gov/DSA/Resources/Structural-Safety-Code-Development"
+    ],
+    "correction": "A. Comply with 2025 CBC Chapter 6 for all mechanical work.",
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "california_ahj",
+    "web_search_requests": 2,
+    "successful_source_count": 18,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://codes.iccsafe.org/content/CABC2025P1",
+      "https://up.codes/viewer/california/ca-building-code-2025",
+      "https://www.meltplan.com/blogs/understanding-title-24-a-guide-to-the-california-building-codes-cbc-crc-energy-code",
+      "https://www.coffman.com/news/key-updates-in-the-2025-california-building-code-cbc/",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/ss-code-development/triennial-rulemaking-workshop/2025_CBSC-CodeChangeSummary_DSA-SS.pdf",
+      "https://www.dgs.ca.gov/BSC/Resources/2025-Title-24-California-Code-Changes",
+      "https://www.dgs.ca.gov/bsc/codes",
+      "https://www.hcd.ca.gov/node/1815",
+      "https://www.dgs.ca.gov/DSA/Resources/Structural-Safety-Code-Development",
+      "https://building.rctlma.org/news/2025-california-building-standards-code-effective-january-1-2026",
+      "https://www.dgs.ca.gov/dsa/publications",
+      "https://www.dgs.ca.gov/DSA/News",
+      "https://www.dgs.ca.gov/DSA/Resources/CALGreen-Code-Development",
+      "https://www.dgs.ca.gov/dsa/Resources.aspx?page=2",
+      "https://www.dgs.ca.gov/dsa",
+      "https://www.dgs.ca.gov/DSA/Resources/Access-Compliance-Code-Development",
+      "https://up.codes/d/dsa",
+      "https://www.dgs.ca.gov/DSA/Resources/Page-Content/Resources-List-Folder/Plan-Review-for-School-Essential-Services-Construction-Projects"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Auto-captured for labeled defect: Cites 2019 CBC for a 2025-cycle project. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

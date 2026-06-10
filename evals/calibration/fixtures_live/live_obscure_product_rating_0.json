@@ -1,0 +1,60 @@
+{
+  "fixture_id": "live_obscure_product_rating_0",
+  "category": "manufacturer",
+  "severity": "MEDIUM",
+  "description": "Live capture from 23 09 23 - DDC (obscure product).docx",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "23 09 23 - DDC (obscure product).docx",
+    "section": "2.04",
+    "issue": "The specified sensor accuracy of +/- 0.05 degF is not obtainable from commercially available duct temperature sensors and appears to be a typographical error (typical DDC duct temperature sensor accuracy is on the order of +/- 0.5 degF over the operating range). As written, no product could be furnished in compliance. Verify the intended accuracy with the controls designer and correct the value (likely +/- 0.5 degF).",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": null,
+    "confidence": 0.7,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "23 09 23 - DDC (obscure product).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "Manufacturer datasheets for commercially available DDC duct temperature sensors (e.g., Automated Logic) show typical accuracies in the range of \u00b10.18\u00b0F to \u00b10.55\u00b0F; \u00b10.05\u00b0F is not achievable with standard products. The finding is correct that \u00b10.05\u00b0F appears to be a typographical error and that \u00b10.5\u00b0F is the appropriate specification.",
+    "sources": [
+      "https://www.automatedlogic.com/en/media/ALC-20903%20Averaging%20Duct%20Sensors_tcm702-230303.pdf"
+    ],
+    "correction": null,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "strict_structured",
+    "verification_profile": "internal_coordination",
+    "web_search_requests": 2,
+    "successful_source_count": 12,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.automatedlogic.com/en/media/ALC-20903%20Averaging%20Duct%20Sensors_tcm702-230303.pdf",
+      "https://bravocontrols.com/shop/duct-temperature-sensor/",
+      "https://temcocontrols.com/shop/duct-temperature-sensor/",
+      "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6890095",
+      "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/4968151",
+      "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6592254",
+      "https://www.veris.com/996238/product/veris-tddam20-duct-temperature-sensor",
+      "https://www.monnit.com/products/sensors/temperature/duct-temperature/",
+      "https://highperformancehvac.com/duct-temperature-sensor/",
+      "https://controlshub.tech/en/blog/76-hvac-sensor-calibration/",
+      "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/11428427",
+      "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/11060747"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "expected_status": "INSUFFICIENT_EVIDENCE",
+    "notes": "Auto-captured for labeled defect: Unverifiable sensor accuracy claim for an obscure model. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

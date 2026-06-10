@@ -1,0 +1,58 @@
+{
+  "fixture_id": "live_stale_ashrae15_0",
+  "category": "code_standard",
+  "severity": "MEDIUM",
+  "description": "Live capture from 23 64 00 - Chillers (stale ASHRAE 15).docx",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "23 64 00 - Chillers (stale ASHRAE 15).docx",
+    "section": "1.02",
+    "issue": "Section cites a superseded edition of ASHRAE 15. The pinned standard edition for this project cycle is ASHRAE 15-2022, not ASHRAE 15-2019. Refrigeration machinery room requirements should reference the current edition adopted for this cycle.",
+    "actionType": "EDIT",
+    "existingText": "A. Refrigeration machinery rooms shall comply with ASHRAE 15-2019.",
+    "replacementText": "A. Refrigeration machinery rooms shall comply with ASHRAE 15-2022.",
+    "codeReference": "ASHRAE 15-2022",
+    "confidence": 0.95,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "23 64 00 - Chillers (stale ASHRAE 15).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "The 2025 California Mechanical Code (CMC) mandates ASHRAE 15-2022 as the applicable edition; referencing ASHRAE 15-2019 in the spec is therefore outdated and should be updated to ASHRAE 15-2022.",
+    "sources": [
+      "https://dbs.lacity.gov/sites/default/files/efs/forms/pc17/P-MC-2026-007-Guideline-HVAC-Systems.pdf"
+    ],
+    "correction": null,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 1,
+    "successful_source_count": 10,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://dbs.lacity.gov/sites/default/files/efs/forms/pc17/P-MC-2026-007-Guideline-HVAC-Systems.pdf",
+      "https://www.ashrae.org/technical-resources/bookstore/ashrae-refrigeration-resources",
+      "https://shop.iccsafe.org/ashrae-standard-15-2022-packaged-w-standard-34-2022-safety-standard-for-refrigeration-systems-and-designation-and-safety-classification-of-refrigerants.html",
+      "https://www.ashrae.org/file%20library/about/government%20affairs/public%20policy%20resources/standards-15-and-24-2024-fact-sheet.pdf",
+      "https://www.ashrae.org/file%20library/technical%20resources/standards%20and%20guidelines/standards%20addenda/15_2022_q_20240930.pdf",
+      "https://tpc.ashrae.org/?cmtKey=8bff7852-e286-4c07-813c-08d416eb3a6d",
+      "https://store.accuristech.com/products/preview/2922395",
+      "https://www.ashrae.org/file%20library/technical%20resources/standards%20and%20guidelines/standards%20addenda/15_2022_c_20240930.pdf",
+      "https://up.codes/code/ashrae-15-safety-standard-for-refrigeration-systems-2022",
+      "https://store.accuristech.com/ashrae/standards/ashrae-15-2024-packaged-w-standard-34-2024?product_id=2922394"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Auto-captured for labeled defect: Cites ASHRAE 15-2019; cycle pins ASHRAE 15 2022. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

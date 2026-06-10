@@ -1,0 +1,70 @@
+{
+  "fixture_id": "live_duct_pressure_contradiction_0",
+  "category": "internal_coordination",
+  "severity": "HIGH",
+  "description": "Live capture from 23 31 13 - Ductwork (contradiction).docx",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "23 31 13 - Ductwork (contradiction).docx",
+    "section": "2.01",
+    "issue": "Internal contradiction in duct pressure class. Paragraph 2.01.A states galvanized steel ductwork is rated for 2 inches w.g. (applied generally), while 2.01.B requires all supply ductwork to be constructed for 4 inches w.g. Supply ductwork is a subset of all ductwork, so these requirements conflict. Pressure class governs duct gauge, reinforcement spacing, sealing class, and SMACNA construction, so the contradiction must be resolved before issuance. Confirm the intended pressure class(es) (e.g., a 2 in. w.g. class for return/exhaust/low-pressure and a 4 in. w.g. class for supply) and rewrite 2.01.A and 2.01.B so the duct construction classes do not overlap or contradict.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": "SMACNA HVAC Duct Construction Standards; CMC 2025",
+    "confidence": 0.92,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "23 31 13 - Ductwork (contradiction).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "SMACNA standards require that \"each duct system shall be constructed for the specific duct pressure classifications shown on the contract drawings,\" and pressure class directly governs gauge, reinforcement spacing, and sealing class. Specifying a blanket 2\" w.g. class for all ductwork in 2.01.A while simultaneously requiring 4\" w.g. for supply ductwork in 2.01.B creates a real and unresolvable internal contradiction that must be reconciled before issuance.",
+    "sources": [
+      "https://law.resource.org/pub/us/cfr/ibr/005/smacna.duct.1995.html",
+      "https://btrained.net/hvac-articles/understanding-smacna-standards-for-hvac-duct-fabrication"
+    ],
+    "correction": null,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "strict_structured",
+    "verification_profile": "internal_coordination",
+    "web_search_requests": 3,
+    "successful_source_count": 21,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://law.resource.org/pub/us/cfr/ibr/005/smacna.duct.1995.html",
+      "https://www.smacna.org/technical-standards",
+      "https://webstore.ansi.org/preview-pages/ANSI/preview_SMACNA+1966-2005.pdf",
+      "https://btrained.net/hvac-articles/understanding-smacna-standards-for-hvac-duct-fabrication",
+      "https://store.smacna.org/hvac-duct-construction-standards-metal-and-flexible-4th/",
+      "https://www.dartmouth.edu/fom/docs/2023_construction_guidelines/23_31_13_ductwork.pdf",
+      "https://www.slideshare.net/slideshow/smacna-duct-construction-standards-2005-pdf/270106982",
+      "https://brominghvac.com/rectangular-duct-sizing-smacna-guide/",
+      "https://www.scribd.com/doc/104856825/HVAC-Duct-Construction",
+      "https://umaec.umich.edu/desguide/tech/15%20old/15890_apr91.pdf",
+      "https://hvacprosales.com/hvac-ductwork/duct-pressure-classes/",
+      "https://www.scribd.com/document/522297786/SMACNA-HVAC-Duct-Pressure-Class",
+      "https://facilities.upenn.edu/sites/default/files/pdfs/233100_-_ductwork_-_mechanical_design_guide_0.pdf",
+      "https://asc67.org/ASC_Previous_Problems/Open/IP/2015/02%20-%20Bid%20Documents/Specifications%20(VOL%20II%20and%20up)/Structural%20Retrofit%20Technical%20Specifications/15890%20Metal%20Ductwork.pdf",
+      "https://www.pmxductwork.com/blog/supply-vs-return-ductwork",
+      "https://www.conklinmetal.com/blog/smacna-mastic/",
+      "https://www.smacna.org/technical-standards/apps/view/exhaust-system-design",
+      "https://www.thermaduct.com/knowledge-base/smacna-phenolic-duct-construction-standards",
+      "https://airductauthority.com/duct-system-codes-and-standards/",
+      "https://www.smaestimating.com/smacna-standards/",
+      "https://hvac-eng.com/hvac-duct-design-duct-pressure-classification/"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "expected_status": "LOCALLY_CLASSIFIED",
+    "notes": "Auto-captured for labeled defect: Duct pressure class stated as both 2 and 4 in. w.g.. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

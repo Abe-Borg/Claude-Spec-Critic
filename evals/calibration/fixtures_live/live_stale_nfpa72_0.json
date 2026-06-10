@@ -1,0 +1,59 @@
+{
+  "fixture_id": "live_stale_nfpa72_0",
+  "category": "code_standard",
+  "severity": "MEDIUM",
+  "description": "Live capture from 23 33 00 - Duct Accessories (stale NFPA 72).docx",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "23 33 00 - Duct Accessories (stale NFPA 72).docx",
+    "section": "2.05",
+    "issue": "Duct smoke detector installation/testing references a superseded NFPA 72 edition. The pinned standard edition for this project cycle is NFPA 72 2025, as amended by California; the 2016 edition is out of date.",
+    "actionType": "EDIT",
+    "existingText": "Duct smoke detectors shall be installed and tested per NFPA 72, 2016 edition.",
+    "replacementText": "Duct smoke detectors shall be installed and tested per NFPA 72, 2025 edition, as amended by California.",
+    "codeReference": "NFPA 72 (2025, as amended by California)",
+    "confidence": 0.95,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "23 33 00 - Duct Accessories (stale NFPA 72).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "The 2025 California Building Code cycle adopts the 2025 edition of NFPA 72, making the 2016 edition referenced in the specification out of date. The replacement text correctly updates the reference to NFPA 72, 2025 edition, as amended by California.",
+    "sources": [
+      "https://www.dgs.ca.gov/BSC/Resources/2025-Title-24-California-Code-Changes",
+      "https://www.fireprotectioneducation.com/class-5.html"
+    ],
+    "correction": null,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "california_ahj",
+    "web_search_requests": 1,
+    "successful_source_count": 10,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.dgs.ca.gov/BSC/Resources/2025-Title-24-California-Code-Changes",
+      "https://www.coffman.com/news/key-updates-in-the-2025-california-building-code-cbc/",
+      "https://www.fireprotectioneducation.com/class-5.html",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/sustainability/Sustainability-Code-Change-Summary-2025-CBC-in-2024-Tri.pdf",
+      "https://in-buildingwireless.com/nfpa-72s-2025-edition-and-erces/",
+      "https://www.firealarmsonline.com/2026/02/2025-california-carbon-monoxide-requirements-cbc-915-cfc-915-nfpa-72.html",
+      "https://www.dgs.ca.gov/DSA/News",
+      "https://www.cafaa.com/event-6355092",
+      "https://www.withessential.com/resources/nfpa-72-changes-for-2026",
+      "https://up.codes/viewer/california/ca-building-code-2025/chapter/35/referenced-standards"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Auto-captured for labeled defect: Duct smoke detectors cite NFPA 72 2016 edition; cycle pins NFPA 72 2025. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

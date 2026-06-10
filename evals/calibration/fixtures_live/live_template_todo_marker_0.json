@@ -1,0 +1,64 @@
+{
+  "fixture_id": "live_template_todo_marker_0",
+  "category": "internal_coordination",
+  "severity": "HIGH",
+  "description": "Live capture from 23 09 93 - Sequences (TODO marker).docx",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "23 09 93 - Sequences (TODO marker).docx",
+    "section": "3.02.A",
+    "issue": "An unresolved \"TODO:\" placeholder remains in the issued sequence of operations. The economizer changeover setpoint is left undefined, so the sequence cannot be programmed, balanced, or commissioned. The note also directs coordination to the \"electrical engineer,\" but the economizer changeover (dry-bulb / differential enthalpy) high-limit setpoint is a mechanical/controls design parameter that should be coordinated with the HVAC designer and controls contractor, and must comply with the California Energy Code economizer high-limit shutoff requirements.",
+    "actionType": "EDIT",
+    "existingText": "A. TODO: coordinate the economizer changeover setpoint with the electrical engineer.",
+    "replacementText": "A. Coordinate the economizer changeover (dry-bulb or differential enthalpy) high-limit setpoint with the HVAC designer and controls contractor, and set it in accordance with the 2025 California Energy Code high-limit shutoff requirements and the equipment setpoint schedule.",
+    "codeReference": "2025 California Energy Code \u00a7140.4(e)",
+    "confidence": 0.92,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "23 09 93 - Sequences (TODO marker).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "The 2025 California Energy Code \u00a7140.4(e) explicitly governs economizer high-limit shutoff requirements (referenced under Table 140.4-G), covering dry-bulb and differential enthalpy control types \u2014 making the changeover setpoint a mechanical/controls design parameter, not an electrical engineering responsibility. The finding is correct that the TODO placeholder is unresolved and that the setpoint must comply with CEC \u00a7140.4(e).",
+    "sources": [
+      "https://codes.iccsafe.org/content/CAEC2025P1/index",
+      "https://energycodeace.com/content/section-1404-prescriptive-requirements-for-space-conditioni"
+    ],
+    "correction": null,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "strict_structured",
+    "verification_profile": "internal_coordination",
+    "web_search_requests": 2,
+    "successful_source_count": 15,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://codes.iccsafe.org/content/CAEC2025P1/index",
+      "https://energycodeace.com/site/custom/public/reference-ace-2019/Documents/section1404prescriptiverequirementsforspaceconditioningsystems.htm",
+      "https://www.energy.ca.gov/sites/default/files/2025-11/CEC-400-2025-015.pdf",
+      "https://www.coffman.com/news/changes-to-the-building-energy-efficiency-standards/",
+      "https://energycodeace.com/content/section-1404-prescriptive-requirements-for-space-conditioni",
+      "https://efiling.energy.ca.gov/GetDocument.aspx?tn=258651",
+      "https://energycodeace.com/download/256482/file_path/fieldList/ECA+NR+Whats+Changed+Fact+Sheet+WEB_4125.pdf",
+      "https://www.energy.ca.gov/sites/default/files/2025-06/CEC-400-2025-008.pdf",
+      "https://up.codes/s/prescriptive-requirements-for-covered-processes",
+      "https://title24stakeholders.com/wp-content/uploads/2023/04/May18-2025-T24-Utility-Sponsored-Stakeholder-Meeting-R2_NR-HVAC-Space-Heating.pdf",
+      "https://codes.iccsafe.org/s/CEC2016/subchapter-5-nonresidential-high-rise-residential-and-hotel-motel-occupancies-performance-and-prescriptive-compliance-approaches-for-achieving-energy-efficiency/CEC2016-Ch05-Sec140.4",
+      "https://energycodeace.com/site/custom/public/reference-ace-2019/Documents/45hvacsystemcontrolrequirements.htm",
+      "https://www.energy.ca.gov/filebrowser/download/8496?fid=8496",
+      "https://www.energy.ca.gov/sites/default/files/2020-01/air_economizer_certification_guidance_ADA.pdf",
+      "https://up.codes/s/prescriptive-requirements-for-space-conditioning-systems"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "expected_status": "LOCALLY_CLASSIFIED",
+    "notes": "Auto-captured for labeled defect: TODO authoring note left in the economizer sequence. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

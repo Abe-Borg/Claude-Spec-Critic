@@ -1,0 +1,58 @@
+{
+  "fixture_id": "live_stale_asce7_0",
+  "category": "code_standard",
+  "severity": "HIGH",
+  "description": "Live capture from 23 05 48 - Seismic Controls (stale ASCE 7).docx",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "23 05 48 - Seismic Controls (stale ASCE 7).docx",
+    "section": "1.04.A",
+    "issue": "Seismic design of equipment anchorage is referenced to ASCE 7-10, a superseded edition. The current code cycle (CBC 2025) adopts ASCE 7-22. Citing ASCE 7-10 for nonstructural component anchorage will not align with DSA-enforced requirements and is likely to be rejected in plan check.",
+    "actionType": "EDIT",
+    "existingText": "A. Seismic design of equipment anchorage shall be per ASCE 7-10 Chapter 13.",
+    "replacementText": "A. Seismic design of equipment anchorage shall be per ASCE 7-22 Chapter 13.",
+    "codeReference": "ASCE 7-22 Chapter 13 (CBC 2025)",
+    "confidence": 0.96,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "23 05 48 - Seismic Controls (stale ASCE 7).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "CBC 2025 adopts ASCE 7-22 for seismic design, superseding ASCE 7-10. Citing ASCE 7-10 Chapter 13 for equipment anchorage is incorrect and must be updated to ASCE 7-22 Chapter 13 to align with DSA-enforced requirements.",
+    "sources": [
+      "https://www.meltplan.com/blogs/how-the-2025-california-building-code-cbc-overhauls-everything-from-authority-to-engineering"
+    ],
+    "correction": "A. Seismic design of equipment anchorage shall be per ASCE 7-22 Chapter 13.",
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "california_ahj",
+    "web_search_requests": 2,
+    "successful_source_count": 10,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.meltplan.com/blogs/how-the-2025-california-building-code-cbc-overhauls-everything-from-authority-to-engineering",
+      "https://www.ci.benicia.ca.us/vertical/Sites/%7BF991A639-AAED-4E1A-9735-86EA195E2C8D%7D/uploads/City_of_Benicia_Part_2_Building_Code_Vol_2.pdf",
+      "https://codelibrary.amlegal.com/codes/elsegundoca/latest/elsegundo_ca/0-0-0-8235",
+      "https://cdi.santacruzcountyca.gov/UPC/BuildingPermitsSafety/BuildingPermitsIndex/BuildingCodesResources/BuildingDesign%E2%80%932025CodeCriteria.aspx",
+      "https://www.meltplan.com/blogs/california-seismic-design-and-wui-code-requirements-cbc-chapter-7a",
+      "https://iseengineers.com/what-californias-2026-building-code-changes-mean-for-structural-engineering/",
+      "https://up.codes/viewer/california/ca-building-code-2025/chapter/16/structural-design",
+      "https://www.calstate.edu/csu-system/doing-business-with-the-csu/capital-planning-design-construction/Documents/CSU_Seismic_Requirements.pdf",
+      "https://cdnsm5-hosted.civiclive.com/UserFiles/Servers/Server_16925367/File/%20City%20Hall/Departments%20&%20Divisions/Planning%20and%20Development%20Services/Building%20Division/2025-ca-significant-changes-cbc-complete.pdf",
+      "https://up.codes/codes/california"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Auto-captured for labeled defect: Cites ASCE 7-10 for seismic design; the current cycle adopts a newer edition. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

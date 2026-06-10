@@ -1,0 +1,66 @@
+{
+  "fixture_id": "live_invalid_2018_cbc_0",
+  "category": "california_ahj",
+  "severity": "MEDIUM",
+  "description": "Live capture from 23 05 00 - Common HVAC (invalid 2018 CBC).docx",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "23 05 00 - Common HVAC (invalid 2018 CBC).docx",
+    "section": "1.03",
+    "issue": "Article 1.03 REFERENCES cites the 2018 California Building Code, which is superseded. The current code cycle for this DSA K-12 project is CBC 2025. A DSA plan checker will reject the obsolete edition citation.",
+    "actionType": "EDIT",
+    "existingText": "A. All work shall comply with the 2018 California Building Code.",
+    "replacementText": "A. All work shall comply with the 2025 California Building Code.",
+    "codeReference": "CBC 2025",
+    "confidence": 0.97,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "23 05 00 - Common HVAC (invalid 2018 CBC).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "The 2018 CBC is doubly superseded \u2014 first by the 2022 CBC (effective Jan 1, 2023) and now by the 2025 CBC. DSA has already issued bulletins (BU 25-02) addressing submittals under the 2025 California Building Standards Code, confirming that CBC 2025 is the current code cycle for DSA K-12 projects. The replacement text citing the 2025 CBC is correct.",
+    "sources": [
+      "https://www.dgs.ca.gov/DSA/Publications"
+    ],
+    "correction": null,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "california_ahj",
+    "web_search_requests": 2,
+    "successful_source_count": 18,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://building.rctlma.org/news/2025-california-building-standards-code-effective-january-1-2026",
+      "https://www.dgs.ca.gov/bsc/codes",
+      "https://www.meltplan.com/blogs/understanding-title-24-a-guide-to-the-california-building-codes-cbc-crc-energy-code",
+      "https://up.codes/viewer/california/ca-building-code-2025",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/ss-code-development/triennial-rulemaking-workshop/2025_CBSC-CodeChangeSummary_DSA-SS.pdf",
+      "https://up.codes/codes/california",
+      "https://codes.iccsafe.org/content/CABC2025P1",
+      "https://www.dgs.ca.gov/DSA/Resources/Structural-Safety-Code-Development",
+      "https://cdnsm5-hosted.civiclive.com/UserFiles/Servers/Server_16925367/File/%20City%20Hall/Departments%20&%20Divisions/Planning%20and%20Development%20Services/Building%20Division/2025%20Code%20Adoption%20QandA.pdf",
+      "https://goldenstatede.com/california-building-code/",
+      "https://www.dgs.ca.gov/DSA/Publications",
+      "https://www.bartosarchitecture.com/school-facilities-resources",
+      "https://www.dgs.ca.gov/dsa",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/access/2025-Intervening-Code-Cycle-Proposals.pdf",
+      "https://www.dgs.ca.gov/dsa/Resources",
+      "https://www.dgs.ca.gov/DSA/Resources/Page-Content/Resources-List-Folder/DSA-Academy",
+      "https://www.dgs.ca.gov/DSA/Resources/Access-Compliance-Code-Development",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/access/2025_CBC_Advisory_Manual.pdf"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Auto-captured for labeled defect: Cites a 2018 California Building Code, an edition that does not exist. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

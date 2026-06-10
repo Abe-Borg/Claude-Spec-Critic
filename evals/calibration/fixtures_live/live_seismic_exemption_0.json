@@ -1,0 +1,72 @@
+{
+  "fixture_id": "live_seismic_exemption_0",
+  "category": "california_ahj",
+  "severity": "CRITICAL",
+  "description": "Live capture from 22 05 48 - Seismic Controls (false exemption).docx",
+  "finding": {
+    "severity": "CRITICAL",
+    "fileName": "22 05 48 - Seismic Controls (false exemption).docx",
+    "section": "1.05",
+    "issue": "The section states that seismic restraint of piping systems is not required for the project. This is a false blanket exemption. Under DSA jurisdiction, CBC 2025 (Chapter 16) adopts ASCE 7-22 Chapter 13, which requires seismic bracing and anchorage of plumbing/mechanical piping unless the specific, conditional exemptions of ASCE 7-22 \u00a713.6.8 are met on an item-by-item basis. A project-wide exemption will be rejected by the DSA plan checker and is a code-compliance/safety showstopper.",
+    "actionType": "EDIT",
+    "existingText": "A. Seismic restraint of piping systems is not required for this project.",
+    "replacementText": "A. Seismic restraint and bracing of piping systems shall be provided in accordance with CBC 2025 and ASCE 7-22 Chapter 13. Exemptions shall be applied only on an individual-component basis where explicitly permitted by ASCE 7-22 Section 13.6.8 (e.g., qualifying trapeze-supported or individually-supported piping within the prescribed weight, diameter, and hanger-length limits). Bracing shall use DSA-recognized OSHPD/OPM (OPM/OPA) seismic preapprovals or a project-specific design prepared and stamped by a California-licensed engineer.",
+    "codeReference": "CBC 2025 Ch. 16 / ASCE 7-22 \u00a713.6.8",
+    "confidence": 0.96,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "22 05 48 - Seismic Controls (false exemption).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "The finding's substance is valid \u2014 ASCE 7-22 Chapter 13 (adopted via CBC 2025) requires seismic support of piping with only conditional exemptions, so a project-wide exemption is improper \u2014 but the citation is wrong for the ASCE 7-22 edition: piping and tubing systems are in \u00a713.6.7 (exemptions in \u00a713.6.7.3), not \u00a713.6.8 (which was the older ASCE 7-16 number). DSA IR 16-13 confirms the item-by-item trapeze/individual-support limits.",
+    "sources": [
+      "https://up.codes/s/component-support",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/interpretations_of_regs/IR-16-13.pdf"
+    ],
+    "correction": "A. Seismic restraint and bracing of piping systems shall be provided in accordance with CBC 2025 and ASCE 7-22 Chapter 13. Exemptions shall be applied only on an individual-component basis where explicitly permitted by ASCE 7-22 Section 13.6.7 (Distribution Systems: Piping and Tubing Systems), including the conditional exemptions of Section 13.6.7.3 (e.g., qualifying trapeze-supported or individually-supported piping within the prescribed weight, diameter, and hanger-length limits). Bracing shall use DSA-recognized OSHPD/OPM (OPM/OPA) seismic preapprovals or a project-specific design prepared and stamped by a California-licensed engineer.",
+    "model_used": "claude-opus-4-8",
+    "verification_mode": "deep_reasoning",
+    "verification_profile": "california_ahj",
+    "web_search_requests": 4,
+    "successful_source_count": 23,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.slideshare.net/michaeljmack/asce-7-10-presentation-on-seismic-bracing-for-mep-systems",
+      "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/9945506",
+      "https://seblog.strongtie.com/2015/08/seismic-bracing-requirements-for-nonstructural-components/",
+      "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/10738914",
+      "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7939290/",
+      "https://www.asce.org/publications-and-news/codes-and-standards/asce-sei-7-22",
+      "https://collaborate.asce.org/standards-exchange/question/api-approach-to-seismic-design-chapter-13-vs-chapter-15-using-asce-7",
+      "https://arxiv.org/pdf/2302.06935",
+      "https://amplify.asce.org/popup-data?apath=%2Fasceworks%2Fstandard%2F9780784414248%2Fpart%2Fprovisions%2Fstandard-chapter%2Fs13%2Fstandard-sec-ver%2Fs13.1.4.ver.atom",
+      "https://www.scribd.com/document/512409110/Asce-7-22-Ch-13-for-Pc",
+      "https://seblog.strongtie.com/2026/05/asce-7-22-shakes-things-up-changes-to-seismic-calculations-for-anchorage-of-equipment/",
+      "https://kineticsnoise.com/files/content/downloads/seismic/pipe_duct/Part%20I%20-%20Selection/S4.0%20Code%20Based%20Exemptions.pdf",
+      "https://up.codes/s/component-support",
+      "https://blog.qrfs.com/329-seismic-bracing-for-ductwork-hvac-electrical-systems/",
+      "https://www.dgs.ca.gov/BSC/Resources/2025-Title-24-California-Code-Changes/2025-Part-2-Chapters-16-and-16A-Structural-Design",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/interpretations_of_regs/IR-16-13.pdf",
+      "https://amplify.asce.org/popup-data?apath=/asceworks/standard/9780784414248/part/provisions/standard-chapter/s13/standard-sec-ver/s13.6.7.3.ver.atom&implicit-login=true",
+      "https://cone-rhombus-agx9.squarespace.com/s/12_Inch_Rule.pdf",
+      "https://isatts.com/asce-7-16/",
+      "https://amplify.asce.org/popup-data?apath=/asceworks/standard/9780784414248/part/provisions/standard-chapter/s13/standard-sec-ver/s13.6.5.ver.atom",
+      "https://ascelibrary.org/doi/pdf/10.1061/9780784414248.err",
+      "https://gisweb.arlingtonwa.gov/EngineeringLibrary/CapitalProj/WWTP_Upgrade_2006/Design_Phase/Div_1/01190_SeismicRequirement.pdf",
+      "https://unistrut.biz/content/Resources/Literature/Unistrut-Seismic-Bracing-Components.pdf"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CONFIRMED",
+    "expected_status": "VERIFIED_SUPPORTED",
+    "notes": "Auto-captured for labeled defect: Declares seismic restraint of piping not required \u2014 wrong for a California DSA K-12 project. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

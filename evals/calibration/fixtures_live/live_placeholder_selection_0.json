@@ -1,0 +1,69 @@
+{
+  "fixture_id": "live_placeholder_selection_0",
+  "category": "internal_coordination",
+  "severity": "HIGH",
+  "description": "Live capture from 23 74 13 - RTU (placeholder).docx",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "23 74 13 - RTU (placeholder).docx",
+    "section": "2.02",
+    "issue": "The cooling capacity contains an unresolved authoring placeholder \"[SELECT]\". The tonnage has not been specified, so the section cannot be bid, purchased, or DSA-reviewed. A value (or a clear pointer to the mechanical equipment schedule) must be inserted before issue.",
+    "actionType": "EDIT",
+    "existingText": "A. Cooling capacity: [SELECT] tons at AHRI rating conditions.",
+    "replacementText": "A. Cooling capacity: ___ tons at AHRI rating conditions, as scheduled (coordinate value with the mechanical equipment schedule).",
+    "codeReference": null,
+    "confidence": 0.92,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "23 74 13 - RTU (placeholder).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "DSA requires 100% complete, finalized, and coordinated Construction Documents at submittal; an unresolved `[SELECT]` placeholder for cooling tonnage in Section 2.02 directly violates this requirement and prevents bidding, procurement, and DSA review. The proposed correction \u2014 replacing the placeholder with a blank referencing the mechanical equipment schedule \u2014 aligns with DSA completeness standards and sound specification practice.",
+    "sources": [
+      "https://www.documents.dgs.ca.gov/dgs/fmc/gs/dsa/DSA_3.pdf"
+    ],
+    "correction": null,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "strict_structured",
+    "verification_profile": "internal_coordination",
+    "web_search_requests": 3,
+    "successful_source_count": 21,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.dgs.ca.gov/DSA/Resources/Page-Content/Resources-List-Folder/Plan-Review-for-School-Essential-Services-Construction-Projects",
+      "https://www.documents.dgs.ca.gov/dgs/fmc/gs/dsa/DSA_3.pdf",
+      "https://www.americanmodular.com/articles/dsa-certification/",
+      "https://www.dgs.ca.gov/DSA/Services/Page-Content/Division-of-the-State-Architect-Services-List/Start-Construction-Project-by-Submitting-Plans-for-Review",
+      "https://asi-sd.com/dsa-building-requirements",
+      "https://www.dgs.ca.gov/DSA/Resources/Start-Construction-Project-by-Submitting-Plans-for-Review",
+      "https://www.fcmat.org/publicationsreports/Appendix%2065%20DSA%20IR%20A-22.pdf",
+      "https://www.dgs.ca.gov/DSA",
+      "https://www.dgs.ca.gov/DSA/Resources/Construction-Project-Submittal-for-Schools-Essential-Services-Facilities",
+      "https://www.dgs.ca.gov/dsa/forms",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/certification/project_submittal_checklist.pdf",
+      "https://www.dgs.ca.gov/DSA/Resources/Plan-Review-for-Schools-Essential-Services-Construction-Projects",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/procedures/PR_07-01",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/guidelines/GL_3.pdf?la=en&hash=76B89B241E9481C42F9BCA21F71BFB66CCB20D6B",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/procedures/PR_13-02.pdf",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/interpretations_of_regs/IR_A-6_rev11-27-18.pdf",
+      "https://www.sfgov.org/mod/sites/default/files/MCD_3%20MCD%20Project%20Submittal%20Checklist%2020190917.pdf",
+      "https://pdf4pro.com/amp/cdn/dsa-3-project-submittal-checklist-california-5a5294.pdf",
+      "https://www.documentine.com/dsa-box-sign-in.html",
+      "https://up.codes/s/plans-specifications-calculations-and-other-data",
+      "https://www.documents.dgs.ca.gov/dgs/fmc/GS/DSA/DSA_403-C.pdf"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "expected_status": "LOCALLY_CLASSIFIED",
+    "notes": "Auto-captured for labeled defect: Unresolved [SELECT] placeholder left in the cooling capacity. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

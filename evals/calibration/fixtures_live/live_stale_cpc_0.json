@@ -1,0 +1,59 @@
+{
+  "fixture_id": "live_stale_cpc_0",
+  "category": "california_ahj",
+  "severity": "MEDIUM",
+  "description": "Live capture from 22 11 16 - Domestic Water (stale CPC).docx",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "22 11 16 - Domestic Water (stale CPC).docx",
+    "section": "1.02",
+    "issue": "References article cites the superseded 2016 California Plumbing Code. The current code cycle for this project is CPC 2025; the citation must be updated for DSA compliance.",
+    "actionType": "EDIT",
+    "existingText": "A. Install domestic water piping per the 2016 California Plumbing Code.",
+    "replacementText": "A. Install domestic water piping per the 2025 California Plumbing Code.",
+    "codeReference": "CPC 2025",
+    "confidence": 0.97,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "22 11 16 - Domestic Water (stale CPC).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "The current California Plumbing Code for this project cycle is CPC 2025, making the spec's reference to the 2016 edition outdated and requiring update for DSA compliance. The CPC 2025 is confirmed as the current adopted edition.",
+    "sources": [
+      "https://up.codes/viewer/california/ca-plumbing-code-2025",
+      "https://iapmo.org/codes-standards-development/code-development/state-adopted-codes/cpc-2025"
+    ],
+    "correction": "A. Install domestic water piping per the 2025 California Plumbing Code.",
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "california_ahj",
+    "web_search_requests": 1,
+    "successful_source_count": 10,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://epubs.iapmo.org/2025/CPC/",
+      "https://up.codes/viewer/california/ca-plumbing-code-2025",
+      "https://iapmo.org/codes-standards-development/code-development/state-adopted-codes/cpc-2025",
+      "https://codelibrary.amlegal.com/codes/san_francisco/latest/sf_building/0-0-0-85773",
+      "https://up.codes/codes/california",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/sustainability/Sustainability-Code-Change-Summary-2025-CBC-in-2024-Tri.pdf",
+      "https://www.dgs.ca.gov/BSC/Resources/2025-Title-24-California-Code-Changes",
+      "https://www.dgs.ca.gov/en/DSA/Resources/Page-Content/Resources-List-Folder/Structural-Safety-Code-Development",
+      "https://www.dgs.ca.gov/-/media/Divisions/DSA/Publications/ss-code-development/triennial-rulemaking-workshop/2025_CBSC-CodeChangeSummary_DSA-SS.pdf",
+      "https://iapmostore.org/2025-california-plumbing-code-ebook/"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Auto-captured for labeled defect: Cites the 2016 California Plumbing Code for a 2025-cycle project. Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}

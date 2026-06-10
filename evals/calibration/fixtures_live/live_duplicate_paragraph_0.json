@@ -1,0 +1,45 @@
+{
+  "fixture_id": "live_duplicate_paragraph_0",
+  "category": "internal_coordination",
+  "severity": "GRIPES",
+  "description": "Live capture from 22 07 19 - Insulation (duplicate paragraph).docx",
+  "finding": {
+    "severity": "GRIPES",
+    "fileName": "22 07 19 - Insulation (duplicate paragraph).docx",
+    "section": "3.01",
+    "issue": "Paragraph 'A' under 3.01 INSTALLATION is duplicated verbatim, with both instances carrying the same item label 'A.'. The redundant paragraph should be removed (and the list re-lettered if additional items are added later) to avoid confusion and an invalid numbering sequence.",
+    "actionType": "DELETE",
+    "existingText": "A. Install insulation continuously through wall and floor penetrations, with the vapor barrier unbroken and all joints sealed per the manufacturer's instructions.\n\nA. Install insulation continuously through wall and floor penetrations, with the vapor barrier unbroken and all joints sealed per the manufacturer's instructions.",
+    "replacementText": null,
+    "codeReference": null,
+    "confidence": 0.95,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": null
+  },
+  "spec_context": {
+    "filename": "22 07 19 - Insulation (duplicate paragraph).docx",
+    "cycle_label": "2025",
+    "paragraph_map_slice": []
+  },
+  "captured_verifier_response": {
+    "verdict": "UNVERIFIED",
+    "explanation": "Verification did not perform web search. Verdict requires external grounding.",
+    "sources": [],
+    "correction": null,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "strict_structured",
+    "verification_profile": "manufacturer",
+    "web_search_requests": 0,
+    "successful_source_count": 0,
+    "search_error_count": 0,
+    "searched_urls": [],
+    "grounded": false,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "expected_status": "LOCALLY_CLASSIFIED",
+    "notes": "Auto-captured for labeled defect: Installation paragraph duplicated verbatim (3.01.A and 3.01.B). Confirm correct_verdict / expected_status before trusting this fixture."
+  }
+}
