@@ -216,6 +216,46 @@ def classify_status(finding) -> ReportStatus:
     return ReportStatus.INSUFFICIENT_EVIDENCE
 
 
+# Statuses where external verification reached a substantive verdict that
+# supersedes the review model's pre-verification confidence score.
+#
+# ``Finding.confidence`` is the *review* model's self-rated certainty,
+# assigned BEFORE any verification ran. Once the verifier reaches a
+# verdict — supported, contradicted, contested, or disputed — that
+# verdict, not the stale review confidence, is the trust signal a reader
+# should rely on. The pre-verification number can actively mislead on
+# these findings: a confirmed finding can carry a low review confidence
+# (the model was unsure, the verifier then grounded it), and a disputed
+# finding a high one. So the report de-emphasizes the confidence % for
+# these statuses (see :func:`report_exporter._write_finding_entry`) and
+# lets the verdict carry the trust.
+#
+# Every other status means the verifier did NOT reach a verdict
+# (NOT_CHECKED, INSUFFICIENT_EVIDENCE, LOCALLY_CLASSIFIED,
+# VERIFICATION_FAILED, MANUAL_REVIEW_REQUIRED), so the review confidence
+# remains the primary signal and stays prominent.
+VERDICT_SUPERSEDES_CONFIDENCE: Final[frozenset[ReportStatus]] = frozenset({
+    ReportStatus.VERIFIED_SUPPORTED,
+    ReportStatus.VERIFIED_CONTRADICTED,
+    ReportStatus.VERIFIED_CONTESTED,
+    ReportStatus.DISPUTED,
+})
+
+
+def verdict_supersedes_confidence(finding) -> bool:
+    """True when verification reached a verdict that supersedes the
+    review model's pre-verification confidence for display.
+
+    Used by the report exporter to decide whether the confidence % is the
+    finding's headline trust signal (no verdict yet → keep it prominent)
+    or a superseded pre-verification footnote (verdict reached → the
+    verification verdict is authoritative, de-emphasize the %). Defensive
+    by construction: delegates to :func:`classify_status`, so a finding
+    with no verification returns False (NOT_CHECKED is not in the set).
+    """
+    return classify_status(finding) in VERDICT_SUPERSEDES_CONFIDENCE
+
+
 def is_budget_exhausted(finding) -> bool:
     """Return True when the verifier consumed its full search budget.
 

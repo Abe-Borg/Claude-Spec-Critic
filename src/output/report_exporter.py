@@ -60,6 +60,7 @@ from .report_status import (
     summarize_budget_exhausted,
     summarize_edit_actions,
     summarize_statuses,
+    verdict_supersedes_confidence,
 )
 
 
@@ -880,7 +881,17 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
         "code compliance issues, coordination problems, and technical errors "
         "relevant to California K-12 DSA projects. Findings are classified by "
         "severity (Critical, High, Medium, Gripe) and assigned a confidence score "
-        "reflecting the model\u2019s certainty."
+        "reflecting the review model\u2019s certainty at review time, before "
+        "verification. The confidence score and the verification verdict are "
+        "distinct signals: confidence is the review model\u2019s own pre-verification "
+        "estimate, while the verdict is a separate verification pass\u2019s grounded "
+        "assessment. For any finding the verifier went on to confirm, correct, "
+        "contest, or dispute, the verification verdict \u2014 not the review "
+        "confidence \u2014 is the authoritative trust signal, so the report "
+        "de-emphasizes the confidence on those findings (shown small beside the "
+        "status, marked \u201cpre-verification\u201d) and lets the verdict stand as "
+        "the headline. The confidence score stays prominent only where verification "
+        "did not reach a verdict (for example, not checked or insufficient evidence)."
     )
 
     verification_stats = verification_stats or {}
@@ -1731,11 +1742,22 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
     run.bold = True
     run.font.color.rgb = severity_color
     run.font.size = Pt(11)
-    # Confidence
-    run = para.add_run(f"{finding.confidence:.0%} ")
-    run.bold = True
-    run.font.size = Pt(11)
-    run.font.color.rgb = conf_color
+    # Confidence (the review model's pre-verification certainty).
+    # Once verification reaches a verdict that supersedes it
+    # (Verified — supported / contradicted / contested / Disputed), the
+    # confidence % is dropped from the header: that finding's trust signal
+    # is the verdict — shown on the Status line and the Verification
+    # verdict line below — not this pre-verification number, which can read
+    # misleadingly low on a confirmed finding (or high on a disputed one).
+    # The number is preserved as a de-emphasized footnote on the Status
+    # line. For not-yet-verified findings the % stays the prominent,
+    # primary signal in the header.
+    confidence_superseded = verdict_supersedes_confidence(finding)
+    if not confidence_superseded:
+        run = para.add_run(f"{finding.confidence:.0%} ")
+        run.bold = True
+        run.font.size = Pt(11)
+        run.font.color.rgb = conf_color
     # Separator
     run = para.add_run("— ")
     run.font.color.rgb = RGBColor(128, 128, 128)
@@ -1822,6 +1844,23 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         cache_badge_run.bold = True
         cache_badge_run.font.color.rgb = badge_color
         cache_badge_run.font.size = Pt(10)
+
+    # Review-confidence footnote. When the header suppressed the
+    # confidence % (a verdict supersedes it), surface the review model's
+    # pre-verification confidence here as a small, gray, explicitly
+    # labeled footnote — the number is preserved for anyone who wants it,
+    # but rendered so it can't be mistaken for the post-verification trust
+    # signal carried by the status/verdict.
+    if confidence_superseded:
+        conf_sep_run = status_para.add_run("  •  ")
+        conf_sep_run.font.color.rgb = RGBColor(170, 170, 170)
+        conf_sep_run.font.size = Pt(9)
+        conf_note_run = status_para.add_run(
+            f"review confidence {finding.confidence:.0%} (pre-verification)"
+        )
+        conf_note_run.italic = True
+        conf_note_run.font.size = Pt(9)
+        conf_note_run.font.color.rgb = RGBColor(150, 150, 150)
 
     status_para.paragraph_format.space_after = Pt(3)
 
