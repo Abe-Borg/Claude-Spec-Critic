@@ -118,8 +118,18 @@ def _classify_response(entries: list[dict]) -> FakeMessage:
 class TestJudgeToolSchemas:
     _FORBIDDEN_KEYS = {"minimum", "maximum", "minLength", "maxLength", "oneOf", "anyOf"}
 
+    # Kept in sync with tests/test_strict_tool_use.py — same walker, same
+    # rules, including the enum rule (no union types, no null members) the
+    # live strict validator enforces with a 400.
     def _walk(self, node, path=""):
         if isinstance(node, dict):
+            if "enum" in node:
+                assert isinstance(node.get("type"), str), (
+                    f"enum on a union type at {path or '<root>'}"
+                )
+                assert None not in node["enum"], (
+                    f"null enum member at {path or '<root>'}"
+                )
             for key, value in node.items():
                 assert key not in self._FORBIDDEN_KEYS, (
                     f"strict-incompatible keyword {key!r} at {path or '<root>'}"
