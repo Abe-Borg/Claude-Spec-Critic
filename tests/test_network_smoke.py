@@ -118,15 +118,18 @@ def test_count_tokens_smoke():
 # ---------------------------------------------------------------------------
 
 
-def test_verification_tool_shape_smoke():
-    """A STANDARD_REASONING verification request is accepted live.
+def test_verification_tool_shape_smoke(monkeypatch):
+    """A STANDARD_REASONING verification request is accepted live (lenient shape).
 
     This is the single most API-evolution-sensitive request the app makes: it
     combines the ``web_search_20260209`` and ``web_fetch_20260209`` server tools
     with adaptive thinking, output effort, and the structured verdict tool. If
     any of those is retired or mutually incompatible under the account, this
-    raises at ``create`` time.
+    raises at ``create`` time. Strict tool use is explicitly disabled here so
+    this test pins the ``SPEC_CRITIC_STRICT_TOOL_USE=0`` rollback shape; the
+    default (strict) shape is smoke test #3.
     """
+    monkeypatch.setenv("SPEC_CRITIC_STRICT_TOOL_USE", "0")
     vr, _decision = _verification_request(include_service_tier=False)
     client = _get_client()
     resp = client.messages.create(**vr.params, extra_headers=vr.extra_headers or None)
@@ -135,19 +138,19 @@ def test_verification_tool_shape_smoke():
 
 
 # ---------------------------------------------------------------------------
-# 3. Strict tool use — strict:true + adaptive thinking + tools (informs the default)
+# 3. Strict tool use — strict:true + adaptive thinking + tools (the default shape)
 # ---------------------------------------------------------------------------
 
 
 def test_strict_tool_use_smoke(monkeypatch):
-    """Same shape as #2 but with ``strict: true`` on the tool schemas.
+    """Same shape as #2 but with ``strict: true`` on the tool schemas — the default.
 
-    ``SPEC_CRITIC_STRICT_TOOL_USE`` defaults off because the strict-mode ×
-    adaptive-thinking interaction was never proven against the live API. This
-    test is the proof: if it passes, the default can be flipped on with
-    confidence; if it 400s, strict mode must stay opt-in.
+    ``SPEC_CRITIC_STRICT_TOOL_USE`` defaults ON, so this is the exact shape
+    every production verification call sends out of the box. If it ever 400s
+    after an SDK / model / account change, set ``SPEC_CRITIC_STRICT_TOOL_USE=0``
+    (the lenient shape #2 pins) and investigate before re-enabling.
     """
-    monkeypatch.setenv("SPEC_CRITIC_STRICT_TOOL_USE", "1")
+    monkeypatch.delenv("SPEC_CRITIC_STRICT_TOOL_USE", raising=False)
     vr, _decision = _verification_request(include_service_tier=False)
     client = _get_client()
     resp = client.messages.create(**vr.params, extra_headers=vr.extra_headers or None)

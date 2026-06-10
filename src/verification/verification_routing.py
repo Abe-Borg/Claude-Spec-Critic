@@ -523,7 +523,7 @@ def build_verification_tools_from_decision(
     from ..review.structured_schemas import verification_verdict_tool
 
     tool_list = build_verification_tools_for_profile(
-        decision.profile, decision.severity
+        decision.profile, decision.severity, model=decision.model
     )
     # Drop the verdict tool when the decision says not to attach it. The
     # profile-aware builder always appends it when
@@ -560,7 +560,7 @@ def build_verification_tools_from_decision(
         # synthesize one. This handles the rare case where the env flag was
         # off when the profile builder ran but the decision was built
         # asking for the verdict tool.
-        out.append(verdict_tool if verdict_tool is not None else verification_verdict_tool())
+        out.append(verdict_tool if verdict_tool is not None else verification_verdict_tool(model=decision.model))
     return out
 
 
