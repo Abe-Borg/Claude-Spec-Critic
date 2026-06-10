@@ -11,6 +11,14 @@ calibration fixture per matched defect in the **existing**
 unchanged ``python -m evals.calibration.runner --fixtures-dir <out>`` then
 grades verdict accuracy, confidence calibration, and grounding integrity.
 
+Defect matching on the live path goes through the LLM-as-judge matcher
+(:mod:`evals.judge`): one Haiku-class call per spec decides which finding
+identifies each labeled defect (phrasing-robust, unlike the substring
+default), and a second call classifies extra findings as legitimate /
+duplicate / hallucination. Any judge failure falls back to the substring
+matcher for that spec and the per-spec report says which matcher decided.
+``--no-judge`` restores pure substring matching.
+
 Safety / cost:
 
 * **Hermetic by default.** Without ``--live`` it prints a notice and exits
@@ -21,7 +29,7 @@ Safety / cost:
 * Verification runs with ``cache=None`` so a stale cached verdict cannot
   mask the reframed verifier prompt (the cache key omits the prompt).
 * Only findings that match a labeled defect are verified, keeping the
-  search spend bounded.
+  search spend bounded. Judge calls are Haiku-class and add cents per run.
 
 The emitted ground truth is *seeded* from the label (and the captured
 verdict as a fallback) and flagged for human review — re-recording is a
@@ -196,27 +204,64 @@ class CaptureSummary:
         return sum(s.severity_match_count for s in self.spec_scores)
 
     @property
+    def judged_specs(self) -> int:
+        return sum(1 for s in self.spec_scores if s.match_method == "judge")
+
+    @property
+    def extra_findings(self) -> int:
+        return sum(s.extra_finding_count for s in self.spec_scores)
+
+    @property
+    def fp_legitimate(self) -> int:
+        return sum(s.fp_legitimate for s in self.spec_scores)
+
+    @property
+    def fp_duplicates(self) -> int:
+        return sum(s.fp_duplicate for s in self.spec_scores)
+
+    @property
+    def fp_hallucinations(self) -> int:
+        return sum(s.fp_hallucination for s in self.spec_scores)
+
+    @property
     def recall(self) -> float:
         denom = self.expected_defects
         return round(self.matched_defects / denom, 4) if denom else 0.0
 
     def render(self) -> str:
+        total = len(self.spec_scores)
         lines = [
             "Spec Critic live-capture summary",
             "=" * 56,
-            f"Specs reviewed:        {len(self.spec_scores)}",
+            f"Specs reviewed:        {total}",
             f"Review recall:         {self.recall:.4f} "
             f"({self.matched_defects}/{self.expected_defects})",
+            f"Matcher:               judge on {self.judged_specs}/{total} specs"
+            + (
+                f" (substring fallback on {total - self.judged_specs})"
+                if 0 < self.judged_specs < total
+                else ""
+            ),
             f"False positives:       {self.false_positives} (clean specs)",
             f"Severity matches:      {self.severity_matches}/{self.matched_defects}",
             f"Calibration fixtures:  {self.fixtures_written}",
-            "",
-            "Per-spec:",
         ]
+        if self.extra_findings:
+            classified = self.fp_legitimate + self.fp_duplicates + self.fp_hallucinations
+            lines.append(
+                f"Extra findings:        {self.extra_findings} "
+                f"(legit {self.fp_legitimate}, dup {self.fp_duplicates}, "
+                f"halluc {self.fp_hallucinations}, "
+                f"unclassified {self.extra_findings - classified})"
+            )
+        lines.extend(["", "Per-spec:"])
         for s in self.spec_scores:
             tag = "clean" if s.is_clean else f"{s.matched_defect_count}/{s.expected_defect_count} defects"
             extra = f", {s.false_positive_count} FP" if s.is_clean else ""
-            lines.append(f"  [{s.spec_id}] {tag}{extra} ({s.finding_count} findings)")
+            lines.append(
+                f"  [{s.spec_id}] {tag}{extra} "
+                f"({s.finding_count} findings, via {s.match_method})"
+            )
         return "\n".join(lines)
 
 
@@ -256,10 +301,80 @@ def _run_review(spec: LabeledSpec, *, model: str, cycle: Any) -> list[Any]:
     return reviewer._parse_findings(raw_findings)
 
 
+def _judged_matcher(
+    spec: LabeledSpec,
+    findings: list[Any],
+    *,
+    judge_model: str | None,
+    log: LogFn,
+) -> tuple[Any, str]:
+    """Resolve the matcher for one spec: judge when usable, else substring.
+
+    Returns ``(matcher, match_method)``. Every judge decision's one-sentence
+    reasoning is logged so the run transcript doubles as the audit trail.
+    """
+    from . import judge
+
+    matches = judge.judge_defect_matches(spec, findings, model=judge_model, log=log)
+    if matches is None:
+        log(
+            f"  judge unavailable for {spec.spec_id}; using substring matcher.",
+            level="warning",
+        )
+        return defect_matched, "substring"
+    for m in sorted(matches.values(), key=lambda j: j.defect_index):
+        target = "no finding" if m.finding_index is None else f"finding {m.finding_index}"
+        reason = f" — {m.reasoning}" if m.reasoning else ""
+        log(f"  judge: defect {m.defect_index} -> {target}{reason}", level="info")
+    return judge.matcher_from_matches(spec, matches, findings), "judge"
+
+
+def _classify_extras(
+    spec: LabeledSpec,
+    findings: list[Any],
+    matcher: Any,
+    score: Any,
+    *,
+    judge_model: str | None,
+    log: LogFn,
+) -> None:
+    """Judge-classify findings matched to no defect; fill score telemetry."""
+    from . import judge
+
+    matched_ids = {
+        id(hit)
+        for hit in (matcher(d, findings) for d in spec.expected_defects)
+        if hit is not None
+    }
+    extra_indices = [i for i, f in enumerate(findings) if id(f) not in matched_ids]
+    score.extra_finding_count = len(extra_indices)
+    if not extra_indices:
+        return
+    classifications = judge.classify_extra_findings(
+        spec, findings, extra_indices, model=judge_model, log=log
+    )
+    if not classifications:
+        return
+    for c in sorted(classifications.values(), key=lambda x: x.finding_index):
+        if c.classification == "legitimate_unlabeled":
+            score.fp_legitimate += 1
+        elif c.classification == "duplicate_of_matched":
+            score.fp_duplicate += 1
+        elif c.classification == "hallucination":
+            score.fp_hallucination += 1
+        reason = f" — {c.reasoning}" if c.reasoning else ""
+        log(
+            f"  judge: extra finding {c.finding_index} = {c.classification}{reason}",
+            level="info",
+        )
+
+
 def capture(
     *,
     out_dir: Path,
     model: str | None = None,
+    judge_enabled: bool = True,
+    judge_model: str | None = None,
     log: LogFn = lambda *_a, **_k: None,
 ) -> CaptureSummary:
     """Run the full live capture over the labeled set. Requires a real key."""
@@ -274,11 +389,23 @@ def capture(
     for spec in LABELED_SPECS:
         log(f"Reviewing {spec.spec_id} ...", level="info")
         findings = _run_review(spec, model=review_model, cycle=CALIFORNIA_2025)
-        score = score_spec_review(spec, findings)
+
+        if judge_enabled:
+            matcher, match_method = _judged_matcher(
+                spec, findings, judge_model=judge_model, log=log
+            )
+        else:
+            matcher, match_method = defect_matched, "substring"
+        score = score_spec_review(spec, findings, matcher=matcher)
+        score.match_method = match_method
+        if judge_enabled:
+            _classify_extras(
+                spec, findings, matcher, score, judge_model=judge_model, log=log
+            )
         summary.spec_scores.append(score)
 
         for idx, defect in enumerate(spec.expected_defects):
-            hit = defect_matched(defect, findings)
+            hit = matcher(defect, findings)
             if hit is None:
                 log(f"  MISS: {defect.label}", level="warning")
                 continue
@@ -324,6 +451,18 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Override the review model (defaults to REVIEW_MODEL_DEFAULT).",
     )
+    parser.add_argument(
+        "--no-judge",
+        action="store_true",
+        help="Disable the LLM-as-judge matcher and use pure substring "
+        "matching (the pre-judge behavior).",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=None,
+        help="Override the judge model (defaults to "
+        "SPEC_CRITIC_EVAL_JUDGE_MODEL or Haiku 4.5).",
+    )
     args = parser.parse_args(argv)
 
     if not args.live:
@@ -341,7 +480,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    summary = capture(out_dir=Path(args.out_dir), model=args.model, log=_log)
+    summary = capture(
+        out_dir=Path(args.out_dir),
+        model=args.model,
+        judge_enabled=not args.no_judge,
+        judge_model=args.judge_model,
+        log=_log,
+    )
     print(summary.render())
     print(
         f"\nScore the captured fixtures with:\n"
