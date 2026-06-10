@@ -160,7 +160,9 @@ def test_build_fixture_dict_is_loader_valid(tmp_path):
 
     loaded = load_fixture(path)  # raises on any missing/invalid key
     assert loaded.fixture_id == "live_stale_cbc_0"
-    assert loaded.ground_truth.correct_verdict == "CORRECTED"
+    # Ground truth seeds from the defect LABEL (not the captured verdict) —
+    # assert against the label itself so a relabel can't break this test.
+    assert loaded.ground_truth.correct_verdict == defect.expected_verdict
     assert loaded.captured_verifier_response.searched_urls == []
     assert loaded.finding.existingText == "2019 CBC"
 

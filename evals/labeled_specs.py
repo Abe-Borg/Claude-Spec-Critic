@@ -21,8 +21,10 @@ prompt improvements that motivated this harness —
   surfaces it.
 * ``duct_pressure_contradiction`` — an internal contradiction: a
   spec-text-only defect that should never burn a web search.
-* ``obscure_product_rating`` — a hard-to-ground manufacturer claim: should
-  land a clean UNVERIFIED, not a guessed (and then downgraded) CONFIRMED.
+* ``obscure_product_rating`` — an obscure-product claim. Originally
+  hypothesized to land a clean UNVERIFIED; the first live baseline showed
+  the verifier legitimately grounds the *general* engineering claim
+  (typical duct-sensor accuracy), so the label now expects CONFIRMED.
 
 — and the growth set broadens coverage to one spec per defect *class* the
 review is expected to catch (placeholder, template marker, duplicate
@@ -36,6 +38,12 @@ expected verification path.
 ``expected_verdict`` / ``expected_status`` seed calibration fixtures.
 Treat a label change like a code change — wrong ground truth is worse
 than no ground truth.
+
+Verdict semantics (the first live baseline corrected the original labels
+6-for-6 on this): the verifier judges the FINDING'S claim. A finding that
+truthfully says "this citation is stale; current is X" earns CONFIRMED /
+VERIFIED_SUPPORTED. CORRECTED means the *finding itself* was wrong in a
+fixable way — not "the spec gets corrected."
 
 The default matching here is coarse (case-insensitive substring) so the
 hermetic path stays free and deterministic. Under ``--live`` capture the
@@ -90,17 +98,35 @@ class LabeledSpec:
 # Spec bodies — tiny, each just enough text to carry its labeled defect(s).
 # ---------------------------------------------------------------------------
 
+# Clean bodies carry the articles a reviewer can defensibly demand
+# (references incl. seismic cross-ref, product standards, testing detail) —
+# the first live baseline showed that skeletal "clean" bodies measure
+# fixture incompleteness, not reviewer noise: every false positive was a
+# legitimate omission flag on content the miniature simply didn't have.
 _CLEAN_BODY = (
     "SECTION 23 21 13 - HYDRONIC PIPING\n"
     "PART 1 GENERAL\n"
     "1.01 SUMMARY\n"
-    "A. Comply with the California Mechanical Code and California Plumbing Code.\n"
+    "A. Chilled water piping for the classroom buildings as shown on the drawings.\n"
+    "1.02 REFERENCES\n"
+    "A. Comply with the California Mechanical Code, California Plumbing Code, "
+    "and California Building Code as adopted for this project.\n"
+    "B. Seismic restraint and bracing: see Section 23 05 48 - Vibration and "
+    "Seismic Controls for HVAC.\n"
     "PART 2 PRODUCTS\n"
     "2.01 PIPE\n"
-    "A. Provide Type L copper for chilled water as scheduled.\n"
+    "A. Chilled water, 2 inch and smaller: Type L hard-drawn copper per ASTM B88 "
+    "with wrought copper fittings per ASME B16.22, soldered joints.\n"
+    "B. Valves: see Section 23 05 23 - General-Duty Valves for HVAC Piping.\n"
     "PART 3 EXECUTION\n"
     "3.01 INSTALLATION\n"
-    "A. Install per manufacturer's written instructions.\n"
+    "A. Install per manufacturer's written instructions and the piping schedule "
+    "on the drawings.\n"
+    "3.02 FIELD QUALITY CONTROL\n"
+    "A. Hydrostatically test chilled water piping at 1.5 times working pressure, "
+    "100 psig minimum, held for 2 hours with no loss of pressure, before "
+    "insulation and concealment.\n"
+    "B. Insulate piping per Section 23 07 19 and the California Energy Code.\n"
 )
 
 _STALE_CBC_BODY = (
@@ -207,13 +233,24 @@ _CLEAN_PLUMBING_BODY = (
     "SECTION 22 13 16 - SANITARY WASTE AND VENT PIPING\n"
     "PART 1 GENERAL\n"
     "1.01 SUMMARY\n"
+    "A. Sanitary waste and vent piping for the classroom buildings as shown "
+    "on the drawings.\n"
+    "1.02 REFERENCES\n"
     "A. Comply with the California Plumbing Code as adopted for this project.\n"
+    "B. Seismic restraint and bracing: see Section 22 05 48 - Vibration and "
+    "Seismic Controls for Plumbing.\n"
     "PART 2 PRODUCTS\n"
     "2.01 PIPE\n"
-    "A. Provide cast iron soil pipe with no-hub couplings as scheduled.\n"
+    "A. Hubless cast iron soil pipe and fittings per CISPI 301 and ASTM A888, "
+    "joined with heavy-duty shielded couplings per CISPI 310.\n"
     "PART 3 EXECUTION\n"
     "3.01 INSTALLATION\n"
-    "A. Slope horizontal drainage piping per code and test before concealment.\n"
+    "A. Slope horizontal drainage piping at 1/4 inch per foot, or not less "
+    "than 1/8 inch per foot where permitted by the California Plumbing Code.\n"
+    "3.02 FIELD QUALITY CONTROL\n"
+    "A. Water test the drainage and vent system per the California Plumbing "
+    "Code with not less than a 10-foot head of water, held for 15 minutes, "
+    "before concealment.\n"
 )
 
 
@@ -239,8 +276,8 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
                 label="Cites 2019 CBC for a 2025-cycle project",
                 expected_severity="MEDIUM",
                 must_match=("2019",),
-                expected_verdict="CORRECTED",
-                expected_status="VERIFIED_CONTRADICTED",
+                expected_verdict="CONFIRMED",
+                expected_status="VERIFIED_SUPPORTED",
             ),
         ),
     ),
@@ -254,8 +291,8 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
                 label="Cites ASHRAE 15-2019; cycle pins ASHRAE 15 2022",
                 expected_severity="MEDIUM",
                 must_match=("ashrae 15",),
-                expected_verdict="CORRECTED",
-                expected_status="VERIFIED_CONTRADICTED",
+                expected_verdict="CONFIRMED",
+                expected_status="VERIFIED_SUPPORTED",
             ),
         ),
     ),
@@ -269,8 +306,12 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
                 label="Duct pressure class stated as both 2 and 4 in. w.g.",
                 expected_severity="HIGH",
                 must_match=("w.g.",),
-                expected_verdict="UNVERIFIED",
-                expected_status="LOCALLY_CLASSIFIED",
+                # HIGH severity hard-gates out of local_skip (routing
+                # contract), and the live verifier grounds the contradiction
+                # claim — the prior LOCALLY_CLASSIFIED label was
+                # self-inconsistent with the HIGH severity above.
+                expected_verdict="CONFIRMED",
+                expected_status="VERIFIED_SUPPORTED",
             ),
         ),
     ),
@@ -281,11 +322,16 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
         spec_text=_OBSCURE_PRODUCT_BODY,
         expected_defects=(
             ExpectedDefect(
-                label="Unverifiable sensor accuracy claim for an obscure model",
+                label="Sensor accuracy claim (+/- 0.05 degF) unattainable for commercial duct sensors",
                 expected_severity="GRIPES",
                 must_match=("qx-9000",),
-                expected_verdict="UNVERIFIED",
-                expected_status="INSUFFICIENT_EVIDENCE",
+                # The first live baseline showed the verifier grounds the
+                # general engineering claim (typical duct-sensor accuracy)
+                # even when the named product is unfindable — a defensible
+                # CONFIRMED, not the clean UNVERIFIED the original label
+                # hypothesized.
+                expected_verdict="CONFIRMED",
+                expected_status="VERIFIED_SUPPORTED",
             ),
         ),
     ),
@@ -300,6 +346,11 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
         expected_defects=(
             ExpectedDefect(
                 label="Unresolved [SELECT] placeholder left in the cooling capacity",
+                # Baseline #1: the model rated this HIGH, which hard-gates
+                # out of local_skip and web-routes to a grounded CONFIRMED.
+                # The label keeps the calmer severity + local-skip
+                # expectation as a standing flag until the severity policy
+                # is decided (tune the prompt's rubric, or adopt HIGH here).
                 expected_severity="MEDIUM",
                 must_match=("[select]",),
                 expected_verdict="UNVERIFIED",
@@ -316,6 +367,11 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
         expected_defects=(
             ExpectedDefect(
                 label="TODO authoring note left in the economizer sequence",
+                # Baseline #1: the model rated this HIGH, which hard-gates
+                # out of local_skip and web-routes to a grounded CONFIRMED.
+                # The label keeps the calmer severity + local-skip
+                # expectation as a standing flag until the severity policy
+                # is decided (tune the prompt's rubric, or adopt HIGH here).
                 expected_severity="GRIPES",
                 must_match=("todo",),
                 expected_verdict="UNVERIFIED",
@@ -336,7 +392,13 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
                 expected_severity="GRIPES",
                 must_match=("duplicat",),
                 expected_verdict="UNVERIFIED",
-                expected_status="LOCALLY_CLASSIFIED",
+                # Status intentionally unasserted: the harness verifies via
+                # verify_finding, whose local-skip prescreen is keyword-only
+                # (the production batch path adds Haiku triage), and the
+                # model's phrasing does not reliably hit the keyword list —
+                # LOCALLY_CLASSIFIED is reachable in production but not
+                # deterministically here.
+                expected_status=None,
             ),
         ),
     ),
@@ -352,8 +414,8 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
                 label="Cites a 2018 California Building Code, an edition that does not exist",
                 expected_severity="MEDIUM",
                 must_match=("2018",),
-                expected_verdict="CORRECTED",
-                expected_status="VERIFIED_CONTRADICTED",
+                expected_verdict="CONFIRMED",
+                expected_status="VERIFIED_SUPPORTED",
             ),
         ),
     ),
@@ -368,8 +430,8 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
                 label="Cites the 2016 California Plumbing Code for a 2025-cycle project",
                 expected_severity="MEDIUM",
                 must_match=("2016",),
-                expected_verdict="CORRECTED",
-                expected_status="VERIFIED_CONTRADICTED",
+                expected_verdict="CONFIRMED",
+                expected_status="VERIFIED_SUPPORTED",
             ),
         ),
     ),
@@ -385,8 +447,8 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
                 label="Cites ASCE 7-10 for seismic design; the current cycle adopts a newer edition",
                 expected_severity="MEDIUM",
                 must_match=("asce 7",),
-                expected_verdict="CORRECTED",
-                expected_status="VERIFIED_CONTRADICTED",
+                expected_verdict="CONFIRMED",
+                expected_status="VERIFIED_SUPPORTED",
             ),
         ),
     ),
@@ -402,8 +464,8 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
                 label="Duct smoke detectors cite NFPA 72 2016 edition; cycle pins NFPA 72 2025",
                 expected_severity="MEDIUM",
                 must_match=("nfpa 72",),
-                expected_verdict="CORRECTED",
-                expected_status="VERIFIED_CONTRADICTED",
+                expected_verdict="CONFIRMED",
+                expected_status="VERIFIED_SUPPORTED",
             ),
         ),
     ),
@@ -419,6 +481,10 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
         expected_defects=(
             ExpectedDefect(
                 label="Declares seismic restraint of piping not required — wrong for a California DSA K-12 project",
+                # Baseline #1 returned CORRECTED / VERIFIED_CONTRADICTED
+                # from the Opus deep pass. Read the captured fixture's
+                # ``correction`` text before deciding whether to adopt
+                # CORRECTED here — CONFIRMED stands until then.
                 expected_severity="CRITICAL",
                 must_match=("seismic",),
                 expected_verdict="CONFIRMED",
