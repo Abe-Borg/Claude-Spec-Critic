@@ -313,12 +313,14 @@ def _get_client() -> Anthropic:
 def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[list, str]:
     """Fallback parser for the legacy ``<findings_json>``-tagged text path.
 
-    The primary path is best-effort tool-use output (the model calls
+    The primary path is tool-use output (the model calls
     ``submit_review_findings``). With ``tool_choice=auto`` the model MAY
     still return plain text — refusals, feature-flag-off runs, and
-    occasional adaptive-thinking detours all land here — so this fallback
-    must stay reachable until/unless a strict-tool-output mode is
-    introduced as the default.
+    occasional adaptive-thinking detours all land here. Strict tool use
+    (on by default) grammar-constrains the payload *of a tool call*; it
+    does not make the tool call itself contractual, and the
+    ``SPEC_CRITIC_STRICT_TOOL_USE=0`` rollback path runs lenient — so this
+    fallback stays permanently reachable as defense-in-depth.
     """
     tagged = re.search(r"<\s*findings_json\s*>(.*?)<\s*/\s*findings_json\s*>", text, flags=re.IGNORECASE | re.DOTALL)
     if tagged:

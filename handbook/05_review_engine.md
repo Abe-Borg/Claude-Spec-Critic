@@ -172,12 +172,12 @@ _FINDING_OBJECT_SCHEMA = {
 Two design choices in that fragment repay attention. First, **every property is
 `required`, and optional fields are modeled as `required-but-nullable`** (`"type":
 ["string", "null"]`) rather than simply omitted from the required list. The
-reason is forward-looking: a strict, constrained-sampling mode needs a fully
-deterministic shape to fill, with no "this key might or might not be present"
-ambiguity. The schemas are authored to be strict-compatible today — no `oneOf`,
-no `anyOf`, every property pinned — even though strict mode is currently *off*
-(more on that in a moment). Second, `additionalProperties: False` slams the door
-on the model inventing extra keys.
+reason: a strict, constrained-sampling mode needs a fully deterministic shape to
+fill, with no "this key might or might not be present" ambiguity. The schemas
+stay inside the strict-mode supported subset — no `oneOf`, no `anyOf`, no
+numerical or string-length constraints, every property pinned — and strict mode
+is now *on by default* (more on that in a moment). Second,
+`additionalProperties: False` slams the door on the model inventing extra keys.
 
 ### The action types, and what happens when a field is missing
 
@@ -205,11 +205,15 @@ rather than producing a phantom edit candidate.
 The right-hand column of that table — *demotion* — is the schema's enforcement
 arm, and it is `validate_edit_shape()`'s job. We come back to exactly how and
 where demotion fires in §5, because it is a parser-time mechanism, not a
-schema-time one. The schema *describes* the required fields in prose; the parser
-*enforces* them in code. That split is deliberate: as we will see, the tool is
-invoked with `tool_choice: auto`, which means the API does not actually constrain
-the output to the schema, so the parser cannot trust the schema to have been
-honored.
+schema-time one. The schema *describes* the action-conditional requirements in
+prose; the parser *enforces* them in code. That split survives strict mode:
+strict constrained sampling guarantees the payload's *shape* (types, enums,
+required keys), but "an EDIT must carry non-empty `existingText`" is a
+conditional rule the schema cannot express — a null `existingText` on an EDIT is
+schema-valid. The parser also serves the two paths with no grammar at all: the
+tagged-JSON text fallback and the `SPEC_CRITIC_STRICT_TOOL_USE=0` rollback. So
+the parser still cannot trust a payload to be semantically complete merely
+because it arrived through the tool.
 
 ### Why `auto`, and why the fallback parser must stay alive
 
@@ -225,13 +229,19 @@ feature-flag-off runs, and the occasional adaptive-thinking detour can all produ
 a plain-text response instead.
 
 That single fact — "reliably but not contractually" — is why the engine keeps a
-second, text-based parser permanently reachable (`_extract_json_array`, §5). The
-same constraint is why `_strict_enabled()` returns `False`: the era of API
-restrictions that blocks forced `tool_choice` under thinking may also reject
-strict mode under thinking, so strict is off. But the schemas are authored to be
-strict-ready, so flipping it on later is a one-line change with no schema rework.
-This is a recurring shape in the codebase: *build for the stricter future, run in
-the lenient present, and keep the safety net for the gap between them.*
+second, text-based parser permanently reachable (`_extract_json_array`, §5).
+Strict tool use is the related-but-separate lever, and it is now ON by default
+(`_strict_enabled()`): unlike forced `tool_choice`, Anthropic documents
+`strict: true` as compatible with adaptive thinking and the Batches API, and the
+live smoke test (`tests/test_network_smoke.py::test_strict_tool_use_smoke`)
+sends the exact production strict shape. Strict mode closes the malformed- and
+truncated-payload failure modes — but only for responses that *are* tool calls.
+It does not make the tool call itself contractual, which is precisely the gap
+the fallback parser covers, and `SPEC_CRITIC_STRICT_TOOL_USE=0` restores the
+legacy lenient shape if an account / SDK combination ever rejects strict at
+submit. The codebase's original posture — *build for the stricter future, run in
+the lenient present, and keep the safety net for the gap between them* — still
+describes the design; the stricter future simply arrived for the payload half.
 
 ---
 
