@@ -264,8 +264,14 @@ def _set_paragraph_collapsed(paragraph) -> None:
 
 
 def _set_paragraph_outline_level(paragraph, level: int) -> None:
-    """Set <w:outlineLvl> on a paragraph so Word includes it in a preceding
-    heading's open-time collapse zone without changing its visual style."""
+    """Set <w:outlineLvl> on a paragraph without changing its visual style.
+
+    Word reads the outline level in both directions: a deep level (e.g. 8)
+    pulls a body paragraph INTO a preceding heading's open-time collapse
+    zone, while a shallow level (e.g. 0) makes a styled-but-unleveled
+    paragraph (such as a Title-styled section header, which carries no
+    native outline level) TERMINATE any open collapse zone and appear in
+    Word's Navigation Pane."""
     pPr = paragraph._p.get_or_add_pPr()
     outline = OxmlElement('w:outlineLvl')
     outline.set(qn('w:val'), str(level))
@@ -1980,7 +1986,9 @@ def _write_findings_section(doc: Document, review) -> None:
     """Write per-spec findings grouped by severity, then spec file, then confidence.
 
     Uses heading hierarchy for Word-native collapse support:
-    - Title (level 0): "Findings"
+    - Title (level 0): "Findings" (stamped outlineLvl=0 — Title has no
+      native outline level, so without it the header is body text to
+      Word's collapse logic and invisible to the Navigation Pane)
     - Heading 1: Severity group (e.g., "CRITICAL (1)")
     - Heading 3: Individual finding header (collapsible)
     - Normal: Finding body content
@@ -1990,7 +1998,8 @@ def _write_findings_section(doc: Document, review) -> None:
     spec's findings across the whole severity block); confidence orders the
     findings within each file.
     """
-    doc.add_heading("Findings", level=0)
+    findings_heading = doc.add_heading("Findings", level=0)
+    _set_paragraph_outline_level(findings_heading, 0)
 
     if review.total_count == 0:
         _add_styled_paragraph(
@@ -2036,14 +2045,24 @@ def _write_cross_check_section(doc: Document, cross_check_result) -> None:
 
     Cross-check findings are rendered with the same collapsible structure
     as per-spec findings.
+
+    The section header must carry an explicit outline level and own its
+    page break: the finding immediately before this section ends with a
+    collapsed-by-default "Sources" Heading 4, whose collapse zone runs
+    until the next paragraph with an outline level at or above it. A bare
+    Title-styled header (no native outline level) and a standalone
+    page-break paragraph are both body text to that logic, so Word folded
+    the entire section banner into the last finding's collapsed Sources
+    panel — hidden on open, absent from the Navigation Pane, with the
+    coordination findings dangling under the last severity group.
     """
     if not cross_check_result:
         return
 
-    doc.add_page_break()
-
     heading = doc.add_heading("Cross-Spec Coordination", level=0)
     heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    heading.paragraph_format.page_break_before = True
+    _set_paragraph_outline_level(heading, 0)
 
     status = getattr(cross_check_result, "cross_check_status", None)
     count = len(cross_check_result.findings)
