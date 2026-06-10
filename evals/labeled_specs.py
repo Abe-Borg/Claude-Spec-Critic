@@ -9,8 +9,8 @@ model's findings against these labels. That is the signal neither hermetic
 harness can produce, because both replay captured output rather than
 calling the model.
 
-Keep the set tiny and purposeful: each case exercises one of the prompt
-improvements —
+Keep each spec tiny and purposeful. The original five cases exercise the
+prompt improvements that motivated this harness —
 
 * ``clean_hydronic`` — a clean spec: proves the reasoning scaffold did not
   raise the false-positive rate.
@@ -23,6 +23,19 @@ improvements —
   spec-text-only defect that should never burn a web search.
 * ``obscure_product_rating`` — a hard-to-ground manufacturer claim: should
   land a clean UNVERIFIED, not a guessed (and then downgraded) CONFIRMED.
+
+— and the growth set broadens coverage to one spec per defect *class* the
+review is expected to catch (placeholder, template marker, duplicate
+paragraph, invalid code cycle, stale CPC cycle, stale ASCE 7, stale
+NFPA 72, a flatly-wrong California seismic exemption, plus a second clean
+spec in Division 22 so false-positive measurement isn't hostage to one
+clean sample). Per-spec comments below state each case's purpose and the
+expected verification path.
+
+⚠️ The labels are the eval's oracle: severities are soft-scored, but
+``expected_verdict`` / ``expected_status`` seed calibration fixtures.
+Treat a label change like a code change — wrong ground truth is worse
+than no ground truth.
 
 The default matching here is coarse (case-insensitive substring) so the
 hermetic path stays free and deterministic. Under ``--live`` capture the
@@ -119,6 +132,84 @@ _OBSCURE_PRODUCT_BODY = (
     "A. Duct temperature sensors: Acme Model QX-9000, accuracy +/- 0.05 degF.\n"
 )
 
+_PLACEHOLDER_BODY = (
+    "SECTION 23 74 13 - PACKAGED ROOFTOP AIR CONDITIONING UNITS\n"
+    "PART 2 PRODUCTS\n"
+    "2.02 CAPACITY\n"
+    "A. Cooling capacity: [SELECT] tons at AHRI rating conditions.\n"
+    "B. Electrical: 460V/3-phase; MCA and MOCP as scheduled.\n"
+)
+
+_TEMPLATE_MARKER_BODY = (
+    "SECTION 23 09 93 - SEQUENCE OF OPERATIONS\n"
+    "PART 3 EXECUTION\n"
+    "3.02 ECONOMIZER\n"
+    "A. TODO: coordinate the economizer changeover setpoint with the electrical engineer.\n"
+    "B. Economizer shall lock out on outside air above the high-limit setpoint.\n"
+)
+
+# The repeated paragraph is deliberately > 80 characters so the deterministic
+# ``duplicate_paragraph`` detector would also fire on the production path —
+# here the model gets no pre-detected alerts, so this measures the review
+# catching it unaided.
+_DUPLICATE_PARAGRAPH_BODY = (
+    "SECTION 22 07 19 - PLUMBING PIPING INSULATION\n"
+    "PART 3 EXECUTION\n"
+    "3.01 INSTALLATION\n"
+    "A. Install insulation continuously through wall and floor penetrations, "
+    "with the vapor barrier unbroken and all joints sealed per the manufacturer's instructions.\n"
+    "B. Install insulation continuously through wall and floor penetrations, "
+    "with the vapor barrier unbroken and all joints sealed per the manufacturer's instructions.\n"
+)
+
+_INVALID_CYCLE_BODY = (
+    "SECTION 23 05 00 - COMMON WORK RESULTS FOR HVAC\n"
+    "PART 1 GENERAL\n"
+    "1.03 REFERENCES\n"
+    "A. All work shall comply with the 2018 California Building Code.\n"
+)
+
+_STALE_CPC_BODY = (
+    "SECTION 22 11 16 - DOMESTIC WATER PIPING\n"
+    "PART 1 GENERAL\n"
+    "1.02 REFERENCES\n"
+    "A. Install domestic water piping per the 2016 California Plumbing Code.\n"
+)
+
+_STALE_ASCE7_BODY = (
+    "SECTION 23 05 48 - VIBRATION AND SEISMIC CONTROLS FOR HVAC\n"
+    "PART 1 GENERAL\n"
+    "1.04 SEISMIC DESIGN\n"
+    "A. Seismic design of equipment anchorage shall be per ASCE 7-10 Chapter 13.\n"
+)
+
+_STALE_NFPA72_BODY = (
+    "SECTION 23 33 00 - AIR DUCT ACCESSORIES\n"
+    "PART 2 PRODUCTS\n"
+    "2.05 DUCT SMOKE DETECTORS\n"
+    "A. Duct smoke detectors shall be installed and tested per NFPA 72, 2016 edition.\n"
+)
+
+_SEISMIC_EXEMPTION_BODY = (
+    "SECTION 22 05 48 - VIBRATION AND SEISMIC CONTROLS FOR PLUMBING\n"
+    "PART 1 GENERAL\n"
+    "1.05 SEISMIC RESTRAINT\n"
+    "A. Seismic restraint of piping systems is not required for this project.\n"
+)
+
+_CLEAN_PLUMBING_BODY = (
+    "SECTION 22 13 16 - SANITARY WASTE AND VENT PIPING\n"
+    "PART 1 GENERAL\n"
+    "1.01 SUMMARY\n"
+    "A. Comply with the California Plumbing Code as adopted for this project.\n"
+    "PART 2 PRODUCTS\n"
+    "2.01 PIPE\n"
+    "A. Provide cast iron soil pipe with no-hub couplings as scheduled.\n"
+    "PART 3 EXECUTION\n"
+    "3.01 INSTALLATION\n"
+    "A. Slope horizontal drainage piping per code and test before concealment.\n"
+)
+
 
 # ---------------------------------------------------------------------------
 # The labeled set.
@@ -191,6 +282,152 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
                 expected_status="INSUFFICIENT_EVIDENCE",
             ),
         ),
+    ),
+    # --- Growth set: one spec per defect class -----------------------------
+    # Unresolved template selection — a deterministic ``placeholder`` class
+    # defect; spec-text-only, should resolve locally without web search.
+    LabeledSpec(
+        spec_id="placeholder_selection",
+        filename="23 74 13 - RTU (placeholder).docx",
+        category="internal_coordination",
+        spec_text=_PLACEHOLDER_BODY,
+        expected_defects=(
+            ExpectedDefect(
+                label="Unresolved [SELECT] placeholder left in the cooling capacity",
+                expected_severity="MEDIUM",
+                must_match=("[select]",),
+                expected_verdict="UNVERIFIED",
+                expected_status="LOCALLY_CLASSIFIED",
+            ),
+        ),
+    ),
+    # Leftover authoring note — the ``template_marker`` class (TODO/FIXME).
+    LabeledSpec(
+        spec_id="template_todo_marker",
+        filename="23 09 93 - Sequences (TODO marker).docx",
+        category="internal_coordination",
+        spec_text=_TEMPLATE_MARKER_BODY,
+        expected_defects=(
+            ExpectedDefect(
+                label="TODO authoring note left in the economizer sequence",
+                expected_severity="GRIPES",
+                must_match=("todo",),
+                expected_verdict="UNVERIFIED",
+                expected_status="LOCALLY_CLASSIFIED",
+            ),
+        ),
+    ),
+    # Verbatim duplicated paragraph — measures the model catching it with no
+    # pre-detected alerts attached (live capture sends the bare spec body).
+    LabeledSpec(
+        spec_id="duplicate_paragraph",
+        filename="22 07 19 - Insulation (duplicate paragraph).docx",
+        category="internal_coordination",
+        spec_text=_DUPLICATE_PARAGRAPH_BODY,
+        expected_defects=(
+            ExpectedDefect(
+                label="Installation paragraph duplicated verbatim (3.01.A and 3.01.B)",
+                expected_severity="GRIPES",
+                must_match=("duplicat",),
+                expected_verdict="UNVERIFIED",
+                expected_status="LOCALLY_CLASSIFIED",
+            ),
+        ),
+    ),
+    # Fabricated code year — CBC editions are triennial (…2016, 2019, 2022,
+    # 2025); "2018 CBC" never existed. Distinct from the *stale* 2019 cite.
+    LabeledSpec(
+        spec_id="invalid_2018_cbc",
+        filename="23 05 00 - Common HVAC (invalid 2018 CBC).docx",
+        category="california_ahj",
+        spec_text=_INVALID_CYCLE_BODY,
+        expected_defects=(
+            ExpectedDefect(
+                label="Cites a 2018 California Building Code, an edition that does not exist",
+                expected_severity="MEDIUM",
+                must_match=("2018",),
+                expected_verdict="CORRECTED",
+                expected_status="VERIFIED_CONTRADICTED",
+            ),
+        ),
+    ),
+    # Stale CPC cycle — the Division 22 twin of ``stale_cbc``.
+    LabeledSpec(
+        spec_id="stale_cpc",
+        filename="22 11 16 - Domestic Water (stale CPC).docx",
+        category="california_ahj",
+        spec_text=_STALE_CPC_BODY,
+        expected_defects=(
+            ExpectedDefect(
+                label="Cites the 2016 California Plumbing Code for a 2025-cycle project",
+                expected_severity="MEDIUM",
+                must_match=("2016",),
+                expected_verdict="CORRECTED",
+                expected_status="VERIFIED_CONTRADICTED",
+            ),
+        ),
+    ),
+    # Stale ASCE 7 edition — the ``stale_asce7`` deterministic class; the
+    # 2025 cycle adopts ASCE 7-22 (confirm against the published code).
+    LabeledSpec(
+        spec_id="stale_asce7",
+        filename="23 05 48 - Seismic Controls (stale ASCE 7).docx",
+        category="code_standard",
+        spec_text=_STALE_ASCE7_BODY,
+        expected_defects=(
+            ExpectedDefect(
+                label="Cites ASCE 7-10 for seismic design; the current cycle adopts a newer edition",
+                expected_severity="MEDIUM",
+                must_match=("asce 7",),
+                expected_verdict="CORRECTED",
+                expected_status="VERIFIED_CONTRADICTED",
+            ),
+        ),
+    ),
+    # Stale pinned NFPA standard beyond the legacy hardcoded subset — the
+    # cycle pins NFPA 72 at 2025 (CA-amended); 2016 is two-plus cycles old.
+    LabeledSpec(
+        spec_id="stale_nfpa72",
+        filename="23 33 00 - Duct Accessories (stale NFPA 72).docx",
+        category="code_standard",
+        spec_text=_STALE_NFPA72_BODY,
+        expected_defects=(
+            ExpectedDefect(
+                label="Duct smoke detectors cite NFPA 72 2016 edition; cycle pins NFPA 72 2025",
+                expected_severity="MEDIUM",
+                must_match=("nfpa 72",),
+                expected_verdict="CORRECTED",
+                expected_status="VERIFIED_CONTRADICTED",
+            ),
+        ),
+    ),
+    # Flatly wrong California exemption: a DSA K-12 project cannot waive
+    # seismic restraint of piping. The finding's claim (restraint IS
+    # required) is web-supportable, so this exercises the CRITICAL
+    # california_ahj deep-reasoning verification path end to end.
+    LabeledSpec(
+        spec_id="seismic_exemption",
+        filename="22 05 48 - Seismic Controls (false exemption).docx",
+        category="california_ahj",
+        spec_text=_SEISMIC_EXEMPTION_BODY,
+        expected_defects=(
+            ExpectedDefect(
+                label="Declares seismic restraint of piping not required — wrong for a California DSA K-12 project",
+                expected_severity="CRITICAL",
+                must_match=("seismic",),
+                expected_verdict="CONFIRMED",
+                expected_status="VERIFIED_SUPPORTED",
+            ),
+        ),
+    ),
+    # Second clean spec, Division 22 — false-positive measurement should not
+    # be hostage to a single clean sample in one division.
+    LabeledSpec(
+        spec_id="clean_sanitary",
+        filename="22 13 16 - Sanitary Waste (clean).docx",
+        spec_text=_CLEAN_PLUMBING_BODY,
+        is_clean=True,
+        category="california_ahj",
     ),
 )
 
