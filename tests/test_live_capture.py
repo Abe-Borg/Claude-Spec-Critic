@@ -73,8 +73,13 @@ def test_default_invocation_is_hermetic_noop(capsys):
     assert live_capture.main([]) == 0
 
 
-def test_live_without_real_key_refuses(capsys):
-    # conftest injects the sentinel key, so --live must refuse with exit 2.
+def test_live_without_real_key_refuses(monkeypatch, capsys):
+    # Force the sentinel explicitly instead of relying on conftest's
+    # setdefault: with a real ANTHROPIC_API_KEY exported in the developer's
+    # shell, this test previously sailed past the refusal guard and made a
+    # REAL paid review call from the hermetic suite. --live must refuse
+    # with exit 2 whenever the key is the sentinel.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real-do-not-use")
     assert live_capture.main(["--live"]) == 2
 
 

@@ -122,9 +122,20 @@ _FINDING_OBJECT_SCHEMA: dict[str, Any] = {
             "description": "ADD only: verbatim nearby paragraph used to locate the insertion point.",
         },
         "insertPosition": {
+            # No ``enum`` here: the live API's strict-mode schema validator
+            # rejects an enum on a union type with a null member — observed
+            # as a hard 400 at submit on every review/cross-check request
+            # ("Enum value 'before' does not match declared type
+            # '['string', 'null']'"). The value set lives in the description
+            # instead, and ``validate_edit_shape`` already demotes an ADD
+            # whose insertPosition is not "before"/"after" at parse time, so
+            # nothing is lost contractually — same pattern as the removed
+            # numeric constraints.
             "type": ["string", "null"],
-            "enum": ["before", "after", None],
-            "description": "ADD only: insert before or after the anchor.",
+            "description": (
+                'ADD only: "before" or "after" the anchor. Null for every '
+                "other action."
+            ),
         },
         # When the prompt renders spec elements with id attributes, the model should
         # cite the element id of the paragraph / row / heading the finding

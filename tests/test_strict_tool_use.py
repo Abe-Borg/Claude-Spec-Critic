@@ -125,12 +125,29 @@ class TestSchemasStayInsideStrictSubset:
     the default, an out-of-subset keyword risks a hard 400 at submit. Range
     enforcement lives at parse time instead (confidence clamp; triage
     index-membership filter).
+
+    ``enum`` is additionally constrained: the live strict validator rejects
+    an enum declared on a union type or carrying a null member — observed as
+    a hard 400 on every review request ("Enum value 'before' does not match
+    declared type '['string', 'null']'", the former ``insertPosition``
+    shape). An enum must sit on a single ``"type": "string"`` declaration;
+    nullable-with-constrained-values moves the value set to the description
+    plus parse-time validation (``validate_edit_shape``).
     """
 
     _FORBIDDEN_KEYS = {"minimum", "maximum", "minLength", "maxLength", "oneOf", "anyOf"}
 
     def _walk(self, node, path=""):
         if isinstance(node, dict):
+            if "enum" in node:
+                assert isinstance(node.get("type"), str), (
+                    f"enum on a union type at {path or '<root>'} — the live "
+                    "strict validator 400s on this shape"
+                )
+                assert None not in node["enum"], (
+                    f"null enum member at {path or '<root>'} — the live "
+                    "strict validator 400s on this shape"
+                )
             for key, value in node.items():
                 assert key not in self._FORBIDDEN_KEYS, (
                     f"strict-incompatible keyword {key!r} at {path or '<root>'}"
