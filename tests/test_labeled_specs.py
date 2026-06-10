@@ -73,19 +73,28 @@ class TestLabeledSetIntegrity:
         if defect.expected_status is not None:
             assert defect.expected_status in _VALID_STATUSES, spec_id
 
-    def test_duplicate_paragraph_spec_actually_duplicates(self) -> None:
-        """The duplicated paragraph must stay verbatim and >= 80 chars —
-        the deterministic detector's threshold — or the case stops testing
-        what its label claims."""
+    def test_duplicate_paragraph_spec_trips_the_production_detector(self) -> None:
+        """Couple by execution, not imitation: the body must trip the real
+        ``detect_duplicate_paragraphs`` detector (blank-line paragraph split,
+        whole-stripped-paragraph keys, >= 80-char threshold). Hand-mirroring
+        those mechanics here previously let a body slip through that the
+        production path would never flag (Codex P2 on #283)."""
+        from src.input.preprocessor import (
+            DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH,
+            detect_duplicate_paragraphs,
+        )
+
         spec = next(s for s in LABELED_SPECS if s.spec_id == "duplicate_paragraph")
-        paragraphs = [
-            line.lstrip("AB. ").strip()
-            for line in spec.spec_text.splitlines()
-            if line.startswith(("A. ", "B. "))
-        ]
-        assert len(paragraphs) == 2
-        assert paragraphs[0] == paragraphs[1]
-        assert len(paragraphs[0]) >= 80
+        alerts = detect_duplicate_paragraphs(spec.spec_text, spec.filename)
+        assert alerts, (
+            "duplicate_paragraph body no longer trips the deterministic "
+            "detector — the eval case has decoupled from the defect class "
+            "its label claims"
+        )
+        assert all(
+            a.get("deterministic_rule") == DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH
+            for a in alerts
+        )
 
     def test_substring_fallback_self_consistent(self) -> None:
         """Each defect's tokens match a finding that quotes its own label +

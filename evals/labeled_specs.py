@@ -148,17 +148,23 @@ _TEMPLATE_MARKER_BODY = (
     "B. Economizer shall lock out on outside air above the high-limit setpoint.\n"
 )
 
-# The repeated paragraph is deliberately > 80 characters so the deterministic
-# ``duplicate_paragraph`` detector would also fire on the production path —
-# here the model gets no pre-detected alerts, so this measures the review
-# catching it unaided.
+# The duplicated paragraph must genuinely trip the production
+# ``duplicate_paragraph`` detector (``detect_duplicate_paragraphs``): the
+# detector splits on BLANK lines and keys on the whole stripped paragraph,
+# so the two copies are blank-line-separated and byte-identical — same
+# "A." prefix, the classic renumber-after-copy-paste artifact. The shape
+# is locked by ``tests/test_labeled_specs.py`` executing the real
+# detector. In live capture the model gets no pre-detected alerts, so the
+# case measures the review catching the duplicate unaided.
 _DUPLICATE_PARAGRAPH_BODY = (
     "SECTION 22 07 19 - PLUMBING PIPING INSULATION\n"
     "PART 3 EXECUTION\n"
     "3.01 INSTALLATION\n"
+    "\n"
     "A. Install insulation continuously through wall and floor penetrations, "
     "with the vapor barrier unbroken and all joints sealed per the manufacturer's instructions.\n"
-    "B. Install insulation continuously through wall and floor penetrations, "
+    "\n"
+    "A. Install insulation continuously through wall and floor penetrations, "
     "with the vapor barrier unbroken and all joints sealed per the manufacturer's instructions.\n"
 )
 
