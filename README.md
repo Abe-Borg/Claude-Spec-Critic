@@ -16,7 +16,7 @@ Configured for the **California 2025 code cycle** by default (`src/core/code_cyc
 
 ## Pipeline at a Glance
 
-1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers. Cached by file hash. Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …).
+1. **Text Extraction** — `.docx` paragraphs, tables, text boxes, footnotes/endnotes, and headers/footers. Cached by file hash. Each element gets a stable `element_id` (`p7`, `t0r2`, `tb0p0`, `fn1p0`, `s1h0`, …).
 2. **Local Pre-Screening** — Deterministic detectors run before any API call: LEED, placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 3. **Per-Spec Review** — Each spec sent to Claude Opus 4.8 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
 4. **Deduplication** — Identical findings consolidated across specs; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text.
@@ -156,7 +156,7 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 | Variable | Default | Effect |
 |---|---|---|
 | `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. |
-| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. |
+| `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, batch-verification thinking / tool-use blocks, untruncated raw responses, and inline prompts. Implies trace enabled. |
 | `SPEC_CRITIC_TRACE_DIR` | `~/.spec_critic/traces/` (state dir on macOS/Linux, equivalent on Windows) | Override the trace root. `~` and `$VAR` are expanded. |
 
 ### GUI
