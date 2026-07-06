@@ -8,6 +8,15 @@ Engineering reference for the Spec Critic codebase. Focuses on non-obvious invar
 
 **PR workflow (standing instruction):** After pushing commits to a feature branch, open a pull request against `master` without waiting to be asked — update the existing open PR if one is already open for the branch. This durably authorizes PR creation and overrides the default "don't open a PR unless explicitly asked" behavior. Still confirm before merging, force-pushing, or other destructive / irreversible actions.
 
+## Common Commands
+
+- Run the GUI app: `python main.py`
+- Full hermetic test suite (no API key, no network): `pytest -q`
+- Network-marked tests (requires a real `ANTHROPIC_API_KEY`): `pytest -m network`
+- Recover a detached/interrupted review batch: `python scripts/recover_batch.py` (`--batch-id` to recover with no saved state)
+- Calibration eval: `python -m evals.calibration.runner`
+- Trace CLI: `python -m src.tracing list` / `show <run_id>` / `prune --keep-last 20`
+
 ---
 
 ## 1) What it is
