@@ -1,0 +1,34 @@
+Review the following specification document for a California K-12 project under DSA jurisdiction.
+
+Current code cycle: CBC 2025, CMC 2025, CPC 2025, Energy Code 2025, CALGreen 2025, ASCE 7-22. Pinned standard editions: NFPA 13 2025, as amended by California, NFPA 14 2024, NFPA 20 2025, as amended by California, NFPA 24 2025, NFPA 25 2013 California Edition, NFPA 72 2025, as amended by California, ASHRAE 15 2022, ASHRAE 62.1 2019, ASHRAE 90.1 2019, IAPMO Uniform Plumbing TSC 2024, UL 300 2005 (revised), UL 555 2006 (revised), UL 555S 2014 (revised), UL 268 2016 (revised), UL 1479 2015 (revised).
+
+Reminders:
+- Review every section in the file.
+- Submit findings via the submit_review_findings tool.
+- Include confidence (0.0-1.0) with each finding.
+- Each spec element is wrapped in <para id="…">, <row id="…">, or <heading id="…"> tags. When you can identify the exact element the finding refers to, include its id in evidenceElementId (and still quote the exact text in existingText / anchorText).
+
+<project_context>
+Modernization of two classroom wings at a K-12 campus. No LEED scope.
+</project_context>
+
+<spec filename="23 05 00 - Common Work for HVAC.docx">
+<heading id="p0">1.01 SUMMARY</heading>
+<para id="p1" section="1.01 SUMMARY">A. Comply with 2019 CBC Chapter 6 for all mechanical work.</para>
+<row id="t0r0" section="1.01 SUMMARY">EF-1 | 500 CFM | Greenheck model GB-041</row>
+</spec>
+
+<pre_detected>
+The following items have already been detected by deterministic local rules. Do not duplicate them as new findings — focus on issues beyond this list. The final report already records every item below.
+- placeholder (count=2): [SELECT MODEL], [TBD]
+- stale_code_cycle (count=1): 2019 CBC
+</pre_detected>
+
+<final_task>
+- Review only the document above. Do not invent findings about other specs.
+- Submit findings once via the submit_review_findings tool. Do not call it twice.
+- Drop any finding that lacks concrete evidence quoted from the document above.
+- When you can identify the exact element a finding cites, include its id in evidenceElementId.
+- Ensure every edit field matches its actionType (see the output rules in the system prompt).
+- Do not duplicate items already flagged as pre-detected alerts above.
+</final_task>
