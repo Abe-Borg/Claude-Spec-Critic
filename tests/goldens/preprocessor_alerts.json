@@ -1,0 +1,118 @@
+{
+  "code_cycle_alerts": [
+    {
+      "context": "1.01 SUMMARY  A. Provide HVAC work per 2019 CBC Chapter 6 and anchor equipment per ASCE 7-10.  B. The build",
+      "deterministic_rule": "stale_code_cycle",
+      "expected_year": "2025",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "found_year": "2019",
+      "match": "2019 CBC",
+      "position": 39,
+      "type": "Stale code cycle reference (2019 vs selected 2025)"
+    },
+    {
+      "context": "e HVAC work per 2019 CBC Chapter 6 and anchor equipment per ASCE 7-10.  B. The building was previously permitted under the 2022 C",
+      "deterministic_rule": "stale_asce7",
+      "expected_edition": "7-22",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "found_edition": "7-10",
+      "match": "ASCE 7-10",
+      "position": 83,
+      "type": "Stale ASCE 7 edition (7-10 vs selected 7-22)"
+    }
+  ],
+  "duplicate_paragraph_alerts": [
+    {
+      "context": "Provide seismic restraints for all suspended equipment in accordance with the approved structural details and project drawings.",
+      "deterministic_rule": "duplicate_paragraph",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "match": "Provide seismic restraints for all suspended equipment in accordance with the approved structural details and project drawings.",
+      "occurrence_count": 2,
+      "position": 734,
+      "type": "Duplicate paragraph"
+    }
+  ],
+  "inconsistent_file_naming_alerts": [
+    {
+      "context": "23-31-13-Metal-Ducts.docx",
+      "deterministic_rule": "inconsistent_filename",
+      "dominant_style": "space",
+      "filename": "23-31-13-Metal-Ducts.docx",
+      "found_style": "dash",
+      "match": "23-31-13-Metal-Ducts.docx",
+      "position": 0,
+      "type": "Inconsistent CSI filename style (expected space-separated)"
+    }
+  ],
+  "invalid_code_cycle_alerts": [
+    {
+      "context": "as previously permitted under the 2022 CBC.  C. Comply with 2018 CBC requirements for mechanical penetrations.  D. Contractor sh",
+      "deterministic_rule": "invalid_code_cycle",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "found_year": "2018",
+      "match": "2018 CBC",
+      "position": 172,
+      "type": "Invalid California code cycle year (2018)"
+    }
+  ],
+  "leed_alerts": [
+    {
+      "context": "for mechanical penetrations.  D. Contractor shall document LEED-NC credits and USGBC checklists where applicable.  E. Furnish",
+      "deterministic_rule": "leed_reference",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "match": "LEED-NC",
+      "position": 253,
+      "type": "LEED-NC reference"
+    },
+    {
+      "context": "trations.  D. Contractor shall document LEED-NC credits and USGBC checklists where applicable.  E. Furnish fans per the fan s",
+      "deterministic_rule": "leed_reference",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "match": "USGBC",
+      "position": 273,
+      "type": "USGBC reference"
+    }
+  ],
+  "placeholder_alerts": [
+    {
+      "context": "sts where applicable.  E. Furnish fans per the fan schedule [SELECT MODEL] prior to submittal review.  F. TODO: confirm duct gauge sel",
+      "deterministic_rule": "placeholder",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "match": "[SELECT MODEL]",
+      "position": 346,
+      "type": "SELECT placeholder"
+    }
+  ],
+  "structural_alerts": [
+    {
+      "context": ". Reference standards apply as listed.  2.01 PRODUCTS  2.02 WARRANTY  Provide seismic restraint",
+      "deterministic_rule": "empty_section",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "match": "2.01 PRODUCTS",
+      "position": 704,
+      "section_number": "2.01",
+      "section_title": "PRODUCTS",
+      "type": "Empty section"
+    },
+    {
+      "context": "1.02 REFERENCES  A. Reference standards apply as listed.  1.02 REFERENCES  A. Reference standards apply as listed.  2.01 PRODUCTS  2.02 WARRANTY  Provide seismic restraints for a",
+      "deterministic_rule": "duplicate_heading",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "match": "1.02 REFERENCES",
+      "occurrence_count": 2,
+      "position": 646,
+      "section_number": "1.02",
+      "type": "Duplicate section heading"
+    }
+  ],
+  "template_marker_alerts": [
+    {
+      "context": "fan schedule [SELECT MODEL] prior to submittal review.  F. TODO: confirm duct gauge selections with the structural engineer.",
+      "deterministic_rule": "template_marker",
+      "filename": "23 05 00 - Common Work for HVAC.docx",
+      "match": "TODO:",
+      "position": 392,
+      "type": "TODO marker"
+    }
+  ]
+}
