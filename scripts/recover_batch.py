@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded  # noqa: E402
 from src.core.api_config import REVIEW_MODEL_DEFAULT  # noqa: E402
 from src.core.api_key_store import load_api_key_from_file  # noqa: E402
-from src.core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE  # noqa: E402
+from src.modules import AVAILABLE_MODULES, DEFAULT_MODULE, get_module  # noqa: E402
 from src.orchestration.batch_resume import (  # noqa: E402
     clear_pending_batch,
     load_pending_batch,
@@ -110,7 +110,7 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
                 )
             else:
                 _log(f"No .docx specs found in {input_dir}; recovering findings only.", level="warning")
-        cycle = AVAILABLE_CYCLES.get(ns.cycle, DEFAULT_CYCLE)
+        module = get_module(ns.module)
         _log(f"Reconstructing batch {ns.batch_id} from the remote results...", level="step")
         submission = thin_submission_from_batch_results(
             ns.batch_id,
@@ -118,7 +118,7 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
             input_dir=input_dir,
             files=files,
             cross_check_enabled=bool(files) and not ns.no_cross_check,
-            cycle=cycle,
+            module=module,
             log=_log,
             progress=_progress,
         )
@@ -166,9 +166,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Review model id used for the batch (affects re-extraction labeling only).",
     )
     parser.add_argument(
-        "--cycle",
-        default=DEFAULT_CYCLE.label,
-        help=f"Code cycle label (default: {DEFAULT_CYCLE.label}).",
+        "--module",
+        default=DEFAULT_MODULE.module_id,
+        choices=sorted(AVAILABLE_MODULES),
+        help=f"Review module id (default: {DEFAULT_MODULE.module_id}).",
     )
     parser.add_argument(
         "-o", "--output",

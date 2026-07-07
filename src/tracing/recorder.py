@@ -193,6 +193,7 @@ class TraceRecorder:
         mode: str = "",
         model: str = "",
         cycle_label: str = "",
+        module_id: str = "",
         files_reviewed: list[str] | None = None,
     ) -> None:
         """Spin up the writer thread and write the initial run.json.
@@ -224,6 +225,7 @@ class TraceRecorder:
                 "mode": mode,
                 "model": model,
                 "cycle_label": cycle_label,
+                "module_id": module_id,
                 "files_reviewed": list(files_reviewed or []),
                 "capture_level": self._capture_level,
                 "spec_critic_version": self._spec_critic_version,

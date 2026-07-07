@@ -24,7 +24,7 @@ from tkinter import messagebox
 from .. import __version__
 from ..batch.batch import BatchStatus
 from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
-from ..core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE
+from ..modules import DEFAULT_MODULE, get_module
 from ..orchestration.batch_resume import (
     PendingBatch,
     clear_pending_batch,
@@ -56,11 +56,13 @@ def submit_batch_thread(app, run_epoch: int) -> None:
     # for the entire batch lifecycle (submit → poll → collect → verify →
     # finalize) and is stopped after collect_batch_results completes.
     # Store on the app so the collect path can reach it.
+    module = get_module(getattr(app, "_selected_module_id", None))
     app._trace_recorder = _maybe_start_recorder(
         run_id=diag.run_id if diag is not None else "no_run_id",
         mode="batch",
         model=REVIEW_MODEL_DEFAULT,
-        cycle_label=app._selected_cycle_label,
+        cycle_label=module.cycle.label,
+        module_id=module.module_id,
         files=app._selected_files_for_review,
     )
     try:
@@ -72,7 +74,7 @@ def submit_batch_thread(app, run_epoch: int) -> None:
             files=app._selected_files_for_review,
             project_context=app._project_context_for_review,
             model=REVIEW_MODEL_DEFAULT,
-            cycle=AVAILABLE_CYCLES.get(app._selected_cycle_label, DEFAULT_CYCLE),
+            module=module,
             cross_check_enabled=app._cross_check_for_review,
             log=app._make_diag_log("batch_submit", run_epoch),
             progress=app._make_diag_progress("batch_submit", run_epoch),
@@ -185,7 +187,7 @@ def collect_batch_results(app) -> None:
         try:
             if app._batch_submission is None:
                 raise RuntimeError("No active batch submission to collect.")
-            cycle = AVAILABLE_CYCLES.get(getattr(app._batch_submission, "cycle_label", DEFAULT_CYCLE.label), DEFAULT_CYCLE)
+            module = get_module(getattr(app._batch_submission, "module_id", None))
 
             # NOTE: this collect → verify → cross-check → verify → finalize
             # sequence is mirrored, UI-free, by
@@ -246,7 +248,7 @@ def collect_batch_results(app) -> None:
                     diag.log("verification", "step", f"Starting verification batch for {len(verifiable_findings)} findings")
                 verification_job = start_batch_verification(
                     verifiable_findings,
-                    cycle=cycle,
+                    module=module,
                     log=app._make_diag_log("verification", run_epoch),
                     progress=app._make_diag_progress("verification", run_epoch),
                     cache=cache,
@@ -262,7 +264,7 @@ def collect_batch_results(app) -> None:
                     collect_batch_verification_results(
                         verification_job,
                         verifiable_findings,
-                        cycle=cycle,
+                        module=module,
                         log=app._make_diag_log("verification", run_epoch),
                         progress=app._make_diag_progress("verification", run_epoch),
                         cache=cache,
@@ -333,7 +335,6 @@ def collect_batch_results(app) -> None:
                 review_state,
                 specs=getattr(app._batch_submission, "prepared_specs", None),
                 project_context=getattr(app, "_project_context_for_review", ""),
-                cycle=cycle,
                 log=app._make_diag_log("cross_check", run_epoch),
             )
             if review_state.cross_check_skipped_due_to_missing_specs:
@@ -369,7 +370,7 @@ def collect_batch_results(app) -> None:
                     diag.log("cross_check_verification", "step", f"Verifying {len(cross_check_findings)} cross-check findings")
                 cross_check_verification_job = start_batch_verification(
                     cross_check_findings,
-                    cycle=cycle,
+                    module=module,
                     log=app._make_diag_log("cross_check_verification", run_epoch),
                     progress=app._make_diag_progress("cross_check_verification", run_epoch),
                     cache=cache,
@@ -381,7 +382,7 @@ def collect_batch_results(app) -> None:
                     collect_batch_verification_results(
                         cross_check_verification_job,
                         cross_check_findings,
-                        cycle=cycle,
+                        module=module,
                         log=app._make_diag_log("cross_check_verification", run_epoch),
                         progress=app._make_diag_progress("cross_check_verification", run_epoch),
                         cache=cache,
@@ -462,6 +463,7 @@ def start_batch_resume(app, pending: PendingBatch) -> None:
         reconstruct_fn=lambda log, progress: pending.to_submission(log=log, progress=progress),
         model=pending.model,
         cycle_label=pending.cycle_label,
+        module_id=pending.module_id,
         project_context=pending.project_context,
         cross_check_enabled=pending.cross_check_enabled,
         files_for_review=[Path(f) for f in pending.files],
@@ -505,8 +507,8 @@ def recover_batch_dialog(app) -> None:
     files = [Path(f) for f in (selected or [])]
     file_strs = [str(f) for f in files]
     input_dir = str(files[0].parent) if files else ""
-    cycle_label = DEFAULT_CYCLE.label
-    cycle = AVAILABLE_CYCLES.get(cycle_label, DEFAULT_CYCLE)
+    module = get_module(getattr(app, "_selected_module_id", None))
+    cycle_label = module.cycle.label
     project_context = app._get_project_context() if hasattr(app, "_get_project_context") else ""
     cross_check_enabled = bool(files) and bool(
         getattr(app, "_cross_check_var", None) and app._cross_check_var.get()
@@ -525,7 +527,7 @@ def recover_batch_dialog(app) -> None:
             input_dir=input_dir or None,
             files=file_strs or None,
             cross_check_enabled=cross_check_enabled,
-            cycle=cycle,
+            module=module,
             project_context=project_context,
             log=log,
             progress=progress,
@@ -536,6 +538,7 @@ def recover_batch_dialog(app) -> None:
         reconstruct_fn=_reconstruct,
         model=REVIEW_MODEL_DEFAULT,
         cycle_label=cycle_label,
+        module_id=module.module_id,
         project_context=project_context,
         cross_check_enabled=cross_check_enabled,
         files_for_review=files,
@@ -555,6 +558,7 @@ def _begin_reconnect_run(
     project_context: str,
     cross_check_enabled: bool,
     files_for_review: list,
+    module_id: str = "",
     input_dir: str = "",
     run_id: str = "",
     files_reviewed_label: list | None = None,
@@ -582,6 +586,7 @@ def _begin_reconnect_run(
     os.environ["ANTHROPIC_API_KEY"] = key
 
     app._selected_cycle_label = cycle_label
+    app._selected_module_id = module_id or DEFAULT_MODULE.module_id
     app._project_context_for_review = project_context
     app._cross_check_for_review = cross_check_enabled
     app._selected_files_for_review = list(files_for_review or [])
@@ -617,19 +622,21 @@ def _begin_reconnect_run(
     run_epoch = app._next_run_epoch()
     threading.Thread(
         target=lambda: _reconnect_worker(
-            app, reconstruct_fn, model, cycle_label, run_id, run_epoch, batch_label
+            app, reconstruct_fn, model, cycle_label, app._selected_module_id,
+            run_id, run_epoch, batch_label
         ),
         daemon=True,
     ).start()
 
 
-def _reconnect_worker(app, reconstruct_fn, model, cycle_label, run_id, run_epoch, batch_label) -> None:
+def _reconnect_worker(app, reconstruct_fn, model, cycle_label, module_id, run_id, run_epoch, batch_label) -> None:
     diag = app._diagnostics_report
     app._trace_recorder = _maybe_start_recorder(
         run_id=diag.run_id if diag is not None else (run_id or "no_run_id"),
         mode="batch",
         model=model,
         cycle_label=cycle_label,
+        module_id=module_id,
         files=app._selected_files_for_review,
     )
     try:

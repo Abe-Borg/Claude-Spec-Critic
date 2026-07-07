@@ -38,7 +38,8 @@ from pathlib import Path
 from typing import Any
 
 from ..core.api_config import REVIEW_MODEL_DEFAULT
-from ..core.code_cycles import AVAILABLE_CYCLES, CodeCycle, DEFAULT_CYCLE
+from ..core.code_cycles import DEFAULT_CYCLE
+from ..modules import DEFAULT_MODULE, ReviewModule, get_module
 from .pipeline import (
     BatchSubmission,
     LogFn,
@@ -77,6 +78,13 @@ class PendingBatch:
     input_dir: str = ""
     files: list[str] = field(default_factory=list)
     cycle_label: str = DEFAULT_CYCLE.label
+    # Registry id of the module the batch was submitted under. Persisted so a
+    # resumed run reconstructs the SAME module (and thus the same cycle /
+    # prompts) it was submitted with. Legacy state files predate this field
+    # and load with the default — which resolves to the California module,
+    # the only configuration those files could have been written by. No
+    # schema bump: the loader is defensive and old readers ignore the key.
+    module_id: str = DEFAULT_MODULE.module_id
     project_context: str = ""
     cross_check_enabled: bool = False
     submitted_at: float = 0.0
@@ -103,6 +111,7 @@ class PendingBatch:
             input_dir=str(input_dir) if input_dir else "",
             files=[str(f) for f in (files or [])],
             cycle_label=submission.cycle_label,
+            module_id=getattr(submission, "module_id", "") or DEFAULT_MODULE.module_id,
             project_context=submission.project_context,
             cross_check_enabled=submission.cross_check_enabled,
             submitted_at=float(submission.job.created_at or time.time()),
@@ -113,7 +122,7 @@ class PendingBatch:
     def to_submission(
         self, *, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress
     ) -> BatchSubmission:
-        cycle = AVAILABLE_CYCLES.get(self.cycle_label, DEFAULT_CYCLE)
+        module = get_module(self.module_id)
         return reconstruct_batch_submission(
             batch_id=self.batch_id,
             request_map=self.request_map,
@@ -123,7 +132,7 @@ class PendingBatch:
             files=self.files or None,
             model=self.model,
             project_context=self.project_context,
-            cycle=cycle,
+            module=module,
             cross_check_enabled=self.cross_check_enabled,
             created_at=self.submitted_at,
             log=log,
@@ -186,6 +195,7 @@ def load_pending_batch(*, path: Path | None = None) -> PendingBatch | None:
         input_dir=_str("input_dir"),
         files=_list("files"),
         cycle_label=_str("cycle_label", DEFAULT_CYCLE.label) or DEFAULT_CYCLE.label,
+        module_id=_str("module_id", DEFAULT_MODULE.module_id) or DEFAULT_MODULE.module_id,
         project_context=_str("project_context"),
         cross_check_enabled=bool(data.get("cross_check_enabled", False)),
         submitted_at=submitted_at,
@@ -231,7 +241,7 @@ def thin_submission_from_batch_results(
     files: list[str] | None = None,
     cross_check_enabled: bool = False,
     project_context: str = "",
-    cycle: CodeCycle = DEFAULT_CYCLE,
+    module: ReviewModule = DEFAULT_MODULE,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> BatchSubmission:
@@ -296,7 +306,7 @@ def thin_submission_from_batch_results(
         files=files,
         model=model,
         project_context=project_context,
-        cycle=cycle,
+        module=module,
         cross_check_enabled=cross_check_enabled and bool(files),
         created_at=time.time(),
         log=log,

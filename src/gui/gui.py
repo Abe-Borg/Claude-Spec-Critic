@@ -45,6 +45,7 @@ from src.orchestration.pipeline import BatchSubmission
 # Constants used by widgets
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
+from src.modules import DEFAULT_MODULE
 
 from src.gui.widgets import (
     AnimatedButton,
@@ -167,6 +168,11 @@ class SpecReviewApp(_CTkDnDRoot):
         # instead of stacking up multiple outbound API calls.
         self._exact_token_refresh_timer_id: str | None = None
         self._selected_cycle_label: str = DEFAULT_CYCLE.label
+        # Registry id of the module the next run reviews under. There is no
+        # selector widget yet (single-module registry); controllers resolve
+        # this via ``modules.get_module`` and derive the cycle from it, so
+        # the module is the single source once a selector lands.
+        self._selected_module_id: str = DEFAULT_MODULE.module_id
         self._font_scale_label: str = "Default (100%)"
         self._create_ui()
 
