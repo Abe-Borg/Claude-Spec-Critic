@@ -171,6 +171,15 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(AVAILABLE_MODULES),
         help=f"Review module id (default: {DEFAULT_MODULE.module_id}).",
     )
+    # Deprecated pre-module flag, kept as a hidden no-op alias so existing
+    # recovery invocations (`--cycle 2025`) keep working. It was already a
+    # no-op: every value resolved through the single-entry cycle registry to
+    # the same default. The module's cycle is authoritative now.
+    parser.add_argument(
+        "--cycle",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "-o", "--output",
         help="Path for the .docx report (default: spec-critic-recovered-<id>-<date>.docx in CWD).",
@@ -184,6 +193,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Do not delete the saved pending-batch state on success.",
     )
     ns = parser.parse_args(argv)
+
+    if ns.cycle is not None:
+        _log(
+            "--cycle is deprecated and ignored — the code cycle now comes from "
+            f"the review module (--module, default {DEFAULT_MODULE.module_id}).",
+            level="warning",
+        )
 
     _ensure_api_key(parser)
 
