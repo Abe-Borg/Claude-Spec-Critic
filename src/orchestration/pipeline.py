@@ -41,7 +41,8 @@ from ..verification.verifier import (
 )
 from ..verification.verification_cache import VerificationCache, cache_persist_enabled
 from ..cross_check.cross_checker import run_chunked_cross_check
-from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE, AVAILABLE_CYCLES
+from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..modules import DEFAULT_MODULE, ReviewModule, get_module
 from ..tracing import capture_hooks as _trace
 
 # Log/progress callbacks accept explicit ``level`` and ``phase`` keywords
@@ -125,6 +126,10 @@ class PipelineResult:
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
     cycle_label: str = DEFAULT_CYCLE.label
+    # Identity of the module the run was reviewed under. Rides alongside
+    # ``cycle_label`` (which stays for the verification-cache namespace and
+    # legacy display) so report / sidecar surfaces can stamp provenance.
+    module_id: str = DEFAULT_MODULE.module_id
     total_elapsed_seconds: float | None = None
     # Remaining deterministic alert types collected during preflight.
     # Carrying them through here lets the report render every detector's
@@ -780,6 +785,12 @@ class BatchSubmission:
     project_context: str = ""
     prepared_specs: list[ExtractedSpec] | None = None
     cycle_label: str = DEFAULT_CYCLE.label
+    # Registry id of the module this batch was submitted under. The stage
+    # functions (repair, cross-check, headless collection) re-resolve the
+    # module from this id via ``get_module`` — one source of truth, same
+    # degrade-to-default posture as the legacy cycle_label lookup. Persisted
+    # into the pending-batch resume state by ``batch_resume.PendingBatch``.
+    module_id: str = DEFAULT_MODULE.module_id
     cross_check_enabled: bool = False
     # Carry the remaining deterministic alert lists so the collect /
     # finalize path can hand them off to the final PipelineResult.
@@ -795,11 +806,13 @@ class BatchSubmission:
     trace_span_id: str = ""
 
 
-def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, cross_check_enabled: bool = False) -> BatchSubmission:
+def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, module: ReviewModule = DEFAULT_MODULE, cross_check_enabled: bool = False) -> BatchSubmission:
+    cycle = module.cycle
     trace_pipeline = _trace.capture_pipeline_start(
         mode="batch",
         model=model,
         cycle_label=cycle.label,
+        module_id=module.module_id,
         files=[str(f) for f in (files or [])],
     )
     prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, model=model)
@@ -835,6 +848,7 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         project_context=project_context,
         prepared_specs=prepared.specs,
         cycle_label=cycle.label,
+        module_id=module.module_id,
         cross_check_enabled=cross_check_enabled,
         code_cycle_alerts=prepared.code_cycle_alerts,
         structural_alerts=prepared.structural_alerts,
@@ -870,7 +884,11 @@ def _recover_retryable_review_batch_results(
         log("Batch review fallback skipped: original extracted specs are unavailable.", level="warning")
         return results_by_request
 
-    cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
+    # Resolve the module (and thus the cycle) from the submission's persisted
+    # identity — the same degrade-to-default posture as the legacy
+    # ``AVAILABLE_CYCLES`` lookup this replaced. ``getattr`` keeps
+    # hand-built test doubles without the field working.
+    cycle = get_module(getattr(submission, "module_id", None)).cycle
     # Resolve each retryable request's spec by FILENAME first. The positional
     # index is only reliable in the normal submit flow, where request_map is
     # built from the same prepared_specs list (index ⇄ position). On the resume
@@ -1043,7 +1061,7 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     )
 
 
-def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, cycle: CodeCycle = DEFAULT_CYCLE, log: LogFn = _noop_log) -> CollectedBatchState:
+def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log) -> CollectedBatchState:
     if not state.submission.cross_check_enabled:
         return state
     if specs is None:
@@ -1088,6 +1106,10 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
             "They remain on the final result; only the cross-check input is filtered.",
             level="info",
         )
+    # The cycle comes from the submission's module identity — the state
+    # object is the single source, so a caller can't pair one module's
+    # submission with another module's cycle.
+    cycle = get_module(getattr(state.submission, "module_id", None)).cycle
     # Split by CSI division when the combined input would otherwise
     # exceed the cross-check token budget. Without this, a large project
     # would get a ``skipped`` status and no coordination review at all.
@@ -1108,7 +1130,7 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
 def start_batch_verification(
     findings: list[Finding],
     *,
-    cycle: CodeCycle = DEFAULT_CYCLE,
+    module: ReviewModule = DEFAULT_MODULE,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
     cache: VerificationCache | None = None,
@@ -1119,6 +1141,7 @@ def start_batch_verification(
     hit) — callers should treat that as "verification complete" without
     polling. Returns the BatchJob otherwise.
     """
+    cycle = module.cycle
     remaining = prepare_findings_for_verification(findings, cycle=cycle, cache=cache, log=log)
     if not remaining:
         progress(60.0, "Verification: all findings resolved locally / cached.")
@@ -1134,7 +1157,7 @@ def collect_batch_verification_results(
     job: BatchJob,
     findings: list[Finding],
     *,
-    cycle: CodeCycle = DEFAULT_CYCLE,
+    module: ReviewModule = DEFAULT_MODULE,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
     poll_interval: int = 15,
@@ -1144,7 +1167,7 @@ def collect_batch_verification_results(
     return collect_verification_batch_results(
         job,
         submitted,
-        cycle=cycle,
+        cycle=module.cycle,
         log=log,
         progress=lambda p, m: progress(60.0 + (p / 100.0) * 35.0, m),
         poll_interval=poll_interval,
@@ -1189,6 +1212,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         placeholder_alerts=state.placeholder_alerts,
         cross_check_result=state.cross_check_result,
         cycle_label=state.submission.cycle_label,
+        module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
         total_elapsed_seconds=time.time() - state.submission.job.created_at,
         # Pass the deterministic-check lists through to the report.
         code_cycle_alerts=list(state.code_cycle_alerts),
@@ -1216,7 +1240,7 @@ def reconstruct_batch_submission(
     files: list[str] | None,
     model: str,
     project_context: str,
-    cycle: CodeCycle,
+    module: ReviewModule,
     cross_check_enabled: bool,
     created_at: float,
     log: LogFn = _noop_log,
@@ -1269,7 +1293,7 @@ def reconstruct_batch_submission(
                 project_context=project_context,
                 log=log,
                 progress=progress,
-                cycle=cycle,
+                cycle=module.cycle,
                 model=model,
                 preflight=False,
             )
@@ -1311,7 +1335,8 @@ def reconstruct_batch_submission(
         model=model,
         project_context=project_context,
         prepared_specs=prepared_specs,
-        cycle_label=cycle.label,
+        cycle_label=module.cycle.label,
+        module_id=module.module_id,
         cross_check_enabled=cross_check_enabled,
         code_cycle_alerts=code_cycle,
         structural_alerts=structural,
@@ -1348,21 +1373,20 @@ def run_batch_collection_headless(
     owns_cache = cache is None
     if cache is None:
         cache = _make_verification_cache(log=log)
-    cycle = AVAILABLE_CYCLES.get(submission.cycle_label, DEFAULT_CYCLE)
+    module = get_module(getattr(submission, "module_id", None))
 
     review_state = collect_review_batch_results(submission, log=log)
 
     verifiable = list(review_state.review_result.findings) if review_state.review_result else []
     if verifiable:
-        job = start_batch_verification(verifiable, cycle=cycle, log=log, progress=progress, cache=cache)
+        job = start_batch_verification(verifiable, module=module, log=log, progress=progress, cache=cache)
         if job is not None:
-            collect_batch_verification_results(job, verifiable, cycle=cycle, log=log, progress=progress, cache=cache)
+            collect_batch_verification_results(job, verifiable, module=module, log=log, progress=progress, cache=cache)
 
     review_state = run_cross_check_for_batch(
         review_state,
         specs=submission.prepared_specs,
         project_context=submission.project_context,
-        cycle=cycle,
         log=log,
     )
     cross_findings = (
@@ -1371,9 +1395,9 @@ def run_batch_collection_headless(
         else []
     )
     if cross_findings:
-        cc_job = start_batch_verification(cross_findings, cycle=cycle, log=log, progress=progress, cache=cache)
+        cc_job = start_batch_verification(cross_findings, module=module, log=log, progress=progress, cache=cache)
         if cc_job is not None:
-            collect_batch_verification_results(cc_job, cross_findings, cycle=cycle, log=log, progress=progress, cache=cache)
+            collect_batch_verification_results(cc_job, cross_findings, module=module, log=log, progress=progress, cache=cache)
 
     if owns_cache:
         _persist_verification_cache(cache, log=log)

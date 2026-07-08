@@ -43,6 +43,7 @@ from src.orchestration.pipeline import (
     run_batch_collection_headless,
 )
 from src.core.code_cycles import DEFAULT_CYCLE
+from src.modules import DEFAULT_MODULE
 from src.review.reviewer import Finding, ReviewResult
 from src.verification.verification_cache import VerificationCache
 from tests.fixtures.fake_anthropic import FakeBatchResult, FakeBatchResultEnvelope
@@ -173,7 +174,7 @@ class TestReconstruct:
             files=["/gone/a.docx"],
             model="claude-opus-4-8",
             project_context="",
-            cycle=DEFAULT_CYCLE,
+            module=DEFAULT_MODULE,
             cross_check_enabled=True,
             created_at=123.0,
             log=lambda msg, level="info": logs.append((level, msg)),
@@ -201,7 +202,7 @@ class TestReconstruct:
             files=[str(path)],
             model="claude-opus-4-8",
             project_context="",
-            cycle=DEFAULT_CYCLE,
+            module=DEFAULT_MODULE,
             cross_check_enabled=True,
             created_at=123.0,
         )
@@ -227,7 +228,7 @@ class TestReconstruct:
             files=[str(path)],
             model="claude-opus-4-8",
             project_context="",
-            cycle=DEFAULT_CYCLE,
+            module=DEFAULT_MODULE,
             cross_check_enabled=True,
             created_at=1.0,
             log=lambda msg, level="info": logs.append(msg),

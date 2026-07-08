@@ -18,7 +18,7 @@ from __future__ import annotations
 import threading
 from typing import NamedTuple
 
-from ..core.code_cycles import DEFAULT_CYCLE
+from ..modules import get_module
 from ..input.extractor import ExtractedSpec, extract_text
 from ..review.prompts import get_system_prompt
 from ..core.tokenizer import count_tokens, exceeds_per_call_limit
@@ -126,7 +126,7 @@ def analyze_tokens(app, file_paths) -> None:
     # the thread; reading Tkinter state from a background thread is not
     # safe.
     project_context = app._get_project_context()
-    cycle = DEFAULT_CYCLE
+    cycle = get_module(getattr(app, "_selected_module_id", None)).cycle
 
     # Snapshot the current checkbox state (on the UI thread, before the worker
     # clears + rebuilds the panel) so an accumulation reload doesn't silently
@@ -320,7 +320,8 @@ def on_file_selection_change(app) -> None:
     if metrics.file_count > 0 and getattr(app, "_extracted_specs", None):
         refresh_exact_token_count(
             app, selected_data, app._extracted_specs,
-            app._get_project_context(), DEFAULT_CYCLE,
+            app._get_project_context(),
+            get_module(getattr(app, "_selected_module_id", None)).cycle,
             getattr(app, "_system_prompt_tokens", 0),
             getattr(app, "_project_context_tokens", 0),
             lambda fn: app.after(0, fn),

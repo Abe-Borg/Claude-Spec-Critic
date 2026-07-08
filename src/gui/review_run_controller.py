@@ -16,7 +16,7 @@ import os
 import threading
 from tkinter import messagebox
 
-from ..core.code_cycles import DEFAULT_CYCLE
+from ..modules import get_module
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..review.reviewer import REVIEW_MODEL_DEFAULT
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
@@ -26,11 +26,12 @@ from ..tracing.session import (
 )
 
 
-def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list):
+def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list, module_id: str = ""):
     """Thin wrapper over ``tracing.session.start_run_recorder`` (kept for
     the existing call sites / signature)."""
     return start_run_recorder(
-        run_id=run_id, mode=mode, model=model, cycle_label=cycle_label, files=files
+        run_id=run_id, mode=mode, model=model, cycle_label=cycle_label, files=files,
+        module_id=module_id,
     )
 
 
@@ -89,7 +90,12 @@ def start_review(app) -> None:
     app._selected_files_for_review = selected_files
     app._project_context_for_review = app._get_project_context()
     app._cross_check_for_review = app._cross_check_var.get()
-    app._selected_cycle_label = DEFAULT_CYCLE.label
+    # The module is the single source: resolve the selected id (unknown /
+    # unset degrades to the default California module) and derive the cycle
+    # label from it so the two app attrs can never disagree.
+    module = get_module(getattr(app, "_selected_module_id", None))
+    app._selected_module_id = module.module_id
+    app._selected_cycle_label = module.cycle.label
     app.is_processing = True
     app.log.log("─" * 40, level="muted", timestamp=False, paced=False)
     app.run_button.set_processing()

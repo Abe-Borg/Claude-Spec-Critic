@@ -104,6 +104,7 @@ def capture_pipeline_start(
     model: str,
     cycle_label: str,
     files: list[str],
+    module_id: str = "",
     name: str = "",
 ) -> SpanHandle | None:
     """Open the root pipeline span. Call once at run entry."""
@@ -118,6 +119,7 @@ def capture_pipeline_start(
             "mode": mode,
             "model": model,
             "cycle_label": cycle_label,
+            "module_id": module_id,
             "files": list(files),
         },
         metadata={"run_id": recorder.run_id},
