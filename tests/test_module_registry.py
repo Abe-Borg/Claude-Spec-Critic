@@ -418,6 +418,42 @@ class TestDetectorVocabularyValidation:
         with pytest.raises(ValueError, match="abbreviation"):
             validate_module_registry([bad])
 
+    def test_list_valued_fields_are_coerced_to_tuples(self):
+        # Config-loaded vocabularies arrive with lists; the dataclass must
+        # coerce them so the preprocessor's pattern cache (keyed by the
+        # hashable vocabulary) never sees an unhashable field mid-run.
+        vocab = DetectorVocabulary(
+            code_abbreviations=["TBC"],  # type: ignore[arg-type]
+            plausible_cycle_years=["2019"],  # type: ignore[arg-type]
+            valid_cycle_years=["2019", "2025"],  # type: ignore[arg-type]
+            asce7_plausible_editions=["22"],  # type: ignore[arg-type]
+            stale_cycle_extra_patterns=[],  # type: ignore[arg-type]
+        )
+        assert vocab.code_abbreviations == ("TBC",)
+        assert isinstance(vocab.valid_cycle_years, tuple)
+        hash(vocab)  # must be cache-key safe
+        validate_module_registry([_module(detector_vocabulary=vocab)])
+
+    def test_bare_string_sequence_field_rejected_at_construction(self):
+        # tuple("CBC") would silently become ("C", "B", "C") — reject instead.
+        with pytest.raises(TypeError, match="single string"):
+            DetectorVocabulary(
+                code_abbreviations="TBC",  # type: ignore[arg-type]
+                plausible_cycle_years=("2019",),
+                valid_cycle_years=("2019",),
+                asce7_plausible_editions=("22",),
+            )
+
+    def test_unhashable_element_rejected_at_registration(self):
+        # A list nested INSIDE a tuple survives coercion but would blow up
+        # the pattern cache — the hashability gate catches it at startup.
+        bad_vocab = dataclasses.replace(
+            _TEST_VOCABULARY, code_abbreviations=(["TBC"],)  # type: ignore[arg-type]
+        )
+        bad = dataclasses.replace(_module(), detector_vocabulary=bad_vocab)
+        with pytest.raises(ValueError, match="hashable"):
+            validate_module_registry([bad])
+
 
 class TestVocabularyDrivenDetection:
     def test_synthetic_vocabulary_drives_stale_detection(self, monkeypatch):

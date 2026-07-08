@@ -95,6 +95,30 @@ class DetectorVocabulary:
     flag_leed_references: bool = True
     jurisdiction_label: str = ""
 
+    def __post_init__(self) -> None:
+        # Dataclasses don't enforce annotations, and config-loaded
+        # vocabularies naturally arrive with lists. Coerce the sequence
+        # fields to tuples so the object stays hashable — the preprocessor
+        # lru-caches compiled patterns keyed by this dataclass, and an
+        # unhashable field would otherwise surface as a TypeError mid-run
+        # instead of at registration. A bare string is rejected rather than
+        # silently iterated per-character.
+        for field_name in (
+            "code_abbreviations",
+            "plausible_cycle_years",
+            "valid_cycle_years",
+            "asce7_plausible_editions",
+            "stale_cycle_extra_patterns",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, str):
+                raise TypeError(
+                    f"DetectorVocabulary.{field_name} must be a sequence of "
+                    f"strings, not a single string: {value!r}"
+                )
+            if not isinstance(value, tuple):
+                object.__setattr__(self, field_name, tuple(value))
+
 
 @dataclass(frozen=True)
 class ReviewModule:
@@ -330,6 +354,17 @@ def _validate_detector_vocabulary(module: ReviewModule) -> None:
             f"ReviewModule {module.module_id!r}: detector_vocabulary must be a "
             f"DetectorVocabulary, got {type(vocab).__name__}"
         )
+    # __post_init__ coerces list-valued sequence fields to tuples, but an
+    # unhashable ELEMENT (a list nested inside a tuple) would still blow up
+    # the preprocessor's pattern cache mid-run — fail it at registration.
+    try:
+        hash(vocab)
+    except TypeError as exc:
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: detector_vocabulary must be "
+            f"hashable — the preprocessor caches compiled patterns keyed by "
+            f"it ({exc})"
+        ) from exc
     if not vocab.code_abbreviations or not all(
         a and a.strip() for a in vocab.code_abbreviations
     ):
