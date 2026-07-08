@@ -251,6 +251,9 @@ class ReviewModule:
         report_context_phrase: Short domain phrase spliced into the report's
             methodology note ("… relevant to {phrase}."). Report-facing
             only; never rendered into a prompt.
+        report_title: The exported report's Heading-0 title (e.g.
+            "Spec Critic — M&P Specification Review Report"). Report-facing
+            only; never rendered into a prompt.
     """
 
     module_id: str
@@ -279,6 +282,7 @@ class ReviewModule:
     cross_check_chunk_groups: tuple[ChunkGroup, ...]
     # --- Report / GUI display surfaces (Phase 5) ------------------------
     report_context_phrase: str
+    report_title: str
 
 
 _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
@@ -297,6 +301,7 @@ _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
     "verifier_system_code_basis_lines",
     "verifier_user_code_basis_lines",
     "report_context_phrase",
+    "report_title",
 )
 
 # Slots that are str.format templates over ``code_basis_format_kwargs`` —

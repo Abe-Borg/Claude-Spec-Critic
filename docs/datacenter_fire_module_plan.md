@@ -133,10 +133,13 @@ few-shot examples against the real parser contract.
 
 - **`module_id`**: `"datacenter_fire"`. Persisted into resume state and trace
   metadata — treat as permanent once shipped.
-- **`display_name` / `description` / `report_context_phrase`**: e.g.
-  "Hyperscale Data Center — Fire Suppression"; description should tell the
-  user to put the governing state code + AHJ into Project Context;
-  report phrase e.g. `"hyperscale data-center fire protection projects"`.
+- **`display_name` / `description` / `report_context_phrase` /
+  `report_title`**: e.g. "Hyperscale Data Center — Fire Suppression";
+  description should tell the user to put the governing state code + AHJ
+  into Project Context; report phrase e.g.
+  `"hyperscale data-center fire protection projects"`; report title e.g.
+  `"Spec Critic — Fire Protection Specification Review Report"` (the
+  exported report's Heading-0 title — the CA module's says "M&P").
 - **`reviewer_persona`**: fire-protection reviewer; project context =
   hyperscale data-center new-build / fit-out under IBC/IFC with FM-insured
   owners; AHJ = local fire marshal.
@@ -255,7 +258,12 @@ _ALL_MODULES: tuple[ReviewModule, ...] = (
 That is the entire wiring. Verify with `python -c "import src.modules"` —
 any contract violation raises `ValueError` at import with a pointed message.
 The GUI selector, `module_for_cycle` bridge, `pending_batch.json` resume,
-trace metadata, and the report methodology note all follow automatically.
+trace metadata, and the report surfaces — title (`report_title`), the
+"Code Cycle:" metadata line, the methodology note (`report_context_phrase`
++ the jurisdiction-worded cycle sentence), the pinned-editions paragraph
+(rendered from the module's own cycle), and the stale/invalid-cycle alert
+headings (worded from `jurisdiction_label` + `plausible_cycle_years`) —
+all follow automatically.
 
 ## 6. Tests (all hermetic; no API key)
 
@@ -278,8 +286,13 @@ trace metadata, and the report methodology note all follow automatically.
    `select_routing(cycle=DATACENTER_FIRE.cycle)`; the same finding under the
    CA cycle classifies differently. Chunk assignment: "28 31 00 …" →
    `div_28`; "23 …" → `general`.
-5. **Report surface**: `_write_methodology_note(doc, domain_phrase=…)`
-   renders the DC phrase.
+5. **Report surface**: `_write_methodology_note(doc, module=DATACENTER_FIRE)`
+   renders the DC phrase, a jurisdiction-free cycle sentence ("This review
+   used {label} code cycle references."), and the DC cycle's own pinned
+   editions (never California's); `_write_title_block` renders
+   `report_title` and a bare "Code Cycle: {label}" line;
+   `_write_alerts` renders "Stale Code Cycle References" /
+   "Invalid Code Cycle Years" with the DC year list.
 
 ## 7. Calibration fixtures
 

@@ -138,9 +138,16 @@ def _module(module_id: str = "test_module", label: str = "9999", **overrides) ->
         profile_keywords=_TEST_PROFILE_KEYWORDS,
         cross_check_chunk_groups=_TEST_CHUNK_GROUPS,
         report_context_phrase="test projects",
+        report_title="Spec Critic — Test Specification Review Report",
     )
     slots.update(overrides)
     return ReviewModule(**slots)
+
+
+class _StubReview:
+    """Minimal duck-typed ReviewResult for the title-block writer."""
+
+    model = "test-model"
 
 
 def _submission(**overrides) -> BatchSubmission:
@@ -741,18 +748,26 @@ class TestUiStatePersistence:
 
 
 class TestReportSurfaces:
-    def test_methodology_note_renders_module_phrase(self):
+    def test_methodology_note_renders_module_phrase_and_jurisdiction(self):
         from docx import Document
 
         from src.output.report_exporter import _write_methodology_note
 
         doc = Document()
-        _write_methodology_note(doc, domain_phrase="hyperscale data-center projects")
+        _write_methodology_note(
+            doc,
+            cycle_label="9999",
+            module=_module(report_context_phrase="hyperscale data-center projects"),
+        )
         text = "\n".join(p.text for p in doc.paragraphs)
         assert "relevant to hyperscale data-center projects." in text
-        assert "California K-12 DSA" not in text
+        # Cycle-references sentence takes the module vocabulary's
+        # jurisdiction wording; the test cycle pins no standards, so no
+        # pinned-editions paragraph renders.
+        assert "This review used Test 9999 code cycle references." in text
+        assert "California" not in text
 
-    def test_methodology_note_default_keeps_california_sentence(self):
+    def test_methodology_note_default_keeps_california_sentences(self):
         from docx import Document
 
         from src.output.report_exporter import _write_methodology_note
@@ -761,9 +776,147 @@ class TestReportSurfaces:
         _write_methodology_note(doc)
         text = "\n".join(p.text for p in doc.paragraphs)
         assert "relevant to California K-12 DSA projects." in text
+        assert "This review used California 2025 code cycle references." in text
+        # Pinned-editions paragraph renders the default module's own cycle.
+        assert "per the 2025 California cycle:" in text
 
-    def test_default_module_report_phrase(self):
+    def test_title_block_renders_module_title_and_jurisdiction(self):
+        from docx import Document
+
+        from src.output.report_exporter import _write_title_block
+
+        doc = Document()
+        _write_title_block(
+            doc,
+            _StubReview(),
+            ["a.docx"],
+            cycle_label="9999",
+            module=_module(
+                report_title="Spec Critic — Fire Protection Specification Review Report"
+            ),
+        )
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Spec Critic — Fire Protection Specification Review Report" in text
+        assert "Code Cycle: Test 9999" in text
+        assert "California" not in text
+
+    def test_title_block_without_jurisdiction_renders_bare_cycle_line(self):
+        from dataclasses import replace as dc_replace
+
+        from docx import Document
+
+        from src.output.report_exporter import _write_title_block
+
+        doc = Document()
+        _write_title_block(
+            doc,
+            _StubReview(),
+            ["a.docx"],
+            cycle_label="9999",
+            module=_module(
+                detector_vocabulary=dc_replace(
+                    _TEST_VOCABULARY, jurisdiction_label=""
+                )
+            ),
+        )
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Code Cycle: 9999" in text
+
+    def test_title_block_default_keeps_california_lines(self):
+        from docx import Document
+
+        from src.output.report_exporter import _write_title_block
+
+        doc = Document()
+        _write_title_block(doc, _StubReview(), ["a.docx"])
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Spec Critic — M&P Specification Review Report" in text
+        assert "Code Cycle: California 2025" in text
+
+    def test_alert_sections_render_module_jurisdiction_and_years(self):
+        from docx import Document
+
+        from src.output.report_exporter import _write_alerts
+
+        doc = Document()
+        _write_alerts(
+            doc,
+            [],
+            [],
+            code_cycle_alerts=[{"filename": "a.docx", "context": "2019 TBC"}],
+            invalid_code_cycle_alerts=[{"filename": "a.docx", "context": "2018 TBC"}],
+            module=_module(),
+        )
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Stale Test Code Cycle References" in text
+        assert "Invalid Test Code Cycle Years" in text
+        # Published years come from plausible_cycle_years — NOT
+        # valid_cycle_years, which also admits anticipated future cycles.
+        assert "(Test publishes cycles every 3 years: 2019, 2022)" in text
+        assert "California" not in text
+
+    def test_alert_sections_generic_without_jurisdiction_or_cadence(self):
+        from dataclasses import replace as dc_replace
+
+        from docx import Document
+
+        from src.output.report_exporter import _write_alerts
+
+        vocab = dc_replace(
+            _TEST_VOCABULARY,
+            jurisdiction_label="",
+            plausible_cycle_years=("2018", "2021", "2027"),
+            valid_cycle_years=("2018", "2021", "2027"),
+        )
+        doc = Document()
+        _write_alerts(
+            doc,
+            [],
+            [],
+            code_cycle_alerts=[{"filename": "a.docx", "context": "2018 TBC"}],
+            invalid_code_cycle_alerts=[{"filename": "a.docx", "context": "2019 TBC"}],
+            module=_module(detector_vocabulary=vocab),
+        )
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Stale Code Cycle References" in text
+        assert "Invalid Code Cycle Years" in text
+        # Irregular gaps (3 then 6) drop the cadence claim.
+        assert "(known cycle years: 2018, 2021, 2027)" in text
+        assert "publishes cycles every" not in text
+
+    def test_alert_sections_default_keep_california_wording(self):
+        from docx import Document
+
+        from src.output.report_exporter import _write_alerts
+
+        doc = Document()
+        _write_alerts(
+            doc,
+            [],
+            [],
+            code_cycle_alerts=[{"filename": "a.docx", "context": "2019 CBC"}],
+            invalid_code_cycle_alerts=[{"filename": "a.docx", "context": "2018 CBC"}],
+        )
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Stale California Code Cycle References" in text
+        assert (
+            "The following references cite a historical California code cycle "
+            "rather than the one selected for this review:"
+        ) in text
+        assert "Invalid California Code Cycle Years" in text
+        # 2028 is in valid_cycle_years (anticipated, detector-admissible)
+        # but is not a published cycle, so it must not appear here.
+        assert (
+            "The following references cite a year that is not a real California "
+            "code cycle (California publishes cycles every 3 years: 2010, 2013, "
+            "2016, 2019, 2022, 2025). These are likely typos:"
+        ) in text
+
+    def test_default_module_report_phrase_and_title(self):
         assert DEFAULT_MODULE.report_context_phrase == "California K-12 DSA projects"
+        assert DEFAULT_MODULE.report_title == (
+            "Spec Critic — M&P Specification Review Report"
+        )
 
     def test_diagnostics_report_carries_module_id(self):
         from src.orchestration.diagnostics import DiagnosticsReport

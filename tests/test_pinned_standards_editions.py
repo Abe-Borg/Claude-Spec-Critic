@@ -314,21 +314,31 @@ class TestVerifierPinnedEditionsBlock:
 
 class TestMethodologyNotePinnedEditions:
     def test_render_note_includes_all_populated_editions(self):
-        note = _render_pinned_editions_note("2025")
+        note = _render_pinned_editions_note(CALIFORNIA_2025, "California")
+        assert "per the 2025 California cycle:" in note
         assert "NFPA 13 2025, as amended by California" in note
         assert "ASHRAE 62.1 2019" in note
         assert "UL 300" in note
 
     def test_render_note_empty_when_cycle_has_no_pinning(self):
-        AVAILABLE_CYCLES["__test_bare__"] = _bare_cycle()
-        try:
-            assert _render_pinned_editions_note("__test_bare__") == ""
-        finally:
-            AVAILABLE_CYCLES.pop("__test_bare__", None)
+        assert _render_pinned_editions_note(_bare_cycle(), "California") == ""
 
-    def test_render_note_unknown_label_falls_back_to_default(self):
-        note = _render_pinned_editions_note("not-a-real-cycle")
-        assert "NFPA 13" in note
+    def test_render_note_uses_the_given_cycle_not_the_california_default(self):
+        # Regression guard: the legacy label→AVAILABLE_CYCLES lookup fell
+        # back to CALIFORNIA_2025 for unknown labels, which would have
+        # rendered California standards into another module's report.
+        cycle = CodeCycle(
+            label="9001",
+            base_codes=(BaseCode("code", "Test Code", "9001"),),
+            asce7="7-22",
+            asce7_previous="7-16",
+            standards=(StandardEdition("NFPA 75", "2024"),),
+        )
+        note = _render_pinned_editions_note(cycle, "")
+        assert "per the 9001 cycle:" in note
+        assert "NFPA 75 2024" in note
+        assert "California" not in note
+        assert "NFPA 13" not in note
 
 
 # ===========================================================================
