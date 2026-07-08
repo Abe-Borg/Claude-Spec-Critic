@@ -1,6 +1,6 @@
 {
   "fixture_id": "tp_critical_corrected_dsa",
-  "category": "california_ahj",
+  "category": "jurisdictional",
   "severity": "CRITICAL",
   "description": "CRITICAL California AHJ finding: spec cites the wrong DSA submittal review pathway. Verifier escalated to Opus and CORRECTED with grounded DSA citation.",
   "finding": {
@@ -36,7 +36,7 @@
     "confidence": 0.97,
     "model_used": "claude-opus-4-7",
     "verification_mode": "deep_reasoning",
-    "verification_profile": "california_ahj",
+    "verification_profile": "jurisdictional",
     "web_search_requests": 5,
     "successful_source_count": 5,
     "search_error_count": 0,

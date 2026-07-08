@@ -264,12 +264,12 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
         filename="23 21 13 - Hydronic (clean).docx",
         spec_text=_CLEAN_BODY,
         is_clean=True,
-        category="california_ahj",
+        category="jurisdictional",
     ),
     LabeledSpec(
         spec_id="stale_cbc",
         filename="23 05 00 - Common HVAC (stale CBC).docx",
-        category="california_ahj",
+        category="jurisdictional",
         spec_text=_STALE_CBC_BODY,
         expected_defects=(
             ExpectedDefect(
@@ -407,7 +407,7 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
     LabeledSpec(
         spec_id="invalid_2018_cbc",
         filename="23 05 00 - Common HVAC (invalid 2018 CBC).docx",
-        category="california_ahj",
+        category="jurisdictional",
         spec_text=_INVALID_CYCLE_BODY,
         expected_defects=(
             ExpectedDefect(
@@ -423,7 +423,7 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
     LabeledSpec(
         spec_id="stale_cpc",
         filename="22 11 16 - Domestic Water (stale CPC).docx",
-        category="california_ahj",
+        category="jurisdictional",
         spec_text=_STALE_CPC_BODY,
         expected_defects=(
             ExpectedDefect(
@@ -472,11 +472,11 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
     # Flatly wrong California exemption: a DSA K-12 project cannot waive
     # seismic restraint of piping. The finding's claim (restraint IS
     # required) is web-supportable, so this exercises the CRITICAL
-    # california_ahj deep-reasoning verification path end to end.
+    # jurisdictional deep-reasoning verification path end to end.
     LabeledSpec(
         spec_id="seismic_exemption",
         filename="22 05 48 - Seismic Controls (false exemption).docx",
-        category="california_ahj",
+        category="jurisdictional",
         spec_text=_SEISMIC_EXEMPTION_BODY,
         expected_defects=(
             ExpectedDefect(
@@ -499,7 +499,7 @@ LABELED_SPECS: tuple[LabeledSpec, ...] = (
         filename="22 13 16 - Sanitary Waste (clean).docx",
         spec_text=_CLEAN_PLUMBING_BODY,
         is_clean=True,
-        category="california_ahj",
+        category="jurisdictional",
     ),
 )
 

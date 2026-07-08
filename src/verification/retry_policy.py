@@ -483,7 +483,7 @@ def compute_backoff_seconds(
 
 # Default cap for the real-time pause-turn continuation loop. The plan
 # explicitly calls this out: drop from 5 to 2. The deep-mode override
-# (4) is reserved for DEEP_REASONING routing — a CRITICAL CALIFORNIA_AHJ
+# (4) is reserved for DEEP_REASONING routing — a CRITICAL JURISDICTIONAL
 # finding may legitimately need more web_search rounds.
 DEFAULT_MAX_CONTINUATIONS = 2
 DEEP_MAX_CONTINUATIONS = 4

@@ -514,6 +514,7 @@ def submit_verification_batch(
             local_skip=False,
             model_override=model,
             cache_phase=PHASE_VERIFICATION,
+            cycle=cycle,
         )
         verification_request = build_verification_request(
             decision,

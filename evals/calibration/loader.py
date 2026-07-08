@@ -4,7 +4,7 @@ Every fixture is one file under :data:`FIXTURES_DIR` containing:
 
 * ``fixture_id`` — unique slug; doubles as the file stem.
 * ``category`` — verification profile or finding kind (e.g.
-  ``california_ahj``, ``code_standard``, ``manufacturer``,
+  ``jurisdictional``, ``code_standard``, ``manufacturer``,
   ``internal_coordination``). Drives per-profile breakdowns in the
   scorer.
 * ``severity`` — CRITICAL / HIGH / MEDIUM / GRIPES.

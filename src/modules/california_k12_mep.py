@@ -20,7 +20,7 @@ profile keywords, cross-check chunk map) moves in later phases.
 from __future__ import annotations
 
 from ..core.code_cycles import CALIFORNIA_2025
-from .base import DetectorVocabulary, ReviewModule
+from .base import ChunkGroup, DetectorVocabulary, ProfileKeywords, ReviewModule
 
 # The review-scope category list. May reference the placeholders documented
 # by :func:`src.modules.base.code_basis_format_kwargs`; formatted against the
@@ -177,6 +177,119 @@ _DETECTOR_VOCABULARY = DetectorVocabulary(
 )
 
 
+# Verification-profile classifier vocabulary. Classification precedence
+# (internal-coordination first, then jurisdictional, manufacturer,
+# code-standard, constructability default) is engine logic in
+# ``verification_profiles.py``; these are the California M&P terms.
+_PROFILE_KEYWORDS = ProfileKeywords(
+    jurisdictional=(
+        "california",
+        "calif.",
+        "dsa",
+        "dgs",
+        "hcai",
+        "oshpd",
+        "title 24",
+        "title-24",
+        "bsc.ca.gov",
+        "ca.gov",
+        "calgreen",
+        "cal green",
+        "cec ",
+        "cbsc",
+        "ahj",
+        "authority having jurisdiction",
+    ),
+    manufacturer=(
+        "manufacturer",
+        "model number",
+        "model no",
+        "datasheet",
+        "data sheet",
+        "submittal",
+        "catalog",
+        "trane",
+        "carrier",
+        "york",
+        "daikin",
+        "greenheck",
+        "victaulic",
+        "watts",
+        "zurn",
+        "kohler",
+        "american standard",
+        "viega",
+        "uponor",
+        "pex",
+        "listed product",
+        "factory authorized",
+        "approved equivalent",
+        "equal to",
+        "or approved equal",
+    ),
+    code_standard=(
+        "cbc",
+        "cmc",
+        "cpc",
+        "cec",
+        "nfpa",
+        "asme",
+        "ashrae",
+        "ieee",
+        "iapmo",
+        "astm",
+        "ansi",
+        "smacna",
+        "ul ",
+        "ul-",
+        "ul listed",
+        "code section",
+        "standard",
+        "energy code",
+        "fire code",
+        "plumbing code",
+        "mechanical code",
+        "building code",
+        "electrical code",
+        "asce",
+    ),
+    internal_coordination=(
+        "internal contradiction",
+        "internally contradicts",
+        "contradiction within",
+        "duplicate paragraph",
+        "duplicate heading",
+        "duplicate section",
+        "placeholder",
+        "tbd",
+        "[select]",
+        "[verify]",
+        "[insert",
+        "formatting",
+        "typo",
+        "typographical",
+        "leed",
+        "missing placeholder",
+        "self-referen",  # "self-referential", "self-references"
+        "inconsistent within",
+    ),
+)
+
+
+# CSI MasterFormat division families for chunked cross-check. Divisions
+# 22/23 dominate K-12 mechanical/plumbing reviews; Division 25 controls +
+# commissioning sections (often 23 09 / 25 xx / 01 91 / 23 08 testing)
+# live together so coordination claims about sequences and TAB stay in
+# one chunk. Intentionally coarse — each chunk gets enough context to
+# find within-discipline conflicts.
+_CROSS_CHECK_CHUNK_GROUPS = (
+    ChunkGroup("div_21", "Division 21 — Fire Suppression", ("21",)),
+    ChunkGroup("div_22", "Division 22 — Plumbing", ("22",)),
+    ChunkGroup("div_23", "Division 23 — HVAC", ("23",)),
+    ChunkGroup("controls_commissioning", "Controls / Commissioning / TAB", ("25", "01")),
+)
+
+
 CALIFORNIA_K12_MEP = ReviewModule(
     module_id="california_k12_mep",
     display_name="California K-12 (DSA) — Mechanical & Plumbing",
@@ -226,4 +339,6 @@ CALIFORNIA_K12_MEP = ReviewModule(
         "Current seismic standard: ASCE {asce7}"
     ),
     detector_vocabulary=_DETECTOR_VOCABULARY,
+    profile_keywords=_PROFILE_KEYWORDS,
+    cross_check_chunk_groups=_CROSS_CHECK_CHUNK_GROUPS,
 )

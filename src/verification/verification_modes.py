@@ -66,12 +66,12 @@ class VerificationMode(str, Enum):
     STANDARD_REASONING = "standard_reasoning"
     """The default for substantive technical claims. Sonnet,
     ``thinking`` enabled, full profile-aware search budget. This is
-    the mode that most CODE_STANDARD / MANUFACTURER / CALIFORNIA_AHJ
+    the mode that most CODE_STANDARD / MANUFACTURER / JURISDICTIONAL
     /CONSTRUCTABILITY findings of MEDIUM and above ride."""
 
     DEEP_REASONING = "deep_reasoning"
     """Opus + adaptive thinking + full profile budget. Reserved for
-    CRITICAL CALIFORNIA_AHJ findings (where the initial pass jumps
+    CRITICAL JURISDICTIONAL findings (where the initial pass jumps
     straight to Opus) and for escalation re-runs of CRITICAL / HIGH
     findings that the standard pass could not ground. Terminal — a
     deep-reasoning result does not escalate further."""
@@ -221,8 +221,8 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
 #      for CRITICAL/HIGH UNVERIFIED reruns; once we're escalating, we're
 #      committing to Opus regardless of what severity or profile would
 #      have picked initially.
-#   3. CRITICAL + CALIFORNIA_AHJ → DEEP_REASONING. The initial pass
-#      jumps straight to Opus for CRITICAL California-specific claims
+#   3. CRITICAL + JURISDICTIONAL → DEEP_REASONING. The initial pass
+#      jumps straight to Opus for CRITICAL jurisdiction-specific claims
 #      because the ambiguity surface is large enough that a Sonnet pass
 #      will usually escalate anyway, and skipping a wasted call is a
 #      direct cost win.
@@ -245,12 +245,16 @@ def select_verification_mode(
     local_skip: bool = False,
     escalated: bool = False,
     cached_mode: VerificationMode | str | None = None,
+    keywords=None,
 ) -> VerificationMode:
     """Select the :class:`VerificationMode` for a finding.
 
     See the module docstring for the rule order. Returns a
     :class:`VerificationMode`; callers should pass it to
-    :func:`mode_policy` to get the actual policy bundle.
+    :func:`mode_policy` to get the actual policy bundle. ``keywords`` is
+    the owning module's :class:`~src.modules.base.ProfileKeywords`
+    (``None`` degrades to the default module's — see
+    :func:`classify_finding_profile`).
     """
     # 0. Cache hit — preserve the stored mode if it was recorded. A
     # legacy cache entry without a mode falls through to the regular
@@ -276,14 +280,14 @@ def select_verification_mode(
         return VerificationMode.STANDARD_REASONING
 
     severity = (getattr(finding, "severity", None) or "").strip().upper()
-    profile = classify_finding_profile(finding)
+    profile = classify_finding_profile(finding, keywords=keywords)
 
-    # 3. Critical California/AHJ goes straight to deep reasoning. The
+    # 3. Critical jurisdictional/AHJ goes straight to deep reasoning. The
     # initial Sonnet pass for these almost always escalates anyway —
-    # the ambiguity surface (Title 24 amendments, DSA / HCAI nuance,
+    # the ambiguity surface (jurisdiction amendments, agency nuance,
     # local AHJ interpretation) is wide enough that Opus is the right
     # first call.
-    if severity == "CRITICAL" and profile is VerificationProfile.CALIFORNIA_AHJ:
+    if severity == "CRITICAL" and profile is VerificationProfile.JURISDICTIONAL:
         return VerificationMode.DEEP_REASONING
 
     # 4. GRIPES → strict structured. Internal-coordination GRIPES are

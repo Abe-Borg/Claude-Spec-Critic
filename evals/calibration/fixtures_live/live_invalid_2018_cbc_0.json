@@ -1,6 +1,6 @@
 {
   "fixture_id": "live_invalid_2018_cbc_0",
-  "category": "california_ahj",
+  "category": "jurisdictional",
   "severity": "MEDIUM",
   "description": "Live capture from 23 05 00 - Common HVAC (invalid 2018 CBC).docx",
   "finding": {
@@ -31,7 +31,7 @@
     "correction": null,
     "model_used": "claude-sonnet-4-6",
     "verification_mode": "standard_reasoning",
-    "verification_profile": "california_ahj",
+    "verification_profile": "jurisdictional",
     "web_search_requests": 2,
     "successful_source_count": 18,
     "search_error_count": 0,

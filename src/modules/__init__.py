@@ -8,7 +8,9 @@ Public surface — import from this package, not the submodules:
 - :data:`CALIFORNIA_K12_MEP` — the California K-12 module instance.
 """
 from .base import (
+    ChunkGroup,
     DetectorVocabulary,
+    ProfileKeywords,
     ReviewModule,
     code_basis_format_kwargs,
     validate_module_registry,
@@ -22,7 +24,9 @@ from .registry import (
 )
 
 __all__ = [
+    "ChunkGroup",
     "DetectorVocabulary",
+    "ProfileKeywords",
     "ReviewModule",
     "code_basis_format_kwargs",
     "validate_module_registry",

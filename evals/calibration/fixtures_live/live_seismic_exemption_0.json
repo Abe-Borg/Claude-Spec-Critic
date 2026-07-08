@@ -1,6 +1,6 @@
 {
   "fixture_id": "live_seismic_exemption_0",
-  "category": "california_ahj",
+  "category": "jurisdictional",
   "severity": "CRITICAL",
   "description": "Live capture from 22 05 48 - Seismic Controls (false exemption).docx",
   "finding": {
@@ -32,7 +32,7 @@
     "correction": "A. Seismic restraint and bracing of piping systems shall be provided in accordance with CBC 2025 and ASCE 7-22 Chapter 13. Exemptions shall be applied only on an individual-component basis where explicitly permitted by ASCE 7-22 Section 13.6.7 (Distribution Systems: Piping and Tubing Systems), including the conditional exemptions of Section 13.6.7.3 (e.g., qualifying trapeze-supported or individually-supported piping within the prescribed weight, diameter, and hanger-length limits). Bracing shall use DSA-recognized OSHPD/OPM (OPM/OPA) seismic preapprovals or a project-specific design prepared and stamped by a California-licensed engineer.",
     "model_used": "claude-opus-4-8",
     "verification_mode": "deep_reasoning",
-    "verification_profile": "california_ahj",
+    "verification_profile": "jurisdictional",
     "web_search_requests": 4,
     "successful_source_count": 23,
     "search_error_count": 0,

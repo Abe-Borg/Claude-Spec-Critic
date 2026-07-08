@@ -1,6 +1,6 @@
 {
   "fixture_id": "tp_corrected_stale_cbc",
-  "category": "california_ahj",
+  "category": "jurisdictional",
   "severity": "HIGH",
   "description": "Stale '2019 CBC' reference in California spec; verifier correctly corrected to 2025 CBC with grounded DGS citation.",
   "finding": {
@@ -35,7 +35,7 @@
     "confidence": 0.95,
     "model_used": "claude-sonnet-4-6",
     "verification_mode": "standard_reasoning",
-    "verification_profile": "california_ahj",
+    "verification_profile": "jurisdictional",
     "web_search_requests": 3,
     "successful_source_count": 3,
     "search_error_count": 0,

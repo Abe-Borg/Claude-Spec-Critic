@@ -418,28 +418,22 @@ def _close_cross_api_span(handle, result, *, source: str, status: str = "ok", er
 # Chunked cross-check for large projects
 # ---------------------------------------------------------------------------
 
-# CSI MasterFormat division 22/23 dominate K-12 mechanical/plumbing reviews.
-# Chunking by these division families lets a 2,000-section megaproject still
+# Chunking by CSI division families lets a 2,000-section megaproject still
 # get coordination review instead of returning a "skipped" status when the
 # combined input exceeds CROSS_CHECK_RECOMMENDED_MAX.
 #
-# The mapping is intentionally coarse — each chunk gets enough context to
-# find within-discipline conflicts. Files whose CSI prefix does not match
-# any chunk (rare) are pooled into a "general" chunk so they are never
-# silently dropped.
+# The division families themselves are module data
+# (``ReviewModule.cross_check_chunk_groups`` — see ``modules.ChunkGroup``);
+# the chunking invariants below (every spec in exactly one chunk, singleton
+# pooling, the reserved "general" bucket for unmatched prefixes) are engine
+# logic. Files whose CSI prefix does not match any group are pooled into
+# "general" so they are never silently dropped.
 _CSI_PREFIX_RE = re.compile(r"^\s*(\d{2})\s?(\d{2})?")
 
 
-_CHUNK_GROUPS: list[tuple[str, str, frozenset[str]]] = [
-    # (chunk_id, label, set of CSI division prefixes)
-    ("div_21", "Division 21 — Fire Suppression", frozenset({"21"})),
-    ("div_22", "Division 22 — Plumbing", frozenset({"22"})),
-    ("div_23", "Division 23 — HVAC", frozenset({"23"})),
-    # Division 25 controls + commissioning sections (often 23 09 / 25 xx /
-    # 01 91 / 23 08 testing) live together so coordination claims about
-    # sequences and TAB stay in one chunk.
-    ("controls_commissioning", "Controls / Commissioning / TAB", frozenset({"25", "01"})),
-]
+def _default_chunk_groups():
+    """Chunk groups used when a caller has no cycle (default module's)."""
+    return module_for_cycle(None).cross_check_chunk_groups
 
 
 def _csi_prefix(filename: str) -> str:
@@ -449,32 +443,38 @@ def _csi_prefix(filename: str) -> str:
     return match.group(1) or ""
 
 
-def _assign_chunk(filename: str) -> str:
+def _assign_chunk(filename: str, groups=None) -> str:
+    if groups is None:
+        groups = _default_chunk_groups()
     prefix = _csi_prefix(filename)
     if prefix:
-        for chunk_id, _label, prefixes in _CHUNK_GROUPS:
-            if prefix in prefixes:
-                return chunk_id
+        for group in groups:
+            if prefix in group.csi_prefixes:
+                return group.chunk_id
     return "general"
 
 
-def _chunk_label(chunk_id: str) -> str:
-    for cid, label, _ in _CHUNK_GROUPS:
-        if cid == chunk_id:
-            return label
+def _chunk_label(chunk_id: str, groups=None) -> str:
+    if groups is None:
+        groups = _default_chunk_groups()
+    for group in groups:
+        if group.chunk_id == chunk_id:
+            return group.label
     return "Project-wide / Other"
 
 
-def _group_specs_by_chunk(specs: list[ExtractedSpec]) -> list[tuple[str, list[ExtractedSpec]]]:
+def _group_specs_by_chunk(specs: list[ExtractedSpec], groups=None) -> list[tuple[str, list[ExtractedSpec]]]:
     """Group specs by CSI division-family chunk, preserving order.
 
     Returns a list of ``(chunk_id, specs)`` pairs with at least two specs
     per chunk; smaller chunks are merged into ``"general"`` so the chunked
     pass still has cross-spec context to work with.
     """
+    if groups is None:
+        groups = _default_chunk_groups()
     buckets: dict[str, list[ExtractedSpec]] = {}
     for spec in specs:
-        cid = _assign_chunk(spec.filename)
+        cid = _assign_chunk(spec.filename, groups)
         buckets.setdefault(cid, []).append(spec)
 
     # Merge singletons into the project-wide bucket so each chunk has at
@@ -491,9 +491,9 @@ def _group_specs_by_chunk(specs: list[ExtractedSpec]) -> list[tuple[str, list[Ex
 
     # Stable order: predefined chunk groups first, then "general" last.
     ordered: list[tuple[str, list[ExtractedSpec]]] = []
-    for cid, _label, _ in _CHUNK_GROUPS:
-        if cid in merged:
-            ordered.append((cid, merged[cid]))
+    for group in groups:
+        if group.chunk_id in merged:
+            ordered.append((group.chunk_id, merged[group.chunk_id]))
     if "general" in merged:
         ordered.append(("general", merged["general"]))
     # Anything else (shouldn't happen, but be defensive) preserves insertion order.
@@ -521,8 +521,8 @@ def _filter_findings_for_chunk(
     ]
 
 
-def _label_finding_with_chunk(finding: Finding, chunk_id: str) -> Finding:
-    label = _chunk_label(chunk_id)
+def _label_finding_with_chunk(finding: Finding, chunk_id: str, groups=None) -> Finding:
+    label = _chunk_label(chunk_id, groups)
     if not label:
         return finding
     section = finding.section or ""
@@ -537,6 +537,7 @@ def _synthesize_chunk_findings(
     *,
     fallback_model: str,
     cycle: CodeCycle,
+    groups=None,
     log: LogFn = _noop_log,
 ) -> tuple[list[Finding], str, str]:
     """Combine chunk-level findings into a single ReviewResult payload.
@@ -550,11 +551,11 @@ def _synthesize_chunk_findings(
     chunks_skipped = 0
 
     for chunk_id, result in chunk_results:
-        label = _chunk_label(chunk_id)
+        label = _chunk_label(chunk_id, groups)
         if result.cross_check_status == "completed":
             chunks_completed += 1
             for f in result.findings:
-                findings.append(_label_finding_with_chunk(f, chunk_id))
+                findings.append(_label_finding_with_chunk(f, chunk_id, groups))
             if result.thinking:
                 summaries.append(f"--- {label} ---\n{result.thinking.strip()}")
         elif result.cross_check_status == "skipped":
@@ -639,7 +640,8 @@ def run_chunked_cross_check(
             verbose=verbose, stream_callback=stream_callback, cycle=cycle, model=model,
         )
 
-    chunks = _group_specs_by_chunk(specs)
+    groups = module_for_cycle(cycle).cross_check_chunk_groups
+    chunks = _group_specs_by_chunk(specs, groups)
     if len(chunks) <= 1 or all(len(group) < 2 for _, group in chunks):
         # Cannot meaningfully chunk — surface the original skip so the GUI
         # can warn the user. Better than silently truncating.
@@ -678,7 +680,7 @@ def run_chunked_cross_check(
     aggregate_in = aggregate_out = 0
     started = time.time()
     for chunk_id, chunk_specs in chunks:
-        label = _chunk_label(chunk_id)
+        label = _chunk_label(chunk_id, groups)
         chunk_filenames = {s.filename for s in chunk_specs}
         scoped_findings = _filter_findings_for_chunk(existing_findings, chunk_filenames)
         log(
@@ -710,7 +712,7 @@ def run_chunked_cross_check(
         aggregate_out += chunk_result.output_tokens
 
     findings, summary_text, status = _synthesize_chunk_findings(
-        chunk_results, fallback_model=model, cycle=cycle, log=log,
+        chunk_results, fallback_model=model, cycle=cycle, groups=groups, log=log,
     )
     # Surface partially-incomplete chunked passes (TRUST_AUDIT P1-3 follow-up):
     # when status is "completed" because ≥1 chunk produced findings, a chunk
