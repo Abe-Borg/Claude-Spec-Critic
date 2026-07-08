@@ -342,4 +342,5 @@ CALIFORNIA_K12_MEP = ReviewModule(
     profile_keywords=_PROFILE_KEYWORDS,
     cross_check_chunk_groups=_CROSS_CHECK_CHUNK_GROUPS,
     report_context_phrase="California K-12 DSA projects",
+    report_title="Spec Critic — M&P Specification Review Report",
 )

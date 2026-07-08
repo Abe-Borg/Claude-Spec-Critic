@@ -44,8 +44,8 @@ from docx.oxml import OxmlElement
 from lxml import etree
 
 from ..core.api_config import web_search_max_uses_for_severity
-from ..core.code_cycles import AVAILABLE_CYCLES, DEFAULT_CYCLE, CodeCycle
-from ..modules import get_module
+from ..core.code_cycles import CodeCycle
+from ..modules import ReviewModule, get_module
 from ..verification.verification_cache import default_cache_path
 from .report_status import (
     EDIT_ACTION_DISPLAY_ORDER,
@@ -309,7 +309,8 @@ def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
 
 def _write_title_block(doc: Document, review, files_reviewed: list[str],
                        cycle_label: str = "2025",
-                       failed_review_count: int = 0) -> None:
+                       failed_review_count: int = 0,
+                       module: ReviewModule | None = None) -> None:
     """Write the report title and metadata.
 
     Uses separate paragraphs instead of \\n within runs to ensure
@@ -320,8 +321,13 @@ def _write_title_block(doc: Document, review, files_reviewed: list[str],
     cannot read as a clean complete run when some specs never produced a
     review. A clean run keeps the original "Files Reviewed: {N}" form
     byte-for-byte.
+
+    The title text and the code-cycle line's jurisdiction wording come
+    from the run ``module`` (``None`` resolves to the default module, so
+    legacy callers keep the original California rendering byte-for-byte).
     """
-    title = doc.add_heading("Spec Critic — M&P Specification Review Report", level=0)
+    module = module if module is not None else get_module(None)
+    title = doc.add_heading(module.report_title, level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     submitted = len(files_reviewed)
@@ -334,12 +340,18 @@ def _write_title_block(doc: Document, review, files_reviewed: list[str],
     else:
         files_reviewed_line = f"Files Reviewed: {submitted}"
 
+    jurisdiction = module.detector_vocabulary.jurisdiction_label.strip()
+    code_cycle_line = (
+        f"Code Cycle: {jurisdiction} {cycle_label}" if jurisdiction
+        else f"Code Cycle: {cycle_label}"
+    )
+
     # Metadata as separate centered paragraphs (not \n in a single para)
     meta_lines = [
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"Model: {review.model}",
         files_reviewed_line,
-        f"Code Cycle: California {cycle_label}",
+        code_cycle_line,
     ]
 
     for line in meta_lines:
@@ -878,13 +890,16 @@ def _summarize_verification_outcomes(findings: list) -> dict[str, object]:
     return stats
 
 
-def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label: str = "2025", cross_check_status: str | None = None, cross_check_reason: str = "", verification_stats: dict[str, object] | None = None, domain_phrase: str = "California K-12 DSA projects") -> None:
+def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label: str = "2025", cross_check_status: str | None = None, cross_check_reason: str = "", verification_stats: dict[str, object] | None = None, module: ReviewModule | None = None) -> None:
     """Write a brief methodology note explaining how the review was produced.
 
-    ``domain_phrase`` comes from the run module's ``report_context_phrase``;
-    the default keeps legacy callers / test doubles rendering the original
-    California sentence.
+    The run ``module`` supplies the domain phrase (``report_context_phrase``),
+    the jurisdiction wording of the code-cycle sentence, and the cycle whose
+    pinned editions are enumerated. ``None`` resolves to the default module,
+    so legacy callers keep the original California sentences byte-for-byte.
     """
+    module = module if module is not None else get_module(None)
+    domain_phrase = module.report_context_phrase
     doc.add_heading("About This Review", level=1)
 
     doc.add_paragraph(
@@ -932,7 +947,9 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
             "Findings should be treated as unverified unless noted otherwise."
         )
 
-    para2_text += f" This review used California {cycle_label} code cycle references."
+    jurisdiction = module.detector_vocabulary.jurisdiction_label.strip()
+    cycle_phrase = f"{jurisdiction} {cycle_label}" if jurisdiction else cycle_label
+    para2_text += f" This review used {cycle_phrase} code cycle references."
 
     if cross_check_enabled and cross_check_status == "completed":
         para2_text += " Cross-check completed."
@@ -954,7 +971,7 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
     # without opening the source; if the spec cites a different edition
     # for one of these standards, the finding's relevance to the
     # current cycle should be re-checked.
-    pinning_text = _render_pinned_editions_note(cycle_label)
+    pinning_text = _render_pinned_editions_note(module.cycle, jurisdiction)
     if pinning_text:
         doc.add_paragraph(pinning_text)
 
@@ -966,25 +983,31 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
     )
 
 
-def _render_pinned_editions_note(cycle_label: str) -> str:
+def _render_pinned_editions_note(cycle: CodeCycle, jurisdiction: str) -> str:
     """Render the methodology paragraph that enumerates pinned editions.
 
-    Looks up the :class:`CodeCycle` for the
-    label and emits a one-paragraph note. Pinning details only render
-    when the cycle has populated the new edition fields \u2014 a cycle with
-    no pinning yet falls back to an empty string so the methodology
-    note degrades gracefully.
+    Renders from the run module's own :class:`CodeCycle`, so the label in
+    the sentence is always the label of the cycle whose standards are
+    enumerated. (The legacy label\u2192``AVAILABLE_CYCLES`` lookup silently
+    fell back to the California default for any unknown label, which would
+    have rendered California standards into another module's report.)
+    Pinning details only render when the cycle has populated edition
+    fields \u2014 a cycle with no pinning falls back to an empty string so
+    the methodology note degrades gracefully.
     """
-    cycle: CodeCycle = AVAILABLE_CYCLES.get(cycle_label, DEFAULT_CYCLE)
     entries = [std for std in cycle.standards if std.edition]
     if not entries:
         return ""
     # Join with semicolons because an individual description can itself contain a
     # comma (e.g. "NFPA 13 2025, as amended by California").
     rendered = "; ".join(std.description for std in entries)
+    cycle_phrase = (
+        f"{cycle.label} {jurisdiction} cycle" if jurisdiction
+        else f"{cycle.label} cycle"
+    )
     return (
-        f"This review pinned the following standards editions per the {cycle_label} "
-        f"California cycle: {rendered}. Findings referencing other editions should "
+        f"This review pinned the following standards editions per the "
+        f"{cycle_phrase}: {rendered}. Findings referencing other editions should "
         "be reviewed for relevance to the current cycle."
     )
 
@@ -1237,6 +1260,27 @@ def _write_alert_section(
             )
 
 
+def _uniform_cycle_cadence(years: tuple[str, ...]) -> int | None:
+    """Return the uniform year gap between consecutive cycle years, or None.
+
+    Drives the "publishes cycles every N years" parenthetical in the
+    invalid-cycle alert intro. ``None`` (non-numeric years, fewer than two
+    years, or an irregular sequence) drops the cadence claim and the intro
+    falls back to a plain "known cycle years" list.
+    """
+    try:
+        values = sorted(int(y) for y in years)
+    except (TypeError, ValueError):
+        return None
+    if len(values) < 2:
+        return None
+    gaps = {b - a for a, b in zip(values, values[1:])}
+    if len(gaps) != 1:
+        return None
+    gap = gaps.pop()
+    return gap if gap > 1 else None
+
+
 def _write_alerts(
     doc: Document,
     leed_alerts: list[dict],
@@ -1248,6 +1292,7 @@ def _write_alerts(
     template_marker_alerts: list[dict] | None = None,
     invalid_code_cycle_alerts: list[dict] | None = None,
     duplicate_paragraph_alerts: list[dict] | None = None,
+    module: ReviewModule | None = None,
 ) -> None:
     """Write the Alerts section with every deterministic-check category.
 
@@ -1257,6 +1302,11 @@ def _write_alerts(
     before the report saw them, so users had to read the log to discover
     them. The new optional kwargs default to ``None`` (treated as empty) so
     legacy callers — including older snapshot tests — keep working.
+
+    The stale/invalid code-cycle section headings and intros render from
+    the run ``module``'s detector vocabulary (jurisdiction wording + the
+    published-cycle-year list). ``None`` resolves to the default module,
+    so legacy callers keep the original California wording byte-for-byte.
     """
     code_cycle_alerts = code_cycle_alerts or []
     structural_alerts = structural_alerts or []
@@ -1305,19 +1355,36 @@ def _write_alerts(
         "spec and should be resolved before issuing:",
         template_marker_alerts,
     )
+    vocab = (module if module is not None else get_module(None)).detector_vocabulary
+    jurisdiction = vocab.jurisdiction_label.strip()
+    j_prefix = f"{jurisdiction} " if jurisdiction else ""
     _write_alert_section(
         doc,
-        "Stale California Code Cycle References",
-        "The following references cite a historical California code cycle "
+        f"Stale {j_prefix}Code Cycle References",
+        f"The following references cite a historical {j_prefix}code cycle "
         "rather than the one selected for this review:",
         code_cycle_alerts,
     )
+    # The parenthetical lists the *published* cycles — the vocabulary's
+    # plausible_cycle_years. (valid_cycle_years additionally admits
+    # anticipated future cycles like 2028, which aren't published and
+    # would falsify the "publishes cycles" claim.)
+    published_years = ", ".join(vocab.plausible_cycle_years)
+    cadence = _uniform_cycle_cadence(vocab.plausible_cycle_years)
+    if published_years and jurisdiction and cadence:
+        known_years = (
+            f" ({jurisdiction} publishes cycles every {cadence} years: "
+            f"{published_years})"
+        )
+    elif published_years:
+        known_years = f" (known cycle years: {published_years})"
+    else:
+        known_years = ""
     _write_alert_section(
         doc,
-        "Invalid California Code Cycle Years",
-        "The following references cite a year that is not a real California "
-        "code cycle (California publishes cycles every 3 years: 2010, 2013, "
-        "2016, 2019, 2022, 2025). These are likely typos:",
+        f"Invalid {j_prefix}Code Cycle Years",
+        f"The following references cite a year that is not a real "
+        f"{j_prefix}code cycle{known_years}. These are likely typos:",
         invalid_code_cycle_alerts,
     )
     _write_alert_section(
@@ -2202,6 +2269,11 @@ def export_report(
 
     # Build the report
     cycle_label = getattr(pipeline_result, "cycle_label", "2025") or "2025"
+    # The run's module owns every domain-worded report surface (title,
+    # jurisdiction phrasing, pinned-standards cycle, alert headings).
+    # Legacy results / test doubles without a module_id resolve to the
+    # default module.
+    module = get_module(getattr(pipeline_result, "module_id", None))
     # Specs whose review failed/truncated (never produced findings).
     # Defensive getattr keeps legacy callers / test doubles at empty.
     failed_review_specs = [
@@ -2215,6 +2287,7 @@ def export_report(
         pipeline_result.files_reviewed,
         cycle_label=cycle_label,
         failed_review_count=failed_review_count,
+        module=module,
     )
 
     # Run Diagnostics banner. Renders right
@@ -2250,11 +2323,7 @@ def export_report(
         cross_check_status=cross_check_status,
         cross_check_reason=cross_check_reason,
         verification_stats=verification_stats,
-        # The run's module owns the domain phrase; legacy results / test
-        # doubles without a module_id resolve to the default module.
-        domain_phrase=get_module(
-            getattr(pipeline_result, "module_id", None)
-        ).report_context_phrase,
+        module=module,
     )
     _write_summary_table(
         doc,
@@ -2286,6 +2355,7 @@ def export_report(
         template_marker_alerts=getattr(pipeline_result, "template_marker_alerts", None),
         invalid_code_cycle_alerts=getattr(pipeline_result, "invalid_code_cycle_alerts", None),
         duplicate_paragraph_alerts=getattr(pipeline_result, "duplicate_paragraph_alerts", None),
+        module=module,
     )
     _write_findings_section(doc, review)
     _write_cross_check_section(doc, cross_check)
