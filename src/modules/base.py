@@ -172,15 +172,22 @@ def _iter_json_objects(text: str) -> Iterator[Mapping[str, object]]:
 
 def _validate_review_examples(module: ReviewModule) -> None:
     """Every JSON example must satisfy the real parse-time edit contract."""
-    # Deferred import: reviewer pulls in the Anthropic SDK and must never
-    # import back into ``modules`` (it doesn't — it is a content-layer leaf).
+    # Deferred imports: reviewer pulls in the Anthropic SDK and must never
+    # import back into ``modules`` (it doesn't — it is a content-layer leaf);
+    # prompt_serialization is the single source of truth for the element-id
+    # wrapper tag names, so a future tag rename updates this guard too.
+    from ..review.prompt_serialization import TAG_HEADING, TAG_PARA, TAG_ROW
     from ..review.reviewer import validate_edit_shape
 
     block = module.review_examples
     # These are per-request concepts; the examples block is part of the
     # cached system-prompt prefix and must not mention them (pinned by
-    # ``test_system_prompt_constant_and_does_not_embed_specs``).
-    for forbidden in ("evidenceElementId", "<para"):
+    # ``test_system_prompt_constant_and_does_not_embed_specs``). Every
+    # element-id wrapper tag is forbidden — an example showing a stale
+    # ``<row id="…">`` would teach the model to emit invalid
+    # ``evidenceElementId`` values.
+    element_wrappers = tuple(f"<{tag}" for tag in (TAG_PARA, TAG_ROW, TAG_HEADING))
+    for forbidden in ("evidenceElementId", *element_wrappers):
         if forbidden in block:
             raise ValueError(
                 f"ReviewModule {module.module_id!r}: review_examples must not "

@@ -235,13 +235,24 @@ class TestContentValidation:
         with pytest.raises(ValueError, match="no parseable JSON"):
             validate_module_registry([bad])
 
-    def test_example_element_id_leak_rejected(self):
-        # Per-request concept inside the cached system-prompt prefix.
+    @pytest.mark.parametrize(
+        "leak, match",
+        [
+            ("Also set evidenceElementId.", "evidenceElementId"),
+            ('Quote the <para id="p7"> element.', "<para"),
+            ('Cite the <row id="t0r0"> entry.', "<row"),
+            ('Reference the <heading id="p0"> line.', "<heading"),
+        ],
+    )
+    def test_example_element_id_leak_rejected(self, leak, match):
+        # Per-request concepts inside the cached system-prompt prefix: the
+        # evidenceElementId field and EVERY element-id wrapper tag the
+        # id-tagged rendering emits (<para>, <row>, <heading>).
         bad = dataclasses.replace(
             _module(),
-            review_examples=_VALID_EXAMPLE_BLOCK + "\nAlso set evidenceElementId.",
+            review_examples=_VALID_EXAMPLE_BLOCK + "\n" + leak,
         )
-        with pytest.raises(ValueError, match="evidenceElementId"):
+        with pytest.raises(ValueError, match=match):
             validate_module_registry([bad])
 
     def test_example_teaching_demotable_edit_rejected(self):
