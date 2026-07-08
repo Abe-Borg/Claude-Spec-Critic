@@ -248,6 +248,9 @@ class ReviewModule:
         cross_check_chunk_groups: CSI-division families for chunked
             cross-spec coordination (see :class:`ChunkGroup`). May be empty
             — every spec then pools into the engine's ``"general"`` chunk.
+        report_context_phrase: Short domain phrase spliced into the report's
+            methodology note ("… relevant to {phrase}."). Report-facing
+            only; never rendered into a prompt.
     """
 
     module_id: str
@@ -274,6 +277,8 @@ class ReviewModule:
     # --- Verification routing + cross-check chunking (Phase 4) ---------
     profile_keywords: ProfileKeywords
     cross_check_chunk_groups: tuple[ChunkGroup, ...]
+    # --- Report / GUI display surfaces (Phase 5) ------------------------
+    report_context_phrase: str
 
 
 _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
@@ -291,6 +296,7 @@ _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
     "cross_check_code_basis_line",
     "verifier_system_code_basis_lines",
     "verifier_user_code_basis_lines",
+    "report_context_phrase",
 )
 
 # Slots that are str.format templates over ``code_basis_format_kwargs`` —

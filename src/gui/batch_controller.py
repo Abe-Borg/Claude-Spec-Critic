@@ -604,6 +604,7 @@ def _begin_reconnect_run(
         mode="batch",
         model=model,
         cycle_label=cycle_label,
+        module_id=app._selected_module_id,
         files_selected=list(files_reviewed_label or []),
         project_context_tokens=0,
         cross_check_enabled=cross_check_enabled,

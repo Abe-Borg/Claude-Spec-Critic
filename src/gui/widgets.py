@@ -428,9 +428,12 @@ class DiagnosticsWindow(ctk.CTkToplevel):
         r = self._report
         started = datetime.fromtimestamp(r.started_at).strftime("%Y-%m-%d %H:%M:%S")
         duration = f"{r.ended_at - r.started_at:.1f}s" if r.ended_at else "in progress"
+        module_part = (
+            f"  •  Module: {r.module_id}" if getattr(r, "module_id", "") else ""
+        )
         lines = [
             f"Run ID: {r.run_id}",
-            f"Mode: {r.mode}  •  Model: {r.model}  •  Cycle: {r.cycle_label}",
+            f"Mode: {r.mode}  •  Model: {r.model}  •  Cycle: {r.cycle_label}{module_part}",
             f"Files: {len(r.files_selected)}  •  Context Tokens: {r.project_context_tokens:,}",
             f"Cross-Check: {'Enabled' if r.cross_check_enabled else 'Disabled'}",
             f"Started: {started}  •  Duration: {duration}",

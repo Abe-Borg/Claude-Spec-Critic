@@ -137,6 +137,7 @@ def _module(module_id: str = "test_module", label: str = "9999", **overrides) ->
         detector_vocabulary=_TEST_VOCABULARY,
         profile_keywords=_TEST_PROFILE_KEYWORDS,
         cross_check_chunk_groups=_TEST_CHUNK_GROUPS,
+        report_context_phrase="test projects",
     )
     slots.update(overrides)
     return ReviewModule(**slots)
@@ -699,6 +700,78 @@ class TestSlotsDriveOutput:
         assert "   synthetic.example" in vp
         # Engine protocol stays regardless of module.
         assert "Prefer authoritative sources in this priority order:" in vp
+
+
+# ---------------------------------------------------------------------------
+# GUI selection persistence + report surfaces (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+class TestUiStatePersistence:
+    def test_round_trip(self, tmp_path):
+        from src.core.ui_state import load_selected_module_id, save_selected_module_id
+
+        state_path = tmp_path / "ui_state.json"
+        assert load_selected_module_id(path=state_path) == ""
+        save_selected_module_id("california_k12_mep", path=state_path)
+        assert load_selected_module_id(path=state_path) == "california_k12_mep"
+
+    def test_corrupt_file_reads_as_no_selection(self, tmp_path):
+        from src.core.ui_state import load_selected_module_id
+
+        state_path = tmp_path / "ui_state.json"
+        state_path.write_text("{not json", encoding="utf-8")
+        assert load_selected_module_id(path=state_path) == ""
+
+    def test_env_override_path(self, tmp_path, monkeypatch):
+        from src.core.ui_state import ui_state_path
+
+        monkeypatch.setenv("SPEC_CRITIC_UI_STATE_PATH", str(tmp_path / "s.json"))
+        assert ui_state_path() == tmp_path / "s.json"
+
+    def test_stale_saved_id_degrades_to_default(self, tmp_path):
+        # The GUI resolves the saved id through get_module, so an id from
+        # an uninstalled module falls back to the default module.
+        from src.core.ui_state import load_selected_module_id, save_selected_module_id
+
+        state_path = tmp_path / "ui_state.json"
+        save_selected_module_id("module_that_no_longer_exists", path=state_path)
+        resolved = get_module(load_selected_module_id(path=state_path))
+        assert resolved is DEFAULT_MODULE
+
+
+class TestReportSurfaces:
+    def test_methodology_note_renders_module_phrase(self):
+        from docx import Document
+
+        from src.output.report_exporter import _write_methodology_note
+
+        doc = Document()
+        _write_methodology_note(doc, domain_phrase="hyperscale data-center projects")
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "relevant to hyperscale data-center projects." in text
+        assert "California K-12 DSA" not in text
+
+    def test_methodology_note_default_keeps_california_sentence(self):
+        from docx import Document
+
+        from src.output.report_exporter import _write_methodology_note
+
+        doc = Document()
+        _write_methodology_note(doc)
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "relevant to California K-12 DSA projects." in text
+
+    def test_default_module_report_phrase(self):
+        assert DEFAULT_MODULE.report_context_phrase == "California K-12 DSA projects"
+
+    def test_diagnostics_report_carries_module_id(self):
+        from src.orchestration.diagnostics import DiagnosticsReport
+
+        assert DiagnosticsReport().module_id == ""
+        assert DiagnosticsReport(module_id="california_k12_mep").module_id == (
+            "california_k12_mep"
+        )
 
 
 # ---------------------------------------------------------------------------

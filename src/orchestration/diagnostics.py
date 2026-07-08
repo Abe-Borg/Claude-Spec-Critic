@@ -226,6 +226,9 @@ class DiagnosticsReport:
     mode: str = ""
     model: str = ""
     cycle_label: str = ""
+    # Registry id of the module the run reviewed under ("" for legacy
+    # callers). Display-only — the run summary renders it next to the cycle.
+    module_id: str = ""
     files_selected: list[str] = field(default_factory=list)
     project_context_tokens: int = 0
     cross_check_enabled: bool = False

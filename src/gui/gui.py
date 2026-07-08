@@ -45,7 +45,8 @@ from src.orchestration.pipeline import BatchSubmission
 # Constants used by widgets
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
-from src.modules import DEFAULT_MODULE
+from src.core.ui_state import load_selected_module_id, save_selected_module_id
+from src.modules import AVAILABLE_MODULES, DEFAULT_MODULE, get_module
 
 from src.gui.widgets import (
     AnimatedButton,
@@ -168,11 +169,15 @@ class SpecReviewApp(_CTkDnDRoot):
         # instead of stacking up multiple outbound API calls.
         self._exact_token_refresh_timer_id: str | None = None
         self._selected_cycle_label: str = DEFAULT_CYCLE.label
-        # Registry id of the module the next run reviews under. There is no
-        # selector widget yet (single-module registry); controllers resolve
-        # this via ``modules.get_module`` and derive the cycle from it, so
-        # the module is the single source once a selector lands.
-        self._selected_module_id: str = DEFAULT_MODULE.module_id
+        # Registry id of the module the next run reviews under, restored
+        # from the persisted UI state (a stale / unknown saved id degrades
+        # to the default module via get_module). Controllers resolve this
+        # via ``modules.get_module`` and derive the cycle from it — the
+        # module is the single source.
+        self._selected_module_id: str = get_module(
+            load_selected_module_id()
+        ).module_id
+        self._selected_cycle_label = get_module(self._selected_module_id).cycle.label
         self._font_scale_label: str = "Default (100%)"
         self._create_ui()
 
@@ -201,7 +206,32 @@ class SpecReviewApp(_CTkDnDRoot):
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._show_usage_dialog,
         ).pack(side="right", padx=(0, 8), pady=(4, 0))
-        ctk.CTkLabel(self.hdr, text="M&P Specification Review  \u2022  California K-12 DSA  \u2022  Opus 4.8", font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"]).pack(anchor="w", pady=(4, 0))
+        self._header_subtitle = ctk.CTkLabel(self.hdr, text=self._module_subtitle(), font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"])
+        self._header_subtitle.pack(anchor="w", pady=(4, 0))
+
+        # Module selector: which domain configuration the next run reviews
+        # under. Single-entry today; additional modules appear here as they
+        # are registered in ``src/modules``.
+        module_row = ctk.CTkFrame(self.hdr, fg_color="transparent")
+        module_row.pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(module_row, text="Review module", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"]).pack(side="left", padx=(0, 10))
+        self._module_names_by_display = {
+            m.display_name: m.module_id for m in AVAILABLE_MODULES.values()
+        }
+        self._module_selector_var = ctk.StringVar(
+            value=get_module(self._selected_module_id).display_name
+        )
+        self.module_selector = ctk.CTkOptionMenu(
+            module_row,
+            values=list(self._module_names_by_display.keys()),
+            variable=self._module_selector_var,
+            command=self._on_module_selected,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["bg_input"], button_color=COLORS["border"],
+            button_hover_color=COLORS["accent"], text_color=COLORS["text_primary"],
+            height=30,
+        )
+        self.module_selector.pack(side="left")
 
         # --- Accessibility row: sits between header and inputs card ---
         accessibility_bar = ctk.CTkFrame(c, fg_color="transparent")
@@ -385,6 +415,23 @@ class SpecReviewApp(_CTkDnDRoot):
         scale = _FONT_SCALE_OPTIONS.get(value, 1.0)
         ctk.set_widget_scaling(scale)
         self._font_scale_label = value
+
+    def _module_subtitle(self) -> str:
+        module = get_module(self._selected_module_id)
+        return f"{module.display_name}  •  Opus 4.8"
+
+    def _on_module_selected(self, display_name: str) -> None:
+        """Switch the review module for the next run and persist the choice.
+
+        Only affects runs started after the switch — an in-flight run keeps
+        the module its submission recorded.
+        """
+        module_id = self._module_names_by_display.get(display_name, "")
+        module = get_module(module_id)
+        self._selected_module_id = module.module_id
+        self._selected_cycle_label = module.cycle.label
+        self._header_subtitle.configure(text=self._module_subtitle())
+        save_selected_module_id(module.module_id)
 
     def _on_trace_toggle(self) -> None:
         """Translate the checkboxes into env vars the recorder reads.
