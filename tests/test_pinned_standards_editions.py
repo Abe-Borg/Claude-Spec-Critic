@@ -26,6 +26,7 @@ from docx import Document
 
 from src.core.code_cycles import (
     AVAILABLE_CYCLES,
+    BaseCode,
     CALIFORNIA_2025,
     CodeCycle,
     DEFAULT_CYCLE,
@@ -63,14 +64,21 @@ def _finding(file: str = "test.docx") -> Finding:
 
 
 def _bare_cycle(label: str = "bare") -> CodeCycle:
-    """A cycle with the code years populated but no pinned standards."""
+    """A cycle with the code years populated but no pinned standards.
+
+    Carries the same base-code KEYS as the California cycle: unknown labels
+    resolve to the default module through the ``module_for_cycle`` bridge,
+    so the CA prompt templates must find their ``{cbc}``-style placeholders.
+    """
     return CodeCycle(
         label=label,
-        cbc="2025",
-        cmc="2025",
-        cpc="2025",
-        energy_code="2025",
-        calgreen="2025",
+        base_codes=(
+            BaseCode("cbc", "CBC", "2025"),
+            BaseCode("cmc", "CMC", "2025"),
+            BaseCode("cpc", "CPC", "2025"),
+            BaseCode("energy", "California Energy Code", "2025"),
+            BaseCode("calgreen", "CALGreen", "2025"),
+        ),
         asce7="7-22",
         asce7_previous="7-16",
     )

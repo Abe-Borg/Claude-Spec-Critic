@@ -11,7 +11,7 @@ from ..input.extractor import ExtractedSpec
 from ..review.reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client
 from ..core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
-from ..modules import module_for_cycle
+from ..modules import code_basis_format_kwargs, module_for_cycle
 from ..review.prompt_serialization import (
     TAG_ALREADY_IDENTIFIED,
     TAG_CORPUS,
@@ -154,10 +154,12 @@ def _cross_system_prompt(cycle: CodeCycle) -> str:
     # via the unique-label bridge); the task and output contract below are
     # engine protocol, byte-identical across modules.
     module = module_for_cycle(cycle)
+    code_basis_line = module.cross_check_code_basis_line.format(
+        **code_basis_format_kwargs(cycle)
+    )
     return (
         f"{module.cross_check_persona}\n\n"
-        f"Current cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, "
-        f"CALGreen {cycle.calgreen}, ASCE {cycle.asce7}.\n\n"
+        f"{code_basis_line}\n\n"
         "<task>\n"
         "Determine whether these specs are well-coordinated with each other. Your job is to evaluate "
         "cross-spec coordination quality — the answer may be that coordination is adequate.\n\n"

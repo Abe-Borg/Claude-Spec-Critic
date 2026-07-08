@@ -7,7 +7,12 @@ Public surface — import from this package, not the submodules:
   — the registry, mirroring the ``AVAILABLE_CYCLES`` pattern.
 - :data:`CALIFORNIA_K12_MEP` — the California K-12 module instance.
 """
-from .base import ReviewModule, category_format_kwargs, validate_module_registry
+from .base import (
+    DetectorVocabulary,
+    ReviewModule,
+    code_basis_format_kwargs,
+    validate_module_registry,
+)
 from .california_k12_mep import CALIFORNIA_K12_MEP
 from .registry import (
     AVAILABLE_MODULES,
@@ -17,8 +22,9 @@ from .registry import (
 )
 
 __all__ = [
+    "DetectorVocabulary",
     "ReviewModule",
-    "category_format_kwargs",
+    "code_basis_format_kwargs",
     "validate_module_registry",
     "CALIFORNIA_K12_MEP",
     "AVAILABLE_MODULES",
