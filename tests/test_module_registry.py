@@ -38,8 +38,10 @@ from src.core.code_cycles import BaseCode, CALIFORNIA_2025, CodeCycle
 from src.modules import (
     AVAILABLE_MODULES,
     CALIFORNIA_K12_MEP,
+    ChunkGroup,
     DEFAULT_MODULE,
     DetectorVocabulary,
+    ProfileKeywords,
     ReviewModule,
     code_basis_format_kwargs,
     get_module,
@@ -77,6 +79,18 @@ _TEST_VOCABULARY = DetectorVocabulary(
     valid_cycle_years=("2019", "2022", "2025"),
     asce7_plausible_editions=("16", "22"),
     jurisdiction_label="Test",
+)
+
+_TEST_PROFILE_KEYWORDS = ProfileKeywords(
+    jurisdictional=("testville", "test marshal"),
+    manufacturer=("testcorp", "model number"),
+    code_standard=("tbc", "test code"),
+    internal_coordination=("placeholder", "typo", "internal contradiction"),
+)
+
+_TEST_CHUNK_GROUPS = (
+    ChunkGroup("div_21", "Division 21 — Fire Suppression", ("21",)),
+    ChunkGroup("div_22", "Division 22 — Plumbing", ("22",)),
 )
 
 
@@ -121,6 +135,9 @@ def _module(module_id: str = "test_module", label: str = "9999", **overrides) ->
         verifier_system_code_basis_lines="Current code cycle: Test Code {code}.",
         verifier_user_code_basis_lines="Current cycle: Test Code {code}.",
         detector_vocabulary=_TEST_VOCABULARY,
+        profile_keywords=_TEST_PROFILE_KEYWORDS,
+        cross_check_chunk_groups=_TEST_CHUNK_GROUPS,
+        report_context_phrase="test projects",
     )
     slots.update(overrides)
     return ReviewModule(**slots)
@@ -501,6 +518,140 @@ class TestVocabularyDrivenDetection:
 
 
 # ---------------------------------------------------------------------------
+# Verification-profile keywords + chunk groups (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileParsing:
+    def test_legacy_california_ahj_maps_to_jurisdictional(self):
+        from src.verification.verification_profiles import (
+            VerificationProfile,
+            parse_verification_profile,
+        )
+
+        assert (
+            parse_verification_profile("california_ahj")
+            is VerificationProfile.JURISDICTIONAL
+        )
+        assert (
+            parse_verification_profile("jurisdictional")
+            is VerificationProfile.JURISDICTIONAL
+        )
+        assert (
+            parse_verification_profile("not-a-profile")
+            is VerificationProfile.CONSTRUCTABILITY
+        )
+        assert (
+            parse_verification_profile(None)
+            is VerificationProfile.CONSTRUCTABILITY
+        )
+        assert (
+            parse_verification_profile(VerificationProfile.MANUFACTURER)
+            is VerificationProfile.MANUFACTURER
+        )
+
+
+class TestModuleKeywordsDriveRouting:
+    def test_keywords_param_drives_classification(self):
+        from src.review.reviewer import Finding
+        from src.verification.verification_profiles import (
+            VerificationProfile,
+            classify_finding_profile,
+        )
+
+        finding = Finding(
+            severity="CRITICAL",
+            fileName="21 13 13 - Sprinklers.docx",
+            section="1.01",
+            issue="Ruling by the Testville marshal conflicts with this clause.",
+            actionType="REPORT_ONLY",
+            existingText=None,
+            replacementText=None,
+            codeReference=None,
+        )
+        # The synthetic module's vocabulary knows "testville"; the default
+        # (California) vocabulary does not.
+        assert (
+            classify_finding_profile(finding, keywords=_TEST_PROFILE_KEYWORDS)
+            is VerificationProfile.JURISDICTIONAL
+        )
+        assert (
+            classify_finding_profile(finding)
+            is VerificationProfile.CONSTRUCTABILITY
+        )
+
+    def test_select_routing_resolves_keywords_from_cycle(self, monkeypatch):
+        from src.modules import registry as registry_mod
+        from src.review.reviewer import Finding
+        from src.verification.verification_modes import VerificationMode
+        from src.verification.verification_profiles import VerificationProfile
+        from src.verification.verification_routing import select_routing
+
+        mod = _module("syn_routing", "6666")
+        monkeypatch.setitem(registry_mod._MODULES_BY_CYCLE_LABEL, "6666", mod)
+        finding = Finding(
+            severity="CRITICAL",
+            fileName="21 13 13 - Sprinklers.docx",
+            section="1.01",
+            issue="Ruling by the Testville marshal conflicts with this clause.",
+            actionType="REPORT_ONLY",
+            existingText=None,
+            replacementText=None,
+            codeReference=None,
+        )
+        # With the owning module's cycle: jurisdictional -> CRITICAL goes deep.
+        routed = select_routing(finding, local_skip=False, cycle=mod.cycle)
+        assert routed.profile is VerificationProfile.JURISDICTIONAL
+        assert routed.mode is VerificationMode.DEEP_REASONING
+        # Without module context the default (CA) vocabulary sees nothing.
+        default_routed = select_routing(finding, local_skip=False)
+        assert default_routed.profile is VerificationProfile.CONSTRUCTABILITY
+        assert default_routed.mode is VerificationMode.STANDARD_REASONING
+
+    def test_empty_keyword_field_rejected(self):
+        bad_keywords = dataclasses.replace(_TEST_PROFILE_KEYWORDS, jurisdictional=())
+        bad = dataclasses.replace(_module(), profile_keywords=bad_keywords)
+        with pytest.raises(ValueError, match="jurisdictional"):
+            validate_module_registry([bad])
+
+
+class TestChunkGroupValidation:
+    def test_duplicate_prefix_across_groups_rejected(self):
+        groups = (
+            ChunkGroup("a", "A", ("21",)),
+            ChunkGroup("b", "B", ("21", "22")),
+        )
+        bad = dataclasses.replace(_module(), cross_check_chunk_groups=groups)
+        with pytest.raises(ValueError, match="more than one chunk group"):
+            validate_module_registry([bad])
+
+    def test_reserved_general_id_rejected(self):
+        groups = (ChunkGroup("general", "General", ("21",)),)
+        bad = dataclasses.replace(_module(), cross_check_chunk_groups=groups)
+        with pytest.raises(ValueError, match="reserved"):
+            validate_module_registry([bad])
+
+    def test_duplicate_chunk_id_rejected(self):
+        groups = (
+            ChunkGroup("dup", "A", ("21",)),
+            ChunkGroup("dup", "B", ("22",)),
+        )
+        bad = dataclasses.replace(_module(), cross_check_chunk_groups=groups)
+        with pytest.raises(ValueError, match="duplicate chunk_id"):
+            validate_module_registry([bad])
+
+    def test_module_groups_drive_chunk_assignment(self):
+        from src.cross_check.cross_checker import _assign_chunk, _chunk_label
+
+        # The synthetic module maps 21/22 only — 23 pools into "general".
+        assert _assign_chunk("21 13 13 - Wet.docx", _TEST_CHUNK_GROUPS) == "div_21"
+        assert _assign_chunk("23 05 00 - HVAC.docx", _TEST_CHUNK_GROUPS) == "general"
+        assert _chunk_label("div_22", _TEST_CHUNK_GROUPS) == "Division 22 — Plumbing"
+        # Default (no groups passed) resolves the California module's map.
+        assert _assign_chunk("23 05 00 - HVAC.docx") == "div_23"
+
+
+# ---------------------------------------------------------------------------
 # Slots drive the assembled prompts
 # ---------------------------------------------------------------------------
 
@@ -549,6 +700,78 @@ class TestSlotsDriveOutput:
         assert "   synthetic.example" in vp
         # Engine protocol stays regardless of module.
         assert "Prefer authoritative sources in this priority order:" in vp
+
+
+# ---------------------------------------------------------------------------
+# GUI selection persistence + report surfaces (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+class TestUiStatePersistence:
+    def test_round_trip(self, tmp_path):
+        from src.core.ui_state import load_selected_module_id, save_selected_module_id
+
+        state_path = tmp_path / "ui_state.json"
+        assert load_selected_module_id(path=state_path) == ""
+        save_selected_module_id("california_k12_mep", path=state_path)
+        assert load_selected_module_id(path=state_path) == "california_k12_mep"
+
+    def test_corrupt_file_reads_as_no_selection(self, tmp_path):
+        from src.core.ui_state import load_selected_module_id
+
+        state_path = tmp_path / "ui_state.json"
+        state_path.write_text("{not json", encoding="utf-8")
+        assert load_selected_module_id(path=state_path) == ""
+
+    def test_env_override_path(self, tmp_path, monkeypatch):
+        from src.core.ui_state import ui_state_path
+
+        monkeypatch.setenv("SPEC_CRITIC_UI_STATE_PATH", str(tmp_path / "s.json"))
+        assert ui_state_path() == tmp_path / "s.json"
+
+    def test_stale_saved_id_degrades_to_default(self, tmp_path):
+        # The GUI resolves the saved id through get_module, so an id from
+        # an uninstalled module falls back to the default module.
+        from src.core.ui_state import load_selected_module_id, save_selected_module_id
+
+        state_path = tmp_path / "ui_state.json"
+        save_selected_module_id("module_that_no_longer_exists", path=state_path)
+        resolved = get_module(load_selected_module_id(path=state_path))
+        assert resolved is DEFAULT_MODULE
+
+
+class TestReportSurfaces:
+    def test_methodology_note_renders_module_phrase(self):
+        from docx import Document
+
+        from src.output.report_exporter import _write_methodology_note
+
+        doc = Document()
+        _write_methodology_note(doc, domain_phrase="hyperscale data-center projects")
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "relevant to hyperscale data-center projects." in text
+        assert "California K-12 DSA" not in text
+
+    def test_methodology_note_default_keeps_california_sentence(self):
+        from docx import Document
+
+        from src.output.report_exporter import _write_methodology_note
+
+        doc = Document()
+        _write_methodology_note(doc)
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "relevant to California K-12 DSA projects." in text
+
+    def test_default_module_report_phrase(self):
+        assert DEFAULT_MODULE.report_context_phrase == "California K-12 DSA projects"
+
+    def test_diagnostics_report_carries_module_id(self):
+        from src.orchestration.diagnostics import DiagnosticsReport
+
+        assert DiagnosticsReport().module_id == ""
+        assert DiagnosticsReport(module_id="california_k12_mep").module_id == (
+            "california_k12_mep"
+        )
 
 
 # ---------------------------------------------------------------------------

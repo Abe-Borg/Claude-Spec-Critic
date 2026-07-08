@@ -46,6 +46,82 @@ from typing import Iterable, Iterator, Mapping
 from ..core.code_cycles import CodeCycle
 
 
+def _coerce_str_tuple_fields(obj: object, field_names: tuple[str, ...]) -> None:
+    """Coerce list-valued sequence fields on a frozen dataclass to tuples.
+
+    Dataclasses don't enforce annotations, and config-loaded module data
+    naturally arrives with lists. Tuples keep the dataclass hashable (the
+    engine caches on these objects); a bare string is rejected rather than
+    silently iterated per-character.
+    """
+    for field_name in field_names:
+        value = getattr(obj, field_name)
+        if isinstance(value, str):
+            raise TypeError(
+                f"{type(obj).__name__}.{field_name} must be a sequence of "
+                f"strings, not a single string: {value!r}"
+            )
+        if not isinstance(value, tuple):
+            object.__setattr__(obj, field_name, tuple(value))
+
+
+@dataclass(frozen=True)
+class ProfileKeywords:
+    """Keyword vocabulary driving the verification-profile classifier.
+
+    The classifier *logic* (precedence order, the ``codeReference`` signal,
+    the constructability default) stays engine-owned in
+    ``verification_profiles.py``; these are the domain terms it scans for.
+    Frozen + tuple-typed so the object is hashable.
+
+    Attributes:
+        jurisdictional: Terms naming the jurisdiction / authority having
+            jurisdiction (California/DSA/HCAI/Title 24 for the CA module;
+            fire marshal / FM Global for a data-center module). Findings
+            matching these get the jurisdictional priority-source guidance,
+            and CRITICAL jurisdictional findings route straight to deep
+            reasoning.
+        manufacturer: Manufacturer / product-data terms (brand names, model
+            number, datasheet, submittal).
+        code_standard: Code / standards-body terms (code abbreviations,
+            NFPA, ASHRAE, ...). A non-empty ``codeReference`` also routes
+            here regardless of keywords.
+        internal_coordination: Terms marking findings verifiable from the
+            spec text alone (placeholder, typo, duplicate, internal
+            contradiction) — checked first; web search adds no signal.
+    """
+
+    jurisdictional: tuple[str, ...]
+    manufacturer: tuple[str, ...]
+    code_standard: tuple[str, ...]
+    internal_coordination: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _coerce_str_tuple_fields(
+            self,
+            ("jurisdictional", "manufacturer", "code_standard", "internal_coordination"),
+        )
+
+
+@dataclass(frozen=True)
+class ChunkGroup:
+    """One CSI-division family for chunked cross-spec coordination.
+
+    The chunking *invariants* (every spec in exactly one chunk, singleton
+    pooling into ``"general"``, completeness across chunks) stay engine-owned
+    in ``cross_check/cross_checker.py``; the division families are module
+    data. ``chunk_id`` must not be ``"general"`` — that id is the engine's
+    reserved pool for unmatched / singleton specs.
+    """
+
+    chunk_id: str
+    label: str
+    csi_prefixes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _coerce_str_tuple_fields(self, ("csi_prefixes",))
+
+
 @dataclass(frozen=True)
 class DetectorVocabulary:
     """Vocabulary the deterministic preprocessor scans for, per module.
@@ -96,28 +172,19 @@ class DetectorVocabulary:
     jurisdiction_label: str = ""
 
     def __post_init__(self) -> None:
-        # Dataclasses don't enforce annotations, and config-loaded
-        # vocabularies naturally arrive with lists. Coerce the sequence
-        # fields to tuples so the object stays hashable — the preprocessor
-        # lru-caches compiled patterns keyed by this dataclass, and an
-        # unhashable field would otherwise surface as a TypeError mid-run
-        # instead of at registration. A bare string is rejected rather than
-        # silently iterated per-character.
-        for field_name in (
-            "code_abbreviations",
-            "plausible_cycle_years",
-            "valid_cycle_years",
-            "asce7_plausible_editions",
-            "stale_cycle_extra_patterns",
-        ):
-            value = getattr(self, field_name)
-            if isinstance(value, str):
-                raise TypeError(
-                    f"DetectorVocabulary.{field_name} must be a sequence of "
-                    f"strings, not a single string: {value!r}"
-                )
-            if not isinstance(value, tuple):
-                object.__setattr__(self, field_name, tuple(value))
+        # The preprocessor lru-caches compiled patterns keyed by this
+        # dataclass, so an unhashable field would surface as a TypeError
+        # mid-run instead of at registration.
+        _coerce_str_tuple_fields(
+            self,
+            (
+                "code_abbreviations",
+                "plausible_cycle_years",
+                "valid_cycle_years",
+                "asce7_plausible_editions",
+                "stale_cycle_extra_patterns",
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -176,6 +243,14 @@ class ReviewModule:
             verifier user prompt.
         detector_vocabulary: The deterministic preprocessor's domain
             vocabulary (see :class:`DetectorVocabulary`).
+        profile_keywords: The verification-profile classifier's keyword
+            vocabulary (see :class:`ProfileKeywords`).
+        cross_check_chunk_groups: CSI-division families for chunked
+            cross-spec coordination (see :class:`ChunkGroup`). May be empty
+            — every spec then pools into the engine's ``"general"`` chunk.
+        report_context_phrase: Short domain phrase spliced into the report's
+            methodology note ("… relevant to {phrase}."). Report-facing
+            only; never rendered into a prompt.
     """
 
     module_id: str
@@ -199,6 +274,11 @@ class ReviewModule:
     verifier_system_code_basis_lines: str
     verifier_user_code_basis_lines: str
     detector_vocabulary: DetectorVocabulary
+    # --- Verification routing + cross-check chunking (Phase 4) ---------
+    profile_keywords: ProfileKeywords
+    cross_check_chunk_groups: tuple[ChunkGroup, ...]
+    # --- Report / GUI display surfaces (Phase 5) ------------------------
+    report_context_phrase: str
 
 
 _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
@@ -216,6 +296,7 @@ _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
     "cross_check_code_basis_line",
     "verifier_system_code_basis_lines",
     "verifier_user_code_basis_lines",
+    "report_context_phrase",
 )
 
 # Slots that are str.format templates over ``code_basis_format_kwargs`` —
@@ -397,6 +478,74 @@ def _validate_detector_vocabulary(module: ReviewModule) -> None:
             )
 
 
+def _validate_profile_keywords(module: ReviewModule) -> None:
+    """Fail fast on classifier vocabulary a module author got wrong."""
+    keywords = module.profile_keywords
+    if not isinstance(keywords, ProfileKeywords):
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: profile_keywords must be a "
+            f"ProfileKeywords, got {type(keywords).__name__}"
+        )
+    try:
+        hash(keywords)
+    except TypeError as exc:
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: profile_keywords must be "
+            f"hashable (tuple elements only) ({exc})"
+        ) from exc
+    for field_name in (
+        "jurisdictional", "manufacturer", "code_standard", "internal_coordination",
+    ):
+        terms = getattr(keywords, field_name)
+        if not terms or not all(t and t.strip() for t in terms):
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: profile_keywords."
+                f"{field_name} needs at least one non-empty term"
+            )
+
+
+def _validate_chunk_groups(module: ReviewModule) -> None:
+    """Fail fast on a chunk map that would mis-assign or drop specs."""
+    seen_ids: set[str] = set()
+    seen_prefixes: set[str] = set()
+    for group in module.cross_check_chunk_groups:
+        if not isinstance(group, ChunkGroup):
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: cross_check_chunk_groups "
+                f"entries must be ChunkGroup, got {type(group).__name__}"
+            )
+        if not group.chunk_id or not group.chunk_id.strip() or not group.label.strip():
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: chunk group needs a "
+                f"non-empty chunk_id and label (got {group.chunk_id!r})"
+            )
+        if group.chunk_id == "general":
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: chunk_id 'general' is "
+                "reserved for the engine's unmatched/singleton pool"
+            )
+        if group.chunk_id in seen_ids:
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: duplicate chunk_id "
+                f"{group.chunk_id!r}"
+            )
+        seen_ids.add(group.chunk_id)
+        if not group.csi_prefixes:
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: chunk group "
+                f"{group.chunk_id!r} has no CSI prefixes"
+            )
+        for prefix in group.csi_prefixes:
+            if prefix in seen_prefixes:
+                # A prefix in two groups would make chunk assignment
+                # order-dependent — every spec must land in exactly one chunk.
+                raise ValueError(
+                    f"ReviewModule {module.module_id!r}: CSI prefix {prefix!r} "
+                    "appears in more than one chunk group"
+                )
+            seen_prefixes.add(prefix)
+
+
 def _validate_module_content(module: ReviewModule) -> None:
     """Fail fast on prompt-slot / vocabulary content a module author got wrong."""
     for field_name in _PROMPT_SLOT_FIELDS:
@@ -433,6 +582,8 @@ def _validate_module_content(module: ReviewModule) -> None:
             ) from exc
 
     _validate_detector_vocabulary(module)
+    _validate_profile_keywords(module)
+    _validate_chunk_groups(module)
     _validate_review_examples(module)
 
 

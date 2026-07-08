@@ -108,6 +108,7 @@ def start_review(app) -> None:
         mode="batch",
         model=REVIEW_MODEL_DEFAULT,
         cycle_label=app._selected_cycle_label,
+        module_id=app._selected_module_id,
         files_selected=[p.name for p in selected_files],
         project_context_tokens=app._project_context_tokens,
         cross_check_enabled=app._cross_check_for_review,

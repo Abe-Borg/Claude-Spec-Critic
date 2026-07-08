@@ -1,6 +1,6 @@
 {
   "fixture_id": "live_stale_cpc_0",
-  "category": "california_ahj",
+  "category": "jurisdictional",
   "severity": "MEDIUM",
   "description": "Live capture from 22 11 16 - Domestic Water (stale CPC).docx",
   "finding": {
@@ -32,7 +32,7 @@
     "correction": "A. Install domestic water piping per the 2025 California Plumbing Code.",
     "model_used": "claude-sonnet-4-6",
     "verification_mode": "standard_reasoning",
-    "verification_profile": "california_ahj",
+    "verification_profile": "jurisdictional",
     "web_search_requests": 1,
     "successful_source_count": 10,
     "search_error_count": 0,

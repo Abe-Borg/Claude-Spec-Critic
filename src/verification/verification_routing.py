@@ -94,6 +94,8 @@ from .retry_policy import (
     DEFAULT_MAX_CONTINUATIONS,
     max_continuations_for_mode,
 )
+from ..core.code_cycles import CodeCycle
+from ..modules import module_for_cycle
 from ..review.reviewer import Finding
 from .verification_modes import (
     ModePolicy,
@@ -104,6 +106,7 @@ from .verification_modes import (
 from .verification_profiles import (
     VerificationProfile,
     classify_finding_profile,
+    parse_verification_profile,
     profile_max_uses,
 )
 from .verification_prescreen import (
@@ -129,7 +132,7 @@ _DEFAULT_MAX_CONTINUATIONS = DEFAULT_MAX_CONTINUATIONS
 TRACE_LOCAL_SKIP = "local_skip"
 TRACE_CACHED_MODE = "cached_mode_replay"
 TRACE_ESCALATED = "escalated_to_deep"
-TRACE_CRITICAL_CALIFORNIA = "critical_california_ahj_initial_deep"
+TRACE_CRITICAL_JURISDICTIONAL = "critical_jurisdictional_initial_deep"
 TRACE_GRIPES_STRICT = "gripes_strict_structured"
 TRACE_INTERNAL_COORD_STRICT = "internal_coordination_strict"
 TRACE_DEFAULT_STANDARD = "default_standard_reasoning"
@@ -256,11 +259,9 @@ class VerificationRoutingDecision:
         presence of the ``routing`` key, and use this constructor only
         when the key is present.
         """
-        profile_value = payload.get("profile") or VerificationProfile.CONSTRUCTABILITY.value
-        try:
-            profile = VerificationProfile(profile_value)
-        except ValueError:
-            profile = VerificationProfile.CONSTRUCTABILITY
+        # parse_verification_profile maps the pre-rename "california_ahj"
+        # value from legacy resume-state rows onto JURISDICTIONAL.
+        profile = parse_verification_profile(payload.get("profile"))
 
         mode_value = payload.get("mode") or VerificationMode.STANDARD_REASONING.value
         try:
@@ -311,7 +312,7 @@ def _trace_for(
     if escalated:
         return TRACE_ESCALATED
     if mode is VerificationMode.DEEP_REASONING:
-        return TRACE_CRITICAL_CALIFORNIA
+        return TRACE_CRITICAL_JURISDICTIONAL
     if mode is VerificationMode.STRICT_STRUCTURED:
         # STRICT_STRUCTURED has two routing branches with different policy
         # implications: GRIPES (any non-internal-coord profile), and
@@ -333,6 +334,7 @@ def select_routing(
     max_continuations: int | None = None,
     local_skip: bool | None = None,
     include_verdict_tool: bool | None = None,
+    cycle: CodeCycle | None = None,
 ) -> VerificationRoutingDecision:
     """Produce the full routing decision for a single verification call.
 
@@ -345,6 +347,12 @@ def select_routing(
     finding:
         The finding to verify. ``None`` is accepted for unit-test
         convenience and routes to STANDARD_REASONING with empty fields.
+    cycle:
+        The code basis the run reviews against. Resolves the owning
+        module's :class:`~src.modules.base.ProfileKeywords` via the
+        registry's unique-label bridge so the profile classifier scans the
+        right jurisdiction / product vocabulary. ``None`` degrades to the
+        default module — cycle-bearing callers should always pass it.
     escalated:
         ``True`` iff this call is the second pass after a failed initial
         attempt. Forces DEEP_REASONING.
@@ -393,6 +401,10 @@ def select_routing(
     elif local_skip is None:
         local_skip = False
 
+    # The keyword vocabulary comes from the cycle's owning module (the
+    # unique-label bridge); None degrades to the default module's.
+    keywords = module_for_cycle(cycle).profile_keywords
+
     if finding is None:
         # Pure-defensive fallback. Real callers always have a finding;
         # tests sometimes synthesize a "what would routing pick for nothing"
@@ -403,7 +415,7 @@ def select_routing(
         finding_id = ""
     else:
         severity = (finding.severity or "").strip().upper() or "GRIPES"
-        profile = classify_finding_profile(finding)
+        profile = classify_finding_profile(finding, keywords=keywords)
         finding_id = finding.finding_id or ""
 
     # Selecting the mode itself is delegated to :mod:`verification_modes`
@@ -415,6 +427,7 @@ def select_routing(
         local_skip=local_skip,
         escalated=escalated,
         cached_mode=cached_mode,
+        keywords=keywords,
     )
     policy: ModePolicy = mode_policy(mode)
 
@@ -464,7 +477,7 @@ def select_routing(
     # Derive the per-mode continuation cap from the centralized
     # policy when the caller did not override it. Default modes get 2
     # (drops from the legacy 5); DEEP_REASONING gets 4 so a legitimate
-    # CRITICAL CALIFORNIA_AHJ finding still has room to converge.
+    # CRITICAL JURISDICTIONAL finding still has room to converge.
     if max_continuations is None:
         max_continuations = max_continuations_for_mode(mode.value)
 
@@ -746,7 +759,7 @@ __all__ = [
     "TRACE_LOCAL_SKIP",
     "TRACE_CACHED_MODE",
     "TRACE_ESCALATED",
-    "TRACE_CRITICAL_CALIFORNIA",
+    "TRACE_CRITICAL_JURISDICTIONAL",
     "TRACE_GRIPES_STRICT",
     "TRACE_INTERNAL_COORD_STRICT",
     "TRACE_DEFAULT_STANDARD",

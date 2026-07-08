@@ -58,6 +58,7 @@ from .verification_modes import (
 )
 from .verification_profiles import (
     VerificationProfile,
+    parse_verification_profile,
     profile_max_uses,
 )
 from .verification_prescreen import (
@@ -1333,7 +1334,7 @@ def verify_finding(
     # Always compute the initial routing decision (used for both selecting
     # the model when none is passed and for stamping the trace inputs).
     initial_decision = select_routing(
-        finding, escalated=escalated, local_skip=False
+        finding, escalated=escalated, local_skip=False, cycle=cycle
     )
     if model is not None:
         selected_model = model
@@ -1374,7 +1375,7 @@ def verify_finding(
         search_error_count=result.search_error_count,
     ):
         escalation_decision = select_routing(
-            finding, escalated=True, local_skip=False,
+            finding, escalated=True, local_skip=False, cycle=cycle,
         )
         escalated_model = escalation_decision.model
         if escalated_model and escalated_model != selected_model:
@@ -1558,6 +1559,7 @@ def _run_verification_call(
         local_skip=False,
         model_override=model,
         cache_phase=PHASE_VERIFICATION,
+        cycle=cycle,
     )
     profile = decision.profile
     mode = decision.mode
@@ -2079,6 +2081,7 @@ def _build_retry_request(
         profile=profile,
         escalated=escalated,
         cache_phase=PHASE_VERIFICATION_RETRY,
+        cycle=cycle,
     )
     system_prompt = _get_verification_system_prompt(
         cycle, include_verdict_tool=decision.include_verdict_tool
@@ -2116,6 +2119,7 @@ def _build_continuation_request(
         profile=profile,
         escalated=escalated,
         cache_phase=PHASE_VERIFICATION_CONTINUATION,
+        cycle=cycle,
     )
     system_prompt = _get_verification_system_prompt(
         cycle, include_verdict_tool=decision.include_verdict_tool
@@ -2137,6 +2141,7 @@ def _retry_routing_decision(
     profile: VerificationProfile | str | None,
     escalated: bool,
     cache_phase: str,
+    cycle: CodeCycle | None = None,
 ) -> VerificationRoutingDecision:
     """Build a routing decision for a retry / continuation request.
 
@@ -2159,6 +2164,7 @@ def _retry_routing_decision(
             local_skip=False,
             model_override=model_override,
             cache_phase=cache_phase,
+            cycle=cycle,
         )
     return _decision_from_legacy_params(
         severity=severity,
@@ -2198,10 +2204,10 @@ def _decision_from_legacy_params(
     elif isinstance(profile, VerificationProfile):
         resolved_profile = profile
     else:
-        try:
-            resolved_profile = VerificationProfile(str(profile))
-        except ValueError:
-            resolved_profile = VerificationProfile.CONSTRUCTABILITY
+        # Maps the pre-rename "california_ahj" value from legacy callers /
+        # persisted rows onto JURISDICTIONAL; unknown strings fall back to
+        # CONSTRUCTABILITY as before.
+        resolved_profile = parse_verification_profile(profile)
 
     # Mode: escalation forces DEEP_REASONING; GRIPES → STRICT_STRUCTURED;
     # non-GRIPES internal-coordination → STRICT_STRUCTURED; otherwise
@@ -2259,6 +2265,7 @@ def _classify_wave_results(
     job: BatchJob,
     findings: list[Finding],
     request_contexts: dict[str, dict],
+    cycle: CodeCycle | None = None,
 ) -> list[VerificationItemOutcome]:
     detailed = retrieve_verification_results_detailed(job)
     outcomes: list[VerificationItemOutcome] = []
@@ -2452,6 +2459,7 @@ def _classify_wave_results(
                 local_skip=False,
                 model_override=model_used,
                 cache_phase=PHASE_VERIFICATION,
+                cycle=cycle,
             )
             apply_routing_to_result(decision, parsed)
         parsed = _apply_source_grounding(
@@ -2530,10 +2538,10 @@ def _run_batch_escalation_wave(
             search_error_count=v.search_error_count,
         ):
             continue
-        decision = select_routing(finding, escalated=True, local_skip=False)
+        decision = select_routing(finding, escalated=True, local_skip=False, cycle=cycle)
         esc_model = decision.model
         # Mirror the real-time guard: don't re-run on the same model the
-        # initial pass already used (CRITICAL california_ahj findings ran
+        # initial pass already used (CRITICAL jurisdictional findings ran
         # their initial pass on Opus, so escalating to Opus is a no-op).
         if not esc_model or esc_model == (v.model_used or ""):
             continue
@@ -2604,7 +2612,8 @@ def _run_batch_escalation_wave(
             )
             return
         outcomes = _classify_wave_results(
-            job=esc_job, findings=findings, request_contexts=escalation_contexts
+            job=esc_job, findings=findings, request_contexts=escalation_contexts,
+            cycle=cycle,
         )
     except Exception as exc:  # escalation is best-effort; never lose verdicts
         log(
@@ -2736,7 +2745,7 @@ def collect_verification_batch_results(
             log(f"Verification {wave_label}: polling ended before terminal status. Remaining findings will be marked UNVERIFIED.", level="warning")
             break
         active_contexts = {cid: ctx for cid, ctx in request_contexts.items() if ctx.get("resolved") is not True}
-        outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts)
+        outcomes = _classify_wave_results(job=current_job, findings=findings, request_contexts=active_contexts, cycle=cycle)
         needs_retry: list[VerificationItemOutcome] = []
         needs_continue: list[VerificationItemOutcome] = []
         # Findings the tracker has decided should stop burning batch waves.
@@ -3003,6 +3012,7 @@ def collect_verification_batch_results(
                 local_skip=False,
                 model_override=original.get("model"),
                 cache_phase=PHASE_VERIFICATION_RETRY,
+                cycle=cycle,
             )
             wave_model = retry_decision.model
             wave_severity = retry_decision.severity
@@ -3057,6 +3067,7 @@ def collect_verification_batch_results(
                 local_skip=False,
                 model_override=original.get("model"),
                 cache_phase=PHASE_VERIFICATION_CONTINUATION,
+                cycle=cycle,
             )
             wave_model = cont_decision.model
             wave_severity = cont_decision.severity

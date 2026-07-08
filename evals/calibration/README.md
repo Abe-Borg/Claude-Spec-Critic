@@ -35,7 +35,7 @@ existing fixtures as templates — they cover several outcome shapes.
 ```json
 {
   "fixture_id": "tp_corrected_stale_cbc",
-  "category": "california_ahj",
+  "category": "jurisdictional",
   "severity": "HIGH",
   "description": "Short human-readable summary of the case.",
 
@@ -70,7 +70,7 @@ existing fixtures as templates — they cover several outcome shapes.
     "confidence": 0.95,
     "model_used": "claude-sonnet-4-6",
     "verification_mode": "standard_reasoning",
-    "verification_profile": "california_ahj",
+    "verification_profile": "jurisdictional",
     "web_search_requests": 3,
     "successful_source_count": 3,
     "search_error_count": 0,
@@ -91,7 +91,7 @@ existing fixtures as templates — they cover several outcome shapes.
 ### Required keys
 
 - `fixture_id` — unique slug; use the file stem for readability.
-- `category` — verification profile (`california_ahj`, `code_standard`,
+- `category` — verification profile (`jurisdictional`, `code_standard`,
   `manufacturer`, `constructability`, `internal_coordination`). Drives
   per-category breakdown when you eventually slice the scorer output.
 - `severity` — one of `CRITICAL` / `HIGH` / `MEDIUM` / `GRIPES`.

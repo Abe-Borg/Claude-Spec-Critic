@@ -33,7 +33,7 @@
     "confidence": 0.0,
     "model_used": "claude-sonnet-4-6",
     "verification_mode": "standard_reasoning",
-    "verification_profile": "california_ahj",
+    "verification_profile": "jurisdictional",
     "web_search_requests": 7,
     "successful_source_count": 7,
     "search_error_count": 0,

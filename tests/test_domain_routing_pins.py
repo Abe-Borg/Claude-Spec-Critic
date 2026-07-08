@@ -9,9 +9,11 @@ preserving for the existing California configuration.
 
 Contract for later phases: a diff that relocates keyword lists / registry
 wiring MUST keep every case below passing unchanged. A case may only change
-in a diff that intentionally changes routing behavior (e.g. the Phase-4
-``CALIFORNIA_AHJ`` -> jurisdictional-profile generalization updates the enum
-spelling consciously, in the same review).
+in a diff that intentionally changes routing behavior — as the Phase-4
+jurisdictional-profile generalization did: ``CALIFORNIA_AHJ`` became
+``JURISDICTIONAL`` (value ``jurisdictional``; legacy strings map via
+``parse_verification_profile``), with the CA keyword vocabulary moved onto
+the module. The finding->profile mappings below are unchanged.
 
 Complements ``test_golden_domain_surfaces.py`` (byte pins of the prompt /
 detector output); these tests pin decisions rather than text. Existing suites
@@ -74,12 +76,12 @@ def _finding(
 _PROFILE_CASES = [
     pytest.param(
         dict(issue="Missing DSA closeout testing requirement for HVAC systems."),
-        VerificationProfile.CALIFORNIA_AHJ,
+        VerificationProfile.JURISDICTIONAL,
         id="california-keyword-dsa",
     ),
     pytest.param(
         dict(issue="Ventilation rate conflicts with Title 24 requirements."),
-        VerificationProfile.CALIFORNIA_AHJ,
+        VerificationProfile.JURISDICTIONAL,
         id="california-keyword-title-24",
     ),
     pytest.param(
@@ -87,8 +89,8 @@ _PROFILE_CASES = [
             issue="CBC amendment adopted by DSA differs from the spec language.",
             code_reference="CBC 1616A",
         ),
-        VerificationProfile.CALIFORNIA_AHJ,
-        id="california-precedes-code-standard",
+        VerificationProfile.JURISDICTIONAL,
+        id="jurisdictional-precedes-code-standard",
     ),
     pytest.param(
         dict(
@@ -122,7 +124,7 @@ _PROFILE_CASES = [
             issue="Internal contradiction: Title 24 ventilation rates differ between 1.02 and 3.01."
         ),
         VerificationProfile.INTERNAL_COORDINATION,
-        id="internal-coordination-precedes-california",
+        id="internal-coordination-precedes-jurisdictional",
     ),
     pytest.param(
         dict(
@@ -153,12 +155,12 @@ class TestProfileClassificationPins:
         )
 
     def test_profile_enum_values_are_pinned(self):
-        # Serialized into caches / resume state / diagnostics. The Phase-4
-        # jurisdictional generalization must update this pin consciously and
-        # handle legacy strings on load.
+        # Serialized into caches / resume state / diagnostics. Updated
+        # consciously in Phase 4 (california_ahj -> jurisdictional);
+        # parse_verification_profile maps the legacy value on load.
         assert {p.value for p in VerificationProfile} == {
             "code_standard",
-            "california_ahj",
+            "jurisdictional",
             "manufacturer",
             "constructability",
             "internal_coordination",
@@ -175,7 +177,7 @@ _MODE_CASES = [
         dict(severity="CRITICAL", issue="Missing DSA structural test requirement."),
         dict(),
         VerificationMode.DEEP_REASONING,
-        id="critical-california-ahj-goes-deep",
+        id="critical-jurisdictional-goes-deep",
     ),
     pytest.param(
         dict(severity="CRITICAL", issue="Referenced NFPA 13 edition is withdrawn."),
@@ -187,7 +189,7 @@ _MODE_CASES = [
         dict(severity="HIGH", issue="Missing DSA closeout requirement."),
         dict(),
         VerificationMode.STANDARD_REASONING,
-        id="high-california-ahj-stays-standard",
+        id="high-jurisdictional-stays-standard",
     ),
     pytest.param(
         dict(

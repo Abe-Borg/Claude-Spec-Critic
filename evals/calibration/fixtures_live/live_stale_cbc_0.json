@@ -1,6 +1,6 @@
 {
   "fixture_id": "live_stale_cbc_0",
-  "category": "california_ahj",
+  "category": "jurisdictional",
   "severity": "MEDIUM",
   "description": "Live capture from 23 05 00 - Common HVAC (stale CBC).docx",
   "finding": {
@@ -32,7 +32,7 @@
     "correction": "A. Comply with 2025 CBC Chapter 6 for all mechanical work.",
     "model_used": "claude-sonnet-4-6",
     "verification_mode": "standard_reasoning",
-    "verification_profile": "california_ahj",
+    "verification_profile": "jurisdictional",
     "web_search_requests": 2,
     "successful_source_count": 18,
     "search_error_count": 0,

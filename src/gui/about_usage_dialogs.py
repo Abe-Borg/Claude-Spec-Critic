@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import customtkinter as ctk
 
+from ..modules import get_module
 from .widgets import COLORS
 
 _UI_FONT_SIZE = 12
@@ -55,8 +56,10 @@ def show_about_dialog(parent) -> None:
         text_color=COLORS["text_primary"],
     ).pack(anchor="w", padx=20, pady=(20, 4))
 
+    module = get_module(getattr(parent, "_selected_module_id", None))
     ctk.CTkLabel(
-        outer, text="AI-assisted M&P specification review for California K-12 DSA projects",
+        outer,
+        text=f"AI-assisted specification review — {module.display_name}",
         font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
         text_color=COLORS["text_muted"],
     ).pack(anchor="w", padx=20, pady=(0, 12))

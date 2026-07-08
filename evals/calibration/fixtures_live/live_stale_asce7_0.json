@@ -31,7 +31,7 @@
     "correction": "A. Seismic design of equipment anchorage shall be per ASCE 7-22 Chapter 13.",
     "model_used": "claude-sonnet-4-6",
     "verification_mode": "standard_reasoning",
-    "verification_profile": "california_ahj",
+    "verification_profile": "jurisdictional",
     "web_search_requests": 2,
     "successful_source_count": 10,
     "search_error_count": 0,
