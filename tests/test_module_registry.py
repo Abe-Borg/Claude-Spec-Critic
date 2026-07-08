@@ -34,12 +34,14 @@ import json
 import pytest
 
 from src.batch.batch import BatchJob
-from src.core.code_cycles import CALIFORNIA_2025, CodeCycle
+from src.core.code_cycles import BaseCode, CALIFORNIA_2025, CodeCycle
 from src.modules import (
     AVAILABLE_MODULES,
     CALIFORNIA_K12_MEP,
     DEFAULT_MODULE,
+    DetectorVocabulary,
     ReviewModule,
+    code_basis_format_kwargs,
     get_module,
     module_for_cycle,
     validate_module_registry,
@@ -63,14 +65,19 @@ from src.tracing.recorder import TraceRecorder
 def _cycle(label: str) -> CodeCycle:
     return CodeCycle(
         label=label,
-        cbc=label,
-        cmc=label,
-        cpc=label,
-        energy_code=label,
-        calgreen=label,
+        base_codes=(BaseCode("code", "Test Code", label),) if label else (),
         asce7="7-22",
         asce7_previous="7-16",
     )
+
+
+_TEST_VOCABULARY = DetectorVocabulary(
+    code_abbreviations=("TBC",),
+    plausible_cycle_years=("2019", "2022"),
+    valid_cycle_years=("2019", "2022", "2025"),
+    asce7_plausible_editions=("16", "22"),
+    jurisdiction_label="Test",
+)
 
 
 _VALID_EXAMPLE_BLOCK = """\
@@ -109,6 +116,11 @@ def _module(module_id: str = "test_module", label: str = "9999", **overrides) ->
         ),
         verifier_persona="You are a test verification assistant.",
         verifier_source_priorities="1. Test sources:\n   example.gov",
+        review_user_code_basis_line="Current code cycle: Test Code {code}.",
+        cross_check_code_basis_line="Current cycle: Test Code {code}.",
+        verifier_system_code_basis_lines="Current code cycle: Test Code {code}.",
+        verifier_user_code_basis_lines="Current cycle: Test Code {code}.",
+        detector_vocabulary=_TEST_VOCABULARY,
     )
     slots.update(overrides)
     return ReviewModule(**slots)
@@ -319,6 +331,176 @@ Example — no-op EDIT:
 
 
 # ---------------------------------------------------------------------------
+# Code basis (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+class TestCodeBasisAccessors:
+    def test_california_base_codes_and_accessors(self):
+        cycle = CALIFORNIA_2025
+        assert [c.key for c in cycle.base_codes] == [
+            "cbc", "cmc", "cpc", "energy", "calgreen",
+        ]
+        assert cycle.code_year("cbc") == "2025"
+        assert cycle.code_year("nope") == ""
+        # First base code is the primary — the stale-detector target.
+        assert cycle.primary_code_year == "2025"
+        assert CodeCycle(label="empty").primary_code_year == ""
+
+    def test_code_basis_format_kwargs_shape(self):
+        kwargs = code_basis_format_kwargs(CALIFORNIA_2025)
+        assert kwargs["cbc"] == "2025"
+        assert kwargs["energy"] == "2025"
+        assert kwargs["asce7"] == "7-22"
+        assert kwargs["asce7_prev"] == "7-16"
+        assert kwargs["pinned_standards"].startswith("NFPA 13 2025")
+
+
+class TestCodeBasisValidation:
+    def test_missing_base_codes_rejected(self):
+        cycle = CodeCycle(label="9999", asce7="7-22", asce7_previous="7-16")
+        bad = dataclasses.replace(_module(), cycle=cycle)
+        with pytest.raises(ValueError, match="base_codes"):
+            validate_module_registry([bad])
+
+    def test_duplicate_base_code_keys_rejected(self):
+        cycle = CodeCycle(
+            label="9999",
+            base_codes=(
+                BaseCode("code", "A", "9999"),
+                BaseCode("code", "B", "9999"),
+            ),
+            asce7="7-22",
+            asce7_previous="7-16",
+        )
+        bad = dataclasses.replace(_module(), cycle=cycle)
+        with pytest.raises(ValueError, match="unique"):
+            validate_module_registry([bad])
+
+    def test_code_basis_line_with_unknown_placeholder_rejected(self):
+        bad = dataclasses.replace(
+            _module(), cross_check_code_basis_line="Current cycle: {missing}."
+        )
+        with pytest.raises(ValueError, match="cross_check_code_basis_line"):
+            validate_module_registry([bad])
+
+
+class TestDetectorVocabularyValidation:
+    def test_plausible_years_must_be_subset_of_valid(self):
+        # The subset relationship is what keeps the stale and invalid
+        # detectors disjoint by construction.
+        bad_vocab = dataclasses.replace(
+            _TEST_VOCABULARY, plausible_cycle_years=("2019", "1999")
+        )
+        bad = dataclasses.replace(_module(), detector_vocabulary=bad_vocab)
+        with pytest.raises(ValueError, match="subset"):
+            validate_module_registry([bad])
+
+    def test_uncompilable_extra_pattern_rejected(self):
+        bad_vocab = dataclasses.replace(
+            _TEST_VOCABULARY, stale_cycle_extra_patterns=(r"\b(20\d{2}",)
+        )
+        bad = dataclasses.replace(_module(), detector_vocabulary=bad_vocab)
+        with pytest.raises(ValueError, match="does not compile"):
+            validate_module_registry([bad])
+
+    def test_extra_pattern_without_year_group_rejected(self):
+        bad_vocab = dataclasses.replace(
+            _TEST_VOCABULARY, stale_cycle_extra_patterns=(r"\b20\d{2}\s+Code\b",)
+        )
+        bad = dataclasses.replace(_module(), detector_vocabulary=bad_vocab)
+        with pytest.raises(ValueError, match="group 1"):
+            validate_module_registry([bad])
+
+    def test_empty_abbreviations_rejected(self):
+        bad_vocab = dataclasses.replace(_TEST_VOCABULARY, code_abbreviations=())
+        bad = dataclasses.replace(_module(), detector_vocabulary=bad_vocab)
+        with pytest.raises(ValueError, match="abbreviation"):
+            validate_module_registry([bad])
+
+    def test_list_valued_fields_are_coerced_to_tuples(self):
+        # Config-loaded vocabularies arrive with lists; the dataclass must
+        # coerce them so the preprocessor's pattern cache (keyed by the
+        # hashable vocabulary) never sees an unhashable field mid-run.
+        vocab = DetectorVocabulary(
+            code_abbreviations=["TBC"],  # type: ignore[arg-type]
+            plausible_cycle_years=["2019"],  # type: ignore[arg-type]
+            valid_cycle_years=["2019", "2025"],  # type: ignore[arg-type]
+            asce7_plausible_editions=["22"],  # type: ignore[arg-type]
+            stale_cycle_extra_patterns=[],  # type: ignore[arg-type]
+        )
+        assert vocab.code_abbreviations == ("TBC",)
+        assert isinstance(vocab.valid_cycle_years, tuple)
+        hash(vocab)  # must be cache-key safe
+        validate_module_registry([_module(detector_vocabulary=vocab)])
+
+    def test_bare_string_sequence_field_rejected_at_construction(self):
+        # tuple("CBC") would silently become ("C", "B", "C") — reject instead.
+        with pytest.raises(TypeError, match="single string"):
+            DetectorVocabulary(
+                code_abbreviations="TBC",  # type: ignore[arg-type]
+                plausible_cycle_years=("2019",),
+                valid_cycle_years=("2019",),
+                asce7_plausible_editions=("22",),
+            )
+
+    def test_unhashable_element_rejected_at_registration(self):
+        # A list nested INSIDE a tuple survives coercion but would blow up
+        # the pattern cache — the hashability gate catches it at startup.
+        bad_vocab = dataclasses.replace(
+            _TEST_VOCABULARY, code_abbreviations=(["TBC"],)  # type: ignore[arg-type]
+        )
+        bad = dataclasses.replace(_module(), detector_vocabulary=bad_vocab)
+        with pytest.raises(ValueError, match="hashable"):
+            validate_module_registry([bad])
+
+
+class TestVocabularyDrivenDetection:
+    def test_synthetic_vocabulary_drives_stale_detection(self, monkeypatch):
+        from src.input.preprocessor import detect_stale_code_cycle_references
+        from src.modules import registry as registry_mod
+
+        mod = _module("syn_detect", "7777")
+        monkeypatch.setitem(registry_mod._MODULES_BY_CYCLE_LABEL, "7777", mod)
+
+        content = "Comply with 2019 TBC Chapter 6 and with 2019 CBC Chapter 6."
+        alerts = detect_stale_code_cycle_references(content, "a.docx", mod.cycle)
+        # "TBC" is this module's abbreviation; "CBC" is NOT in its
+        # vocabulary, so only one citation alerts.
+        assert len(alerts) == 1
+        assert alerts[0]["match"] == "2019 TBC"
+        assert alerts[0]["expected_year"] == "7777"  # primary_code_year
+
+    def test_invalid_detector_uses_vocabulary_and_label(self):
+        from src.input.preprocessor import detect_invalid_code_cycle_strings
+
+        alerts = detect_invalid_code_cycle_strings(
+            "Per 2018 TBC requirements.", "a.docx", vocabulary=_TEST_VOCABULARY
+        )
+        assert len(alerts) == 1
+        assert alerts[0]["type"] == "Invalid Test code cycle year (2018)"
+        # 2019 is a valid year for this vocabulary — not invalid.
+        assert not detect_invalid_code_cycle_strings(
+            "Per 2019 TBC requirements.", "a.docx", vocabulary=_TEST_VOCABULARY
+        )
+
+    def test_leed_flag_gates_the_leed_detector(self, monkeypatch):
+        from src.input.preprocessor import preprocess_spec
+        from src.modules import registry as registry_mod
+
+        no_leed_vocab = dataclasses.replace(
+            _TEST_VOCABULARY, flag_leed_references=False
+        )
+        mod = _module("syn_leed", "7778", detector_vocabulary=no_leed_vocab)
+        monkeypatch.setitem(registry_mod._MODULES_BY_CYCLE_LABEL, "7778", mod)
+
+        content = "Project shall achieve LEED-NC Silver certification."
+        assert preprocess_spec(content, "a.docx", cycle=mod.cycle).leed_alerts == []
+        # The default (California) module keeps flagging LEED references.
+        assert preprocess_spec(content, "a.docx", cycle=None).leed_alerts
+
+
+# ---------------------------------------------------------------------------
 # Slots drive the assembled prompts
 # ---------------------------------------------------------------------------
 
@@ -336,7 +518,7 @@ class TestSlotsDriveOutput:
             reviewer_persona="You are a synthetic persona for slot testing.",
             review_user_intro="Synthetic intro line.",
             review_confidence_high_example="a synthetic high example",
-            review_categories_template="1. Synthetic category for cycle {cbc}.",
+            review_categories_template="1. Synthetic category for cycle {code}.",
             cross_check_persona="Synthetic cross-check persona.",
             verifier_persona="Synthetic verifier persona.",
             verifier_source_priorities="1. Synthetic sources:\n   synthetic.example",
@@ -346,6 +528,10 @@ class TestSlotsDriveOutput:
         sp = get_system_prompt(mod.cycle)
         assert sp.startswith("You are a synthetic persona for slot testing.\n\n<task>")
         assert "1. Synthetic category for cycle 8888." in sp
+        assert "Current code cycle: Test Code 8888." in get_single_spec_user_message(
+            "body", "a.docx", "", cycle=mod.cycle,
+            paragraph_map=None, pre_detected_alerts=None,
+        )
         assert "(e.g., a synthetic high example)" in sp
         assert "Example 1 — REPORT_ONLY:" in sp
 

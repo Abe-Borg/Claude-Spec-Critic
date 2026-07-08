@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Mapping, Sequence
 
 from ..core.code_cycles import CodeCycle
-from ..modules import category_format_kwargs, module_for_cycle
+from ..modules import code_basis_format_kwargs, module_for_cycle
 from .prompt_serialization import (
     TAG_PROJECT_CONTEXT,
     TAG_SPEC,
@@ -62,7 +62,7 @@ def get_system_prompt(cycle: CodeCycle) -> str:
     """
     module = module_for_cycle(cycle)
     categories = module.review_categories_template.format(
-        **category_format_kwargs(cycle)
+        **code_basis_format_kwargs(cycle)
     )
     return f"""{module.reviewer_persona}
 
@@ -188,10 +188,12 @@ def get_single_spec_user_message(
         f" Pinned standard editions: {pinned_standards}." if pinned_standards else ""
     )
 
+    code_basis_line = module.review_user_code_basis_line.format(
+        **code_basis_format_kwargs(cycle)
+    )
     return (
         f"{module.review_user_intro}\n\n"
-        f"Current code cycle: CBC {cycle.cbc}, CMC {cycle.cmc}, CPC {cycle.cpc}, "
-        f"Energy Code {cycle.energy_code}, CALGreen {cycle.calgreen}, ASCE {cycle.asce7}.{standards_clause}\n\n"
+        f"{code_basis_line}{standards_clause}\n\n"
         "Reminders:\n"
         "- Review every section in the file.\n"
         "- Submit findings via the submit_review_findings tool.\n"

@@ -20,10 +20,10 @@ profile keywords, cross-check chunk map) moves in later phases.
 from __future__ import annotations
 
 from ..core.code_cycles import CALIFORNIA_2025
-from .base import ReviewModule
+from .base import DetectorVocabulary, ReviewModule
 
 # The review-scope category list. May reference the placeholders documented
-# by :func:`src.modules.base.category_format_kwargs`; formatted against the
+# by :func:`src.modules.base.code_basis_format_kwargs`; formatted against the
 # module's cycle at prompt-build time.
 _REVIEW_CATEGORIES = """\
 1. Internal contradictions within the spec (e.g., conflicting requirements in different articles).
@@ -151,6 +151,32 @@ _VERIFIER_SOURCE_PRIORITIES = """\
    archive.org"""
 
 
+# The deterministic preprocessor's California vocabulary. The detector
+# logic (regex assembly, span dedup, negation suppression) is engine-owned
+# in ``input/preprocessor.py``; these are the domain facts it scans for.
+_DETECTOR_VOCABULARY = DetectorVocabulary(
+    # Abbreviations recognized next to a year ("2019 CBC" / "CBC 2019").
+    code_abbreviations=("CBC", "CMC", "CPC", "CEC", "CFC", "CALGreen", "CalGreen", "CRC"),
+    # Real historical cycles in the recent window the stale detector flags.
+    plausible_cycle_years=("2010", "2013", "2016", "2019", "2022", "2025"),
+    # Every published cycle plus the next anticipated one; a year/code
+    # citation outside this set is a typo or fabrication ("2018 CBC").
+    valid_cycle_years=("2010", "2013", "2016", "2019", "2022", "2025", "2028"),
+    # Real, published ASCE 7 editions (recognition whitelist). Verify
+    # against ASCE's published edition history before extending.
+    asce7_plausible_editions=("88", "93", "95", "98", "02", "05", "10", "16", "22"),
+    # Long-form citations ("2019 California Building Code"); year is group 1.
+    stale_cycle_extra_patterns=(
+        r"\b(20\d{2})\s+California\s+(?:Building|Mechanical|Plumbing|"
+        r"Electrical|Fire|Energy|Green\s+Building|Residential)\s+Code\b",
+    ),
+    # K-12 DSA projects typically aren't LEED — references are likely
+    # copy/paste errors, so the LEED detector runs for this module.
+    flag_leed_references=True,
+    jurisdiction_label="California",
+)
+
+
 CALIFORNIA_K12_MEP = ReviewModule(
     module_id="california_k12_mep",
     display_name="California K-12 (DSA) — Mechanical & Plumbing",
@@ -182,4 +208,22 @@ CALIFORNIA_K12_MEP = ReviewModule(
         "California K-12 DSA projects."
     ),
     verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
+    review_user_code_basis_line=(
+        "Current code cycle: CBC {cbc}, CMC {cmc}, CPC {cpc}, "
+        "Energy Code {energy}, CALGreen {calgreen}, ASCE {asce7}."
+    ),
+    cross_check_code_basis_line=(
+        "Current cycle: CBC {cbc}, CMC {cmc}, CPC {cpc}, "
+        "CALGreen {calgreen}, ASCE {asce7}."
+    ),
+    verifier_system_code_basis_lines=(
+        "Current code cycle: CBC {cbc}, CMC {cmc}, CPC {cpc},\n"
+        "Energy Code {energy}, CALGreen {calgreen}, ASCE {asce7}."
+    ),
+    verifier_user_code_basis_lines=(
+        "Current cycle: CBC {cbc}, CMC {cmc}, CPC {cpc}, "
+        "CEC {energy}, CALGreen {calgreen}\n"
+        "Current seismic standard: ASCE {asce7}"
+    ),
+    detector_vocabulary=_DETECTOR_VOCABULARY,
 )

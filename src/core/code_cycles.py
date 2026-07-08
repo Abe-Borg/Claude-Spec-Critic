@@ -3,8 +3,10 @@
 This module is the single source of truth for *which* California code cycle a
 review runs against. It is consumed in four places:
 
-1. ``preprocessor.detect_stale_code_cycle_references`` reads the plain code-year
-   fields (``cbc`` / ``asce7``) to flag stale references **with no API call**.
+1. ``preprocessor.detect_stale_code_cycle_references`` reads the code basis
+   (``primary_code_year`` / ``asce7``) to flag stale references **with no API
+   call**; the abbreviation/year vocabulary it scans for comes from the
+   owning module's ``DetectorVocabulary``.
 2. The reviewer system prompt (``review/prompts.py``) injects the cycle so the
    model knows the current editions and can flag superseded ones.
 3. The verifier system prompt (``verification/verifier.py``) renders the pinned
@@ -88,30 +90,70 @@ class StandardEdition:
 
 
 @dataclass(frozen=True)
+class BaseCode:
+    """One adopted base code of a code basis and the year in force.
+
+    Generalizes the former California-shaped flat fields (``cbc`` / ``cmc`` /
+    ``cpc`` / ``energy_code`` / ``calgreen``) so a non-California module can
+    declare its own basis (e.g. IBC / IFC) without this dataclass growing a
+    field per jurisdiction.
+
+    Attributes:
+        key: Stable template-placeholder id (e.g. ``"cbc"``). Module prompt
+            templates reference years as ``{cbc}`` via
+            ``modules.code_basis_format_kwargs``; the engine never renders
+            the key itself.
+        name: Human-readable designation (``"CBC"``, ``"California Energy
+            Code"``). Informational/provenance only — module templates carry
+            their own per-surface display labels so prompt phrasing stays
+            byte-controlled by the module, not derived here.
+        year: The adopted year in force (``"2025"``).
+        source: Maintainer provenance, never rendered into any prompt.
+    """
+
+    key: str
+    name: str
+    year: str
+    source: str = ""
+
+
+@dataclass(frozen=True)
 class CodeCycle:
-    """A California code cycle: the plain code years plus the pinned standards.
+    """A code basis: the adopted base codes plus the pinned standards.
 
-    The plain code-year fields (``cbc`` … ``asce7_previous``) are unambiguous and
-    load-bearing for the deterministic stale-cycle detector and the cache key.
-    The referenced standards (NFPA / ASHRAE / IAPMO / UL) live in ``standards``
-    as an ordered tuple of :class:`StandardEdition` — a single collection rather
-    than ~15 flat string fields, so the verifier prompt, the reviewer prompt, and
-    the report methodology note can all render from one source instead of three
-    hand-maintained copies.
+    ``base_codes`` is an ordered tuple of :class:`BaseCode` — the **first
+    entry is the primary code** (:attr:`primary_code_year` drives the
+    deterministic stale-cycle detector's comparison target). ``asce7`` /
+    ``asce7_previous`` stay dedicated fields because the detector does
+    edition arithmetic on them (two-digit edition widening) that a generic
+    year string can't express. The referenced standards (NFPA / ASHRAE /
+    IAPMO / UL) live in ``standards`` as an ordered tuple of
+    :class:`StandardEdition` — a single collection so the verifier prompt,
+    the reviewer prompt, and the report methodology note all render from one
+    source instead of three hand-maintained copies.
 
-    ``standards`` is a ``tuple`` (not ``list``) so the dataclass stays hashable
-    under ``frozen=True``; :class:`StandardEdition` is likewise frozen.
+    All collections are tuples (not lists) so the dataclass stays hashable
+    under ``frozen=True``; :class:`BaseCode` and :class:`StandardEdition`
+    are likewise frozen.
     """
 
     label: str
-    cbc: str
-    cmc: str
-    cpc: str
-    energy_code: str
-    calgreen: str
-    asce7: str
-    asce7_previous: str
+    base_codes: tuple[BaseCode, ...] = ()
+    asce7: str = ""
+    asce7_previous: str = ""
     standards: tuple[StandardEdition, ...] = field(default_factory=tuple)
+
+    def code_year(self, key: str) -> str:
+        """Year of the base code with template key ``key`` (``""`` if unknown)."""
+        for code in self.base_codes:
+            if code.key == key:
+                return code.year
+        return ""
+
+    @property
+    def primary_code_year(self) -> str:
+        """Year of the basis' primary (first) code — the stale-detector target."""
+        return self.base_codes[0].year if self.base_codes else ""
 
     def standard(self, name: str) -> StandardEdition | None:
         """Return the pinned :class:`StandardEdition` for ``name`` or ``None``."""
@@ -168,13 +210,19 @@ class CodeCycle:
 # Code years verified against the California Building Standards Commission 2025
 # (2024 Triennial) adoption — CBC/CMC/CPC/Energy/CALGreen 2025, ASCE 7-22
 # (CBC 2025 Ch. 16), prior cycle ASCE 7-16.
+_BSC_2025_SOURCE = "BSC 2025 (2024 Triennial) adoption"
+
 CALIFORNIA_2025 = CodeCycle(
     label="2025",
-    cbc="2025",
-    cmc="2025",
-    cpc="2025",
-    energy_code="2025",
-    calgreen="2025",
+    base_codes=(
+        # Primary code first — the stale-cycle detector compares found
+        # years against this entry's year.
+        BaseCode("cbc", "CBC", "2025", source=_BSC_2025_SOURCE),
+        BaseCode("cmc", "CMC", "2025", source=_BSC_2025_SOURCE),
+        BaseCode("cpc", "CPC", "2025", source=_BSC_2025_SOURCE),
+        BaseCode("energy", "California Energy Code", "2025", source=_BSC_2025_SOURCE),
+        BaseCode("calgreen", "CALGreen", "2025", source=_BSC_2025_SOURCE),
+    ),
     asce7="7-22",
     asce7_previous="7-16",
     standards=(

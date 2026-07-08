@@ -39,10 +39,85 @@ Invariants:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Iterable, Iterator, Mapping
 
 from ..core.code_cycles import CodeCycle
+
+
+@dataclass(frozen=True)
+class DetectorVocabulary:
+    """Vocabulary the deterministic preprocessor scans for, per module.
+
+    The detector *logic* (regex assembly, span dedup, the negation
+    suppression window, sentence narrowing) stays engine-owned in
+    ``input/preprocessor.py``; this dataclass carries only the domain data.
+    Frozen + tuple-typed so it is hashable — the engine caches compiled
+    patterns per vocabulary.
+
+    Attributes:
+        code_abbreviations: Abbreviations recognized next to a year
+            (``"2019 CBC"`` / ``"CBC 2019"``). Escaped and alternated into
+            the engine's year/code patterns.
+        plausible_cycle_years: Real historical cycle years the *stale*
+            detector may flag (a found year must be in this set and differ
+            from the cycle's ``primary_code_year``). Keep it a recent window
+            so legitimate distant-historical references don't alert.
+        valid_cycle_years: Every year the jurisdiction has published (or
+            announced) a cycle for. The *invalid* detector flags year/code
+            citations outside this set. Must be a superset of
+            ``plausible_cycle_years`` — that superset relationship is what
+            keeps the stale and invalid detectors disjoint by construction
+            (validated at registration).
+        asce7_plausible_editions: Two-digit ASCE 7 editions the stale
+            detector recognizes (recognition whitelist so a stray capture
+            like ``7-42`` is ignored).
+        stale_cycle_extra_patterns: Additional regex *sources* alternated
+            after the engine's two year/code patterns (e.g. California's
+            long-form ``"2019 California Building Code"``). Each must
+            capture the year as group 1; compiled case-insensitive.
+            Validated compilable at registration.
+        flag_leed_references: Whether LEED references are appropriateness
+            alerts for this domain (True for CA K-12 DSA, where LEED is
+            typically a copy/paste error; a data-center module that
+            genuinely pursues LEED sets False).
+        jurisdiction_label: Word spliced into the invalid-cycle alert text
+            (``"Invalid California code cycle year"``). Empty renders the
+            generic ``"Invalid code cycle year"``.
+    """
+
+    code_abbreviations: tuple[str, ...]
+    plausible_cycle_years: tuple[str, ...]
+    valid_cycle_years: tuple[str, ...]
+    asce7_plausible_editions: tuple[str, ...]
+    stale_cycle_extra_patterns: tuple[str, ...] = ()
+    flag_leed_references: bool = True
+    jurisdiction_label: str = ""
+
+    def __post_init__(self) -> None:
+        # Dataclasses don't enforce annotations, and config-loaded
+        # vocabularies naturally arrive with lists. Coerce the sequence
+        # fields to tuples so the object stays hashable — the preprocessor
+        # lru-caches compiled patterns keyed by this dataclass, and an
+        # unhashable field would otherwise surface as a TypeError mid-run
+        # instead of at registration. A bare string is rejected rather than
+        # silently iterated per-character.
+        for field_name in (
+            "code_abbreviations",
+            "plausible_cycle_years",
+            "valid_cycle_years",
+            "asce7_plausible_editions",
+            "stale_cycle_extra_patterns",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, str):
+                raise TypeError(
+                    f"DetectorVocabulary.{field_name} must be a sequence of "
+                    f"strings, not a single string: {value!r}"
+                )
+            if not isinstance(value, tuple):
+                object.__setattr__(self, field_name, tuple(value))
 
 
 @dataclass(frozen=True)
@@ -71,7 +146,7 @@ class ReviewModule:
             protocol (the report's confidence colors depend on them).
         review_categories_template: The numbered review-scope category list.
             May reference the placeholders from
-            :func:`category_format_kwargs`; formatted against the module's
+            :func:`code_basis_format_kwargs`; formatted against the module's
             cycle at prompt-build time (and at registration, so a typo'd
             placeholder fails startup, not a run).
         review_examples: The few-shot examples block. JSON examples inside it
@@ -88,6 +163,19 @@ class ReviewModule:
             list for the verifier prompt (the ``Prefer authoritative
             sources`` header and the surrounding guidance are engine
             protocol; the tiers and domains are the domain content).
+        review_user_code_basis_line: The "Current code cycle: …" line of the
+            review user message. Like every ``*_code_basis_line*`` slot, a
+            template formatted against :func:`code_basis_format_kwargs` —
+            the module owns the display labels and which codes each surface
+            names, so per-surface phrasing stays byte-controlled.
+        cross_check_code_basis_line: Cycle line of the cross-check system
+            prompt.
+        verifier_system_code_basis_lines: Cycle line(s) of the verifier
+            system prompt (may contain ``\\n`` — spliced line-by-line).
+        verifier_user_code_basis_lines: Cycle line(s) of the per-finding
+            verifier user prompt.
+        detector_vocabulary: The deterministic preprocessor's domain
+            vocabulary (see :class:`DetectorVocabulary`).
     """
 
     module_id: str
@@ -105,6 +193,12 @@ class ReviewModule:
     cross_check_severity_definitions: str
     verifier_persona: str
     verifier_source_priorities: str
+    # --- Code-basis rendering + detector vocabulary (Phase 3) ----------
+    review_user_code_basis_line: str
+    cross_check_code_basis_line: str
+    verifier_system_code_basis_lines: str
+    verifier_user_code_basis_lines: str
+    detector_vocabulary: DetectorVocabulary
 
 
 _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
@@ -118,6 +212,21 @@ _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
     "cross_check_severity_definitions",
     "verifier_persona",
     "verifier_source_priorities",
+    "review_user_code_basis_line",
+    "cross_check_code_basis_line",
+    "verifier_system_code_basis_lines",
+    "verifier_user_code_basis_lines",
+)
+
+# Slots that are str.format templates over ``code_basis_format_kwargs`` —
+# each is format-checked against the module's own cycle at registration so a
+# typo'd placeholder fails startup, not a run.
+_TEMPLATE_SLOT_FIELDS: tuple[str, ...] = (
+    "review_categories_template",
+    "review_user_code_basis_line",
+    "cross_check_code_basis_line",
+    "verifier_system_code_basis_lines",
+    "verifier_user_code_basis_lines",
 )
 
 # The severity names and action types are protocol — report rendering,
@@ -126,23 +235,23 @@ _VALID_SEVERITIES = frozenset({"CRITICAL", "HIGH", "MEDIUM", "GRIPES"})
 _VALID_ACTIONS = frozenset({"EDIT", "DELETE", "ADD", "REPORT_ONLY"})
 
 
-def category_format_kwargs(cycle: CodeCycle) -> dict[str, str]:
-    """Placeholders a module's ``review_categories_template`` may reference.
+def code_basis_format_kwargs(cycle: CodeCycle) -> dict[str, str]:
+    """Placeholders a module's template slots may reference.
 
-    Derived entirely from the module's :class:`CodeCycle`. The names mirror
-    the cycle's (still California-shaped) plain code-year fields; Phase 3
-    generalizes both together.
+    Derived entirely from the module's :class:`CodeCycle`: one placeholder
+    per :class:`BaseCode` (keyed by ``BaseCode.key``) plus ``asce7`` /
+    ``asce7_prev`` and the ``pinned_standards`` inline phrase. Used by
+    ``review_categories_template`` and every ``*_code_basis_line*`` slot —
+    a module's placeholder set is therefore defined by its own cycle, and
+    registration verifies each template formats against it.
     """
-    return {
-        "cbc": cycle.cbc,
-        "cmc": cycle.cmc,
-        "cpc": cycle.cpc,
-        "energy": cycle.energy_code,
-        "calgreen": cycle.calgreen,
-        "asce7": cycle.asce7,
-        "asce7_prev": cycle.asce7_previous,
-        "pinned_standards": cycle.edition_inline_phrase() or "current editions",
-    }
+    kwargs = {code.key: code.year for code in cycle.base_codes}
+    kwargs.update(
+        asce7=cycle.asce7,
+        asce7_prev=cycle.asce7_previous,
+        pinned_standards=cycle.edition_inline_phrase() or "current editions",
+    )
+    return kwargs
 
 
 def _iter_json_objects(text: str) -> Iterator[Mapping[str, object]]:
@@ -237,8 +346,59 @@ def _validate_review_examples(module: ReviewModule) -> None:
             )
 
 
+def _validate_detector_vocabulary(module: ReviewModule) -> None:
+    """Fail fast on preprocessor vocabulary a module author got wrong."""
+    vocab = module.detector_vocabulary
+    if not isinstance(vocab, DetectorVocabulary):
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: detector_vocabulary must be a "
+            f"DetectorVocabulary, got {type(vocab).__name__}"
+        )
+    # __post_init__ coerces list-valued sequence fields to tuples, but an
+    # unhashable ELEMENT (a list nested inside a tuple) would still blow up
+    # the preprocessor's pattern cache mid-run — fail it at registration.
+    try:
+        hash(vocab)
+    except TypeError as exc:
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: detector_vocabulary must be "
+            f"hashable — the preprocessor caches compiled patterns keyed by "
+            f"it ({exc})"
+        ) from exc
+    if not vocab.code_abbreviations or not all(
+        a and a.strip() for a in vocab.code_abbreviations
+    ):
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: detector_vocabulary needs at "
+            "least one non-empty code abbreviation"
+        )
+    # The stale detector flags years in the plausible set; the invalid
+    # detector flags years OUTSIDE the valid set. plausible ⊆ valid is what
+    # keeps the two disjoint by construction — a year can't be both a real
+    # historical cycle and a fabrication.
+    missing = set(vocab.plausible_cycle_years) - set(vocab.valid_cycle_years)
+    if missing:
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: plausible_cycle_years must be "
+            f"a subset of valid_cycle_years (missing: {sorted(missing)})"
+        )
+    for src in vocab.stale_cycle_extra_patterns:
+        try:
+            compiled = re.compile(src, flags=re.IGNORECASE)
+        except re.error as exc:
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: stale_cycle_extra_patterns "
+                f"entry does not compile: {src!r} ({exc})"
+            ) from exc
+        if compiled.groups < 1:
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: stale_cycle_extra_patterns "
+                f"entry must capture the year as group 1: {src!r}"
+            )
+
+
 def _validate_module_content(module: ReviewModule) -> None:
-    """Fail fast on prompt-slot content a module author got wrong."""
+    """Fail fast on prompt-slot / vocabulary content a module author got wrong."""
     for field_name in _PROMPT_SLOT_FIELDS:
         value = getattr(module, field_name)
         if not isinstance(value, str) or not value.strip():
@@ -246,16 +406,33 @@ def _validate_module_content(module: ReviewModule) -> None:
                 f"ReviewModule {module.module_id!r} has an empty prompt slot: "
                 f"{field_name}"
             )
-    try:
-        module.review_categories_template.format(
-            **category_format_kwargs(module.cycle)
-        )
-    except Exception as exc:  # KeyError / IndexError / ValueError from format
+
+    codes = module.cycle.base_codes if module.cycle else ()
+    if not codes:
         raise ValueError(
-            f"ReviewModule {module.module_id!r}: review_categories_template "
-            f"does not format against its own cycle ({exc!r}). Available "
-            f"placeholders: {sorted(category_format_kwargs(module.cycle))}"
-        ) from exc
+            f"ReviewModule {module.module_id!r}: cycle pins no base_codes — "
+            "the first base code is the stale-detector target and the "
+            "template-placeholder source"
+        )
+    keys = [code.key for code in codes]
+    if len(set(keys)) != len(keys) or not all(k and k.strip() and code.year for k, code in zip(keys, codes)):
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: base_codes need unique, "
+            f"non-empty keys and non-empty years (got keys {keys})"
+        )
+
+    kwargs = code_basis_format_kwargs(module.cycle)
+    for field_name in _TEMPLATE_SLOT_FIELDS:
+        try:
+            getattr(module, field_name).format(**kwargs)
+        except Exception as exc:  # KeyError / IndexError / ValueError from format
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: {field_name} does not "
+                f"format against its own cycle ({exc!r}). Available "
+                f"placeholders: {sorted(kwargs)}"
+            ) from exc
+
+    _validate_detector_vocabulary(module)
     _validate_review_examples(module)
 
 

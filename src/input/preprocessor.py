@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Iterable, Optional
 
 from ..core.code_cycles import CodeCycle
+from ..modules import DetectorVocabulary, module_for_cycle
 
 
 @dataclass
@@ -214,41 +216,51 @@ def detect_placeholders(content: str, filename: str, max_matches: int = 200) -> 
 # reference or an empty section heading.
 # -----------------------------------------------------------------------------
 
-# Years that should trigger a stale-cycle alert when they sit next to a
-# California code abbreviation. Limited to a recent window so we do not flag
-# legitimate historical references far from the current cycle.
-_PLAUSIBLE_CODE_YEARS = {"2010", "2013", "2016", "2019", "2022", "2025"}
+# The year/code vocabulary (abbreviations, plausible/valid year sets, extra
+# long-form patterns, the LEED appropriateness flag) is module data —
+# ``DetectorVocabulary`` on the owning ``ReviewModule``, resolved through the
+# registry's unique-label bridge. The detector LOGIC below (regex assembly,
+# span dedup, the negation-suppression window, sentence narrowing) stays
+# engine-owned so a module cannot change detection semantics, only the
+# domain facts scanned for.
 
-# Code abbreviations recognised on the right-hand side of "<year> <code>".
-_CODE_ABBREVS = ("CBC", "CMC", "CPC", "CEC", "CFC", "CALGreen", "CalGreen", "CRC")
 
-# Captures "2019 CBC", "CBC 2019", "2019 California Building Code", etc.
-_STALE_CYCLE_PATTERNS: tuple[re.Pattern, ...] = (
-    re.compile(
-        r"\b(20\d{2})\s+(?:" + "|".join(_CODE_ABBREVS) + r")\b",
-        flags=re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:" + "|".join(_CODE_ABBREVS) + r")[\s,]+(20\d{2})\b",
-        flags=re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(20\d{2})\s+California\s+(?:Building|Mechanical|Plumbing|"
-        r"Electrical|Fire|Energy|Green\s+Building|Residential)\s+Code\b",
-        flags=re.IGNORECASE,
-    ),
-)
+def _default_vocabulary() -> DetectorVocabulary:
+    """Vocabulary used when a caller has no cycle (degrades to the default module)."""
+    return module_for_cycle(None).detector_vocabulary
+
+
+@lru_cache(maxsize=8)
+def _stale_cycle_patterns_for(vocabulary: DetectorVocabulary) -> tuple[re.Pattern, ...]:
+    """Compile the year/code citation patterns for one module's vocabulary.
+
+    Two engine patterns (``"<year> <code>"`` and ``"<code> <year>"``) built
+    from the vocabulary's abbreviations, plus any module-supplied long-form
+    patterns (each captures the year as group 1 — validated at module
+    registration). Cached per vocabulary: ``DetectorVocabulary`` is frozen
+    and tuple-typed, so it is hashable, and the registry holds a handful of
+    modules at most.
+    """
+    abbrev_alt = "|".join(re.escape(a) for a in vocabulary.code_abbreviations)
+    patterns = [
+        re.compile(r"\b(20\d{2})\s+(?:" + abbrev_alt + r")\b", flags=re.IGNORECASE),
+        re.compile(r"\b(?:" + abbrev_alt + r")[\s,]+(20\d{2})\b", flags=re.IGNORECASE),
+    ]
+    patterns.extend(
+        re.compile(source, flags=re.IGNORECASE)
+        for source in vocabulary.stale_cycle_extra_patterns
+    )
+    return tuple(patterns)
+
 
 # ASCE 7 edition references. Only flag editions older than the cycle's
-# nominal ASCE 7 edition (e.g. 7-10 / 7-05 when cycle says 7-22).
+# nominal ASCE 7 edition (e.g. 7-10 / 7-05 when cycle says 7-22). The
+# pattern is structural (engine); the recognition whitelist of real,
+# published editions lives on the module vocabulary
+# (``asce7_plausible_editions``) so a stray capture like "ASCE 7-42" is
+# ignored while every genuine edition older than the cycle's nominal one is
+# still flagged (TRUST_AUDIT P2-1).
 _ASCE7_PATTERN = re.compile(r"\bASCE[\s-]*7[\s-]*(\d{2})\b", flags=re.IGNORECASE)
-# Real, published ASCE 7 editions (two-digit). Acts as a recognition
-# whitelist so a stray two-digit capture like "ASCE 7-42" is ignored while
-# every genuine edition older than the cycle's nominal one is still flagged.
-# Previously only {05,10,16,22} were recognized, so genuinely old references
-# (7-88/93/95/98/02) silently escaped the deterministic check — TRUST_AUDIT
-# P2-1. Verify against ASCE's published edition history before extending.
-_ASCE7_PLAUSIBLE_EDITIONS = {"88", "93", "95", "98", "02", "05", "10", "16", "22"}
 
 
 def _asce7_edition_year(two_digit: str) -> int:
@@ -351,9 +363,11 @@ def detect_stale_code_cycle_references(
 ) -> list[dict]:
     """Flag year/edition references that do not match the selected cycle.
 
-    A reference is "stale" when it pins a California code year that is
-    different from ``cycle.cbc`` (e.g. ``2019 CBC`` selected against the 2025
-    cycle), or when an ASCE 7 edition is older than ``cycle.asce7``.
+    A reference is "stale" when it pins a code year that is different from
+    the cycle's ``primary_code_year`` (e.g. ``2019 CBC`` selected against
+    the 2025 cycle), or when an ASCE 7 edition is older than ``cycle.asce7``.
+    The abbreviation / year vocabulary comes from the owning module's
+    :class:`DetectorVocabulary` (resolved via the unique-label bridge).
 
     The detector is intentionally narrow: it never flags the cycle's own year
     or its prior cycle's year if the prior cycle is being referenced as
@@ -363,15 +377,17 @@ def detect_stale_code_cycle_references(
     """
     if not cycle:
         return []
-    target_year = (cycle.cbc or "").strip()
+    vocabulary = module_for_cycle(cycle).detector_vocabulary
+    target_year = (cycle.primary_code_year or "").strip()
     if not target_year:
         return []
 
+    plausible_years = frozenset(vocabulary.plausible_cycle_years)
     alerts: list[dict] = []
     seen_spans: list[tuple[int, int]] = []
-    for pattern in _STALE_CYCLE_PATTERNS:
+    for pattern in _stale_cycle_patterns_for(vocabulary):
         for match in pattern.finditer(content):
-            year = next((g for g in match.groups() if g and g in _PLAUSIBLE_CODE_YEARS), None)
+            year = next((g for g in match.groups() if g and g in plausible_years), None)
             if year is None or year == target_year:
                 continue
             span = (match.start(), match.end())
@@ -412,7 +428,7 @@ def detect_stale_code_cycle_references(
             # though ``98 > 22`` numerically. Unknown two-digit captures (not a
             # real edition) are ignored to avoid flagging stray numbers.
             if (
-                edition not in _ASCE7_PLAUSIBLE_EDITIONS
+                edition not in vocabulary.asce7_plausible_editions
                 or _asce7_edition_year(edition) >= target_asce_year
             ):
                 continue
@@ -651,46 +667,46 @@ def detect_unresolved_template_markers(
     )
 
 
-# Known California code-cycle years. California publishes a new cycle every
-# three years (with a six-month grace period); ``2025`` is the active cycle
-# and ``2028`` is the next anticipated cycle. Any year/code citation outside
-# this set is almost certainly a typo or fabrication (e.g. ``2018 CBC``).
-#
-# Distinct from ``_PLAUSIBLE_CODE_YEARS`` above (used by the *stale*-cycle
-# detector to flag known historical cycles that aren't current). Stale and
-# invalid are different problems: ``2019 CBC`` is stale-but-historical;
-# ``2018 CBC`` is invalid because California never published a 2018 cycle.
-_VALID_CALIFORNIA_CODE_YEARS: frozenset[str] = frozenset(_PLAUSIBLE_CODE_YEARS) | {"2028"}
-
-
 def detect_invalid_code_cycle_strings(
     content: str,
     filename: str,
     *,
+    vocabulary: DetectorVocabulary | None = None,
     max_matches: int = 100,
 ) -> list[dict]:
-    """Flag year/code citations whose year is not a real California cycle.
+    """Flag year/code citations whose year is not a real published cycle.
 
-    California publishes code cycles every three years: 2010, 2013, 2016,
-    2019, 2022, 2025 (and the next cycle is 2028). A reference like
+    The vocabulary's ``valid_cycle_years`` lists every year the jurisdiction
+    has published (or announced) a cycle for — for California: 2010, 2013,
+    2016, 2019, 2022, 2025, and the anticipated 2028. A reference like
     ``2018 CBC`` or ``2024 CMC`` is a clear typo / fabrication that the LLM
-    review does not need to discover — surface it locally.
+    review does not need to discover — surface it locally. When
+    ``vocabulary`` is omitted, the default module's vocabulary applies
+    (``preprocess_spec`` passes the owning module's explicitly).
 
     The detector reuses the same year/code patterns as the stale-cycle
     detector but applies a *different* admissibility test:
-        - Stale-cycle path : year is in _PLAUSIBLE_CODE_YEARS but not the
-          selected cycle's year.
+        - Stale-cycle path : year is in ``plausible_cycle_years`` but not
+          the selected cycle's primary year.
         - Invalid path     : year matches a real-looking ``20\\d{2}`` but is
-          NOT in _VALID_CALIFORNIA_CODE_YEARS.
-    The two detectors do not collide because their admissibility sets are
-    disjoint by construction.
+          NOT in ``valid_cycle_years``.
+    The two detectors do not collide because ``plausible_cycle_years`` is a
+    subset of ``valid_cycle_years`` (enforced at module registration), so
+    their admissibility sets are disjoint by construction.
     """
+    vocab = vocabulary if vocabulary is not None else _default_vocabulary()
+    valid_years = frozenset(vocab.valid_cycle_years)
+    jurisdiction = vocab.jurisdiction_label.strip()
+    type_prefix = (
+        f"Invalid {jurisdiction} code cycle year" if jurisdiction
+        else "Invalid code cycle year"
+    )
     alerts: list[dict] = []
     seen_spans: list[tuple[int, int]] = []
-    for pattern in _STALE_CYCLE_PATTERNS:
+    for pattern in _stale_cycle_patterns_for(vocab):
         for match in pattern.finditer(content):
             year = next((g for g in match.groups() if g and re.fullmatch(r"20\d{2}", g)), None)
-            if year is None or year in _VALID_CALIFORNIA_CODE_YEARS:
+            if year is None or year in valid_years:
                 continue
             span = (match.start(), match.end())
             if any(s <= span[0] and span[1] <= e for s, e in seen_spans):
@@ -701,7 +717,7 @@ def detect_invalid_code_cycle_strings(
             alerts.append(
                 {
                     "filename": filename,
-                    "type": f"Invalid California code cycle year ({year})",
+                    "type": f"{type_prefix} ({year})",
                     "match": match.group(0),
                     "context": content[ctx_start:ctx_end].replace("\n", " ").strip(),
                     "position": span[0],
@@ -799,8 +815,16 @@ def preprocess_spec(
     When ``cycle`` is provided, also run stale code-cycle detection and
     structural checks. ``cycle=None`` skips those passes — callers without
     a cycle still get template-marker, invalid-code-cycle, and
-    duplicate-paragraph detection, which never require a cycle.
+    duplicate-paragraph detection, which never require a cycle (their
+    vocabulary comes from the cycle's owning module, degrading to the
+    default module when ``cycle`` is ``None``).
+
+    The LEED detector is gated by the module's
+    ``detector_vocabulary.flag_leed_references`` — LEED references are
+    copy/paste errors for some domains (CA K-12 DSA) and genuine scope for
+    others (a data-center module pursuing certification).
     """
+    vocabulary = module_for_cycle(cycle).detector_vocabulary
     code_cycle_alerts: list[dict] = []
     if cycle is not None:
         code_cycle_alerts = detect_stale_code_cycle_references(content, filename, cycle)
@@ -808,12 +832,17 @@ def preprocess_spec(
         detect_empty_sections(content, filename)
         + detect_duplicate_headings(content, filename)
     )
+    leed_alerts: list[dict] = []
+    if vocabulary.flag_leed_references:
+        leed_alerts = detect_leed_references(content, filename)
     return PreprocessResult(
-        leed_alerts=detect_leed_references(content, filename),
+        leed_alerts=leed_alerts,
         placeholder_alerts=detect_placeholders(content, filename),
         code_cycle_alerts=code_cycle_alerts,
         structural_alerts=structural_alerts,
         template_marker_alerts=detect_unresolved_template_markers(content, filename),
-        invalid_code_cycle_alerts=detect_invalid_code_cycle_strings(content, filename),
+        invalid_code_cycle_alerts=detect_invalid_code_cycle_strings(
+            content, filename, vocabulary=vocabulary
+        ),
         duplicate_paragraph_alerts=detect_duplicate_paragraphs(content, filename),
     )
