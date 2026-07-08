@@ -27,6 +27,12 @@ AVAILABLE_MODULES: dict[str, ReviewModule] = {
 
 DEFAULT_MODULE: ReviewModule = CALIFORNIA_K12_MEP
 
+# Reverse index for the ``module_for_cycle`` bridge. Well-defined because
+# ``validate_module_registry`` enforces registry-unique cycle labels.
+_MODULES_BY_CYCLE_LABEL: dict[str, ReviewModule] = {
+    module.cycle.label: module for module in _ALL_MODULES
+}
+
 
 def get_module(module_id: str | None) -> ReviewModule:
     """Resolve ``module_id`` to a :class:`ReviewModule`, defaulting safely.
@@ -39,3 +45,19 @@ def get_module(module_id: str | None) -> ReviewModule:
     if not module_id:
         return DEFAULT_MODULE
     return AVAILABLE_MODULES.get(module_id.strip(), DEFAULT_MODULE)
+
+
+def module_for_cycle(cycle) -> ReviewModule:
+    """Resolve the module that owns ``cycle`` (by label), defaulting safely.
+
+    The **bridge** for content layers that are still keyed by ``cycle=``
+    (prompt builders in ``review/prompts.py``, ``cross_check``, and
+    ``verification/verifier.py``): they resolve their module's prompt slots
+    from the cycle they were handed, with zero signature churn. Sound
+    because cycle labels are registry-unique (enforced at import). Unknown /
+    label-less cycles degrade to :data:`DEFAULT_MODULE`, matching
+    :func:`get_module`. The bridge retires when later phases thread
+    ``module=`` through the content layers explicitly.
+    """
+    label = (getattr(cycle, "label", "") or "").strip()
+    return _MODULES_BY_CYCLE_LABEL.get(label, DEFAULT_MODULE)

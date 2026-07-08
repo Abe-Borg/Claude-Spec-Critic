@@ -20,6 +20,7 @@ from ..batch.batch import (
 from ..batch.batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
 from ..review.reviewer import Finding, _get_client
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..modules import module_for_cycle
 from ..core.api_config import (
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
@@ -610,8 +611,12 @@ def _get_verification_system_prompt(
     """
     if include_verdict_tool is None:
         include_verdict_tool = verification_request_includes_verdict_tool()
+    # Persona + the authoritative-source tiers are the module's domain
+    # content (resolved via the unique-label bridge); everything else in
+    # this prompt is engine protocol shared by every module.
+    module = module_for_cycle(cycle)
     base_lines = [
-        "You are a construction specification verification assistant for California K-12 DSA projects.",
+        module.verifier_persona,
         "Your job is to verify or dispute a single finding using web search evidence.",
         "",
         "Use web search before rendering a verdict.",
@@ -632,30 +637,7 @@ def _get_verification_system_prompt(
         "",
         "Prefer authoritative sources in this priority order:",
         "",
-        "1. California regulatory authorities:",
-        "   dgs.ca.gov, dsa.ca.gov, hcai.ca.gov, bsc.ca.gov, energy.ca.gov,",
-        "   osfm.fire.ca.gov, calbo.org",
-        "",
-        "2. Code publishers with full text:",
-        "   up.codes, codes.iccsafe.org, iccsafe.org",
-        "",
-        "3. Standards organizations:",
-        "   nfpa.org, ashrae.org, iapmo.org, smacna.org, aspe.org, astm.org, asce.org",
-        "",
-        "4. Testing and listing agencies:",
-        "   ul.com, fmglobal.com",
-        "",
-        "5. Major manufacturer technical data:",
-        "   greenheck.com, trane.com, carrier.com, watts.com, zurn.com, victaulic.com",
-        "",
-        "6. Industry associations:",
-        "   phccweb.org, mcaa.org, csinet.org, seaoc.org",
-        "",
-        "7. Healthcare-specific (for HCAI projects):",
-        "   fgiguidelines.org, jointcommission.org",
-        "",
-        "8. Archived or historical standards:",
-        "   archive.org",
+        *module.verifier_source_priorities.splitlines(),
         "",
         "When tier 1-3 sources don't have what you need, search the broader web.",
         "When a regulatory source conflicts with a manufacturer datasheet, treat the",
