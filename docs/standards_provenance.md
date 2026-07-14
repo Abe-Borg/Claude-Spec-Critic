@@ -1,11 +1,22 @@
-# Pinned standards provenance — California 2025 cycle
+# Pinned standards provenance
 
-Provenance record for the standard editions pinned in
-`src/core/code_cycles.py::CALIFORNIA_2025.standards`. Each row records the
-adopted edition, where it was confirmed (or why it is still unconfirmed), the
-date checked, and a confidence level. The machine-readable source of truth is the
-`StandardEdition.source` field on each entry; this file carries the longer-form
-provenance that does not fit in a one-line `source`.
+Provenance record for the standard editions each module pins in its
+`CodeCycle`. Each row records the adopted (or referenced) edition, where it was
+confirmed (or why it is still unconfirmed), the date checked, and a confidence
+level. The machine-readable source of truth is the `StandardEdition.source`
+field on each entry; this file carries the longer-form provenance that does not
+fit in a one-line `source`.
+
+Sections:
+
+- **California 2025 cycle** (`CALIFORNIA_2025`, `california_k12_mep` module) —
+  below.
+- **Data-center IBC/IFC 2024 cycle** (`DATACENTER_IBC_2024`, `datacenter_fire`
+  module) — at the end of this file.
+
+---
+
+# California 2025 cycle
 
 **Why this file exists.** A pinned edition string is a quiet correctness
 dependency: the reviewer and verifier reason *against* these editions, so a wrong
@@ -149,3 +160,108 @@ could not be read directly (paywalled), so all stay `UNVERIFIED`.
 - ICC Digital Codes — 2024 IBC Chapter 35; UpCodes — CBC 2025 Chapter 35.
   *(Both 403 to automated fetch; values via search summaries only.)*
 - UL Solutions damper / firestop application guides (edition cross-checks).
+
+---
+
+# Data-center IBC/IFC 2024 cycle
+
+Provenance record for the standard editions pinned in
+`src/modules/datacenter_fire.py::DATACENTER_IBC_2024.standards` — the code basis
+for the `datacenter_fire` module (WS-0 / WS-1 of
+`docs/hyperscale_datacenter_module_plan.md`).
+
+**Jurisdiction decision** (`datacenter_fire_module_plan.md` §3.1): hyperscale
+data centers are built across many states and provinces, each adopting the
+I-codes on its own schedule with its own amendments. Rather than pin one
+jurisdiction, the module pins the **model codes** — IBC and IFC, current
+editions — as the code basis. State / provincial / local / AHJ facts are
+per-project data supplied via Project Context (v1 posture) and, once the
+location-aware engine work lands, by the research phase. A state-pinned variant
+(e.g. a Virginia USBC cycle) would be a *separate* module with its own
+registry-unique cycle label — never a multi-jurisdictional cycle.
+
+> **Access limitation (2026-07).** The authoritative referenced-standards tables
+> — ICC Digital Codes (`codes.iccsafe.org`) and UpCodes — returned **HTTP 403**
+> to automated fetching during this research pass (the same limitation the
+> California section documents). NFSA, MeyerFire, and the NPS crosswalk PDF also
+> 403'd. The editions below therefore rest on web *search summaries* of those
+> sources plus secondary/industry sources, **not** a direct read of the
+> published code. That is enough to pin best-grounded values and flag risk, but
+> **not** enough to clear an entry off `UNVERIFIED`. A maintainer with code
+> access (a purchased 2024 IBC/IFC, or a logged-in ICC/UpCodes session) should
+> make the final confirmation against the Chapter 35 / Chapter 80 tables.
+
+Date of this research pass: **2026-07-14**.
+
+## Base codes (matter of public record)
+
+| Code | Year | Confidence | Source |
+|---|---|---|---|
+| IBC | 2024 | High | ICC published the 2024 I-codes; 2024 is the current edition (2027 is the next cycle). |
+| IFC | 2024 | High | As above. |
+| ASCE 7 | 7-22 | High | The 2024 IBC references ASCE 7-22, replacing ASCE 7-16 (ASCE, StructureMag, SEAO all corroborate). Previous edition 7-16. |
+
+The base-code years are not `StandardEdition` entries and carry their provenance
+in `BaseCode.source`; they are well-grounded and treated as reliable. The
+`StandardEdition` entries below are the referenced-standard editions and are all
+`UNVERIFIED` pending a primary-table read.
+
+## Pinned standard editions — research findings
+
+**Every entry is `UNVERIFIED`** (primary tables paywalled). Values are the
+best-grounded estimates from secondary sources plus knowledge of the NFPA
+revision cycles and the 2024 I-code reference freeze (~2022 for the install
+family).
+
+| Standard | Pinned | Confidence | Notes |
+|---|---|---|---|
+| NFPA 13 (sprinklers) | 2022 | Medium–high | The 2024 Life Safety Code and multiple secondary sources cite NFPA 13-2022; well corroborated. |
+| NFPA 14 (standpipe) | 2019 | **Low** | NFPA 14-2024 exists but postdates the 2024 IBC reference freeze, so 2019 is the likely referenced edition — but this may have moved. Verify first. |
+| NFPA 20 (fire pumps) | 2022 | Medium | Good secondary corroboration for NFPA 20-2022. |
+| NFPA 22 (water tanks) | 2018 | **Low** | NFPA 22-2023 exists and postdates the freeze; 2018 is the likely referenced edition. Verify. |
+| NFPA 24 (private mains) | 2022 | Medium | Good secondary corroboration for NFPA 24-2022. |
+| NFPA 25 (ITM) | 2020 | **Low–medium** | IFC-referenced; NFPA 25-2023 exists and postdates the freeze. The fire/operations code's ITM edition often differs from the building code's install editions. Verify against the 2024 IFC table. |
+| NFPA 72 (alarm/detection) | 2022 | Medium–high | The 2024 Life Safety Code cites NFPA 72-2022; well corroborated. |
+| NFPA 2001 (clean agent) | 2022 | Low–medium | 2022 edition is the one in the 2024 I-code reference window. Verify. |
+| NFPA 855 (energy storage / BESS) | 2023 | Medium | Referenced by the 2024 IFC (§1207); current edition 2023 (a 2026 edition is in development). Confirm the code-referenced edition. |
+| NFPA 75 (IT equipment) | 2024 | Medium | Current edition 2024 (well corroborated via NFPA/ANSI store listings); owner-invoked benchmark rather than strictly code-mandated. Pinned at the current edition per the module plan. |
+| NFPA 76 (telecom) | 2024 | Medium | Current edition 2024 (issued Dec 2023; well corroborated); owner-invoked benchmark. Pinned at the current edition. |
+
+**Notes on the split.** The install family (13/14/20/22/24/72) and the
+special-hazard/BESS standards (2001/855) are the code-referenced editions the
+2024 IBC/IFC point to. NFPA 75/76 are pinned at their *current* editions because
+owner data-center standards routinely invoke them even where the code does not;
+`StandardEdition.source` records that distinction for maintainers. FM Global
+data sheets are deliberately **not** `StandardEdition` entries — they are
+revision-dated guidance documents, not adopted-code editions
+(`datacenter_fire_module_plan.md` §3.3); FM is represented as a jurisdictional
+keyword, a top verifier source tier, and a review category. UL listings are not
+pinned as `StandardEdition` entries either — the WS-1 review categories do not
+cite UL standards by number.
+
+## How to confirm and clear an `UNVERIFIED` flag
+
+Same procedure as the California section: open the published referenced-standards
+table (2024 IBC Chapter 35 / 2024 IFC Chapter 80), read the exact edition and
+revision date, correct `edition` in `datacenter_fire.py` if wrong, replace the
+`UNVERIFIED …` `source` string with a confirmed provenance string so
+`is_verified` flips true, and update the row here. Because the verification
+cache key folds in the cycle's standards fingerprint, correcting an edition
+automatically re-grounds affected verdicts — no manual cache clear needed.
+
+## Sources consulted (2026-07-14)
+
+- ICC Digital Codes — 2024 IBC Chapter 35 referenced standards; UpCodes —
+  2024 IBC Chapter 35 (Phoenix / Wichita-Sedgwick adoptions). *(Both 403 to
+  automated fetch; values via search summaries only.)*
+- NFSA — "Changes to the 2024 IBC and IFC." *(403 to automated fetch; via
+  search.)*
+- ASCE / StructureMag / SEAO — 2024 IBC references ASCE 7-22 (structural-change
+  summaries).
+- Electrical Contractor Magazine — 2024 Life Safety Code references NFPA 13-2022
+  and NFPA 72-2022.
+- MeyerFire — "Notable 2024 IBC Changes for Fire Protection." *(403 to
+  automated fetch; via search.)*
+- NPS NFPA/IFC crosswalk (nps.gov PDF). *(403 to automated fetch; via search.)*
+- NFPA / ANSI / ICC store listings — current editions of NFPA 75 (2024), NFPA 76
+  (2024), NFPA 855 (2023).
