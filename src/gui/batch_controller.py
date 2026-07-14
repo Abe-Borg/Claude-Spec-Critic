@@ -39,6 +39,7 @@ from ..orchestration.pipeline import (
     collect_batch_verification_results,
     collect_review_batch_results,
     finalize_batch_result,
+    location_inputs_for_submission,
     run_compliance_for_batch,
     run_cross_check_for_batch,
     start_batch_review,
@@ -261,6 +262,13 @@ def collect_batch_results(app) -> None:
 
             verifiable_findings = list(rv.findings)
             cache = _make_verification_cache(log=app._make_diag_log("verification", run_epoch))
+            # WS-4 location-aware verification (D-9): derived once from the
+            # submission's persisted profile; (None, None) on profile-less
+            # runs keeps request bytes and cache keys unchanged. Mirrored in
+            # run_batch_collection_headless.
+            user_location, jurisdiction_fp = location_inputs_for_submission(
+                app._batch_submission
+            )
             if review_state.truncated_specs:
                 if diag:
                     for spec_name in review_state.truncated_specs:
@@ -280,6 +288,8 @@ def collect_batch_results(app) -> None:
                     log=app._make_diag_log("verification", run_epoch),
                     progress=app._make_diag_progress("verification", run_epoch),
                     cache=cache,
+                    user_location=user_location,
+                    jurisdiction_fingerprint=jurisdiction_fp,
                 )
                 if verification_job is None:
                     if diag:
@@ -296,6 +306,8 @@ def collect_batch_results(app) -> None:
                         log=app._make_diag_log("verification", run_epoch),
                         progress=app._make_diag_progress("verification", run_epoch),
                         cache=cache,
+                        user_location=user_location,
+                        jurisdiction_fingerprint=jurisdiction_fp,
                     )
                 if diag:
                     from ..orchestration.diagnostics import bound_structured_payload
@@ -449,6 +461,8 @@ def collect_batch_results(app) -> None:
                     log=app._make_diag_log("cross_check_verification", run_epoch),
                     progress=app._make_diag_progress("cross_check_verification", run_epoch),
                     cache=cache,
+                    user_location=user_location,
+                    jurisdiction_fingerprint=jurisdiction_fp,
                 )
                 if cross_check_verification_job is None:
                     if diag:
@@ -461,6 +475,8 @@ def collect_batch_results(app) -> None:
                         log=app._make_diag_log("cross_check_verification", run_epoch),
                         progress=app._make_diag_progress("cross_check_verification", run_epoch),
                         cache=cache,
+                        user_location=user_location,
+                        jurisdiction_fingerprint=jurisdiction_fp,
                     )
                     if diag:
                         diag.log("cross_check_verification", "success", "Cross-check verification complete")

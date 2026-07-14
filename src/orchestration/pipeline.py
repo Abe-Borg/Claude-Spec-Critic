@@ -1433,6 +1433,21 @@ def run_compliance_for_batch(
     return state
 
 
+def location_inputs_for_submission(submission) -> tuple[dict | None, str | None]:
+    """Derive ``(user_location, jurisdiction_fingerprint)`` from a submission.
+
+    Reads the persisted :class:`ProjectProfile` dict (WS-2). ``(None, None)``
+    for every profile-less run — the tuple then leaves the web_search tool
+    dict and the verification cache key byte-identical to today (D-9).
+    Shared by the GUI collect driver and the headless driver so the two
+    cannot disagree on how location threads into verification.
+    """
+    profile = ProjectProfile.from_dict(getattr(submission, "project_profile", None))
+    if profile is None or not profile.is_complete():
+        return None, None
+    return profile.web_search_user_location(), profile.jurisdiction_fingerprint()
+
+
 def start_batch_verification(
     findings: list[Finding],
     *,
@@ -1440,6 +1455,8 @@ def start_batch_verification(
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
     cache: VerificationCache | None = None,
+    user_location: dict | None = None,
+    jurisdiction_fingerprint: str | None = None,
 ) -> BatchJob | None:
     """Submit a verification batch, applying the local pre-pass first.
 
@@ -1448,12 +1465,18 @@ def start_batch_verification(
     polling. Returns the BatchJob otherwise.
     """
     cycle = module.cycle
-    remaining = prepare_findings_for_verification(findings, cycle=cycle, cache=cache, log=log)
+    remaining = prepare_findings_for_verification(
+        findings,
+        cycle=cycle,
+        cache=cache,
+        jurisdiction_fingerprint=jurisdiction_fingerprint,
+        log=log,
+    )
     if not remaining:
         progress(60.0, "Verification: all findings resolved locally / cached.")
         return None
     progress(60.0, f"Submitting {len(remaining)} verification requests...")
-    job = start_verification_batch(remaining, cycle=cycle)
+    job = start_verification_batch(remaining, cycle=cycle, user_location=user_location)
     job.submitted_findings = remaining
     log(f"Verification batch submitted: {job.batch_id}", level="step")
     return job
@@ -1468,6 +1491,8 @@ def collect_batch_verification_results(
     progress: ProgressFn = _noop_progress,
     poll_interval: int = 15,
     cache: VerificationCache | None = None,
+    user_location: dict | None = None,
+    jurisdiction_fingerprint: str | None = None,
 ) -> list[Finding]:
     submitted = job.submitted_findings if job.submitted_findings is not None else findings
     return collect_verification_batch_results(
@@ -1478,6 +1503,8 @@ def collect_batch_verification_results(
         progress=lambda p, m: progress(60.0 + (p / 100.0) * 35.0, m),
         poll_interval=poll_interval,
         cache=cache,
+        user_location=user_location,
+        jurisdiction_fingerprint=jurisdiction_fingerprint,
     )
 
 
@@ -1696,14 +1723,17 @@ def run_batch_collection_headless(
     if cache is None:
         cache = _make_verification_cache(log=log)
     module = get_module(getattr(submission, "module_id", None))
+    # WS-4 location-aware verification (D-9): (None, None) on every
+    # profile-less run keeps request bytes and cache keys unchanged.
+    user_location, jurisdiction_fp = location_inputs_for_submission(submission)
 
     review_state = collect_review_batch_results(submission, log=log)
 
     verifiable = list(review_state.review_result.findings) if review_state.review_result else []
     if verifiable:
-        job = start_batch_verification(verifiable, module=module, log=log, progress=progress, cache=cache)
+        job = start_batch_verification(verifiable, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
         if job is not None:
-            collect_batch_verification_results(job, verifiable, module=module, log=log, progress=progress, cache=cache)
+            collect_batch_verification_results(job, verifiable, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
 
     review_state = run_cross_check_for_batch(
         review_state,
@@ -1735,9 +1765,9 @@ def run_batch_collection_headless(
     # take arbitrary findings (WS-4 step 5).
     round2_findings = cross_findings + compliance_findings
     if round2_findings:
-        cc_job = start_batch_verification(round2_findings, module=module, log=log, progress=progress, cache=cache)
+        cc_job = start_batch_verification(round2_findings, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
         if cc_job is not None:
-            collect_batch_verification_results(cc_job, round2_findings, module=module, log=log, progress=progress, cache=cache)
+            collect_batch_verification_results(cc_job, round2_findings, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
 
     if owns_cache:
         _persist_verification_cache(cache, log=log)

@@ -12,7 +12,10 @@ from pathlib import Path
 from tkinter import filedialog
 
 from ..output.report_exporter import export_report
-from ..output.edit_sidecar import write_edit_instructions_sidecar
+from ..output.edit_sidecar import (
+    write_edit_instructions_sidecar,
+    write_requirements_profile_sidecar,
+)
 
 
 def export_report_to_file(app, result) -> str:
@@ -36,6 +39,15 @@ def export_report_to_file(app, result) -> str:
             app.log.log_success(f"Edit instructions saved: {sidecar_path.name}")
         except Exception as e:
             app.log.log_warning(f"Edit-instructions sidecar not written: {e}")
+        # WS-4 (D-14 [FT]): the standalone requirements-profile export — the
+        # longest-half-life artifact. Returns None (writes nothing) on every
+        # profile-less run.
+        try:
+            profile_path = write_requirements_profile_sidecar(result, output_path)
+            if profile_path is not None:
+                app.log.log_success(f"Requirements profile saved: {profile_path.name}")
+        except Exception as e:
+            app.log.log_warning(f"Requirements-profile sidecar not written: {e}")
         return "success"
     except Exception as e:
         app.log.log_error(f"Export failed: {e}")

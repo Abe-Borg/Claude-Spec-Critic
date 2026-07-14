@@ -132,7 +132,9 @@ def _standards_fingerprint(cycle) -> str:
     return _digest(rendered)
 
 
-def make_cache_key(finding, *, cycle: CodeCycle) -> str:
+def make_cache_key(
+    finding, *, cycle: CodeCycle, jurisdiction_fingerprint: str | None = None
+) -> str:
     """Build a stable cache key for a finding under a given code cycle.
 
     The key includes the normalized cycle label, a fingerprint of the cycle's
@@ -151,13 +153,24 @@ def make_cache_key(finding, *, cycle: CodeCycle) -> str:
     edition correction now produces fresh keys, re-grounding the affected
     findings against the corrected edition. (Switching cycles still invalidates
     too, since the label leads the key.)
+
+    ``jurisdiction_fingerprint`` (WS-4, D-9) appends a sixth segment **only
+    when non-None** — the ``ProjectProfile.jurisdiction_fingerprint()`` of a
+    profile-bearing run — so a compliance/jurisdictional verdict grounded
+    against one city's codes can never replay for a different city. Without
+    a profile the key shape is byte-identical to the five-segment format (no
+    ``_no_loc`` sentinel), so every existing CA cache entry stays warm and no
+    schema bump is needed: profile-present keys are simply new keys.
     """
     code_ref = _normalize(getattr(finding, "codeReference", "")) or "_no_ref"
     action = _normalize(getattr(finding, "actionType", "")) or "_no_action"
     cycle_label = _normalize(getattr(cycle, "label", "")) or "_no_cycle"
     std_fp = _standards_fingerprint(cycle) or "_no_std"
     claim = _claim_summary(finding)
-    return f"{cycle_label}|{std_fp}|{action}|{code_ref}|{_digest(claim)}"
+    key = f"{cycle_label}|{std_fp}|{action}|{code_ref}|{_digest(claim)}"
+    if jurisdiction_fingerprint:
+        key = f"{key}|{jurisdiction_fingerprint}"
+    return key
 
 
 # Canonical "disable" tokens for boolean env-var flags. Anything else —
@@ -254,8 +267,16 @@ class VerificationCache:
     loaded_from_disk: int = 0
     expired_on_load: int = 0
 
-    def get(self, finding, *, cycle: CodeCycle) -> "VerificationResult | None":
-        key = make_cache_key(finding, cycle=cycle)
+    def get(
+        self,
+        finding,
+        *,
+        cycle: CodeCycle,
+        jurisdiction_fingerprint: str | None = None,
+    ) -> "VerificationResult | None":
+        key = make_cache_key(
+            finding, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
+        )
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
@@ -264,7 +285,14 @@ class VerificationCache:
             self.hits += 1
         return _clone_for_hit(entry)
 
-    def put(self, finding, *, cycle: CodeCycle, result: "VerificationResult") -> None:
+    def put(
+        self,
+        finding,
+        *,
+        cycle: CodeCycle,
+        result: "VerificationResult",
+        jurisdiction_fingerprint: str | None = None,
+    ) -> None:
         # Don't cache results that explicitly opted out of caching, or
         # results that came from an unsuccessful local skip path. We only
         # want to share *grounded* verdicts across findings.
@@ -307,7 +335,9 @@ class VerificationCache:
             getattr(result, "accepted_sources", None) or getattr(result, "sources", None)
         ):
             return
-        key = make_cache_key(finding, cycle=cycle)
+        key = make_cache_key(
+            finding, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
+        )
         with self._lock:
             stored = _clone_for_store(result)
             self._entries[key] = _CacheEntry(result=stored, created_ts=time.time())
