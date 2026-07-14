@@ -250,6 +250,134 @@ TRIAGE_CLASSIFICATIONS_SCHEMA: dict[str, Any] = {
 }
 
 
+# Closed category set for research items. Drives the rendered profile's
+# section grouping (``research.requirements_research``) and — later — the
+# compliance pass's controlling-requirement classes. Closed enum on a
+# non-nullable string is inside the strict-mode supported subset.
+RESEARCH_ITEM_CATEGORIES: tuple[str, ...] = (
+    "governing_code",
+    "local_amendment",
+    "ahj_requirement",
+    "referenced_standard",
+    "client_standard",
+    "insurer_requirement",
+    "site_environment",
+)
+
+# Actionability routing (D-7 [FT]): ``spec_requirement`` is content the
+# specifications must contain or match; ``process_advisory`` is a
+# permit/schedule/process fact (fees, notice periods, seasonal windows) the
+# project team must act on but which is not spec text — advisories must
+# never generate "missing from the spec" coverage rows downstream. Unknown
+# values coerce to ``spec_requirement`` at parse: the safe default, since it
+# can only over-check, never silently skip.
+RESEARCH_ACTIONABILITY_VALUES: tuple[str, ...] = (
+    "spec_requirement",
+    "process_advisory",
+)
+
+
+REQUIREMENTS_RESEARCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["summary", "items"],
+    "properties": {
+        "summary": {
+            "type": "string",
+            "description": (
+                "Short narrative of what was researched and how well it "
+                "grounded. Empty string is acceptable."
+            ),
+        },
+        "items": {
+            "type": "array",
+            "description": "Zero or more discrete requirements or facts.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                # All properties required; optionals are nullable — the
+                # strict-mode subset discipline used by every other tool.
+                "required": [
+                    "topic",
+                    "category",
+                    "requirement",
+                    "actionability",
+                    "authority",
+                    "code_reference",
+                    "source_urls",
+                    "confidence",
+                    "notes",
+                ],
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "Short label for the requirement (a few words).",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": list(RESEARCH_ITEM_CATEGORIES),
+                        "description": "Requirement class.",
+                    },
+                    "requirement": {
+                        "type": "string",
+                        "description": (
+                            "ONE discrete requirement or fact, stated so a "
+                            "specification reviewer can act on it."
+                        ),
+                    },
+                    "actionability": {
+                        "type": "string",
+                        "enum": list(RESEARCH_ACTIONABILITY_VALUES),
+                        "description": (
+                            "spec_requirement: content the specifications must "
+                            "contain or match. process_advisory: a "
+                            "permit/schedule/process fact (fees, notice periods, "
+                            "seasonal windows, allocation reviews) the project "
+                            "team must act on but which is not spec text."
+                        ),
+                    },
+                    "authority": {
+                        "type": ["string", "null"],
+                        "description": "Who imposes the requirement (agency, insurer, client).",
+                    },
+                    "code_reference": {
+                        "type": ["string", "null"],
+                        "description": "Code/standard section citation when one exists.",
+                    },
+                    "source_urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "URLs of sources retrieved in this conversation that "
+                            "support the requirement. Never cite a URL you did "
+                            "not actually retrieve."
+                        ),
+                    },
+                    "confidence": {
+                        # No ``minimum``/``maximum``: numerical constraints are
+                        # outside the strict-mode supported subset; the parser
+                        # clamps to [0, 1].
+                        "type": "number",
+                        "description": (
+                            "0..1 confidence. Use 0 for a requirement you could "
+                            "not ground in retrieved sources (and explain in "
+                            "notes) — never guess."
+                        ),
+                    },
+                    "notes": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Caveats: paywalled primary source, official summary "
+                            "used instead, pending amendments, etc."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -305,6 +433,7 @@ _REVIEW_TOOL_NAME = "submit_review_findings"
 _CROSS_CHECK_TOOL_NAME = "submit_cross_check_findings"
 _VERIFICATION_TOOL_NAME = "submit_verification_verdict"
 _TRIAGE_TOOL_NAME = "submit_triage_classifications"
+_RESEARCH_TOOL_NAME = "submit_requirements_research"
 
 
 ENV_STRICT_TOOL_USE = "SPEC_CRITIC_STRICT_TOOL_USE"
@@ -420,6 +549,29 @@ def triage_tool_choice() -> dict[str, Any]:
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 
+def requirements_research_tool(*, model: str | None = None) -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "name": _RESEARCH_TOOL_NAME,
+        "description": (
+            "After researching with web search/fetch, submit the structured "
+            "requirements-research output for this dimension. Use this tool "
+            "exactly once as the final step of your turn."
+        ),
+        "input_schema": REQUIREMENTS_RESEARCH_SCHEMA,
+    }
+    if _strict_for_model(model):
+        tool["strict"] = True
+    return tool
+
+
+def research_tool_choice() -> dict[str, Any]:
+    # Like verification, research cannot force tool_choice — the model must
+    # be free to call web_search / web_fetch first. The system prompt
+    # instructs it to end the turn with the research tool; the tagged-JSON
+    # fallback (``<research_json>``) stays reachable for the text detour.
+    return {"type": "auto", "disable_parallel_tool_use": True}
+
+
 def verification_verdict_tool(*, model: str | None = None) -> dict[str, Any]:
     tool: dict[str, Any] = {
         "name": _VERIFICATION_TOOL_NAME,
@@ -524,3 +676,4 @@ REVIEW_TOOL_NAME = _REVIEW_TOOL_NAME
 CROSS_CHECK_TOOL_NAME = _CROSS_CHECK_TOOL_NAME
 VERIFICATION_TOOL_NAME = _VERIFICATION_TOOL_NAME
 TRIAGE_TOOL_NAME = _TRIAGE_TOOL_NAME
+RESEARCH_TOOL_NAME = _RESEARCH_TOOL_NAME

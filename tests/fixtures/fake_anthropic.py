@@ -38,11 +38,22 @@ from typing import Any
 
 
 @dataclass
+class FakeServerToolUsage:
+    """Mimic ``usage.server_tool_use`` (web_search / web_fetch counters)."""
+    web_search_requests: int = 0
+    web_fetch_requests: int = 0
+
+
+@dataclass
 class FakeUsage:
     input_tokens: int = 100
     output_tokens: int = 50
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    # ``None`` keeps legacy fixtures byte-compatible; pass a
+    # ``FakeServerToolUsage`` to exercise the ``_web_search_count`` /
+    # ``_web_fetch_count`` readers (verifier + research budget paths).
+    server_tool_use: Any = None
 
 
 @dataclass
@@ -254,6 +265,143 @@ def verification_text_fallback_response(
     content: list[Any] = [FakeTextBlock(text=body)]
     return _maybe_dict(
         FakeMessage(content=content, stop_reason=stop_reason), dict_shape=dict_shape
+    )
+
+
+def sample_research_profile_payload() -> dict[str, Any]:
+    """Return a structured payload matching ``REQUIREMENTS_RESEARCH_SCHEMA``.
+
+    Two items: a grounded governing-code requirement and a process advisory
+    (the two ``actionability`` classes), so a single fixture exercises the
+    grounding partition and the [PROCESS] rendering path.
+    """
+    return {
+        "summary": "Researched governing codes for the project location.",
+        "items": [
+            {
+                "topic": "Building code edition",
+                "category": "governing_code",
+                "requirement": (
+                    "The governing building code for the project location is "
+                    "the 2024 IBC as adopted with state amendments."
+                ),
+                "actionability": "spec_requirement",
+                "authority": "State Building Code Agency",
+                "code_reference": "IBC 2024",
+                "source_urls": ["https://codes.example.gov/adoption"],
+                "confidence": 0.9,
+                "notes": None,
+            },
+            {
+                "topic": "Hydrant flow test window",
+                "category": "ahj_requirement",
+                "requirement": (
+                    "Hydrant flow tests are only witnessed April through "
+                    "October; permit scheduling must account for the window."
+                ),
+                "actionability": "process_advisory",
+                "authority": "City Fire Marshal",
+                "code_reference": None,
+                "source_urls": ["https://city.example.gov/fire/flow-tests"],
+                "confidence": 0.7,
+                "notes": "Seasonal window published in the AHJ bulletin.",
+            },
+        ],
+    }
+
+
+def research_tool_use_response(
+    *,
+    payload: dict[str, Any] | None = None,
+    stop_reason: str = "tool_use",
+    searched_urls: list[str] | None = None,
+    web_search_requests: int | None = None,
+    dict_shape: bool = False,
+) -> Any:
+    """A successful ``submit_requirements_research`` tool call.
+
+    ``searched_urls`` become ``web_search_result`` items (the grounding
+    pool); ``web_search_requests`` populates ``usage.server_tool_use`` so
+    budget accounting sees real counts (defaults to 1 when any URL is
+    searched, else 0).
+    """
+    payload = payload if payload is not None else sample_research_profile_payload()
+    if searched_urls is None:
+        searched_urls = ["https://codes.example.gov/adoption",
+                         "https://city.example.gov/fire/flow-tests"]
+    content: list[Any] = []
+    if searched_urls:
+        content.append(
+            FakeServerToolUseBlock(
+                name="web_search",
+                input={"query": "governing building code for project location"},
+            )
+        )
+        content.append(
+            FakeWebSearchResultBlock(
+                content=[
+                    {
+                        "type": "web_search_result",
+                        "url": url,
+                        "title": f"Result {i}",
+                        "encrypted_content": "fake-encrypted-blob",
+                    }
+                    for i, url in enumerate(searched_urls, start=1)
+                ]
+            )
+        )
+    content.append(
+        FakeToolUseBlock(name="submit_requirements_research", input=dict(payload))
+    )
+    if web_search_requests is None:
+        web_search_requests = 1 if searched_urls else 0
+    usage = FakeUsage(
+        server_tool_use=FakeServerToolUsage(web_search_requests=web_search_requests)
+    )
+    return _maybe_dict(
+        FakeMessage(content=content, stop_reason=stop_reason, usage=usage),
+        dict_shape=dict_shape,
+    )
+
+
+def pause_turn_response(
+    *,
+    searched_urls: list[str] | None = None,
+    web_search_requests: int = 1,
+    dict_shape: bool = False,
+) -> Any:
+    """A ``stop_reason="pause_turn"`` message (server-tool long turn paused).
+
+    The continuation loops resume these by re-sending the assistant content
+    verbatim; the fixture carries a server_tool_use + search-result block so
+    resumed conversations retain their grounding evidence.
+    """
+    content: list[Any] = [
+        FakeServerToolUseBlock(
+            name="web_search",
+            input={"query": "municipal amendments fire suppression"},
+        )
+    ]
+    if searched_urls:
+        content.append(
+            FakeWebSearchResultBlock(
+                content=[
+                    {
+                        "type": "web_search_result",
+                        "url": url,
+                        "title": f"Result {i}",
+                        "encrypted_content": "fake-encrypted-blob",
+                    }
+                    for i, url in enumerate(searched_urls, start=1)
+                ]
+            )
+        )
+    usage = FakeUsage(
+        server_tool_use=FakeServerToolUsage(web_search_requests=web_search_requests)
+    )
+    return _maybe_dict(
+        FakeMessage(content=content, stop_reason="pause_turn", usage=usage),
+        dict_shape=dict_shape,
     )
 
 

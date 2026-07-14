@@ -152,6 +152,21 @@ class ProjectProfile:
 
     # -- Routing inputs -------------------------------------------------------
 
+    def prompt_format_kwargs(self) -> dict[str, str]:
+        """The per-run values for research prompt-template placeholders (D-6/§6.1).
+
+        Display forms throughout — a research prompt says "Markham, Ontario,
+        Canada", not "Markham, ON, CA" — matching the dummy values module
+        registration format-checks templates against
+        (``modules.base._DUMMY_PROFILE_FORMAT_KWARGS``).
+        """
+        return {
+            "city": self.city,
+            "state_or_province": self.state_display,
+            "country": self.country_display,
+            "client_name": self.client_name,
+        }
+
     def web_search_user_location(self) -> dict[str, str]:
         """The ``user_location`` dict for the web_search tool.
 

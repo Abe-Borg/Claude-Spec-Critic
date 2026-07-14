@@ -1,6 +1,16 @@
 # Implementation Plan: Hyperscale Data Center Fire-Sprinkler Module + Location/Client-Aware Review Engine
 
-**Status: NOT IMPLEMENTED. This is a work order for coding agents.**
+**Status: IN PROGRESS — WS-0 through WS-3 are implemented; WS-4 and WS-5
+remain a work order for coding agents.**
+
+| Workstream | Status |
+|---|---|
+| WS-0 — code-basis research + provenance | ✅ Implemented (PR #297) |
+| WS-1 — `datacenter_fire` module v1 (profile features off) | ✅ Implemented (PR #297) |
+| WS-2 — engine: ProjectProfile input plumbing | ✅ Implemented (PR #298) |
+| WS-3 — engine: requirements-research fan-out phase | ✅ Implemented |
+| WS-4 — engine: compliance pass + location-aware verification | ⬜ Not implemented |
+| WS-5 — module v2: turn it on + end-to-end + docs | ⬜ Not implemented |
 
 **Rev 2 (2026-07-14):** incorporates field-trial amendments from a live,
 end-to-end review of a real hyperscale data-center Division 21 package in a
@@ -419,6 +429,8 @@ fast-follow after WS-5.
 
 ### WS-0 — Code-basis research + provenance (no code)
 
+> **Status: ✅ Implemented** (PR #297, commit `d09e347`).
+
 Execute [DCPLAN] §3 exactly. Deliverables:
 
 1. The pinned `CodeCycle` facts: IBC/IFC current editions as base codes
@@ -441,6 +453,8 @@ enumerated for the eventual PR body.
 ---
 
 ### WS-1 — `datacenter_fire` module v1 (module data only; profile features OFF)
+
+> **Status: ✅ Implemented** (PR #297).
 
 Execute [DCPLAN] §§2, 4–7 with the slot content from §5 of this plan (which
 refines [DCPLAN]'s drafts). The module ships with
@@ -483,6 +497,8 @@ Estimated size: ~1 large new module file (~450 lines of content strings),
 ---
 
 ### WS-2 — Engine: ProjectProfile input plumbing (no new phases yet)
+
+> **Status: ✅ Implemented** (PR #298).
 
 Goal: the profile exists, is collected by the GUI when the selected module
 wants it, survives resume/recovery, and shows up in report title lines,
@@ -553,6 +569,24 @@ Estimated size: ~8 files touched, ~300–400 new lines + tests.
 ---
 
 ### WS-3 — Engine: requirements-research fan-out phase
+
+> **Status: ✅ Implemented.** New `src/research/` package
+> (`requirements_research.py` runner + `corpus_signals.py` scrape);
+> `submit_requirements_research` strict-subset tool; `ResearchDimension` +
+> `research_persona` / `research_dimensions` / `corpus_signal_patterns`
+> module slots with the D-2 conditional validation; `PHASE_RESEARCH`
+> registration (24k output cap, cache both, effort high,
+> `SPEC_CRITIC_RESEARCH_MODEL`); `build_web_search_tool(user_location=)`
+> (None ⇒ legacy bytes); the research phase runs inside
+> `start_batch_review` (one engine submission entry ⇒ GUI + headless in
+> lockstep; resume/recovery never re-runs it); additive
+> `requirements_profile` on `BatchSubmission` / `PendingBatch` /
+> `PipelineResult`; `KIND_RESEARCH` / `KIND_RESEARCH_DIMENSION` tracing +
+> `location_research` diagnostics; fakes (`pause_turn_response`,
+> `research_tool_use_response`) + `tests/test_requirements_research.py`.
+> Implementation note: item trimming over the context cap drops items from
+> the *rendered block only* — the structured profile keeps every item for
+> the WS-4 compliance pass / report / profile.json.
 
 Goal: `run_requirements_research(module, profile, *, log, progress, diag)`
 exists, fans out per-dimension web-search calls, grounds the results, and
