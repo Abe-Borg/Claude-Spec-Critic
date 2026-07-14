@@ -195,6 +195,7 @@ class TraceRecorder:
         cycle_label: str = "",
         module_id: str = "",
         files_reviewed: list[str] | None = None,
+        project_profile: dict | None = None,
     ) -> None:
         """Spin up the writer thread and write the initial run.json.
 
@@ -231,6 +232,10 @@ class TraceRecorder:
                 "spec_critic_version": self._spec_critic_version,
                 "resumed_at": [],
             }
+            # Additive + conditional: only present when a profile was supplied,
+            # so a profile-less run.json is byte-identical to today's.
+            if project_profile:
+                self._run_meta["project_profile"] = dict(project_profile)
         self._write_run_meta_sync()
 
         if self._writer_thread is None or not self._writer_thread.is_alive():

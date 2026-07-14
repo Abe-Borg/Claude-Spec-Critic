@@ -254,6 +254,18 @@ class ReviewModule:
         report_title: The exported report's Heading-0 title (e.g.
             "Spec Critic — M&P Specification Review Report"). Report-facing
             only; never rendered into a prompt.
+        project_profile_enabled: Whether this module wants a per-run
+            :class:`~src.core.project_profile.ProjectProfile` (project
+            city/state/country/client). Default ``False`` — the flag that
+            gates every location-aware behavior added by WS-2…WS-5 of the
+            data-center module plan. With it off, the GUI collects no profile
+            fields, no research/compliance phase runs, and every downstream
+            surface (cache key, report, tool dicts) is byte-identical to a
+            module that never heard of a profile. The content slots those
+            later workstreams add are validated non-empty **iff** this is
+            ``True`` and required-empty when ``False`` (design decision D-2),
+            so a module cannot ship dead location-aware content — that
+            conditional validation lands with the slots, not here.
     """
 
     module_id: str
@@ -283,6 +295,11 @@ class ReviewModule:
     # --- Report / GUI display surfaces (Phase 5) ------------------------
     report_context_phrase: str
     report_title: str
+    # --- Location-aware capability gate (WS-2 of the data-center plan) ---
+    # Additive, defaulted: existing modules keep their all-required-field
+    # construction, CA passes validation unchanged, and the flag defaults off
+    # so nothing location-aware activates until a module opts in.
+    project_profile_enabled: bool = False
 
 
 _PROMPT_SLOT_FIELDS: tuple[str, ...] = (

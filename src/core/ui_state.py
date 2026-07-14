@@ -18,6 +18,10 @@ import os
 from pathlib import Path
 
 _MODULE_KEY = "module_id"
+# Per-module last-entered project profile, keyed by module id. A nested map so
+# switching modules restores the profile last used for THAT module rather than
+# carrying one domain's city/client into another.
+_PROFILES_KEY = "project_profiles"
 
 
 def ui_state_path() -> Path:
@@ -44,9 +48,45 @@ def load_selected_module_id(*, path: Path | None = None) -> str:
 
 def save_selected_module_id(module_id: str, *, path: Path | None = None) -> None:
     """Persist the selected module id. Best-effort: never raises."""
+    _write_key(_MODULE_KEY, module_id, path=path)
+
+
+def load_project_profile(module_id: str, *, path: Path | None = None) -> dict:
+    """Last-entered project profile for ``module_id`` (``{}`` when none saved)."""
+    profiles = _load(path).get(_PROFILES_KEY, {})
+    if not isinstance(profiles, dict):
+        return {}
+    entry = profiles.get(module_id, {})
+    return entry if isinstance(entry, dict) else {}
+
+
+def save_project_profile(
+    module_id: str, profile: dict, *, path: Path | None = None
+) -> None:
+    """Persist the project profile for ``module_id``. Best-effort: never raises.
+
+    Read-modify-write so the top-level ``module_id`` selection and other
+    modules' saved profiles are never clobbered.
+    """
     target = path or ui_state_path()
     state = _load(target)
-    state[_MODULE_KEY] = module_id
+    profiles = state.get(_PROFILES_KEY)
+    if not isinstance(profiles, dict):
+        profiles = {}
+    profiles[module_id] = dict(profile)
+    state[_PROFILES_KEY] = profiles
+    _write_state(state, path=target)
+
+
+def _write_key(key: str, value: object, *, path: Path | None = None) -> None:
+    target = path or ui_state_path()
+    state = _load(target)
+    state[key] = value
+    _write_state(state, path=target)
+
+
+def _write_state(state: dict, *, path: Path | None = None) -> None:
+    target = path or ui_state_path()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(".tmp")

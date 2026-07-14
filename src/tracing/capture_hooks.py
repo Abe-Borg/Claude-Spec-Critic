@@ -106,22 +106,28 @@ def capture_pipeline_start(
     files: list[str],
     module_id: str = "",
     name: str = "",
+    project_profile: dict | None = None,
 ) -> SpanHandle | None:
     """Open the root pipeline span. Call once at run entry."""
     recorder = _get()
     if recorder is None:
         return None
     span_name = name or f"pipeline: {mode}"
+    inputs: dict[str, Any] = {
+        "mode": mode,
+        "model": model,
+        "cycle_label": cycle_label,
+        "module_id": module_id,
+        "files": list(files),
+    }
+    # Additive + conditional: the key only appears when a profile is present,
+    # so a profile-less (flag-off) run's trace is byte-identical to today's.
+    if project_profile:
+        inputs["project_profile"] = dict(project_profile)
     return recorder.open_span(
         KIND_PIPELINE,
         span_name,
-        inputs={
-            "mode": mode,
-            "model": model,
-            "cycle_label": cycle_label,
-            "module_id": module_id,
-            "files": list(files),
-        },
+        inputs=inputs,
         metadata={"run_id": recorder.run_id},
     )
 

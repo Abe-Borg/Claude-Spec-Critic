@@ -229,6 +229,10 @@ class DiagnosticsReport:
     # Registry id of the module the run reviewed under ("" for legacy
     # callers). Display-only — the run summary renders it next to the cycle.
     module_id: str = ""
+    # One-line project identity for the run summary (D-13), e.g.
+    # "Ashburn, Virginia, USA — Client: ExampleCo". Display-only, additive,
+    # empty on every profile-less run (so the summary is unchanged there).
+    project_profile_summary: str = ""
     files_selected: list[str] = field(default_factory=list)
     project_context_tokens: int = 0
     cross_check_enabled: bool = False

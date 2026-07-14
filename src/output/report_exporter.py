@@ -45,6 +45,7 @@ from lxml import etree
 
 from ..core.api_config import web_search_max_uses_for_severity
 from ..core.code_cycles import CodeCycle
+from ..core.project_profile import ProjectProfile
 from ..modules import ReviewModule, get_module
 from ..verification.verification_cache import default_cache_path
 from .report_status import (
@@ -310,7 +311,8 @@ def _add_styled_paragraph(doc: Document, text: str, style: str | None = None,
 def _write_title_block(doc: Document, review, files_reviewed: list[str],
                        cycle_label: str = "2025",
                        failed_review_count: int = 0,
-                       module: ReviewModule | None = None) -> None:
+                       module: ReviewModule | None = None,
+                       profile: ProjectProfile | None = None) -> None:
     """Write the report title and metadata.
 
     Uses separate paragraphs instead of \\n within runs to ensure
@@ -325,6 +327,12 @@ def _write_title_block(doc: Document, review, files_reviewed: list[str],
     The title text and the code-cycle line's jurisdiction wording come
     from the run ``module`` (``None`` resolves to the default module, so
     legacy callers keep the original California rendering byte-for-byte).
+
+    ``profile`` (a per-run :class:`ProjectProfile`) appends two centered
+    metadata lines — ``Project: {city}, {state}, {country}`` and
+    ``Client: {client}`` (D-13). It is only ever present when the run's
+    module opted into a profile, so a profile-less run's title block is
+    byte-identical to today.
     """
     module = module if module is not None else get_module(None)
     title = doc.add_heading(module.report_title, level=0)
@@ -353,6 +361,9 @@ def _write_title_block(doc: Document, review, files_reviewed: list[str],
         files_reviewed_line,
         code_cycle_line,
     ]
+    # Project / client identity lines only when a profile is present (D-13).
+    if profile is not None:
+        meta_lines.extend(profile.project_meta_lines())
 
     for line in meta_lines:
         para = doc.add_paragraph()
@@ -2274,6 +2285,12 @@ def export_report(
     # Legacy results / test doubles without a module_id resolve to the
     # default module.
     module = get_module(getattr(pipeline_result, "module_id", None))
+    # Per-run project identity (city/state/country/client), if the run's
+    # module collected one. Defensive: legacy results / test doubles have no
+    # attribute, and a malformed/empty dict degrades to None (profile-less).
+    project_profile = ProjectProfile.from_dict(
+        getattr(pipeline_result, "project_profile", None)
+    )
     # Specs whose review failed/truncated (never produced findings).
     # Defensive getattr keeps legacy callers / test doubles at empty.
     failed_review_specs = [
@@ -2288,6 +2305,7 @@ def export_report(
         cycle_label=cycle_label,
         failed_review_count=failed_review_count,
         module=module,
+        profile=project_profile,
     )
 
     # Run Diagnostics banner. Renders right
