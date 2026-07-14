@@ -123,6 +123,43 @@ class ChunkGroup:
 
 
 @dataclass(frozen=True)
+class ResearchDimension:
+    """One axis of the requirements-research fan-out (WS-3, design D-6).
+
+    The research *engine* (fan-out, streaming, grounding, failure policy)
+    lives in ``src/research/requirements_research.py``; the dimensions —
+    what to research and how hard — are module data. One synchronous
+    web-search call runs per dimension, in parallel across dimensions.
+
+    Attributes:
+        dimension_id: Stable id (``"governing_codes"``). Unique within the
+            module; stamped onto every research item the dimension produces
+            and into per-dimension status telemetry.
+        title: Human-readable label for logs / report provenance.
+        prompt_template: The dimension's research brief. A ``str.format``
+            template over :data:`PROFILE_FORMAT_PLACEHOLDERS`
+            (``{city}`` / ``{state_or_province}`` / ``{country}`` /
+            ``{client_name}``) plus the module's own
+            :func:`code_basis_format_kwargs` placeholders — format-checked
+            at registration with dummy profile values so a typo'd
+            placeholder fails startup, not a run.
+        max_searches: Per-dimension web_search budget. ``0`` ⇒ the engine
+            default (``api_config.RESEARCH_DEFAULT_MAX_SEARCHES``).
+            Per-dimension budgets are module data (D-6 [FT]) because the
+            heavy dimensions (governing codes, AHJ) need 3–5× the budget
+            of the light ones.
+        max_fetches: Per-dimension web_fetch budget. ``0`` ⇒ the engine
+            default (``api_config.RESEARCH_DEFAULT_MAX_FETCHES``).
+    """
+
+    dimension_id: str
+    title: str
+    prompt_template: str
+    max_searches: int = 0
+    max_fetches: int = 0
+
+
+@dataclass(frozen=True)
 class DetectorVocabulary:
     """Vocabulary the deterministic preprocessor scans for, per module.
 
@@ -300,6 +337,28 @@ class ReviewModule:
     # construction, CA passes validation unchanged, and the flag defaults off
     # so nothing location-aware activates until a module opts in.
     project_profile_enabled: bool = False
+    # --- Requirements-research content slots (WS-3, D-6) -----------------
+    # Validated by the D-2 conditional rule (see ``_validate_research_slots``):
+    # ``project_profile_enabled=True`` ⇒ persona non-empty and ≥1 dimension;
+    # ``False`` ⇒ all three required-empty so a module can't ship dead
+    # location-aware content. ``research_persona`` is the first line of the
+    # research system prompt (who the researcher is); ``research_dimensions``
+    # are the fan-out axes; ``corpus_signal_patterns`` are extra regexes the
+    # deterministic corpus-signal scrape matches for client/owner document
+    # names (e.g. "Basis of Design" headers) — optional even when enabled,
+    # since the scrape's other signal families are engine-owned.
+    research_persona: str = ""
+    research_dimensions: tuple[ResearchDimension, ...] = ()
+    corpus_signal_patterns: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _coerce_str_tuple_fields(self, ("corpus_signal_patterns",))
+        # Coerce a list of dimensions to a tuple (config-loaded module data
+        # arrives with lists); keeps the frozen dataclass hashable.
+        if not isinstance(self.research_dimensions, tuple):
+            object.__setattr__(
+                self, "research_dimensions", tuple(self.research_dimensions)
+            )
 
 
 _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
@@ -354,6 +413,42 @@ def code_basis_format_kwargs(cycle: CodeCycle) -> dict[str, str]:
         asce7_prev=cycle.asce7_previous,
         pinned_standards=cycle.edition_inline_phrase() or "current editions",
     )
+    return kwargs
+
+
+# The per-run project-identity placeholders a research prompt template may
+# reference (design D-6 / §6.1 of the hyperscale DC plan), rendered from
+# ``ProjectProfile.prompt_format_kwargs()`` at call time. The dummy values
+# below exist only for registration-time format checking — they must never
+# reach a real prompt.
+PROFILE_FORMAT_PLACEHOLDERS: tuple[str, ...] = (
+    "city",
+    "state_or_province",
+    "country",
+    "client_name",
+)
+
+_DUMMY_PROFILE_FORMAT_KWARGS: dict[str, str] = {
+    "city": "Springfield",
+    "state_or_province": "Virginia",
+    "country": "USA",
+    "client_name": "ExampleCo",
+}
+
+
+def research_template_format_kwargs(
+    cycle: CodeCycle, profile_kwargs: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """Placeholders a module's research prompt templates may reference.
+
+    The union of the module's own code-basis placeholders
+    (:func:`code_basis_format_kwargs`) and the per-run project-identity
+    placeholders (:data:`PROFILE_FORMAT_PLACEHOLDERS`). ``profile_kwargs``
+    carries the real per-run values (``ProjectProfile.prompt_format_kwargs()``);
+    registration passes ``None`` to format-check against dummy values.
+    """
+    kwargs = code_basis_format_kwargs(cycle)
+    kwargs.update(profile_kwargs if profile_kwargs is not None else _DUMMY_PROFILE_FORMAT_KWARGS)
     return kwargs
 
 
@@ -568,6 +663,94 @@ def _validate_chunk_groups(module: ReviewModule) -> None:
             seen_prefixes.add(prefix)
 
 
+def _validate_research_slots(module: ReviewModule) -> None:
+    """Enforce the D-2 conditional rule on the WS-3 research content slots.
+
+    ``project_profile_enabled=True`` ⇒ the module must ship a research
+    persona and at least one well-formed dimension (the research phase is
+    what the flag turns on); ``False`` ⇒ every research slot must be empty
+    so a module cannot carry dead location-aware content that nothing
+    exercises. Never relax these checks — extend them (invariant 10).
+    """
+    mid = module.module_id
+    if not module.project_profile_enabled:
+        if module.research_persona:
+            raise ValueError(
+                f"ReviewModule {mid!r}: research_persona must be empty while "
+                "project_profile_enabled=False (D-2: no dead content)"
+            )
+        if module.research_dimensions:
+            raise ValueError(
+                f"ReviewModule {mid!r}: research_dimensions must be empty while "
+                "project_profile_enabled=False (D-2: no dead content)"
+            )
+        if module.corpus_signal_patterns:
+            raise ValueError(
+                f"ReviewModule {mid!r}: corpus_signal_patterns must be empty "
+                "while project_profile_enabled=False (D-2: no dead content)"
+            )
+        return
+
+    if not module.research_persona.strip():
+        raise ValueError(
+            f"ReviewModule {mid!r}: project_profile_enabled=True requires a "
+            "non-empty research_persona"
+        )
+    if not module.research_dimensions:
+        raise ValueError(
+            f"ReviewModule {mid!r}: project_profile_enabled=True requires at "
+            "least one research dimension"
+        )
+    kwargs = research_template_format_kwargs(module.cycle)
+    seen_dimension_ids: set[str] = set()
+    for dim in module.research_dimensions:
+        if not isinstance(dim, ResearchDimension):
+            raise ValueError(
+                f"ReviewModule {mid!r}: research_dimensions entries must be "
+                f"ResearchDimension, got {type(dim).__name__}"
+            )
+        if (
+            not dim.dimension_id
+            or dim.dimension_id != dim.dimension_id.strip()
+            or not dim.title.strip()
+            or not dim.prompt_template.strip()
+        ):
+            raise ValueError(
+                f"ReviewModule {mid!r}: research dimension needs a stripped "
+                f"non-empty dimension_id, title, and prompt_template "
+                f"(got id {dim.dimension_id!r})"
+            )
+        if dim.dimension_id in seen_dimension_ids:
+            raise ValueError(
+                f"ReviewModule {mid!r}: duplicate research dimension_id "
+                f"{dim.dimension_id!r}"
+            )
+        seen_dimension_ids.add(dim.dimension_id)
+        if dim.max_searches < 0 or dim.max_fetches < 0:
+            raise ValueError(
+                f"ReviewModule {mid!r}: research dimension "
+                f"{dim.dimension_id!r} budgets must be non-negative "
+                f"(0 = engine default)"
+            )
+        try:
+            dim.prompt_template.format(**kwargs)
+        except Exception as exc:  # KeyError / IndexError / ValueError from format
+            raise ValueError(
+                f"ReviewModule {mid!r}: research dimension "
+                f"{dim.dimension_id!r} prompt_template does not format against "
+                f"the module cycle + profile placeholders ({exc!r}). Available "
+                f"placeholders: {sorted(kwargs)}"
+            ) from exc
+    for src in module.corpus_signal_patterns:
+        try:
+            re.compile(src, flags=re.IGNORECASE)
+        except re.error as exc:
+            raise ValueError(
+                f"ReviewModule {mid!r}: corpus_signal_patterns entry does not "
+                f"compile: {src!r} ({exc})"
+            ) from exc
+
+
 def _validate_module_content(module: ReviewModule) -> None:
     """Fail fast on prompt-slot / vocabulary content a module author got wrong."""
     for field_name in _PROMPT_SLOT_FIELDS:
@@ -606,6 +789,7 @@ def _validate_module_content(module: ReviewModule) -> None:
     _validate_detector_vocabulary(module)
     _validate_profile_keywords(module)
     _validate_chunk_groups(module)
+    _validate_research_slots(module)
     _validate_review_examples(module)
 
 

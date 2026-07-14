@@ -373,9 +373,32 @@ class TestModuleCapabilityFlag:
         assert DATACENTER_FIRE.project_profile_enabled is False
 
     def test_flag_is_additive_and_validates(self):
-        from src.modules import CALIFORNIA_K12_MEP, validate_module_registry
+        import pytest
 
-        # Flipping the flag on a module must not break registry validation in
-        # WS-2 (the conditional content-slot rules arrive with the slots).
-        enabled = dataclasses.replace(CALIFORNIA_K12_MEP, project_profile_enabled=True)
+        from src.modules import (
+            CALIFORNIA_K12_MEP,
+            ResearchDimension,
+            validate_module_registry,
+        )
+
+        # WS-3 landed the D-2 conditional rule: enabling the flag now
+        # REQUIRES the research content slots (a module can't turn on
+        # location-aware behavior with nothing to research)...
+        bare = dataclasses.replace(CALIFORNIA_K12_MEP, project_profile_enabled=True)
+        with pytest.raises(ValueError, match="research_persona"):
+            validate_module_registry([bare])
+
+        # ...and validates cleanly once the slots are supplied.
+        enabled = dataclasses.replace(
+            CALIFORNIA_K12_MEP,
+            project_profile_enabled=True,
+            research_persona="You research jurisdiction requirements.",
+            research_dimensions=(
+                ResearchDimension(
+                    dimension_id="governing_codes",
+                    title="Governing codes",
+                    prompt_template="Determine the governing codes for {city}.",
+                ),
+            ),
+        )
         validate_module_registry([enabled])

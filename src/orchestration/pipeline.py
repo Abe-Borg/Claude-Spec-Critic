@@ -137,6 +137,11 @@ class PipelineResult:
     # dict form keeps the result JSON-friendly. ``None`` on every existing
     # (profile-less) run, so those reports are byte-identical.
     project_profile: dict | None = None
+    # Serialized ``RequirementsProfile`` from the WS-3 research phase, or
+    # ``None`` when it didn't run. Carried so the WS-4 report section /
+    # compliance pass / profile.json export can read it via ``getattr``;
+    # additive like ``project_profile``.
+    requirements_profile: dict | None = None
     total_elapsed_seconds: float | None = None
     # Remaining deterministic alert types collected during preflight.
     # Carrying them through here lets the report render every detector's
@@ -803,6 +808,13 @@ class BatchSubmission:
     # Persisted into the pending-batch resume state and stamped onto the
     # PipelineResult; additive, ``None`` on every profile-less run.
     project_profile: dict | None = None
+    # Serialized ``RequirementsProfile`` (the WS-3 research phase's typed
+    # output), or ``None`` when the phase didn't run. The rendered TEXT of
+    # the profile is already inside ``project_context`` (spliced pre-submit),
+    # so resume recovers the reviewers' view for free; this dict is what the
+    # compliance pass and report surfaces (WS-4) reconstruct the structured
+    # items from. Additive — same precedent as ``project_profile``.
+    requirements_profile: dict | None = None
     cross_check_enabled: bool = False
     # Carry the remaining deterministic alert lists so the collect /
     # finalize path can hand them off to the final PipelineResult.
@@ -818,7 +830,86 @@ class BatchSubmission:
     trace_span_id: str = ""
 
 
-def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, module: ReviewModule = DEFAULT_MODULE, cross_check_enabled: bool = False, project_profile: ProjectProfile | None = None) -> BatchSubmission:
+def _research_phase_applies(module: ReviewModule, profile: ProjectProfile | None, *, log: LogFn = _noop_log) -> bool:
+    """Gate for the WS-3 requirements-research phase.
+
+    Every condition must hold: the module opted in
+    (``project_profile_enabled``), a complete profile was collected, and the
+    module actually defines research dimensions. With any of them false the
+    submit path is byte-identical to a profile-less run (invariant 2). An
+    enabled module with a present-but-incomplete profile is logged rather
+    than silently skipped — the GUI blocks that combination at validation,
+    so hitting it means a headless caller passed bad input.
+    """
+    if not getattr(module, "project_profile_enabled", False) or profile is None:
+        return False
+    if not profile.is_complete():
+        log(
+            "Project profile is incomplete (city/state/country/client); "
+            "skipping location research.",
+            level="warning",
+        )
+        return False
+    return bool(getattr(module, "research_dimensions", ()))
+
+
+def _run_research_phase(
+    *,
+    module: ReviewModule,
+    profile: ProjectProfile,
+    input_dir: Path,
+    files: Optional[list[Path]],
+    user_context: str,
+    log: LogFn,
+    progress: ProgressFn,
+    diagnostics=None,
+) -> tuple[str, dict]:
+    """Corpus scrape → research fan-out → context splice (WS-3, D-3).
+
+    Returns ``(effective_context, requirements_profile_dict)``. The scrape
+    is best-effort (an extraction failure degrades research to profile-only
+    — the failure posture is unchanged); the fan-out itself raises
+    :class:`~src.research.ResearchFanoutError` when EVERY dimension fails,
+    aborting the submit before anything is billed for review.
+
+    Deferred import: the research package pulls in the verifier's streaming
+    stack, which profile-less runs (the CA module, i.e. every run today)
+    never need.
+    """
+    from ..research import (
+        run_requirements_research,
+        scrape_corpus_signals,
+        splice_profile_into_context,
+    )
+
+    progress(0.0, "Researching location requirements...")
+    corpus_signals = None
+    try:
+        # Cached extraction: the later ``_prepare_specs`` call re-extracts
+        # the same files and hits the LRU, so scraping early costs nothing.
+        spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
+        extracted = extract_multiple_specs_cached(spec_files)
+        corpus_signals = scrape_corpus_signals(extracted, module=module)
+    except Exception as exc:  # noqa: BLE001 — scrape is a seed, never a gate
+        log(
+            f"Corpus-signal scrape skipped ({exc}); research runs profile-only.",
+            level="warning",
+        )
+    research_profile = run_requirements_research(
+        module,
+        profile,
+        corpus_signals=corpus_signals,
+        log=log,
+        progress=progress,
+        diag=diagnostics,
+    )
+    effective_context, _dropped = splice_profile_into_context(
+        user_context, research_profile, log=log
+    )
+    return effective_context, research_profile.to_dict()
+
+
+def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, module: ReviewModule = DEFAULT_MODULE, cross_check_enabled: bool = False, project_profile: ProjectProfile | None = None, diagnostics=None) -> BatchSubmission:
     cycle = module.cycle
     profile_dict = project_profile.to_dict() if project_profile is not None else None
     trace_pipeline = _trace.capture_pipeline_start(
@@ -829,7 +920,28 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         files=[str(f) for f in (files or [])],
         project_profile=profile_dict,
     )
-    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, model=model)
+    # WS-3 requirements-research phase: runs BEFORE spec preparation so its
+    # rendered profile is inside ``project_context`` when preflight counts
+    # tokens and the batch submits. Living here (the one engine submission
+    # entry point) keeps the GUI submit thread and any headless submitter in
+    # lockstep by construction (invariant 7). Resume/recovery paths call
+    # ``reconstruct_batch_submission`` instead, so research is never re-run
+    # on resume (D-12). ``diagnostics`` is an optional duck-typed
+    # ``DiagnosticsReport`` for per-dimension API-call telemetry.
+    effective_context = project_context
+    requirements_profile_dict: dict | None = None
+    if _research_phase_applies(module, project_profile, log=log):
+        effective_context, requirements_profile_dict = _run_research_phase(
+            module=module,
+            profile=project_profile,
+            input_dir=input_dir,
+            files=files,
+            user_context=project_context,
+            log=log,
+            progress=progress,
+            diagnostics=diagnostics,
+        )
+    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=effective_context, log=log, progress=progress, cycle=cycle, model=model)
     _trace.capture_note(
         trace_pipeline,
         "specs prepared",
@@ -840,7 +952,7 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
     )
     job = submit_review_batch(
         prepared.specs,
-        project_context=project_context,
+        project_context=effective_context,
         model=model,
         cycle=cycle,
         # Feed each spec's deterministic alerts to the prompt builder so
@@ -859,11 +971,15 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         leed_alerts=prepared.leed_alerts,
         placeholder_alerts=prepared.placeholder_alerts,
         model=model,
-        project_context=project_context,
+        # The EFFECTIVE context (research profile spliced in) — this is what
+        # the batch was submitted with, what cross-check/verification must
+        # see, and what resume recovers the profile text from.
+        project_context=effective_context,
         prepared_specs=prepared.specs,
         cycle_label=cycle.label,
         module_id=module.module_id,
         project_profile=profile_dict,
+        requirements_profile=requirements_profile_dict,
         cross_check_enabled=cross_check_enabled,
         code_cycle_alerts=prepared.code_cycle_alerts,
         structural_alerts=prepared.structural_alerts,
@@ -1229,6 +1345,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         cycle_label=state.submission.cycle_label,
         module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
         project_profile=getattr(state.submission, "project_profile", None),
+        requirements_profile=getattr(state.submission, "requirements_profile", None),
         total_elapsed_seconds=time.time() - state.submission.job.created_at,
         # Pass the deterministic-check lists through to the report.
         code_cycle_alerts=list(state.code_cycle_alerts),
@@ -1260,6 +1377,7 @@ def reconstruct_batch_submission(
     cross_check_enabled: bool,
     created_at: float,
     project_profile: dict | None = None,
+    requirements_profile: dict | None = None,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> BatchSubmission:
@@ -1355,6 +1473,11 @@ def reconstruct_batch_submission(
         cycle_label=module.cycle.label,
         module_id=module.module_id,
         project_profile=project_profile,
+        # Research is never re-run on resume (D-12): the profile TEXT is
+        # already inside the persisted ``project_context``; the structured
+        # dict rides back in here from the persisted state (or None for a
+        # recovery path that has no saved state).
+        requirements_profile=requirements_profile,
         cross_check_enabled=cross_check_enabled,
         code_cycle_alerts=code_cycle,
         structural_alerts=structural,

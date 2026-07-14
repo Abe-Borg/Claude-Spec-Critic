@@ -73,6 +73,23 @@ def submit_batch_thread(app, run_epoch: int) -> None:
         if diag:
             diag.log("batch_submit", "step", "Preparing batch submission")
 
+        # WS-3 UI nicety: when the engine will run the research phase (module
+        # opted in + complete profile + dimensions defined), name it on the
+        # run button. The authoritative gate lives in start_batch_review;
+        # this only mirrors it for display, and profile-less runs never hit it.
+        if (
+            module.project_profile_enabled
+            and profile is not None
+            and profile.is_complete()
+            and module.research_dimensions
+        ):
+            app._dispatch_if_current(
+                run_epoch,
+                lambda: app.run_button.configure(
+                    text="Researching location requirements..."
+                ),
+            )
+
         submission = start_batch_review(
             input_dir=app.input_dir,
             files=app._selected_files_for_review,
@@ -83,6 +100,11 @@ def submit_batch_thread(app, run_epoch: int) -> None:
             project_profile=profile,
             log=app._make_diag_log("batch_submit", run_epoch),
             progress=app._make_diag_progress("batch_submit", run_epoch),
+            # WS-3: per-dimension research telemetry rolls into the run
+            # diagnostics (phase="location_research"). The research phase
+            # itself runs inside start_batch_review, gated on the module
+            # flag + a complete profile — profile-less runs are untouched.
+            diagnostics=diag,
         )
         if diag:
             diag.log("batch_submit", "success", f"Batch submitted: {submission.job.batch_id}", {

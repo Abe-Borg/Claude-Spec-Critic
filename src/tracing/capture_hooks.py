@@ -49,6 +49,8 @@ from .spans import (
     KIND_CROSS_CHECK,
     KIND_CROSS_CHECK_CHUNK,
     KIND_PIPELINE,
+    KIND_RESEARCH,
+    KIND_RESEARCH_DIMENSION,
     KIND_TRIAGE,
     KIND_VERIFICATION_ESCALATION,
     KIND_VERIFICATION_INITIAL,
@@ -221,6 +223,114 @@ def capture_cross_check_end(
     recorder.close_span(
         handle,
         outputs={"finding_count": finding_count, "cross_check_status": status},
+        status=STATUS_OK if error is None else STATUS_ERROR,
+        error=error,
+    )
+
+
+# ---- Requirements research (WS-3) ---------------------------------------
+@_safe
+def capture_research_start(
+    *,
+    dimension_count: int,
+    project: str = "",
+    parent: SpanHandle | None = None,
+) -> SpanHandle | None:
+    """Open the parent span for the requirements-research fan-out."""
+    recorder = _get()
+    if recorder is None:
+        return None
+    inputs: dict[str, Any] = {"dimension_count": dimension_count}
+    if project:
+        inputs["project"] = project
+    return recorder.open_span(
+        KIND_RESEARCH,
+        f"research ({dimension_count} dimensions)",
+        parent=parent,
+        inputs=inputs,
+    )
+
+
+@_safe
+def capture_research_end(
+    handle: SpanHandle | None,
+    *,
+    item_count: int,
+    completed_dimensions: int,
+    failed_dimensions: int,
+    error: str | None = None,
+) -> None:
+    recorder = _get()
+    if recorder is None or handle is None:
+        return
+    recorder.close_span(
+        handle,
+        outputs={
+            "item_count": item_count,
+            "completed_dimensions": completed_dimensions,
+            "failed_dimensions": failed_dimensions,
+        },
+        status=STATUS_OK if error is None else STATUS_ERROR,
+        error=error,
+    )
+
+
+@_safe
+def capture_research_dimension_start(
+    *,
+    dimension_id: str,
+    model: str,
+    max_searches: int,
+    max_fetches: int,
+    user_message: str = "",
+    system_prompt: str = "",
+    parent: SpanHandle | None = None,
+) -> SpanHandle | None:
+    recorder = _get()
+    if recorder is None:
+        return None
+    inputs: dict[str, Any] = {
+        "dimension_id": dimension_id,
+        "model": model,
+        "max_searches": max_searches,
+        "max_fetches": max_fetches,
+    }
+    if user_message:
+        inputs["user_message"] = recorder.prompt_ref("research_user", user_message)
+    if system_prompt:
+        inputs["system_prompt"] = recorder.prompt_ref("research_system", system_prompt)
+    return recorder.open_span(
+        KIND_RESEARCH_DIMENSION,
+        f"research: {dimension_id}",
+        parent=parent,
+        inputs=inputs,
+        metadata={"dimension_id": dimension_id},
+    )
+
+
+@_safe
+def capture_research_dimension_end(
+    handle: SpanHandle | None,
+    *,
+    status: str,
+    item_count: int = 0,
+    grounded_count: int = 0,
+    web_search_requests: int = 0,
+    web_fetch_requests: int = 0,
+    error: str | None = None,
+) -> None:
+    recorder = _get()
+    if recorder is None or handle is None:
+        return
+    recorder.close_span(
+        handle,
+        outputs={
+            "dimension_status": status,
+            "item_count": item_count,
+            "grounded_count": grounded_count,
+            "web_search_requests": web_search_requests,
+            "web_fetch_requests": web_fetch_requests,
+        },
         status=STATUS_OK if error is None else STATUS_ERROR,
         error=error,
     )

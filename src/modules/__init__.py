@@ -12,8 +12,10 @@ from .base import (
     ChunkGroup,
     DetectorVocabulary,
     ProfileKeywords,
+    ResearchDimension,
     ReviewModule,
     code_basis_format_kwargs,
+    research_template_format_kwargs,
     validate_module_registry,
 )
 from .california_k12_mep import CALIFORNIA_K12_MEP
@@ -29,8 +31,10 @@ __all__ = [
     "ChunkGroup",
     "DetectorVocabulary",
     "ProfileKeywords",
+    "ResearchDimension",
     "ReviewModule",
     "code_basis_format_kwargs",
+    "research_template_format_kwargs",
     "validate_module_registry",
     "CALIFORNIA_K12_MEP",
     "DATACENTER_FIRE",

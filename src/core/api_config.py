@@ -11,6 +11,8 @@ Model identifiers may be overridden via env vars:
     SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL — escalation (default Opus 4.8).
     SPEC_CRITIC_TRIAGE_MODEL                — verification triage
                                               (default Haiku 4.5).
+    SPEC_CRITIC_RESEARCH_MODEL              — requirements research fan-out
+                                              (default Sonnet 4.6).
 """
 from __future__ import annotations
 
@@ -49,6 +51,11 @@ VERIFICATION_ESCALATION_MODEL = os.environ.get(
 # task is shallow classification over short inputs; Haiku fits.
 TRIAGE_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_TRIAGE_MODEL", MODEL_HAIKU_45)
 
+# Requirements-research fan-out (per-dimension web_search calls that build
+# the Project Requirements Profile for profile-enabled modules). Sonnet:
+# the task is retrieval + structured summarization, not deep review.
+RESEARCH_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_RESEARCH_MODEL", MODEL_SONNET_46)
+
 
 # Convenience sets for output-cap dispatch. Every Opus family member shares
 # the 128k output ceiling and the high-effort escalation tier, so newer Opus
@@ -86,6 +93,11 @@ VERIFICATION_OUTPUT_CAP = 16_000
 # Triage emits a small array of {index, classification, reason}; 8k is more
 # than enough even for a 50-finding chunk.
 HAIKU_TRIAGE_OUTPUT_CAP = 8_000
+# One research dimension returns a structured item list plus tool-use /
+# thinking overhead. Field measurement (hyperscale DC plan, D-11 [FT]):
+# dimension outputs ran 6–14k tokens before protocol overhead, so the
+# original 16k-style verification cap would truncate the heavy dimensions.
+RESEARCH_OUTPUT_CAP = 24_000
 
 # Token threshold above which a review uses the larger batch cap.
 LARGE_REVIEW_INPUT_THRESHOLD = 200_000
@@ -100,6 +112,7 @@ PHASE_VERIFICATION = "verification"
 PHASE_VERIFICATION_RETRY = "verification_retry"
 PHASE_VERIFICATION_CONTINUATION = "verification_continuation"
 PHASE_TRIAGE = "triage"
+PHASE_RESEARCH = "research"
 
 
 def output_cap_for_model(model: str, *, requested: int) -> int:
@@ -130,6 +143,7 @@ _PHASE_OUTPUT_BUDGET: dict[str, int] = {
     PHASE_VERIFICATION_RETRY: VERIFICATION_OUTPUT_CAP,
     PHASE_VERIFICATION_CONTINUATION: VERIFICATION_OUTPUT_CAP,
     PHASE_TRIAGE: HAIKU_TRIAGE_OUTPUT_CAP,
+    PHASE_RESEARCH: RESEARCH_OUTPUT_CAP,
 }
 
 
@@ -167,6 +181,10 @@ def review_max_tokens(*, model: str = REVIEW_MODEL_DEFAULT, allow_extended_outpu
 
 def cross_check_max_tokens(*, model: str = CROSS_CHECK_MODEL_DEFAULT) -> int:
     return phase_output_cap(PHASE_CROSS_CHECK, model=model)
+
+
+def research_max_tokens(*, model: str = RESEARCH_MODEL_DEFAULT) -> int:
+    return phase_output_cap(PHASE_RESEARCH, model=model)
 
 
 def verification_max_tokens(*, model: str = VERIFICATION_MODEL_DEFAULT, phase: str = PHASE_VERIFICATION) -> int:
@@ -480,6 +498,10 @@ _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     PHASE_VERIFICATION: EFFORT_MEDIUM,
     PHASE_VERIFICATION_RETRY: EFFORT_MEDIUM,
     PHASE_VERIFICATION_CONTINUATION: EFFORT_MEDIUM,
+    # Research is retrieval-heavy but not the deepest-reasoning phase;
+    # ``high`` keeps the model persistent about chasing primary sources
+    # without the xhigh token eagerness the review phases warrant.
+    PHASE_RESEARCH: EFFORT_HIGH,
 }
 
 # Verification phases get the model-aware bump: Opus on verification is
@@ -601,6 +623,10 @@ _PHASE_CACHE_POLICY: dict[str, CachePolicy] = {
     PHASE_VERIFICATION: CachePolicy(cache_system=True, cache_tools=True),
     PHASE_VERIFICATION_RETRY: CachePolicy(cache_system=True, cache_tools=True),
     PHASE_VERIFICATION_CONTINUATION: CachePolicy(cache_system=True, cache_tools=True),
+    # Research: the system prompt (persona + protocol) and tool list are
+    # shared across every dimension call and every pause_turn resume in a
+    # run, so both breakpoints pay for themselves on the second call.
+    PHASE_RESEARCH: CachePolicy(cache_system=True, cache_tools=True),
     # Triage: ~375-token system prompt called in batches of up to 20,
     # below the 2048-token Haiku cache minimum so repeated calls cannot
     # hit. Skip caching to avoid the cache-write cost.
@@ -779,13 +805,36 @@ def web_search_max_uses_for_severity(severity: str | None) -> int:
     return _SEVERITY_MAX_USES.get(sev, DEFAULT_VERIFICATION_MAX_USES)
 
 
-def build_web_search_tool(*, max_uses: int = DEFAULT_VERIFICATION_MAX_USES) -> dict:
+# Per-run web-search research budgets (requirements-research fan-out).
+# These are the ENGINE defaults; a module's ``ResearchDimension`` may
+# override per dimension (0 ⇒ fall back to these). Re-baselined from field
+# measurement (hyperscale DC plan D-11 [FT]): the heavy governing-codes /
+# AHJ dimensions need 20–24 searches to reach referenced-standards-table
+# depth, so modules are expected to raise these for those dimensions.
+RESEARCH_DEFAULT_MAX_SEARCHES = 12
+RESEARCH_DEFAULT_MAX_FETCHES = 4
+
+
+def build_web_search_tool(
+    *,
+    max_uses: int = DEFAULT_VERIFICATION_MAX_USES,
+    user_location: dict | None = None,
+) -> dict:
+    """Build the web_search server-tool dict.
+
+    ``user_location`` steers search localization. ``None`` (every existing
+    call site) keeps the long-standing hardcoded California default
+    byte-identical — the CA module's request shape must not change. A run
+    with a :class:`~src.core.project_profile.ProjectProfile` passes
+    ``profile.web_search_user_location()`` so research (WS-3) and
+    verification (WS-4) search as the project's own locale.
+    """
     return {
         "type": "web_search_20260209",
         "name": "web_search",
         "blocked_domains": list(_WEB_SEARCH_BLOCKED_DOMAINS),
         "max_uses": max_uses,
-        "user_location": {
+        "user_location": dict(user_location) if user_location else {
             "type": "approximate",
             "country": "US",
             "region": "California",
