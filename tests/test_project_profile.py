@@ -385,10 +385,12 @@ class TestModuleCapabilityFlag:
         # REQUIRES the research content slots (a module can't turn on
         # location-aware behavior with nothing to research)...
         bare = dataclasses.replace(CALIFORNIA_K12_MEP, project_profile_enabled=True)
-        with pytest.raises(ValueError, match="research_persona"):
+        with pytest.raises(ValueError, match="project_profile_enabled=True requires"):
             validate_module_registry([bare])
 
-        # ...and validates cleanly once the slots are supplied.
+        # ...and validates cleanly once the slots are supplied (research
+        # persona + dimensions from WS-3, compliance persona + severity
+        # anchors from WS-4).
         enabled = dataclasses.replace(
             CALIFORNIA_K12_MEP,
             project_profile_enabled=True,
@@ -400,5 +402,7 @@ class TestModuleCapabilityFlag:
                     prompt_template="Determine the governing codes for {city}.",
                 ),
             ),
+            compliance_persona="You evaluate spec packages for compliance.",
+            compliance_severity_definitions="- CRITICAL — permit-blocking omission.",
         )
         validate_module_registry([enabled])

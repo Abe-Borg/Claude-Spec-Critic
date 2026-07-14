@@ -278,6 +278,13 @@ class ReviewResult:
     # In-memory only — telemetry describes runtime behavior, not durable
     # state.
     structured_payload: dict | None = None
+    # Compliance-pass coverage matrix (WS-4, D-7): one dict per profile
+    # requirement — {"requirement_id", "status", "evidence", "fileName"} —
+    # populated only by ``compliance_checker.run_compliance_check`` (the
+    # compliance ReviewResult reuses ``cross_check_status`` for its
+    # completed/failed/skipped status). Review and cross-check results leave
+    # it empty; additive, JSON-friendly.
+    coverage: list[dict] = field(default_factory=list)
 
     @property
     def critical_count(self) -> int: return sum(1 for f in self.findings if f.severity == "CRITICAL")

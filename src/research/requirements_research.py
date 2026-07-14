@@ -123,7 +123,9 @@ _RESEARCH_JSON_TAG_PATTERN = re.compile(
 
 # Fixed category → rendered-section mapping (§6.4 of the plan). Unknown
 # categories (text-fallback payloads can carry anything) land in a trailing
-# OTHER section rather than being silently dropped.
+# OTHER section rather than being silently dropped. Public (no underscore
+# aliases below) so the report's "Jurisdiction & Client Requirements"
+# section groups items identically to the rendered context block.
 _SECTION_ORDER: tuple[str, ...] = (
     "GOVERNING CODES & AMENDMENTS",
     "AHJ REQUIREMENTS",
@@ -140,6 +142,10 @@ _CATEGORY_SECTIONS: dict[str, str] = {
     "insurer_requirement": "CLIENT & INSURER STANDARDS",
     "site_environment": "SITE ENVIRONMENT",
 }
+
+# Public aliases for report/display consumers.
+PROFILE_SECTION_ORDER = _SECTION_ORDER
+PROFILE_CATEGORY_SECTIONS = _CATEGORY_SECTIONS
 
 
 # ---------------------------------------------------------------------------

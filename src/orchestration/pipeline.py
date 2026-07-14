@@ -126,6 +126,11 @@ class PipelineResult:
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
+    # WS-4 compliance pass output. ``None`` on every profile-less run so
+    # those reports/sidecars are byte-identical; a ReviewResult (with
+    # ``coverage`` + ``cross_check_status`` reused as the pass status)
+    # when the pass ran or was explicitly skipped.
+    compliance_result: Optional[ReviewResult] = None
     cycle_label: str = DEFAULT_CYCLE.label
     # Identity of the module the run was reviewed under. Rides alongside
     # ``cycle_label`` (which stays for the verification-cache namespace and
@@ -171,6 +176,12 @@ class CollectedBatchState:
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
+    # WS-4 compliance pass output (``None`` when the pass never applied —
+    # flag-off module or no requirements profile — so profile-less runs
+    # carry no trace of it). The ReviewResult reuses ``cross_check_status``
+    # as its completed/failed/skipped status and carries the coverage
+    # matrix on ``ReviewResult.coverage``.
+    compliance_result: Optional[ReviewResult] = None
     cross_check_skipped_due_to_missing_specs: bool = False
     truncated_specs: list[str] = field(default_factory=list)
     # Propagate the rest of the deterministic alerts through the
@@ -454,6 +465,25 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             occurrence_originals=member_originals,
         ))
     return out
+
+
+def assign_compliance_finding_ids(findings: list[Finding]) -> list[Finding]:
+    """Stamp a stable, content-derived ``lc-`` id on each compliance finding.
+
+    Mirrors :func:`assign_cross_check_finding_ids` for the WS-4 compliance
+    pass (design D-8): compliance findings never flow through the review
+    dedup pass, so without this they reach verification, the sidecar, and
+    the trace viewer with ``finding_id=""``. The ``lc-`` prefix is the only
+    collision firewall between finding classes — a compliance finding and a
+    review/coordination finding that share an identical dedup key must never
+    collapse into one sidecar entry. Same-content compliance findings
+    intentionally share an id (the downstream dedup signal). Mutates in
+    place (only filling empty ids), idempotent, returns the same list.
+    """
+    for f in findings:
+        if not f.finding_id:
+            f.finding_id = compute_finding_id(f, prefix="lc")
+    return findings
 
 
 def assign_cross_check_finding_ids(findings: list[Finding]) -> list[Finding]:
@@ -1271,6 +1301,138 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
     return state
 
 
+def _log_compliance_status(log: LogFn, result: ReviewResult) -> None:
+    status = result.cross_check_status or "completed"
+    if status == "completed":
+        log(
+            f"Compliance check completed: {len(result.findings)} finding(s), "
+            f"{len(getattr(result, 'coverage', []) or [])} coverage entr(ies).",
+            level="success",
+        )
+    elif status == "skipped":
+        log(f"Compliance check skipped: {result.thinking}", level="warning")
+    else:
+        log(f"Compliance check FAILED: {result.error}", level="error")
+
+
+def run_compliance_for_batch(
+    state: CollectedBatchState,
+    *,
+    specs: list[ExtractedSpec] | None = None,
+    project_context: str | None = None,
+    log: LogFn = _noop_log,
+) -> CollectedBatchState:
+    """Run the WS-4 local-code compliance pass over a collected batch.
+
+    Mirrors :func:`run_cross_check_for_batch`'s shape: gate → input
+    fallback to submission fields → failed-spec exclusion → cycle
+    re-derivation from ``module_id`` → id stamping → result onto the state.
+    Inserted AFTER cross-check and BEFORE verification round 2, so its
+    findings verify together with the coordination findings in one batch.
+
+    Gate: the module must have ``project_profile_enabled`` on AND the
+    submission must carry a structured ``requirements_profile``. A flag-off
+    run leaves ``state.compliance_result`` as ``None`` (no report surface
+    renders — invariant 2); a flag-on run without a usable profile records
+    an explicit ``skipped`` result so the absence is honest (D-12: recovery
+    paths without saved state report "skipped (profile unavailable)").
+    """
+    from ..research import RequirementsProfile
+
+    module = get_module(getattr(state.submission, "module_id", None))
+    if not getattr(module, "project_profile_enabled", False):
+        return state
+
+    profile = RequirementsProfile.from_dict(
+        getattr(state.submission, "requirements_profile", None)
+    )
+    if profile is None:
+        skipped = ReviewResult(
+            findings=[],
+            cross_check_status="skipped",
+            thinking=(
+                "Compliance check skipped: requirements profile unavailable "
+                "(research did not run, or this is a recovery without saved state)."
+            ),
+        )
+        state.compliance_result = skipped
+        _log_compliance_status(log, skipped)
+        return state
+
+    if specs is None:
+        specs = state.submission.prepared_specs
+    if project_context is None:
+        project_context = state.submission.project_context
+    if not specs:
+        skipped = ReviewResult(
+            findings=[],
+            cross_check_status="skipped",
+            thinking=(
+                "Compliance check skipped: original extracted spec content is "
+                "not available."
+            ),
+        )
+        state.compliance_result = skipped
+        _log_compliance_status(log, skipped)
+        return state
+
+    # Exclude specs whose individual review failed — same rule as
+    # cross-check: no compliance claims about a spec that was never
+    # successfully reviewed.
+    failed_filenames = set(state.truncated_specs or [])
+    if failed_filenames:
+        specs = [s for s in specs if s.filename not in failed_filenames]
+    if not specs:
+        skipped = ReviewResult(
+            findings=[],
+            cross_check_status="skipped",
+            thinking="Compliance check skipped: every spec failed review.",
+        )
+        state.compliance_result = skipped
+        _log_compliance_status(log, skipped)
+        return state
+
+    # Already-identified context: review + cross-check findings, DISPUTED
+    # excluded — the same input rule cross-check applies to review findings.
+    existing: list[Finding] = [
+        f
+        for f in (state.review_result.findings if state.review_result else [])
+        if not (f.verification and f.verification.verdict == "DISPUTED")
+    ]
+    if state.cross_check_result and state.cross_check_result.findings:
+        existing.extend(
+            f
+            for f in state.cross_check_result.findings
+            if not (f.verification and f.verification.verdict == "DISPUTED")
+        )
+
+    cycle = module.cycle
+    from ..compliance import run_chunked_compliance_check
+
+    compliance = run_chunked_compliance_check(
+        specs,
+        profile,
+        existing,
+        project_context=project_context,
+        cycle=cycle,
+        log=log,
+    )
+    # Label compliance findings in ``section`` (precedent: cross-check chunk
+    # labels) so the report and sidecar show their origin without a new
+    # ReportStatus, then stamp stable ``lc-`` ids before the findings flow
+    # into round-2 verification and the edit sidecar (D-8). Label-then-id
+    # matches cross-check's order, so the content-derived id includes the
+    # label consistently.
+    for f in compliance.findings:
+        section = f.section or ""
+        if not section.startswith("[Compliance]"):
+            f.section = f"[Compliance] {section}".strip()
+    assign_compliance_finding_ids(compliance.findings)
+    state.compliance_result = compliance
+    _log_compliance_status(log, compliance)
+    return state
+
+
 def start_batch_verification(
     findings: list[Finding],
     *,
@@ -1328,6 +1490,8 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         all_findings.extend(state.review_result.findings)
     if state.cross_check_result and state.cross_check_result.findings:
         all_findings.extend(state.cross_check_result.findings)
+    if state.compliance_result and state.compliance_result.findings:
+        all_findings.extend(state.compliance_result.findings)
     # Tracing: snapshot every finding's terminal state and close the
     # batch-mode pipeline span.
     for _f in all_findings:
@@ -1342,6 +1506,9 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
                 "cross_check_finding_count": (
                     len(state.cross_check_result.findings) if state.cross_check_result else 0
                 ),
+                "compliance_finding_count": (
+                    len(state.compliance_result.findings) if state.compliance_result else 0
+                ),
                 "truncated_specs": list(state.truncated_specs),
             },
         )
@@ -1355,6 +1522,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         leed_alerts=state.leed_alerts,
         placeholder_alerts=state.placeholder_alerts,
         cross_check_result=state.cross_check_result,
+        compliance_result=state.compliance_result,
         cycle_label=state.submission.cycle_label,
         module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
         project_profile=getattr(state.submission, "project_profile", None),
@@ -1543,15 +1711,33 @@ def run_batch_collection_headless(
         project_context=submission.project_context,
         log=log,
     )
+    # WS-4 compliance pass: after cross-check, before verification round 2.
+    # No-op (state unchanged) for flag-off modules; explicit ``skipped``
+    # when the module opted in but the profile is unavailable (recovery).
+    review_state = run_compliance_for_batch(
+        review_state,
+        specs=submission.prepared_specs,
+        project_context=submission.project_context,
+        log=log,
+    )
     cross_findings = (
         list(review_state.cross_check_result.findings)
         if (review_state.cross_check_result and review_state.cross_check_result.findings)
         else []
     )
-    if cross_findings:
-        cc_job = start_batch_verification(cross_findings, module=module, log=log, progress=progress, cache=cache)
+    compliance_findings = (
+        list(review_state.compliance_result.findings)
+        if (review_state.compliance_result and review_state.compliance_result.findings)
+        else []
+    )
+    # Verification round 2 covers cross-check AND compliance findings in ONE
+    # batch — both are plain findings lists and the verification functions
+    # take arbitrary findings (WS-4 step 5).
+    round2_findings = cross_findings + compliance_findings
+    if round2_findings:
+        cc_job = start_batch_verification(round2_findings, module=module, log=log, progress=progress, cache=cache)
         if cc_job is not None:
-            collect_batch_verification_results(cc_job, cross_findings, module=module, log=log, progress=progress, cache=cache)
+            collect_batch_verification_results(cc_job, round2_findings, module=module, log=log, progress=progress, cache=cache)
 
     if owns_cache:
         _persist_verification_cache(cache, log=log)

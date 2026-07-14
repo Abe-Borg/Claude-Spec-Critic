@@ -56,6 +56,11 @@ TRIAGE_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_TRIAGE_MODEL", MODEL_HAIKU_45
 # the task is retrieval + structured summarization, not deep review.
 RESEARCH_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_RESEARCH_MODEL", MODEL_SONNET_46)
 
+# Local-code compliance pass (profile-enabled modules; modeled on
+# cross-check). Bound directly to Sonnet with NO env override — deliberate
+# parity with ``CROSS_CHECK_MODEL_DEFAULT``, which is likewise unswappable.
+COMPLIANCE_MODEL_DEFAULT = MODEL_SONNET_46
+
 
 # Convenience sets for output-cap dispatch. Every Opus family member shares
 # the 128k output ceiling and the high-effort escalation tier, so newer Opus
@@ -98,6 +103,10 @@ HAIKU_TRIAGE_OUTPUT_CAP = 8_000
 # dimension outputs ran 6–14k tokens before protocol overhead, so the
 # original 16k-style verification cap would truncate the heavy dimensions.
 RESEARCH_OUTPUT_CAP = 24_000
+# The compliance pass emits a coverage matrix (one row per profile
+# requirement) plus findings — cross-check-scale output, sized between the
+# cross-check (96k) and verification (16k) caps.
+COMPLIANCE_OUTPUT_CAP = 64_000
 
 # Token threshold above which a review uses the larger batch cap.
 LARGE_REVIEW_INPUT_THRESHOLD = 200_000
@@ -113,6 +122,7 @@ PHASE_VERIFICATION_RETRY = "verification_retry"
 PHASE_VERIFICATION_CONTINUATION = "verification_continuation"
 PHASE_TRIAGE = "triage"
 PHASE_RESEARCH = "research"
+PHASE_COMPLIANCE = "compliance"
 
 
 def output_cap_for_model(model: str, *, requested: int) -> int:
@@ -144,6 +154,7 @@ _PHASE_OUTPUT_BUDGET: dict[str, int] = {
     PHASE_VERIFICATION_CONTINUATION: VERIFICATION_OUTPUT_CAP,
     PHASE_TRIAGE: HAIKU_TRIAGE_OUTPUT_CAP,
     PHASE_RESEARCH: RESEARCH_OUTPUT_CAP,
+    PHASE_COMPLIANCE: COMPLIANCE_OUTPUT_CAP,
 }
 
 
@@ -185,6 +196,10 @@ def cross_check_max_tokens(*, model: str = CROSS_CHECK_MODEL_DEFAULT) -> int:
 
 def research_max_tokens(*, model: str = RESEARCH_MODEL_DEFAULT) -> int:
     return phase_output_cap(PHASE_RESEARCH, model=model)
+
+
+def compliance_max_tokens(*, model: str = COMPLIANCE_MODEL_DEFAULT) -> int:
+    return phase_output_cap(PHASE_COMPLIANCE, model=model)
 
 
 def verification_max_tokens(*, model: str = VERIFICATION_MODEL_DEFAULT, phase: str = PHASE_VERIFICATION) -> int:
@@ -502,6 +517,11 @@ _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     # ``high`` keeps the model persistent about chasing primary sources
     # without the xhigh token eagerness the review phases warrant.
     PHASE_RESEARCH: EFFORT_HIGH,
+    # Compliance is a deep-evaluation pass like cross-check; ``xhigh``
+    # matches, and the existing ``_clamp_effort_for_model`` drops it to
+    # ``high`` on Sonnet (the pass's fixed model) exactly as it does for
+    # cross-check.
+    PHASE_COMPLIANCE: EFFORT_XHIGH,
 }
 
 # Verification phases get the model-aware bump: Opus on verification is
@@ -627,6 +647,10 @@ _PHASE_CACHE_POLICY: dict[str, CachePolicy] = {
     # shared across every dimension call and every pause_turn resume in a
     # run, so both breakpoints pay for themselves on the second call.
     PHASE_RESEARCH: CachePolicy(cache_system=True, cache_tools=True),
+    # Compliance: one call on small projects, several on chunked ones —
+    # the stable system prompt + tool block pay back on chunk #2 and on
+    # retries, mirroring cross-check.
+    PHASE_COMPLIANCE: CachePolicy(cache_system=True, cache_tools=True),
     # Triage: ~375-token system prompt called in batches of up to 20,
     # below the 2048-token Haiku cache minimum so repeated calls cannot
     # hit. Skip caching to avoid the cache-write cost.

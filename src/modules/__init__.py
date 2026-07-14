@@ -11,6 +11,7 @@ Public surface — import from this package, not the submodules:
 from .base import (
     ChunkGroup,
     DetectorVocabulary,
+    PolityTokenRule,
     ProfileKeywords,
     ResearchDimension,
     ReviewModule,
@@ -30,6 +31,7 @@ from .registry import (
 __all__ = [
     "ChunkGroup",
     "DetectorVocabulary",
+    "PolityTokenRule",
     "ProfileKeywords",
     "ResearchDimension",
     "ReviewModule",

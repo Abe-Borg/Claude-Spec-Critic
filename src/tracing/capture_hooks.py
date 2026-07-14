@@ -46,6 +46,7 @@ from .spans import (
     EVENT_WEB_FETCH_RESULT,
     EVENT_WEB_SEARCH_QUERY,
     EVENT_WEB_SEARCH_RESULT,
+    KIND_COMPLIANCE,
     KIND_CROSS_CHECK,
     KIND_CROSS_CHECK_CHUNK,
     KIND_PIPELINE,
@@ -223,6 +224,54 @@ def capture_cross_check_end(
     recorder.close_span(
         handle,
         outputs={"finding_count": finding_count, "cross_check_status": status},
+        status=STATUS_OK if error is None else STATUS_ERROR,
+        error=error,
+    )
+
+
+# ---- Compliance pass (WS-4) ----------------------------------------------
+@_safe
+def capture_compliance_start(
+    *,
+    spec_count: int,
+    requirement_count: int,
+    chunked: bool,
+    parent: SpanHandle | None = None,
+) -> SpanHandle | None:
+    recorder = _get()
+    if recorder is None:
+        return None
+    return recorder.open_span(
+        KIND_COMPLIANCE,
+        f"compliance ({spec_count} specs, {requirement_count} requirements)",
+        parent=parent,
+        inputs={
+            "spec_count": spec_count,
+            "requirement_count": requirement_count,
+            "chunked": chunked,
+        },
+    )
+
+
+@_safe
+def capture_compliance_end(
+    handle: SpanHandle | None,
+    *,
+    finding_count: int,
+    coverage_count: int = 0,
+    status: str = "completed",
+    error: str | None = None,
+) -> None:
+    recorder = _get()
+    if recorder is None or handle is None:
+        return
+    recorder.close_span(
+        handle,
+        outputs={
+            "finding_count": finding_count,
+            "coverage_count": coverage_count,
+            "compliance_status": status,
+        },
         status=STATUS_OK if error is None else STATUS_ERROR,
         error=error,
     )

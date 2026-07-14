@@ -84,8 +84,8 @@ def _sanitize_narrative(text: str) -> str:
     return '\n'.join(cleaned)
 
 
-def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list[Finding]) -> str:
-    """Render spec corpus for cross-check.
+def render_corpus_block(specs: list[ExtractedSpec]) -> str:
+    """Render the ``<corpus>`` block over a list of extracted specs.
 
     Each spec is serialized through :func:`wrap_document_block` so
     a literal ``</spec>`` (or any other reserved character) inside a spec
@@ -96,9 +96,12 @@ def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list
 
     When element ids are enabled and the spec has a paragraph
     map, the body is rendered with one id-tagged element per paragraph /
-    row / heading so the cross-check model can cite ids in its findings.
-    Specs without a map (the rare path that hands raw strings around)
-    keep the legacy plain-body rendering automatically.
+    row / heading so the model can cite ids in its findings. Specs without
+    a map (the rare path that hands raw strings around) keep the legacy
+    plain-body rendering automatically.
+
+    Import-reusable: the compliance pass (WS-4) renders its corpus through
+    this same helper so the two passes cannot drift on spec serialization.
     """
     use_ids = element_ids_enabled()
     spec_blocks: list[str] = []
@@ -116,36 +119,52 @@ def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list
                 )
             )
     corpus_inner = render_blocks(spec_blocks)
-    sections = [f"<{TAG_CORPUS}>\n{corpus_inner}\n</{TAG_CORPUS}>"]
-    if existing_findings:
-        # Every per-spec review finding has been stamped with a stable id
-        # by ``pipeline._deduplicate_findings``. Render each ``<prior>``
-        # block with its id so the prior findings are individually
-        # identifiable in the prompt. Findings without an id (hand-built
-        # test fixtures) still appear, just without the id attribute.
-        prior_blocks: list[str] = []
-        for f in existing_findings:
-            attrs: dict[str, str | None] = {
-                "severity": f.severity,
-                "file": f.fileName,
-            }
-            if f.section:
-                attrs["section"] = f.section
-            if f.finding_id:
-                attrs["id"] = f.finding_id
-            prior_blocks.append(
-                "  " + wrap_data_block(
-                    TAG_PRIOR_FINDING,
-                    (f.issue or "")[:160],
-                    attrs=attrs,
-                )
+    return f"<{TAG_CORPUS}>\n{corpus_inner}\n</{TAG_CORPUS}>"
+
+
+def render_already_identified_block(existing_findings: list[Finding]) -> str:
+    """Render the ``<already_identified>`` block, or ``""`` when empty.
+
+    Every per-spec review finding has been stamped with a stable id by
+    ``pipeline._deduplicate_findings``. Render each ``<prior>`` block with
+    its id so the prior findings are individually identifiable in the
+    prompt. Findings without an id (hand-built test fixtures) still
+    appear, just without the id attribute. Import-reusable for the
+    compliance pass (WS-4).
+    """
+    if not existing_findings:
+        return ""
+    prior_blocks: list[str] = []
+    for f in existing_findings:
+        attrs: dict[str, str | None] = {
+            "severity": f.severity,
+            "file": f.fileName,
+        }
+        if f.section:
+            attrs["section"] = f.section
+        if f.finding_id:
+            attrs["id"] = f.finding_id
+        prior_blocks.append(
+            "  " + wrap_data_block(
+                TAG_PRIOR_FINDING,
+                (f.issue or "")[:160],
+                attrs=attrs,
             )
-        note_attr = escape_attr("Do not repeat these findings.")
-        sections.append(
-            f'\n<{TAG_ALREADY_IDENTIFIED} note="{note_attr}">\n'
-            + "\n".join(prior_blocks)
-            + f"\n</{TAG_ALREADY_IDENTIFIED}>"
         )
+    note_attr = escape_attr("Do not repeat these findings.")
+    return (
+        f'<{TAG_ALREADY_IDENTIFIED} note="{note_attr}">\n'
+        + "\n".join(prior_blocks)
+        + f"\n</{TAG_ALREADY_IDENTIFIED}>"
+    )
+
+
+def _build_cross_check_input(specs: list[ExtractedSpec], existing_findings: list[Finding]) -> str:
+    """Corpus + already-identified blocks, in cross-check's legacy order."""
+    sections = [render_corpus_block(specs)]
+    already = render_already_identified_block(existing_findings)
+    if already:
+        sections.append("\n" + already)
     return "\n".join(sections)
 
 

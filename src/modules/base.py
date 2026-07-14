@@ -160,6 +160,31 @@ class ResearchDimension:
 
 
 @dataclass(frozen=True)
+class PolityTokenRule:
+    """One wrong-polity token pattern (WS-4, design D-15 [FT]).
+
+    A string whose suspiciousness is a pure function of the run's project
+    country — e.g. a bare ``UL listed`` or ``NFPA 70`` on a Canadian run,
+    an ``O. Reg.`` citation on a US run. The pre-screen applies the profile
+    country's rules only when a run has a :class:`ProjectProfile`, so
+    profile-less runs are byte-identical.
+
+    Attributes:
+        country: Which project country makes the token suspicious —
+            ``"US"`` or ``"CA"`` (the profile's normalized country code).
+        pattern: Regex source (compiled case-sensitively unless the source
+            carries inline flags; compile-checked at registration like
+            ``stale_cycle_extra_patterns``).
+        note: Human explanation of the suspicion, rendered into the alert
+            (and thus into ``<pre_detected>`` and the report).
+    """
+
+    country: str
+    pattern: str
+    note: str
+
+
+@dataclass(frozen=True)
 class DetectorVocabulary:
     """Vocabulary the deterministic preprocessor scans for, per module.
 
@@ -350,15 +375,26 @@ class ReviewModule:
     research_persona: str = ""
     research_dimensions: tuple[ResearchDimension, ...] = ()
     corpus_signal_patterns: tuple[str, ...] = ()
+    # --- Compliance-pass content slots (WS-4, D-7) ------------------------
+    # Same D-2 conditional rule: enabled ⇒ both non-empty (the compliance
+    # pass is part of what the flag turns on); disabled ⇒ both empty.
+    compliance_persona: str = ""
+    compliance_severity_definitions: str = ""
+    # --- Wrong-polity token rules (WS-4, D-15 [FT]) -----------------------
+    # Flat tuple (not a Mapping keyed by country) so the frozen module stays
+    # hashable. Optional even when the flag is on — polity tokens are a
+    # detector enhancement, not the core of the capability — but
+    # required-empty when off (no dead content).
+    polity_suspect_tokens: tuple[PolityTokenRule, ...] = ()
 
     def __post_init__(self) -> None:
         _coerce_str_tuple_fields(self, ("corpus_signal_patterns",))
-        # Coerce a list of dimensions to a tuple (config-loaded module data
-        # arrives with lists); keeps the frozen dataclass hashable.
-        if not isinstance(self.research_dimensions, tuple):
-            object.__setattr__(
-                self, "research_dimensions", tuple(self.research_dimensions)
-            )
+        # Coerce list-valued dataclass-tuple fields (config-loaded module
+        # data arrives with lists); keeps the frozen dataclass hashable.
+        for field_name in ("research_dimensions", "polity_suspect_tokens"):
+            value = getattr(self, field_name)
+            if not isinstance(value, tuple):
+                object.__setattr__(self, field_name, tuple(value))
 
 
 _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
@@ -664,32 +700,62 @@ def _validate_chunk_groups(module: ReviewModule) -> None:
 
 
 def _validate_research_slots(module: ReviewModule) -> None:
-    """Enforce the D-2 conditional rule on the WS-3 research content slots.
+    """Enforce the D-2 conditional rule on the profile-gated content slots.
 
     ``project_profile_enabled=True`` ⇒ the module must ship a research
-    persona and at least one well-formed dimension (the research phase is
-    what the flag turns on); ``False`` ⇒ every research slot must be empty
+    persona, at least one well-formed dimension, and the compliance-pass
+    persona + severity anchors (the research and compliance phases are what
+    the flag turns on); ``False`` ⇒ every profile-gated slot must be empty
     so a module cannot carry dead location-aware content that nothing
     exercises. Never relax these checks — extend them (invariant 10).
     """
     mid = module.module_id
     if not module.project_profile_enabled:
-        if module.research_persona:
-            raise ValueError(
-                f"ReviewModule {mid!r}: research_persona must be empty while "
-                "project_profile_enabled=False (D-2: no dead content)"
-            )
-        if module.research_dimensions:
-            raise ValueError(
-                f"ReviewModule {mid!r}: research_dimensions must be empty while "
-                "project_profile_enabled=False (D-2: no dead content)"
-            )
-        if module.corpus_signal_patterns:
-            raise ValueError(
-                f"ReviewModule {mid!r}: corpus_signal_patterns must be empty "
-                "while project_profile_enabled=False (D-2: no dead content)"
-            )
+        for field_name in (
+            "research_persona",
+            "research_dimensions",
+            "corpus_signal_patterns",
+            "compliance_persona",
+            "compliance_severity_definitions",
+            "polity_suspect_tokens",
+        ):
+            if getattr(module, field_name):
+                raise ValueError(
+                    f"ReviewModule {mid!r}: {field_name} must be empty while "
+                    "project_profile_enabled=False (D-2: no dead content)"
+                )
         return
+
+    for field_name in ("compliance_persona", "compliance_severity_definitions"):
+        value = getattr(module, field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"ReviewModule {mid!r}: project_profile_enabled=True requires a "
+                f"non-empty {field_name}"
+            )
+    for rule in module.polity_suspect_tokens:
+        if not isinstance(rule, PolityTokenRule):
+            raise ValueError(
+                f"ReviewModule {mid!r}: polity_suspect_tokens entries must be "
+                f"PolityTokenRule, got {type(rule).__name__}"
+            )
+        if rule.country not in ("US", "CA"):
+            raise ValueError(
+                f"ReviewModule {mid!r}: polity token rule country must be "
+                f"'US' or 'CA', got {rule.country!r}"
+            )
+        if not rule.note.strip():
+            raise ValueError(
+                f"ReviewModule {mid!r}: polity token rule {rule.pattern!r} "
+                "needs a non-empty note (rendered into the alert)"
+            )
+        try:
+            re.compile(rule.pattern)
+        except re.error as exc:
+            raise ValueError(
+                f"ReviewModule {mid!r}: polity token pattern does not compile: "
+                f"{rule.pattern!r} ({exc})"
+            ) from exc
 
     if not module.research_persona.strip():
         raise ValueError(

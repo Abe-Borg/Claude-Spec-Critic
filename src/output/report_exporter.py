@@ -47,6 +47,11 @@ from ..core.api_config import web_search_max_uses_for_severity
 from ..core.code_cycles import CodeCycle
 from ..core.project_profile import ProjectProfile
 from ..modules import ReviewModule, get_module
+from ..research import (
+    PROFILE_CATEGORY_SECTIONS,
+    PROFILE_SECTION_ORDER,
+    RequirementsProfile,
+)
 from ..verification.verification_cache import default_cache_path
 from .report_status import (
     EDIT_ACTION_DISPLAY_ORDER,
@@ -411,6 +416,7 @@ def _summarize_run_diagnostics(
     edit_action_counts: dict,
     cross_check_result,
     pipeline_result=None,
+    compliance_result=None,
 ) -> dict:
     """Roll up operational counts for the Run Diagnostics banner.
 
@@ -547,6 +553,47 @@ def _summarize_run_diagnostics(
     # run shows the same count.
     budget_exhausted_count = summarize_budget_exhausted(findings)
 
+    # WS-4 conditional states: ``None`` when the phase never ran (flag-off
+    # module — every profile-less run), so those banners are byte-identical.
+    research_state: dict | None = None
+    profile = RequirementsProfile.from_dict(
+        getattr(pipeline_result, "requirements_profile", None)
+    )
+    if profile is not None:
+        research_state = {
+            "dimensions_total": len(profile.dimension_statuses),
+            "dimensions_completed": profile.completed_dimensions,
+            "dimensions_failed": profile.failed_dimensions,
+            "item_count": len(profile.items),
+            "ungrounded_count": sum(1 for i in profile.items if not i.grounded),
+        }
+
+    compliance_state: dict | None = None
+    if compliance_result is not None:
+        comp_status = (
+            getattr(compliance_result, "cross_check_status", None) or "completed"
+        )
+        coverage = list(getattr(compliance_result, "coverage", None) or [])
+        compliance_state = {
+            "status": comp_status,
+            "finding_count": len(getattr(compliance_result, "findings", []) or []),
+            "missing": sum(1 for c in coverage if c.get("status") == "missing"),
+            "contradicted": sum(
+                1 for c in coverage if c.get("status") == "contradicted"
+            ),
+            "chunk_failures": int(getattr(compliance_result, "chunk_failures", 0) or 0),
+            "chunk_skips": int(getattr(compliance_result, "chunk_skips", 0) or 0),
+            "reason": (
+                getattr(compliance_result, "thinking", "")
+                if comp_status == "skipped"
+                else (
+                    getattr(compliance_result, "error", "")
+                    if comp_status == "failed"
+                    else ""
+                )
+            ),
+        }
+
     return {
         "edit_suggested": edit_suggested,
         "report_only": report_only,
@@ -560,6 +607,8 @@ def _summarize_run_diagnostics(
         "tracked_changes_spec_count": tracked_changes_spec_count,
         "cross_check": cross_check_state,
         "budget_exhausted_count": budget_exhausted_count,
+        "research": research_state,
+        "compliance": compliance_state,
     }
 
 
@@ -730,6 +779,46 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
                 cc_highlight = False
         rows.append(("Cross-spec coordination", cc_value, cc_highlight))
 
+    # WS-4 conditional rows — rendered only when the phases ran (a
+    # profile-less run's banner is byte-identical to before).
+    research = summary.get("research")
+    if research is not None:
+        completed = int(research.get("dimensions_completed", 0) or 0)
+        total = int(research.get("dimensions_total", 0) or 0)
+        failed = int(research.get("dimensions_failed", 0) or 0)
+        items = int(research.get("item_count", 0) or 0)
+        ungrounded = int(research.get("ungrounded_count", 0) or 0)
+        research_value = (
+            f"{completed} of {total} dimensions completed; "
+            f"{items} item{'s' if items != 1 else ''} ({ungrounded} ungrounded)"
+        )
+        rows.append(("Location/client research", research_value, failed > 0))
+
+    compliance = summary.get("compliance")
+    if compliance is not None:
+        comp_status = str(compliance.get("status", "completed") or "completed")
+        comp_count = int(compliance.get("finding_count", 0) or 0)
+        missing = int(compliance.get("missing", 0) or 0)
+        contradicted = int(compliance.get("contradicted", 0) or 0)
+        if comp_status in ("skipped", "failed"):
+            comp_value = comp_status
+            comp_highlight = True
+        else:
+            comp_value = (
+                f"{comp_count} finding{'s' if comp_count != 1 else ''} — "
+                f"{missing} missing / {contradicted} contradicted"
+            )
+            incomplete_chunks = int(compliance.get("chunk_failures", 0) or 0) + int(
+                compliance.get("chunk_skips", 0) or 0
+            )
+            if incomplete_chunks:
+                comp_value += (
+                    f" — {incomplete_chunks} chunk"
+                    f"{'s' if incomplete_chunks != 1 else ''} not analyzed"
+                )
+            comp_highlight = bool(missing or contradicted or incomplete_chunks)
+        rows.append(("Local-code compliance", comp_value, comp_highlight))
+
     # Render as a 2-column table. Label cells get a light-gray
     # shading so the visual rhythm matches the existing summary table
     # above; value cells get red shading when ``highlight=True``.
@@ -863,7 +952,297 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         hint_run.font.italic = True
         hint_run.font.color.rgb = RGBColor(204, 132, 0)
 
+    # --- Research partial-failure hint (WS-4, D-13) ---
+    # Amber (informational, not transient): the run continued on a partial
+    # profile per the D-3 failure policy, so the reader must know which
+    # coverage the requirements analysis is missing.
+    if research is not None and int(research.get("dimensions_failed", 0) or 0) > 0:
+        failed = int(research.get("dimensions_failed", 0) or 0)
+        hint_para = doc.add_paragraph()
+        hint_para.paragraph_format.space_before = Pt(6)
+        hint_para.paragraph_format.space_after = Pt(8)
+        hint_run = hint_para.add_run(
+            f"{failed} location/client research dimension"
+            f"{'s' if failed != 1 else ''} failed, so the Project Requirements "
+            "Profile — and every check made against it — is missing that "
+            "coverage. The Jurisdiction & Client Requirements section names "
+            "the failed dimension(s); re-running the review retries them."
+        )
+        hint_run.font.size = Pt(10)
+        hint_run.font.italic = True
+        hint_run.font.color.rgb = RGBColor(204, 132, 0)
+
+    # --- Compliance hint (WS-4, D-13) ---
+    # Red when the pass didn't run (skipped/failed — invariant 8: never
+    # silent) or when it found missing/contradicted requirements.
+    if compliance is not None:
+        comp_status = str(compliance.get("status", "completed") or "completed")
+        missing = int(compliance.get("missing", 0) or 0)
+        contradicted = int(compliance.get("contradicted", 0) or 0)
+        if comp_status in ("skipped", "failed"):
+            hint_para = doc.add_paragraph()
+            hint_para.paragraph_format.space_before = Pt(6)
+            hint_para.paragraph_format.space_after = Pt(8)
+            hint_run = hint_para.add_run(
+                f"⚠ The local-code compliance evaluation {comp_status} "
+                f"({compliance.get('reason') or 'no reason recorded'}). The "
+                "specs were NOT evaluated against the researched location/"
+                "client requirements — absence of compliance findings carries "
+                "no information."
+            )
+            hint_run.font.size = Pt(10)
+            hint_run.font.italic = True
+            hint_run.font.color.rgb = RGBColor(192, 0, 0)
+        elif missing or contradicted:
+            hint_para = doc.add_paragraph()
+            hint_para.paragraph_format.space_before = Pt(6)
+            hint_para.paragraph_format.space_after = Pt(8)
+            hint_run = hint_para.add_run(
+                f"The compliance evaluation classified {missing} researched "
+                f"requirement{'s' if missing != 1 else ''} as missing from the "
+                f"package and {contradicted} as contradicted. See the "
+                "Requirements Coverage table and the Local-Code Compliance "
+                "findings for the specifics."
+            )
+            hint_run.font.size = Pt(10)
+            hint_run.font.italic = True
+            hint_run.font.color.rgb = RGBColor(192, 0, 0)
+
     doc.add_paragraph()  # Spacer between banner and the next section.
+
+
+# ---------------------------------------------------------------------------
+# Jurisdiction & Client Requirements section (WS-4, D-13)
+# ---------------------------------------------------------------------------
+
+# Coverage-status display: label, value-cell shading, text color.
+_COVERAGE_STATUS_STYLES: dict[str, tuple[str, str, RGBColor]] = {
+    "represented": ("Represented", "C6EFCE", RGBColor(0x00, 0x61, 0x00)),
+    "missing": ("MISSING", "FFE5E5", RGBColor(0xC0, 0x00, 0x00)),
+    "contradicted": ("CONTRADICTED", "FFE5E5", RGBColor(0xC0, 0x00, 0x00)),
+    "unclear": ("Unclear", "FFF2CC", RGBColor(0x99, 0x66, 0x00)),
+}
+
+# Categories whose items pin an edition (the at-a-glance "which edition do I
+# cite?" table, D-13 [FT]).
+_EDITION_CATEGORIES = ("governing_code", "referenced_standard", "local_amendment")
+
+
+def _requirements_detail_line(item) -> str:
+    parts = []
+    if item.authority:
+        parts.append(f"Authority: {item.authority}")
+    if item.code_reference:
+        parts.append(f"Ref: {item.code_reference}")
+    if item.accepted_sources:
+        parts.append("Sources: " + ", ".join(item.accepted_sources))
+    parts.append(f"confidence {round(item.confidence * 100)}%")
+    return " • ".join(parts)
+
+
+def _write_requirements_section(
+    doc: Document,
+    requirements_profile: RequirementsProfile,
+    compliance_result,
+    module: ReviewModule,
+) -> None:
+    """Render the "Jurisdiction & Client Requirements" section (D-13).
+
+    Placed between "Files Reviewed" and the methodology note. Contents, in
+    order: project identity + research provenance, the per-category
+    requirement items (grounded/[UNVERIFIED] marked), the edition reference
+    table, the compliance coverage matrix (``represented`` rows rendered as
+    visibly as ``missing`` ones — a critic that can say "this part is
+    right" earns trust), and the Process & Schedule Advisories subsection.
+    Rendered only when the run produced a requirements profile, so
+    profile-less reports are byte-identical.
+    """
+    doc.add_heading("Jurisdiction & Client Requirements", level=1)
+
+    project = ProjectProfile.from_dict(requirements_profile.project)
+    intro = doc.add_paragraph()
+    total = len(requirements_profile.dimension_statuses)
+    searches = sum(
+        s.web_search_requests for s in requirements_profile.dimension_statuses
+    )
+    identity = (
+        f"Project: {project.city}, {project.state_display}, "
+        f"{project.country_display} — Client: {project.client_name}. "
+        if project is not None
+        else ""
+    )
+    intro_run = intro.add_run(
+        f"{identity}Requirements researched via location/client web research "
+        f"({requirements_profile.completed_dimensions} of {total} dimensions "
+        f"completed, {searches} web searches), researched "
+        f"{requirements_profile.research_date}. Edition and process facts are "
+        "as-of that date. Items marked [UNVERIFIED] could not be grounded in "
+        "retrieved sources and are never treated as controlling."
+    )
+    intro_run.font.size = Pt(10)
+    intro_run.font.italic = True
+    intro_run.font.color.rgb = RGBColor(100, 100, 100)
+
+    failed_dimensions = [
+        s for s in requirements_profile.dimension_statuses if s.status != "completed"
+    ]
+    if failed_dimensions:
+        warn = doc.add_paragraph()
+        warn_run = warn.add_run(
+            f"⚠ {len(failed_dimensions)} research dimension(s) failed "
+            f"({', '.join(s.dimension_id for s in failed_dimensions)}); the "
+            "profile below is missing their requirements."
+        )
+        warn_run.font.size = Pt(10)
+        warn_run.font.italic = True
+        warn_run.font.color.rgb = RGBColor(192, 0, 0)
+
+    # --- Requirement items, grouped by the same sections as the rendered
+    # context block so the report and the model saw the same organization.
+    spec_items = [i for i in requirements_profile.items if not i.is_process_advisory]
+    sections: dict[str, list] = {name: [] for name in PROFILE_SECTION_ORDER}
+    for item in spec_items:
+        sections[PROFILE_CATEGORY_SECTIONS.get(item.category, "OTHER")].append(item)
+    for section_name in PROFILE_SECTION_ORDER:
+        section_items = sections[section_name]
+        if not section_items:
+            continue
+        doc.add_heading(section_name.title(), level=2)
+        for item in section_items:
+            para = doc.add_paragraph(style="List Bullet")
+            id_run = para.add_run(f"[{item.item_id}] ")
+            id_run.font.size = Pt(9)
+            id_run.font.color.rgb = RGBColor(128, 128, 128)
+            req_run = para.add_run(item.requirement)
+            req_run.font.size = Pt(10)
+            if not item.grounded:
+                marker = para.add_run("  [UNVERIFIED]")
+                marker.font.size = Pt(9)
+                marker.bold = True
+                marker.font.color.rgb = RGBColor(192, 0, 0)
+            detail = para.add_run(f"\n{_requirements_detail_line(item)}")
+            detail.font.size = Pt(8)
+            detail.font.italic = True
+            detail.font.color.rgb = RGBColor(120, 120, 120)
+
+    # --- Edition reference table (D-13 [FT]): the single most-reused
+    # artifact — "which edition do I cite?" at a glance.
+    edition_items = [i for i in spec_items if i.category in _EDITION_CATEGORIES]
+    if edition_items:
+        doc.add_heading("Adopted & Referenced Editions", level=2)
+        note = doc.add_paragraph()
+        note_run = note.add_run(
+            f"Edition facts researched {requirements_profile.research_date}; "
+            "verify against the adopting instrument before relying on them."
+        )
+        note_run.font.size = Pt(9)
+        note_run.font.italic = True
+        note_run.font.color.rgb = RGBColor(120, 120, 120)
+        table = doc.add_table(rows=len(edition_items) + 1, cols=3)
+        table.style = "Table Grid"
+        for col, header in enumerate(("Topic", "Requirement / edition", "Authority & reference")):
+            cell = table.rows[0].cells[col]
+            _set_cell_shading(cell, "F0F0F0")
+            cell.text = ""
+            run = cell.paragraphs[0].add_run(header)
+            run.bold = True
+            run.font.size = Pt(9)
+        for row_idx, item in enumerate(edition_items, start=1):
+            cells = table.rows[row_idx].cells
+            values = (
+                item.topic or item.category,
+                item.requirement + ("" if item.grounded else "  [UNVERIFIED]"),
+                "; ".join(p for p in (item.authority, item.code_reference) if p),
+            )
+            for col, value in enumerate(values):
+                cells[col].text = ""
+                run = cells[col].paragraphs[0].add_run(value)
+                run.font.size = Pt(9)
+
+    # --- Compliance coverage matrix.
+    coverage = list(getattr(compliance_result, "coverage", None) or [])
+    if coverage:
+        doc.add_heading("Requirements Coverage", level=2)
+        requirement_by_id = {i.item_id: i for i in requirements_profile.items}
+        table = doc.add_table(rows=len(coverage) + 1, cols=3)
+        table.style = "Table Grid"
+        for col, header in enumerate(("Requirement", "Coverage", "Evidence")):
+            cell = table.rows[0].cells[col]
+            _set_cell_shading(cell, "F0F0F0")
+            cell.text = ""
+            run = cell.paragraphs[0].add_run(header)
+            run.bold = True
+            run.font.size = Pt(9)
+        for row_idx, entry in enumerate(coverage, start=1):
+            cells = table.rows[row_idx].cells
+            rid = entry.get("requirement_id") or ""
+            item = requirement_by_id.get(rid)
+            requirement_text = item.requirement if item is not None else "(unknown requirement)"
+            cells[0].text = ""
+            req_run = cells[0].paragraphs[0].add_run(f"[{rid}] {requirement_text}")
+            req_run.font.size = Pt(9)
+
+            status = str(entry.get("status") or "unclear")
+            label, shading, color = _COVERAGE_STATUS_STYLES.get(
+                status, _COVERAGE_STATUS_STYLES["unclear"]
+            )
+            cells[1].text = ""
+            _set_cell_shading(cells[1], shading)
+            status_run = cells[1].paragraphs[0].add_run(label)
+            status_run.bold = True
+            status_run.font.size = Pt(9)
+            status_run.font.color.rgb = color
+
+            evidence_parts = [p for p in (entry.get("evidence"), entry.get("fileName")) if p]
+            cells[2].text = ""
+            ev_run = cells[2].paragraphs[0].add_run(" — ".join(evidence_parts))
+            ev_run.font.size = Pt(8)
+    elif compliance_result is not None:
+        status = getattr(compliance_result, "cross_check_status", None) or "completed"
+        if status in ("skipped", "failed"):
+            para = doc.add_paragraph()
+            reason = (
+                getattr(compliance_result, "thinking", "")
+                if status == "skipped"
+                else getattr(compliance_result, "error", "")
+            )
+            run = para.add_run(
+                f"⚠ Compliance coverage unavailable — the compliance pass "
+                f"{status}: {reason}"
+            )
+            run.font.size = Pt(10)
+            run.font.italic = True
+            run.font.color.rgb = RGBColor(192, 0, 0)
+
+    # --- Process & Schedule Advisories (D-7 [FT]): real project-team
+    # deliverables that are NOT spec content and never coverage rows.
+    advisories = [i for i in requirements_profile.items if i.is_process_advisory]
+    if advisories:
+        doc.add_heading("Process & Schedule Advisories", level=2)
+        note = doc.add_paragraph()
+        note_run = note.add_run(
+            "Permit, schedule, and process facts the project team must act on. "
+            "These are not specification content and are never counted as "
+            "missing spec coverage."
+        )
+        note_run.font.size = Pt(9)
+        note_run.font.italic = True
+        note_run.font.color.rgb = RGBColor(120, 120, 120)
+        for item in advisories:
+            para = doc.add_paragraph(style="List Bullet")
+            req_run = para.add_run(item.requirement)
+            req_run.font.size = Pt(10)
+            if not item.grounded:
+                marker = para.add_run("  [UNVERIFIED]")
+                marker.font.size = Pt(9)
+                marker.bold = True
+                marker.font.color.rgb = RGBColor(192, 0, 0)
+            detail = para.add_run(f"\n{_requirements_detail_line(item)}")
+            detail.font.size = Pt(8)
+            detail.font.italic = True
+            detail.font.color.rgb = RGBColor(120, 120, 120)
+
+    doc.add_paragraph()  # Spacer before the next section.
 
 
 # ---------------------------------------------------------------------------
@@ -2189,6 +2568,66 @@ def _write_cross_check_section(doc: Document, cross_check_result) -> None:
         _write_narrative_text(doc, cross_check_result.thinking)
 
 
+def _write_compliance_section(doc: Document, compliance_result) -> None:
+    """Write the Local-Code Compliance findings section (WS-4).
+
+    Mirrors :func:`_write_cross_check_section`: explicit outline level +
+    page break so the previous finding's collapsed Sources panel cannot
+    swallow the banner, findings rendered through the shared
+    ``_write_finding_entry``, and an explicit red status line when the pass
+    skipped or failed (invariant 8 — never silent). ``None`` (the phase
+    never applied — every profile-less run) renders nothing.
+    """
+    if not compliance_result:
+        return
+
+    heading = doc.add_heading("Local-Code Compliance", level=0)
+    heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    heading.paragraph_format.page_break_before = True
+    _set_paragraph_outline_level(heading, 0)
+
+    status = getattr(compliance_result, "cross_check_status", None)
+    count = len(compliance_result.findings)
+    subtitle = doc.add_paragraph()
+    if status == "skipped":
+        run = subtitle.add_run(
+            f"Compliance evaluation was skipped: {compliance_result.thinking}"
+        )
+    elif status == "failed":
+        run = subtitle.add_run(
+            f"Compliance evaluation failed: {compliance_result.error}"
+        )
+    elif status == "completed" and count == 0:
+        run = subtitle.add_run(
+            "Compliance evaluation completed — no missing or contradicted "
+            "requirements found."
+        )
+    else:
+        run = subtitle.add_run(
+            "Evaluation against the researched location/client requirements — "
+            f"{count} issue{'s' if count != 1 else ''} found."
+        )
+    run.font.size = Pt(11)
+    run.font.italic = True
+    run.font.color.rgb = RGBColor(128, 128, 128)
+    subtitle.paragraph_format.space_after = Pt(12)
+
+    if status in ("skipped", "failed"):
+        return
+
+    severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "GRIPES": 3}
+    sorted_findings = sorted(
+        compliance_result.findings,
+        key=lambda f: (severity_rank.get(f.severity, 99), f.fileName or "", -f.confidence),
+    )
+    for idx, finding in enumerate(sorted_findings, 1):
+        _write_finding_entry(doc, finding, idx)
+
+    if compliance_result.thinking:
+        doc.add_heading("Compliance Summary", level=2)
+        _write_narrative_text(doc, compliance_result.thinking)
+
+
 def _sanitize_markdown_line(line: str) -> str:
     """Strip markdown header prefixes from a line."""
     stripped = line
@@ -2249,9 +2688,19 @@ def export_report(
 
     review = pipeline_result.review_result
     cross_check = pipeline_result.cross_check_result
+    # WS-4 compliance output (``None`` on every profile-less run). Its
+    # findings join the trust-model / banner statistics alongside review +
+    # cross-check findings; the structured requirements profile drives the
+    # Jurisdiction & Client Requirements section.
+    compliance = getattr(pipeline_result, "compliance_result", None)
+    requirements_profile = RequirementsProfile.from_dict(
+        getattr(pipeline_result, "requirements_profile", None)
+    )
     all_findings = list(review.findings)
     if cross_check and cross_check.findings:
         all_findings.extend(cross_check.findings)
+    if compliance is not None and compliance.findings:
+        all_findings.extend(compliance.findings)
     verification_stats = _summarize_verification_outcomes(all_findings)
 
     doc = Document()
@@ -2320,6 +2769,7 @@ def export_report(
         edit_action_counts=verification_stats.get("edit_action_counts", {}),
         cross_check_result=cross_check,
         pipeline_result=pipeline_result,
+        compliance_result=compliance,
     )
     _write_run_diagnostics_banner(doc, run_diagnostics)
 
@@ -2328,6 +2778,11 @@ def export_report(
         pipeline_result.files_reviewed,
         failed_review_specs=set(failed_review_specs),
     )
+    # WS-4 "Jurisdiction & Client Requirements" — between Files Reviewed and
+    # the methodology note (D-13); renders only when the run researched a
+    # requirements profile, so profile-less reports are byte-identical.
+    if requirements_profile is not None:
+        _write_requirements_section(doc, requirements_profile, compliance, module)
     cross_check_status = getattr(cross_check, "cross_check_status", None) if cross_check else None
     cross_check_reason = ""
     if cross_check and cross_check_status == "skipped":
@@ -2377,6 +2832,7 @@ def export_report(
     )
     _write_findings_section(doc, review)
     _write_cross_check_section(doc, cross_check)
+    _write_compliance_section(doc, compliance)
 
 
     # Save

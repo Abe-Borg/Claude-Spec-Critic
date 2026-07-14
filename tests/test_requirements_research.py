@@ -73,11 +73,17 @@ def _dimension(dimension_id: str = "alpha", marker: str | None = None, **overrid
 
 
 def _enabled_module(**overrides):
-    """A profile-enabled module built off the CA default (not registered)."""
+    """A profile-enabled module built off the CA default (not registered).
+
+    Carries every profile-gated slot the D-2 conditional validation demands
+    (research persona/dimensions + the WS-4 compliance persona/severities).
+    """
     defaults = dict(
         project_profile_enabled=True,
         research_persona="You are a test research assistant.",
         research_dimensions=(_dimension("alpha"),),
+        compliance_persona="You are a test compliance reviewer.",
+        compliance_severity_definitions="- CRITICAL — permit-blocking omission.",
     )
     defaults.update(overrides)
     return dataclasses.replace(DEFAULT_MODULE, **defaults)

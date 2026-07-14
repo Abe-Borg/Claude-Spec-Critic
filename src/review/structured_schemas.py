@@ -378,6 +378,86 @@ REQUIREMENTS_RESEARCH_SCHEMA: dict[str, Any] = {
 }
 
 
+# Closed coverage-status set for the compliance pass (WS-4, D-7). Drives the
+# coverage matrix in the report and the chunked-merge precedence
+# (contradicted > represented > unclear > unanimous-missing). Unknown values
+# coerce to "unclear" at parse — the honest default for a status the model
+# invented.
+COMPLIANCE_COVERAGE_STATUSES: tuple[str, ...] = (
+    "represented",
+    "missing",
+    "contradicted",
+    "unclear",
+)
+
+
+COMPLIANCE_FINDINGS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["compliance_summary", "coverage", "findings"],
+    "properties": {
+        "compliance_summary": {
+            "type": "string",
+            "description": (
+                "Plain-text summary of how well the package represents the "
+                "profile requirements. No markdown. Empty string is acceptable."
+            ),
+        },
+        "coverage": {
+            "type": "array",
+            "description": (
+                "One entry per controlling profile requirement id, classifying "
+                "how the package represents it. Process-advisory ([PROCESS]) "
+                "items never get coverage entries."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["requirement_id", "status", "evidence", "fileName"],
+                "properties": {
+                    "requirement_id": {
+                        "type": "string",
+                        "description": (
+                            "The profile requirement id being classified "
+                            "(e.g. 'r-1a2b3c4d5e6f')."
+                        ),
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": list(COMPLIANCE_COVERAGE_STATUSES),
+                        "description": (
+                            "represented: the package correctly reflects the "
+                            "requirement. missing: no spec content addresses it. "
+                            "contradicted: spec content conflicts with it. "
+                            "unclear: cannot be determined from the package."
+                        ),
+                    },
+                    "evidence": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Strongest supporting quote from the package (verbatim), "
+                            "or null when none exists (e.g. missing)."
+                        ),
+                    },
+                    "fileName": {
+                        "type": ["string", "null"],
+                        "description": "Spec file the evidence came from, or null.",
+                    },
+                },
+            },
+        },
+        "findings": {
+            "type": "array",
+            "items": _FINDING_OBJECT_SCHEMA,
+            "description": (
+                "Zero or more compliance findings (missing/contradicted "
+                "requirements, or spec text conflicting with a requirement)."
+            ),
+        },
+    },
+}
+
+
 VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -434,6 +514,7 @@ _CROSS_CHECK_TOOL_NAME = "submit_cross_check_findings"
 _VERIFICATION_TOOL_NAME = "submit_verification_verdict"
 _TRIAGE_TOOL_NAME = "submit_triage_classifications"
 _RESEARCH_TOOL_NAME = "submit_requirements_research"
+_COMPLIANCE_TOOL_NAME = "submit_compliance_findings"
 
 
 ENV_STRICT_TOOL_USE = "SPEC_CRITIC_STRICT_TOOL_USE"
@@ -572,6 +653,25 @@ def research_tool_choice() -> dict[str, Any]:
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 
+def compliance_findings_tool(*, model: str | None = None) -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "name": _COMPLIANCE_TOOL_NAME,
+        "description": (
+            "Submit the structured local-code compliance output. Use this tool "
+            "exactly once: one coverage entry per controlling profile "
+            "requirement, plus findings for missing/contradicted requirements."
+        ),
+        "input_schema": COMPLIANCE_FINDINGS_SCHEMA,
+    }
+    if _strict_for_model(model):
+        tool["strict"] = True
+    return tool
+
+
+def compliance_tool_choice() -> dict[str, Any]:
+    return {"type": "auto", "disable_parallel_tool_use": True}
+
+
 def verification_verdict_tool(*, model: str | None = None) -> dict[str, Any]:
     tool: dict[str, Any] = {
         "name": _VERIFICATION_TOOL_NAME,
@@ -677,3 +777,4 @@ CROSS_CHECK_TOOL_NAME = _CROSS_CHECK_TOOL_NAME
 VERIFICATION_TOOL_NAME = _VERIFICATION_TOOL_NAME
 TRIAGE_TOOL_NAME = _TRIAGE_TOOL_NAME
 RESEARCH_TOOL_NAME = _RESEARCH_TOOL_NAME
+COMPLIANCE_TOOL_NAME = _COMPLIANCE_TOOL_NAME
