@@ -425,14 +425,17 @@ _PROFILE_KEYWORDS = ProfileKeywords(
 
 # CSI MasterFormat division families for chunked cross-check. Division 21 (fire
 # suppression) and Division 28 (fire detection/alarm) dominate data-center fire
-# packages; Division 22 (plumbing / water supply) is included because fire-water
-# supply coordination lives there. Unmatched prefixes (e.g. Division 23/26)
-# pool into the engine's reserved ``general`` chunk. Chunked runs are
-# within-chunk-only coordination (documented engine limitation).
+# packages; Division 22 is included for **fire-water supply** coordination — the
+# incoming water service, fire-service mains, backflow prevention, and the
+# supply feeding fire pumps and sprinkler risers live in CSI Division 22
+# ("Plumbing"), so a fire finding about the water supply lands in the right
+# chunk. This module does not review general plumbing scope. Unmatched prefixes
+# (e.g. Division 23/26) pool into the engine's reserved ``general`` chunk.
+# Chunked runs are within-chunk-only coordination (documented engine limitation).
 _CROSS_CHECK_CHUNK_GROUPS = (
     ChunkGroup("div_21", "Division 21 — Fire Suppression", ("21",)),
     ChunkGroup("div_28", "Division 28 — Fire Detection & Alarm", ("28",)),
-    ChunkGroup("div_22", "Division 22 — Plumbing / Water Supply", ("22",)),
+    ChunkGroup("div_22", "Division 22 — Water Supply (Plumbing)", ("22",)),
 )
 
 
