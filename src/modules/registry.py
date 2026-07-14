@@ -14,9 +14,11 @@ from __future__ import annotations
 
 from .base import ReviewModule, validate_module_registry
 from .california_k12_mep import CALIFORNIA_K12_MEP
+from .datacenter_fire import DATACENTER_FIRE
 
 _ALL_MODULES: tuple[ReviewModule, ...] = (
     CALIFORNIA_K12_MEP,
+    DATACENTER_FIRE,
 )
 
 validate_module_registry(_ALL_MODULES)

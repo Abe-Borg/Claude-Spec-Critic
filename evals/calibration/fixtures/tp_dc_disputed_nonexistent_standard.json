@@ -1,0 +1,54 @@
+{
+  "fixture_id": "tp_dc_disputed_nonexistent_standard",
+  "category": "code_standard",
+  "severity": "HIGH",
+  "description": "Refutation fixture: spec cites a fabricated standard designation ('NFPA 1300') that does not exist; verifier correctly DISPUTED it, and the model's proposed replacement is itself uncertain, so a human must resolve.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "21 13 13 - Wet-Pipe Sprinkler Systems.docx",
+    "section": "2.02",
+    "issue": "Specification cites 'NFPA 1300 Standard for Data Center Suppression' as the governing standard for the clean-agent system; no such NFPA standard exists.",
+    "actionType": "EDIT",
+    "existingText": "NFPA 1300",
+    "replacementText": "NFPA 2001",
+    "codeReference": "NFPA 1300",
+    "confidence": 0.6,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p9"
+  },
+  "spec_context": {
+    "filename": "21 13 13 - Wet-Pipe Sprinkler Systems.docx",
+    "cycle_label": "Data Center IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 8, "id": "p8", "text": "2.02 CLEAN AGENT SYSTEM"},
+      {"index": 9, "id": "p9", "text": "A. Provide clean-agent suppression per NFPA 1300."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "DISPUTED",
+    "explanation": "There is no NFPA 1300. The applicable clean-agent standard is NFPA 2001 (Clean Agent Fire Extinguishing Systems); however, depending on the room use the author may have intended NFPA 75/76 or NFPA 855, so the single replacement cannot be asserted with confidence. The citation is fabricated and must be corrected by a human.",
+    "sources": ["https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=2001"],
+    "correction": null,
+    "confidence": 0.8,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 4,
+    "successful_source_count": 4,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=2001",
+      "https://www.nfpa.org/for-professionals/codes-and-standards/list-of-codes-and-standards",
+      "https://codes.iccsafe.org/content/IFC2024P1"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "DISPUTED",
+    "correct_correction_text": null,
+    "expected_status": "DISPUTED",
+    "notes": "NFPA 1300 is a fabricated designation. Refutation is where verification earns its cost; the model's single replacement is uncertain, so DISPUTED (not CORRECTED) is right."
+  }
+}

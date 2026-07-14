@@ -38,6 +38,7 @@ from src.core.code_cycles import BaseCode, CALIFORNIA_2025, CodeCycle
 from src.modules import (
     AVAILABLE_MODULES,
     CALIFORNIA_K12_MEP,
+    DATACENTER_FIRE,
     ChunkGroup,
     DEFAULT_MODULE,
     DetectorVocabulary,
@@ -174,13 +175,19 @@ def _submission(**overrides) -> BatchSubmission:
 
 class TestRegistry:
     def test_default_module_is_california_k12_mep(self):
+        # DEFAULT_MODULE stays California even as the registry grows; the
+        # data-center module is registered alongside it.
         assert DEFAULT_MODULE is CALIFORNIA_K12_MEP
         assert DEFAULT_MODULE.module_id == "california_k12_mep"
         assert DEFAULT_MODULE.cycle is CALIFORNIA_2025
-        assert AVAILABLE_MODULES == {"california_k12_mep": CALIFORNIA_K12_MEP}
+        assert AVAILABLE_MODULES == {
+            "california_k12_mep": CALIFORNIA_K12_MEP,
+            "datacenter_fire": DATACENTER_FIRE,
+        }
 
     def test_get_module_resolves_known_id(self):
         assert get_module("california_k12_mep") is CALIFORNIA_K12_MEP
+        assert get_module("datacenter_fire") is DATACENTER_FIRE
 
     @pytest.mark.parametrize("bad_id", [None, "", "  ", "not_a_module"])
     def test_get_module_degrades_to_default(self, bad_id):
@@ -192,6 +199,50 @@ class TestRegistry:
     def test_review_module_is_frozen(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
             CALIFORNIA_K12_MEP.module_id = "other"  # type: ignore[misc]
+
+
+class TestDatacenterFireModule:
+    """Contract pins for the second module (WS-1 of the DC module plan)."""
+
+    def test_registers_and_pins_ibc_cycle(self):
+        assert DATACENTER_FIRE.module_id == "datacenter_fire"
+        assert DATACENTER_FIRE.cycle.label == "dc-ibc-2024"
+        # First base code is primary — the stale-detector target.
+        assert DATACENTER_FIRE.cycle.primary_code_year == "2024"
+        assert [c.key for c in DATACENTER_FIRE.cycle.base_codes] == ["ibc", "ifc"]
+        assert DATACENTER_FIRE.cycle.asce7 == "7-22"
+
+    def test_cycle_is_not_in_the_california_cycle_registry(self):
+        # The module carries its cycle directly; AVAILABLE_CYCLES is the
+        # California-cycle registry and must NOT gain the DC label (its label
+        # is registry-unique across modules, which is what namespaces the
+        # verification cache and backs the module_for_cycle bridge).
+        from src.core.code_cycles import AVAILABLE_CYCLES
+
+        assert "dc-ibc-2024" not in AVAILABLE_CYCLES
+        assert module_for_cycle(DATACENTER_FIRE.cycle) is DATACENTER_FIRE
+
+    def test_leed_detector_is_disabled(self):
+        # LEED is genuine scope for data centers, not a copy/paste error.
+        assert DATACENTER_FIRE.detector_vocabulary.flag_leed_references is False
+
+    def test_all_pinned_editions_are_unverified(self):
+        # Every DC standard edition is web-researched against paywalled ICC
+        # tables — none may silently ship as verified (WS-0 acceptance).
+        assert DATACENTER_FIRE.cycle.standards
+        assert (
+            len(DATACENTER_FIRE.cycle.unverified_standards())
+            == len(DATACENTER_FIRE.cycle.standards)
+        )
+
+    def test_report_surfaces_are_fire_protection_not_mep(self):
+        assert DATACENTER_FIRE.report_title == (
+            "Spec Critic — Fire Protection Specification Review Report"
+        )
+        assert (
+            DATACENTER_FIRE.report_context_phrase
+            == "hyperscale data-center fire protection projects"
+        )
 
 
 class TestRegistryValidation:

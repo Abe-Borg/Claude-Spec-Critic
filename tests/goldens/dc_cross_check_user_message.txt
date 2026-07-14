@@ -1,0 +1,23 @@
+Review the following 2 specs for cross-spec coordination only.
+
+<project_context>
+Hyperscale data-center new-build program.
+</project_context>
+
+<corpus>
+<spec filename="21 13 13 - Wet-Pipe Sprinkler Systems.docx">
+<heading id="p0">1.01 SUMMARY</heading>
+<para id="p1" section="1.01 SUMMARY">A. Comply with 2015 IBC Chapter 9 for all fire-suppression work.</para>
+<row id="t0r0" section="1.01 SUMMARY">FP-1 | 1500 GPM | Viking model VK-100</row>
+</spec>
+<spec filename="28 31 00 - Fire Detection and Alarm.docx">
+1.01 SUMMARY
+
+A. Provide fire detection and alarm as indicated.
+</spec>
+</corpus>
+
+<already_identified note="Do not repeat these findings.">
+  <prior severity="HIGH" file="21 13 13 - Wet-Pipe Sprinkler Systems.docx" section="3.05" id="rf-0123456789ab">Pre-action releasing sequence references detection zoning absent from the fire-alarm section.</prior>
+  <prior severity="HIGH" file="28 31 00 - Fire Detection and Alarm.docx">Releasing-panel programming assigned to different parties across sections.</prior>
+</already_identified>

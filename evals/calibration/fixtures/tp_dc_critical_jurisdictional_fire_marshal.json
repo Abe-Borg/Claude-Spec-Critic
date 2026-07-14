@@ -1,0 +1,54 @@
+{
+  "fixture_id": "tp_dc_critical_jurisdictional_fire_marshal",
+  "category": "jurisdictional",
+  "severity": "CRITICAL",
+  "description": "CRITICAL jurisdictional finding (fire-marshal acceptance test) that rides the deep-reasoning path; verifier corrected a missing witnessed-test requirement with a grounded state fire-marshal citation.",
+  "finding": {
+    "severity": "CRITICAL",
+    "fileName": "21 13 16 - Dry-Pipe Sprinkler Systems.docx",
+    "section": "3.09",
+    "issue": "Spec omits the fire marshal witnessed acceptance test the authority having jurisdiction requires before occupancy; the closeout section only references contractor self-certification.",
+    "actionType": "EDIT",
+    "existingText": "Contractor shall self-certify system acceptance.",
+    "replacementText": "System acceptance shall be witnessed and approved by the authority having jurisdiction (fire marshal) prior to occupancy, in addition to contractor certification.",
+    "codeReference": "IFC / local fire marshal acceptance-test policy",
+    "confidence": 0.7,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p12"
+  },
+  "spec_context": {
+    "filename": "21 13 16 - Dry-Pipe Sprinkler Systems.docx",
+    "cycle_label": "Data Center IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 11, "id": "p11", "text": "3.09 ACCEPTANCE TESTING"},
+      {"index": 12, "id": "p12", "text": "A. Contractor shall self-certify system acceptance."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "The IFC and typical fire-marshal policy require a witnessed acceptance test of the fire-suppression system by the AHJ before occupancy for a mission-critical facility. Contractor self-certification alone does not satisfy the jurisdiction's acceptance-test requirement.",
+    "sources": ["https://www.osfm.fire.ca.gov/divisions/fire-engineering-and-investigations/"],
+    "correction": "System acceptance shall be witnessed and approved by the authority having jurisdiction (fire marshal) prior to occupancy.",
+    "confidence": 0.85,
+    "model_used": "claude-opus-4-8",
+    "verification_mode": "deep_reasoning",
+    "verification_profile": "jurisdictional",
+    "web_search_requests": 5,
+    "successful_source_count": 5,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.osfm.fire.ca.gov/divisions/fire-engineering-and-investigations/",
+      "https://codes.iccsafe.org/content/IFC2024P1",
+      "https://www.nfpa.org/codes-and-standards"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "correct_correction_text": "System acceptance shall be witnessed and approved by the authority having jurisdiction (fire marshal) prior to occupancy.",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Exercises the CRITICAL + jurisdictional routing that must ride deep reasoning (Opus). AHJ witnessed acceptance is a real requirement for occupancy."
+  }
+}
