@@ -1682,6 +1682,7 @@ def _write_alerts(
     template_marker_alerts: list[dict] | None = None,
     invalid_code_cycle_alerts: list[dict] | None = None,
     duplicate_paragraph_alerts: list[dict] | None = None,
+    polity_alerts: list[dict] | None = None,
     module: ReviewModule | None = None,
 ) -> None:
     """Write the Alerts section with every deterministic-check category.
@@ -1704,6 +1705,7 @@ def _write_alerts(
     template_marker_alerts = template_marker_alerts or []
     invalid_code_cycle_alerts = invalid_code_cycle_alerts or []
     duplicate_paragraph_alerts = duplicate_paragraph_alerts or []
+    polity_alerts = polity_alerts or []
     if not any((
         leed_alerts,
         placeholder_alerts,
@@ -1713,6 +1715,7 @@ def _write_alerts(
         template_marker_alerts,
         invalid_code_cycle_alerts,
         duplicate_paragraph_alerts,
+        polity_alerts,
     )):
         return
 
@@ -1797,6 +1800,17 @@ def _write_alerts(
         "These files use a CSI naming style that differs from the project's "
         "dominant style:",
         naming_alerts,
+    )
+    # WS-4 (D-15): tokens whose suspiciousness is a pure function of the
+    # project's country. Rendered only when a profile-bearing run produced
+    # them, so profile-less reports are unchanged.
+    _write_alert_section(
+        doc,
+        "Wrong-Polity Tokens",
+        "These tokens belong to a different country's code/regulatory regime "
+        "than the project location. Each entry notes why the token is "
+        "suspicious for this project's country:",
+        polity_alerts,
     )
 
 
@@ -2828,6 +2842,7 @@ def export_report(
         template_marker_alerts=getattr(pipeline_result, "template_marker_alerts", None),
         invalid_code_cycle_alerts=getattr(pipeline_result, "invalid_code_cycle_alerts", None),
         duplicate_paragraph_alerts=getattr(pipeline_result, "duplicate_paragraph_alerts", None),
+        polity_alerts=getattr(pipeline_result, "polity_alerts", None),
         module=module,
     )
     _write_findings_section(doc, review)

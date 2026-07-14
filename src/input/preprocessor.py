@@ -81,6 +81,13 @@ class PreprocessResult:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Wrong-polity token alerts (WS-4, D-15 [FT]): strings suspicious purely
+    # as a function of the run's project country (bare "UL listed" on a
+    # Canadian run, "O. Reg." citations on a US run). Populated only when
+    # ``preprocess_spec`` receives a ``profile_country`` — profile-less runs
+    # are byte-identical. Alert dicts additionally carry a ``note`` key (the
+    # module rule's explanation, rendered into the report).
+    polity_alerts: list[dict] = field(default_factory=list)
 
 
 # Stable rule identifiers so every consumer (report, verification router,
@@ -97,6 +104,7 @@ DETERMINISTIC_RULE_TEMPLATE_MARKER: str = "template_marker"
 DETERMINISTIC_RULE_INVALID_CODE_CYCLE: str = "invalid_code_cycle"
 DETERMINISTIC_RULE_DUPLICATE_PARAGRAPH: str = "duplicate_paragraph"
 DETERMINISTIC_RULE_INCONSISTENT_FILENAME: str = "inconsistent_filename"
+DETERMINISTIC_RULE_WRONG_POLITY: str = "wrong_polity_token"
 
 
 # -----------------------------------------------------------------------------
@@ -804,11 +812,71 @@ def detect_duplicate_paragraphs(
     return alerts
 
 
+@lru_cache(maxsize=16)
+def _compiled_polity_rules(rules: tuple, country: str) -> tuple:
+    """Compile a module's polity rules for one country. Cached per module.
+
+    ``rules`` is the module's hashable ``polity_suspect_tokens`` tuple;
+    registration already verified every pattern compiles, so failures here
+    are impossible in practice (the compile is repeated for defense).
+    """
+    return tuple(
+        (re.compile(rule.pattern), rule)
+        for rule in rules
+        if rule.country == country
+    )
+
+
+def detect_wrong_polity_tokens(
+    content: str,
+    filename: str,
+    *,
+    rules: tuple,
+    country: str,
+    max_matches: int = 100,
+) -> list[dict]:
+    """Flag tokens suspicious purely as a function of the project country.
+
+    WS-4, design D-15 [FT]: the field trial's largest single finding class
+    (≈10 of 52) needed no model call to *flag* — bare ``UL listed`` /
+    ``NFPA 70`` / ``OSHA`` on a ``country=CA`` run; ``NBC`` / ``O. Reg.`` /
+    ``CRN`` citations on a ``country=US`` run. The model phrases the fix;
+    this detector guarantees the flag. Each alert carries the rule's
+    ``note`` explaining the suspicion, rendered into ``<pre_detected>`` and
+    the report's alerts section.
+    """
+    alerts: list[dict] = []
+    for compiled, rule in _compiled_polity_rules(tuple(rules), country):
+        for match in compiled.finditer(content):
+            m_start, m_end = match.start(), match.end()
+            ctx_start = max(0, m_start - 60)
+            ctx_end = min(len(content), m_end + 60)
+            window = content[ctx_start:ctx_end].replace("\n", " ").strip()
+            alerts.append(
+                {
+                    "filename": filename,
+                    "type": "Wrong-polity token",
+                    "match": match.group(0),
+                    # The note leads the context so the generic alert
+                    # renderer (which shows only ``context``) surfaces the
+                    # WHY alongside the WHERE.
+                    "context": f"'{match.group(0)}' — {rule.note} | …{window}…",
+                    "position": m_start,
+                    "deterministic_rule": DETERMINISTIC_RULE_WRONG_POLITY,
+                    "note": rule.note,
+                }
+            )
+            if len(alerts) >= max_matches:
+                return alerts
+    return alerts
+
+
 def preprocess_spec(
     content: str,
     filename: str,
     *,
     cycle: Optional[CodeCycle] = None,
+    profile_country: str | None = None,
 ) -> PreprocessResult:
     """Run all detection passes on a single specification.
 
@@ -823,8 +891,21 @@ def preprocess_spec(
     ``detector_vocabulary.flag_leed_references`` — LEED references are
     copy/paste errors for some domains (CA K-12 DSA) and genuine scope for
     others (a data-center module pursuing certification).
+
+    ``profile_country`` (WS-4, D-15) activates the wrong-polity token
+    detector with the module's country-matched rules. ``None`` — every
+    profile-less run — produces byte-identical output (invariant 2).
     """
-    vocabulary = module_for_cycle(cycle).detector_vocabulary
+    module = module_for_cycle(cycle)
+    vocabulary = module.detector_vocabulary
+    polity_alerts: list[dict] = []
+    if profile_country and module.polity_suspect_tokens:
+        polity_alerts = detect_wrong_polity_tokens(
+            content,
+            filename,
+            rules=module.polity_suspect_tokens,
+            country=profile_country,
+        )
     code_cycle_alerts: list[dict] = []
     if cycle is not None:
         code_cycle_alerts = detect_stale_code_cycle_references(content, filename, cycle)
@@ -845,4 +926,5 @@ def preprocess_spec(
             content, filename, vocabulary=vocabulary
         ),
         duplicate_paragraph_alerts=detect_duplicate_paragraphs(content, filename),
+        polity_alerts=polity_alerts,
     )

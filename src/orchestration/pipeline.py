@@ -24,7 +24,7 @@ from ..core.tokenizer import (
     local_estimate_safety_factor,
     safe_local_estimate,
 )
-from ..review.reviewer import ReviewResult, Finding
+from ..review.reviewer import ReviewResult, Finding, validate_finding_anchors
 from ..review.review_request_builder import (
     ReviewRequestSpec,
     build_token_count_request,
@@ -157,6 +157,8 @@ class PipelineResult:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Wrong-polity token alerts (WS-4, D-15). Empty on profile-less runs.
+    polity_alerts: list[dict] = field(default_factory=list)
     # The extracted specs themselves so the
     # report's Run Diagnostics banner can count specs whose extraction
     # surfaced warnings (drawing-heavy documents, embedded objects).
@@ -193,6 +195,8 @@ class CollectedBatchState:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Wrong-polity token alerts (WS-4, D-15). Empty on profile-less runs.
+    polity_alerts: list[dict] = field(default_factory=list)
     # Tracing: the pipeline span_id carries the batch-mode root span across
     # the separate function calls (submit, poll, collect, cross-check,
     # verify, finalize). Default empty string when tracing was disabled at
@@ -542,6 +546,9 @@ class _PreparedSpecs:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Wrong-polity token alerts (WS-4, D-15). Empty on every profile-less
+    # run (the detector only fires when a profile country is supplied).
+    polity_alerts: list[dict] = field(default_factory=list)
     # Per-spec view of every deterministic alert that fired for that
     # filename. The reviewer / batch paths use this to populate the
     # ``<pre_detected>`` block in each per-spec user message so the model
@@ -631,7 +638,7 @@ def _run_exact_token_preflight(
             )
 
 
-def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT, preflight: bool = True) -> _PreparedSpecs:
+def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT, preflight: bool = True, profile_country: str | None = None) -> _PreparedSpecs:
     # ``preflight=False`` skips the token-size gates (exact + local). Used by
     # the resume path: the batch already passed preflight at submit time, so a
     # large spec must not raise here and block recovery of an in-flight batch.
@@ -647,6 +654,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     template_marker_alerts: list[dict] = []
     invalid_code_cycle_alerts: list[dict] = []
     duplicate_paragraph_alerts: list[dict] = []
+    polity_alerts: list[dict] = []
     # Per-filename view of the per-spec alerts so the reviewer / batch
     # paths can hand each spec only its own alerts when building the
     # ``<pre_detected>`` block.
@@ -666,7 +674,9 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
             continue
         specs.append(spec)
-        pre = preprocess_spec(spec.content, spec.filename, cycle=cycle)
+        pre = preprocess_spec(
+            spec.content, spec.filename, cycle=cycle, profile_country=profile_country
+        )
         leed_alerts.extend(pre.leed_alerts)
         placeholder_alerts.extend(pre.placeholder_alerts)
         code_cycle_alerts.extend(pre.code_cycle_alerts)
@@ -674,6 +684,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         template_marker_alerts.extend(pre.template_marker_alerts)
         invalid_code_cycle_alerts.extend(pre.invalid_code_cycle_alerts)
         duplicate_paragraph_alerts.extend(pre.duplicate_paragraph_alerts)
+        polity_alerts.extend(pre.polity_alerts)
         # Cache this spec's alerts under its filename so the reviewer /
         # batch paths can hand them to the prompt builder. Naming-style
         # alerts are appended below once the project-wide check runs
@@ -686,6 +697,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             *pre.template_marker_alerts,
             *pre.invalid_code_cycle_alerts,
             *pre.duplicate_paragraph_alerts,
+            *pre.polity_alerts,
         ]
         progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
     if not specs:
@@ -812,6 +824,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         template_marker_alerts=template_marker_alerts,
         invalid_code_cycle_alerts=invalid_code_cycle_alerts,
         duplicate_paragraph_alerts=duplicate_paragraph_alerts,
+        polity_alerts=polity_alerts,
         pre_detected_by_filename=pre_detected_by_filename,
     )
 
@@ -854,6 +867,8 @@ class BatchSubmission:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Wrong-polity token alerts (WS-4, D-15). Empty on profile-less runs.
+    polity_alerts: list[dict] = field(default_factory=list)
     # Tracing: pipeline span_id carried from start_batch_review through to
     # finalize_batch_result so the batch-mode root span can be closed at
     # the end of the run. Empty string when tracing was disabled.
@@ -984,7 +999,19 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
             progress=progress,
             diagnostics=diagnostics,
         )
-    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=effective_context, log=log, progress=progress, cycle=cycle, model=model)
+    # Wrong-polity detector activation (WS-4, D-15): only a profile-bearing
+    # run on an opted-in module supplies a country; ``None`` keeps every
+    # profile-less run's preprocessing byte-identical.
+    profile_country = (
+        project_profile.country
+        if (
+            getattr(module, "project_profile_enabled", False)
+            and project_profile is not None
+            and project_profile.is_complete()
+        )
+        else None
+    )
+    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=effective_context, log=log, progress=progress, cycle=cycle, model=model, profile_country=profile_country)
     _trace.capture_note(
         trace_pipeline,
         "specs prepared",
@@ -1030,6 +1057,7 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         template_marker_alerts=prepared.template_marker_alerts,
         invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
         duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+        polity_alerts=prepared.polity_alerts,
         trace_span_id=(trace_pipeline.span_id if trace_pipeline is not None else ""),
     )
 
@@ -1207,6 +1235,16 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         in_tok += rr.input_tokens
         out_tok += rr.output_tokens
 
+    # Deterministic anchor validation (WS-4, D-16): pre-dedup, so every
+    # per-file finding is checked against its OWN file's extracted text
+    # before the cross-file merge retains it as an occurrence original.
+    # Skipped entirely (texts map empty ⇒ every lookup misses ⇒ unchecked)
+    # when the recovery path has no extracted specs.
+    texts_by_filename = {
+        s.filename: s.content for s in (submission.prepared_specs or [])
+    }
+    if texts_by_filename:
+        validate_finding_anchors(all_findings, texts_by_filename, log=log)
     all_findings = _deduplicate_findings(all_findings)
     combined = ReviewResult(findings=all_findings, thinking="\n\n".join(all_thinking), model=submission.model, input_tokens=in_tok, output_tokens=out_tok, elapsed_seconds=time.time() - submission.job.created_at)
     if errors:
@@ -1229,6 +1267,7 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         template_marker_alerts=list(submission.template_marker_alerts),
         invalid_code_cycle_alerts=list(submission.invalid_code_cycle_alerts),
         duplicate_paragraph_alerts=list(submission.duplicate_paragraph_alerts),
+        polity_alerts=list(getattr(submission, "polity_alerts", None) or []),
         # Carry the pipeline span_id through so finalize_batch_result can
         # close the root span at the end of the batch lifecycle.
         trace_span_id=submission.trace_span_id,
@@ -1290,6 +1329,11 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
     # ``run_chunked_cross_check`` falls back to the single-pass
     # ``run_cross_check`` when the input fits.
     cross = run_chunked_cross_check(specs, dedup_findings, project_context=project_context, cycle=cycle, log=log)
+    # Deterministic anchor validation (WS-4, D-16) — coordination findings
+    # claim anchors in named files too; check them against the same texts.
+    validate_finding_anchors(
+        cross.findings, {s.filename: s.content for s in specs}, log=log
+    )
     # Stamp a stable, content-derived id on each coordination finding
     # before it flows into cross-check verification and the edit sidecar.
     # These findings never pass through the review dedup pass, so without
@@ -1416,6 +1460,11 @@ def run_compliance_for_batch(
         project_context=project_context,
         cycle=cycle,
         log=log,
+    )
+    # Deterministic anchor validation (WS-4, D-16): compliance ADD/EDIT
+    # findings must anchor on text that exists verbatim in the named spec.
+    validate_finding_anchors(
+        compliance.findings, {s.filename: s.content for s in specs}, log=log
     )
     # Label compliance findings in ``section`` (precedent: cross-check chunk
     # labels) so the report and sidecar show their origin without a new
@@ -1562,6 +1611,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         template_marker_alerts=list(state.template_marker_alerts),
         invalid_code_cycle_alerts=list(state.invalid_code_cycle_alerts),
         duplicate_paragraph_alerts=list(state.duplicate_paragraph_alerts),
+        polity_alerts=list(state.polity_alerts),
         # Ride the extracted specs through to
         # the PipelineResult so the report banner can surface extraction
         # warnings. ``prepared_specs`` may be nulled by the recovery
@@ -1616,11 +1666,11 @@ def reconstruct_batch_submission(
         created_at=created_at,
     )
     prepared_specs: list[ExtractedSpec] | None = None
-    # Eight DISTINCT empty lists (not a chained alias) so a future ``.append``
+    # Nine DISTINCT empty lists (not a chained alias) so a future ``.append``
     # on one can't corrupt the others; the re-extract success branch reassigns
     # each from ``prepared.*``.
-    leed, placeholder, code_cycle, structural, naming, template, invalid, dup = (
-        [], [], [], [], [], [], [], [],
+    leed, placeholder, code_cycle, structural, naming, template, invalid, dup, polity = (
+        [], [], [], [], [], [], [], [], [],
     )
 
     resolved_files = [Path(f) for f in files] if files else None
@@ -1629,6 +1679,19 @@ def reconstruct_batch_submission(
         # explicit list it ignores ``input_dir``, so fall back to the files'
         # parent when the original input_dir wasn't captured.
         extract_dir = Path(input_dir) if input_dir else resolved_files[0].parent
+        # Reactivate the wrong-polity detector on resume (D-15): the country
+        # rides the persisted profile dict; an incomplete/absent profile
+        # degrades to None (detector off), same as the submit path.
+        resume_profile = ProjectProfile.from_dict(project_profile)
+        profile_country = (
+            resume_profile.country
+            if (
+                getattr(module, "project_profile_enabled", False)
+                and resume_profile is not None
+                and resume_profile.is_complete()
+            )
+            else None
+        )
         try:
             prepared = _prepare_specs(
                 input_dir=extract_dir,
@@ -1639,6 +1702,7 @@ def reconstruct_batch_submission(
                 cycle=module.cycle,
                 model=model,
                 preflight=False,
+                profile_country=profile_country,
             )
             prepared_specs = prepared.specs
             leed = prepared.leed_alerts
@@ -1649,6 +1713,7 @@ def reconstruct_batch_submission(
             template = prepared.template_marker_alerts
             invalid = prepared.invalid_code_cycle_alerts
             dup = prepared.duplicate_paragraph_alerts
+            polity = prepared.polity_alerts
             if {s.filename for s in prepared.specs} != set(files_reviewed):
                 log(
                     "Resumed spec set differs from the originally reviewed files; "
@@ -1693,6 +1758,7 @@ def reconstruct_batch_submission(
         template_marker_alerts=template,
         invalid_code_cycle_alerts=invalid,
         duplicate_paragraph_alerts=dup,
+        polity_alerts=polity,
         trace_span_id="",
     )
 
