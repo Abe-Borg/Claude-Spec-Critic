@@ -1033,6 +1033,86 @@ class TestRunResearchPhaseIntegration:
         assert "NFPA 13 (2022)" in user_message
         assert any("risk consultant" in m for m in (user_message,))
 
+    def _forbid_runner(self, monkeypatch):
+        """Fail the test if the API-backed fan-out is ever reached."""
+
+        def _boom(*args, **kwargs):
+            raise AssertionError(
+                "research fan-out must not run when the spec set is unusable"
+            )
+
+        # ``_run_research_phase`` binds the runner via a deferred
+        # ``from ..research import ...`` at call time, so patching the
+        # package attribute intercepts it.
+        monkeypatch.setattr("src.research.run_requirements_research", _boom)
+
+    def test_empty_input_dir_aborts_before_research_spend(
+        self, tmp_path, monkeypatch
+    ):
+        # PR #299 review (Codex P2): a run that cannot submit must fail
+        # BEFORE the research budget is spent, not after.
+        from src.orchestration import pipeline
+
+        self._forbid_runner(monkeypatch)
+        with pytest.raises(FileNotFoundError, match="No specification files found"):
+            pipeline._run_research_phase(
+                module=_enabled_module(),
+                profile=_complete_profile(),
+                input_dir=tmp_path,
+                files=None,
+                user_context="",
+                log=_LogCollector(),
+                progress=lambda *a, **k: None,
+            )
+
+    def test_extraction_failure_aborts_before_research_spend(
+        self, tmp_path, monkeypatch
+    ):
+        from src.orchestration import pipeline
+
+        self._forbid_runner(monkeypatch)
+
+        def _corrupt(_files):
+            raise ValueError("corrupt DOCX: not a zip archive")
+
+        monkeypatch.setattr(pipeline, "extract_multiple_specs_cached", _corrupt)
+        spec_path = tmp_path / "21 13 13 Broken.docx"
+        spec_path.write_bytes(b"not a real docx")
+        with pytest.raises(ValueError, match="corrupt DOCX"):
+            pipeline._run_research_phase(
+                module=_enabled_module(),
+                profile=_complete_profile(),
+                input_dir=tmp_path,
+                files=[spec_path],
+                user_context="",
+                log=_LogCollector(),
+                progress=lambda *a, **k: None,
+            )
+
+    def test_all_empty_specs_abort_before_research_spend(
+        self, tmp_path, monkeypatch
+    ):
+        from src.input.extractor import ExtractedSpec
+        from src.orchestration import pipeline
+
+        self._forbid_runner(monkeypatch)
+        empty = ExtractedSpec(filename="a.docx", content="   ", word_count=0)
+        monkeypatch.setattr(
+            pipeline, "extract_multiple_specs_cached", lambda _files: [empty]
+        )
+        spec_path = tmp_path / "a.docx"
+        spec_path.write_bytes(b"placeholder")
+        with pytest.raises(FileNotFoundError, match="All files failed extraction"):
+            pipeline._run_research_phase(
+                module=_enabled_module(),
+                profile=_complete_profile(),
+                input_dir=tmp_path,
+                files=[spec_path],
+                user_context="",
+                log=_LogCollector(),
+                progress=lambda *a, **k: None,
+            )
+
 
 class TestRequirementsProfilePersistence:
     def _submission(self, requirements_profile):

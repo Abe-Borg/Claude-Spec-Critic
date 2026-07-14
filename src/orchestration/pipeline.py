@@ -866,11 +866,11 @@ def _run_research_phase(
 ) -> tuple[str, dict]:
     """Corpus scrape → research fan-out → context splice (WS-3, D-3).
 
-    Returns ``(effective_context, requirements_profile_dict)``. The scrape
-    is best-effort (an extraction failure degrades research to profile-only
-    — the failure posture is unchanged); the fan-out itself raises
-    :class:`~src.research.ResearchFanoutError` when EVERY dimension fails,
-    aborting the submit before anything is billed for review.
+    Returns ``(effective_context, requirements_profile_dict)``. The
+    extraction gate below is authoritative, the scrape itself best-effort;
+    the fan-out raises :class:`~src.research.ResearchFanoutError` when EVERY
+    dimension fails, aborting the submit before anything is billed for
+    review.
 
     Deferred import: the research package pulls in the verifier's streaming
     stack, which profile-less runs (the CA module, i.e. every run today)
@@ -883,12 +883,25 @@ def _run_research_phase(
     )
 
     progress(0.0, "Researching location requirements...")
+    # Extraction gate — MUST hold before the API-backed fan-out spends
+    # anything. A missing/corrupt/empty spec set would kill the run at
+    # ``_prepare_specs`` anyway; discovering that only AFTER research would
+    # burn the whole research budget with no review submitted. The gates
+    # mirror ``_prepare_specs``' own failure modes (same error messages) and
+    # the extraction is LRU-cached, so the later ``_prepare_specs`` call
+    # re-uses this work rather than repeating it.
+    spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
+    if not spec_files:
+        raise FileNotFoundError(f"No specification files found in: {input_dir}")
+    # Per-file extraction errors (corrupt DOCX) propagate and abort here.
+    extracted = extract_multiple_specs_cached(spec_files)
+    if not any(spec.word_count > 0 and spec.content.strip() for spec in extracted):
+        raise FileNotFoundError("All files failed extraction. No specs to review.")
+
+    # The scrape over the successfully-extracted text stays best-effort:
+    # it is a research seed, and a scrape bug must not sink the run.
     corpus_signals = None
     try:
-        # Cached extraction: the later ``_prepare_specs`` call re-extracts
-        # the same files and hits the LRU, so scraping early costs nothing.
-        spec_files = [Path(f) for f in files] if files else _get_spec_files(Path(input_dir))
-        extracted = extract_multiple_specs_cached(spec_files)
         corpus_signals = scrape_corpus_signals(extracted, module=module)
     except Exception as exc:  # noqa: BLE001 — scrape is a seed, never a gate
         log(
