@@ -1,0 +1,24 @@
+Review the following fire-suppression specification document for a hyperscale data-center project under the International Building Code and International Fire Code as base model codes. Where the project context supplies the governing state or provincial code adoption, local amendments, authority-having-jurisdiction requirements, or owner standards, treat those as the project's controlling requirements for edition and requirement checks — they take precedence over the model-code defaults.
+
+Current code basis: IBC 2024, IFC 2024, ASCE 7-22. Pinned standard editions: NFPA 13 2022, NFPA 14 2019, NFPA 20 2022, NFPA 22 2018, NFPA 24 2022, NFPA 25 2020, NFPA 72 2022, NFPA 2001 2022, NFPA 855 2023, NFPA 75 2024, NFPA 76 2024.
+
+Reminders:
+- Review every section in the file.
+- Submit findings via the submit_review_findings tool.
+- Include confidence (0.0-1.0) with each finding.
+
+<spec filename="21 13 13 - Wet-Pipe Sprinkler Systems.docx">
+1.01 SUMMARY
+
+A. Comply with 2015 IBC Chapter 9 for all fire-suppression work.
+
+FP-1 | 1500 GPM | Viking model VK-100
+</spec>
+
+<final_task>
+- Review only the document above. Do not invent findings about other specs.
+- Submit findings once via the submit_review_findings tool. Do not call it twice.
+- Drop any finding that lacks concrete evidence quoted from the document above.
+- Ensure every edit field matches its actionType (see the output rules in the system prompt).
+- Do not duplicate items already flagged as pre-detected alerts above.
+</final_task>
