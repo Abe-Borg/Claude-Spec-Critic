@@ -85,6 +85,13 @@ class PendingBatch:
     # the only configuration those files could have been written by. No
     # schema bump: the loader is defensive and old readers ignore the key.
     module_id: str = DEFAULT_MODULE.module_id
+    # Per-run project identity (city/state/country/client) as a serialized
+    # dict, or ``None`` for a profile-less run. Additive like ``module_id``:
+    # legacy state files predate the key and load as ``None`` (profile-less,
+    # a valid run), so NO schema bump. The profile *text* is separately inside
+    # the persisted ``project_context`` once WS-3 splices it, but the typed
+    # dict is what a resumed run reconstructs the routing/report inputs from.
+    project_profile: dict | None = None
     project_context: str = ""
     cross_check_enabled: bool = False
     submitted_at: float = 0.0
@@ -112,6 +119,7 @@ class PendingBatch:
             files=[str(f) for f in (files or [])],
             cycle_label=submission.cycle_label,
             module_id=getattr(submission, "module_id", "") or DEFAULT_MODULE.module_id,
+            project_profile=getattr(submission, "project_profile", None),
             project_context=submission.project_context,
             cross_check_enabled=submission.cross_check_enabled,
             submitted_at=float(submission.job.created_at or time.time()),
@@ -135,6 +143,7 @@ class PendingBatch:
             module=module,
             cross_check_enabled=self.cross_check_enabled,
             created_at=self.submitted_at,
+            project_profile=self.project_profile,
             log=log,
             progress=progress,
         )
@@ -186,6 +195,9 @@ def load_pending_batch(*, path: Path | None = None) -> PendingBatch | None:
     submitted = data.get("submitted_at")
     submitted_at = float(submitted) if isinstance(submitted, (int, float)) else 0.0
     request_map = data.get("request_map")
+    # Additive, defensive: absent (legacy) or non-dict reads as None (a valid
+    # profile-less run). No schema bump.
+    profile = data.get("project_profile")
     return PendingBatch(
         batch_id=batch_id,
         model=_str("model") or REVIEW_MODEL_DEFAULT,
@@ -196,6 +208,7 @@ def load_pending_batch(*, path: Path | None = None) -> PendingBatch | None:
         files=_list("files"),
         cycle_label=_str("cycle_label", DEFAULT_CYCLE.label) or DEFAULT_CYCLE.label,
         module_id=_str("module_id", DEFAULT_MODULE.module_id) or DEFAULT_MODULE.module_id,
+        project_profile=profile if isinstance(profile, dict) else None,
         project_context=_str("project_context"),
         cross_check_enabled=bool(data.get("cross_check_enabled", False)),
         submitted_at=submitted_at,
@@ -242,6 +255,7 @@ def thin_submission_from_batch_results(
     cross_check_enabled: bool = False,
     project_context: str = "",
     module: ReviewModule = DEFAULT_MODULE,
+    project_profile: dict | None = None,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> BatchSubmission:
@@ -309,6 +323,7 @@ def thin_submission_from_batch_results(
         module=module,
         cross_check_enabled=cross_check_enabled and bool(files),
         created_at=time.time(),
+        project_profile=project_profile,
         log=log,
         progress=progress,
     )

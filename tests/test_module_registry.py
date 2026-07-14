@@ -797,6 +797,47 @@ class TestUiStatePersistence:
         resolved = get_module(load_selected_module_id(path=state_path))
         assert resolved is DEFAULT_MODULE
 
+    def test_per_module_profile_round_trip(self, tmp_path):
+        from src.core.ui_state import load_project_profile, save_project_profile
+
+        state_path = tmp_path / "ui_state.json"
+        assert load_project_profile("datacenter_fire", path=state_path) == {}
+        prof = {"city": "Ashburn", "state_or_province": "VA", "country": "US", "client_name": "ExampleCo"}
+        save_project_profile("datacenter_fire", prof, path=state_path)
+        assert load_project_profile("datacenter_fire", path=state_path) == prof
+        # A different module has its own (empty) slot.
+        assert load_project_profile("california_k12_mep", path=state_path) == {}
+
+    def test_profile_save_preserves_selected_module_id(self, tmp_path):
+        # Read-modify-write: saving a profile must not clobber the top-level
+        # module selection (or vice versa).
+        from src.core.ui_state import (
+            load_project_profile,
+            load_selected_module_id,
+            save_project_profile,
+            save_selected_module_id,
+        )
+
+        state_path = tmp_path / "ui_state.json"
+        save_selected_module_id("datacenter_fire", path=state_path)
+        save_project_profile(
+            "datacenter_fire", {"city": "Ashburn"}, path=state_path
+        )
+        assert load_selected_module_id(path=state_path) == "datacenter_fire"
+        assert load_project_profile("datacenter_fire", path=state_path) == {"city": "Ashburn"}
+        # And saving the module id again preserves the profile.
+        save_selected_module_id("california_k12_mep", path=state_path)
+        assert load_project_profile("datacenter_fire", path=state_path) == {"city": "Ashburn"}
+
+    def test_corrupt_profiles_section_reads_as_empty(self, tmp_path):
+        import json
+
+        from src.core.ui_state import load_project_profile
+
+        state_path = tmp_path / "ui_state.json"
+        state_path.write_text(json.dumps({"project_profiles": "not a dict"}), encoding="utf-8")
+        assert load_project_profile("datacenter_fire", path=state_path) == {}
+
 
 class TestReportSurfaces:
     def test_methodology_note_renders_module_phrase_and_jurisdiction(self):

@@ -37,6 +37,7 @@ def start_run_recorder(
     cycle_label: str,
     files: list,
     module_id: str = "",
+    project_profile: dict | None = None,
 ) -> TraceRecorder | None:
     """Start a recorder for a new run, or return ``None`` when tracing is off.
 
@@ -58,6 +59,7 @@ def start_run_recorder(
         cycle_label=cycle_label,
         module_id=module_id,
         files_reviewed=[p.name if hasattr(p, "name") else str(p) for p in files],
+        project_profile=project_profile,
     )
     set_recorder(rec)
     return rec

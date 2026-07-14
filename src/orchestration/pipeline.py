@@ -42,6 +42,7 @@ from ..verification.verifier import (
 from ..verification.verification_cache import VerificationCache, cache_persist_enabled
 from ..cross_check.cross_checker import run_chunked_cross_check
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..core.project_profile import ProjectProfile
 from ..modules import DEFAULT_MODULE, ReviewModule, get_module
 from ..tracing import capture_hooks as _trace
 
@@ -130,6 +131,12 @@ class PipelineResult:
     # ``cycle_label`` (which stays for the verification-cache namespace and
     # legacy display) so report / sidecar surfaces can stamp provenance.
     module_id: str = DEFAULT_MODULE.module_id
+    # Per-run project identity (city/state/country/client) as a serialized
+    # dict, or ``None`` for a profile-less run. Additive + ``getattr``-read
+    # downstream (report title lines, sidecar), mirroring ``module_id``; the
+    # dict form keeps the result JSON-friendly. ``None`` on every existing
+    # (profile-less) run, so those reports are byte-identical.
+    project_profile: dict | None = None
     total_elapsed_seconds: float | None = None
     # Remaining deterministic alert types collected during preflight.
     # Carrying them through here lets the report render every detector's
@@ -791,6 +798,11 @@ class BatchSubmission:
     # degrade-to-default posture as the legacy cycle_label lookup. Persisted
     # into the pending-batch resume state by ``batch_resume.PendingBatch``.
     module_id: str = DEFAULT_MODULE.module_id
+    # Per-run project identity (city/state/country/client) as a serialized
+    # dict, or ``None`` when the selected module doesn't collect a profile.
+    # Persisted into the pending-batch resume state and stamped onto the
+    # PipelineResult; additive, ``None`` on every profile-less run.
+    project_profile: dict | None = None
     cross_check_enabled: bool = False
     # Carry the remaining deterministic alert lists so the collect /
     # finalize path can hand them off to the final PipelineResult.
@@ -806,14 +818,16 @@ class BatchSubmission:
     trace_span_id: str = ""
 
 
-def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, module: ReviewModule = DEFAULT_MODULE, cross_check_enabled: bool = False) -> BatchSubmission:
+def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, module: ReviewModule = DEFAULT_MODULE, cross_check_enabled: bool = False, project_profile: ProjectProfile | None = None) -> BatchSubmission:
     cycle = module.cycle
+    profile_dict = project_profile.to_dict() if project_profile is not None else None
     trace_pipeline = _trace.capture_pipeline_start(
         mode="batch",
         model=model,
         cycle_label=cycle.label,
         module_id=module.module_id,
         files=[str(f) for f in (files or [])],
+        project_profile=profile_dict,
     )
     prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=project_context, log=log, progress=progress, cycle=cycle, model=model)
     _trace.capture_note(
@@ -849,6 +863,7 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         prepared_specs=prepared.specs,
         cycle_label=cycle.label,
         module_id=module.module_id,
+        project_profile=profile_dict,
         cross_check_enabled=cross_check_enabled,
         code_cycle_alerts=prepared.code_cycle_alerts,
         structural_alerts=prepared.structural_alerts,
@@ -1213,6 +1228,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         cross_check_result=state.cross_check_result,
         cycle_label=state.submission.cycle_label,
         module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
+        project_profile=getattr(state.submission, "project_profile", None),
         total_elapsed_seconds=time.time() - state.submission.job.created_at,
         # Pass the deterministic-check lists through to the report.
         code_cycle_alerts=list(state.code_cycle_alerts),
@@ -1243,6 +1259,7 @@ def reconstruct_batch_submission(
     module: ReviewModule,
     cross_check_enabled: bool,
     created_at: float,
+    project_profile: dict | None = None,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> BatchSubmission:
@@ -1337,6 +1354,7 @@ def reconstruct_batch_submission(
         prepared_specs=prepared_specs,
         cycle_label=module.cycle.label,
         module_id=module.module_id,
+        project_profile=project_profile,
         cross_check_enabled=cross_check_enabled,
         code_cycle_alerts=code_cycle,
         structural_alerts=structural,

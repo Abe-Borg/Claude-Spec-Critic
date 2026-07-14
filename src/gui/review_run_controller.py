@@ -20,18 +20,20 @@ from ..modules import get_module
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..review.reviewer import REVIEW_MODEL_DEFAULT
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
+from ..core.ui_state import save_project_profile
+from .project_profile_inputs import completeness_error
 from ..tracing.session import (
     start_run_recorder,
     stop_run_recorder as _stop_recorder,
 )
 
 
-def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list, module_id: str = ""):
+def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list, module_id: str = "", project_profile: dict | None = None):
     """Thin wrapper over ``tracing.session.start_run_recorder`` (kept for
     the existing call sites / signature)."""
     return start_run_recorder(
         run_id=run_id, mode=mode, model=model, cycle_label=cycle_label, files=files,
-        module_id=module_id,
+        module_id=module_id, project_profile=project_profile,
     )
 
 
@@ -66,6 +68,17 @@ def validate_inputs(app) -> bool:
                 f"Trim the context (or remove some attachments) before running.",
             )
             return False
+    # When the selected module opts into a project profile, block the run
+    # until it is complete — a location-aware review must not spend on review
+    # with a half-entered jurisdiction. Profile-less modules gather None and
+    # skip this check entirely.
+    profile = app._gather_project_profile()
+    if profile is not None:
+        error = completeness_error(profile)
+        if error:
+            app.log.log_error(error)
+            messagebox.showerror("Project details required", error)
+            return False
     return True
 
 
@@ -96,6 +109,18 @@ def start_review(app) -> None:
     module = get_module(getattr(app, "_selected_module_id", None))
     app._selected_module_id = module.module_id
     app._selected_cycle_label = module.cycle.label
+    # Snapshot the per-run project profile (None for a profile-less module).
+    # Persist the entered values per module and echo the parsed location back
+    # so a typo is visible before review spend begins (D-1).
+    app._project_profile_for_review = app._gather_project_profile()
+    if app._project_profile_for_review is not None:
+        save_project_profile(
+            module.module_id, app._project_profile_for_review.to_dict()
+        )
+        app.log.log(
+            f"Project: {app._project_profile_for_review.display_line()}",
+            level="info",
+        )
     app.is_processing = True
     app.log.log("─" * 40, level="muted", timestamp=False, paced=False)
     app.run_button.set_processing()
@@ -109,6 +134,11 @@ def start_review(app) -> None:
         model=REVIEW_MODEL_DEFAULT,
         cycle_label=app._selected_cycle_label,
         module_id=app._selected_module_id,
+        project_profile_summary=(
+            app._project_profile_for_review.display_line()
+            if app._project_profile_for_review is not None
+            else ""
+        ),
         files_selected=[p.name for p in selected_files],
         project_context_tokens=app._project_context_tokens,
         cross_check_enabled=app._cross_check_for_review,
