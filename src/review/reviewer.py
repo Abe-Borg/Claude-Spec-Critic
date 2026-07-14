@@ -91,6 +91,112 @@ def validate_edit_shape(
     return None
 
 
+def _collapse_ws(text: str) -> str:
+    """Collapse runs of whitespace to single spaces (anchor-match fallback)."""
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _demote_to_report_only(finding: "Finding", reason: str) -> None:
+    """Apply the standard demotion: REPORT_ONLY + reason + cleared edit slots.
+
+    Mirrors the parse-time demotion in :func:`_parse_findings` exactly so a
+    post-parse demotion (anchor validation) is indistinguishable downstream
+    from a parse-time one: the finding's prose survives, no edit instruction
+    can reach the report or the sidecar, and the banner's demotion row
+    counts it via ``demotion_reason``.
+    """
+    finding.actionType = "REPORT_ONLY"
+    finding.demotion_reason = reason
+    finding.edit_proposal = None
+    finding.existingText = None
+    finding.replacementText = None
+    finding.anchorText = None
+    finding.insertPosition = None
+
+
+def validate_finding_anchors(
+    findings: list["Finding"],
+    texts_by_filename: dict[str, str],
+    *,
+    log=lambda *_a, **_k: None,
+) -> int:
+    """Deterministic anchor validation (WS-4, design D-16 [FT]).
+
+    For every edit-bearing finding, the text it claims to anchor on must
+    actually exist in the named file: ADD ⇒ ``anchorText`` is a substring of
+    the file's extracted text; EDIT/DELETE ⇒ ``existingText`` is. Exact
+    match first, then a whitespace-collapsed match (models normalize
+    whitespace); if both fail the finding is **demoted to REPORT_ONLY with
+    ``demotion_reason`` stamped — never silently dropped** (invariant 8).
+    Findings naming a file whose extraction is unavailable are left
+    unchecked, as are findings whose per-file text can't be attributed.
+
+    Applied after parse to review, cross-check, AND compliance findings (the
+    three stage functions call it), converting anchor hallucination from a
+    review-quality risk into a deterministic impossibility and hardening the
+    sidecar for any future auto-applier. Multi-file merged findings are
+    checked as their per-file originals too, each against its own file.
+
+    Returns the number of findings demoted (representatives only; demoted
+    per-file originals ride their group).
+    """
+    # Pre-collapse each file once — the collapsed haystack is reused across
+    # every finding naming that file.
+    collapsed_by_filename: dict[str, str] = {}
+
+    def _text_contains(filename: str, needle: str) -> bool | None:
+        """True/False = checked; None = file text unavailable (skip)."""
+        text = texts_by_filename.get(filename)
+        if text is None:
+            return None
+        if needle in text:
+            return True
+        collapsed = collapsed_by_filename.get(filename)
+        if collapsed is None:
+            collapsed = _collapse_ws(text)
+            collapsed_by_filename[filename] = collapsed
+        return _collapse_ws(needle) in collapsed
+
+    def _check_one(finding: "Finding") -> bool:
+        """Validate one finding in place. Returns True when demoted."""
+        action = (finding.actionType or "").strip().upper()
+        if action == "ADD":
+            needle, slot = finding.anchorText, "anchor text"
+        elif action in ("EDIT", "DELETE"):
+            needle, slot = finding.existingText, "existing text"
+        else:
+            return False
+        if not needle or not (finding.fileName or "").strip():
+            # A missing needle was already demoted at parse time; a finding
+            # with no filename can't be attributed to a text. Skip both.
+            return False
+        contains = _text_contains(finding.fileName, needle)
+        if contains is None or contains:
+            return False
+        _demote_to_report_only(
+            finding, f"{slot} not found in {finding.fileName}"
+        )
+        return True
+
+    demoted = 0
+    for finding in findings:
+        if _check_one(finding):
+            demoted += 1
+        # Per-file originals carry each file's own anchor after a cross-file
+        # merge; validate each against ITS file so a downstream applier
+        # never receives a per-file locator that does not exist there.
+        for original in getattr(finding, "occurrence_originals", None) or []:
+            _check_one(original)
+    if demoted:
+        log(
+            f"Anchor validation: demoted {demoted} finding(s) to REPORT_ONLY "
+            "(claimed anchor/existing text not found verbatim in the named "
+            "spec).",
+            level="warning",
+        )
+    return demoted
+
+
 @dataclass
 class EditProposal:
     """An optional, separate, high-confidence action derived from a finding.
@@ -278,6 +384,13 @@ class ReviewResult:
     # In-memory only — telemetry describes runtime behavior, not durable
     # state.
     structured_payload: dict | None = None
+    # Compliance-pass coverage matrix (WS-4, D-7): one dict per profile
+    # requirement — {"requirement_id", "status", "evidence", "fileName"} —
+    # populated only by ``compliance_checker.run_compliance_check`` (the
+    # compliance ReviewResult reuses ``cross_check_status`` for its
+    # completed/failed/skipped status). Review and cross-check results leave
+    # it empty; additive, JSON-friendly.
+    coverage: list[dict] = field(default_factory=list)
 
     @property
     def critical_count(self) -> int: return sum(1 for f in self.findings if f.severity == "CRITICAL")

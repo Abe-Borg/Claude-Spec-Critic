@@ -475,6 +475,7 @@ def submit_verification_batch(
     *,
     cycle: CodeCycle = DEFAULT_CYCLE,
     model: str | None = None,
+    user_location: dict | None = None,
 ) -> BatchJob:
     if not findings:
         raise ValueError("No findings eligible for verification")
@@ -522,6 +523,10 @@ def submit_verification_batch(
             system_prompt=system_prompt_fn(cycle),
             assistant_content=None,
             include_service_tier=True,
+            # Per-run project location (WS-4, D-9): the same dict for every
+            # finding in the submission — stored once per submission at the
+            # pipeline level, not per finding.
+            user_location=user_location,
         )
         extra_headers_seq.append(verification_request.extra_headers)
         reqs.append({"custom_id": custom_id, "params": verification_request.params})

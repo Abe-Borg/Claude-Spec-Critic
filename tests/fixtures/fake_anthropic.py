@@ -405,6 +405,67 @@ def pause_turn_response(
     )
 
 
+def sample_compliance_payload() -> dict[str, Any]:
+    """Structured payload matching ``COMPLIANCE_FINDINGS_SCHEMA``.
+
+    One represented + one missing coverage entry, plus an ADD finding tied
+    to the missing requirement (its id referenced in the issue text — the
+    linkage the chunked findings filter keys on).
+    """
+    return {
+        "compliance_summary": "One researched requirement is missing from the package.",
+        "coverage": [
+            {
+                "requirement_id": "r-aaaaaaaaaaaa",
+                "status": "represented",
+                "evidence": "Comply with the 2024 IBC as amended.",
+                "fileName": "21 13 13 Wet-Pipe.docx",
+            },
+            {
+                "requirement_id": "r-bbbbbbbbbbbb",
+                "status": "missing",
+                "evidence": None,
+                "fileName": None,
+            },
+        ],
+        "findings": [
+            {
+                "severity": "HIGH",
+                "fileName": "21 13 13 Wet-Pipe.docx",
+                "section": "1.2",
+                "issue": (
+                    "The package does not reference the required municipal "
+                    "amendment (profile requirement r-bbbbbbbbbbbb)."
+                ),
+                "actionType": "ADD",
+                "existingText": None,
+                "replacementText": "Comply with Municipal Amendment 12-2024.",
+                "codeReference": "Municipal Amendment 12-2024",
+                "confidence": 0.85,
+                "anchorText": "PART 1 - GENERAL",
+                "insertPosition": "after",
+                "evidenceElementId": None,
+            }
+        ],
+    }
+
+
+def compliance_tool_use_response(
+    *,
+    payload: dict[str, Any] | None = None,
+    stop_reason: str = "tool_use",
+    dict_shape: bool = False,
+) -> Any:
+    """A successful ``submit_compliance_findings`` tool call."""
+    payload = payload if payload is not None else sample_compliance_payload()
+    content: list[Any] = [
+        FakeToolUseBlock(name="submit_compliance_findings", input=dict(payload))
+    ]
+    return _maybe_dict(
+        FakeMessage(content=content, stop_reason=stop_reason), dict_shape=dict_shape
+    )
+
+
 def max_tokens_incomplete_response(
     *,
     partial_text: str = "Reviewing… (output truncated mid-sentence",

@@ -76,6 +76,7 @@
       "type": "SELECT placeholder"
     }
   ],
+  "polity_alerts": [],
   "structural_alerts": [
     {
       "context": ". Reference standards apply as listed.  2.01 PRODUCTS  2.02 WARRANTY  Provide seismic bracing f",

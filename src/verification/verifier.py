@@ -1289,6 +1289,8 @@ def verify_finding(
     model: str | None = None,
     cache: VerificationCache | None = None,
     escalated: bool = False,
+    user_location: dict | None = None,
+    jurisdiction_fingerprint: str | None = None,
     _trace_parent=None,
 ) -> VerificationResult:
     """Verify a single finding using Claude with web search.
@@ -1305,11 +1307,17 @@ def verify_finding(
       claim in the same run.
     - ``escalated`` is propagated into the result so diagnostics can
       distinguish the first pass from the Opus retry.
+    - ``user_location`` / ``jurisdiction_fingerprint`` (WS-4, D-9) carry the
+      run's project location into the web_search tool and the cache key.
+      ``None`` (every profile-less run) keeps today's request bytes and the
+      five-segment cache key unchanged.
     """
     finding_id = getattr(finding, "finding_id", "") or "unknown"
 
     if cache is not None:
-        cached = cache.get(finding, cycle=cycle)
+        cached = cache.get(
+            finding, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
+        )
         if cached is not None:
             cache_age_days = None
             ts = getattr(cached, "cache_entry_created_ts", 0.0) or 0.0
@@ -1354,6 +1362,7 @@ def verify_finding(
             model=selected_model,
             max_retries=max_retries,
             escalated=escalated,
+            user_location=user_location,
             trace_parent=trace_initial,
         )
     except Exception:
@@ -1414,6 +1423,7 @@ def verify_finding(
                     model=escalated_model,
                     max_retries=max_retries,
                     escalated=True,
+                    user_location=user_location,
                     trace_parent=trace_esc,
                 )
             except Exception:
@@ -1436,7 +1446,12 @@ def verify_finding(
         _trace.capture_verification_end(trace_initial, verification_result=result)
 
     if cache is not None and result.cache_status == "miss":
-        cache.put(finding, cycle=cycle, result=result)
+        cache.put(
+            finding,
+            cycle=cycle,
+            result=result,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+        )
     return result
 
 
@@ -1526,6 +1541,7 @@ def _run_verification_call(
     model: str,
     max_retries: int,
     escalated: bool,
+    user_location: dict | None = None,
     trace_parent=None,
 ) -> VerificationResult:
     """Single verification call (no caching, no escalation).
@@ -1619,6 +1635,7 @@ def _run_verification_call(
         prompt=prompt,
         system_prompt=system_prompt,
         include_service_tier=False,
+        user_location=user_location,
     )
     stream_kwargs = request.params
     extra_headers = request.extra_headers
@@ -1962,6 +1979,7 @@ def prepare_findings_for_verification(
     *,
     cycle: CodeCycle = DEFAULT_CYCLE,
     cache: VerificationCache | None = None,
+    jurisdiction_fingerprint: str | None = None,
     log: Callable[..., None] = lambda *_a, **_k: None,
 ) -> list[Finding]:
     """Apply the verification pre-pass: local skip + cache lookup + Haiku triage.
@@ -1990,7 +2008,9 @@ def prepare_findings_for_verification(
             skipped_local += 1
             continue
         if cache is not None:
-            cached = cache.get(f, cycle=cycle)
+            cached = cache.get(
+                f, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
+            )
             if cached is not None:
                 f.verification = cached
                 cache_hits += 1
@@ -2029,7 +2049,7 @@ def prepare_findings_for_verification(
     return remaining
 
 
-def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, model: str | None = None) -> BatchJob:
+def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFAULT_CYCLE, model: str | None = None, user_location: dict | None = None) -> BatchJob:
     # Compute include_verdict_tool once and thread it through both the
     # user-prompt builder and the system-prompt builder so the batch
     # request payload (built by submit_verification_batch via
@@ -2046,6 +2066,7 @@ def start_verification_batch(findings: list[Finding], *, cycle: CodeCycle = DEFA
         ),
         cycle=cycle,
         model=model or initial_verification_model(),
+        user_location=user_location,
     )
 
 
@@ -2058,6 +2079,7 @@ def _build_retry_request(
     profile: VerificationProfile | str | None = None,
     finding: Finding | None = None,
     escalated: bool = False,
+    user_location: dict | None = None,
 ) -> VerificationRequest:
     """Build a verification retry request.
 
@@ -2091,6 +2113,7 @@ def _build_retry_request(
         prompt=prompt,
         system_prompt=system_prompt,
         include_service_tier=False,
+        user_location=user_location,
     )
 
 
@@ -2104,6 +2127,7 @@ def _build_continuation_request(
     profile: VerificationProfile | str | None = None,
     finding: Finding | None = None,
     escalated: bool = False,
+    user_location: dict | None = None,
 ) -> VerificationRequest:
     """Build a verification continuation request.
 
@@ -2130,6 +2154,7 @@ def _build_continuation_request(
         system_prompt=system_prompt,
         assistant_content=assistant_content_blocks,
         include_service_tier=False,
+        user_location=user_location,
     )
 
 
@@ -2494,6 +2519,8 @@ def _run_batch_escalation_wave(
     policy: PollPolicy,
     log: Callable[..., None],
     progress: Callable[[float, str], None],
+    user_location: dict | None = None,
+    jurisdiction_fingerprint: str | None = None,
 ) -> None:
     """Escalate ungrounded high-stakes batch findings on Opus (real-time parity).
 
@@ -2554,6 +2581,7 @@ def _run_batch_escalation_wave(
             prompt=prompt,
             system_prompt=system_prompt,
             include_service_tier=False,
+            user_location=user_location,
         )
         extra_headers_seq.append(esc_request.extra_headers)
         escalation_requests.append({"custom_id": custom_id, "params": esc_request.params})
@@ -2652,7 +2680,12 @@ def _run_batch_escalation_wave(
         # shouldn't persist (ungrounded, verification_failed, contested
         # telemetry is runtime-only).
         if cache is not None and merged.cache_status == "miss":
-            cache.put(finding, cycle=cycle, result=merged)
+            cache.put(
+                finding,
+                cycle=cycle,
+                result=merged,
+                jurisdiction_fingerprint=jurisdiction_fingerprint,
+            )
 
     log(
         f"Verification escalation complete: {escalated_count} escalated "
@@ -2673,6 +2706,8 @@ def collect_verification_batch_results(
     max_waves: int = MAX_VERIFICATION_WAVES,
     cache: VerificationCache | None = None,
     realtime_fallback_threshold: int | None = None,
+    user_location: dict | None = None,
+    jurisdiction_fingerprint: str | None = None,
 ) -> list[Finding]:
     if not findings:
         return findings
@@ -2766,7 +2801,12 @@ def collect_verification_batch_results(
             if outcome.classification == "success" and outcome.parsed_verification:
                 finding.verification = outcome.parsed_verification
                 if cache is not None:
-                    cache.put(finding, cycle=cycle, result=outcome.parsed_verification)
+                    cache.put(
+                        finding,
+                        cycle=cycle,
+                        result=outcome.parsed_verification,
+                        jurisdiction_fingerprint=jurisdiction_fingerprint,
+                    )
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 succeeded += 1
                 if outcome.raw_message is not None:
@@ -2939,7 +2979,14 @@ def collect_verification_batch_results(
                 fallback_findings = [findings[outcome.finding_idx] for outcome in unresolved]
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     fb_futures = {
-                        pool.submit(verify_finding, f, cycle=cycle, cache=cache): f
+                        pool.submit(
+                            verify_finding,
+                            f,
+                            cycle=cycle,
+                            cache=cache,
+                            user_location=user_location,
+                            jurisdiction_fingerprint=jurisdiction_fingerprint,
+                        ): f
                         for f in fallback_findings
                     }
                     for future in as_completed(fb_futures):
@@ -3026,6 +3073,7 @@ def collect_verification_batch_results(
                 profile=wave_profile,
                 finding=wave_finding,
                 escalated=wave_escalated,
+                user_location=user_location,
             )
             wave_extra_headers_seq.append(retry_request.extra_headers)
             next_requests.append({
@@ -3082,6 +3130,7 @@ def collect_verification_batch_results(
                 profile=wave_profile,
                 finding=wave_finding,
                 escalated=wave_escalated,
+                user_location=user_location,
             )
             wave_extra_headers_seq.append(cont_request.extra_headers)
             next_requests.append({
@@ -3159,6 +3208,8 @@ def collect_verification_batch_results(
         policy=policy,
         log=log,
         progress=progress,
+        user_location=user_location,
+        jurisdiction_fingerprint=jurisdiction_fingerprint,
     )
     counts = {"CONFIRMED": 0, "CORRECTED": 0, "DISPUTED": 0, "UNVERIFIED": 0}
     # Tracing: batch verification runs server-side, so there's no live span

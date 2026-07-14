@@ -42,13 +42,20 @@ from pathlib import Path
 from ..orchestration.pipeline import group_findings
 from .report_status import classify_status
 
+# v4 (WS-4, D-14): compliance findings (``lc-`` ids, from
+# ``PipelineResult.compliance_result``) join the finding sweep, and the
+# top level gains two optional keys — ``project`` (the run's
+# city/state/country/client identity dict, ``None`` on profile-less runs)
+# and ``requirements_coverage`` (the compliance pass's per-requirement
+# coverage matrix, ``[]`` when the pass didn't run) — so a downstream
+# applier can see what drove location-specific edits.
 # v3 fans out multi-file findings: one entry per affected file (was: a single
 # entry carrying only the representative file). Entries gain ``affected_files``
 # and ``has_per_file_original``, and their ``fileName`` / ``evidenceElementId``
 # / ``edit_proposal`` are now the per-file values. v2 dropped the per-entry
 # ``suppression_reason`` key along with the cross-check dependency-suppression
 # feature that produced it.
-SIDECAR_SCHEMA_VERSION = 3
+SIDECAR_SCHEMA_VERSION = 4
 
 
 def _serialize_edit_proposal(proposal) -> dict | None:
@@ -151,12 +158,17 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
     """Build the sidecar payload from a pipeline result."""
     review = getattr(pipeline_result, "review_result", None)
     cross_check = getattr(pipeline_result, "cross_check_result", None)
+    compliance = getattr(pipeline_result, "compliance_result", None)
 
     findings: list = []
     if review is not None:
         findings.extend(getattr(review, "findings", []) or [])
     if cross_check is not None:
         findings.extend(getattr(cross_check, "findings", []) or [])
+    # v4: compliance findings (``lc-`` ids) join the sweep — they are plain
+    # findings and fan out per affected file exactly like the others.
+    if compliance is not None:
+        findings.extend(getattr(compliance, "findings", []) or [])
 
     entries: list[dict] = []
     for group in group_findings(findings):
@@ -167,6 +179,13 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "report_file": report_path.name if report_path is not None else None,
         "cycle_label": getattr(pipeline_result, "cycle_label", None),
+        # v4: per-run project identity + the compliance coverage matrix so a
+        # downstream applier can see what drove location-specific edits.
+        # ``None`` / ``[]`` on profile-less runs.
+        "project": getattr(pipeline_result, "project_profile", None),
+        "requirements_coverage": list(
+            getattr(compliance, "coverage", None) or []
+        ) if compliance is not None else [],
         "edit_count": len(entries),
         "edits": entries,
     }
@@ -185,3 +204,52 @@ def write_edit_instructions_sidecar(pipeline_result, output_path: Path) -> Path:
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return sidecar_path
+
+
+def build_requirements_profile_export(pipeline_result) -> dict | None:
+    """Build the standalone requirements-profile payload (WS-4, D-14 [FT]).
+
+    The field trial re-used the edition table and requirement items outside
+    the report within hours (project memory, RFI drafting, hand-offs) — the
+    profile is the artifact with the longest half-life and the report must
+    not be its only container. Returns ``None`` when the run produced no
+    requirements profile (every profile-less run) so no file is written.
+    """
+    profile = getattr(pipeline_result, "requirements_profile", None)
+    if not isinstance(profile, dict) or not profile:
+        return None
+    compliance = getattr(pipeline_result, "compliance_result", None)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "project": getattr(pipeline_result, "project_profile", None),
+        "module_id": getattr(pipeline_result, "module_id", None),
+        "research_date": profile.get("research_date"),
+        "requirements_profile": profile,
+        "requirements_coverage": list(
+            getattr(compliance, "coverage", None) or []
+        ) if compliance is not None else [],
+        "compliance_status": (
+            getattr(compliance, "cross_check_status", None)
+            if compliance is not None
+            else None
+        ),
+    }
+
+
+def write_requirements_profile_sidecar(
+    pipeline_result, output_path: Path
+) -> Path | None:
+    """Write ``<report-stem>.profile.json`` beside the report, if applicable.
+
+    Returns the path written, or ``None`` when the run has no requirements
+    profile (profile-less runs write nothing — no empty artifacts).
+    """
+    data = build_requirements_profile_export(pipeline_result)
+    if data is None:
+        return None
+    output_path = Path(output_path)
+    profile_path = output_path.with_name(output_path.stem + ".profile.json")
+    profile_path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return profile_path

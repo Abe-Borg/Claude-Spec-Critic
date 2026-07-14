@@ -39,6 +39,8 @@ from ..orchestration.pipeline import (
     collect_batch_verification_results,
     collect_review_batch_results,
     finalize_batch_result,
+    location_inputs_for_submission,
+    run_compliance_for_batch,
     run_cross_check_for_batch,
     start_batch_review,
     start_batch_verification,
@@ -260,6 +262,13 @@ def collect_batch_results(app) -> None:
 
             verifiable_findings = list(rv.findings)
             cache = _make_verification_cache(log=app._make_diag_log("verification", run_epoch))
+            # WS-4 location-aware verification (D-9): derived once from the
+            # submission's persisted profile; (None, None) on profile-less
+            # runs keeps request bytes and cache keys unchanged. Mirrored in
+            # run_batch_collection_headless.
+            user_location, jurisdiction_fp = location_inputs_for_submission(
+                app._batch_submission
+            )
             if review_state.truncated_specs:
                 if diag:
                     for spec_name in review_state.truncated_specs:
@@ -279,6 +288,8 @@ def collect_batch_results(app) -> None:
                     log=app._make_diag_log("verification", run_epoch),
                     progress=app._make_diag_progress("verification", run_epoch),
                     cache=cache,
+                    user_location=user_location,
+                    jurisdiction_fingerprint=jurisdiction_fp,
                 )
                 if verification_job is None:
                     if diag:
@@ -295,6 +306,8 @@ def collect_batch_results(app) -> None:
                         log=app._make_diag_log("verification", run_epoch),
                         progress=app._make_diag_progress("verification", run_epoch),
                         cache=cache,
+                        user_location=user_location,
+                        jurisdiction_fingerprint=jurisdiction_fp,
                     )
                 if diag:
                     from ..orchestration.diagnostics import bound_structured_payload
@@ -361,7 +374,13 @@ def collect_batch_results(app) -> None:
             review_state = run_cross_check_for_batch(
                 review_state,
                 specs=getattr(app._batch_submission, "prepared_specs", None),
-                project_context=getattr(app, "_project_context_for_review", ""),
+                # ``None`` falls back to ``submission.project_context`` — the
+                # EFFECTIVE context the batch was submitted with (WS-3 splices
+                # the requirements profile into it). The app attribute holds
+                # the raw pre-splice user context on a fresh run, which would
+                # hide the profile from cross-check on profile-enabled runs;
+                # profile-less runs are identical either way.
+                project_context=None,
                 log=app._make_diag_log("cross_check", run_epoch),
             )
             if review_state.cross_check_skipped_due_to_missing_specs:
@@ -390,17 +409,60 @@ def collect_batch_results(app) -> None:
                     extra={"finding_count": len(cc.findings)},
                 )
 
+            # WS-4 compliance pass: after cross-check, before verification
+            # round 2 (mirrored in ``run_batch_collection_headless`` — keep
+            # the two stage orders in lockstep). No-op for flag-off modules.
+            module_wants_compliance = getattr(module, "project_profile_enabled", False)
+            if module_wants_compliance:
+                if diag:
+                    diag.log("compliance", "step", "Running local-code compliance check")
+                app._dispatch_if_current(run_epoch, lambda: app.run_button.configure(text="Compliance check (live API)..."))
+            review_state = run_compliance_for_batch(
+                review_state,
+                log=app._make_diag_log("compliance", run_epoch),
+            )
+            if diag and review_state.compliance_result is not None:
+                comp = review_state.compliance_result
+                diag.record_api_call(
+                    phase="compliance",
+                    model=comp.model,
+                    message=f"Compliance: {comp.cross_check_status}",
+                    input_tokens=comp.input_tokens,
+                    output_tokens=comp.output_tokens,
+                    cache_creation_input_tokens=comp.cache_creation_input_tokens,
+                    cache_read_input_tokens=comp.cache_read_input_tokens,
+                    stop_reason=comp.stop_reason,
+                    mode="realtime",
+                    retry_status="initial",
+                    structured_payload=comp.structured_payload,
+                    extra={
+                        "finding_count": len(comp.findings),
+                        "coverage_count": len(getattr(comp, "coverage", []) or []),
+                    },
+                )
+
             cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []
-            if cross_check_findings:
+            compliance_findings = list(review_state.compliance_result.findings) if review_state.compliance_result and review_state.compliance_result.findings else []
+            # Verification round 2: cross-check + compliance findings in ONE
+            # batch (WS-4 step 5) — both are plain findings lists.
+            round2_findings = cross_check_findings + compliance_findings
+            if round2_findings:
                 app._dispatch_if_current(run_epoch, lambda: app.run_button.configure(text="Verifying cross-check..."))
                 if diag:
-                    diag.log("cross_check_verification", "step", f"Verifying {len(cross_check_findings)} cross-check findings")
+                    diag.log(
+                        "cross_check_verification",
+                        "step",
+                        f"Verifying {len(cross_check_findings)} cross-check + "
+                        f"{len(compliance_findings)} compliance findings",
+                    )
                 cross_check_verification_job = start_batch_verification(
-                    cross_check_findings,
+                    round2_findings,
                     module=module,
                     log=app._make_diag_log("cross_check_verification", run_epoch),
                     progress=app._make_diag_progress("cross_check_verification", run_epoch),
                     cache=cache,
+                    user_location=user_location,
+                    jurisdiction_fingerprint=jurisdiction_fp,
                 )
                 if cross_check_verification_job is None:
                     if diag:
@@ -408,11 +470,13 @@ def collect_batch_results(app) -> None:
                 else:
                     collect_batch_verification_results(
                         cross_check_verification_job,
-                        cross_check_findings,
+                        round2_findings,
                         module=module,
                         log=app._make_diag_log("cross_check_verification", run_epoch),
                         progress=app._make_diag_progress("cross_check_verification", run_epoch),
                         cache=cache,
+                        user_location=user_location,
+                        jurisdiction_fingerprint=jurisdiction_fp,
                     )
                     if diag:
                         diag.log("cross_check_verification", "success", "Cross-check verification complete")

@@ -507,8 +507,19 @@ def select_routing(
 
 def build_verification_tools_from_decision(
     decision: VerificationRoutingDecision,
+    *,
+    user_location: dict | None = None,
 ) -> list[dict]:
     """Build the tool list for a verification request from a routing decision.
+
+    ``user_location`` (WS-4, D-9) travels alongside — not inside — the
+    decision: it is per-run project identity, identical for every finding in
+    a run, while the decision is per-finding policy. When provided (a run
+    with a :class:`ProjectProfile`), it is patched onto the **web_search
+    tool only** — the web_fetch server tool has no location parameter and an
+    unsupported field would reject the request at submit. ``None`` (every
+    profile-less run) keeps today's hardcoded-California default
+    byte-identical.
 
     Routes through :func:`src.batch.build_verification_tools_for_profile`
     so the profile-aware web_search budget is used, then patches
@@ -554,6 +565,9 @@ def build_verification_tools_from_decision(
     # batch path used to ignore it. Centralizing here closes that gap.
     if web_tool_list and decision.web_search_max_uses != web_tool_list[0].get("max_uses"):
         web_tool_list[0]["max_uses"] = decision.web_search_max_uses
+    # Project location (WS-4, D-9): patched onto the web_search tool only.
+    if web_tool_list and user_location:
+        web_tool_list[0]["user_location"] = dict(user_location)
 
     out: list[dict] = list(web_tool_list)
     # Attach web_fetch only for modes that benefit from a
@@ -628,6 +642,7 @@ def build_verification_request(
     system_prompt: str,
     assistant_content: list | None = None,
     include_service_tier: bool = False,
+    user_location: dict | None = None,
 ) -> VerificationRequest:
     """Build a verification request split into API body + transport headers.
 
@@ -663,6 +678,11 @@ def build_verification_request(
         batch submissions; ``False`` for real-time streaming (the API
         rejects ``service_tier`` on streaming requests). Defaults to
         ``False`` because the real-time path is the more common caller.
+    user_location:
+        The run's project location (``ProjectProfile.web_search_user_location()``)
+        for web_search localization, or ``None`` (profile-less — today's
+        bytes). Travels alongside the decision per D-9: the batch path
+        stores it once per submission, not per finding.
     """
     if decision.local_skip:
         raise ValueError(
@@ -674,7 +694,9 @@ def build_verification_request(
     if assistant_content is not None:
         messages.append({"role": "assistant", "content": assistant_content})
 
-    tools = build_verification_tools_from_decision(decision)
+    tools = build_verification_tools_from_decision(
+        decision, user_location=user_location
+    )
 
     # Phase-aware cache wrapping — the cache helpers consult the registry
     # entry for ``decision.cache_phase`` so the verification retry /

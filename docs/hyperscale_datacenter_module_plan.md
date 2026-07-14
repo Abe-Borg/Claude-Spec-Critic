@@ -1,15 +1,15 @@
 # Implementation Plan: Hyperscale Data Center Fire-Sprinkler Module + Location/Client-Aware Review Engine
 
-**Status: IN PROGRESS — WS-0 through WS-3 are implemented; WS-4 and WS-5
-remain a work order for coding agents.**
+**Status: IN PROGRESS — WS-0 through WS-4 are implemented; WS-5
+remains a work order for coding agents.**
 
 | Workstream | Status |
 |---|---|
 | WS-0 — code-basis research + provenance | ✅ Implemented (PR #297) |
 | WS-1 — `datacenter_fire` module v1 (profile features off) | ✅ Implemented (PR #297) |
 | WS-2 — engine: ProjectProfile input plumbing | ✅ Implemented (PR #298) |
-| WS-3 — engine: requirements-research fan-out phase | ✅ Implemented |
-| WS-4 — engine: compliance pass + location-aware verification | ⬜ Not implemented |
+| WS-3 — engine: requirements-research fan-out phase | ✅ Implemented (PR #299) |
+| WS-4 — engine: compliance pass + location-aware verification | ✅ Implemented (as 4a/4b/4c commits; 6d structural detectors deferred) |
 | WS-5 — module v2: turn it on + end-to-end + docs | ⬜ Not implemented |
 
 **Rev 2 (2026-07-14):** incorporates field-trial amendments from a live,
@@ -570,7 +570,7 @@ Estimated size: ~8 files touched, ~300–400 new lines + tests.
 
 ### WS-3 — Engine: requirements-research fan-out phase
 
-> **Status: ✅ Implemented.** New `src/research/` package
+> **Status: ✅ Implemented** (PR #299). New `src/research/` package
 > (`requirements_research.py` runner + `corpus_signals.py` scrape);
 > `submit_requirements_research` strict-subset tool; `ResearchDimension` +
 > `research_persona` / `research_dimensions` / `corpus_signal_patterns`
@@ -698,6 +698,20 @@ tests.
 ---
 
 ### WS-4 — Engine: compliance pass + location-aware verification
+
+> **Status: ✅ Implemented** (three commits: 4a compliance pass +
+> pipeline stage + report surfaces; 4b user_location threading +
+> cache jurisdiction segment + sidecar v4 + `<report-stem>.profile.json`;
+> 4c anchor validation + wrong-polity token detector).
+> Implementation notes: `ComplianceResult` is a plain `ReviewResult`
+> (coverage rides an additive `ReviewResult.coverage` field;
+> `cross_check_status` is reused as the pass status) so
+> `PipelineResult.compliance_result: ReviewResult | None` matches D-14
+> exactly. The chunked findings filter links ADD findings to requirements
+> via profile item ids referenced in finding text (the engine `<output>`
+> block instructs the model to include them). The 6d structural-integrity
+> detectors were deferred per the plan's own "skip if WS-4 runs long"
+> escape hatch — the review categories cover the class.
 
 Goal: the compliance pass runs after cross-check, its findings verify and
 report like any others, verification requests carry the project location,

@@ -20,6 +20,8 @@ Public surface — import from this package, not the submodules:
 """
 from .corpus_signals import CorpusSignals, scrape_corpus_signals
 from .requirements_research import (
+    PROFILE_CATEGORY_SECTIONS,
+    PROFILE_SECTION_ORDER,
     DimensionStatus,
     RequirementsProfile,
     ResearchFanoutError,
@@ -29,6 +31,8 @@ from .requirements_research import (
 )
 
 __all__ = [
+    "PROFILE_CATEGORY_SECTIONS",
+    "PROFILE_SECTION_ORDER",
     "CorpusSignals",
     "DimensionStatus",
     "RequirementsProfile",

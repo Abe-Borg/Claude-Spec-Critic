@@ -24,7 +24,7 @@ from ..core.tokenizer import (
     local_estimate_safety_factor,
     safe_local_estimate,
 )
-from ..review.reviewer import ReviewResult, Finding
+from ..review.reviewer import ReviewResult, Finding, validate_finding_anchors
 from ..review.review_request_builder import (
     ReviewRequestSpec,
     build_token_count_request,
@@ -126,6 +126,11 @@ class PipelineResult:
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
+    # WS-4 compliance pass output. ``None`` on every profile-less run so
+    # those reports/sidecars are byte-identical; a ReviewResult (with
+    # ``coverage`` + ``cross_check_status`` reused as the pass status)
+    # when the pass ran or was explicitly skipped.
+    compliance_result: Optional[ReviewResult] = None
     cycle_label: str = DEFAULT_CYCLE.label
     # Identity of the module the run was reviewed under. Rides alongside
     # ``cycle_label`` (which stays for the verification-cache namespace and
@@ -152,6 +157,8 @@ class PipelineResult:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Wrong-polity token alerts (WS-4, D-15). Empty on profile-less runs.
+    polity_alerts: list[dict] = field(default_factory=list)
     # The extracted specs themselves so the
     # report's Run Diagnostics banner can count specs whose extraction
     # surfaced warnings (drawing-heavy documents, embedded objects).
@@ -171,6 +178,12 @@ class CollectedBatchState:
     leed_alerts: list[dict] = field(default_factory=list)
     placeholder_alerts: list[dict] = field(default_factory=list)
     cross_check_result: Optional[ReviewResult] = None
+    # WS-4 compliance pass output (``None`` when the pass never applied —
+    # flag-off module or no requirements profile — so profile-less runs
+    # carry no trace of it). The ReviewResult reuses ``cross_check_status``
+    # as its completed/failed/skipped status and carries the coverage
+    # matrix on ``ReviewResult.coverage``.
+    compliance_result: Optional[ReviewResult] = None
     cross_check_skipped_due_to_missing_specs: bool = False
     truncated_specs: list[str] = field(default_factory=list)
     # Propagate the rest of the deterministic alerts through the
@@ -182,6 +195,8 @@ class CollectedBatchState:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Wrong-polity token alerts (WS-4, D-15). Empty on profile-less runs.
+    polity_alerts: list[dict] = field(default_factory=list)
     # Tracing: the pipeline span_id carries the batch-mode root span across
     # the separate function calls (submit, poll, collect, cross-check,
     # verify, finalize). Default empty string when tracing was disabled at
@@ -456,6 +471,25 @@ def _deduplicate_findings(findings: list[Finding]) -> list[Finding]:
     return out
 
 
+def assign_compliance_finding_ids(findings: list[Finding]) -> list[Finding]:
+    """Stamp a stable, content-derived ``lc-`` id on each compliance finding.
+
+    Mirrors :func:`assign_cross_check_finding_ids` for the WS-4 compliance
+    pass (design D-8): compliance findings never flow through the review
+    dedup pass, so without this they reach verification, the sidecar, and
+    the trace viewer with ``finding_id=""``. The ``lc-`` prefix is the only
+    collision firewall between finding classes — a compliance finding and a
+    review/coordination finding that share an identical dedup key must never
+    collapse into one sidecar entry. Same-content compliance findings
+    intentionally share an id (the downstream dedup signal). Mutates in
+    place (only filling empty ids), idempotent, returns the same list.
+    """
+    for f in findings:
+        if not f.finding_id:
+            f.finding_id = compute_finding_id(f, prefix="lc")
+    return findings
+
+
 def assign_cross_check_finding_ids(findings: list[Finding]) -> list[Finding]:
     """Stamp a stable, content-derived id on each cross-check finding.
 
@@ -512,6 +546,9 @@ class _PreparedSpecs:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Wrong-polity token alerts (WS-4, D-15). Empty on every profile-less
+    # run (the detector only fires when a profile country is supplied).
+    polity_alerts: list[dict] = field(default_factory=list)
     # Per-spec view of every deterministic alert that fired for that
     # filename. The reviewer / batch paths use this to populate the
     # ``<pre_detected>`` block in each per-spec user message so the model
@@ -601,7 +638,7 @@ def _run_exact_token_preflight(
             )
 
 
-def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT, preflight: bool = True) -> _PreparedSpecs:
+def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT, preflight: bool = True, profile_country: str | None = None) -> _PreparedSpecs:
     # ``preflight=False`` skips the token-size gates (exact + local). Used by
     # the resume path: the batch already passed preflight at submit time, so a
     # large spec must not raise here and block recovery of an in-flight batch.
@@ -617,6 +654,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     template_marker_alerts: list[dict] = []
     invalid_code_cycle_alerts: list[dict] = []
     duplicate_paragraph_alerts: list[dict] = []
+    polity_alerts: list[dict] = []
     # Per-filename view of the per-spec alerts so the reviewer / batch
     # paths can hand each spec only its own alerts when building the
     # ``<pre_detected>`` block.
@@ -636,7 +674,9 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
             continue
         specs.append(spec)
-        pre = preprocess_spec(spec.content, spec.filename, cycle=cycle)
+        pre = preprocess_spec(
+            spec.content, spec.filename, cycle=cycle, profile_country=profile_country
+        )
         leed_alerts.extend(pre.leed_alerts)
         placeholder_alerts.extend(pre.placeholder_alerts)
         code_cycle_alerts.extend(pre.code_cycle_alerts)
@@ -644,6 +684,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         template_marker_alerts.extend(pre.template_marker_alerts)
         invalid_code_cycle_alerts.extend(pre.invalid_code_cycle_alerts)
         duplicate_paragraph_alerts.extend(pre.duplicate_paragraph_alerts)
+        polity_alerts.extend(pre.polity_alerts)
         # Cache this spec's alerts under its filename so the reviewer /
         # batch paths can hand them to the prompt builder. Naming-style
         # alerts are appended below once the project-wide check runs
@@ -656,6 +697,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             *pre.template_marker_alerts,
             *pre.invalid_code_cycle_alerts,
             *pre.duplicate_paragraph_alerts,
+            *pre.polity_alerts,
         ]
         progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
     if not specs:
@@ -782,6 +824,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
         template_marker_alerts=template_marker_alerts,
         invalid_code_cycle_alerts=invalid_code_cycle_alerts,
         duplicate_paragraph_alerts=duplicate_paragraph_alerts,
+        polity_alerts=polity_alerts,
         pre_detected_by_filename=pre_detected_by_filename,
     )
 
@@ -824,6 +867,8 @@ class BatchSubmission:
     template_marker_alerts: list[dict] = field(default_factory=list)
     invalid_code_cycle_alerts: list[dict] = field(default_factory=list)
     duplicate_paragraph_alerts: list[dict] = field(default_factory=list)
+    # Wrong-polity token alerts (WS-4, D-15). Empty on profile-less runs.
+    polity_alerts: list[dict] = field(default_factory=list)
     # Tracing: pipeline span_id carried from start_batch_review through to
     # finalize_batch_result so the batch-mode root span can be closed at
     # the end of the run. Empty string when tracing was disabled.
@@ -954,7 +999,19 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
             progress=progress,
             diagnostics=diagnostics,
         )
-    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=effective_context, log=log, progress=progress, cycle=cycle, model=model)
+    # Wrong-polity detector activation (WS-4, D-15): only a profile-bearing
+    # run on an opted-in module supplies a country; ``None`` keeps every
+    # profile-less run's preprocessing byte-identical.
+    profile_country = (
+        project_profile.country
+        if (
+            getattr(module, "project_profile_enabled", False)
+            and project_profile is not None
+            and project_profile.is_complete()
+        )
+        else None
+    )
+    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=effective_context, log=log, progress=progress, cycle=cycle, model=model, profile_country=profile_country)
     _trace.capture_note(
         trace_pipeline,
         "specs prepared",
@@ -1000,6 +1057,7 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         template_marker_alerts=prepared.template_marker_alerts,
         invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
         duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+        polity_alerts=prepared.polity_alerts,
         trace_span_id=(trace_pipeline.span_id if trace_pipeline is not None else ""),
     )
 
@@ -1177,6 +1235,16 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         in_tok += rr.input_tokens
         out_tok += rr.output_tokens
 
+    # Deterministic anchor validation (WS-4, D-16): pre-dedup, so every
+    # per-file finding is checked against its OWN file's extracted text
+    # before the cross-file merge retains it as an occurrence original.
+    # Skipped entirely (texts map empty ⇒ every lookup misses ⇒ unchecked)
+    # when the recovery path has no extracted specs.
+    texts_by_filename = {
+        s.filename: s.content for s in (submission.prepared_specs or [])
+    }
+    if texts_by_filename:
+        validate_finding_anchors(all_findings, texts_by_filename, log=log)
     all_findings = _deduplicate_findings(all_findings)
     combined = ReviewResult(findings=all_findings, thinking="\n\n".join(all_thinking), model=submission.model, input_tokens=in_tok, output_tokens=out_tok, elapsed_seconds=time.time() - submission.job.created_at)
     if errors:
@@ -1199,6 +1267,7 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
         template_marker_alerts=list(submission.template_marker_alerts),
         invalid_code_cycle_alerts=list(submission.invalid_code_cycle_alerts),
         duplicate_paragraph_alerts=list(submission.duplicate_paragraph_alerts),
+        polity_alerts=list(getattr(submission, "polity_alerts", None) or []),
         # Carry the pipeline span_id through so finalize_batch_result can
         # close the root span at the end of the batch lifecycle.
         trace_span_id=submission.trace_span_id,
@@ -1260,6 +1329,11 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
     # ``run_chunked_cross_check`` falls back to the single-pass
     # ``run_cross_check`` when the input fits.
     cross = run_chunked_cross_check(specs, dedup_findings, project_context=project_context, cycle=cycle, log=log)
+    # Deterministic anchor validation (WS-4, D-16) — coordination findings
+    # claim anchors in named files too; check them against the same texts.
+    validate_finding_anchors(
+        cross.findings, {s.filename: s.content for s in specs}, log=log
+    )
     # Stamp a stable, content-derived id on each coordination finding
     # before it flows into cross-check verification and the edit sidecar.
     # These findings never pass through the review dedup pass, so without
@@ -1271,6 +1345,158 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
     return state
 
 
+def _log_compliance_status(log: LogFn, result: ReviewResult) -> None:
+    status = result.cross_check_status or "completed"
+    if status == "completed":
+        log(
+            f"Compliance check completed: {len(result.findings)} finding(s), "
+            f"{len(getattr(result, 'coverage', []) or [])} coverage entr(ies).",
+            level="success",
+        )
+    elif status == "skipped":
+        log(f"Compliance check skipped: {result.thinking}", level="warning")
+    else:
+        log(f"Compliance check FAILED: {result.error}", level="error")
+
+
+def run_compliance_for_batch(
+    state: CollectedBatchState,
+    *,
+    specs: list[ExtractedSpec] | None = None,
+    project_context: str | None = None,
+    log: LogFn = _noop_log,
+) -> CollectedBatchState:
+    """Run the WS-4 local-code compliance pass over a collected batch.
+
+    Mirrors :func:`run_cross_check_for_batch`'s shape: gate → input
+    fallback to submission fields → failed-spec exclusion → cycle
+    re-derivation from ``module_id`` → id stamping → result onto the state.
+    Inserted AFTER cross-check and BEFORE verification round 2, so its
+    findings verify together with the coordination findings in one batch.
+
+    Gate: the module must have ``project_profile_enabled`` on AND the
+    submission must carry a structured ``requirements_profile``. A flag-off
+    run leaves ``state.compliance_result`` as ``None`` (no report surface
+    renders — invariant 2); a flag-on run without a usable profile records
+    an explicit ``skipped`` result so the absence is honest (D-12: recovery
+    paths without saved state report "skipped (profile unavailable)").
+    """
+    from ..research import RequirementsProfile
+
+    module = get_module(getattr(state.submission, "module_id", None))
+    if not getattr(module, "project_profile_enabled", False):
+        return state
+
+    profile = RequirementsProfile.from_dict(
+        getattr(state.submission, "requirements_profile", None)
+    )
+    if profile is None:
+        skipped = ReviewResult(
+            findings=[],
+            cross_check_status="skipped",
+            thinking=(
+                "Compliance check skipped: requirements profile unavailable "
+                "(research did not run, or this is a recovery without saved state)."
+            ),
+        )
+        state.compliance_result = skipped
+        _log_compliance_status(log, skipped)
+        return state
+
+    if specs is None:
+        specs = state.submission.prepared_specs
+    if project_context is None:
+        project_context = state.submission.project_context
+    if not specs:
+        skipped = ReviewResult(
+            findings=[],
+            cross_check_status="skipped",
+            thinking=(
+                "Compliance check skipped: original extracted spec content is "
+                "not available."
+            ),
+        )
+        state.compliance_result = skipped
+        _log_compliance_status(log, skipped)
+        return state
+
+    # Exclude specs whose individual review failed — same rule as
+    # cross-check: no compliance claims about a spec that was never
+    # successfully reviewed.
+    failed_filenames = set(state.truncated_specs or [])
+    if failed_filenames:
+        specs = [s for s in specs if s.filename not in failed_filenames]
+    if not specs:
+        skipped = ReviewResult(
+            findings=[],
+            cross_check_status="skipped",
+            thinking="Compliance check skipped: every spec failed review.",
+        )
+        state.compliance_result = skipped
+        _log_compliance_status(log, skipped)
+        return state
+
+    # Already-identified context: review + cross-check findings, DISPUTED
+    # excluded — the same input rule cross-check applies to review findings.
+    existing: list[Finding] = [
+        f
+        for f in (state.review_result.findings if state.review_result else [])
+        if not (f.verification and f.verification.verdict == "DISPUTED")
+    ]
+    if state.cross_check_result and state.cross_check_result.findings:
+        existing.extend(
+            f
+            for f in state.cross_check_result.findings
+            if not (f.verification and f.verification.verdict == "DISPUTED")
+        )
+
+    cycle = module.cycle
+    from ..compliance import run_chunked_compliance_check
+
+    compliance = run_chunked_compliance_check(
+        specs,
+        profile,
+        existing,
+        project_context=project_context,
+        cycle=cycle,
+        log=log,
+    )
+    # Deterministic anchor validation (WS-4, D-16): compliance ADD/EDIT
+    # findings must anchor on text that exists verbatim in the named spec.
+    validate_finding_anchors(
+        compliance.findings, {s.filename: s.content for s in specs}, log=log
+    )
+    # Label compliance findings in ``section`` (precedent: cross-check chunk
+    # labels) so the report and sidecar show their origin without a new
+    # ReportStatus, then stamp stable ``lc-`` ids before the findings flow
+    # into round-2 verification and the edit sidecar (D-8). Label-then-id
+    # matches cross-check's order, so the content-derived id includes the
+    # label consistently.
+    for f in compliance.findings:
+        section = f.section or ""
+        if not section.startswith("[Compliance]"):
+            f.section = f"[Compliance] {section}".strip()
+    assign_compliance_finding_ids(compliance.findings)
+    state.compliance_result = compliance
+    _log_compliance_status(log, compliance)
+    return state
+
+
+def location_inputs_for_submission(submission) -> tuple[dict | None, str | None]:
+    """Derive ``(user_location, jurisdiction_fingerprint)`` from a submission.
+
+    Reads the persisted :class:`ProjectProfile` dict (WS-2). ``(None, None)``
+    for every profile-less run — the tuple then leaves the web_search tool
+    dict and the verification cache key byte-identical to today (D-9).
+    Shared by the GUI collect driver and the headless driver so the two
+    cannot disagree on how location threads into verification.
+    """
+    profile = ProjectProfile.from_dict(getattr(submission, "project_profile", None))
+    if profile is None or not profile.is_complete():
+        return None, None
+    return profile.web_search_user_location(), profile.jurisdiction_fingerprint()
+
+
 def start_batch_verification(
     findings: list[Finding],
     *,
@@ -1278,6 +1504,8 @@ def start_batch_verification(
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
     cache: VerificationCache | None = None,
+    user_location: dict | None = None,
+    jurisdiction_fingerprint: str | None = None,
 ) -> BatchJob | None:
     """Submit a verification batch, applying the local pre-pass first.
 
@@ -1286,12 +1514,18 @@ def start_batch_verification(
     polling. Returns the BatchJob otherwise.
     """
     cycle = module.cycle
-    remaining = prepare_findings_for_verification(findings, cycle=cycle, cache=cache, log=log)
+    remaining = prepare_findings_for_verification(
+        findings,
+        cycle=cycle,
+        cache=cache,
+        jurisdiction_fingerprint=jurisdiction_fingerprint,
+        log=log,
+    )
     if not remaining:
         progress(60.0, "Verification: all findings resolved locally / cached.")
         return None
     progress(60.0, f"Submitting {len(remaining)} verification requests...")
-    job = start_verification_batch(remaining, cycle=cycle)
+    job = start_verification_batch(remaining, cycle=cycle, user_location=user_location)
     job.submitted_findings = remaining
     log(f"Verification batch submitted: {job.batch_id}", level="step")
     return job
@@ -1306,6 +1540,8 @@ def collect_batch_verification_results(
     progress: ProgressFn = _noop_progress,
     poll_interval: int = 15,
     cache: VerificationCache | None = None,
+    user_location: dict | None = None,
+    jurisdiction_fingerprint: str | None = None,
 ) -> list[Finding]:
     submitted = job.submitted_findings if job.submitted_findings is not None else findings
     return collect_verification_batch_results(
@@ -1316,6 +1552,8 @@ def collect_batch_verification_results(
         progress=lambda p, m: progress(60.0 + (p / 100.0) * 35.0, m),
         poll_interval=poll_interval,
         cache=cache,
+        user_location=user_location,
+        jurisdiction_fingerprint=jurisdiction_fingerprint,
     )
 
 
@@ -1328,6 +1566,8 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         all_findings.extend(state.review_result.findings)
     if state.cross_check_result and state.cross_check_result.findings:
         all_findings.extend(state.cross_check_result.findings)
+    if state.compliance_result and state.compliance_result.findings:
+        all_findings.extend(state.compliance_result.findings)
     # Tracing: snapshot every finding's terminal state and close the
     # batch-mode pipeline span.
     for _f in all_findings:
@@ -1342,6 +1582,9 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
                 "cross_check_finding_count": (
                     len(state.cross_check_result.findings) if state.cross_check_result else 0
                 ),
+                "compliance_finding_count": (
+                    len(state.compliance_result.findings) if state.compliance_result else 0
+                ),
                 "truncated_specs": list(state.truncated_specs),
             },
         )
@@ -1355,6 +1598,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         leed_alerts=state.leed_alerts,
         placeholder_alerts=state.placeholder_alerts,
         cross_check_result=state.cross_check_result,
+        compliance_result=state.compliance_result,
         cycle_label=state.submission.cycle_label,
         module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
         project_profile=getattr(state.submission, "project_profile", None),
@@ -1367,6 +1611,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         template_marker_alerts=list(state.template_marker_alerts),
         invalid_code_cycle_alerts=list(state.invalid_code_cycle_alerts),
         duplicate_paragraph_alerts=list(state.duplicate_paragraph_alerts),
+        polity_alerts=list(state.polity_alerts),
         # Ride the extracted specs through to
         # the PipelineResult so the report banner can surface extraction
         # warnings. ``prepared_specs`` may be nulled by the recovery
@@ -1421,11 +1666,11 @@ def reconstruct_batch_submission(
         created_at=created_at,
     )
     prepared_specs: list[ExtractedSpec] | None = None
-    # Eight DISTINCT empty lists (not a chained alias) so a future ``.append``
+    # Nine DISTINCT empty lists (not a chained alias) so a future ``.append``
     # on one can't corrupt the others; the re-extract success branch reassigns
     # each from ``prepared.*``.
-    leed, placeholder, code_cycle, structural, naming, template, invalid, dup = (
-        [], [], [], [], [], [], [], [],
+    leed, placeholder, code_cycle, structural, naming, template, invalid, dup, polity = (
+        [], [], [], [], [], [], [], [], [],
     )
 
     resolved_files = [Path(f) for f in files] if files else None
@@ -1434,6 +1679,19 @@ def reconstruct_batch_submission(
         # explicit list it ignores ``input_dir``, so fall back to the files'
         # parent when the original input_dir wasn't captured.
         extract_dir = Path(input_dir) if input_dir else resolved_files[0].parent
+        # Reactivate the wrong-polity detector on resume (D-15): the country
+        # rides the persisted profile dict; an incomplete/absent profile
+        # degrades to None (detector off), same as the submit path.
+        resume_profile = ProjectProfile.from_dict(project_profile)
+        profile_country = (
+            resume_profile.country
+            if (
+                getattr(module, "project_profile_enabled", False)
+                and resume_profile is not None
+                and resume_profile.is_complete()
+            )
+            else None
+        )
         try:
             prepared = _prepare_specs(
                 input_dir=extract_dir,
@@ -1444,6 +1702,7 @@ def reconstruct_batch_submission(
                 cycle=module.cycle,
                 model=model,
                 preflight=False,
+                profile_country=profile_country,
             )
             prepared_specs = prepared.specs
             leed = prepared.leed_alerts
@@ -1454,6 +1713,7 @@ def reconstruct_batch_submission(
             template = prepared.template_marker_alerts
             invalid = prepared.invalid_code_cycle_alerts
             dup = prepared.duplicate_paragraph_alerts
+            polity = prepared.polity_alerts
             if {s.filename for s in prepared.specs} != set(files_reviewed):
                 log(
                     "Resumed spec set differs from the originally reviewed files; "
@@ -1498,6 +1758,7 @@ def reconstruct_batch_submission(
         template_marker_alerts=template,
         invalid_code_cycle_alerts=invalid,
         duplicate_paragraph_alerts=dup,
+        polity_alerts=polity,
         trace_span_id="",
     )
 
@@ -1528,16 +1789,28 @@ def run_batch_collection_headless(
     if cache is None:
         cache = _make_verification_cache(log=log)
     module = get_module(getattr(submission, "module_id", None))
+    # WS-4 location-aware verification (D-9): (None, None) on every
+    # profile-less run keeps request bytes and cache keys unchanged.
+    user_location, jurisdiction_fp = location_inputs_for_submission(submission)
 
     review_state = collect_review_batch_results(submission, log=log)
 
     verifiable = list(review_state.review_result.findings) if review_state.review_result else []
     if verifiable:
-        job = start_batch_verification(verifiable, module=module, log=log, progress=progress, cache=cache)
+        job = start_batch_verification(verifiable, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
         if job is not None:
-            collect_batch_verification_results(job, verifiable, module=module, log=log, progress=progress, cache=cache)
+            collect_batch_verification_results(job, verifiable, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
 
     review_state = run_cross_check_for_batch(
+        review_state,
+        specs=submission.prepared_specs,
+        project_context=submission.project_context,
+        log=log,
+    )
+    # WS-4 compliance pass: after cross-check, before verification round 2.
+    # No-op (state unchanged) for flag-off modules; explicit ``skipped``
+    # when the module opted in but the profile is unavailable (recovery).
+    review_state = run_compliance_for_batch(
         review_state,
         specs=submission.prepared_specs,
         project_context=submission.project_context,
@@ -1548,10 +1821,19 @@ def run_batch_collection_headless(
         if (review_state.cross_check_result and review_state.cross_check_result.findings)
         else []
     )
-    if cross_findings:
-        cc_job = start_batch_verification(cross_findings, module=module, log=log, progress=progress, cache=cache)
+    compliance_findings = (
+        list(review_state.compliance_result.findings)
+        if (review_state.compliance_result and review_state.compliance_result.findings)
+        else []
+    )
+    # Verification round 2 covers cross-check AND compliance findings in ONE
+    # batch — both are plain findings lists and the verification functions
+    # take arbitrary findings (WS-4 step 5).
+    round2_findings = cross_findings + compliance_findings
+    if round2_findings:
+        cc_job = start_batch_verification(round2_findings, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
         if cc_job is not None:
-            collect_batch_verification_results(cc_job, cross_findings, module=module, log=log, progress=progress, cache=cache)
+            collect_batch_verification_results(cc_job, round2_findings, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
 
     if owns_cache:
         _persist_verification_cache(cache, log=log)
