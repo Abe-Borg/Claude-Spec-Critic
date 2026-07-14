@@ -24,6 +24,7 @@ from tkinter import messagebox
 from .. import __version__
 from ..batch.batch import BatchStatus
 from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
+from ..core.project_profile import ProjectProfile
 from ..modules import DEFAULT_MODULE, get_module
 from ..orchestration.batch_resume import (
     PendingBatch,
@@ -57,6 +58,8 @@ def submit_batch_thread(app, run_epoch: int) -> None:
     # finalize) and is stopped after collect_batch_results completes.
     # Store on the app so the collect path can reach it.
     module = get_module(getattr(app, "_selected_module_id", None))
+    profile = getattr(app, "_project_profile_for_review", None)
+    profile_dict = profile.to_dict() if profile is not None else None
     app._trace_recorder = _maybe_start_recorder(
         run_id=diag.run_id if diag is not None else "no_run_id",
         mode="batch",
@@ -64,6 +67,7 @@ def submit_batch_thread(app, run_epoch: int) -> None:
         cycle_label=module.cycle.label,
         module_id=module.module_id,
         files=app._selected_files_for_review,
+        project_profile=profile_dict,
     )
     try:
         if diag:
@@ -76,6 +80,7 @@ def submit_batch_thread(app, run_epoch: int) -> None:
             model=REVIEW_MODEL_DEFAULT,
             module=module,
             cross_check_enabled=app._cross_check_for_review,
+            project_profile=profile,
             log=app._make_diag_log("batch_submit", run_epoch),
             progress=app._make_diag_progress("batch_submit", run_epoch),
         )
@@ -465,6 +470,7 @@ def start_batch_resume(app, pending: PendingBatch) -> None:
         cycle_label=pending.cycle_label,
         module_id=pending.module_id,
         project_context=pending.project_context,
+        project_profile=pending.project_profile,
         cross_check_enabled=pending.cross_check_enabled,
         files_for_review=[Path(f) for f in pending.files],
         input_dir=pending.input_dir,
@@ -510,6 +516,10 @@ def recover_batch_dialog(app) -> None:
     module = get_module(getattr(app, "_selected_module_id", None))
     cycle_label = module.cycle.label
     project_context = app._get_project_context() if hasattr(app, "_get_project_context") else ""
+    # Re-gather the project profile from the live widgets (like project_context)
+    # so a recovered location-aware run carries the same routing/report inputs.
+    profile = app._gather_project_profile() if hasattr(app, "_gather_project_profile") else None
+    profile_dict = profile.to_dict() if profile is not None else None
     cross_check_enabled = bool(files) and bool(
         getattr(app, "_cross_check_var", None) and app._cross_check_var.get()
     )
@@ -529,6 +539,7 @@ def recover_batch_dialog(app) -> None:
             cross_check_enabled=cross_check_enabled,
             module=module,
             project_context=project_context,
+            project_profile=profile_dict,
             log=log,
             progress=progress,
         )
@@ -540,6 +551,7 @@ def recover_batch_dialog(app) -> None:
         cycle_label=cycle_label,
         module_id=module.module_id,
         project_context=project_context,
+        project_profile=profile_dict,
         cross_check_enabled=cross_check_enabled,
         files_for_review=files,
         input_dir=input_dir,
@@ -561,6 +573,7 @@ def _begin_reconnect_run(
     module_id: str = "",
     input_dir: str = "",
     run_id: str = "",
+    project_profile: dict | None = None,
     files_reviewed_label: list | None = None,
     batch_label: str = "",
     verb: str = "Resuming",
@@ -588,6 +601,9 @@ def _begin_reconnect_run(
     app._selected_cycle_label = cycle_label
     app._selected_module_id = module_id or DEFAULT_MODULE.module_id
     app._project_context_for_review = project_context
+    # Restore the per-run profile snapshot so the reconnected run's report /
+    # tracing / routing see the same location the original submission used.
+    app._project_profile_for_review = ProjectProfile.from_dict(project_profile)
     app._cross_check_for_review = cross_check_enabled
     app._selected_files_for_review = list(files_for_review or [])
     if input_dir:
@@ -605,6 +621,11 @@ def _begin_reconnect_run(
         model=model,
         cycle_label=cycle_label,
         module_id=app._selected_module_id,
+        project_profile_summary=(
+            app._project_profile_for_review.display_line()
+            if app._project_profile_for_review is not None
+            else ""
+        ),
         files_selected=list(files_reviewed_label or []),
         project_context_tokens=0,
         cross_check_enabled=cross_check_enabled,
@@ -624,13 +645,13 @@ def _begin_reconnect_run(
     threading.Thread(
         target=lambda: _reconnect_worker(
             app, reconstruct_fn, model, cycle_label, app._selected_module_id,
-            run_id, run_epoch, batch_label
+            run_id, run_epoch, batch_label, project_profile
         ),
         daemon=True,
     ).start()
 
 
-def _reconnect_worker(app, reconstruct_fn, model, cycle_label, module_id, run_id, run_epoch, batch_label) -> None:
+def _reconnect_worker(app, reconstruct_fn, model, cycle_label, module_id, run_id, run_epoch, batch_label, project_profile=None) -> None:
     diag = app._diagnostics_report
     app._trace_recorder = _maybe_start_recorder(
         run_id=diag.run_id if diag is not None else (run_id or "no_run_id"),
@@ -638,6 +659,7 @@ def _reconnect_worker(app, reconstruct_fn, model, cycle_label, module_id, run_id
         model=model,
         cycle_label=cycle_label,
         module_id=module_id,
+        project_profile=project_profile,
         files=app._selected_files_for_review,
     )
     try:

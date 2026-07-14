@@ -45,7 +45,19 @@ from src.orchestration.pipeline import BatchSubmission
 # Constants used by widgets
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
-from src.core.ui_state import load_selected_module_id, save_selected_module_id
+from src.core.project_profile import ProjectProfile
+from src.core.ui_state import (
+    load_project_profile,
+    load_selected_module_id,
+    save_project_profile,
+    save_selected_module_id,
+)
+from src.gui.project_profile_inputs import (
+    COUNTRY_OPTIONS,
+    STATE_PLACEHOLDER,
+    build_profile,
+    state_options_for_country,
+)
 from src.modules import AVAILABLE_MODULES, DEFAULT_MODULE, get_module
 
 from src.gui.widgets import (
@@ -159,6 +171,9 @@ class SpecReviewApp(_CTkDnDRoot):
         self._system_prompt_tokens: int = 0
         self._selected_files_for_review: list[Path] = []
         self._project_context_for_review: str = ""
+        # Per-run project identity, snapshotted at run start when the selected
+        # module opts in (``project_profile_enabled``); ``None`` otherwise.
+        self._project_profile_for_review: ProjectProfile | None = None
         self._cross_check_for_review: bool = False
         self._last_result = None
         self._diagnostics_report: Optional[DiagnosticsReport] = None
@@ -407,9 +422,135 @@ class SpecReviewApp(_CTkDnDRoot):
         # on the first run without needing to toggle first.
         self._on_trace_toggle()
 
+        # --- Row 5: Project profile (location + client) -------------------
+        # Only shown when the selected module opts in (project_profile_enabled).
+        # Grouped in a frame that is grid_remove()-hidden by default so a
+        # profile-less module's inputs card is unchanged.
+        self._create_project_profile_row()
+
         # (Accessibility row is now in the header area, not inside the inputs card)
 
         self.inputs_content.columnconfigure(1, weight=1)
+        # Reflect the initially-selected module's profile preference.
+        self._update_project_profile_visibility()
+
+    def _create_project_profile_row(self) -> None:
+        """Build the (initially hidden) project city/state/country/client row."""
+        self._profile_label = ctk.CTkLabel(
+            self.inputs_content, text="Project", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+            text_color=COLORS["text_secondary"], width=100, anchor="nw",
+        )
+        self._profile_label.grid(row=5, column=0, sticky="nw", pady=8)
+        self._profile_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        self._profile_frame.grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=8)
+        self._profile_frame.columnconfigure(1, weight=1)
+        self._profile_frame.columnconfigure(3, weight=1)
+
+        ekw = {
+            "font": ctk.CTkFont(family="Consolas", size=_UI_FONT_SIZE),
+            "fg_color": COLORS["bg_input"], "border_color": COLORS["border"],
+            "text_color": COLORS["text_primary"], "height": 32,
+        }
+        mkw = {
+            "font": ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+            "fg_color": COLORS["bg_input"], "button_color": COLORS["border"],
+            "button_hover_color": COLORS["accent"], "text_color": COLORS["text_primary"],
+            "height": 32,
+        }
+        lkw = {
+            "font": ctk.CTkFont(family="Segoe UI", size=11),
+            "text_color": COLORS["text_muted"],
+        }
+
+        # Country (drives the state/province options).
+        ctk.CTkLabel(self._profile_frame, text="Country", **lkw).grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        self._profile_country_var = ctk.StringVar(value=COUNTRY_OPTIONS[0])
+        self._profile_country_menu = ctk.CTkOptionMenu(
+            self._profile_frame, values=COUNTRY_OPTIONS, variable=self._profile_country_var,
+            command=self._on_profile_country_changed, **mkw,
+        )
+        self._profile_country_menu.grid(row=0, column=1, sticky="w", pady=4)
+
+        # State / province (dropdown of canonical codes for the country).
+        ctk.CTkLabel(self._profile_frame, text="State/Prov.", **lkw).grid(row=0, column=2, sticky="w", padx=(12, 6), pady=4)
+        self._profile_state_var = ctk.StringVar(value=STATE_PLACEHOLDER)
+        self._profile_state_menu = ctk.CTkOptionMenu(
+            self._profile_frame,
+            values=state_options_for_country(COUNTRY_OPTIONS[0]),
+            variable=self._profile_state_var, **mkw,
+        )
+        self._profile_state_menu.grid(row=0, column=3, sticky="ew", pady=4)
+
+        # City (free text, normalized on the profile).
+        ctk.CTkLabel(self._profile_frame, text="City", **lkw).grid(row=1, column=0, sticky="w", padx=(0, 6), pady=4)
+        self._profile_city_entry = ctk.CTkEntry(self._profile_frame, placeholder_text="e.g. Ashburn", **ekw)
+        self._profile_city_entry.grid(row=1, column=1, sticky="ew", pady=4)
+
+        # Client.
+        ctk.CTkLabel(self._profile_frame, text="Client", **lkw).grid(row=1, column=2, sticky="w", padx=(12, 6), pady=4)
+        self._profile_client_entry = ctk.CTkEntry(self._profile_frame, placeholder_text="Owner / client name", **ekw)
+        self._profile_client_entry.grid(row=1, column=3, sticky="ew", pady=4)
+
+        self._profile_hint = ctk.CTkLabel(
+            self._profile_frame,
+            text="Required for this module — drives location-aware review.",
+            **lkw,
+        )
+        self._profile_hint.grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 0))
+
+    def _on_profile_country_changed(self, country_display: str) -> None:
+        """Repopulate the state/province dropdown for the chosen country."""
+        options = state_options_for_country(country_display)
+        self._profile_state_menu.configure(values=options)
+        self._profile_state_var.set(STATE_PLACEHOLDER)
+
+    def _update_project_profile_visibility(self) -> None:
+        """Show the project row iff the selected module opts into a profile."""
+        module = get_module(getattr(self, "_selected_module_id", None))
+        if not hasattr(self, "_profile_frame"):
+            return
+        if module.project_profile_enabled:
+            self._profile_label.grid()
+            self._profile_frame.grid()
+            self._load_project_profile_into_widgets(module.module_id)
+        else:
+            self._profile_label.grid_remove()
+            self._profile_frame.grid_remove()
+
+    def _load_project_profile_into_widgets(self, module_id: str) -> None:
+        """Restore the last-entered profile for ``module_id`` into the widgets."""
+        saved = load_project_profile(module_id)
+        if not saved:
+            return
+        profile = ProjectProfile.from_dict(saved)
+        if profile is None:
+            return
+        country_display = profile.country_display
+        if country_display in COUNTRY_OPTIONS:
+            self._profile_country_var.set(country_display)
+            self._profile_state_menu.configure(
+                values=state_options_for_country(country_display)
+            )
+        if profile.state_or_province:
+            self._profile_state_var.set(
+                f"{profile.state_or_province} — {profile.state_display}"
+            )
+        self._profile_city_entry.delete(0, "end")
+        self._profile_city_entry.insert(0, profile.city)
+        self._profile_client_entry.delete(0, "end")
+        self._profile_client_entry.insert(0, profile.client_name)
+
+    def _gather_project_profile(self) -> ProjectProfile | None:
+        """Build the profile from the widgets, or ``None`` for a profile-less module."""
+        module = get_module(getattr(self, "_selected_module_id", None))
+        if not module.project_profile_enabled or not hasattr(self, "_profile_frame"):
+            return None
+        return build_profile(
+            city=self._profile_city_entry.get(),
+            state_value=self._profile_state_var.get(),
+            country_display=self._profile_country_var.get(),
+            client_name=self._profile_client_entry.get(),
+        )
 
     def _on_font_scale_change(self, value: str):
         scale = _FONT_SCALE_OPTIONS.get(value, 1.0)
@@ -432,6 +573,9 @@ class SpecReviewApp(_CTkDnDRoot):
         self._selected_cycle_label = module.cycle.label
         self._header_subtitle.configure(text=self._module_subtitle())
         save_selected_module_id(module.module_id)
+        # Show/hide the project-profile inputs for the newly-selected module
+        # (the first dynamic field behavior on module change).
+        self._update_project_profile_visibility()
 
     def _on_trace_toggle(self) -> None:
         """Translate the checkboxes into env vars the recorder reads.
