@@ -517,13 +517,29 @@ class SpecReviewApp(_CTkDnDRoot):
             self._profile_label.grid_remove()
             self._profile_frame.grid_remove()
 
+    def _reset_project_profile_widgets(self) -> None:
+        """Clear the shared profile widgets back to their empty defaults."""
+        self._profile_country_var.set(COUNTRY_OPTIONS[0])
+        self._profile_state_menu.configure(
+            values=state_options_for_country(COUNTRY_OPTIONS[0])
+        )
+        self._profile_state_var.set(STATE_PLACEHOLDER)
+        self._profile_city_entry.delete(0, "end")
+        self._profile_client_entry.delete(0, "end")
+
     def _load_project_profile_into_widgets(self, module_id: str) -> None:
-        """Restore the last-entered profile for ``module_id`` into the widgets."""
+        """Restore the last-entered profile for ``module_id`` into the widgets.
+
+        The city/state/country/client widgets are shared across modules, so a
+        module with no saved profile must RESET them — otherwise the previous
+        module's values bleed through and ``validate_inputs`` /
+        ``_gather_project_profile`` would accept and persist them under the
+        newly-selected module.
+        """
         saved = load_project_profile(module_id)
-        if not saved:
-            return
-        profile = ProjectProfile.from_dict(saved)
+        profile = ProjectProfile.from_dict(saved) if saved else None
         if profile is None:
+            self._reset_project_profile_widgets()
             return
         country_display = profile.country_display
         if country_display in COUNTRY_OPTIONS:
@@ -531,10 +547,11 @@ class SpecReviewApp(_CTkDnDRoot):
             self._profile_state_menu.configure(
                 values=state_options_for_country(country_display)
             )
-        if profile.state_or_province:
-            self._profile_state_var.set(
-                f"{profile.state_or_province} — {profile.state_display}"
-            )
+        self._profile_state_var.set(
+            f"{profile.state_or_province} — {profile.state_display}"
+            if profile.state_or_province
+            else STATE_PLACEHOLDER
+        )
         self._profile_city_entry.delete(0, "end")
         self._profile_city_entry.insert(0, profile.city)
         self._profile_client_entry.delete(0, "end")
