@@ -1,0 +1,50 @@
+{
+  "fixture_id": "tp_dc_local_skip_placeholder",
+  "category": "internal_coordination",
+  "severity": "GRIPES",
+  "description": "Placeholder token '[SELECT MODEL]' flagged by the deterministic detector; the verification router locally skips because web search adds no signal.",
+  "finding": {
+    "severity": "GRIPES",
+    "fileName": "21 13 16 - Dry-Pipe Sprinkler Systems.docx",
+    "section": "2.03",
+    "issue": "Spec contains a '[SELECT MODEL]' placeholder in the pre-action valve schedule that must be resolved before issue.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": null,
+    "confidence": 0.95,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p10"
+  },
+  "spec_context": {
+    "filename": "21 13 16 - Dry-Pipe Sprinkler Systems.docx",
+    "cycle_label": "Data Center IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 9, "id": "p9", "text": "2.03 PRE-ACTION VALVES"},
+      {"index": 10, "id": "p10", "text": "A. Furnish pre-action valves per the riser schedule [SELECT MODEL]."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "UNVERIFIED",
+    "explanation": "Locally classified: external grounding not required for this finding.",
+    "sources": [],
+    "correction": null,
+    "confidence": 0.0,
+    "model_used": "local",
+    "verification_mode": "local_skip",
+    "verification_profile": "internal_coordination",
+    "web_search_requests": 0,
+    "successful_source_count": 0,
+    "search_error_count": 0,
+    "searched_urls": [],
+    "grounded": false,
+    "cache_status": "local_skip"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "correct_correction_text": null,
+    "expected_status": "LOCALLY_CLASSIFIED",
+    "notes": "Placeholder text is self-evident from the spec — no external verification adds signal. Local skip is the correct routing."
+  }
+}

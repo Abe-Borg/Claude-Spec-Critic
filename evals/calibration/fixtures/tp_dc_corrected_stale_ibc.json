@@ -1,0 +1,54 @@
+{
+  "fixture_id": "tp_dc_corrected_stale_ibc",
+  "category": "code_standard",
+  "severity": "MEDIUM",
+  "description": "Data-center fire-suppression spec cites a stale '2015 IBC' edition; verifier correctly corrected to the current adopted IBC edition with a grounded code-publisher citation.",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "21 13 13 - Wet-Pipe Sprinkler Systems.docx",
+    "section": "1.03",
+    "issue": "Specification cites the 2015 IBC; the current base model code is the 2024 IBC and the project's adopted edition governs.",
+    "actionType": "EDIT",
+    "existingText": "2015 IBC",
+    "replacementText": "the current adopted IBC edition",
+    "codeReference": "IBC (current adopted edition)",
+    "confidence": 0.9,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p4"
+  },
+  "spec_context": {
+    "filename": "21 13 13 - Wet-Pipe Sprinkler Systems.docx",
+    "cycle_label": "Data Center IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 2, "id": "p2", "text": "1.03 REFERENCES"},
+      {"index": 4, "id": "p4", "text": "A. Comply with 2015 IBC Chapter 9 for all fire-suppression work."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "The 2015 IBC is two full cycles behind the current 2024 edition. The specification must reference the IBC edition adopted for the project's jurisdiction; 2015 is stale for a new-build data center.",
+    "sources": ["https://codes.iccsafe.org/content/IBC2024P1"],
+    "correction": "the current adopted IBC edition",
+    "confidence": 0.92,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 3,
+    "successful_source_count": 3,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://codes.iccsafe.org/content/IBC2024P1",
+      "https://www.iccsafe.org/products-and-services/i-codes/2024-i-codes/",
+      "https://www.nfpa.org/codes-and-standards"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "correct_correction_text": "the current adopted IBC edition",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "2015 IBC is stale; the 2024 IBC is current and the project's adopted edition controls. The fix defers to the adopted edition rather than hardcoding a year."
+  }
+}

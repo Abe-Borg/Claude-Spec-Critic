@@ -1,0 +1,53 @@
+{
+  "fixture_id": "tp_dc_confirmed_nfpa20",
+  "category": "code_standard",
+  "severity": "MEDIUM",
+  "description": "Spec cites NFPA 20 for stationary fire-pump installation; verifier correctly confirmed with a grounded NFPA citation.",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "21 30 00 - Fire Pumps.docx",
+    "section": "2.01",
+    "issue": "Specification cites NFPA 20 for the design and installation of the electric fire pump and its controller.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": "NFPA 20",
+    "confidence": 0.8,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p8"
+  },
+  "spec_context": {
+    "filename": "21 30 00 - Fire Pumps.docx",
+    "cycle_label": "Data Center IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 7, "id": "p7", "text": "2.01 GENERAL"},
+      {"index": 8, "id": "p8", "text": "A. Design and install stationary fire pumps per NFPA 20."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "NFPA 20 'Standard for the Installation of Stationary Pumps for Fire Protection' is the authoritative reference for fire-pump installation and is referenced by the IBC/IFC. The citation is correct for a data-center fire-suppression package.",
+    "sources": ["https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=20"],
+    "correction": null,
+    "confidence": 0.9,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 2,
+    "successful_source_count": 2,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=20",
+      "https://codes.iccsafe.org/content/IBC2024P1"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CONFIRMED",
+    "correct_correction_text": null,
+    "expected_status": "VERIFIED_SUPPORTED",
+    "notes": "NFPA 20 is the correct standard for stationary fire-pump installation."
+  }
+}
