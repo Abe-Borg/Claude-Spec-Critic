@@ -170,11 +170,14 @@ mechanism, zero new machinery.
 
 **D-9. Verification becomes location-aware in two narrow, cheap ways** (not
 by re-plumbing project context into verifier prompts):
-1. `build_web_search_tool` / `build_web_fetch_tool` gain an optional
-   `user_location=` parameter; when a run has a profile, verification (and
-   research/compliance) requests carry the project's location; when absent,
-   the current hardcoded `{"country":"US","region":"California"}` default is
-   used **unchanged** (CA behavior byte-identical). Threading: an optional
+1. `build_web_search_tool` gains an optional `user_location=` parameter;
+   when a run has a profile, verification (and research/compliance)
+   requests carry the project's location; when absent, the current
+   hardcoded `{"country":"US","region":"California"}` default is used
+   **unchanged** (CA behavior byte-identical). **`build_web_fetch_tool` is
+   NOT touched** — the web_fetch server tool has no location parameter, and
+   adding an unsupported field would reject the request at submit.
+   Threading: an optional
    `user_location` dict travels alongside — not inside —
    `VerificationRoutingDecision` (new optional kwarg on
    `build_verification_tools_from_decision` and `build_verification_request`;
@@ -414,9 +417,10 @@ returns a `RequirementsProfile` that the submit path splices into
    `RESEARCH_MODEL_DEFAULT = env("SPEC_CRITIC_RESEARCH_MODEL", Sonnet 4.6)`
    (+ docstring row; + `research_max_tokens()` wrapper);
    `RESEARCH_MAX_SEARCHES = 8`.
-   **`build_web_search_tool` / `build_web_fetch_tool` gain optional
+   **`build_web_search_tool` gains optional
    `user_location: dict | None = None`** — `None` keeps today's hardcoded
-   CA default byte-identical.
+   CA default byte-identical. `build_web_fetch_tool` is unchanged (the
+   fetch server tool has no location parameter).
 2. **Module contract** (`src/modules/base.py`): `ResearchDimension`
    frozen dataclass (`dimension_id`, `title`, `prompt_template`);
    `ReviewModule.research_persona: str = ""` and
@@ -527,9 +531,20 @@ and the cache can't replay verdicts across jurisdictions.
    - Skip paths: no profile / no grounded items ⇒ `skipped` with reason;
      oversize corpus ⇒ chunked per module chunk groups (refactor the
      `_group_specs_by_chunk` / `_assign_chunk` / synthesis helpers in
-     `cross_checker.py` to be import-reusable rather than copy-pasted;
-     coverage entries merge across chunks by `requirement_id`, worst status
-     wins: contradicted > missing > unclear > represented).
+     `cross_checker.py` to be import-reusable rather than copy-pasted).
+     **Chunked coverage merge — a chunk-local absence is NOT a package
+     miss.** Each chunk sees only its CSI subset, so a requirement
+     represented in the Div 21 chunk will legitimately be reported
+     `missing` by the Div 28 chunk. Merge per `requirement_id` in this
+     precedence: `contradicted` (any chunk) > `represented` (any chunk) >
+     `unclear` (any chunk) > `missing` **only when every chunk reported
+     missing**. Chunk-level `missing` means "not found in this chunk."
+     Findings filter accordingly post-merge: contradiction/EDIT findings
+     from any chunk survive; ADD/missing findings survive only when the
+     merged status for that requirement is `missing`, deduplicated to one
+     finding per requirement. The chunked user message appends one line
+     telling the model it is seeing a subset of the package and to
+     classify absence relative to this subset only.
    - Streaming + retry identical to cross-check.
 5. **Pipeline integration** (`pipeline.py` + both drivers):
    - `run_compliance_for_batch(state, ...) -> CollectedBatchState`
@@ -550,8 +565,9 @@ and the cache can't replay verdicts across jurisdictions.
      `start_batch_verification` / `collect_batch_verification_results` /
      `verify_finding` → `build_verification_request(...,
      user_location=...)` → `build_verification_tools_from_decision(...,
-     user_location=...)` → the two tool builders. `None` everywhere ⇒
-     today's bytes.
+     user_location=...)` → the **web_search tool builder only** (web_fetch
+     has no location parameter and its dict must never carry the key).
+     `None` everywhere ⇒ today's bytes.
    - `verification_cache.make_cache_key(finding, *, cycle,
      jurisdiction_fingerprint: str | None = None)` — append `|{fp}` **only
      when non-None** (D-9). Thread the fingerprint from the profile at both
@@ -575,15 +591,20 @@ and the cache can't replay verdicts across jurisdictions.
    - Tracing: `KIND_COMPLIANCE` span + hooks + viewer.
 8. **Tests** (hermetic):
    - Compliance pass: completed/failed/skipped paths; chunked path
-     completeness + coverage merge (worst-status-wins); `lc-` ids stamped,
+     completeness + coverage merge (contradicted > represented > unclear >
+     unanimous-missing; a requirement represented in one chunk and missing
+     in another merges to `represented` and produces NO missing-finding);
+     `lc-` ids stamped,
      never colliding with `rf-`/`cf-` on identical content; DISPUTED
      exclusion from already-identified; findings verify in round 2 and land
      in report + sidecar; ungrounded profile items excluded from
      controlling set.
    - Cache key: fingerprint appended iff present; different cities ⇒
      different keys; profile-less key byte-identical pin.
-   - user_location: profile threads to web_search/web_fetch tool dicts;
-     absent profile ⇒ tool dict byte-identical pin.
+   - user_location: profile threads to the web_search tool dict; the
+     web_fetch tool dict never carries a `user_location` key (with or
+     without a profile); absent profile ⇒ web_search dict byte-identical
+     pin.
    - Report/banner: section renders; conditional rows only when phases ran;
      clean CA run report byte-identical.
    - Sidecar v4 shape test.
