@@ -1,15 +1,27 @@
 # Implementation Plan: `datacenter_fire` Review Module
 
-**Status: NOT IMPLEMENTED. This is a work order for a future coding agent.**
+**Status: ✅ IMPLEMENTED and SUPERSEDED.** The module-data half specified here
+shipped as WS-1 (`src/modules/datacenter_fire.py`), and the location-aware
+engine half — plus turning the module's profile features **on** — shipped as
+WS-2 … WS-5 of the superseding plan
+**[`docs/hyperscale_datacenter_module_plan.md`](hyperscale_datacenter_module_plan.md)**.
+That document is now the authoritative record for this module (status table,
+per-workstream notes, and the final content in §5). This file remains the
+canonical explanation of the *module-data authoring contract* (what a
+`ReviewModule` is, how registration validates it, the provenance discipline) —
+read it as the general module-authoring guide, but for what the
+`datacenter_fire` module actually contains and why, follow the hyperscale plan.
 
 This document specifies how to add the second review module — fire-suppression
 specifications for hyperscale data-center projects — to Spec Critic's module
 registry. The engine work is already done (Phases 0–5 of the module-extraction
 refactor, PRs #290–#294): the review pipeline, prompts, deterministic
 detectors, verification routing, cross-check chunking, GUI, and report are all
-driven by validated module data. **Adding this module requires no engine
-changes.** If you find yourself editing anything outside the files listed in
-§2, stop and re-read §8.
+driven by validated module data. **Adding a plain module requires no engine
+changes** (the location-aware pipeline the data-center module now uses is
+separate engine work, delivered by the hyperscale plan). If you find yourself
+editing anything outside the files listed in §2 for a *plain* module, stop and
+re-read §8.
 
 ---
 

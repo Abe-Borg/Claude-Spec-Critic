@@ -220,6 +220,59 @@ class TestPolityTokenDetector:
         )
         validate_module_registry([module])
 
+    def test_real_datacenter_module_rules_behavior(self):
+        """Pin the SHIPPED datacenter_fire polity rules (WS-5).
+
+        Regression guard for two case/collision bugs the review caught: the
+        UL rule must catch title-case "UL Listed", and the seismic rule must
+        NOT fire on "Safety Data Sheets (SDS)". These are the real rules the
+        profile-enabled Canadian review depends on, not synthetic ones.
+        """
+        from src.modules import DATACENTER_FIRE
+
+        rules = DATACENTER_FIRE.polity_suspect_tokens
+
+        def _matches(text: str, country: str) -> set[str]:
+            return {
+                a["match"]
+                for a in detect_wrong_polity_tokens(
+                    text, "a.docx", rules=rules, country=country
+                )
+            }
+
+        # UL rule is case-insensitive on "listed" — the common title-case form
+        # must be caught, while cULus/ULC (no word boundary before U) must not.
+        assert _matches("Provide UL Listed control valves.", "CA")
+        assert _matches("Provide U.L. Listed solenoids.", "CA")
+        assert not _matches("Provide cULus-listed control valves.", "CA")
+        assert not _matches("Provide ULC Listed devices.", "CA")
+
+        # Seismic rule: real seismic notation fires; a Safety Data Sheet does not.
+        assert _matches("Design to Seismic Design Category B (SDC B).", "CA")
+        assert _matches("Provide S_DS and S_D1 design spectral values.", "CA")
+        assert _matches("bulk", "CA") == set()  # sanity: unrelated text is silent
+        assert not any(
+            "SDS" in m
+            for m in _matches(
+                "Submit Safety Data Sheets (SDS) for all products.", "CA"
+            )
+        )
+
+        # Life-safety code: spaced and hyphenated compounds both fire.
+        assert _matches("Comply with the Life Safety Code.", "CA")
+        assert _matches("Provide life-safety code egress signage.", "CA")
+
+        # DOT-proximity vessel words are word-bounded — no match inside
+        # 'tankage' / 'transceiver', but a real DOT-rated cylinder fires.
+        assert _matches("Nitrogen cylinder shall be DOT rated.", "CA")
+        assert not _matches(
+            "Provide DOT radios and a transceiver in the tankage area.", "CA"
+        )
+
+        # US-only rules fire on US runs; the CA-only UL rule does not.
+        assert "O. Reg." in _matches("Comply with O. Reg. 213/07.", "US")
+        assert not _matches("Provide UL Listed valves.", "US")
+
     def test_rule_validation_rejects_bad_country_and_pattern(self):
         def _module(**overrides):
             from src.modules import ResearchDimension

@@ -1,0 +1,32 @@
+Evaluate the following 2 specs against the project requirements profile.
+
+<project_context>
+Hyperscale data-center new-build program.
+</project_context>
+
+<project_requirements_profile>
+CONTROLLING REQUIREMENTS (grounded in retrieved sources — evaluate the package against each of these):
+- [r-000000000001] The 2021 Virginia USBC (2021 IBC basis) governs, effective 2024-01-18. (Authority: Virginia DHCD; Ref: 13VAC5-63)
+- [r-000000000002] The adopted code references NFPA 13-2019 for sprinkler installation. (Authority: Virginia DHCD; Ref: IBC 903)
+- [r-000000000005] ASCE 7-22 Seismic Design Category B applies at this site. (Authority: ASCE 7-22)
+
+NOT INDEPENDENTLY VERIFIED (could not be grounded — do not treat as controlling; at most recommend confirmation via REPORT_ONLY):
+- [r-000000000004] ExampleCo standards prefer double-interlock pre-action in white space. (Authority: ExampleCo) [UNVERIFIED]
+</project_requirements_profile>
+
+<already_identified note="Do not repeat these findings.">
+  <prior severity="HIGH" file="21 13 13 - Wet-Pipe Sprinkler Systems.docx" section="3.05" id="rf-0123456789ab">Pre-action releasing sequence references detection zoning absent from the fire-alarm section.</prior>
+</already_identified>
+
+<corpus>
+<spec filename="21 13 13 - Wet-Pipe Sprinkler Systems.docx">
+<heading id="p0">1.01 SUMMARY</heading>
+<para id="p1" section="1.01 SUMMARY">A. Comply with 2015 IBC Chapter 9 for all fire-suppression work.</para>
+<row id="t0r0" section="1.01 SUMMARY">FP-1 | 1500 GPM | Viking model VK-100</row>
+</spec>
+<spec filename="28 31 00 - Fire Detection and Alarm.docx">
+1.01 SUMMARY
+
+A. Provide fire detection and alarm as indicated.
+</spec>
+</corpus>

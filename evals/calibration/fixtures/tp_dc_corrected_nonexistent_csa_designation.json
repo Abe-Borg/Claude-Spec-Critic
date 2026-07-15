@@ -1,0 +1,56 @@
+{
+  "fixture_id": "tp_dc_corrected_nonexistent_csa_designation",
+  "category": "code_standard",
+  "severity": "MEDIUM",
+  "description": "Spec cites a fabricated CSA standard designation ('B64 SERIES:23'-pattern) for nitrogen-receiver registration; verification identifies that the designation does not exist and grounds the correct pressure-vessel reference. Complements tp_dc_disputed_nonexistent_standard (where the correction was uncertain, so DISPUTED).",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "21 13 16 - Dry-Pipe Sprinkler Systems.docx",
+    "section": "2.03",
+    "issue": "The pre-action nitrogen receiver is specified to CSA B64 SERIES:23 — a designation that does not appear to exist as a published standard, and CSA B64 governs backflow preventers, not pressure vessels.",
+    "actionType": "EDIT",
+    "existingText": "registered to CSA B64 SERIES:23",
+    "replacementText": "constructed to the ASME BPVC and CRN-registered per CSA B51",
+    "codeReference": "CSA B51",
+    "confidence": 0.6,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p9"
+  },
+  "spec_context": {
+    "filename": "21 13 16 - Dry-Pipe Sprinkler Systems.docx",
+    "cycle_label": "Data Center IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 9, "id": "p9", "text": "B. Nitrogen receiver shall be registered to CSA B64 SERIES:23."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "CSA B64 is the standard family for backflow preventers, and 'SERIES:23' is not a valid CSA edition suffix — the designation as cited does not exist. Pressure-vessel design registration for a nitrogen receiver in Canada is governed by CSA B51 (ASME BPVC construction with a Canadian Registration Number), which is the correct reference.",
+    "sources": [
+      "https://www.csagroup.org/store/",
+      "https://www.scc.ca/en/accreditation/product-process-and-service-certification"
+    ],
+    "correction": "constructed to the ASME BPVC and CRN-registered per CSA B51",
+    "confidence": 0.83,
+    "model_used": "claude-sonnet-4-6",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 4,
+    "successful_source_count": 3,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.csagroup.org/store/",
+      "https://www.scc.ca/en/accreditation/product-process-and-service-certification",
+      "https://www.nfpa.org/codes-and-standards"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "correct_correction_text": "constructed to the ASME BPVC and CRN-registered per CSA B51",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Fabricated designation (§5.14 item 9 'B64 SERIES:23'-pattern). The verifier grounds the correct designation, so CORRECTED (not DISPUTED). Refutation is where verification earns its cost (§9 Q2)."
+  }
+}
