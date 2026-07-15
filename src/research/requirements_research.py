@@ -50,6 +50,7 @@ from ..core.api_config import (
     tools_with_cache,
 )
 from ..core.project_profile import ProjectProfile
+from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..gui.context_attachment import (
     context_within_token_cap,
     merge_into_context,
@@ -681,10 +682,15 @@ def _run_dimension(
                             responses=all_responses,
                         )
                     # Resume per Anthropic's pause_turn contract: re-send the
-                    # assistant content as-is, no synthetic user turn.
+                    # assistant content, no synthetic user turn. Fetched PDFs
+                    # count against the API's per-request page limit on the
+                    # way back up, so oversized ones are elided first — a
+                    # research dimension that fetches a full building code
+                    # (>600 pages) must not 400 its own continuation.
                     messages.append(
                         {"role": "assistant", "content": response.content}
                     )
+                    messages = sanitize_messages_for_resend(messages)
                     _trace.capture_continuation_resume(
                         trace_span, continuation_index=continuation_count
                     )
@@ -761,7 +767,10 @@ def _run_dimension(
         except Exception as exc:  # noqa: BLE001 — classified below
             failure_class = classify_exception(exc)
             if not is_retryable_failure_class(failure_class) or is_last_attempt:
-                return _failed(f"{type(exc).__name__}: {exc}")
+                # Pass the attempt's completed responses so the tokens and
+                # searches already billed before the failing call show up in
+                # diagnostics instead of reading as a zero-cost failure.
+                return _failed(f"{type(exc).__name__}: {exc}", responses=all_responses)
             backoff = compute_backoff_seconds(
                 policy, attempt=attempt, failure_class=failure_class
             )
