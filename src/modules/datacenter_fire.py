@@ -660,7 +660,9 @@ _POLITY_SUSPECT_TOKENS = (
     ),
     PolityTokenRule(
         country="CA",
-        pattern=r"(?i:\blife safety code\b)",
+        # Allow the hyphenated compound "life-safety code" as well as the
+        # spaced form.
+        pattern=r"(?i:\blife[- ]safety code\b)",
         note=(
             "The Life Safety Code (NFPA 101) is a US code; Canadian life "
             "safety is governed by the National / provincial Building Code."
@@ -683,8 +685,8 @@ _POLITY_SUSPECT_TOKENS = (
     PolityTokenRule(
         country="CA",
         pattern=(
-            r"\bDOT\b[^.\n]{0,80}(?i:tank|vessel|receiver|cylinder)"
-            r"|(?i:tank|vessel|receiver|cylinder)[^.\n]{0,80}\bDOT\b"
+            r"\bDOT\b[^.\n]{0,80}\b(?i:tank|vessel|receiver|cylinder)\b"
+            r"|\b(?i:tank|vessel|receiver|cylinder)\b[^.\n]{0,80}\bDOT\b"
         ),
         note=(
             "A DOT cylinder/vessel rating is a US pressure-vessel regime; "

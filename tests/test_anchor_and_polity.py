@@ -258,6 +258,17 @@ class TestPolityTokenDetector:
             )
         )
 
+        # Life-safety code: spaced and hyphenated compounds both fire.
+        assert _matches("Comply with the Life Safety Code.", "CA")
+        assert _matches("Provide life-safety code egress signage.", "CA")
+
+        # DOT-proximity vessel words are word-bounded — no match inside
+        # 'tankage' / 'transceiver', but a real DOT-rated cylinder fires.
+        assert _matches("Nitrogen cylinder shall be DOT rated.", "CA")
+        assert not _matches(
+            "Provide DOT radios and a transceiver in the tankage area.", "CA"
+        )
+
         # US-only rules fire on US runs; the CA-only UL rule does not.
         assert "O. Reg." in _matches("Comply with O. Reg. 213/07.", "US")
         assert not _matches("Provide UL Listed valves.", "US")
