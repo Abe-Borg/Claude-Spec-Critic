@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..core.api_config import (
-    MODEL_SONNET_46,
+    MODEL_SONNET_5,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT,
 )
@@ -172,7 +172,7 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
         # cheaper path for findings that do not need deep reasoning."
         return ModePolicy(
             mode=mode,
-            model=MODEL_SONNET_46,
+            model=MODEL_SONNET_5,
             thinking_enabled=False,
             web_search_enabled=True,
             allows_escalation=False,

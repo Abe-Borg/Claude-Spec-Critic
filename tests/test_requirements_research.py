@@ -37,7 +37,6 @@ from src.review.structured_schemas import (
     REQUIREMENTS_RESEARCH_SCHEMA,
     RESEARCH_TOOL_NAME,
     requirements_research_tool,
-    research_tool_choice,
 )
 from tests.fixtures.fake_anthropic import (
     FakeMessage,
@@ -301,11 +300,14 @@ class TestResearchSchema:
     def test_tool_builder_lenient_for_unknown_model(self):
         assert "strict" not in requirements_research_tool(model="claude-mystery-9")
 
-    def test_tool_choice_shape(self):
-        assert research_tool_choice() == {
-            "type": "auto",
-            "disable_parallel_tool_use": True,
-        }
+    def test_no_tool_choice_helper_exists(self):
+        # Research must send NO tool_choice: the _20260209 web server tools
+        # run programmatic tool calling under the hood, and the API 400s on
+        # disable_parallel_tool_use combined with it. The helper was removed
+        # so a future call site can't reintroduce the rejected shape.
+        import src.review.structured_schemas as schemas
+
+        assert not hasattr(schemas, "research_tool_choice")
 
 
 class TestWebSearchUserLocation:
@@ -723,10 +725,9 @@ class TestResearchFanout:
         assert "user_location" not in tools[1]
         # Trailing cache breakpoint lands on the output tool.
         assert tools[-1].get("cache_control") == {"type": "ephemeral", "ttl": "1h"}
-        assert kwargs["tool_choice"] == {
-            "type": "auto",
-            "disable_parallel_tool_use": True,
-        }
+        # NO tool_choice key: disable_parallel_tool_use is rejected (400)
+        # alongside the _20260209 web tools' programmatic tool calling.
+        assert "tool_choice" not in kwargs
         assert kwargs["max_tokens"] == 24_000
 
     def test_engine_default_budgets_apply_when_dimension_says_zero(self):

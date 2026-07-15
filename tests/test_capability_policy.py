@@ -21,6 +21,7 @@ from src.core.api_config import (
     MODEL_HAIKU_45,
     MODEL_OPUS_48,
     MODEL_SONNET_46,
+    MODEL_SONNET_5,
     OPUS_MODELS,
     PHASE_REVIEW,
     PHASE_TRIAGE,
@@ -192,11 +193,11 @@ class TestUnknownModelWarnsLoudly:
 
 class TestEffortPolicy:
     """Per-phase effort levels. Review and cross-check default to ``xhigh``
-    (Anthropic's recommended starting point for coding/agentic work on Opus
-    4.8); verification stays medium (Sonnet) / high (Opus escalation) so
-    the verdict envelope doesn't balloon. ``xhigh`` is Opus-only, so any phase
-    that defaults to it clamps to ``high`` on a non-Opus model (see
-    ``TestXhighClampsOnNonOpus``)."""
+    (Anthropic's recommended starting point for coding/agentic work);
+    verification stays medium (Sonnet) / high (Opus escalation) so the
+    verdict envelope doesn't balloon. ``xhigh`` is gated per model via
+    ``supports_xhigh_effort`` (Opus 4.8 and Sonnet 5 accept it; Sonnet 4.6
+    clamps to ``high`` — see ``TestXhighClampGating``)."""
 
     def test_review_uses_xhigh(self) -> None:
         # Review defaults to Opus 4.8, which accepts xhigh.
@@ -222,66 +223,123 @@ class TestEffortPolicy:
 
 
 # ---------------------------------------------------------------------------
-# xhigh is Opus-only — every phase clamps it to high on a non-Opus model
+# xhigh is capability-gated — models without supports_xhigh_effort clamp
 # ---------------------------------------------------------------------------
 
 
-class TestXhighClampsOnNonOpus:
-    """Regression: ``xhigh`` is an Opus-4.8-only effort level. Sonnet 4.6
-    rejects it at submit with HTTP 400 ("This model does not support effort
-    level 'xhigh'. Supported levels: high, low, max, medium."). Because the
-    cross-check phase defaults to ``xhigh`` but *always* runs on Sonnet 4.6
-    (``CROSS_CHECK_MODEL_DEFAULT``), every cross-spec coordination pass used to
-    400 at submit and produce zero findings. ``effort_config_for`` must clamp
-    ``xhigh`` down to ``high`` on any non-Opus model."""
+class TestXhighClampGating:
+    """Regression: ``xhigh`` is rejected at submit (HTTP 400 "This model does
+    not support effort level 'xhigh'. Supported levels: high, low, max,
+    medium.") by models without the ``supports_xhigh_effort`` capability —
+    Sonnet 4.6 among them. When the cross-check phase (``xhigh`` default) ran
+    on Sonnet 4.6, every cross-spec coordination pass used to 400 at submit
+    and produce zero findings. ``effort_config_for`` must clamp ``xhigh``
+    down to ``high`` on any model whose capability entry lacks the flag —
+    while passing it through natively on Opus 4.8 and Sonnet 5."""
 
-    def test_cross_check_on_sonnet_clamps_to_high(self) -> None:
-        # The bug: this used to return {"effort": "xhigh"} → 400 on Sonnet.
+    def test_cross_check_on_sonnet_46_clamps_to_high(self) -> None:
+        # The historical bug: this returned {"effort": "xhigh"} → 400. A
+        # pinned SPEC_CRITIC override to Sonnet 4.6 must still clamp.
         assert effort_config_for(
             model=MODEL_SONNET_46, phase=api_config.PHASE_CROSS_CHECK
         ) == {"effort": "high"}
 
-    def test_cross_check_default_model_does_not_400(self) -> None:
-        # Pin the real wiring: the phase's default model must never be asked
-        # for an effort level it rejects. Guards against someone flipping
-        # CROSS_CHECK_MODEL_DEFAULT back to a non-xhigh model without the clamp.
+    def test_cross_check_default_model_runs_xhigh_natively(self) -> None:
+        # Pin the real wiring: cross-check's default model (Sonnet 5) carries
+        # supports_xhigh_effort, so the phase's declared xhigh survives — and
+        # is only ever sent to a model whose whitelist entry vouches for it.
         cfg = effort_config_for(
             model=api_config.CROSS_CHECK_MODEL_DEFAULT,
             phase=api_config.PHASE_CROSS_CHECK,
         )
-        assert cfg is not None
-        assert cfg["effort"] != "xhigh"
+        assert cfg == {"effort": "xhigh"}
+        assert model_capabilities(
+            api_config.CROSS_CHECK_MODEL_DEFAULT
+        ).supports_xhigh_effort is True
 
-    def test_review_on_sonnet_override_clamps_to_high(self) -> None:
-        # Latent variant: SPEC_CRITIC_REVIEW_MODEL=sonnet would otherwise 400.
+    def test_review_on_sonnet_46_override_clamps_to_high(self) -> None:
+        # Latent variant: SPEC_CRITIC_REVIEW_MODEL=claude-sonnet-4-6 would
+        # otherwise 400.
         assert effort_config_for(
             model=MODEL_SONNET_46, phase=api_config.PHASE_REVIEW
         ) == {"effort": "high"}
 
-    def test_opus_keeps_xhigh_on_both_deep_phases(self) -> None:
-        # Opus 4.8 accepts xhigh — the clamp must not strip it.
-        for phase in (api_config.PHASE_REVIEW, api_config.PHASE_CROSS_CHECK):
-            assert effort_config_for(model=MODEL_OPUS_48, phase=phase) == {
-                "effort": "xhigh"
-            }
+    def test_xhigh_capable_models_keep_xhigh_on_deep_phases(self) -> None:
+        # Opus 4.8 and Sonnet 5 both accept xhigh — the clamp must not strip it.
+        for model in (MODEL_OPUS_48, MODEL_SONNET_5):
+            for phase in (
+                api_config.PHASE_REVIEW,
+                api_config.PHASE_CROSS_CHECK,
+                api_config.PHASE_COMPLIANCE,
+            ):
+                assert effort_config_for(model=model, phase=phase) == {
+                    "effort": "xhigh"
+                }
+
+    def test_unknown_model_clamps_xhigh(self) -> None:
+        # Conservative default capabilities leave supports_xhigh_effort off.
+        assert api_config._clamp_effort_for_model("xhigh", "claude-mystery-9") == "high"
 
     def test_clamp_helper_is_targeted(self) -> None:
-        # Only xhigh is clamped, and only off-Opus; other levels pass through.
+        # Only xhigh is clamped, and only on non-flag models; other levels
+        # pass through everywhere.
         assert api_config._clamp_effort_for_model("xhigh", MODEL_SONNET_46) == "high"
         assert api_config._clamp_effort_for_model("xhigh", MODEL_OPUS_48) == "xhigh"
+        assert api_config._clamp_effort_for_model("xhigh", MODEL_SONNET_5) == "xhigh"
         assert api_config._clamp_effort_for_model("high", MODEL_SONNET_46) == "high"
         assert api_config._clamp_effort_for_model("medium", MODEL_SONNET_46) == "medium"
 
 
 # ---------------------------------------------------------------------------
-# Default models track the newest Opus generation (4.8)
+# Sonnet 5 whitelisting — the default Sonnet tier resolves full capabilities
 # ---------------------------------------------------------------------------
 
 
-class TestDefaultModelsAreOpus48:
-    """Review and verification-escalation default to Opus 4.8, the flagship
-    Opus generation. Pinned so a future model bump is a deliberate, reviewed
-    edit."""
+class TestSonnet5Whitelisted:
+    """Sonnet 5 backs verification / cross-check / compliance / research by
+    default, so it must resolve to full capabilities — falling through to the
+    conservative unknown-model defaults would strip adaptive thinking, effort,
+    and strict tools from every one of those phases and clamp output to 64k."""
+
+    def test_registered_not_unknown(self) -> None:
+        assert MODEL_SONNET_5 in api_config._MODEL_CAPABILITIES
+
+    def test_capability_helpers_agree(self) -> None:
+        assert model_supports_adaptive_thinking(MODEL_SONNET_5) is True
+        assert model_supports_effort(MODEL_SONNET_5) is True
+        caps = model_capabilities(MODEL_SONNET_5)
+        assert caps.supports_strict_tools is True
+        assert caps.supports_xhigh_effort is True
+        assert caps.context_window == 1_000_000
+
+    def test_output_ceiling_is_128k(self) -> None:
+        # Sonnet 5 is the first Sonnet at the Opus ceiling. The legacy
+        # family-set dispatch would have clamped it to the 64k
+        # previous-generation-Sonnet ceiling.
+        assert output_cap_for_model(MODEL_SONNET_5, requested=300_000) == 128_000
+
+    def test_sonnet_46_ceiling_unchanged(self) -> None:
+        # The capability-registry refactor of output_cap_for_model must not
+        # move any previously-registered model's ceiling.
+        assert output_cap_for_model(MODEL_SONNET_46, requested=300_000) == 64_000
+        assert output_cap_for_model(MODEL_HAIKU_45, requested=300_000) == 64_000
+        assert output_cap_for_model("claude-mystery-9", requested=300_000) == 64_000
+
+    def test_extended_output_beta_off_pending_confirmation(self) -> None:
+        # Conservative start (same as Sonnet 4.6 pre-rollout): degrade to the
+        # 128k baseline cap rather than risk a 400 on an unconfirmed beta.
+        assert model_supports_extended_output_beta(MODEL_SONNET_5) is False
+
+
+# ---------------------------------------------------------------------------
+# Default models track the newest generation of each tier
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultModels:
+    """Review / escalation default to Opus 4.8; the Sonnet-tier phases
+    (verification initial, cross-check, compliance, research) default to
+    Sonnet 5. Pinned so a future model bump is a deliberate, reviewed edit."""
 
     def test_review_default_is_opus_48(self) -> None:
         # Holds when SPEC_CRITIC_REVIEW_MODEL is unset (the test harness env).
@@ -290,11 +348,13 @@ class TestDefaultModelsAreOpus48:
     def test_escalation_default_is_opus_48(self) -> None:
         assert api_config.VERIFICATION_ESCALATION_MODEL == MODEL_OPUS_48
 
-    def test_initial_verifier_still_sonnet(self) -> None:
+    def test_initial_verifier_is_sonnet_5(self) -> None:
         # Escalation only fires when initial != escalation model; keep them
         # distinct so the escalation tier stays meaningful.
-        assert api_config.VERIFICATION_MODEL_DEFAULT == MODEL_SONNET_46
+        assert api_config.VERIFICATION_MODEL_DEFAULT == MODEL_SONNET_5
         assert api_config.VERIFICATION_MODEL_DEFAULT != api_config.VERIFICATION_ESCALATION_MODEL
 
-    def test_cross_check_still_sonnet(self) -> None:
-        assert api_config.CROSS_CHECK_MODEL_DEFAULT == MODEL_SONNET_46
+    def test_sonnet_tier_defaults_are_sonnet_5(self) -> None:
+        assert api_config.CROSS_CHECK_MODEL_DEFAULT == MODEL_SONNET_5
+        assert api_config.COMPLIANCE_MODEL_DEFAULT == MODEL_SONNET_5
+        assert api_config.RESEARCH_MODEL_DEFAULT == MODEL_SONNET_5

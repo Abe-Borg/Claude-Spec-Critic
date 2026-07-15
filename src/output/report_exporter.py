@@ -43,7 +43,11 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from lxml import etree
 
-from ..core.api_config import web_search_max_uses_for_severity
+from ..core.api_config import (
+    CROSS_CHECK_MODEL_DEFAULT,
+    web_search_max_uses_for_severity,
+)
+from ..core.pricing import price_for
 from ..core.code_cycles import CodeCycle
 from ..core.project_profile import ProjectProfile
 from ..modules import ReviewModule, get_module
@@ -2551,8 +2555,13 @@ def _write_cross_check_section(doc: Document, cross_check_result) -> None:
     elif status == "completed" and count == 0:
         run = subtitle.add_run("Cross-check completed — no coordination issues found.")
     else:
+        # Render the cross-check model's human label from the pricing table
+        # so the report can't drift from the configured model (the string
+        # was previously hardcoded and went stale on model bumps).
+        price = price_for(CROSS_CHECK_MODEL_DEFAULT)
+        model_label = price.label if price else CROSS_CHECK_MODEL_DEFAULT
         run = subtitle.add_run(
-            f"Sonnet 4.6 coordination analysis — "
+            f"{model_label} coordination analysis — "
             f"{count} issue{'s' if count != 1 else ''} found."
         )
     run.font.size = Pt(11)

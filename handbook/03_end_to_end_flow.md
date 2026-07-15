@@ -380,7 +380,7 @@ review     ─► Opus 4.8 (batch) raises a Finding via submit_review_findings: 
 collect    ─► reconciled against the submitted set; spec parsed cleanly                   (Ch 6/7)
 dedup      ─► appears once → kept as singleton, stamped finding_id "rf-…"                  (Ch 7)
 route      ─► HIGH + non-empty codeReference ⇒ never local-skip, never Haiku-eligible ⇒   (Ch 9)
-              web_required ⇒ standard_reasoning mode (Sonnet 4.6, web_search budget 7)
+              web_required ⇒ standard_reasoning mode (Sonnet 5, web_search budget 7)
 verify     ─► Sonnet searches the CA Building Standards Commission adoption matrix;        (Ch 10)
               cites a URL the web_search tool actually returned ⇒ grounded;
               verdict = CORRECTED (the 2019 edition is wrong)

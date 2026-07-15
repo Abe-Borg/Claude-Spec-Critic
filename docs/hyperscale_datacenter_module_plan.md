@@ -637,7 +637,9 @@ returns a `RequirementsProfile` that the submit path splices into
    for optionals, `additionalProperties: false`, closed `category` enum on a
    non-nullable string, bare `number` confidence (clamped at parse). Builder
    `requirements_research_tool(*, model=None)` with `_strict_for_model`;
-   `research_tool_choice()` = `{"type":"auto","disable_parallel_tool_use":True}`;
+   NO `tool_choice` on the request (verification's convention — the
+   `_20260209` web server tools run programmatic tool calling under the
+   hood, and the API 400s on `disable_parallel_tool_use` combined with it);
    tagged-JSON fallback tag `<research_json>`.
 4. **The runner** (new `src/research/requirements_research.py`):
    - `ResearchItem` dataclass: `item_id` (content hash, stable),
