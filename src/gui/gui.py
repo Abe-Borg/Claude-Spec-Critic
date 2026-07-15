@@ -43,7 +43,9 @@ from src.input.extractor import ExtractedSpec
 from src.orchestration.pipeline import BatchSubmission
 
 # Constants used by widgets
+from src.core.api_config import CROSS_CHECK_MODEL_DEFAULT
 from src.core.code_cycles import DEFAULT_CYCLE
+from src.core.pricing import price_for
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 from src.core.project_profile import ProjectProfile
 from src.core.ui_state import (
@@ -373,8 +375,12 @@ class SpecReviewApp(_CTkDnDRoot):
             checkbox_width=20, checkbox_height=20,
         )
         self._cross_check_cb.pack(side="left")
+        # Model label rendered from config so the hint can't drift when the
+        # cross-check default is bumped (it previously hardcoded the name).
+        _cc_price = price_for(CROSS_CHECK_MODEL_DEFAULT)
+        _cc_label = _cc_price.label if _cc_price else CROSS_CHECK_MODEL_DEFAULT
         self._cross_check_hint = ctk.CTkLabel(options_frame,
-            text="Sonnet 4.6 \u2022 full content \u2022 finds inter-spec conflicts",
+            text=f"{_cc_label} \u2022 full content \u2022 finds inter-spec conflicts",
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
 

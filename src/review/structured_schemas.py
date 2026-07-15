@@ -645,12 +645,14 @@ def requirements_research_tool(*, model: str | None = None) -> dict[str, Any]:
     return tool
 
 
-def research_tool_choice() -> dict[str, Any]:
-    # Like verification, research cannot force tool_choice — the model must
-    # be free to call web_search / web_fetch first. The system prompt
-    # instructs it to end the turn with the research tool; the tagged-JSON
-    # fallback (``<research_json>``) stays reachable for the text detour.
-    return {"type": "auto", "disable_parallel_tool_use": True}
+# Research sends NO tool_choice — the same convention as verification (see
+# the note below verification_verdict_tool). The ``_20260209`` web server
+# tools run dynamic filtering (programmatic tool calling under the hood),
+# and the API rejects ``disable_parallel_tool_use`` combined with it:
+# HTTP 400 ``tool_choice.disable_parallel_tool_use: true cannot be used
+# with programmatic tool calling``. The system prompt instructs the model
+# to end the turn with the research tool; the tagged-JSON fallback
+# (``<research_json>``) stays reachable for the text detour.
 
 
 def compliance_findings_tool(*, model: str | None = None) -> dict[str, Any]:

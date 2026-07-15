@@ -50,15 +50,22 @@ code-referenced prose and wants the strongest model available; a triage
 classification sorts short findings into two buckets and wants the cheapest. So
 the defaults are tiered, and every model id lives as a named constant at the top
 of `api_config.py` (`MODEL_OPUS_48 = "claude-opus-4-8"`, and likewise for
-`claude-sonnet-4-6` and `claude-haiku-4-5`).
+`claude-sonnet-5`, `claude-sonnet-4-6`, and `claude-haiku-4-5`).
 
 | Phase | Default model | Env override |
 |---|---|---|
 | Review (per-spec) | Opus 4.8 | `SPEC_CRITIC_REVIEW_MODEL` |
-| Cross-spec coordination | Sonnet 4.6 | *(none — see note)* |
-| Verification, initial pass | Sonnet 4.6 | `SPEC_CRITIC_VERIFICATION_MODEL` |
+| Cross-spec coordination | Sonnet 5 | *(none — see note)* |
+| Verification, initial pass | Sonnet 5 | `SPEC_CRITIC_VERIFICATION_MODEL` |
 | Verification, escalation / deep-reasoning | Opus 4.8 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` |
+| Requirements research (profile modules) | Sonnet 5 | `SPEC_CRITIC_RESEARCH_MODEL` |
+| Compliance pass (profile modules) | Sonnet 5 | *(none — cross-check parity)* |
 | Triage | Haiku 4.5 | `SPEC_CRITIC_TRIAGE_MODEL` |
+
+Sonnet 4.6 remains a registered constant (`MODEL_SONNET_46`) even though no
+phase defaults to it anymore — an operator env override that pins the
+previous-generation id must keep its correct request shape, most notably the
+`xhigh` → `high` effort clamp that 4.6 needs and Sonnet 5 does not.
 
 The pattern that produces an override is a single line —
 `os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_48)` — read once at import
@@ -71,7 +78,7 @@ initial review and the escalation tier of verification.
 > **Drift note.** The handbook's shared-facts sheet describes the stack as
 > "defaults, all overridable by env var." The source has one exception:
 > **cross-spec coordination is not env-overridable.** `CROSS_CHECK_MODEL_DEFAULT`
-> is bound directly to `MODEL_SONNET_46` with no `os.environ.get`, and there is
+> is bound directly to `MODEL_SONNET_5` with no `os.environ.get`, and there is
 > no `SPEC_CRITIC_CROSS_CHECK_MODEL` variable anywhere in `src/`. `CLAUDE.md`'s
 > environment-variable table agrees — it lists no cross-check override. If a
 > future operator needs to retune the coordination model, this is the one phase
@@ -102,16 +109,19 @@ class ModelCapabilities:
     supports_extended_output_beta: bool   # 300k batch-only beta
     context_window: int
     supports_effort: bool = False
+    supports_strict_tools: bool = False
+    supports_xhigh_effort: bool = False   # xhigh effort level gate
 ```
 
-The whitelist covers exactly three models, plus a default for everything else:
+The whitelist covers exactly four models, plus a default for everything else:
 
-| Model id | thinking | effort | 300k extended | context | output ceiling |
-|---|---|---|---|---|---|
-| `claude-opus-4-8` | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
-| `claude-sonnet-4-6` | ✓ | ✓ | ✓ | 1,000,000 | 64,000 |
-| `claude-haiku-4-5` | ✗ | ✗ | ✗ | 200,000 | 64,000 |
-| **anything else** | ✗ | ✗ | ✗ | 200,000 | 64,000 |
+| Model id | thinking | effort | xhigh | 300k extended | context | output ceiling |
+|---|---|---|---|---|---|---|
+| `claude-opus-4-8` | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
+| `claude-sonnet-5` | ✓ | ✓ | ✓ | ✗ *(pending confirmation)* | 1,000,000 | 128,000 |
+| `claude-sonnet-4-6` | ✓ | ✓ | ✗ | ✓ | 1,000,000 | 64,000 |
+| `claude-haiku-4-5` | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
+| **anything else** | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
 
 That last row is the load-bearing one. An unknown id falls through
 `_MODEL_CAPABILITIES.get(model, _DEFAULT_CAPABILITIES)` to a record with **every
@@ -132,39 +142,42 @@ firmly as it rejects an unsupported feature:
   is off. That belt-and-suspenders is deliberate: even if someone overrode triage
   to a thinking-capable model, the phase opt-out still holds.
 - **`effort_config_for(model, phase)`** attaches `output_config.effort` — `xhigh`
-  for the deep phases (review, cross-check), `high` for Opus on the escalation
-  verification phase, `medium` for Sonnet verification, and *nothing* for triage
-  or any model whose `supports_effort` flag is off. The usable levels are
-  `low`/`medium`/`high`/`xhigh`, and `xhigh` is Opus-4.8-only: because
-  `supports_effort` is a coarse boolean, `effort_config_for` clamps `xhigh`→`high`
-  on any non-Opus model. That clamp is load-bearing for cross-check, which
-  *defaults* to `xhigh` but always runs on Sonnet 4.6 — without it every
-  coordination pass would 400 at submit.
+  for the deep phases (review, cross-check, compliance), `high` for Opus on the
+  escalation verification phase and for research, `medium` for Sonnet
+  verification, and *nothing* for triage or any model whose `supports_effort`
+  flag is off. The usable levels are `low`/`medium`/`high`/`xhigh`, and `xhigh`
+  is gated per model by `supports_xhigh_effort` (Opus 4.8 ✓, Sonnet 5 ✓,
+  Sonnet 4.6 ✗): `effort_config_for` clamps `xhigh`→`high` on any model whose
+  capability entry lacks the flag. On today's defaults nothing clamps —
+  cross-check and compliance run their declared `xhigh` natively on Sonnet 5 —
+  but the clamp stays load-bearing for a pinned Sonnet 4.6 override, which
+  rejects `xhigh` at submit with a 400.
 
 The deeper consequence of the degrade-to-safe default deserves to be made
 concrete, because it is the chapter's central tension and it is *sharper than it
-looks*. The output ceiling for an unknown model is not enforced through the
-capability record alone — it is also enforced by `output_cap_for_model`, which
-clamps a requested cap against a hand-written family check:
+looks*. The output ceiling is enforced by `output_cap_for_model`, which now
+resolves through the capability registry itself:
 
 ```python
-if model in OPUS_MODELS:        ceiling = MAX_OUTPUT_TOKENS_OPUS    # 128k
-elif model in HAIKU_MODELS:     ceiling = MAX_OUTPUT_TOKENS_HAIKU   # 64k
-else:                           ceiling = MAX_OUTPUT_TOKENS_SONNET  # 64k
+return min(requested, model_capabilities(model).max_output_tokens)
 ```
 
-`OPUS_MODELS` is a frozenset of the known Opus ids — currently `claude-opus-4-8`,
-the review and escalation default. The degrade-to-safe tension shows up the moment
-an operator points review at an id that *isn't* in the known sets — say a future
-successor like `claude-opus-4-9`. That id is in none of the known sets. It loses
-adaptive thinking. It loses `xhigh` effort. It loses the 300k extended-output
-path. And its baseline output cap clamps down to the `else` branch: **64,000
-tokens**, half of what a listed Opus gets. The operator did this *to get better
-reviews*, and the program gives them a weaker, smaller request. This *used* to
-happen with no warning at all; the trust-audit fix (P0-3) now emits one `WARNING`
-per unrecognized id naming the conservative caps it fell back to, so the
-under-powering is at least visible. We return to this in the closing section —
-keeping `OPUS_MODELS` current is still the real remedy.
+(It used to be a hand-written family check — `if model in OPUS_MODELS: 128k,
+else: 64k` — which silently clamped any 128k-capable model that wasn't an Opus
+id; Sonnet 5, the first 128k Sonnet, is what forced the ceiling into the
+registry. `OPUS_MODELS` survives for exactly one decision: Opus on a
+verification phase is the escalation tier, so effort bumps to `high`.) The
+degrade-to-safe tension shows up the moment an operator points review at an id
+the registry doesn't know — say a future successor like `claude-opus-4-9`. That
+id has no capability entry. It loses adaptive thinking. It loses `xhigh`
+effort. It loses the 300k extended-output path. And its baseline output cap
+falls to the conservative default: **64,000 tokens**, half of what a listed
+Opus gets. The operator did this *to get better reviews*, and the program gives
+them a weaker, smaller request. This *used* to happen with no warning at all;
+the trust-audit fix (P0-3) now emits one `WARNING` per unrecognized id naming
+the conservative caps it fell back to, so the under-powering is at least
+visible. We return to this in the closing section — keeping the whitelist
+current is still the real remedy.
 
 ## Output caps and the extended-output path
 
@@ -217,7 +230,11 @@ One subtlety: Sonnet 4.6 also carries the extended-output capability now; an
 earlier version of the code gated this by Opus-family membership and *excluded*
 Sonnet incorrectly. Reading the flag from the capability registry instead of
 testing `model in OPUS_MODELS` is what fixed it — a small object lesson in why the
-whitelist is the single source of truth rather than a family check.
+whitelist is the single source of truth rather than a family check. Sonnet 5, by
+contrast, starts with the flag *off* — the conservative pre-confirmation posture
+Sonnet 4.6 itself began with: until the beta's supported-model list is confirmed
+to include it, a Sonnet-5-overridden extended review caps at the 128k baseline
+rather than risking a 400 on the beta header.
 
 ## Token economics: counting before you commit
 
@@ -254,6 +271,7 @@ local estimate is used as a *budget gate*, it is padded:
 |---|---|
 | `claude-opus-4-8` | 1.10× |
 | `claude-sonnet-4-6` | 1.10× |
+| `claude-sonnet-5` | 1.45× *(new tokenizer: ~30% more tokens than the 4.6-family tokenizer, compounded onto the family's 1.10× cl100k pad)* |
 | `claude-haiku-4-5` | 1.15× |
 | unknown | 1.20× |
 
@@ -423,7 +441,7 @@ documented, supported way to retune the program without editing code.
 | Variable | Default | Effect |
 |---|---|---|
 | `SPEC_CRITIC_REVIEW_MODEL` | Opus 4.8 | Override the review model |
-| `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 4.6 | Override the verifier initial-pass model |
+| `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 5 | Override the verifier initial-pass model |
 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 4.8 | Override the escalation model |
 | `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Override the triage model |
 | `SPEC_CRITIC_ELEMENT_IDS` | on | Disable to revert to legacy plain-body spec rendering |
@@ -473,8 +491,10 @@ via `_WARNED_UNKNOWN_MODELS` so the per-request hot path can't spam the log) nam
 the conservative caps it fell back to, so a stale whitelist that under-powers a
 newer model is visible rather than invisible. The deeper remedy is unchanged:
 adding a model to the whitelist is a small change (register it in
-`_MODEL_CAPABILITIES`, add it to the relevant family frozenset), and the work is
-*remembering to do it* before the default goes stale.
+`_MODEL_CAPABILITIES` — output ceiling and `xhigh` eligibility now live on the
+entry itself; only a new *Opus* id also joins `OPUS_MODELS`, for the
+escalation-tier effort bump), and the work is *remembering to do it* before the
+default goes stale.
 
 **The hardcoded beta header (audit P0-4, since addressed).** `output-300k-2026-03-24`
 is a hardcoded constant, and an *unrecognized* `anthropic-beta` value is rejected by

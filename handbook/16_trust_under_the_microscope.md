@@ -288,7 +288,7 @@ Two items here share a root cause — a hardcoded assumption about the outside w
 that can quietly go stale.
 
 The **model-capability whitelist** (`api_config._MODEL_CAPABILITIES`) enumerates
-exactly three model ids: Opus 4.8, Sonnet 4.6, Haiku 4.5. Any id outside that set
+exactly four model ids: Opus 4.8, Sonnet 5, Sonnet 4.6, Haiku 4.5. Any id outside that set
 falls through to `_DEFAULT_CAPABILITIES`, which disables every capability flag —
 no adaptive thinking, no extended-output beta, a 200k context window, output
 capped at 128k instead of 300k. This "safe default" is genuinely smart in one

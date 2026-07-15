@@ -62,7 +62,6 @@ from ..review.structured_schemas import (
     RESEARCH_TOOL_NAME,
     extract_tool_use_block,
     requirements_research_tool,
-    research_tool_choice,
 )
 from ..tracing import capture_hooks as _trace
 from ..verification.retry_policy import (
@@ -625,12 +624,18 @@ def _run_dimension(
         # breakpoint on it (the same discipline as the verdict tool).
         requirements_research_tool(model=model),
     ]
+    # No ``tool_choice`` — verification's convention for web-tool requests.
+    # The ``web_search_20260209`` / ``web_fetch_20260209`` server tools run
+    # dynamic filtering (code execution under the hood), which the API treats
+    # as programmatic tool calling and rejects with a 400 when combined with
+    # ``tool_choice.disable_parallel_tool_use`` (or a forcing tool_choice).
+    # The system prompt instructs the model to end the turn with the research
+    # output tool; the tagged-JSON fallback stays reachable for text detours.
     request_kwargs: dict = {
         "model": model,
         "max_tokens": research_max_tokens(model=model),
         "system": system_prompt_with_cache(system_prompt, phase=PHASE_RESEARCH),
         "tools": tools_with_cache(tools, phase=PHASE_RESEARCH),
-        "tool_choice": research_tool_choice(),
     }
     apply_thinking_config(request_kwargs, model=model, phase=PHASE_RESEARCH)
     apply_effort_config(request_kwargs, model=model, phase=PHASE_RESEARCH)

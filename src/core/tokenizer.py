@@ -6,7 +6,7 @@ These counts are used for guardrails, not exact billing.
 
 Token limits (v2.3.0):
     - Claude Opus 4.8 context window: 1,000,000 tokens
-    - Opus 4.8 max output: 128,000 tokens
+    - Opus 4.8 / Sonnet 5 max output: 128,000 tokens
     - Sonnet 4.6 max output: 64,000 tokens
     - Per-spec recommended input limit: 500,000 tokens
       (practical limit — individual specs are reviewed one at a time)
@@ -61,7 +61,7 @@ PROJECT_CONTEXT_MAX_TOKENS = 100_000
 # Cross-check limits (v2.2.0)
 # ---------------------------------------------------------------------------
 
-# Cross-check uses Sonnet 4.6 with full spec content and adaptive thinking.
+# Cross-check uses Sonnet 5 with full spec content and adaptive thinking.
 # With thinking enabled, thinking tokens + text output share the max_tokens budget.
 # We keep a 128K output reserve (matches the api_config cross-check cap before
 # the per-model clamp) so the input budget stays stable across model changes.
@@ -101,10 +101,16 @@ def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
 # the authoritative gate (directive 3).
 _DEFAULT_LOCAL_SAFETY_FACTOR = 1.20  # unknown models — widest margin
 _LOCAL_SAFETY_FACTORS: dict[str, float] = {
-    # Opus / Sonnet share Claude's main tokenizer; the cl100k_base
+    # Opus / Sonnet 4.6 share Claude's main tokenizer; the cl100k_base
     # undercount is small but non-zero.
     "claude-opus-4-8": 1.10,
     "claude-sonnet-4-6": 1.10,
+    # Sonnet 5 uses a NEW tokenizer that produces ~30% more tokens than the
+    # 4.6-family tokenizer for the same text (per Anthropic's Sonnet 5
+    # migration guide). Compounding the family's 1.10 cl100k pad with that
+    # shift gives ~1.43; round up so the fallback gate never gains false
+    # confidence from a pre-migration multiplier.
+    "claude-sonnet-5": 1.45,
     # Haiku 4.5 tokenization tends to undercount cl100k a bit more on
     # structured construction-spec text in practice. Pad more.
     "claude-haiku-4-5": 1.15,
@@ -197,14 +203,15 @@ _IMAGE_LONG_EDGE_DEFAULT = 1568
 def _image_caps_for_model(model: str | None) -> tuple[int, int]:
     """Return ``(token_cap, long_edge_cap_px)`` for ``model``.
 
-    Reads the Opus high-resolution tier from the api_config whitelist so the
-    capability source of truth stays single. Imported lazily to avoid any
-    import-order coupling at module load.
+    Reads the high-resolution vision tier from the api_config whitelist so
+    the capability source of truth stays single (Opus 4.8 and Sonnet 5 —
+    Sonnet 5 is the first Sonnet-tier model with high-res image support).
+    Imported lazily to avoid any import-order coupling at module load.
     """
     try:
-        from .api_config import OPUS_MODELS
+        from .api_config import HIRES_VISION_MODELS
 
-        if model in OPUS_MODELS:
+        if model in HIRES_VISION_MODELS:
             return _IMAGE_TOKEN_CAP_HIRES, _IMAGE_LONG_EDGE_HIRES
     except Exception:  # pragma: no cover - defensive; fall back to safe default
         pass
