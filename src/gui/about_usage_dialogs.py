@@ -1,11 +1,17 @@
-"""Informational dialogs ("How It Works" / "How to Use").
+"""Informational dialogs ("How It Works" / "How to Use" / "Why Trust It?").
 
-These two windows are pure UI: long blocks of mostly-static text rendered
-in a modal CTkToplevel. Model names and the code basis are rendered from
-config (``api_config`` defaults via the pricing table's labels, and the
-selected module's cycle) so the copy can't drift when a default model or
-module changes. Keeping them out of gui.py preserves the GUI shell as a
-thin layout-and-wiring file.
+These windows are pure UI: long blocks of mostly-static text rendered in a
+modal CTkToplevel. Model names and the code basis are rendered from config
+(``api_config`` defaults via the pricing table's labels, and the selected
+module's cycle) so the copy can't drift when a default model or module
+changes. Keeping them out of gui.py preserves the GUI shell as a thin
+layout-and-wiring file.
+
+The trust dialog (:func:`show_trust_dialog`) is a plain-language account of
+the anti-hallucination and verification machinery for engineers and
+stakeholders. Every claim it makes maps to an enforced mechanism in the
+codebase (the grounding invariant, anchor validation, the diagnostics
+banner, ...) — when one of those mechanisms changes, update the copy here.
 """
 from __future__ import annotations
 
@@ -331,6 +337,166 @@ def show_usage_dialog(parent) -> None:
         text_color=COLORS["text_secondary"],
         wraplength=520, justify="left",
     ).pack(anchor="w", padx=8, pady=(0, 10))
+
+    ctk.CTkButton(
+        outer, text="Close", width=100, height=32,
+        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+        fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+        command=dialog.destroy,
+    ).pack(pady=(0, 16))
+
+
+def show_trust_dialog(parent) -> None:
+    """Plain-language explanation of the verification and anti-hallucination
+    safeguards, for engineers and stakeholders deciding whether to rely on
+    the tool's output. Non-programming audience; assumes familiarity with
+    specs and AEC review workflows."""
+    dialog = _build_modal(parent, "Why You Can Trust the Results", "660x700")
+
+    outer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
+    outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+    ctk.CTkLabel(
+        outer, text="Why You Can Trust the Results",
+        font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+        text_color=COLORS["text_primary"],
+    ).pack(anchor="w", padx=20, pady=(20, 4))
+
+    ctk.CTkLabel(
+        outer,
+        text="How Spec Critic guards against AI errors — and shows its work",
+        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+        text_color=COLORS["text_muted"],
+    ).pack(anchor="w", padx=20, pady=(0, 12))
+
+    scroll = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+    scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+    verifier_label = _model_label(VERIFICATION_MODEL_DEFAULT)
+    escalation_label = _model_label(VERIFICATION_ESCALATION_MODEL)
+
+    sections = [
+        ("The ground rule: trust is earned per finding, never assumed", (
+            "Spec Critic is built on one assumption: an AI's claim is just a "
+            "claim until it survives checking. The tool's job is not to sound "
+            "confident — it is to show, for every individual finding, how much "
+            "checking stands behind it, and to say plainly when a check could "
+            "not be completed. Every finding in the report carries a status "
+            "(Verified, Disputed, Insufficient evidence, Locally classified, "
+            "Verification failed, and so on), and nothing is ever silently "
+            "promoted to a stronger status than the evidence supports. Think "
+            "of the statuses the way you would read stamps in a plan-review "
+            "set: they tell you what has been checked, by whom, and what "
+            "still needs a human decision."
+        )),
+        ("Two independent AIs: one proposes, another cross-examines", (
+            "The AI that reads your specs and drafts findings never gets the "
+            "final word on whether it was right. Every substantive finding is "
+            "handed to a second, separate AI — the verifier — whose only job "
+            "is to check the claim against the outside world using live web "
+            "search of code texts, standards bodies, and authority-having-"
+            "jurisdiction publications. This is the same principle as plan "
+            "review: the author does not approve their own work. For the "
+            f"highest-stakes findings the first verifier ({verifier_label}) "
+            f"cannot settle, a stronger model ({escalation_label}) re-runs "
+            "the check from scratch. And when two verifiers reach different, "
+            "well-supported conclusions, the report marks the finding "
+            "Contested and recommends human review — the disagreement itself "
+            "is treated as information, not something to be papered over."
+        )),
+        ("The hallucination guard: no real source, no “Verified”", (
+            "Language models can invent plausible-looking citations — a code "
+            "section that doesn't exist, a standards document that was never "
+            "published. Spec Critic's most important rule is aimed squarely "
+            "at this: a finding can only be marked Verified (confirmed or "
+            "corrected) if the verifier cited at least one source that was "
+            "actually retrieved during its live web search. The software "
+            "compares every source the AI claims to have used against the "
+            "list of pages the search really returned. A citation that "
+            "doesn't match is stripped, and the verdict is automatically "
+            "downgraded to Insufficient evidence. This rule is enforced in "
+            "three independent places in the software — including the saved-"
+            "results store, which refuses to remember a verdict that lacks a "
+            "real source — so a fabricated citation cannot reach the report "
+            "through any path. When you see “Verified,” it always means you "
+            "can follow the listed source and read the same evidence the "
+            "verifier read."
+        )),
+        ("Anchored to your code cycle, not the AI's memory", (
+            "An AI's built-in knowledge is frozen at its training date and "
+            "fuzzy about editions — exactly the wrong properties for code "
+            "review. So Spec Critic never asks the AI to remember which code "
+            "applies. Each review module pins the precise code basis: the "
+            "adopted cycle and the specific standard editions (for example, "
+            "which edition of NFPA 13 the jurisdiction actually adopted, "
+            "including state amendments). That pinned list is written into "
+            "every review and verification request, and the reviewer is "
+            "instructed to flag departures from those editions specifically. "
+            "Saved verification results are keyed to the exact cycle and "
+            "edition list (and, for location-aware modules, the project's "
+            "jurisdiction) — change any of them and prior verdicts are not "
+            "reused; everything re-verifies against the new basis."
+        )),
+        ("Some checks never touch an AI at all", (
+            "The mechanical problems — unresolved placeholders like [VERIFY] "
+            "or TBD, leftover TODO markers, paragraphs duplicated verbatim, "
+            "code years that don't exist (a “2018 CBC” was never published), "
+            "references to superseded cycles, empty sections, CSI-number and "
+            "filename mismatches — are found by plain deterministic pattern "
+            "matching, the same technology as find-and-replace. These "
+            "detectors run before any AI is involved, produce the same "
+            "answer every time, and cannot hallucinate. Findings of this "
+            "kind are labeled “Locally classified” so you can tell at a "
+            "glance that they rest on mechanical detection, not AI judgment."
+        )),
+        ("How suggested edits are decided — and why they are never applied", (
+            "When the AI proposes a text change, it must quote the exact "
+            "existing spec language and the exact replacement — no "
+            "paraphrasing. Before that suggestion reaches the report, the "
+            "software mechanically confirms the quoted text really does "
+            "appear, word for word, in the named spec file; a suggestion "
+            "anchored to text that isn't there is demoted to a report-only "
+            "observation. Suggestions that would change nothing are rejected "
+            "outright. Each surviving suggestion carries two signals side by "
+            "side: the reviewing model's own confidence, and the independent "
+            "verification verdict — and once a real verdict exists, the "
+            "report visibly favors the verdict over the model's self-rating. "
+            "Most importantly, Spec Critic never edits your documents. It "
+            "writes suggestions into the report and a machine-readable "
+            "sidecar file; applying any of them remains a deliberate human "
+            "decision, with the engineer of record in control."
+        )),
+        ("When something goes wrong, the report says so", (
+            "A review tool earns trust by admitting what it could not do. "
+            "Every exported report opens with a Run Diagnostics banner that "
+            "names any spec whose review failed outright — because a spec "
+            "with zero findings from a failed review is not a clean bill of "
+            "health — and flags verification calls that hit technical "
+            "failures, findings whose search budget ran out before grounding, "
+            "and any cross-spec coordination chunks that were not analyzed. "
+            "Reused verdicts from earlier runs are labeled with their age. "
+            "And every verified finding includes an evidence panel listing "
+            "the sources consulted, which citations were accepted or "
+            "rejected, and which models did the work — so an engineer can "
+            "retrace the entire chain of reasoning without taking anything "
+            "on faith."
+        )),
+        ("The honest limits", (
+            "Spec Critic is an assistant, not an authority. It is advisory "
+            "only and is not a substitute for the engineer of record, peer "
+            "review, or AHJ review. An AI review can miss issues — a clean "
+            "report does not certify a compliant spec — and verification is "
+            "only as good as what is publicly retrievable online; some "
+            "authority requirements live in documents no search can reach. "
+            "Code citations should be spot-checked against the published "
+            "text before acting on them. The design goal has never been "
+            "“the AI is always right.” It is narrower and more useful: for "
+            "every claim in the report, you can see exactly how much "
+            "checking stands behind it, and what kind."
+        )),
+    ]
+
+    _render_sections(scroll, sections)
 
     ctk.CTkButton(
         outer, text="Close", width=100, height=32,

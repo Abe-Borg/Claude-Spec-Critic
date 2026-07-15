@@ -181,9 +181,11 @@ limit); the `EnhancedLog` (a paced, colour-coded, collapsible activity log that
 queues lines so status updates appear at a readable cadence); the
 `AnimatedButton` (the run button, with `ready` / `processing` / `complete` visual
 states); and the `DiagnosticsWindow` (a pop-out that renders a `DiagnosticsReport`
-into configuration, summary, and event-timeline cards). Two static informational
-modals — "How It Works" and "How to Use" — live in `about_usage_dialogs.py`,
-deliberately kept out of `gui.py` so the shell stays a layout file.
+into configuration, summary, and event-timeline cards). Three informational
+modals — "How It Works", "How to Use", and "Why Trust It?" (a plain-language
+account of the anti-hallucination and verification safeguards for engineers
+and stakeholders) — live in `about_usage_dialogs.py`, deliberately kept out
+of `gui.py` so the shell stays a layout file.
 
 Drag-and-drop degrades gracefully. The root window is `_CTkDnDRoot`, which is
 `customtkinter.CTk` mixed with `tkinterdnd2`'s `DnDWrapper` *when that package is
