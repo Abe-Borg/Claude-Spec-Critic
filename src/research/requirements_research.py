@@ -50,6 +50,7 @@ from ..core.api_config import (
     tools_with_cache,
 )
 from ..core.project_profile import ProjectProfile
+from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..gui.context_attachment import (
     context_within_token_cap,
     merge_into_context,
@@ -646,6 +647,14 @@ def _run_dimension(
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, policy.max_attempts)
 
+    # Responses completed by earlier, retried attempts. A retryable failure
+    # abandons its attempt's conversation but not its billed usage — every
+    # terminal ``_failed`` below reports the cross-attempt aggregate so a
+    # failed dimension never reads as cheaper than it actually was. (The
+    # success path intentionally reports only the successful attempt: its
+    # counts describe the calls that produced the result.)
+    billed_responses: list[Any] = []
+
     for attempt in range(attempts_planned):
         is_last_attempt = attempt == attempts_planned - 1
         try:
@@ -678,26 +687,31 @@ def _run_dimension(
                             "Research exceeded the per-dimension web_search "
                             f"budget ceiling ({total_search_so_far} > "
                             f"{search_budget_ceiling}) without completing.",
-                            responses=all_responses,
+                            responses=[*billed_responses, *all_responses],
                         )
                     # Resume per Anthropic's pause_turn contract: re-send the
-                    # assistant content as-is, no synthetic user turn.
+                    # assistant content, no synthetic user turn. Fetched PDFs
+                    # count against the API's per-request page limit on the
+                    # way back up, so oversized ones are elided first — a
+                    # research dimension that fetches a full building code
+                    # (>600 pages) must not 400 its own continuation.
                     messages.append(
                         {"role": "assistant", "content": response.content}
                     )
+                    messages = sanitize_messages_for_resend(messages)
                     _trace.capture_continuation_resume(
                         trace_span, continuation_index=continuation_count
                     )
                     continue
                 return _failed(
                     f"Research response incomplete (stop_reason: {stop_reason}).",
-                    responses=all_responses,
+                    responses=[*billed_responses, *all_responses],
                 )
             if not completed:
                 return _failed(
                     "Research did not complete after maximum continuation "
                     f"attempts (max_continuations={RESEARCH_MAX_CONTINUATIONS}).",
-                    responses=all_responses,
+                    responses=[*billed_responses, *all_responses],
                 )
 
             payload, parse_source = _parse_research_payload(all_responses)
@@ -705,7 +719,7 @@ def _run_dimension(
                 return _failed(
                     "Research produced no parseable payload (no tool call, "
                     "no tagged JSON).",
-                    responses=all_responses,
+                    responses=[*billed_responses, *all_responses],
                 )
             items = _items_from_payload(payload, dimension.dimension_id)
 
@@ -761,7 +775,17 @@ def _run_dimension(
         except Exception as exc:  # noqa: BLE001 — classified below
             failure_class = classify_exception(exc)
             if not is_retryable_failure_class(failure_class) or is_last_attempt:
-                return _failed(f"{type(exc).__name__}: {exc}")
+                # Pass every completed response (this attempt's plus any
+                # retried earlier attempts') so the tokens and searches
+                # already billed before the failing call show up in
+                # diagnostics instead of reading as a zero-cost failure.
+                return _failed(
+                    f"{type(exc).__name__}: {exc}",
+                    responses=[*billed_responses, *all_responses],
+                )
+            # Retrying: this attempt's conversation is abandoned, but its
+            # completed calls were still billed — carry them forward.
+            billed_responses.extend(all_responses)
             backoff = compute_backoff_seconds(
                 policy, attempt=attempt, failure_class=failure_class
             )
@@ -772,7 +796,10 @@ def _run_dimension(
                 backoff_seconds=backoff,
             )
             time.sleep(backoff)
-    return _failed(f"Research failed after {attempts_planned} attempts.")
+    return _failed(
+        f"Research failed after {attempts_planned} attempts.",
+        responses=billed_responses,
+    )
 
 
 def _apply_response_telemetry(

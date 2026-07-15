@@ -40,7 +40,9 @@ from src.review.structured_schemas import (
 )
 from tests.fixtures.fake_anthropic import (
     FakeMessage,
+    FakeServerToolUsage,
     FakeTextBlock,
+    FakeUsage,
     pause_turn_response,
     research_tool_use_response,
     sample_research_profile_payload,
@@ -592,6 +594,134 @@ class TestResearchFanout:
         resumed = client.calls[1]["messages"]
         assert [m["role"] for m in resumed] == ["user", "assistant"]
         assert profile.dimension_statuses[0].web_search_requests == 2
+
+    def test_pause_turn_resume_elides_oversized_fetched_pdf(self):
+        """A fetched >600-page PDF must not ride the continuation resume.
+
+        The API enforces its per-request PDF page limit on re-sent
+        ``web_fetch`` documents (observed live: ``messages.1.content.22.
+        pdf.source.base64.data: A maximum of 600 PDF pages may be
+        provided`` killed a research dimension mid-continuation), so the
+        resume path elides the oversized payload instead of 400ing.
+        """
+        import base64 as _b64
+        import io as _io
+
+        from pypdf import PdfWriter
+
+        from src.core.resend_sanitizer import MAX_RESEND_PDF_PAGES
+
+        writer = PdfWriter()
+        for _ in range(MAX_RESEND_PDF_PAGES + 1):
+            writer.add_blank_page(width=72, height=72)
+        buf = _io.BytesIO()
+        writer.write(buf)
+        oversized_pdf_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+
+        pause_with_pdf = FakeMessage(
+            content=[
+                {
+                    "type": "web_fetch_tool_result",
+                    "tool_use_id": "srvtoolu_fetch_1",
+                    "content": {
+                        "type": "web_fetch_result",
+                        "url": "https://codes.example.gov/full-code.pdf",
+                        "content": {
+                            "type": "document",
+                            "title": "Full building code",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": oversized_pdf_b64,
+                            },
+                        },
+                    },
+                }
+            ],
+            stop_reason="pause_turn",
+            usage=FakeUsage(
+                server_tool_use=FakeServerToolUsage(
+                    web_search_requests=1, web_fetch_requests=1
+                )
+            ),
+        )
+        client = FakeResearchClient(
+            _route_by_marker(
+                {"ALPHA": [pause_with_pdf, research_tool_use_response()]}
+            )
+        )
+        profile = run_requirements_research(
+            _enabled_module(), _complete_profile(), client=client
+        )
+        assert profile.dimension_statuses[0].status == "completed"
+        assert len(client.calls) == 2
+        resumed = client.calls[1]["messages"]
+        assert [m["role"] for m in resumed] == ["user", "assistant"]
+        serialized = json.dumps(resumed[1]["content"])
+        assert "application/pdf" not in serialized
+        assert "elided" in serialized
+        # The result block itself (and its URL) survives — only the PDF
+        # payload is swapped for the plain-text note.
+        assert "https://codes.example.gov/full-code.pdf" in serialized
+
+    def test_failed_dimension_preserves_telemetry_from_completed_calls(self):
+        """A dimension that fails mid-continuation still reports the searches
+        (and tokens) its completed calls already billed — a failure must not
+        read as zero-cost in diagnostics."""
+        module = _enabled_module(
+            research_dimensions=(_dimension("alpha"), _dimension("beta"))
+        )
+        client = FakeResearchClient(
+            _route_by_marker(
+                {
+                    "ALPHA": [
+                        pause_turn_response(web_search_requests=2),
+                        RuntimeError("boom"),
+                    ],
+                    "BETA": [research_tool_use_response()],
+                }
+            )
+        )
+        profile = run_requirements_research(module, _complete_profile(), client=client)
+        by_id = {s.dimension_id: s for s in profile.dimension_statuses}
+        assert by_id["alpha"].status == "failed"
+        assert "RuntimeError: boom" in by_id["alpha"].error
+        # The pre-failure pause_turn call's searches are preserved.
+        assert by_id["alpha"].web_search_requests == 2
+        assert by_id["beta"].status == "completed"
+
+    def test_failed_dimension_telemetry_spans_retried_attempts(self, monkeypatch):
+        """Billed usage from a retried (abandoned) attempt still reaches the
+        terminal failure status — the aggregate must span attempts, not just
+        the last one."""
+        monkeypatch.setattr(rr.time, "sleep", lambda _s: None)
+        module = _enabled_module(
+            research_dimensions=(_dimension("alpha"), _dimension("beta"))
+        )
+        client = FakeResearchClient(
+            _route_by_marker(
+                {
+                    "ALPHA": [
+                        # Attempt 1: a pause that billed 2 searches, then a
+                        # retryable transport error on the continuation.
+                        pause_turn_response(web_search_requests=2),
+                        RuntimeError("connection reset by peer"),
+                        # Attempt 2: another billed pause, then a
+                        # non-retryable terminal error.
+                        pause_turn_response(web_search_requests=1),
+                        RuntimeError("boom"),
+                    ],
+                    "BETA": [research_tool_use_response()],
+                }
+            )
+        )
+        profile = run_requirements_research(module, _complete_profile(), client=client)
+        by_id = {s.dimension_id: s for s in profile.dimension_statuses}
+        assert by_id["alpha"].status == "failed"
+        assert "RuntimeError: boom" in by_id["alpha"].error
+        # 2 searches from the retried attempt + 1 from the terminal attempt.
+        assert by_id["alpha"].web_search_requests == 3
+        assert by_id["beta"].status == "completed"
 
     def test_pause_turn_over_budget_ceiling_fails_dimension(self):
         module = _enabled_module(

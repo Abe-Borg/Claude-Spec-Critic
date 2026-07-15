@@ -95,6 +95,7 @@ from .retry_policy import (
     max_continuations_for_mode,
 )
 from ..core.code_cycles import CodeCycle
+from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..modules import module_for_cycle
 from ..review.reviewer import Finding
 from .verification_modes import (
@@ -692,7 +693,11 @@ def build_verification_request(
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
     if assistant_content is not None:
+        # Batch continuation resume: fetched PDFs in the prior assistant
+        # turn count against the API's per-request page limit when re-sent,
+        # so oversized ones are elided (same guard as the realtime loops).
         messages.append({"role": "assistant", "content": assistant_content})
+        messages = sanitize_messages_for_resend(messages)
 
     tools = build_verification_tools_from_decision(
         decision, user_location=user_location

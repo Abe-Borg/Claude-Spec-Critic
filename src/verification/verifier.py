@@ -20,6 +20,7 @@ from ..batch.batch import (
 from ..batch.batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
 from ..review.reviewer import Finding, _get_client
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..modules import code_basis_format_kwargs, module_for_cycle
 from ..core.api_config import (
     PHASE_VERIFICATION,
@@ -1756,7 +1757,13 @@ def _run_verification_call(
                     # synthetic ``"continue"`` user turn wastes tokens,
                     # changes the model's continuation behavior, and
                     # interferes with thinking / tool-state continuity.
+                    # One exception to "as-is": fetched PDFs count against
+                    # the API's per-request page limit on the way back up,
+                    # so oversized ones are elided before the resume
+                    # (otherwise a web_fetch of a big code PDF 400s the
+                    # continuation it was meant to inform).
                     messages.append({"role": "assistant", "content": response.content})
+                    messages = sanitize_messages_for_resend(messages)
                     _trace.capture_continuation_resume(trace_parent, continuation_index=continuation_count)
                     continue
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
