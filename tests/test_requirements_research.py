@@ -690,6 +690,39 @@ class TestResearchFanout:
         assert by_id["alpha"].web_search_requests == 2
         assert by_id["beta"].status == "completed"
 
+    def test_failed_dimension_telemetry_spans_retried_attempts(self, monkeypatch):
+        """Billed usage from a retried (abandoned) attempt still reaches the
+        terminal failure status — the aggregate must span attempts, not just
+        the last one."""
+        monkeypatch.setattr(rr.time, "sleep", lambda _s: None)
+        module = _enabled_module(
+            research_dimensions=(_dimension("alpha"), _dimension("beta"))
+        )
+        client = FakeResearchClient(
+            _route_by_marker(
+                {
+                    "ALPHA": [
+                        # Attempt 1: a pause that billed 2 searches, then a
+                        # retryable transport error on the continuation.
+                        pause_turn_response(web_search_requests=2),
+                        RuntimeError("connection reset by peer"),
+                        # Attempt 2: another billed pause, then a
+                        # non-retryable terminal error.
+                        pause_turn_response(web_search_requests=1),
+                        RuntimeError("boom"),
+                    ],
+                    "BETA": [research_tool_use_response()],
+                }
+            )
+        )
+        profile = run_requirements_research(module, _complete_profile(), client=client)
+        by_id = {s.dimension_id: s for s in profile.dimension_statuses}
+        assert by_id["alpha"].status == "failed"
+        assert "RuntimeError: boom" in by_id["alpha"].error
+        # 2 searches from the retried attempt + 1 from the terminal attempt.
+        assert by_id["alpha"].web_search_requests == 3
+        assert by_id["beta"].status == "completed"
+
     def test_pause_turn_over_budget_ceiling_fails_dimension(self):
         module = _enabled_module(
             research_dimensions=(_dimension("alpha", max_searches=1),)
