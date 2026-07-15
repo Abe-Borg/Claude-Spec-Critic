@@ -668,7 +668,12 @@ _POLITY_SUSPECT_TOKENS = (
     ),
     PolityTokenRule(
         country="CA",
-        pattern=r"\bU\.?L\.?[- ]listed\b",
+        # Case-insensitive on "listed" so "UL Listed" / "U.L. Listed" (the
+        # common title-case forms) are caught — the engine compiles polity
+        # patterns with NO flags, so the scoped ``(?i:…)`` is what makes it
+        # case-blind. ``UL`` stays uppercase-required, and the word boundary
+        # before ``U`` still excludes ``cULus``/``ULC`` (no boundary there).
+        pattern=r"\bU\.?L\.?[- ](?i:listed)\b",
         note=(
             "A bare UL listing may not be recognized in Canada; "
             "fire-protection and electrical components generally require "
@@ -698,10 +703,14 @@ _POLITY_SUSPECT_TOKENS = (
     ),
     PolityTokenRule(
         country="CA",
-        pattern=r"\bSDS\b|\bSD1\b|(?i:\bseismic design category\b)",
+        # Match the ASCE 7 seismic *notation* (S_DS / S_D1 design spectral
+        # accelerations, SDC) and the phrase — NOT bare "SDS", which collides
+        # with the ubiquitous "Safety Data Sheets (SDS)" submittal requirement
+        # and would fire a spurious seismic alert on every submittal section.
+        pattern=r"\bS_DS\b|\bS_D1\b|\bSDC\b|(?i:\bseismic design category\b)",
         note=(
-            "SDS/SD1/Seismic Design Category are the ASCE 7 / IBC seismic "
-            "parameters; Canadian projects use the NBC seismic-hazard "
+            "S_DS / S_D1 / SDC / Seismic Design Category are the ASCE 7 / IBC "
+            "seismic parameters; Canadian projects use the NBC seismic-hazard "
             "framework instead."
         ),
     ),
