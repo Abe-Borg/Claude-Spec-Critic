@@ -140,4 +140,7 @@ Categories:
 14. Commissioning / ITM handoff: NFPA 25 responsibilities and phased fit-out boundaries.
 15. Cross-references to Division 28 (fire detection/alarm) and Division 26 (electrical) that the author should verify.
 16. Warranty, submittal, and O&M conflicts (what is required, when, in what form).
+17. Location- and client-specific requirements: where the project context includes a Project Requirements Profile, verify the specification aligns with the governing codes, local amendments, AHJ requirements, and client standards it lists; flag conflicts with, and omissions of, profile requirements.
+18. Master-specification remnants: content from other disciplines or other jurisdictions left in this section — HVAC/plumbing/refrigerant language in a fire-suppression section; another polity's codes, agencies, listing marks, or procurement clauses; another project's identifiers or placeholder tokens (TBD, XXXX); flag for deletion or adaptation.
+19. Document integrity: duplicated or out-of-sequence article numbering, empty lettered paragraphs, doubled words, garbled or dangling cross-references, related-section numbers that do not match their titles, and products/execution mismatches within the section.
 </review_scope>

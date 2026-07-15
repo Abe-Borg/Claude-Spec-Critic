@@ -1,0 +1,56 @@
+{
+  "fixture_id": "tp_dc_corrected_misattributed_amendment",
+  "category": "jurisdictional",
+  "severity": "HIGH",
+  "description": "Compliance-shaped finding asserts a provincial amendment shortens the fire-pump acceptance-testing interval; verification finds the cited requirement is unamended base national-code / NFPA 25 text, so the jurisdiction attribution is corrected. One of the field trial's three refutation wins (D-4 [FT]).",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "21 30 00 - Fire Pumps.docx",
+    "section": "[Compliance] 1.04",
+    "issue": "The package should cite the provincial fire-code amendment that is claimed to shorten the fire-pump acceptance-testing interval below the base standard (profile requirement r-a1b2c3d4e5f6).",
+    "actionType": "EDIT",
+    "existingText": "Test fire pumps annually per NFPA 25.",
+    "replacementText": "Test fire pumps at the interval required by the provincial fire-code amendment.",
+    "codeReference": "Provincial fire-code amendment (claimed)",
+    "confidence": 0.7,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p11"
+  },
+  "spec_context": {
+    "filename": "21 30 00 - Fire Pumps.docx",
+    "cycle_label": "Data Center IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 11, "id": "p11", "text": "A. Test fire pumps annually per NFPA 25."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "The cited fire-pump acceptance-testing interval is the base national-code / NFPA 25 requirement, not a provincial amendment. The province adopts the referenced standard without shortening the interval, so attributing the requirement to a local amendment misstates its source; the base-standard interval governs and no amendment edit is warranted.",
+    "sources": [
+      "https://nrc.canada.ca/en/certifications-evaluations-standards/codes-canada/codes-canada-publications",
+      "https://www.nfpa.org/codes-and-standards"
+    ],
+    "correction": "the base standard interval governs — no provincial amendment shortens it",
+    "confidence": 0.86,
+    "model_used": "claude-opus-4-8",
+    "verification_mode": "deep_reasoning",
+    "verification_profile": "jurisdictional",
+    "web_search_requests": 6,
+    "successful_source_count": 5,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://nrc.canada.ca/en/certifications-evaluations-standards/codes-canada/codes-canada-publications",
+      "https://www.nfpa.org/codes-and-standards",
+      "https://www.csagroup.org/standards/"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "correct_correction_text": "the base standard interval governs — no provincial amendment shortens it",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "Jurisdiction-attribution error: base national-code text presented as a provincial amendment. Claim-level verification catches the misattribution (D-4 [FT]; §9 Q2). Compliance findings always ride round-2 verification precisely so this class is caught before publication."
+  }
+}

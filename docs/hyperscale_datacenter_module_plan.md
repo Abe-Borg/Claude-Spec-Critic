@@ -1,7 +1,9 @@
 # Implementation Plan: Hyperscale Data Center Fire-Sprinkler Module + Location/Client-Aware Review Engine
 
-**Status: IN PROGRESS — WS-0 through WS-4 are implemented; WS-5
-remains a work order for coding agents.**
+**Status: COMPLETE — WS-0 through WS-5 are implemented. The
+`datacenter_fire` module now ships with its location-aware features ON
+(`project_profile_enabled=True`); the only remaining item is the optional
+WS-6 research-cache fast-follow (§8).**
 
 | Workstream | Status |
 |---|---|
@@ -10,7 +12,8 @@ remains a work order for coding agents.**
 | WS-2 — engine: ProjectProfile input plumbing | ✅ Implemented (PR #298) |
 | WS-3 — engine: requirements-research fan-out phase | ✅ Implemented (PR #299) |
 | WS-4 — engine: compliance pass + location-aware verification | ✅ Implemented (as 4a/4b/4c commits; 6d structural detectors deferred) |
-| WS-5 — module v2: turn it on + end-to-end + docs | ⬜ Not implemented |
+| WS-5 — module v2: turn it on + end-to-end + docs | ✅ Implemented — `datacenter_fire` flag flipped ON with research (4 dimensions) / compliance / wrong-polity content (§§5.9–5.13); review intro §5.3 + categories 17–19; DC goldens regenerated; new research/compliance/profile goldens; `tests/test_datacenter_e2e.py`; 2 refutation-shaped calibration fixtures |
+| WS-6 — research cache (fast-follow) | ⬜ Not implemented (§8) |
 
 **Rev 2 (2026-07-14):** incorporates field-trial amendments from a live,
 end-to-end review of a real hyperscale data-center Division 21 package in a
@@ -867,6 +870,30 @@ profile.json), and WS-4c (anchor validation + polity/structural detectors).
 ---
 
 ### WS-5 — Module v2: turn it on + end-to-end + docs
+
+> **Status: ✅ Implemented.** `src/modules/datacenter_fire.py` sets
+> `project_profile_enabled=True` and carries the §§5.9–5.13 content: the
+> research persona + four research dimensions (per-dimension budgets
+> 24/8, 20/6, 12/4, 8/4), the compliance persona + severity anchors, the
+> `polity_suspect_tokens` seed sets (9 CA + 5 US rules), the
+> `corpus_signal_patterns`, the §5.3 review intro (three-way precedence +
+> conditional-BoD honesty), and review categories 17–19. The
+> current-edition-opportunities advisory is engine-owned in the compliance
+> `<output>` skeleton (§6.5), so flipping the flag activates it — no module
+> slot. The three affected DC reviewer goldens were regenerated (CA
+> untouched); new goldens pin the research system prompt, all four
+> dimension user messages (+ a corpus-signals variant), the compliance
+> system prompt, the compliance user message, and the rendered
+> requirements-profile block (`tests/test_golden_datacenter_surfaces.py`).
+> `tests/test_datacenter_e2e.py` drives the whole flag-on pipeline
+> hermetically (research profile → review → cross-check → compliance →
+> verification round 2 → report + sidecar v4 + profile.json) and pins
+> CA-neutrality through the identical driver. Two refutation-shaped
+> calibration fixtures (§5.14 item 9) were added:
+> `tp_dc_corrected_misattributed_amendment` (jurisdiction misattribution →
+> CORRECTED) and `tp_dc_corrected_nonexistent_csa_designation` (fabricated
+> designation → CORRECTED); the budget-exhausted municipal-code UNVERIFIED
+> fixture shipped in WS-1. `CLAUDE.md` documents the new invariants.
 
 1. Flip `project_profile_enabled=True` on `DATACENTER_FIRE` and add the
    module's research/compliance content (§5.9–5.11 below): 4 research

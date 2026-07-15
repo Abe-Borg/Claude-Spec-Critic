@@ -364,13 +364,15 @@ class TestDiagnosticsProfileSummary:
 
 
 class TestModuleCapabilityFlag:
-    def test_default_off_for_existing_modules(self):
+    def test_flag_state_of_registered_modules(self):
         from src.modules import CALIFORNIA_K12_MEP, DATACENTER_FIRE
 
-        # Both current modules keep the flag off (no location-aware behavior
-        # until a later workstream flips it for the DC module).
+        # The California module keeps the flag OFF — no location-aware
+        # behavior, byte-identical to a module that never heard of a profile.
+        # WS-5 flipped the flag ON for the data-center module, which is what
+        # activates its research / compliance / wrong-polity phases.
         assert CALIFORNIA_K12_MEP.project_profile_enabled is False
-        assert DATACENTER_FIRE.project_profile_enabled is False
+        assert DATACENTER_FIRE.project_profile_enabled is True
 
     def test_flag_is_additive_and_validates(self):
         import pytest
