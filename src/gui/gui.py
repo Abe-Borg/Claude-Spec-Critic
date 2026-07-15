@@ -76,7 +76,11 @@ from src.gui.widgets import (
 from src.core.api_key_store import load_api_key_from_file
 
 # Controllers
-from src.gui.about_usage_dialogs import show_about_dialog, show_usage_dialog
+from src.gui.about_usage_dialogs import (
+    show_about_dialog,
+    show_trust_dialog,
+    show_usage_dialog,
+)
 from src.gui.batch_controller import (
     collect_batch_results,
     offer_batch_resume,
@@ -222,6 +226,13 @@ class SpecReviewApp(_CTkDnDRoot):
             fg_color=COLORS["bg_card"], hover_color=COLORS["border"],
             border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text_secondary"], command=self._show_usage_dialog,
+        ).pack(side="right", padx=(0, 8), pady=(4, 0))
+        ctk.CTkButton(
+            hdr_title_row, text="Why Trust It?", width=110, height=30,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            fg_color=COLORS["bg_card"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"], command=self._show_trust_dialog,
         ).pack(side="right", padx=(0, 8), pady=(4, 0))
         self._header_subtitle = ctk.CTkLabel(self.hdr, text=self._module_subtitle(), font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"])
         self._header_subtitle.pack(anchor="w", pady=(4, 0))
@@ -793,6 +804,9 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _show_usage_dialog(self):
         show_usage_dialog(self)
+
+    def _show_trust_dialog(self):
+        show_trust_dialog(self)
 
     def _maybe_offer_batch_resume(self):
         offer_batch_resume(self)
