@@ -37,7 +37,12 @@ from pathlib import Path
 # Make ``src`` importable when this file is run directly from the repo.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded  # noqa: E402
+from src.batch.batch_runtime import (  # noqa: E402
+    BatchNotFinishedError,
+    DEFAULT_REVIEW_POLL_POLICY,
+    ensure_batch_ended,
+    poll_batch_bounded,
+)
 from src.core.api_config import REVIEW_MODEL_DEFAULT  # noqa: E402
 from src.core.api_key_store import load_api_key_from_file  # noqa: E402
 from src.modules import AVAILABLE_MODULES, DEFAULT_MODULE, get_module  # noqa: E402
@@ -111,6 +116,20 @@ def _build_submission(parser: argparse.ArgumentParser, ns: argparse.Namespace):
             else:
                 _log(f"No .docx specs found in {input_dir}; recovering findings only.", level="warning")
         module = get_module(ns.module)
+        # The thin reconstruction below reads the batch's *results* stream to
+        # rebuild the request map — impossible while the batch is still
+        # processing (no results_url yet, and the SDK raises). Poll it to
+        # completion first; an already-ended batch clears the single status
+        # check with no waiting.
+        ensure_batch_ended(
+            ns.batch_id,
+            policy=DEFAULT_REVIEW_POLL_POLICY,
+            log=_log,
+            progress_cb=lambda s: _log(
+                f"  {s.succeeded}/{s.total} done, {s.processing} processing, {s.errored} errored",
+                level="info",
+            ),
+        )
         _log(f"Reconstructing batch {ns.batch_id} from the remote results...", level="step")
         submission = thin_submission_from_batch_results(
             ns.batch_id,
@@ -205,6 +224,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         submission, had_saved_state = _build_submission(parser, ns)
+    except BatchNotFinishedError as exc:
+        _log(str(exc), level="error")
+        _log("Re-run this tool later to try again.", level="info")
+        return 2
     except Exception as exc:  # noqa: BLE001 — turn API errors into a clean message
         if _is_not_found(exc):
             _log(

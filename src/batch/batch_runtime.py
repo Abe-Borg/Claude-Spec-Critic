@@ -89,6 +89,105 @@ class PollOutcome:
     user_canceled: bool = False
 
 
+# Batch ``processing_status`` values after which no more items will complete.
+# Shared by the poll loop's terminal check and the recovery paths'
+# pre-reconstruction check (``ensure_batch_ended``) so "terminal" cannot
+# drift between them.
+TERMINAL_BATCH_STATUSES = frozenset({"ended", "failed", "expired", "canceled"})
+
+
+def is_terminal_batch_status(status: str) -> bool:
+    """True when ``status`` (an API ``processing_status``) is terminal."""
+    return (status or "").replace("-", "_") in TERMINAL_BATCH_STATUSES
+
+
+class BatchNotFinishedError(RuntimeError):
+    """Raised by :func:`ensure_batch_ended` when the batch is still processing.
+
+    Carries the machine-readable ``reason`` (``max_elapsed`` / ``no_progress``
+    / ``poll_error_threshold: ...`` / ``user_canceled``) and the last observed
+    :class:`BatchStatus` so callers can build surface-appropriate messages;
+    ``str(exc)`` is already presentable.
+    """
+
+    def __init__(
+        self,
+        batch_id: str,
+        *,
+        reason: str,
+        status: BatchStatus | None = None,
+    ) -> None:
+        self.batch_id = batch_id
+        self.reason = reason
+        self.status = status
+        detail = ""
+        if status is not None and status.total:
+            detail = f" ({status.completed} of {status.total} requests done)"
+        super().__init__(
+            f"Batch {batch_id} has not finished processing{detail}; "
+            f"polling stopped: {reason}. The batch keeps running remotely."
+        )
+
+
+def ensure_batch_ended(
+    batch_id: str,
+    *,
+    policy: PollPolicy,
+    log: Callable[..., None],
+    progress_cb: Callable[[BatchStatus], None] | None = None,
+    cancel_event=None,
+) -> BatchStatus:
+    """Return the batch's terminal status, polling until it ends when needed.
+
+    Guard for the bare-id recovery paths: reconstructing a submission from a
+    batch's results (``thin_submission_from_batch_results``) reads the results
+    stream, which does not exist until the batch ends — pointing it at a
+    still-running batch fails with the SDK's raw "No ``results_url`` for the
+    given batch" error. Call this first so an in-progress batch is polled to
+    completion (bounded by ``policy``) before any results are read.
+
+    The initial status check deliberately bypasses the poll loop's
+    consecutive-error retry: a typo'd batch id or auth failure raises
+    immediately instead of backing off for minutes. An already-ended batch
+    returns from that single check with no waiting.
+
+    Raises :class:`BatchNotFinishedError` when the poll bound is hit (or the
+    poll loop gives up / is canceled) while the batch is still processing.
+    """
+    status = poll_batch(batch_id)
+    if is_terminal_batch_status(status.status):
+        return status
+
+    log(
+        f"Batch {batch_id} is still processing "
+        f"({status.completed} of {status.total} requests done). "
+        "Waiting for it to finish before collecting results...",
+        level="warning",
+    )
+    last_seen = {"status": status}
+
+    def _observe(s: BatchStatus) -> None:
+        last_seen["status"] = s
+        if progress_cb is not None:
+            progress_cb(s)
+
+    outcome = poll_batch_bounded(
+        batch_id,
+        policy=policy,
+        log=log,
+        progress_cb=_observe,
+        cancel_event=cancel_event,
+    )
+    if outcome.terminal and outcome.final_status is not None:
+        return outcome.final_status
+    reason = (
+        "user_canceled"
+        if outcome.user_canceled
+        else outcome.detach_reason or outcome.poll_error or "unknown"
+    )
+    raise BatchNotFinishedError(batch_id, reason=reason, status=last_seen["status"])
+
+
 def poll_batch_bounded(
     batch_id: str,
     *,
@@ -156,8 +255,7 @@ def poll_batch_bounded(
 
         progress_cb(status)
 
-        normalized = status.status.replace("-", "_")
-        if normalized in ("ended", "failed", "expired", "canceled"):
+        if is_terminal_batch_status(status.status):
             _trace.capture_note(
                 None, "batch poll terminal",
                 batch_id=batch_id, terminal_status=status.status,
