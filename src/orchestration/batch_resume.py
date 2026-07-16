@@ -275,7 +275,9 @@ def thin_submission_from_batch_results(
     Lists the batch's results to recover the ``request_map`` / order directly
     from the remote batch (their ``custom_id``s), so a batch submitted *before*
     resume-state persistence existed — or one whose state file was lost — can
-    still be recovered. The batch must have ended (poll first).
+    still be recovered. The batch must have ended: a still-running batch has
+    no results stream and the SDK raises ("No ``results_url`` for the given
+    batch"). Callers poll first via ``batch_runtime.ensure_batch_ended``.
 
     Findings come back regardless of local files. When ``input_dir`` + ``files``
     are supplied they are re-extracted to additionally enable cross-spec

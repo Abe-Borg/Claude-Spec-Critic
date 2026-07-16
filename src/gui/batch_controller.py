@@ -23,7 +23,12 @@ from tkinter import messagebox
 
 from .. import __version__
 from ..batch.batch import BatchStatus
-from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
+from ..batch.batch_runtime import (
+    BatchNotFinishedError,
+    DEFAULT_REVIEW_POLL_POLICY,
+    ensure_batch_ended,
+    poll_batch_bounded,
+)
 from ..core.project_profile import ProjectProfile
 from ..modules import DEFAULT_MODULE, get_module
 from ..orchestration.batch_resume import (
@@ -653,6 +658,22 @@ def recover_batch_dialog(app) -> None:
         )
 
     def _reconstruct(log, progress):
+        # A bare-id recovery rebuilds the request map from the batch's
+        # *results* stream, which does not exist until the batch ends — the
+        # SDK fails on a still-running batch with the raw "No `results_url`
+        # for the given batch" error (observed live on a slow batch ~4h into
+        # processing). Poll it to completion first under the standard review
+        # policy; an already-ended batch clears the single status check with
+        # no waiting, and a typo'd id still fails fast on that same check.
+        ensure_batch_ended(
+            batch_id,
+            policy=DEFAULT_REVIEW_POLL_POLICY,
+            log=log,
+            progress_cb=lambda s: log(
+                f"Poll: {s.succeeded}/{s.total} done, {s.errored} errors",
+                level="info",
+            ),
+        )
         return thin_submission_from_batch_results(
             batch_id,
             model=REVIEW_MODEL_DEFAULT,
@@ -801,6 +822,18 @@ def _reconnect_worker(app, reconstruct_fn, model, cycle_label, module_id, run_id
                 f"Batch '{batch_label}' was not found. Double-check the id (they "
                 "look like msgbatch_…); it may also have expired (results are kept "
                 "~29 days)."
+            )
+        elif isinstance(e, BatchNotFinishedError) or "results_url" in msg:
+            # The batch is still processing. ``ensure_batch_ended`` raises the
+            # typed error after the bounded poll gives up; the ``results_url``
+            # message match is defense-in-depth for any path that still reads
+            # the results stream of an unfinished batch.
+            friendly = (
+                f"Batch '{batch_label}' is still processing on Anthropic's servers "
+                "and didn't finish within this session's polling window. It keeps "
+                "running remotely (batches complete within 24h of submission; "
+                "results are kept ~29 days) — run Recover batch… again later to "
+                "finish the report at no extra cost."
             )
         else:
             friendly = f"Recovery failed: {e}"
