@@ -9,7 +9,12 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
-from ..review.reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client
+from ..review.reviewer import (
+    Finding,
+    ReviewResult,
+    _get_client,
+    review_result_from_message,
+)
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..review.review_request_builder import ReviewRequestSpec, build_review_request
 from ..core.api_config import (
@@ -17,12 +22,9 @@ from ..core.api_config import (
     PHASE_VERIFICATION,
     REVIEW_MODEL_DEFAULT,
     assert_extended_output_allowed,
-    extract_cache_usage,
     output_cap_for_model,
 )
 from ..review.structured_schemas import (
-    REVIEW_TOOL_NAME,
-    extract_tool_use_block,
     structured_tool_output_enabled,
     verification_verdict_tool,
 )
@@ -328,55 +330,12 @@ def retrieve_review_results(job: BatchJob, *, model: str) -> dict[str, ReviewRes
                 err += f": {result.result.error}"
             results[custom_id] = ReviewResult(findings=[], error=err)
             continue
-        message = result.result.message
-        response_text = "".join(block.text for block in message.content if hasattr(block, "text") and block.text is not None)
-        usage = message.usage if hasattr(message, "usage") else None
-        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-        cache = extract_cache_usage(usage)
-        stop_reason = getattr(message, "stop_reason", None)
-
-        # Tool-use stops are the success path when the model invoked the
-        # ``submit_review_findings`` custom tool.
-        if stop_reason not in ("end_turn", "tool_use"):
-            results[custom_id] = ReviewResult(
-                findings=[], raw_response=response_text, stop_reason=stop_reason,
-                parse_status="incomplete", model=model,
-                input_tokens=input_tokens, output_tokens=output_tokens,
-                cache_creation_input_tokens=cache["cache_creation_input_tokens"],
-                cache_read_input_tokens=cache["cache_read_input_tokens"],
-                error=f"Batch response incomplete (stop_reason: {stop_reason})",
-            )
-            continue
-        try:
-            structured_payload = extract_tool_use_block(message, REVIEW_TOOL_NAME)
-            if isinstance(structured_payload, dict):
-                data = structured_payload.get("findings") or []
-                if not isinstance(data, list):
-                    data = []
-                thinking = str(structured_payload.get("analysis_summary") or "")
-                payload_for_diag: dict | None = structured_payload
-            else:
-                data, thinking = _extract_json_array(response_text, stop_reason=stop_reason)
-                payload_for_diag = None
-            findings = _parse_findings(data)
-            results[custom_id] = ReviewResult(
-                findings=findings, raw_response=response_text, thinking=thinking,
-                model=model, input_tokens=input_tokens, output_tokens=output_tokens,
-                cache_creation_input_tokens=cache["cache_creation_input_tokens"],
-                cache_read_input_tokens=cache["cache_read_input_tokens"],
-                stop_reason=stop_reason, parse_status="ok",
-                structured_payload=payload_for_diag,
-            )
-        except Exception as e:
-            results[custom_id] = ReviewResult(
-                findings=[], raw_response=response_text, thinking=response_text,
-                model=model, input_tokens=input_tokens, output_tokens=output_tokens,
-                cache_creation_input_tokens=cache["cache_creation_input_tokens"],
-                cache_read_input_tokens=cache["cache_read_input_tokens"],
-                stop_reason=stop_reason, parse_status="parse_error",
-                error=f"Failed to parse review output: {e}",
-            )
+        # The per-message classification (stop-reason gate, structured
+        # tool-use parse, tagged-JSON fallback, parse-error capture) is the
+        # transport-agnostic core shared with the real-time runner.
+        results[custom_id] = review_result_from_message(
+            result.result.message, model=model
+        )
     return results
 
 

@@ -116,6 +116,16 @@ class PendingBatch:
         run_id: str = "",
         app_version: str = "",
     ) -> "PendingBatch":
+        # A real-time run has no remote batch to reconnect to — its reviews
+        # ran to completion inside start_batch_review and die with the
+        # process. Persisting one would seed the startup resume prompt with
+        # a sentinel batch_id the API has never heard of. Callers gate on
+        # review_transport before persisting; this guard is the backstop.
+        if getattr(submission, "review_transport", "batch") == "realtime":
+            raise ValueError(
+                "Real-time review runs have no pending-batch resume state; "
+                "refusing to persist one."
+            )
         return cls(
             batch_id=submission.job.batch_id,
             model=submission.model,

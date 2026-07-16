@@ -15,6 +15,7 @@ from anthropic import Anthropic
 
 from ..core.api_config import (
     REVIEW_MODEL_DEFAULT,  # re-exported for batch/resume/GUI importers
+    extract_cache_usage,
 )
 
 # ``REPORT_ONLY`` is the explicit "no edit proposal" action type. Findings
@@ -596,4 +597,77 @@ def _parse_findings(data: list) -> list[Finding]:
             demotion_reason=demotion_reason,
         ))
     return findings
+
+
+def review_result_from_message(message, *, model: str) -> ReviewResult:
+    """Classify one review response message into a :class:`ReviewResult`.
+
+    Transport-agnostic core shared by the batch retrieval path (each
+    succeeded batch item's ``result.message``) and the real-time streaming
+    runner (``stream.get_final_message()``). One classification contract:
+
+    * ``stop_reason`` outside ``("end_turn", "tool_use")`` ⇒
+      ``parse_status="incomplete"`` (truncation / unexpected stop).
+    * Structured tool use (``submit_review_findings``) is the primary
+      parse; the tagged-JSON text fallback stays reachable for plain-text
+      responses (``tool_choice`` is ``auto``).
+    * Any parse exception ⇒ ``parse_status="parse_error"``.
+
+    The message may be an SDK Pydantic object or a plain dict-shaped
+    variant (the batch results stream can return either);
+    ``extract_tool_use_block`` coerces both.
+    """
+    from .structured_schemas import REVIEW_TOOL_NAME, extract_tool_use_block
+
+    response_text = "".join(
+        block.text
+        for block in message.content
+        if hasattr(block, "text") and block.text is not None
+    )
+    usage = message.usage if hasattr(message, "usage") else None
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    cache = extract_cache_usage(usage)
+    stop_reason = getattr(message, "stop_reason", None)
+
+    # Tool-use stops are the success path when the model invoked the
+    # ``submit_review_findings`` custom tool.
+    if stop_reason not in ("end_turn", "tool_use"):
+        return ReviewResult(
+            findings=[], raw_response=response_text, stop_reason=stop_reason,
+            parse_status="incomplete", model=model,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            cache_creation_input_tokens=cache["cache_creation_input_tokens"],
+            cache_read_input_tokens=cache["cache_read_input_tokens"],
+            error=f"Review response incomplete (stop_reason: {stop_reason})",
+        )
+    try:
+        structured_payload = extract_tool_use_block(message, REVIEW_TOOL_NAME)
+        if isinstance(structured_payload, dict):
+            data = structured_payload.get("findings") or []
+            if not isinstance(data, list):
+                data = []
+            thinking = str(structured_payload.get("analysis_summary") or "")
+            payload_for_diag: dict | None = structured_payload
+        else:
+            data, thinking = _extract_json_array(response_text, stop_reason=stop_reason)
+            payload_for_diag = None
+        findings = _parse_findings(data)
+        return ReviewResult(
+            findings=findings, raw_response=response_text, thinking=thinking,
+            model=model, input_tokens=input_tokens, output_tokens=output_tokens,
+            cache_creation_input_tokens=cache["cache_creation_input_tokens"],
+            cache_read_input_tokens=cache["cache_read_input_tokens"],
+            stop_reason=stop_reason, parse_status="ok",
+            structured_payload=payload_for_diag,
+        )
+    except Exception as e:
+        return ReviewResult(
+            findings=[], raw_response=response_text, thinking=response_text,
+            model=model, input_tokens=input_tokens, output_tokens=output_tokens,
+            cache_creation_input_tokens=cache["cache_creation_input_tokens"],
+            cache_read_input_tokens=cache["cache_read_input_tokens"],
+            stop_reason=stop_reason, parse_status="parse_error",
+            error=f"Failed to parse review output: {e}",
+        )
 

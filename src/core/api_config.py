@@ -233,15 +233,47 @@ def triage_max_tokens(*, model: str = TRIAGE_MODEL_DEFAULT) -> int:
 def review_max_tokens(*, model: str = REVIEW_MODEL_DEFAULT, allow_extended_output: bool = False) -> int:
     """Return a per-call max_tokens for a review request.
 
-    Review runs exclusively through the Message Batches API, so every
-    request shares the same baseline cap on normal-size specs.
-    ``allow_extended_output`` selects the 300k batch-only path; the beta
-    header is checked at the call site by
+    Both review transports share the same baseline cap on normal-size
+    specs (the batch path and the real-time streaming path build through
+    the same request builder). ``allow_extended_output`` selects the 300k
+    batch-only path — the real-time transport always pins it off — and the
+    beta header is checked at the call site by
     :func:`assert_extended_output_allowed`.
     """
     if allow_extended_output:
         return min(BATCH_MAX_OUTPUT_TOKENS, REVIEW_OUTPUT_CAP_BATCH_EXTENDED)
     return phase_output_cap(PHASE_REVIEW, model=model)
+
+
+# Real-time review fan-out concurrency. Review streams are the app's heaviest
+# synchronous calls (xhigh effort, up to the 128k phase cap of output — 5-8x
+# the output budget of any other streaming phase), so the default pool is
+# deliberately smaller than the research fan-out (4) and the verification
+# real-time fallback (5): two concurrent streams keep a multi-spec run
+# parallel without inviting output-TPM rate-limit storms on lower API tiers
+# (429s are retryable, but a storm burns the retry budget and surfaces as
+# failed-review specs). Higher-tier orgs raise the env knob.
+ENV_REALTIME_REVIEW_WORKERS = "SPEC_CRITIC_REALTIME_REVIEW_WORKERS"
+REALTIME_REVIEW_MAX_WORKERS_DEFAULT = 2
+_REALTIME_REVIEW_WORKERS_CEILING = 8
+
+
+def realtime_review_max_workers() -> int:
+    """Concurrent streaming-review workers for the real-time transport.
+
+    Reads ``SPEC_CRITIC_REALTIME_REVIEW_WORKERS`` fresh on each call (test
+    seam; no import-order surprises), clamps to [1, 8], and falls back to
+    the default (2) on a missing or malformed value so a typo never
+    serializes — or stampedes — a run.
+    """
+    raw = os.environ.get(ENV_REALTIME_REVIEW_WORKERS)
+    if raw is None or not raw.strip():
+        return REALTIME_REVIEW_MAX_WORKERS_DEFAULT
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return REALTIME_REVIEW_MAX_WORKERS_DEFAULT
+    return max(1, min(_REALTIME_REVIEW_WORKERS_CEILING, value))
 
 
 def cross_check_max_tokens(*, model: str = CROSS_CHECK_MODEL_DEFAULT) -> int:

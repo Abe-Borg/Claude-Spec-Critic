@@ -103,6 +103,14 @@ def start_review(app) -> None:
     app._selected_files_for_review = selected_files
     app._project_context_for_review = app._get_project_context()
     app._cross_check_for_review = app._cross_check_var.get()
+    # Snapshot the review transport for this run (the toggle only affects
+    # runs started after it changes). Defensive getattr keeps hand-built
+    # test doubles without the checkbox on the batch default.
+    realtime_var = getattr(app, "_realtime_var", None)
+    app._review_transport_for_review = (
+        "realtime" if (realtime_var is not None and realtime_var.get()) else "batch"
+    )
+    transport = app._review_transport_for_review
     # The module is the single source: resolve the selected id (unknown /
     # unset degrades to the default California module) and derive the cycle
     # label from it so the two app attrs can never disagree.
@@ -130,7 +138,7 @@ def start_review(app) -> None:
     os.environ["ANTHROPIC_API_KEY"] = app.api_key_entry.get().strip()
 
     app._diagnostics_report = DiagnosticsReport(
-        mode="batch",
+        mode=transport,
         model=REVIEW_MODEL_DEFAULT,
         cycle_label=app._selected_cycle_label,
         module_id=app._selected_module_id,
@@ -145,11 +153,14 @@ def start_review(app) -> None:
     )
     app._diagnostics_report.log(
         "init", "info",
-        f"Run started: batch mode, {num_specs} files, cycle {app._selected_cycle_label}",
+        f"Run started: {transport} mode, {num_specs} files, cycle {app._selected_cycle_label}",
     )
     app.diagnostics_button.configure(state="disabled")
 
-    app.log.log_step(f"Submitting {num_specs} files for batch review (Opus 4.8)...")
+    if transport == "realtime":
+        app.log.log_step(f"Starting real-time review of {num_specs} files (Opus 4.8)...")
+    else:
+        app.log.log_step(f"Submitting {num_specs} files for batch review (Opus 4.8)...")
     run_epoch = app._next_run_epoch()
     threading.Thread(target=app._submit_batch_thread, args=(run_epoch,), daemon=True).start()
 
@@ -230,7 +241,12 @@ def on_review_error(app, err) -> None:
 
 def reset_ui(app) -> None:
     app.run_button.set_ready()
-    app.run_button.configure(text="Submit Batch")
+    # Mode-aware idle label; hand-built test doubles without the helper
+    # keep the legacy batch text.
+    idle_text_fn = getattr(app, "_run_button_idle_text", None)
+    app.run_button.configure(
+        text=idle_text_fn() if callable(idle_text_fn) else "Submit Batch"
+    )
     app.progress_bar.pack_forget()
     app.is_processing = False
     app._batch_submission = None

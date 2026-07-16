@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
@@ -29,18 +30,22 @@ from ..core.tokenizer import (
 )
 from ..review.reviewer import ReviewResult, Finding, validate_finding_anchors
 from ..review.review_request_builder import (
+    RETRY_TRUNCATED_REVIEW_INSTRUCTION,
     ReviewRequestSpec,
     build_token_count_request,
     estimate_local_request_tokens,
     review_request_cache_key,
 )
+from ..review.realtime_review import REALTIME_JOB_SENTINEL, run_realtime_review
 from ..batch.batch import BatchJob, submit_review_batch, retrieve_review_results
 from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from ..core.api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
 from ..verification.verifier import (
+    VerificationResult,
     start_verification_batch,
     collect_verification_batch_results,
     prepare_findings_for_verification,
+    verify_finding,
 )
 from ..verification.verification_cache import VerificationCache, cache_persist_enabled
 from ..cross_check.cross_checker import run_chunked_cross_check
@@ -887,6 +892,17 @@ class BatchSubmission:
     # finalize_batch_result so the batch-mode root span can be closed at
     # the end of the run. Empty string when tracing was disabled.
     trace_span_id: str = ""
+    # Review transport for this run: "batch" (default — Message Batches API,
+    # remote queue, pending-state resume story) or "realtime" (synchronous
+    # streaming fan-out, ``src.review.realtime_review``). Every downstream
+    # branch keys on THIS field, never on the job stub's sentinel batch_id.
+    review_transport: str = "batch"
+    # Real-time transport only: the already-collected per-request review
+    # results, keyed by custom_id exactly like ``retrieve_review_results``'
+    # return shape. In-memory only — never persisted; a real-time run has no
+    # pending-batch resume story by design (``PendingBatch.from_submission``
+    # refuses it).
+    realtime_results: dict[str, ReviewResult] | None = None
 
 
 def _research_phase_applies(module: ReviewModule, profile: ProjectProfile | None, *, log: LogFn = _noop_log) -> bool:
@@ -981,11 +997,11 @@ def _run_research_phase(
     return effective_context, research_profile.to_dict()
 
 
-def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, module: ReviewModule = DEFAULT_MODULE, cross_check_enabled: bool = False, project_profile: ProjectProfile | None = None, diagnostics=None) -> BatchSubmission:
+def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, module: ReviewModule = DEFAULT_MODULE, cross_check_enabled: bool = False, project_profile: ProjectProfile | None = None, diagnostics=None, review_transport: str = "batch") -> BatchSubmission:
     cycle = module.cycle
     profile_dict = project_profile.to_dict() if project_profile is not None else None
     trace_pipeline = _trace.capture_pipeline_start(
-        mode="batch",
+        mode=review_transport,
         model=model,
         cycle_label=cycle.label,
         module_id=module.module_id,
@@ -1034,19 +1050,50 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         placeholder_alerts=len(prepared.placeholder_alerts),
         cross_check_enabled=cross_check_enabled,
     )
-    job = submit_review_batch(
-        prepared.specs,
-        project_context=effective_context,
-        model=model,
-        cycle=cycle,
-        # Feed each spec's deterministic alerts to the prompt builder so
-        # the model is told what local rules already detected and skips
-        # duplicating those items as new findings.
-        pre_detected_alerts=prepared.pre_detected_by_filename,
-    )
+    realtime_results: dict[str, ReviewResult] | None = None
+    if review_transport == "realtime":
+        # Real-time transport: the reviews run to completion HERE (streaming
+        # fan-out), and the submission carries the finished results plus a
+        # local job stub so the collect/finalize path is reused unchanged.
+        # ``created_at`` is stamped before the streaming starts so
+        # elapsed-time reads cover the reviews themselves.
+        realtime_started = time.time()
+        realtime_results, request_map = run_realtime_review(
+            prepared.specs,
+            project_context=effective_context,
+            model=model,
+            cycle=cycle,
+            pre_detected_alerts=prepared.pre_detected_by_filename,
+            log=log,
+            # The runner reports 0-100 fan-out completion; map it into the
+            # pipeline's review band (25→55), below the verification band
+            # (60→95) so the run's progress stays monotone.
+            progress=lambda p, m: progress(25.0 + (p / 100.0) * 30.0, m),
+            diagnostics=diagnostics,
+            _trace_parent=trace_pipeline,
+        )
+        job = BatchJob(
+            batch_id=REALTIME_JOB_SENTINEL,
+            job_type="review",
+            request_map=request_map,
+            created_at=realtime_started,
+            status="completed",
+        )
+    else:
+        job = submit_review_batch(
+            prepared.specs,
+            project_context=effective_context,
+            model=model,
+            cycle=cycle,
+            # Feed each spec's deterministic alerts to the prompt builder so
+            # the model is told what local rules already detected and skips
+            # duplicating those items as new findings.
+            pre_detected_alerts=prepared.pre_detected_by_filename,
+        )
     # The "review batch submitted" trace note is emitted inside
-    # ``submit_review_batch`` (with the extended-output-beta flag); no
-    # second note here so the trace shows the submission once.
+    # ``submit_review_batch`` (with the extended-output-beta flag) and the
+    # "realtime review completed" note inside ``run_realtime_review``; no
+    # second note here so the trace shows each submission once.
     ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
     return BatchSubmission(
         job=job,
@@ -1073,6 +1120,8 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
         polity_alerts=prepared.polity_alerts,
         trace_span_id=(trace_pipeline.span_id if trace_pipeline is not None else ""),
+        review_transport=review_transport,
+        realtime_results=realtime_results,
     )
 
 
@@ -1157,11 +1206,7 @@ def _recover_retryable_review_batch_results(
         project_context=submission.project_context,
         model=submission.model,
         cycle=cycle,
-        retry_instruction=(
-            "This is a retry of a previously truncated review. Submit findings via the "
-            "submit_review_findings tool with analysis_summary set to an empty string. "
-            "Spend the entire output budget on the findings array."
-        ),
+        retry_instruction=RETRY_TRUNCATED_REVIEW_INSTRUCTION,
         pre_detected_alerts=repair_pre_detected,
     )
     outcome = poll_batch_bounded(
@@ -1204,8 +1249,18 @@ def _log_cross_check_status(log: LogFn, cross: ReviewResult):
 
 
 def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _noop_log) -> CollectedBatchState:
-    results_by_request = retrieve_review_results(submission.job, model=submission.model)
-    results_by_request = _recover_retryable_review_batch_results(submission, results_by_request, log=log)
+    if getattr(submission, "review_transport", "batch") == "realtime":
+        # Real-time transport: the reviews already ran inside
+        # ``start_batch_review`` (streaming fan-out, with its own inline
+        # instructed repair) — no remote batch to retrieve and no second
+        # repair batch to submit. Everything below this branch (per-request
+        # bucketing into ``truncated_specs``, anchor validation, dedup +
+        # ``rf-`` id stamping, error aggregation) is shared byte-for-byte,
+        # which is what keeps failed-review surfacing working for free.
+        results_by_request = dict(submission.realtime_results or {})
+    else:
+        results_by_request = retrieve_review_results(submission.job, model=submission.model)
+        results_by_request = _recover_retryable_review_batch_results(submission, results_by_request, log=log)
     all_findings: list[Finding] = []
     all_thinking: list[str] = []
     errors: list[str] = []
@@ -1633,6 +1688,117 @@ def collect_batch_verification_results(
     )
 
 
+def verify_findings_for_run(
+    findings: list[Finding],
+    *,
+    module: ReviewModule = DEFAULT_MODULE,
+    transport: str = "batch",
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+    cache: VerificationCache | None = None,
+    user_location: dict | None = None,
+    jurisdiction_fingerprint: str | None = None,
+) -> None:
+    """Verify ``findings`` in place, on the run's transport.
+
+    The single verification entry point both drivers (the GUI collect
+    sequence and :func:`run_batch_collection_headless`) call for round 1
+    (review findings) and round 2 (cross-check + compliance findings), so
+    the two collect sequences cannot drift on transport selection. The
+    transport is the run's ``BatchSubmission.review_transport`` — a
+    real-time run verifies in real time too (zero batch polling end-to-end;
+    that is the point of the mode), a batch run keeps the batch waves.
+
+    * ``transport="batch"`` — the existing wave pair
+      (:func:`start_batch_verification` →
+      :func:`collect_batch_verification_results`), including the
+      everything-resolved-locally early-out and the small-tail real-time
+      fallback inside the collector.
+    * ``transport="realtime"`` — the same local pre-pass
+      (``prepare_findings_for_verification``: local-skip + cache hits stamp
+      results without any API call), then a small thread pool over
+      ``verify_finding``, mirroring the batch collector's real-time
+      fallback tail (``verifier.collect_verification_batch_results``). A
+      worker exception stamps a ``VERIFICATION_FAILED`` result rather than
+      raising — the operational-failure honesty contract.
+
+    Exactly-once: the pre-pass stamps local/cached results, the pool stamps
+    every remaining finding exactly once, and the exception arm stamps
+    failures — every finding ends the call with exactly one
+    ``VerificationResult``, never dropped, never double-written.
+    """
+    if not findings:
+        return
+    if transport == "realtime":
+        cycle = module.cycle
+        remaining = prepare_findings_for_verification(
+            findings,
+            cycle=cycle,
+            cache=cache,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            log=log,
+        )
+        if not remaining:
+            progress(60.0, "Verification: all findings resolved locally / cached.")
+            return
+        total = len(remaining)
+        progress(60.0, f"Verifying {total} finding(s) (real-time)...")
+        log(f"Verification: real-time streaming for {total} finding(s)...", level="step")
+        # Same pool shape as the batch path's real-time fallback: each call
+        # is a streaming web-search-grounded verification that blocks on the
+        # network, so a small pool wins; verify_finding owns cache puts and
+        # escalation internally.
+        done = 0
+        with ThreadPoolExecutor(max_workers=min(5, total)) as pool:
+            futures = {
+                pool.submit(
+                    verify_finding,
+                    f,
+                    cycle=cycle,
+                    cache=cache,
+                    user_location=user_location,
+                    jurisdiction_fingerprint=jurisdiction_fingerprint,
+                ): f
+                for f in remaining
+            }
+            for future in as_completed(futures):
+                f = futures[future]
+                try:
+                    f.verification = future.result()
+                except Exception as e:  # noqa: BLE001 — operational failure, surfaced honestly
+                    f.verification = VerificationResult(
+                        verdict="UNVERIFIED",
+                        explanation=f"Real-time verification failed: {e}",
+                        verification_failed=True,
+                    )
+                done += 1
+                progress(
+                    60.0 + (done / total) * 35.0,
+                    f"Verified {done}/{total} findings",
+                )
+        return
+    job = start_batch_verification(
+        findings,
+        module=module,
+        log=log,
+        progress=progress,
+        cache=cache,
+        user_location=user_location,
+        jurisdiction_fingerprint=jurisdiction_fingerprint,
+    )
+    if job is not None:
+        collect_batch_verification_results(
+            job,
+            findings,
+            module=module,
+            log=log,
+            progress=progress,
+            cache=cache,
+            user_location=user_location,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+        )
+
+
 def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
     # ``prepared_specs`` rides through to PipelineResult.extracted_specs for
     # the report's extraction-warnings banner. The recovery path may null it.
@@ -1871,12 +2037,10 @@ def run_batch_collection_headless(
     user_location, jurisdiction_fp = location_inputs_for_submission(submission)
 
     review_state = collect_review_batch_results(submission, log=log)
+    transport = getattr(submission, "review_transport", "batch") or "batch"
 
     verifiable = list(review_state.review_result.findings) if review_state.review_result else []
-    if verifiable:
-        job = start_batch_verification(verifiable, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
-        if job is not None:
-            collect_batch_verification_results(job, verifiable, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
+    verify_findings_for_run(verifiable, module=module, transport=transport, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
 
     review_state = run_cross_check_for_batch(
         review_state,
@@ -1907,10 +2071,7 @@ def run_batch_collection_headless(
     # batch — both are plain findings lists and the verification functions
     # take arbitrary findings (WS-4 step 5).
     round2_findings = cross_findings + compliance_findings
-    if round2_findings:
-        cc_job = start_batch_verification(round2_findings, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
-        if cc_job is not None:
-            collect_batch_verification_results(cc_job, round2_findings, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
+    verify_findings_for_run(round2_findings, module=module, transport=transport, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
 
     # WS-5 drawing-impact synthesis: last, so it can link findings that only
     # just picked up their verdicts. No-op (state unchanged) when no drawing

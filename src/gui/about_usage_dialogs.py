@@ -273,10 +273,16 @@ def show_usage_dialog(parent) -> None:
             "verification — and helps Claude produce more relevant findings. "
             "Click Expand for a larger editing area."
         )),
-        ("5.  Batch Processing", (
-            "All specs are queued and processed through the Batch API on Claude "
-            f"{_model_label(REVIEW_MODEL_DEFAULT)} at 50% cost savings, with "
-            f"results {_BATCH_TIMING_COPY}."
+        ("5.  Batch Processing (Default) or Real-Time", (
+            "By default, all specs are queued and processed through the Batch "
+            f"API on Claude {_model_label(REVIEW_MODEL_DEFAULT)} at 50% cost "
+            f"savings, with results {_BATCH_TIMING_COPY}. Check “Real-time "
+            "review (streaming)” in Options to stream the reviews "
+            "synchronously instead: results arrive in minutes for small runs, "
+            "verification runs live too (no batch queues anywhere), but the "
+            "run bills at standard API pricing and has no crash resume — if "
+            "the app closes mid-run, in-flight review work is lost. Very "
+            "large specs (≥200k input tokens) still require batch mode."
         )),
         ("6.  Enable Cross-Spec Coordination (Optional)", (
             "Check this option to run a separate coordination analysis that "
@@ -287,7 +293,7 @@ def show_usage_dialog(parent) -> None:
             "exceeds the recommended token ceiling."
         )),
         ("7.  Run the Review", (
-            "Click Submit Batch. "
+            "Click Submit Batch (labeled Start Review (live) in real-time mode). "
             "The activity log shows progress. The batch runs on Anthropic's "
             "servers (up to ~24h), so you can close the app or lose your "
             "connection without losing the work — the batch is saved, and on "
@@ -327,7 +333,9 @@ def show_usage_dialog(parent) -> None:
         scroll,
         text=(
             "Use batch mode for routine reviews — same review logic at "
-            "lower cost, with slower turnaround. Save your API key to a file so you don't "
+            "lower cost, with slower turnaround. Switch on Real-time review "
+            "when you need results now — identical prompts and findings "
+            "logic at standard price. Save your API key to a file so you don't "
             "have to paste it every time. Write specific project context — "
             "the more detail you provide, the more targeted the findings. "
             "Always spot-check code citations against the actual code text "
