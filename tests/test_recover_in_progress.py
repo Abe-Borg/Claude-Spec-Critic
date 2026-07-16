@@ -144,10 +144,43 @@ class TestEnsureBatchEnded:
         assert "has not finished processing" in str(err)
         assert "0 of 2 requests done" in str(err)
 
+    def test_transient_preflight_failure_falls_through_to_poll_loop(
+        self, monkeypatch
+    ):
+        """A retryable failure (connection / 5xx / rate limit) on the
+        preflight status check must NOT abort the recovery — it falls through
+        to the bounded poll loop, which re-polls under its own
+        consecutive-error backoff. (Codex review P2: the results-download
+        path this guard fronts already had retry handling; the preflight
+        must not regress an already-ended recovery on a single blip.)"""
+        calls = {"n": 0}
+
+        def flaky_poll(_bid):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Message matches retry_policy's connection-pattern heuristic
+                # -> FailureClass.CONNECTION -> retryable.
+                raise ConnectionError("connection reset by peer")
+            return _status(processing=0, succeeded=2, status="ended")
+
+        monkeypatch.setattr(rt, "poll_batch", flaky_poll)
+        clock = {"t": 0.0}
+        monkeypatch.setattr(rt.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(
+            rt.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s)
+        )
+
+        out = ensure_batch_ended(
+            "msgbatch_blip", policy=PollPolicy(), log=_noop_log
+        )
+        assert out.status == "ended"
+        assert calls["n"] == 2
+
     def test_bad_batch_id_fails_fast_without_retry_backoff(self, monkeypatch):
-        """The immediate pre-check must let a 404 propagate unchanged — never
-        absorbed into the poll loop's 10-strike consecutive-error backoff
-        (minutes of sleeping for a typo'd id)."""
+        """The immediate pre-check must let a non-retryable error (404 /
+        auth / unknown) propagate unchanged — never absorbed into the poll
+        loop's 10-strike consecutive-error backoff (minutes of sleeping for
+        a typo'd id)."""
 
         class FakeNotFound(Exception):
             status_code = 404

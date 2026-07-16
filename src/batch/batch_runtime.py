@@ -146,25 +146,48 @@ def ensure_batch_ended(
     given batch" error. Call this first so an in-progress batch is polled to
     completion (bounded by ``policy``) before any results are read.
 
-    The initial status check deliberately bypasses the poll loop's
-    consecutive-error retry: a typo'd batch id or auth failure raises
-    immediately instead of backing off for minutes. An already-ended batch
-    returns from that single check with no waiting.
+    The initial status check fails fast only on NON-retryable errors (a
+    typo'd batch id, auth failure — via the shared
+    :func:`retry_policy.classify_exception` taxonomy) so a bad id raises
+    immediately instead of backing off for minutes. A *transient* failure
+    (connection drop, 5xx/529, rate limit) does not abort the recovery: it
+    falls through to the bounded poll loop below, which re-polls under its
+    own consecutive-error backoff — matching the retry behavior the
+    results-download path already had before this guard existed. An
+    already-ended batch returns from the single successful check with no
+    waiting.
 
     Raises :class:`BatchNotFinishedError` when the poll bound is hit (or the
     poll loop gives up / is canceled) while the batch is still processing.
     """
-    status = poll_batch(batch_id)
-    if is_terminal_batch_status(status.status):
-        return status
-
-    log(
-        f"Batch {batch_id} is still processing "
-        f"({status.completed} of {status.total} requests done). "
-        "Waiting for it to finish before collecting results...",
-        level="warning",
+    from ..verification.retry_policy import (  # local import — mirrors
+        # batch._collect_batch_results_with_retry, keeping this module's
+        # import surface (and any circular-import risk) small.
+        classify_exception,
+        is_retryable_failure_class,
     )
-    last_seen = {"status": status}
+
+    status: BatchStatus | None = None
+    try:
+        status = poll_batch(batch_id)
+    except Exception as exc:  # noqa: BLE001 — classified, re-raised if terminal
+        if not is_retryable_failure_class(classify_exception(exc)):
+            raise
+        log(
+            f"Batch status check failed transiently ({exc}); "
+            "retrying via the poll loop...",
+            level="warning",
+        )
+    if status is not None:
+        if is_terminal_batch_status(status.status):
+            return status
+        log(
+            f"Batch {batch_id} is still processing "
+            f"({status.completed} of {status.total} requests done). "
+            "Waiting for it to finish before collecting results...",
+            level="warning",
+        )
+    last_seen: dict[str, BatchStatus | None] = {"status": status}
 
     def _observe(s: BatchStatus) -> None:
         last_seen["status"] = s
