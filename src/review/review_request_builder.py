@@ -67,6 +67,19 @@ if TYPE_CHECKING:
     from ..input.extractor import ParagraphMapping
 
 
+# Instruction suffix appended to a review request that retries a previously
+# truncated / unparseable response. Shared by the batch repair pass
+# (``pipeline._recover_retryable_review_batch_results``) and the real-time
+# runner's inline repair attempt so the two transports issue the identical
+# retry prompt. Cache-safe: ``build_user_message`` appends it after the spec
+# body, past every prompt-cache breakpoint.
+RETRY_TRUNCATED_REVIEW_INSTRUCTION = (
+    "This is a retry of a previously truncated review. Submit findings via the "
+    "submit_review_findings tool with analysis_summary set to an empty string. "
+    "Spend the entire output budget on the findings array."
+)
+
+
 @dataclass(frozen=True)
 class ReviewRequestSpec:
     """Inputs that fully describe one review request.
@@ -76,11 +89,13 @@ class ReviewRequestSpec:
     from this record so the path that counts a request and the path that
     sends a request cannot fall out of sync.
 
-    Review runs exclusively through the Message Batches API, so the
-    builder always produces a batch-shaped request (batch cache phase,
-    service tier, extended-output gating). ``force_allow_extended_output``
-    is an escape hatch for tests; production callers leave it ``None``
-    and let the builder decide.
+    The same built request serves both review transports: the Message
+    Batches path wraps ``params`` in a ``{custom_id, params}`` envelope,
+    and the real-time path streams it via ``client.messages.stream``
+    (with ``include_service_tier=False`` and extended output pinned off —
+    the 300k output beta is batch-only by API design).
+    ``force_allow_extended_output`` is an escape hatch for tests;
+    production callers leave it ``None`` and let the builder decide.
     """
 
     spec_content: str

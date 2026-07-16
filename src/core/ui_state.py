@@ -22,6 +22,11 @@ _MODULE_KEY = "module_id"
 # switching modules restores the profile last used for THAT module rather than
 # carrying one domain's city/client into another.
 _PROFILES_KEY = "project_profiles"
+# Review transport preference: "batch" (default) or "realtime". Anything
+# else — including a hand-edited file — reads as "batch", the safe default
+# (50% cheaper, resumable).
+_TRANSPORT_KEY = "review_transport"
+_VALID_TRANSPORTS = ("batch", "realtime")
 
 
 def ui_state_path() -> Path:
@@ -49,6 +54,23 @@ def load_selected_module_id(*, path: Path | None = None) -> str:
 def save_selected_module_id(module_id: str, *, path: Path | None = None) -> None:
     """Persist the selected module id. Best-effort: never raises."""
     _write_key(_MODULE_KEY, module_id, path=path)
+
+
+def load_review_transport(*, path: Path | None = None) -> str:
+    """Last-selected review transport; ``"batch"`` when unset or unknown."""
+    value = _load(path).get(_TRANSPORT_KEY, "")
+    return value if value in _VALID_TRANSPORTS else "batch"
+
+
+def save_review_transport(transport: str, *, path: Path | None = None) -> None:
+    """Persist the review transport. Best-effort: never raises.
+
+    Unknown values are dropped rather than written, so the stored state can
+    only ever hold a transport the app knows how to run.
+    """
+    if transport not in _VALID_TRANSPORTS:
+        return
+    _write_key(_TRANSPORT_KEY, transport, path=path)
 
 
 def load_project_profile(module_id: str, *, path: Path | None = None) -> dict:

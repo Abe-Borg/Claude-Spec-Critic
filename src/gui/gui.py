@@ -50,8 +50,10 @@ from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 from src.core.project_profile import ProjectProfile
 from src.core.ui_state import (
     load_project_profile,
+    load_review_transport,
     load_selected_module_id,
     save_project_profile,
+    save_review_transport,
     save_selected_module_id,
 )
 from src.gui.project_profile_inputs import (
@@ -285,7 +287,7 @@ class SpecReviewApp(_CTkDnDRoot):
         self.file_list_panel = FileListPanel(c, on_selection_change=self._on_file_selection_change, pack_after=self.inputs_card)
         self.token_gauge = TokenGauge(c, max_tokens=RECOMMENDED_MAX)
         self.token_gauge.pack(fill="x", pady=(16, 0))
-        self.run_button = AnimatedButton(c, text="Submit Batch", command=self.start_review)
+        self.run_button = AnimatedButton(c, text=self._run_button_idle_text(), command=self.start_review)
         self.run_button.pack(fill="x", pady=(16, 0))
         self.progress_bar = ctk.CTkProgressBar(c, height=4, corner_radius=2, fg_color=COLORS["bg_input"], progress_color=COLORS["accent"], indeterminate_speed=0.5)
         self.progress_bar.set(0)
@@ -380,9 +382,11 @@ class SpecReviewApp(_CTkDnDRoot):
         ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=3, column=0, sticky="w", pady=8)
         options_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         options_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
+        options_line1 = ctk.CTkFrame(options_frame, fg_color="transparent")
+        options_line1.pack(anchor="w")
         self._cross_check_var = ctk.BooleanVar(value=False)
         self._cross_check_cb = ctk.CTkCheckBox(
-            options_frame, text="Cross-spec coordination check", variable=self._cross_check_var,
+            options_line1, text="Cross-spec coordination check", variable=self._cross_check_var,
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
             checkmark_color=COLORS["text_primary"], text_color=COLORS["text_secondary"],
@@ -393,10 +397,32 @@ class SpecReviewApp(_CTkDnDRoot):
         # cross-check default is bumped (it previously hardcoded the name).
         _cc_price = price_for(CROSS_CHECK_MODEL_DEFAULT)
         _cc_label = _cc_price.label if _cc_price else CROSS_CHECK_MODEL_DEFAULT
-        self._cross_check_hint = ctk.CTkLabel(options_frame,
+        self._cross_check_hint = ctk.CTkLabel(options_line1,
             text=f"{_cc_label} \u2022 full content \u2022 finds inter-spec conflicts",
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._cross_check_hint.pack(side="left", padx=(12, 0))
+
+        # Review transport toggle (second options line). Batch is the
+        # default (50% cheaper, resumable); real-time streams the reviews
+        # synchronously for immediate results at full API price with no
+        # resume story. Persisted across launches like the module selector;
+        # only affects runs started after the toggle.
+        options_line2 = ctk.CTkFrame(options_frame, fg_color="transparent")
+        options_line2.pack(anchor="w", pady=(6, 0))
+        self._realtime_var = ctk.BooleanVar(value=load_review_transport() == "realtime")
+        self._realtime_cb = ctk.CTkCheckBox(
+            options_line2, text="Real-time review (streaming)", variable=self._realtime_var,
+            command=self._on_transport_toggle,
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
+            checkmark_color=COLORS["text_primary"], text_color=COLORS["text_secondary"],
+            checkbox_width=20, checkbox_height=20,
+        )
+        self._realtime_cb.pack(side="left")
+        self._realtime_hint = ctk.CTkLabel(options_line2,
+            text="results now \u2022 full API price (batch saves 50%) \u2022 no crash resume",
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
+        self._realtime_hint.pack(side="left", padx=(12, 0))
 
         # --- Row 4: Agent tracing ---
         ctk.CTkLabel(self.inputs_content, text="Tracing", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
@@ -613,6 +639,25 @@ class SpecReviewApp(_CTkDnDRoot):
         # Show/hide the project-profile inputs for the newly-selected module
         # (the first dynamic field behavior on module change).
         self._update_project_profile_visibility()
+
+    def _run_button_idle_text(self) -> str:
+        """Idle run-button label for the selected review transport."""
+        realtime_var = getattr(self, "_realtime_var", None)
+        if realtime_var is not None and realtime_var.get():
+            return "Start Review (live)"
+        return "Submit Batch"
+
+    def _on_transport_toggle(self) -> None:
+        """Persist the review-transport choice and refresh the idle button.
+
+        Only affects runs started after the toggle — an in-flight run keeps
+        the transport its submission recorded (same discipline as the module
+        selector).
+        """
+        transport = "realtime" if self._realtime_var.get() else "batch"
+        save_review_transport(transport)
+        if not getattr(self, "is_processing", False):
+            self.run_button.configure(text=self._run_button_idle_text())
 
     def _on_trace_toggle(self) -> None:
         """Translate the checkboxes into env vars the recorder reads.

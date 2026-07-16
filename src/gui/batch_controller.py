@@ -36,7 +36,6 @@ from ..orchestration.batch_resume import (
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..orchestration.pipeline import (
     BatchSubmission,
-    collect_batch_verification_results,
     collect_review_batch_results,
     finalize_batch_result,
     location_inputs_for_submission,
@@ -44,7 +43,7 @@ from ..orchestration.pipeline import (
     run_cross_check_for_batch,
     run_drawing_impact_for_batch,
     start_batch_review,
-    start_batch_verification,
+    verify_findings_for_run,
     _make_verification_cache,
     _persist_verification_cache,
 )
@@ -56,8 +55,9 @@ _BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
 
 def submit_batch_thread(app, run_epoch: int) -> None:
     diag = app._diagnostics_report
+    transport = getattr(app, "_review_transport_for_review", "batch") or "batch"
     # Start the trace recorder if tracing is enabled. The recorder lives
-    # for the entire batch lifecycle (submit → poll → collect → verify →
+    # for the entire run lifecycle (submit → [poll] → collect → verify →
     # finalize) and is stopped after collect_batch_results completes.
     # Store on the app so the collect path can reach it.
     module = get_module(getattr(app, "_selected_module_id", None))
@@ -65,7 +65,7 @@ def submit_batch_thread(app, run_epoch: int) -> None:
     profile_dict = profile.to_dict() if profile is not None else None
     app._trace_recorder = _maybe_start_recorder(
         run_id=diag.run_id if diag is not None else "no_run_id",
-        mode="batch",
+        mode=transport,
         model=REVIEW_MODEL_DEFAULT,
         cycle_label=module.cycle.label,
         module_id=module.module_id,
@@ -74,7 +74,20 @@ def submit_batch_thread(app, run_epoch: int) -> None:
     )
     try:
         if diag:
-            diag.log("batch_submit", "step", "Preparing batch submission")
+            diag.log(
+                "batch_submit", "step",
+                "Starting real-time review" if transport == "realtime"
+                else "Preparing batch submission",
+            )
+        if transport == "realtime":
+            # The reviews run to completion INSIDE start_batch_review on
+            # this transport — reflect that on the button for the duration.
+            # (A research-enabled run overwrites this with its own label
+            # below; the reviews still follow within the same call.)
+            app._dispatch_if_current(
+                run_epoch,
+                lambda: app.run_button.configure(text="Reviewing specs (live)..."),
+            )
 
         # WS-3 UI nicety: when the engine will run the research phase (module
         # opted in + complete profile + dimensions defined), name it on the
@@ -108,7 +121,19 @@ def submit_batch_thread(app, run_epoch: int) -> None:
             # itself runs inside start_batch_review, gated on the module
             # flag + a complete profile — profile-less runs are untouched.
             diagnostics=diag,
+            review_transport=transport,
         )
+        if transport == "realtime":
+            # The reviews already ran to completion — nothing is pending
+            # remotely, so there is no pending-batch state to persist (a
+            # crash mid-run loses in-flight work by design) and no polling
+            # phase; hand straight off to collection.
+            if diag:
+                diag.log("batch_submit", "success", "Real-time review complete", {
+                    "files_reviewed": len(submission.files_reviewed),
+                })
+            app._dispatch_if_current(run_epoch, lambda: on_realtime_reviewed(app, submission))
+            return
         if diag:
             diag.log("batch_submit", "success", f"Batch submitted: {submission.job.batch_id}", {
                 "batch_id": submission.job.batch_id,
@@ -147,6 +172,22 @@ def on_batch_submitted(app, submission: BatchSubmission) -> None:
     app.log.log_step(f"Polling for results ({_BATCH_TIMING_COPY})...")
     app.run_button.configure(text="Polling...")
     app._poll_batch()
+
+
+def on_realtime_reviewed(app, submission: BatchSubmission) -> None:
+    """Real-time counterpart to ``on_batch_submitted``: no polling phase.
+
+    The streaming reviews already ran inside ``start_batch_review``, so the
+    submission arrives carrying its results — store it and go straight to
+    the shared collect sequence.
+    """
+    app._batch_submission = submission
+    app.progress_bar.set(0.55)
+    app.log.log_success(
+        f"Real-time review complete — {len(submission.files_reviewed)} spec(s) reviewed"
+    )
+    app.log.log("  streamed live • standard API pricing", level="muted")
+    app._collect_batch_results()
 
 
 def poll_batch(app) -> None:
@@ -218,12 +259,16 @@ def collect_batch_results(app) -> None:
             if app._batch_submission is None:
                 raise RuntimeError("No active batch submission to collect.")
             module = get_module(getattr(app._batch_submission, "module_id", None))
+            transport = getattr(app._batch_submission, "review_transport", "batch") or "batch"
 
             # NOTE: this collect → verify → cross-check → verify → finalize
             # sequence is mirrored, UI-free, by
             # ``pipeline.run_batch_collection_headless`` (used by the recovery
-            # tool). Keep the two stage orders in lockstep; a future refactor
-            # should collapse them onto one shared core (see PR discussion).
+            # tool). Keep the two stage orders in lockstep; the transport
+            # branches live in the shared pipeline helpers
+            # (``collect_review_batch_results`` / ``verify_findings_for_run``),
+            # not here. A future refactor should collapse the two sequences
+            # onto one shared core (see PR discussion).
             if diag:
                 diag.log("batch_collect", "step", "Collecting review batch results")
             review_state = collect_review_batch_results(
@@ -232,32 +277,41 @@ def collect_batch_results(app) -> None:
             )
             rv = review_state.review_result
             if diag:
-                # Route through ``record_api_call`` so the per-
-                # phase rollup gets a consistent ``call_mode="batch"`` tag
-                # for the review phase.
-                diag.record_api_call(
-                    phase="batch_collect",
-                    model=rv.model,
-                    level="success",
-                    message="Review results collected",
-                    input_tokens=rv.input_tokens,
-                    output_tokens=rv.output_tokens,
-                    cache_creation_input_tokens=rv.cache_creation_input_tokens,
-                    cache_read_input_tokens=rv.cache_read_input_tokens,
-                    stop_reason=rv.stop_reason,
-                    mode="batch",
-                    retry_status="initial",
-                    structured_payload=rv.structured_payload,
-                    extra={
-                        "elapsed_seconds": round(rv.elapsed_seconds, 2),
-                        "parse_status": rv.parse_status,
-                        "severity_counts": {
-                            "CRITICAL": rv.critical_count, "HIGH": rv.high_count,
-                            "MEDIUM": rv.medium_count, "GRIPES": rv.gripe_count,
-                        },
+                if transport == "realtime":
+                    # The real-time runner already recorded one
+                    # record_api_call(mode="realtime") row PER SPEC as the
+                    # streams completed — recording the aggregate here too
+                    # would double-count tokens in the per-phase rollup.
+                    diag.log("batch_collect", "success", "Review results collected (real-time)", {
                         "total_findings": rv.total_count,
-                    },
-                )
+                    })
+                else:
+                    # Route through ``record_api_call`` so the per-
+                    # phase rollup gets a consistent ``call_mode="batch"`` tag
+                    # for the review phase.
+                    diag.record_api_call(
+                        phase="batch_collect",
+                        model=rv.model,
+                        level="success",
+                        message="Review results collected",
+                        input_tokens=rv.input_tokens,
+                        output_tokens=rv.output_tokens,
+                        cache_creation_input_tokens=rv.cache_creation_input_tokens,
+                        cache_read_input_tokens=rv.cache_read_input_tokens,
+                        stop_reason=rv.stop_reason,
+                        mode="batch",
+                        retry_status="initial",
+                        structured_payload=rv.structured_payload,
+                        extra={
+                            "elapsed_seconds": round(rv.elapsed_seconds, 2),
+                            "parse_status": rv.parse_status,
+                            "severity_counts": {
+                                "CRITICAL": rv.critical_count, "HIGH": rv.high_count,
+                                "MEDIUM": rv.medium_count, "GRIPES": rv.gripe_count,
+                            },
+                            "total_findings": rv.total_count,
+                        },
+                    )
                 if rv.error:
                     diag.log("batch_collect", "error", f"Review errors: {rv.error}")
 
@@ -282,34 +336,24 @@ def collect_batch_results(app) -> None:
             if verifiable_findings:
                 app._dispatch_if_current(run_epoch, lambda: app.run_button.configure(text="Verifying findings..."))
                 if diag:
-                    diag.log("verification", "step", f"Starting verification batch for {len(verifiable_findings)} findings")
-                verification_job = start_batch_verification(
+                    diag.log(
+                        "verification", "step",
+                        f"Verifying {len(verifiable_findings)} findings ({transport})",
+                    )
+                # Transport-routed: batch waves on a batch run, streaming
+                # pool on a real-time run (zero batch polling end-to-end).
+                # Submission / all-resolved-locally details arrive through
+                # the log callback from inside the helper.
+                verify_findings_for_run(
                     verifiable_findings,
                     module=module,
+                    transport=transport,
                     log=app._make_diag_log("verification", run_epoch),
                     progress=app._make_diag_progress("verification", run_epoch),
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
                 )
-                if verification_job is None:
-                    if diag:
-                        diag.log("verification", "info", "Verification: all findings resolved locally; no batch submitted.")
-                else:
-                    if diag:
-                        diag.log("verification", "info", f"Verification batch submitted: {verification_job.batch_id}", {
-                            "batch_id": verification_job.batch_id,
-                        })
-                    collect_batch_verification_results(
-                        verification_job,
-                        verifiable_findings,
-                        module=module,
-                        log=app._make_diag_log("verification", run_epoch),
-                        progress=app._make_diag_progress("verification", run_epoch),
-                        cache=cache,
-                        user_location=user_location,
-                        jurisdiction_fingerprint=jurisdiction_fp,
-                    )
                 if diag:
                     from ..orchestration.diagnostics import bound_structured_payload
                     verdicts = {}
@@ -339,12 +383,12 @@ def collect_batch_results(app) -> None:
                                 "initial_verdict": f.verification.initial_verdict,
                                 "escalation_changed_verdict": f.verification.escalation_changed_verdict,
                                 "escalation_reason": f.verification.escalation_reason,
-                                # Tag remote verifications as
-                                # batch API calls so the per-phase
-                                # rollup's call_mode counters reflect
-                                # the path that actually ran.
+                                # Tag remote verifications with the
+                                # transport that actually ran so the
+                                # per-phase rollup's call_mode counters
+                                # reflect the real path.
                                 "api_call": f.verification.cache_status not in ("hit", "local_skip"),
-                                "call_mode": "batch",
+                                "call_mode": transport,
                                 "model": f.verification.model_used,
                                 "web_search_requests": f.verification.web_search_requests,
                                 # Token usage so the per-phase diagnostics
@@ -454,33 +498,20 @@ def collect_batch_results(app) -> None:
                         "cross_check_verification",
                         "step",
                         f"Verifying {len(cross_check_findings)} cross-check + "
-                        f"{len(compliance_findings)} compliance findings",
+                        f"{len(compliance_findings)} compliance findings ({transport})",
                     )
-                cross_check_verification_job = start_batch_verification(
+                verify_findings_for_run(
                     round2_findings,
                     module=module,
+                    transport=transport,
                     log=app._make_diag_log("cross_check_verification", run_epoch),
                     progress=app._make_diag_progress("cross_check_verification", run_epoch),
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
                 )
-                if cross_check_verification_job is None:
-                    if diag:
-                        diag.log("cross_check_verification", "info", "Cross-check verification: all findings resolved locally; no batch submitted.")
-                else:
-                    collect_batch_verification_results(
-                        cross_check_verification_job,
-                        round2_findings,
-                        module=module,
-                        log=app._make_diag_log("cross_check_verification", run_epoch),
-                        progress=app._make_diag_progress("cross_check_verification", run_epoch),
-                        cache=cache,
-                        user_location=user_location,
-                        jurisdiction_fingerprint=jurisdiction_fp,
-                    )
-                    if diag:
-                        diag.log("cross_check_verification", "success", "Cross-check verification complete")
+                if diag:
+                    diag.log("cross_check_verification", "success", "Cross-check verification complete")
 
             # WS-5 drawing-impact synthesis: the LAST pass, so it can link
             # findings that only just picked up verdicts in round-2
@@ -525,8 +556,11 @@ def collect_batch_results(app) -> None:
             # state is no longer needed — drop it so the next launch doesn't
             # offer to resume an already-collected batch. Only the success path
             # clears it: a detach / collect error leaves it on disk so the user
-            # can still resume.
-            clear_pending_batch()
+            # can still resume. Batch runs only — a real-time run never saved
+            # pending state, and clearing here would delete a DIFFERENT
+            # (earlier, detached) batch's resumable state.
+            if transport == "batch":
+                clear_pending_batch()
             app._dispatch_if_current(run_epoch, lambda r=final_result: app._on_review_complete(r))
         except Exception as e:
             import traceback
