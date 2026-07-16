@@ -7,7 +7,10 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..drawing_impact import DrawingImpactResult
 
 from ..input.extractor import ExtractedSpec, SUPPORTED_EXTENSIONS
 from ..input.extraction_cache import (
@@ -131,6 +134,13 @@ class PipelineResult:
     # ``coverage`` + ``cross_check_status`` reused as the pass status)
     # when the pass ran or was explicitly skipped.
     compliance_result: Optional[ReviewResult] = None
+    # Drawing-impact synthesis output (WS-5). ``None`` unless the run's
+    # Project Context carried a construction-drawing digest — so a run
+    # without attached drawings is byte-identical. Carries the model's
+    # grounded explanation of how the drawings informed the review; the
+    # report renders a dedicated section from it. Additive + ``getattr``-read
+    # downstream, like ``compliance_result``.
+    drawing_impact_result: Optional["DrawingImpactResult"] = None
     cycle_label: str = DEFAULT_CYCLE.label
     # Identity of the module the run was reviewed under. Rides alongside
     # ``cycle_label`` (which stays for the verification-cache namespace and
@@ -184,6 +194,10 @@ class CollectedBatchState:
     # as its completed/failed/skipped status and carries the coverage
     # matrix on ``ReviewResult.coverage``.
     compliance_result: Optional[ReviewResult] = None
+    # Drawing-impact synthesis output (WS-5). ``None`` unless the submission's
+    # Project Context carried a drawing digest; carried through to the
+    # PipelineResult by ``finalize_batch_result``.
+    drawing_impact_result: Optional["DrawingImpactResult"] = None
     cross_check_skipped_due_to_missing_specs: bool = False
     truncated_specs: list[str] = field(default_factory=list)
     # Propagate the rest of the deterministic alerts through the
@@ -1482,6 +1496,68 @@ def run_compliance_for_batch(
     return state
 
 
+def run_drawing_impact_for_batch(
+    state: CollectedBatchState,
+    *,
+    project_context: str | None = None,
+    log: LogFn = _noop_log,
+) -> CollectedBatchState:
+    """Explain how attached construction drawings informed the review (WS-5).
+
+    Runs LAST in the collect sequence — after cross-check and compliance and
+    their round-2 verification — so every finding it can link already carries
+    a stable id (``rf-`` / ``cf-`` / ``lc-``) and, where applicable, a
+    verification verdict.
+
+    Gate: a drawing digest must be present in Project Context (independent of
+    the module — drawings can be attached in any module). A run without
+    attached drawings leaves ``state.drawing_impact_result`` at ``None`` and
+    the exported report is byte-identical. Never raises: a failed synthesis
+    pass is recorded as a ``status="failed"`` result, not an exception, so the
+    report can surface the failure honestly (the drawings still informed the
+    review as context).
+    """
+    from ..drawing_impact import extract_drawing_digest, run_drawing_impact
+
+    if project_context is None:
+        project_context = state.submission.project_context
+    digest_text = extract_drawing_digest(project_context)
+    if not digest_text:
+        # No drawings were attached — no section, byte-identical report.
+        return state
+
+    module = get_module(getattr(state.submission, "module_id", None))
+    findings: list[Finding] = []
+    if state.review_result and state.review_result.findings:
+        findings.extend(state.review_result.findings)
+    if state.cross_check_result and state.cross_check_result.findings:
+        findings.extend(state.cross_check_result.findings)
+    if state.compliance_result and state.compliance_result.findings:
+        findings.extend(state.compliance_result.findings)
+
+    log(
+        f"Explaining how the construction drawings informed "
+        f"{len(findings)} finding(s)...",
+        level="step",
+    )
+    result = run_drawing_impact(
+        digest_text=digest_text,
+        findings=findings,
+        module=module,
+        log=log,
+    )
+    state.drawing_impact_result = result
+    if result.status == "completed":
+        log(
+            f"Drawing-impact analysis: {result.impact_level} impact, "
+            f"{result.linked_finding_count} finding(s) linked to the drawings.",
+            level="info",
+        )
+    else:
+        log(f"Drawing-impact analysis failed: {result.error}", level="warning")
+    return state
+
+
 def location_inputs_for_submission(submission) -> tuple[dict | None, str | None]:
     """Derive ``(user_location, jurisdiction_fingerprint)`` from a submission.
 
@@ -1599,6 +1675,7 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         placeholder_alerts=state.placeholder_alerts,
         cross_check_result=state.cross_check_result,
         compliance_result=state.compliance_result,
+        drawing_impact_result=getattr(state, "drawing_impact_result", None),
         cycle_label=state.submission.cycle_label,
         module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
         project_profile=getattr(state.submission, "project_profile", None),
@@ -1834,6 +1911,15 @@ def run_batch_collection_headless(
         cc_job = start_batch_verification(round2_findings, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
         if cc_job is not None:
             collect_batch_verification_results(cc_job, round2_findings, module=module, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
+
+    # WS-5 drawing-impact synthesis: last, so it can link findings that only
+    # just picked up their verdicts. No-op (state unchanged) when no drawing
+    # digest is in Project Context.
+    review_state = run_drawing_impact_for_batch(
+        review_state,
+        project_context=submission.project_context,
+        log=log,
+    )
 
     if owns_cache:
         _persist_verification_cache(cache, log=log)
