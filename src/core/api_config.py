@@ -80,6 +80,16 @@ DRAWING_DIGEST_MODEL_DEFAULT = os.environ.get(
     "SPEC_CRITIC_DRAWING_DIGEST_MODEL", MODEL_SONNET_5
 )
 
+# Drawing-impact synthesis (one post-review pass that explains, for the
+# report, how the attached construction drawings informed the review — it
+# cross-references the final findings against the drawing digest already in
+# Project Context). Sonnet: the task is grounded synthesis over text the run
+# already produced, not deep review. Env-overridable like the digest it
+# reads, defaulting to the same tier.
+DRAWING_IMPACT_MODEL_DEFAULT = os.environ.get(
+    "SPEC_CRITIC_DRAWING_IMPACT_MODEL", MODEL_SONNET_5
+)
+
 
 # Opus family membership now drives exactly one policy decision: the
 # verification-phase effort bump (Opus on a verification phase is always the
@@ -141,6 +151,10 @@ COMPLIANCE_OUTPUT_CAP = 64_000
 # inviting rambling. Anything larger would let a 4-chunk digest exceed the
 # 100k PROJECT_CONTEXT_MAX_TOKENS cap on its own.
 DRAWING_DIGEST_OUTPUT_CAP = 24_000
+# The drawing-impact synthesis emits a short narrative plus a bounded list of
+# per-finding links (only the findings the drawings actually bear on), so its
+# output is naturally small — 16k is a fail-fast guard, not a billing knob.
+DRAWING_IMPACT_OUTPUT_CAP = 16_000
 
 # Token threshold above which a review uses the larger batch cap.
 LARGE_REVIEW_INPUT_THRESHOLD = 200_000
@@ -158,6 +172,7 @@ PHASE_TRIAGE = "triage"
 PHASE_RESEARCH = "research"
 PHASE_COMPLIANCE = "compliance"
 PHASE_DRAWING_DIGEST = "drawing_digest"
+PHASE_DRAWING_IMPACT = "drawing_impact"
 
 
 def output_cap_for_model(model: str, *, requested: int) -> int:
@@ -193,6 +208,7 @@ _PHASE_OUTPUT_BUDGET: dict[str, int] = {
     PHASE_RESEARCH: RESEARCH_OUTPUT_CAP,
     PHASE_COMPLIANCE: COMPLIANCE_OUTPUT_CAP,
     PHASE_DRAWING_DIGEST: DRAWING_DIGEST_OUTPUT_CAP,
+    PHASE_DRAWING_IMPACT: DRAWING_IMPACT_OUTPUT_CAP,
 }
 
 
@@ -242,6 +258,10 @@ def compliance_max_tokens(*, model: str = COMPLIANCE_MODEL_DEFAULT) -> int:
 
 def drawing_digest_max_tokens(*, model: str = DRAWING_DIGEST_MODEL_DEFAULT) -> int:
     return phase_output_cap(PHASE_DRAWING_DIGEST, model=model)
+
+
+def drawing_impact_max_tokens(*, model: str = DRAWING_IMPACT_MODEL_DEFAULT) -> int:
+    return phase_output_cap(PHASE_DRAWING_IMPACT, model=model)
 
 
 def verification_max_tokens(*, model: str = VERIFICATION_MODEL_DEFAULT, phase: str = PHASE_VERIFICATION) -> int:
@@ -604,6 +624,11 @@ _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     # no tools to chase, no deep reasoning; ``medium`` keeps the output
     # disciplined against the per-chunk length contract.
     PHASE_DRAWING_DIGEST: EFFORT_MEDIUM,
+    # Drawing-impact synthesis reasons about how the digest relates to the
+    # findings — a genuine (if bounded) reasoning task, but lighter than the
+    # deep review phases; ``high`` keeps it grounded without the xhigh token
+    # eagerness. Clamps to ``high`` anyway on any non-xhigh model.
+    PHASE_DRAWING_IMPACT: EFFORT_HIGH,
 }
 
 # Verification phases get the model-aware bump: Opus on verification is
@@ -748,6 +773,10 @@ _PHASE_CACHE_POLICY: dict[str, CachePolicy] = {
     # ``cache_tools=False`` documents that (``tools_with_cache`` already
     # no-ops on an empty list).
     PHASE_DRAWING_DIGEST: CachePolicy(cache_system=True, cache_tools=False),
+    # Drawing impact: one call per run (not chunked), but the stable
+    # system prompt + tool block pay back on a retry — mirror cross-check
+    # / compliance rather than the tool-less digest.
+    PHASE_DRAWING_IMPACT: CachePolicy(cache_system=True, cache_tools=True),
 }
 
 

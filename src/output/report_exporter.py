@@ -598,6 +598,19 @@ def _summarize_run_diagnostics(
             ),
         }
 
+    # WS-5 drawing-impact synthesis state. ``None`` when no construction
+    # drawings were attached (no drawing-impact result), so the banner row is
+    # absent and a drawing-less report stays byte-identical.
+    drawing_impact_state: dict | None = None
+    di = getattr(pipeline_result, "drawing_impact_result", None)
+    if di is not None:
+        drawing_impact_state = {
+            "status": str(getattr(di, "status", "") or ""),
+            "impact_level": str(getattr(di, "impact_level", "") or ""),
+            "linked_finding_count": int(getattr(di, "linked_finding_count", 0) or 0),
+            "error": str(getattr(di, "error", "") or ""),
+        }
+
     return {
         "edit_suggested": edit_suggested,
         "report_only": report_only,
@@ -613,6 +626,7 @@ def _summarize_run_diagnostics(
         "budget_exhausted_count": budget_exhausted_count,
         "research": research_state,
         "compliance": compliance_state,
+        "drawing_impact": drawing_impact_state,
     }
 
 
@@ -823,6 +837,24 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             comp_highlight = bool(missing or contradicted or incomplete_chunks)
         rows.append(("Local-code compliance", comp_value, comp_highlight))
 
+    # WS-5 drawing-impact row — rendered only when construction drawings were
+    # attached (so a drawing-less run's banner is byte-identical). "failed" is
+    # highlighted red; a completed pass shows the impact level + link count.
+    drawing_impact = summary.get("drawing_impact")
+    if drawing_impact is not None:
+        di_status = str(drawing_impact.get("status", "") or "")
+        if di_status == "completed":
+            di_level = str(drawing_impact.get("impact_level", "") or "minimal")
+            di_linked = int(drawing_impact.get("linked_finding_count", 0) or 0)
+            di_value = (
+                f"{di_level} — {di_linked} finding{'s' if di_linked != 1 else ''} linked"
+            )
+            di_highlight = False
+        else:
+            di_value = "analysis failed"
+            di_highlight = True
+        rows.append(("Drawing analysis impact", di_value, di_highlight))
+
     # Render as a 2-column table. Label cells get a light-gray
     # shading so the visual rhythm matches the existing summary table
     # above; value cells get red shading when ``highlight=True``.
@@ -1011,6 +1043,27 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             hint_run.font.size = Pt(10)
             hint_run.font.italic = True
             hint_run.font.color.rgb = RGBColor(192, 0, 0)
+
+    # --- Drawing-impact failure hint (WS-5) ---
+    # Amber, not red: a failed synthesis pass does NOT mean the drawings were
+    # ignored — they still rode on every review call as context; the run just
+    # couldn't produce the explanatory summary. Distinct cause/remedy from the
+    # verification and compliance hints above.
+    if drawing_impact is not None and str(drawing_impact.get("status", "")) != "completed":
+        err = str(drawing_impact.get("error", "") or "")
+        hint_para = doc.add_paragraph()
+        hint_para.paragraph_format.space_before = Pt(6)
+        hint_para.paragraph_format.space_after = Pt(8)
+        hint_run = hint_para.add_run(
+            "The drawing-impact analysis did not complete"
+            + (f" ({err})" if err else "")
+            + ". The attached drawings still informed the review as context; "
+            "only the explanatory summary is missing. Re-running the review "
+            "re-attempts it."
+        )
+        hint_run.font.size = Pt(10)
+        hint_run.font.italic = True
+        hint_run.font.color.rgb = RGBColor(204, 132, 0)
 
     doc.add_paragraph()  # Spacer between banner and the next section.
 
@@ -1245,6 +1298,157 @@ def _write_requirements_section(
             detail.font.size = Pt(8)
             detail.font.italic = True
             detail.font.color.rgb = RGBColor(120, 120, 120)
+
+    doc.add_paragraph()  # Spacer before the next section.
+
+
+# ---------------------------------------------------------------------------
+# Drawing-impact section (WS-5)
+# ---------------------------------------------------------------------------
+
+# Overall-impact badge styles: display label + text color, keyed by the
+# ``DrawingImpactResult.impact_level`` value.
+_DRAWING_IMPACT_LEVEL_STYLES: dict[str, tuple[str, RGBColor]] = {
+    "substantial": ("Substantial", RGBColor(0, 128, 0)),      # Green
+    "moderate": ("Moderate", RGBColor(204, 132, 0)),          # Amber
+    "minimal": ("Minimal", RGBColor(128, 128, 128)),          # Gray
+    "none": ("None", RGBColor(100, 100, 100)),                # Dark gray
+}
+
+# Per-link relationship styles: display label + text color.
+_DRAWING_RELATIONSHIP_STYLES: dict[str, tuple[str, RGBColor]] = {
+    "corroborated": ("Corroborated by drawings", RGBColor(0, 128, 0)),    # Green
+    "contradicted": ("Contradicted by drawings", RGBColor(192, 0, 0)),    # Red
+    "contextualized": ("Contextualized by drawings", RGBColor(59, 130, 246)),  # Blue
+}
+
+
+def _write_drawing_impact_section(doc: Document, drawing_impact, findings_by_id: dict) -> None:
+    """Render "How the Drawings Informed This Review" (WS-5).
+
+    Rendered only when the run carried a drawing-impact result — i.e. a
+    construction-drawing digest was in Project Context. A run without attached
+    drawings passes ``drawing_impact=None`` and this returns immediately, so
+    the report is byte-identical. All fields are read defensively via
+    ``getattr`` so a legacy / test-double result object cannot crash export.
+
+    ``findings_by_id`` maps ``finding_id`` → the report finding, so each link
+    renders enough context (severity, file, issue snippet) to stand on its own
+    above the findings list.
+    """
+    if drawing_impact is None:
+        return
+
+    doc.add_heading("How the Drawings Informed This Review", level=1)
+
+    intro = doc.add_paragraph()
+    intro_run = intro.add_run(
+        "Construction drawings were attached to this run and analyzed into a "
+        "text digest that was supplied as reference context to every stage of "
+        "the review. This section reports how that drawing content bore on the "
+        "findings — where the drawings corroborate, contradict, or add context "
+        "to a finding, cited to the drawing sheet pages."
+    )
+    intro_run.font.size = Pt(10)
+    intro_run.font.italic = True
+    intro_run.font.color.rgb = RGBColor(100, 100, 100)
+
+    status = str(getattr(drawing_impact, "status", "") or "")
+    if status != "completed":
+        err = str(getattr(drawing_impact, "error", "") or "")
+        para = doc.add_paragraph()
+        run = para.add_run(
+            "⚠ The drawing-impact analysis did not complete"
+            + (f" ({err})" if err else "")
+            + ". The drawings were still provided to the review as context; "
+            "this run simply could not produce the explanatory summary. "
+            "Re-running the review will re-attempt it."
+        )
+        run.font.size = Pt(10)
+        run.font.italic = True
+        run.font.color.rgb = RGBColor(192, 0, 0)
+        doc.add_paragraph()
+        return
+
+    # Overall impact badge.
+    level = str(getattr(drawing_impact, "impact_level", "") or "").strip().lower()
+    label, color = _DRAWING_IMPACT_LEVEL_STYLES.get(
+        level, _DRAWING_IMPACT_LEVEL_STYLES["minimal"]
+    )
+    badge = doc.add_paragraph()
+    prefix_run = badge.add_run("Overall drawing impact: ")
+    prefix_run.bold = True
+    prefix_run.font.size = Pt(11)
+    level_run = badge.add_run(label)
+    level_run.bold = True
+    level_run.font.size = Pt(11)
+    level_run.font.color.rgb = color
+
+    # Narrative — split on blank lines into paragraphs so multi-theme prose
+    # keeps its structure.
+    narrative = str(getattr(drawing_impact, "narrative", "") or "").strip()
+    if narrative:
+        for chunk in (c.strip() for c in narrative.split("\n\n")):
+            if not chunk:
+                continue
+            para = doc.add_paragraph()
+            run = para.add_run(chunk)
+            run.font.size = Pt(11)
+
+    # Per-finding links.
+    links = list(getattr(drawing_impact, "finding_links", None) or [])
+    if links:
+        doc.add_heading("Findings the drawings bear on", level=2)
+        for link in links:
+            fid = str(getattr(link, "finding_id", "") or "")
+            relationship = str(getattr(link, "relationship", "") or "").strip().lower()
+            rel_label, rel_color = _DRAWING_RELATIONSHIP_STYLES.get(
+                relationship, _DRAWING_RELATIONSHIP_STYLES["contextualized"]
+            )
+            finding = findings_by_id.get(fid)
+            severity = str(getattr(finding, "severity", "") or "") if finding is not None else ""
+            issue = str(getattr(finding, "issue", "") or "") if finding is not None else ""
+            file_name = str(getattr(finding, "fileName", "") or "") if finding is not None else ""
+
+            head = doc.add_paragraph(style="List Bullet")
+            rel_run = head.add_run(rel_label)
+            rel_run.bold = True
+            rel_run.font.size = Pt(10)
+            rel_run.font.color.rgb = rel_color
+            meta_bits = [b for b in (severity, file_name) if b]
+            meta = f"  [{fid}]" + (f" — {' · '.join(meta_bits)}" if meta_bits else "")
+            meta_run = head.add_run(meta)
+            meta_run.font.size = Pt(9)
+            meta_run.font.color.rgb = RGBColor(120, 120, 120)
+            if issue:
+                snippet = issue.strip()
+                if len(snippet) > 200:
+                    snippet = snippet[:199] + "…"
+                issue_run = head.add_run(f"\n{snippet}")
+                issue_run.font.size = Pt(10)
+
+            explanation = str(getattr(link, "explanation", "") or "").strip()
+            refs = [str(r) for r in (getattr(link, "sheet_references", None) or []) if str(r).strip()]
+            detail_parts = []
+            if explanation:
+                detail_parts.append(explanation)
+            if refs:
+                detail_parts.append("Sheets: " + ", ".join(refs))
+            if detail_parts:
+                detail = head.add_run("\n" + " • ".join(detail_parts))
+                detail.font.size = Pt(9)
+                detail.font.italic = True
+                detail.font.color.rgb = RGBColor(90, 90, 90)
+    else:
+        note = doc.add_paragraph()
+        note_run = note.add_run(
+            "No individual finding turned on drawing content — on this run the "
+            "drawings served as background context rather than the basis for a "
+            "specific finding."
+        )
+        note_run.font.size = Pt(10)
+        note_run.font.italic = True
+        note_run.font.color.rgb = RGBColor(100, 100, 100)
 
     doc.add_paragraph()  # Spacer before the next section.
 
@@ -2821,6 +3025,19 @@ def export_report(
         verification_stats=verification_stats,
         module=module,
     )
+    # WS-5 "How the Drawings Informed This Review" — rendered only when the
+    # run carried attached construction drawings (a drawing-impact result),
+    # so a run without drawings is byte-identical. Placed right after the
+    # methodology note (both answer "how was this review produced?") and
+    # above the findings its links reference.
+    drawing_impact = getattr(pipeline_result, "drawing_impact_result", None)
+    if drawing_impact is not None:
+        findings_by_id = {
+            f.finding_id: f
+            for f in all_findings
+            if getattr(f, "finding_id", "")
+        }
+        _write_drawing_impact_section(doc, drawing_impact, findings_by_id)
     _write_summary_table(
         doc,
         review,

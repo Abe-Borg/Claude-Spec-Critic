@@ -42,6 +42,7 @@ from ..orchestration.pipeline import (
     location_inputs_for_submission,
     run_compliance_for_batch,
     run_cross_check_for_batch,
+    run_drawing_impact_for_batch,
     start_batch_review,
     start_batch_verification,
     _make_verification_cache,
@@ -480,6 +481,41 @@ def collect_batch_results(app) -> None:
                     )
                     if diag:
                         diag.log("cross_check_verification", "success", "Cross-check verification complete")
+
+            # WS-5 drawing-impact synthesis: the LAST pass, so it can link
+            # findings that only just picked up verdicts in round-2
+            # verification. Self-gates on a drawing digest being present in
+            # Project Context — a no-op (no log line, no API call) otherwise,
+            # so a run without attached drawings is unaffected.
+            from ..drawing_impact import extract_drawing_digest
+            if extract_drawing_digest(getattr(review_state.submission, "project_context", "")):
+                app._dispatch_if_current(run_epoch, lambda: app.run_button.configure(text="Analyzing drawing impact (live API)..."))
+                if diag:
+                    diag.log("drawing_impact", "step", "Explaining how the drawings informed the review")
+            review_state = run_drawing_impact_for_batch(
+                review_state,
+                project_context=None,
+                log=app._make_diag_log("drawing_impact", run_epoch),
+            )
+            if diag and review_state.drawing_impact_result is not None:
+                di = review_state.drawing_impact_result
+                diag.record_api_call(
+                    phase="drawing_impact",
+                    model=di.model,
+                    message=f"Drawing impact: {di.status}",
+                    input_tokens=di.input_tokens,
+                    output_tokens=di.output_tokens,
+                    cache_creation_input_tokens=di.cache_creation_input_tokens,
+                    cache_read_input_tokens=di.cache_read_input_tokens,
+                    stop_reason=di.stop_reason,
+                    mode="realtime",
+                    retry_status="initial",
+                    structured_payload=di.structured_payload,
+                    extra={
+                        "impact_level": di.impact_level,
+                        "linked_finding_count": di.linked_finding_count,
+                    },
+                )
 
             _persist_verification_cache(cache, log=app._make_diag_log("finalization", run_epoch))
             if diag:

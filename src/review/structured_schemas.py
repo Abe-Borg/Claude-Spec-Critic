@@ -458,6 +458,108 @@ COMPLIANCE_FINDINGS_SCHEMA: dict[str, Any] = {
 }
 
 
+# Closed relationship set for a drawing-impact finding link (WS-5). Describes
+# how the drawings bear on a finding. Unknown values coerce to
+# "contextualized" at parse — the weakest, safe default (it neither confirms
+# nor refutes the finding, so it can't overstate the drawings' contribution).
+DRAWING_IMPACT_RELATIONSHIPS: tuple[str, ...] = (
+    "corroborated",
+    "contradicted",
+    "contextualized",
+)
+
+# Closed overall-impact set. Drives the report badge; the model is instructed
+# to pick "none"/"minimal" honestly when the drawings added little. Unknown
+# values coerce to "minimal" at parse.
+DRAWING_IMPACT_LEVELS: tuple[str, ...] = (
+    "substantial",
+    "moderate",
+    "minimal",
+    "none",
+)
+
+
+DRAWING_IMPACT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["impact_level", "narrative", "finding_links"],
+    "properties": {
+        "impact_level": {
+            "type": "string",
+            "enum": list(DRAWING_IMPACT_LEVELS),
+            "description": (
+                "Overall degree to which having the drawings available changed "
+                "or supported this review. Choose 'none' or 'minimal' honestly "
+                "when the drawings only restated the specs or no finding turned "
+                "on drawing content."
+            ),
+        },
+        "narrative": {
+            "type": "string",
+            "description": (
+                "Plain-text explanation (no markdown) of how the drawings "
+                "informed the review: what they made checkable that the spec "
+                "text alone did not, and where drawings and specs agree or "
+                "conflict. State plainly when the drawings added little."
+            ),
+        },
+        "finding_links": {
+            "type": "array",
+            "description": (
+                "Only the findings the drawings genuinely bear on. Omit a "
+                "finding entirely rather than inventing a connection."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "finding_id",
+                    "relationship",
+                    "explanation",
+                    "sheet_references",
+                ],
+                "properties": {
+                    "finding_id": {
+                        "type": "string",
+                        "description": (
+                            "The exact id of a finding from the input list "
+                            "(e.g. 'rf-1a2b3c4d5e6f'). Never invent an id."
+                        ),
+                    },
+                    "relationship": {
+                        "type": "string",
+                        "enum": list(DRAWING_IMPACT_RELATIONSHIPS),
+                        "description": (
+                            "corroborated: the drawings independently support "
+                            "the finding. contradicted: the drawings conflict "
+                            "with it (reconcile the two). contextualized: the "
+                            "drawings supply interpreting context without "
+                            "confirming or refuting it."
+                        ),
+                    },
+                    "explanation": {
+                        "type": "string",
+                        "description": (
+                            "One or two plain-text sentences on how the drawing "
+                            "content relates to this finding."
+                        ),
+                    },
+                    "sheet_references": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "The digest page references that support this link, "
+                            "each in the digest's own '[<file> p.N]' form. Never "
+                            "cite a page not present in the digest."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 VERIFICATION_VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -515,6 +617,7 @@ _VERIFICATION_TOOL_NAME = "submit_verification_verdict"
 _TRIAGE_TOOL_NAME = "submit_triage_classifications"
 _RESEARCH_TOOL_NAME = "submit_requirements_research"
 _COMPLIANCE_TOOL_NAME = "submit_compliance_findings"
+_DRAWING_IMPACT_TOOL_NAME = "submit_drawing_impact"
 
 
 ENV_STRICT_TOOL_USE = "SPEC_CRITIC_STRICT_TOOL_USE"
@@ -674,6 +777,26 @@ def compliance_tool_choice() -> dict[str, Any]:
     return {"type": "auto", "disable_parallel_tool_use": True}
 
 
+def drawing_impact_tool(*, model: str | None = None) -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "name": _DRAWING_IMPACT_TOOL_NAME,
+        "description": (
+            "Submit the structured explanation of how the construction "
+            "drawings informed this specification review. Use this tool "
+            "exactly once. ``finding_links`` may be empty when no finding "
+            "turns on drawing content."
+        ),
+        "input_schema": DRAWING_IMPACT_SCHEMA,
+    }
+    if _strict_for_model(model):
+        tool["strict"] = True
+    return tool
+
+
+def drawing_impact_tool_choice() -> dict[str, Any]:
+    return {"type": "auto", "disable_parallel_tool_use": True}
+
+
 def verification_verdict_tool(*, model: str | None = None) -> dict[str, Any]:
     tool: dict[str, Any] = {
         "name": _VERIFICATION_TOOL_NAME,
@@ -780,3 +903,4 @@ VERIFICATION_TOOL_NAME = _VERIFICATION_TOOL_NAME
 TRIAGE_TOOL_NAME = _TRIAGE_TOOL_NAME
 RESEARCH_TOOL_NAME = _RESEARCH_TOOL_NAME
 COMPLIANCE_TOOL_NAME = _COMPLIANCE_TOOL_NAME
+DRAWING_IMPACT_TOOL_NAME = _DRAWING_IMPACT_TOOL_NAME
