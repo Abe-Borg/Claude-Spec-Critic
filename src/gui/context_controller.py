@@ -290,7 +290,10 @@ def attach_drawing_files(app) -> None:
                 module_display_name=module_display_name,
             )
         except Exception as exc:  # noqa: BLE001 — surfaced to the operator
-            app.after(0, lambda: _on_preflight_failed(exc))
+            # Bind via default arg: Python clears ``exc`` when the except
+            # block exits, so a plain closure would NameError when the Tk
+            # callback fires later — and the reset/error path would never run.
+            app.after(0, lambda e=exc: _on_preflight_failed(e))
             return
         app.after(0, lambda: _on_preflight_done(preflight))
 
@@ -339,10 +342,14 @@ def attach_drawing_files(app) -> None:
                 log=_log,
             )
         except DrawingDigestError as exc:
-            app.after(0, lambda: _on_digest_failed(str(exc)))
+            # Default-arg binding, same reason as the preflight worker.
+            app.after(0, lambda msg=str(exc): _on_digest_failed(msg))
             return
         except Exception as exc:  # noqa: BLE001 — surfaced to the operator
-            app.after(0, lambda: _on_digest_failed(f"{type(exc).__name__}: {exc}"))
+            app.after(
+                0,
+                lambda msg=f"{type(exc).__name__}: {exc}": _on_digest_failed(msg),
+            )
             return
         app.after(0, lambda: _on_digest_done(result))
 
