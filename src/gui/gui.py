@@ -93,6 +93,7 @@ from src.gui.batch_controller import (
 )
 from src.gui.context_controller import (
     attach_context_files,
+    attach_drawing_files,
     context_focus_in,
     context_focus_out,
     do_context_change,
@@ -349,6 +350,8 @@ class SpecReviewApp(_CTkDnDRoot):
         ctk.CTkLabel(ctx_label_frame, text="Project Context", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="nw").pack(anchor="nw")
         ctk.CTkButton(ctx_label_frame, text="Expand", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._open_context_modal).pack(anchor="nw", pady=(4, 0))
         ctk.CTkButton(ctx_label_frame, text="Attach Files…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_context_files).pack(anchor="nw", pady=(4, 0))
+        self.attach_drawings_button = ctk.CTkButton(ctx_label_frame, text="Attach Drawings…", width=80, height=24, font=ctk.CTkFont(size=11), fg_color=COLORS["bg_input"], hover_color=COLORS["border"], border_width=1, border_color=COLORS["border"], text_color=COLORS["text_secondary"], command=self._attach_drawing_files)
+        self.attach_drawings_button.pack(anchor="nw", pady=(4, 0))
         ctx_field_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         ctx_field_frame.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=8)
         ctx_field_frame.columnconfigure(0, weight=1)
@@ -687,6 +690,9 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _attach_context_files(self, target_textbox=None) -> None:
         attach_context_files(self, target_textbox)
+
+    def _attach_drawing_files(self) -> None:
+        attach_drawing_files(self)
 
     def _open_context_modal(self):
         open_context_modal(self)

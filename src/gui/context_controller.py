@@ -7,6 +7,8 @@ every API call. This controller owns:
 - token-count refresh + warning thresholds on the textbox label
 - ``.docx``/``.pdf`` attachment extraction (rejecting unsupported
   extensions, surfacing per-file errors via messagebox)
+- the "Attach Drawings…" vision-digest flow (drawing PDFs -> one-time
+  digest call -> editable text merged into the context textbox)
 - the modal "Project Context" expand window
 
 The widgets remain owned by ``SpecReviewApp``; this controller mutates
@@ -14,13 +16,26 @@ them through references on the app object.
 """
 from __future__ import annotations
 
+import os
+import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
 from ..input.extractor import CONTEXT_ATTACHMENT_EXTENSIONS, extract_context_text
+from ..input.drawing_digest import (
+    DrawingDigestError,
+    DRAWING_DIGEST_MODEL_DEFAULT,
+    build_digest_chunks,
+    format_digest_confirm_message,
+    preflight_digest_cost,
+    run_drawing_digest,
+    validate_drawing_files,
+    wrapped_digest_block,
+)
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
+from ..modules import get_module
 from .context_attachment import (
     context_within_token_cap,
     merge_into_context,
@@ -35,6 +50,11 @@ _CONTEXT_FILETYPES = [
     ("Word Documents", "*.docx"),
     ("PDF Documents", "*.pdf"),
     ("Markdown / Text", "*.md *.txt"),
+    ("All Files", "*.*"),
+]
+
+_DRAWING_FILETYPES = [
+    ("PDF Drawings", "*.pdf"),
     ("All Files", "*.*"),
 ]
 
@@ -119,7 +139,11 @@ def extract_context_attachments(paths: list[Path]) -> tuple[str, list[str]]:
             errors.append(f"{path.name}: {exc}")
             continue
         if not text:
-            errors.append(f"{path.name}: no extractable text (scanned PDF?)")
+            errors.append(
+                f"{path.name}: no extractable text (scanned PDF?). If this "
+                "is a drawing set, use 'Attach Drawings…' to analyze it "
+                "with vision."
+            )
             continue
         sections.append(wrap_attachment(path.name, text))
     return ("\n\n".join(sections), errors)
@@ -185,6 +209,197 @@ def attach_context_files(app, target_textbox=None) -> None:
     else:
         target_textbox.delete("1.0", "end")
         target_textbox.insert("1.0", merged)
+
+
+def attach_drawing_files(app) -> None:
+    """Pick drawing PDFs, run the one-time vision digest, merge the text.
+
+    The digest is an API spend, so the flow is deliberately staged: fast
+    local validation + chunk packing under the watch cursor, then a
+    background ``count_tokens`` preflight feeding a cost-confirm dialog,
+    and only then the digest call itself on a second background thread.
+    All tkinter mutation is marshaled back to the main thread via
+    ``app.after(0, ...)``; a running flag + button disable prevents
+    concurrent digests. A review started mid-digest is safe — the review
+    snapshots Project Context at submit time.
+    """
+    if getattr(app, "_drawing_digest_running", False):
+        return
+    if getattr(app, "is_processing", False):
+        messagebox.showwarning(
+            "Review in progress",
+            "Wait for the current review to finish before analyzing drawings.",
+        )
+        return
+    api_key = app.api_key_entry.get().strip()
+    if not api_key:
+        messagebox.showerror(
+            "API key required",
+            "Analyzing drawings calls the Anthropic API — enter your API key first.",
+        )
+        return
+    os.environ["ANTHROPIC_API_KEY"] = api_key
+
+    files = filedialog.askopenfilenames(
+        title="Attach construction drawings (PDF)",
+        filetypes=_DRAWING_FILETYPES,
+    )
+    if not files:
+        return
+    paths = [Path(f) for f in files]
+
+    try:
+        app.configure(cursor="watch")
+        app.update_idletasks()
+        drawing_files, errors = validate_drawing_files(paths)
+        chunks = (
+            build_digest_chunks(drawing_files, model=DRAWING_DIGEST_MODEL_DEFAULT)
+            if drawing_files
+            else []
+        )
+    finally:
+        app.configure(cursor="")
+
+    if errors:
+        messagebox.showwarning(
+            "Some drawings could not be used",
+            "\n".join(errors),
+        )
+    if not chunks:
+        return
+
+    module = get_module(getattr(app, "_selected_module_id", None))
+    module_display_name = module.display_name
+
+    app._drawing_digest_running = True
+    _set_drawings_button_state(app, "disabled")
+
+    def _log(msg: str, level: str = "info", **_kwargs) -> None:
+        if hasattr(app, "log"):
+            app.after(0, lambda m=msg, l=level: app.log.log(m, level=l))
+
+    def _reset() -> None:
+        app._drawing_digest_running = False
+        _set_drawings_button_state(app, "normal")
+
+    def _preflight_worker() -> None:
+        try:
+            preflight = preflight_digest_cost(
+                chunks,
+                model=DRAWING_DIGEST_MODEL_DEFAULT,
+                module_display_name=module_display_name,
+            )
+        except Exception as exc:  # noqa: BLE001 — surfaced to the operator
+            app.after(0, lambda: _on_preflight_failed(exc))
+            return
+        app.after(0, lambda: _on_preflight_done(preflight))
+
+    def _on_preflight_failed(exc: Exception) -> None:
+        _reset()
+        messagebox.showerror(
+            "Drawing analysis failed",
+            f"Could not estimate the drawing set's size: {exc}",
+        )
+
+    def _on_preflight_done(preflight) -> None:
+        if preflight.over_window_chunk_indices:
+            _reset()
+            bad = ", ".join(
+                str(i + 1) for i in preflight.over_window_chunk_indices
+            )
+            messagebox.showerror(
+                "Drawing set too dense",
+                f"Request(s) {bad} exceed the model's context window even "
+                "as a single chunk. Split the densest PDFs into smaller "
+                "files and re-attach.",
+            )
+            return
+        proceed = messagebox.askyesno(
+            "Analyze drawings?",
+            format_digest_confirm_message(
+                preflight, chunks=chunks, model=DRAWING_DIGEST_MODEL_DEFAULT
+            ),
+        )
+        if not proceed:
+            _reset()
+            return
+        _log(
+            f"Analyzing {sum(len(c.parts) for c in chunks)} drawing "
+            f"document(s) across {len(chunks)} request(s)...",
+            level="step",
+        )
+        threading.Thread(target=_digest_worker, daemon=True).start()
+
+    def _digest_worker() -> None:
+        try:
+            result = run_drawing_digest(
+                chunks,
+                model=DRAWING_DIGEST_MODEL_DEFAULT,
+                module_display_name=module_display_name,
+                log=_log,
+            )
+        except DrawingDigestError as exc:
+            app.after(0, lambda: _on_digest_failed(str(exc)))
+            return
+        except Exception as exc:  # noqa: BLE001 — surfaced to the operator
+            app.after(0, lambda: _on_digest_failed(f"{type(exc).__name__}: {exc}"))
+            return
+        app.after(0, lambda: _on_digest_done(result))
+
+    def _on_digest_failed(error: str) -> None:
+        _reset()
+        messagebox.showerror("Drawing analysis failed", error)
+
+    def _on_digest_done(result) -> None:
+        _reset()
+        wrapped = wrapped_digest_block(result)
+        merged = merge_into_context(get_project_context(app), wrapped)
+        merged_tokens, fits = context_within_token_cap(merged)
+        if not fits:
+            digest_tokens = count_tokens(wrapped)
+            messagebox.showerror(
+                "Digest too large for Project Context",
+                f"The drawing digest is {digest_tokens:,} tokens and would "
+                f"push Project Context to {merged_tokens:,} tokens, over "
+                f"the {PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
+                "Attach fewer sheets, split the set into smaller runs, or "
+                "trim the existing context, then try again.",
+            )
+            return
+        set_context_text(app, merged)
+        if result.failed_chunks:
+            failed = "\n".join(
+                f"- request {s.chunk_index + 1}: {', '.join(s.file_labels)} — {s.error}"
+                for s in result.chunk_statuses
+                if s.status == "failed"
+            )
+            messagebox.showwarning(
+                "Digest completed partially",
+                "Some drawing requests failed; their sheets are NOT in the "
+                f"digest:\n{failed}",
+            )
+        cost = result.actual_cost_usd()
+        cost_text = f" (~${cost:,.2f})" if cost is not None else ""
+        _log(
+            f"Drawing digest complete: {result.completed_chunks}/"
+            f"{len(result.chunk_statuses)} request(s), "
+            f"{result.total_input_tokens:,} in / "
+            f"{result.total_output_tokens:,} out tokens{cost_text}. "
+            "Digest added to Project Context — review and edit it before "
+            "running a review.",
+            level="success",
+        )
+
+    threading.Thread(target=_preflight_worker, daemon=True).start()
+
+
+def _set_drawings_button_state(app, state: str) -> None:
+    button = getattr(app, "attach_drawings_button", None)
+    if button is not None:
+        try:
+            button.configure(state=state)
+        except Exception:  # noqa: BLE001 — widget teardown must never raise
+            pass
 
 
 def open_context_modal(app) -> None:

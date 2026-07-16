@@ -13,6 +13,8 @@ Model identifiers may be overridden via env vars:
                                               (default Haiku 4.5).
     SPEC_CRITIC_RESEARCH_MODEL              — requirements research fan-out
                                               (default Sonnet 5).
+    SPEC_CRITIC_DRAWING_DIGEST_MODEL        — construction-drawing digest
+                                              vision pass (default Sonnet 5).
 """
 from __future__ import annotations
 
@@ -66,6 +68,17 @@ RESEARCH_MODEL_DEFAULT = os.environ.get("SPEC_CRITIC_RESEARCH_MODEL", MODEL_SONN
 # cross-check). Bound directly to Sonnet with NO env override — deliberate
 # parity with ``CROSS_CHECK_MODEL_DEFAULT``, which is likewise unswappable.
 COMPLIANCE_MODEL_DEFAULT = MODEL_SONNET_5
+
+# Construction-drawing digest (one-time vision pass at attach time that
+# turns drawing PDFs into a plain-text Project Context block). Sonnet: the
+# task is transcription + structured summarization of provided documents,
+# not deep review. All four whitelisted models accept PDF document blocks
+# (there is no ``supports_vision`` capability flag — a non-vision override
+# fails fast at the digest call itself, before anything downstream is
+# billed).
+DRAWING_DIGEST_MODEL_DEFAULT = os.environ.get(
+    "SPEC_CRITIC_DRAWING_DIGEST_MODEL", MODEL_SONNET_5
+)
 
 
 # Opus family membership now drives exactly one policy decision: the
@@ -123,6 +136,11 @@ RESEARCH_OUTPUT_CAP = 24_000
 # requirement) plus findings — cross-check-scale output, sized between the
 # cross-check (96k) and verification (16k) caps.
 COMPLIANCE_OUTPUT_CAP = 64_000
+# One drawing-digest chunk targets ~12k tokens of digest text (the in-prompt
+# length contract); 24k gives headroom for notes-dense sheets without
+# inviting rambling. Anything larger would let a 4-chunk digest exceed the
+# 100k PROJECT_CONTEXT_MAX_TOKENS cap on its own.
+DRAWING_DIGEST_OUTPUT_CAP = 24_000
 
 # Token threshold above which a review uses the larger batch cap.
 LARGE_REVIEW_INPUT_THRESHOLD = 200_000
@@ -139,6 +157,7 @@ PHASE_VERIFICATION_CONTINUATION = "verification_continuation"
 PHASE_TRIAGE = "triage"
 PHASE_RESEARCH = "research"
 PHASE_COMPLIANCE = "compliance"
+PHASE_DRAWING_DIGEST = "drawing_digest"
 
 
 def output_cap_for_model(model: str, *, requested: int) -> int:
@@ -173,6 +192,7 @@ _PHASE_OUTPUT_BUDGET: dict[str, int] = {
     PHASE_TRIAGE: HAIKU_TRIAGE_OUTPUT_CAP,
     PHASE_RESEARCH: RESEARCH_OUTPUT_CAP,
     PHASE_COMPLIANCE: COMPLIANCE_OUTPUT_CAP,
+    PHASE_DRAWING_DIGEST: DRAWING_DIGEST_OUTPUT_CAP,
 }
 
 
@@ -218,6 +238,10 @@ def research_max_tokens(*, model: str = RESEARCH_MODEL_DEFAULT) -> int:
 
 def compliance_max_tokens(*, model: str = COMPLIANCE_MODEL_DEFAULT) -> int:
     return phase_output_cap(PHASE_COMPLIANCE, model=model)
+
+
+def drawing_digest_max_tokens(*, model: str = DRAWING_DIGEST_MODEL_DEFAULT) -> int:
+    return phase_output_cap(PHASE_DRAWING_DIGEST, model=model)
 
 
 def verification_max_tokens(*, model: str = VERIFICATION_MODEL_DEFAULT, phase: str = PHASE_VERIFICATION) -> int:
@@ -576,6 +600,10 @@ _PHASE_DEFAULT_EFFORT: dict[str, str] = {
     # ``_clamp_effort_for_model`` still drops it to ``high`` should the
     # pass ever run on a model without ``supports_xhigh_effort``.
     PHASE_COMPLIANCE: EFFORT_XHIGH,
+    # The drawing digest reads and transcribes documents it was handed —
+    # no tools to chase, no deep reasoning; ``medium`` keeps the output
+    # disciplined against the per-chunk length contract.
+    PHASE_DRAWING_DIGEST: EFFORT_MEDIUM,
 }
 
 # Verification phases get the model-aware bump: Opus on verification is
@@ -714,6 +742,12 @@ _PHASE_CACHE_POLICY: dict[str, CachePolicy] = {
     # below the 2048-token Haiku cache minimum so repeated calls cannot
     # hit. Skip caching to avoid the cache-write cost.
     PHASE_TRIAGE: CachePolicy(cache_system=False, cache_tools=False),
+    # Drawing digest: the system prompt (protocol/format contract) is
+    # byte-identical across every chunk and retry in a run, so the
+    # breakpoint pays back on chunk #2. The phase sends no tools at all;
+    # ``cache_tools=False`` documents that (``tools_with_cache`` already
+    # no-ops on an empty list).
+    PHASE_DRAWING_DIGEST: CachePolicy(cache_system=True, cache_tools=False),
 }
 
 
