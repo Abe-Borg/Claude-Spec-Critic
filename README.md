@@ -209,3 +209,9 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 - **Trust Upgrade Chunk 13**: New `VerificationResult.budget_exhausted` sentinel on UNVERIFIED results whose verifier consumed its full mode-scaled `web_search` budget. The report's per-finding status line appends a `(search budget exhausted)` sub-label; the Run Diagnostics banner gets a "Budget-exhausted findings" row plus a recovery-hint paragraph pointing operators at the severity-tiered budget knob. Cache refuses to persist exhausted results (transient signal — re-run with higher severity allocates more budget). Calibration eval surfaces the count in its summary header.
 
 Older changelog entries trimmed; see git history for v2.10.0, v2.8.x, and the non-GUI refactor chunks A–P.
+
+## License
+
+Copyright © 2025–2026 Abraham Borg. All rights reserved.
+
+Spec Critic is proprietary software. The source is publicly viewable on GitHub, but it is **not** open source: no permission is granted to use, copy, modify, or redistribute it without the copyright holder's prior written consent. See [`LICENSE`](LICENSE). Third-party dependencies — direct and transitive, pinned in `requirements.txt` — are installed separately and remain under their own licenses (MIT / BSD / Apache-2.0 / MPL-2.0); none imposes copyleft terms on Spec Critic itself, and a bundled binary distribution must carry every bundled package's license text.
