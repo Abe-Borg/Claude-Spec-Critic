@@ -34,7 +34,8 @@ src/
 │   ├── code_cycles.py          # California code cycle definitions
 │   ├── pricing.py              # Model pricing table + request cost estimate (USD; dependency-free)
 │   ├── tokenizer.py            # Local + Anthropic token counting
-│   └── ui_state.py             # Persisted GUI selections (selected module)
+│   ├── ui_state.py             # Persisted GUI selections (selected module)
+│   └── updates.py              # Self-update checker for the Windows build (stdlib-only, injectable seams)
 
 # Domain modules (module-extraction refactor, in progress)
 ├── modules/
@@ -48,9 +49,14 @@ src/
 │   ├── widgets.py              # Reusable UI components
 │   ├── about_usage_dialogs.py  # About / API-usage dialogs
 │   ├── context_attachment.py   # Pure (tkinter-free) Project Context merge / token-cap / attachment-wrap helpers
-│   └── *_controller.py         # 7 thin bridges between widgets and pipeline
+│   └── *_controller.py         # 8 thin bridges between widgets and pipeline
 │                               # (batch, context, diagnostics, file_selection,
-│                               #  report, review_run, token_analysis)
+│                               #  report, review_run, token_analysis, update)
+
+# Windows packaging (see docs/RELEASE_WINDOWS.md)
+├── ../packaging/windows/       # app_entry.py (--selfcheck), spec-critic.spec (PyInstaller),
+│                               # installer.iss (Inno Setup), make_manifest.py (latest.json),
+│                               # check_release_version.py (tag == both version literals)
 
 # Orchestration / state
 ├── orchestration/
@@ -302,6 +308,9 @@ The report exporter renders one collapsed "Sources" Heading 4 per finding with a
 
 `report_status.verdict_supersedes_confidence(finding)` (backed by the `VERDICT_SUPERSEDES_CONFIDENCE` frozenset = `VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED` / `VERIFIED_CONTESTED` / `DISPUTED`) is the single predicate for "verification reached a verdict that supersedes the review %." When it's True, `report_exporter._write_finding_entry` **drops the bold colored % from the Heading-3 header** and re-renders the same number as a small gray italic footnote on the Status line — `… • review confidence 55% (pre-verification)` — so the value is preserved but can't be mistaken for the post-verification trust signal (the verdict). When it's False (no verdict reached: `NOT_CHECKED` / `INSUFFICIENT_EVIDENCE` / `LOCALLY_CLASSIFIED` / `VERIFICATION_FAILED`), the % stays the prominent header signal — it's the only trust signal those findings have. The distinction is documented for the reader in the "About This Review" methodology note. Locked in by `tests/test_report_status.py` (`TestVerdictSupersedesConfidence`, `TestConfidenceDeEmphasisRendering`).
 
+### Windows desktop build + self-update
+The app ships as an unsigned PyInstaller one-folder build wrapped in an Inno Setup per-user installer (`packaging/windows/`, built + published by `.github/workflows/release.yml` on `v*` tags; full runbook in `docs/RELEASE_WINDOWS.md`). `src/core/updates.py` is the in-app updater — stdlib-only, injectable fetcher/opener/clock, `check_for_update` never raises — and `src/gui/update_controller.py` is its GUI bridge (footer version + "Check for Updates" button, once-a-day silent launch check, update dialog with Download & Install / Skip this Version / Later + progress bar). Invariants to preserve: **https is enforced on BOTH the manifest URL and the installer URL** (the manifest is the root of trust — it carries the installer's authenticating SHA-256; `fetch_manifest`, `parse_manifest`, and `download_installer` each check independently, so the `SPEC_CRITIC_UPDATE_URL` override can never downgrade to plaintext); the download streams to a `.part` temp, the SHA-256 is computed during the stream, and `os.replace` promotes to the final `.exe` name **only after the hash matches** — any failure (including a checksum mismatch) deletes the temp so nothing runnable-but-unverified survives; the release workflow's version guard (`check_release_version.py`) requires the tag to equal **both** `pyproject.toml` and `src/__init__.py` (a half-bumped tag ships an installer stuck in a perpetual "update available" loop — `tests/test_release_metadata.py` keeps the pair in lockstep on every PR); RC tags (`vX.Y.ZrcN`) publish as GitHub **pre-releases** so `releases/latest/download/latest.json` never auto-offers them to stable installs (`parse_version` orders `rcN` strictly below its final); the workflow's `build` job is read-only (`contents: read`, `persist-credentials: false`) and only the tag-gated no-repo-code `publish` job holds `contents: write`; the GUI guards the download lifecycle (one download at a time; closing the dialog mid-download cancels its completion handling so it can't pop a stray install prompt; install refused while `is_processing`). Throttle state lives at `~/.spec_critic/update_check.json` (`SPEC_CRITIC_UPDATE_STATE_PATH` seam); downloads land in `~/.spec_critic/updates/`. The frozen exe supports `--version` / `--selfcheck` (result written to `SPEC_CRITIC_SELFCHECK_OUT` because the windowed build may have `sys.stdout=None`); CI smoke-runs it to catch missing hidden imports (`tiktoken_ext`, `keyring.backends.Windows`, customtkinter/tkinterdnd2 assets — see `spec-critic.spec`). The app is unsigned by choice: SmartScreen's "Run anyway" notice is the documented cost; the free SHA-256 integrity gate is what actually authenticates downloads. Locked in by `tests/test_updates.py` (updater contract, atomicity, https gates, throttle, manifest maker round-trip, version guard, AST-checked GUI wiring).
+
 ---
 
 ## 3) Verification Routing
@@ -462,6 +471,9 @@ Model-id overrides plus a handful of operator switches for rollback / cache cont
 | `SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS` | `60` days | Age-based pruning on cache load. Explicit `0` restores the legacy "no expiry" behavior; malformed/negative values fall back to the 60-day default so a typo never silently turns the cache into a permanent database. |
 | `SPEC_CRITIC_CACHE_PATH` | `~/.spec_critic/verification_cache.json` | Override the on-disk cache file path; `~` and `$VAR` are expanded |
 | `SPEC_CRITIC_PENDING_BATCH_PATH` | `~/.spec_critic/pending_batch.json` | Override the pending-batch state file used for review-batch resume / recovery; `~` and `$VAR` are expanded |
+| `SPEC_CRITIC_UPDATE_URL` | GitHub `releases/latest/download/latest.json` | Override the Windows self-updater's manifest URL (testing / a fork's releases). Must be **https** — the manifest carries the installer's authenticating SHA-256, so the fetch refuses plaintext even via this override. |
+| `SPEC_CRITIC_DISABLE_UPDATE_CHECK` | off (checks enabled) | Set truthy to disable the once-a-day launch check AND the manual "Check for Updates" path entirely (locked-down deployments). |
+| `SPEC_CRITIC_UPDATE_STATE_PATH` | `~/.spec_critic/update_check.json` | Override the updater's throttle-state file (last-check timestamp + "skip this version" marker); `~` and `$VAR` are expanded |
 | `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. Writes a forensic JSONL trace to `~/.spec_critic/traces/<run_id>/`. |
 | `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, batch-verification thinking / tool-use blocks, untruncated raw responses, and inline prompts. Implies trace enabled. |
 | `SPEC_CRITIC_TRACE_DIR` | `~/.spec_critic/traces/` | Override the trace root directory. `~` and `$VAR` are expanded. |

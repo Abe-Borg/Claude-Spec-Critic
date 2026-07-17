@@ -136,6 +136,16 @@ from src.gui.token_analysis_controller import (
     on_file_selection_change,
     refresh_exact_token_count,
 )
+from src.gui.update_controller import (
+    build_footer,
+    close_update_dialog,
+    init_update_state,
+    maybe_auto_check_for_updates,
+    on_check_for_updates_clicked,
+    on_update_check_done,
+    show_update_dialog,
+    start_update_check,
+)
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
@@ -204,12 +214,29 @@ class SpecReviewApp(_CTkDnDRoot):
         ).module_id
         self._selected_cycle_label = get_module(self._selected_module_id).cycle.label
         self._font_scale_label: str = "Default (100%)"
+        # Self-update checker (Windows desktop build). The last-check date and
+        # any "skipped" version persist in ~/.spec_critic/update_check.json;
+        # the network fetch/download always runs off the UI thread. See
+        # core/updates.py and docs/RELEASE_WINDOWS.md.
+        init_update_state(self)
         self._create_ui()
+        # Silent, throttled (once/day) update check shortly after the window
+        # paints — never blocks startup, and only surfaces a dialog when an
+        # update is actually available. Scheduled after the batch-resume
+        # prompt (600ms in main()) so the two startup prompts don't collide.
+        # The footer's "Check for Updates" button runs the same path on
+        # demand with visible results.
+        self.after(1500, self._maybe_auto_check_for_updates)
 
     def _create_ui(self):
         c = ctk.CTkFrame(self, fg_color="transparent")
         c.pack(fill="both", expand=True, padx=24, pady=24)
         self.container = c
+
+        # Footer packed first (side="bottom") so the version + "Check for
+        # Updates" strip reserves the bottom edge before the log below claims
+        # the remaining space with expand=True.
+        self._build_footer(c)
 
         # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
@@ -875,6 +902,29 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _recover_batch_dialog(self):
         recover_batch_dialog(self)
+
+    # ----- Self-update (Windows desktop build) -----
+
+    def _build_footer(self, parent):
+        build_footer(self, parent)
+
+    def _maybe_auto_check_for_updates(self):
+        maybe_auto_check_for_updates(self)
+
+    def _on_check_for_updates_clicked(self):
+        on_check_for_updates_clicked(self)
+
+    def _start_update_check(self, *, manual: bool):
+        start_update_check(self, manual=manual)
+
+    def _on_update_check_done(self, result, manual: bool):
+        on_update_check_done(self, result, manual)
+
+    def _show_update_dialog(self, info):
+        show_update_dialog(self, info)
+
+    def _close_update_dialog(self):
+        close_update_dialog(self)
 
 
 def main():
