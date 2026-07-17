@@ -70,6 +70,7 @@ __all__ = [
     "is_newer",
     "manifest_url",
     "releases_page_url",
+    "installer_platform_supported",
     "update_check_disabled",
     "parse_manifest",
     "fetch_manifest",
@@ -211,6 +212,17 @@ def releases_page_url() -> str:
     return _RELEASES_PAGE_URL
 
 
+def installer_platform_supported() -> bool:
+    """Whether the released installer is usable on this platform.
+
+    The release asset is a Windows ``.exe`` (Inno Setup). On macOS / Linux —
+    i.e. a source checkout — offering it would prompt the user to download and
+    run a binary that cannot work there, so the GUI gates the auto-check and
+    the download dialog on this.
+    """
+    return sys.platform.startswith("win")
+
+
 def update_check_disabled() -> bool:
     """Whether update checks are turned off via ``SPEC_CRITIC_DISABLE_UPDATE_CHECK``."""
     raw = os.environ.get(ENV_DISABLE)
@@ -287,10 +299,36 @@ def fetch_manifest(url: str, *, timeout: float = DEFAULT_MANIFEST_TIMEOUT) -> di
         url, headers={"User-Agent": _USER_AGENT, "Accept": "application/json"}
     )
     with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310 - https enforced above
+        # urlopen follows redirects, so the scheme check above only covers the
+        # FIRST hop — an https URL that redirects to http would otherwise hand
+        # us a plaintext manifest whose sha256/installer-URL we'd then trust.
+        # Refuse to parse anything whose final URL downgraded off https.
+        _require_https_final_url(resp, "update manifest")
         raw = resp.read(MAX_MANIFEST_BYTES + 1)
     if len(raw) > MAX_MANIFEST_BYTES:
         raise UpdateError("update manifest is unexpectedly large; refusing to parse")
     return json.loads(raw.decode("utf-8"))
+
+
+def _require_https_final_url(resp, what: str) -> None:
+    """Raise unless ``resp``'s post-redirect URL is still https.
+
+    Best-effort attribute access: real ``urllib`` responses always expose the
+    final URL (``.url`` / ``geturl()``); an injected test double that exposes
+    neither is left to the caller's other integrity gates.
+    """
+    final = getattr(resp, "url", None)
+    if final is None:
+        getter = getattr(resp, "geturl", None)
+        if callable(getter):
+            try:
+                final = getter()
+            except Exception:
+                final = None
+    if final is not None and not str(final).lower().startswith("https://"):
+        raise UpdateError(
+            f"{what} request was redirected to a non-https URL; refusing to trust it"
+        )
 
 
 def check_for_update(
@@ -364,7 +402,19 @@ def _installer_filename(url: str) -> str:
 
 def _open_url(url: str, *, timeout: float):
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310 - https enforced by caller
+    resp = urllib.request.urlopen(request, timeout=timeout)  # noqa: S310 - https enforced by caller
+    # Same redirect-downgrade guard as fetch_manifest. The sha256 check would
+    # still catch a tampered installer, but there is no reason to stream one
+    # over plaintext in the first place.
+    try:
+        _require_https_final_url(resp, "installer download")
+    except BaseException:
+        try:
+            resp.close()
+        except Exception:
+            pass
+        raise
+    return resp
 
 
 def download_installer(

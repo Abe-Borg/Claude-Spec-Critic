@@ -208,6 +208,81 @@ def test_manifest_url_default_points_at_repo() -> None:
     assert url.endswith("latest.json")
 
 
+def test_installer_platform_supported_matches_sys_platform(monkeypatch) -> None:
+    # The release asset is a Windows installer; the GUI gates on this.
+    monkeypatch.setattr(updates.sys, "platform", "win32")
+    assert updates.installer_platform_supported() is True
+    monkeypatch.setattr(updates.sys, "platform", "linux")
+    assert updates.installer_platform_supported() is False
+    monkeypatch.setattr(updates.sys, "platform", "darwin")
+    assert updates.installer_platform_supported() is False
+
+
+# --------------------------------------------------------------------------
+# Redirect downgrade: urlopen follows redirects, so the pre-flight scheme
+# check only covers the first hop. The FINAL url must still be https or the
+# payload is refused (the manifest is the root of trust for the sha256).
+# --------------------------------------------------------------------------
+
+
+class _RedirectedResponse:
+    """A urlopen-shaped response reporting a post-redirect final URL."""
+
+    def __init__(self, data: bytes, final_url: str):
+        self._buf = io.BytesIO(data)
+        self.url = final_url
+        self.closed = False
+
+    def read(self, n: int = -1) -> bytes:
+        return self._buf.read(n)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def test_fetch_manifest_rejects_redirect_downgrade(monkeypatch) -> None:
+    payload = json.dumps(_manifest()).encode("utf-8")
+    monkeypatch.setattr(
+        updates.urllib.request,
+        "urlopen",
+        lambda request, timeout=None: _RedirectedResponse(payload, "http://evil/latest.json"),
+    )
+    with pytest.raises(UpdateError):
+        updates.fetch_manifest("https://github.com/x/latest.json")
+
+
+def test_fetch_manifest_accepts_https_redirect(monkeypatch) -> None:
+    # GitHub's releases/latest/download path legitimately redirects — an
+    # https-to-https redirect must keep working.
+    payload = json.dumps(_manifest()).encode("utf-8")
+    monkeypatch.setattr(
+        updates.urllib.request,
+        "urlopen",
+        lambda request, timeout=None: _RedirectedResponse(
+            payload, "https://objects.githubusercontent.com/latest.json"
+        ),
+    )
+    result = updates.fetch_manifest("https://github.com/x/latest.json")
+    assert result["version"] == _manifest()["version"]
+
+
+def test_open_url_rejects_redirect_downgrade_and_closes(monkeypatch) -> None:
+    resp = _RedirectedResponse(b"exe bytes", "http://evil/SpecCriticSetup.exe")
+    monkeypatch.setattr(
+        updates.urllib.request, "urlopen", lambda request, timeout=None: resp
+    )
+    with pytest.raises(UpdateError):
+        updates._open_url("https://host/SpecCriticSetup.exe", timeout=1.0)
+    assert resp.closed  # the rejected connection is not leaked
+
+
 # --------------------------------------------------------------------------
 # Throttle-state / download paths
 # --------------------------------------------------------------------------
@@ -573,3 +648,11 @@ def test_controller_guards_download_lifecycle() -> None:
     assert "_update_download_cancelled" in src
     # Install is refused while a review run is in flight.
     assert "is_processing" in src
+
+
+def test_controller_gates_on_installer_platform() -> None:
+    # The release asset is a Windows installer: the silent auto-check and the
+    # download dialog must both be gated on installer_platform_supported so a
+    # macOS/Linux source run is never offered an unusable .exe.
+    src = _controller_source()
+    assert src.count("updates.installer_platform_supported()") >= 2

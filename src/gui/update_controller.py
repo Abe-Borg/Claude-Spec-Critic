@@ -86,8 +86,13 @@ def maybe_auto_check_for_updates(app) -> None:
 
     Only surfaces a dialog if an update is available and the user has not
     chosen to skip that version; a clean or failed check stays silent.
+    Windows-only: the release asset is a Windows installer, so a source run
+    on macOS / Linux is never nagged about an update it cannot apply (the
+    manual footer button still works there and points at the releases page).
     """
     try:
+        if not updates.installer_platform_supported():
+            return
         if updates.update_check_disabled():
             return
         state = updates.load_state(app._update_state_path)
@@ -143,6 +148,19 @@ def on_update_check_done(app, result, manual: bool) -> None:
         set_update_status(
             app, f"Update available: v{info.version}", color=COLORS["accent_glow"]
         )
+        if not updates.installer_platform_supported():
+            # The release asset is a Windows installer — don't offer a
+            # download this platform can't run. A manual check still reports
+            # the news and points at the releases page.
+            if manual:
+                messagebox.showinfo(
+                    "Update available",
+                    f"Version {info.version} is available, but the packaged "
+                    "update is a Windows installer and can't be applied to "
+                    "this install.\n\n"
+                    f"See {updates.releases_page_url()} for the release.",
+                )
+            return
         skipped = False
         if not manual:
             try:
