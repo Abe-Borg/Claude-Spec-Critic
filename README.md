@@ -212,6 +212,10 @@ Older changelog entries trimmed; see git history for v2.10.0, v2.8.x, and the no
 
 ## License
 
-Copyright © 2025–2026 Abraham Borg. All rights reserved.
+Copyright © 2025–2026 Abraham Borg.
 
-Spec Critic is proprietary software. The source is publicly viewable on GitHub, but it is **not** open source: no permission is granted to use, copy, modify, or redistribute it without the copyright holder's prior written consent. See [`LICENSE`](LICENSE). Third-party dependencies — direct and transitive, pinned in `requirements.txt` — are installed separately and remain under their own licenses (MIT / BSD / Apache-2.0 / MPL-2.0); none imposes copyleft terms on Spec Critic itself, and a bundled binary distribution must carry every bundled package's license text.
+Spec Critic is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) — see [`LICENSE`](LICENSE). You may use, copy, modify, and share it for **any noncommercial purpose** — personal use, study, research, hobby projects, and use by charitable, educational, or government organizations. **Commercial use requires the copyright holder's prior written permission.** Anyone redistributing the software (or part of it) must pass along the license terms and the `Required Notice:` line from the `LICENSE` file.
+
+Third-party dependencies — direct and transitive, pinned in `requirements.txt` — are installed separately and remain under their own licenses (MIT / BSD / Apache-2.0 / MPL-2.0); a bundled binary distribution must carry every bundled package's license text.
+
+Spec Critic is an AI-assisted review aid, not an authority. Its output is advisory and is not a substitute for review by a licensed design professional.
