@@ -1,4 +1,4 @@
-"""Informational dialogs ("How It Works" / "How to Use" / "Why Trust It?").
+"""Informational dialogs ("How It Works" / "How to Use" / "Why Trust It?" / "About").
 
 These windows are pure UI: long blocks of mostly-static text rendered in a
 modal CTkToplevel. Model names and the code basis are rendered from config
@@ -15,8 +15,11 @@ banner, ...) — when one of those mechanisms changes, update the copy here.
 """
 from __future__ import annotations
 
+import webbrowser
+
 import customtkinter as ctk
 
+from .. import __version__
 from ..core.api_config import (
     CROSS_CHECK_MODEL_DEFAULT,
     REVIEW_MODEL_DEFAULT,
@@ -29,6 +32,14 @@ from .widgets import COLORS
 
 _UI_FONT_SIZE = 12
 _BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
+
+# Identity / licensing copy for the About dialog. Keep in sync with the
+# LICENSE file and the README License section.
+_AUTHOR_NAME = "Abraham Borg"
+_COPYRIGHT_NOTICE = "Copyright © 2025–2026 Abraham Borg."
+_LICENSE_NAME = "PolyForm Noncommercial License 1.0.0"
+_LICENSE_URL = "https://polyformproject.org/licenses/noncommercial/1.0.0"
+_LINKEDIN_URL = "https://www.linkedin.com/in/abrahamborg/"
 
 
 def _model_label(model_id: str) -> str:
@@ -70,6 +81,17 @@ def _render_sections(scroll, sections: list[tuple[str, str]]) -> None:
             text_color=COLORS["text_secondary"],
             wraplength=520, justify="left",
         ).pack(anchor="w", padx=8, pady=(0, 4))
+
+
+def _link_label(scroll, url: str) -> None:
+    """A clickable link rendered in the section-body style."""
+    link = ctk.CTkLabel(
+        scroll, text=url,
+        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE, underline=True),
+        text_color=COLORS["accent"], cursor="hand2",
+    )
+    link.pack(anchor="w", padx=8, pady=(0, 4))
+    link.bind("<Button-1>", lambda _event: webbrowser.open(url))
 
 
 def show_about_dialog(parent) -> None:
@@ -505,6 +527,58 @@ def show_trust_dialog(parent) -> None:
     ]
 
     _render_sections(scroll, sections)
+
+    ctk.CTkButton(
+        outer, text="Close", width=100, height=32,
+        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+        fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+        command=dialog.destroy,
+    ).pack(pady=(0, 16))
+
+
+def show_license_dialog(parent) -> None:
+    """The "About" dialog: version, copyright, license terms, and contact."""
+    dialog = _build_modal(parent, "About Spec Critic", geometry="560x520")
+
+    outer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
+    outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+    ctk.CTkLabel(
+        outer, text="About Spec Critic",
+        font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+        text_color=COLORS["text_primary"],
+    ).pack(anchor="w", padx=20, pady=(20, 4))
+
+    ctk.CTkLabel(
+        outer, text=f"Version {__version__}",
+        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+        text_color=COLORS["text_muted"],
+    ).pack(anchor="w", padx=20, pady=(0, 12))
+
+    scroll = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+    scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+    _render_sections(scroll, [
+        ("Copyright", _COPYRIGHT_NOTICE),
+        ("License", (
+            f"Spec Critic is licensed under the {_LICENSE_NAME}. You may "
+            "use, copy, modify, and share it for any noncommercial purpose — "
+            "personal use, study, research, hobby projects, and use by "
+            "charitable, educational, or government organizations. Commercial "
+            "use requires the copyright holder’s prior written permission. "
+            "The full terms ship with the software in the LICENSE file and "
+            "are published at:"
+        )),
+    ])
+    _link_label(scroll, _LICENSE_URL)
+
+    _render_sections(scroll, [
+        ("Author", (
+            f"Created by {_AUTHOR_NAME}. Questions, feedback, or commercial "
+            "licensing inquiries — connect on LinkedIn:"
+        )),
+    ])
+    _link_label(scroll, _LINKEDIN_URL)
 
     ctk.CTkButton(
         outer, text="Close", width=100, height=32,
