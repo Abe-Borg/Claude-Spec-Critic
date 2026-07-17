@@ -14,13 +14,13 @@ the Software or its documentation, in whole or in part, without the prior
 written consent of the copyright holder.
 
 Third-party software. The Software depends on third-party packages
-declared in requirements.txt and pyproject.toml (anthropic, python-docx,
-pypdf, pydantic, tiktoken, customtkinter, platformdirs, tkinterdnd2).
-Those packages are installed separately, are not part of the Software,
-and each remains subject to its own license terms (MIT, BSD-3-Clause, or
-similarly permissive). Any binary distribution of the Software that
-bundles those packages (for example, a PyInstaller build) must include
-their respective license texts and copyright notices.
+declared in pyproject.toml, with the full pinned set — direct and
+transitive — recorded in requirements.txt. Those packages are installed
+separately, are not part of the Software, and each remains subject to
+its own license terms. Any binary distribution of the Software that
+bundles third-party packages (for example, a PyInstaller build) must
+include the license texts and copyright notices of every bundled
+package, including transitive dependencies.
 
 No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
 KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
