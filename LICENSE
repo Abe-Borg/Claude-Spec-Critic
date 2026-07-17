@@ -1,0 +1,35 @@
+Spec Critic — Proprietary License
+
+Copyright (c) 2025-2026 Abraham Borg. All rights reserved.
+
+Spec Critic ("the Software") and its accompanying documentation are the
+proprietary work of the copyright holder. The source code is publicly
+viewable, but the Software is not open-source software.
+
+No license granted. Except for the limited rights that the hosting
+platform's terms of service grant to its users (viewing and forking this
+repository within GitHub), no permission is granted to any person to use,
+copy, modify, merge, publish, distribute, sublicense, or sell copies of
+the Software or its documentation, in whole or in part, without the prior
+written consent of the copyright holder.
+
+Third-party software. The Software depends on third-party packages
+declared in requirements.txt and pyproject.toml (anthropic, python-docx,
+pypdf, pydantic, tiktoken, customtkinter, platformdirs, tkinterdnd2).
+Those packages are installed separately, are not part of the Software,
+and each remains subject to its own license terms (MIT, BSD-3-Clause, or
+similarly permissive). Any binary distribution of the Software that
+bundles those packages (for example, a PyInstaller build) must include
+their respective license texts and copyright notices.
+
+No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+Spec Critic is an AI-assisted review aid, not an authority. Its output is
+advisory and is not a substitute for review by a licensed design
+professional.
