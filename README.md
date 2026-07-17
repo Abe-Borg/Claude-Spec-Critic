@@ -1,6 +1,6 @@
 # Spec Critic
 
-**v3.0.0** — AI-assisted construction-specification review, organized around selectable **review modules**. The default module is California K-12 DSA mechanical/plumbing.
+**v3.1.0** — AI-assisted construction-specification review, organized around selectable **review modules**. The default module is California K-12 DSA mechanical/plumbing.
 
 Spec Critic reviews CSI-format `.docx` specifications against the selected module's code basis and pinned standards editions, using Claude. With the default **California K-12 DSA M&P** module that means California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) and the NFPA / ASHRAE / IAPMO / UL editions adopted for the current cycle. It produces structured findings with severity classifications, confidence scores, web-search-backed verification verdicts, optional cross-spec coordination analysis, and structured edit instructions — rendered in a Word report and written to a machine-readable JSON sidecar for a separate, downstream applier to ingest. Spec Critic emits edit instructions but does not apply them.
 
@@ -218,6 +218,9 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 - API keys and bearer tokens are redacted before serialization (shared regex with `diagnostics.py`).
 
 ## Changelog (recent)
+
+### v3.1.0
+- **Windows desktop app + auto-updater.** Spec Critic now ships as a downloadable Windows installer (`SpecCriticSetup.exe`, PyInstaller one-folder + Inno Setup, distributed via GitHub Releases — see the install section above and `docs/RELEASE_WINDOWS.md`). The app checks for updates once a day at launch and on demand via the footer's **Check for Updates** button; downloads are SHA-256-verified against the release manifest before they ever run, with https enforced end-to-end (including post-redirect URLs). The updater is Windows-gated (source runs on macOS/Linux are never offered the installer), and the update dialog defers to in-flight reviews/digests. New env vars: `SPEC_CRITIC_UPDATE_URL`, `SPEC_CRITIC_DISABLE_UPDATE_CHECK`, `SPEC_CRITIC_UPDATE_STATE_PATH`.
 
 ### v3.0.0
 - **Emit-but-don't-apply edits.** Removed the surgical write-back stack (the `src/editing/` package: locator, spec_editor, apply_edits, replacement_style, edit_candidates), the GUI apply dialogs, and the auto-edit confidence gating (composite confidence, numeric/standards demotion, the auto-edit floor). Spec Critic now emits structured edit proposals — rendered inline in the Word report and written to a machine-readable `<report-stem>.edits.json` sidecar — for a separate, future applier to ingest.
