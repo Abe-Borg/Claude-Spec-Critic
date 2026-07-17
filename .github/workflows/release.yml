@@ -1,0 +1,198 @@
+# Windows installer build + release for Spec Critic.
+#
+# What it does:
+#   * push a tag  vX.Y.Z  -> the `build` job builds the installer + latest.json,
+#                            then the tag-only `publish` job attaches both to a
+#                            GitHub Release. The installed app's updater fetches
+#                            releases/latest/download/latest.json to discover it.
+#   * pull_request / workflow_dispatch (packaging-related changes) -> the `build`
+#                            job builds + self-checks + compiles the installer
+#                            WITHOUT publishing, and uploads the artifacts, so the
+#                            whole Windows packaging pipeline is validated (and the
+#                            installer is downloadable) before any release.
+#
+# Cutting a release (see docs/RELEASE_WINDOWS.md for the full runbook):
+#   1. Bump the version in pyproject.toml AND src/__init__.py
+#      (tests/test_release_metadata.py keeps them in lockstep).
+#   2. Commit, then:  git tag v3.1.0 && git push origin v3.1.0
+#   3. This workflow builds and publishes the release automatically. A tag with
+#      an `rcN` suffix is published as a GitHub *pre-release*, so it never
+#      becomes `releases/latest` and is not auto-offered to stable installs.
+#
+# Security posture:
+#   * The `build` job executes repo-controlled code (PyInstaller runs the spec
+#     and imports the package), so it is READ-ONLY: `contents: read`, and the
+#     checkout does not persist the git credential. A PR build therefore never
+#     holds a write-capable token.
+#   * Only the `publish` job has `contents: write`, it is gated to tag refs, and
+#     it runs NO repo code — it just downloads the built artifact and calls `gh`.
+#   * Third-party actions are pinned to immutable commit SHAs (the trailing
+#     comment is the human-readable version).
+name: Release (Windows installer)
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "packaging/windows/**"
+      - ".github/workflows/release.yml"
+      - "src/core/updates.py"
+      - "pyproject.toml"
+      - "requirements.txt"
+  workflow_dispatch:
+
+# Least privilege by default; the tag-gated publish job elevates to write.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+    # Read-only: this job runs PR-controlled code (PyInstaller executes the spec
+    # and imports the package). No write token is ever exposed to it.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Don't leave a push-capable credential in .git/config for later steps.
+          persist-credentials: false
+
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $ref = "${{ github.ref }}"
+          if ($ref -like "refs/tags/v*") {
+            $v = $ref -replace "^refs/tags/v", ""
+          } else {
+            $v = python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])"
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Resolved version: $v"
+
+      - name: Guard - tag matches both version literals
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        # Checks the tag against BOTH pyproject.toml AND src/__init__.py (the
+        # version the frozen app reports to the updater). A half-bumped tag
+        # would otherwise ship an installer stuck in a perpetual "update
+        # available" loop.
+        run: python packaging/windows/check_release_version.py --tag "${{ github.ref_name }}"
+
+      - name: Install app + PyInstaller
+        shell: pwsh
+        # keyring is an optional dependency of the app (Credential Manager key
+        # storage); installed here so the frozen build ships with it.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e . --no-deps
+          pip install keyring "pyinstaller==6.11.1"
+
+      - name: Build one-folder app (PyInstaller)
+        shell: pwsh
+        run: pyinstaller packaging/windows/spec-critic.spec --noconfirm --clean
+
+      - name: Smoke - frozen exe self-check
+        shell: pwsh
+        run: |
+          $env:SPEC_CRITIC_SELFCHECK_OUT = "$PWD\selfcheck.txt"
+          $p = Start-Process -FilePath "dist\SpecCritic\SpecCritic.exe" `
+                 -ArgumentList "--selfcheck" -Wait -PassThru
+          if (Test-Path selfcheck.txt) { Get-Content selfcheck.txt }
+          if ($p.ExitCode -ne 0) {
+            Write-Error "Frozen exe self-check failed (exit $($p.ExitCode)) - a hidden import is likely missing from the spec."
+            exit 1
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Compile installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & "$iscc" /DMyAppVersion=${{ steps.ver.outputs.version }} packaging\windows\installer.iss
+
+      - name: Generate update manifest (latest.json)
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$v/SpecCriticSetup.exe"
+          python packaging/windows/make_manifest.py `
+            --version $v `
+            --installer dist/installer/SpecCriticSetup.exe `
+            --url $url `
+            --out dist/installer/latest.json `
+            --notes "Spec Critic v$v. See the release notes for details." `
+            --published-at (Get-Date -Format "yyyy-MM-dd")
+          Get-Content dist/installer/latest.json
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: windows-installer
+          path: |
+            dist/installer/SpecCriticSetup.exe
+            dist/installer/latest.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    # Tag refs only. This job runs NO repo-controlled code — it downloads the
+    # already-built artifact and calls `gh` — so holding a write token here does
+    # not expose the repo to PR-supplied build steps.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release / upload assets
+      actions: read      # download-artifact reads the run's artifact
+    steps:
+      - name: Download built installer
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: windows-installer
+          path: artifact
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          notes=$'Windows installer for Spec Critic '"$tag"$'.\n\n'
+          notes+=$'Download **SpecCriticSetup.exe** below and run it. '
+          notes+=$'The app is not code-signed, so Windows SmartScreen may warn on '
+          notes+=$'first run - choose **More info** then **Run anyway**.\n\n'
+          notes+=$'Existing installs will offer this update automatically.'
+
+          # A release-candidate tag (vX.Y.ZrcN) is published as a pre-release so
+          # GitHub never marks it "latest" — the updater reads
+          # releases/latest/download/latest.json, so stable installs are not
+          # auto-offered an RC.
+          flags=(--verify-tag --title "Spec Critic ${tag}" --notes "${notes}")
+          if [[ "${version}" == *rc* ]]; then
+            flags+=(--prerelease)
+          else
+            flags+=(--latest)
+          fi
+
+          assets=(artifact/SpecCriticSetup.exe artifact/latest.json)
+          if ! gh release create "${tag}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" "${flags[@]}"; then
+            # Release already exists (e.g. a re-run) - replace the assets.
+            gh release upload "${tag}" "${assets[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
+          fi

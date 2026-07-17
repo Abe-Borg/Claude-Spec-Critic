@@ -64,9 +64,35 @@ Defaults (each overridable via its `SPEC_CRITIC_*_MODEL` env var **except cross-
 
 Unknown model ids degrade to safe defaults via `api_config.model_capabilities(...)` — a misconfigured `SPEC_CRITIC_*_MODEL` env var produces a smaller request rather than an API rejection.
 
+## Download & Install (Windows)
+
+Spec Critic ships as a normal downloadable Windows app — no server to host,
+nothing running in the cloud. It runs entirely on your own PC and talks only to
+the Anthropic API with your own key.
+
+1. Go to the [latest release](https://github.com/Abe-Borg/Claude-Spec-Critic/releases/latest)
+   and download **`SpecCriticSetup.exe`**.
+2. Run it. Because the app is not code-signed, Windows SmartScreen may show a
+   **"Windows protected your PC"** notice — click **More info → Run anyway**.
+   This is expected for independent software; you'll see it on the first
+   install and on each update.
+3. It installs per-user (no admin prompt), adds a Start-menu shortcut, and
+   launches. Paste your Anthropic API key into the field at the top and you're
+   ready.
+
+**Staying up to date.** The app silently checks for a new version once a day at
+launch, and the **Check for Updates** button (bottom-right footer) checks on
+demand. When an update exists, a dialog shows what's new and lets you choose
+**Download & Install**, **Skip this Version**, or **Later** — nothing installs
+without your say-so. Every download is verified against a published SHA-256
+hash before it runs, so a corrupted or tampered installer is rejected
+automatically. Set `SPEC_CRITIC_DISABLE_UPDATE_CHECK=1` to turn the check off
+entirely; `SPEC_CRITIC_UPDATE_URL` points the updater at a fork's releases.
+See `docs/RELEASE_WINDOWS.md` for how releases are built and published.
+
 ## Requirements
 
-- Python 3.11+
+- Python 3.11+ (source install; the Windows installer bundles its own)
 - Anthropic API key (`ANTHROPIC_API_KEY`)
 - See `requirements.txt`: `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic`
 

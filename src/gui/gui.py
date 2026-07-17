@@ -136,6 +136,16 @@ from src.gui.token_analysis_controller import (
     on_file_selection_change,
     refresh_exact_token_count,
 )
+from src.gui.update_controller import (
+    build_footer,
+    close_update_dialog,
+    init_update_state,
+    maybe_auto_check_for_updates,
+    on_check_for_updates_clicked,
+    on_update_check_done,
+    show_update_dialog,
+    start_update_check,
+)
 
 _CONTEXT_PLACEHOLDER = "Describe your project (optional)"
 
@@ -204,12 +214,28 @@ class SpecReviewApp(_CTkDnDRoot):
         ).module_id
         self._selected_cycle_label = get_module(self._selected_module_id).cycle.label
         self._font_scale_label: str = "Default (100%)"
+        # Self-update checker (Windows desktop build). The last-check date and
+        # any "skipped" version persist in ~/.spec_critic/update_check.json;
+        # the network fetch/download always runs off the UI thread. See
+        # core/updates.py and docs/RELEASE_WINDOWS.md.
+        init_update_state(self)
         self._create_ui()
+        # The silent once/day update check is scheduled by main()'s startup
+        # sequence AFTER the batch-resume prompt resolves — a timer stagger
+        # alone can't prevent the two startup prompts from stacking, because
+        # tk after-timers keep firing inside the resume messagebox's modal
+        # loop. The footer's "Check for Updates" button runs the same path
+        # on demand with visible results.
 
     def _create_ui(self):
         c = ctk.CTkFrame(self, fg_color="transparent")
         c.pack(fill="both", expand=True, padx=24, pady=24)
         self.container = c
+
+        # Footer packed first (side="bottom") so the version + "Check for
+        # Updates" strip reserves the bottom edge before the log below claims
+        # the remaining space with expand=True.
+        self._build_footer(c)
 
         # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
@@ -876,15 +902,47 @@ class SpecReviewApp(_CTkDnDRoot):
     def _recover_batch_dialog(self):
         recover_batch_dialog(self)
 
+    # ----- Self-update (Windows desktop build) -----
+
+    def _build_footer(self, parent):
+        build_footer(self, parent)
+
+    def _maybe_auto_check_for_updates(self):
+        maybe_auto_check_for_updates(self)
+
+    def _on_check_for_updates_clicked(self):
+        on_check_for_updates_clicked(self)
+
+    def _start_update_check(self, *, manual: bool):
+        start_update_check(self, manual=manual)
+
+    def _on_update_check_done(self, result, manual: bool):
+        on_update_check_done(self, result, manual)
+
+    def _show_update_dialog(self, info):
+        show_update_dialog(self, info)
+
+    def _close_update_dialog(self):
+        close_update_dialog(self)
+
 
 def main():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
     app = SpecReviewApp()
+
     # After the window is up, offer to resume an unfinished batch from a prior
     # session (closed app / detached poller). Scheduled on the event loop so the
-    # prompt appears once the UI is interactive.
-    app.after(600, app._maybe_offer_batch_resume)
+    # prompt appears once the UI is interactive. The silent update check is
+    # chained strictly AFTER the resume prompt returns — offer_batch_resume
+    # blocks inside a modal askyesno while the prompt is open, and tk
+    # after-timers keep firing during that modal loop, so an independent timer
+    # could pop the update dialog mid-prompt and fight it for the modal grab.
+    def _startup_sequence():
+        app._maybe_offer_batch_resume()
+        app.after(900, app._maybe_auto_check_for_updates)
+
+    app.after(600, _startup_sequence)
     app.mainloop()
 
 
