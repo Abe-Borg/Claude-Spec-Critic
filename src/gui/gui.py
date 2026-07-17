@@ -220,13 +220,12 @@ class SpecReviewApp(_CTkDnDRoot):
         # core/updates.py and docs/RELEASE_WINDOWS.md.
         init_update_state(self)
         self._create_ui()
-        # Silent, throttled (once/day) update check shortly after the window
-        # paints — never blocks startup, and only surfaces a dialog when an
-        # update is actually available. Scheduled after the batch-resume
-        # prompt (600ms in main()) so the two startup prompts don't collide.
-        # The footer's "Check for Updates" button runs the same path on
-        # demand with visible results.
-        self.after(1500, self._maybe_auto_check_for_updates)
+        # The silent once/day update check is scheduled by main()'s startup
+        # sequence AFTER the batch-resume prompt resolves — a timer stagger
+        # alone can't prevent the two startup prompts from stacking, because
+        # tk after-timers keep firing inside the resume messagebox's modal
+        # loop. The footer's "Check for Updates" button runs the same path
+        # on demand with visible results.
 
     def _create_ui(self):
         c = ctk.CTkFrame(self, fg_color="transparent")
@@ -931,10 +930,19 @@ def main():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
     app = SpecReviewApp()
+
     # After the window is up, offer to resume an unfinished batch from a prior
     # session (closed app / detached poller). Scheduled on the event loop so the
-    # prompt appears once the UI is interactive.
-    app.after(600, app._maybe_offer_batch_resume)
+    # prompt appears once the UI is interactive. The silent update check is
+    # chained strictly AFTER the resume prompt returns — offer_batch_resume
+    # blocks inside a modal askyesno while the prompt is open, and tk
+    # after-timers keep firing during that modal loop, so an independent timer
+    # could pop the update dialog mid-prompt and fight it for the modal grab.
+    def _startup_sequence():
+        app._maybe_offer_batch_resume()
+        app.after(900, app._maybe_auto_check_for_updates)
+
+    app.after(600, _startup_sequence)
     app.mainloop()
 
 

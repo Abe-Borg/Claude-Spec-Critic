@@ -15,8 +15,10 @@ Lifecycle guards (learned on the sibling Drawing Analyzer app):
   stray "install & quit" prompt later. The daemon worker itself can't be
   killed; its result is simply ignored and the verified file stays cached in
   ``~/.spec_critic/updates`` for the next offer.
-- "Download & Install" is refused while a review run is in flight
-  (``app.is_processing``) — the installer would close the app mid-run.
+- "Download & Install" is refused while a review run or a drawing digest is
+  in flight (``app.is_processing`` / ``app._drawing_digest_running``) — the
+  installer would close the app mid-spend — and the busy state is re-checked
+  when the download completes before the install-and-quit prompt.
 """
 from __future__ import annotations
 
@@ -160,6 +162,12 @@ def on_update_check_done(app, result, manual: bool) -> None:
                     "this install.\n\n"
                     f"See {updates.releases_page_url()} for the release.",
                 )
+            return
+        if not manual and getattr(app, "is_processing", False):
+            # A run went active while the silent check was in flight (e.g.
+            # the startup resume prompt just reconnected a batch). Don't
+            # interrupt it with a modal dialog — the footer status is set,
+            # and tomorrow's check or the manual button re-offers it.
             return
         skipped = False
         if not manual:
@@ -309,16 +317,25 @@ def _grab_dialog(win) -> None:
         pass
 
 
+def _app_is_busy(app) -> bool:
+    """Whether the app is mid-spend (review run or drawing digest)."""
+    return bool(
+        getattr(app, "is_processing", False)
+        or getattr(app, "_drawing_digest_running", False)
+    )
+
+
 def start_update_download(app, info) -> None:
     if app._update_downloading:
         # A download is already running (e.g. the dialog was closed and
         # reopened). Don't start a second writer to the same file.
         set_update_status(app, "A download is already in progress…")
         return
-    if getattr(app, "is_processing", False):
+    if _app_is_busy(app):
         messagebox.showinfo(
-            "Review in progress",
-            "Please wait for the current review to finish before updating.",
+            "Work in progress",
+            "Please wait for the current review / drawing analysis to "
+            "finish before updating.",
         )
         return
     app._update_downloading = True
@@ -379,6 +396,15 @@ def on_update_download_done(app, path) -> None:
         # flight — respect that and don't pop a surprise install prompt. The
         # verified file stays cached; the next check will offer it again.
         set_update_status(app, "Update downloaded — install it later.")
+        return
+    if _app_is_busy(app):
+        # A run / digest started while the download streamed. Installing now
+        # would kill the app mid-spend — keep the verified file cached and
+        # let the next offer install it.
+        reset_update_dialog_buttons(app)
+        set_update_status(
+            app, "Update downloaded — install it after the current run finishes."
+        )
         return
     try:
         app._update_progress.set(1.0)

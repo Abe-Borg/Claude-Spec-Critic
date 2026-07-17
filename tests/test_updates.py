@@ -32,6 +32,23 @@ from src.core.updates import (
 _GOOD_SHA = "a" * 64
 
 
+@pytest.fixture(autouse=True)
+def _isolate_update_env(monkeypatch):
+    """Keep these hermetic tests immune to ambient operator env vars.
+
+    A developer with SPEC_CRITIC_DISABLE_UPDATE_CHECK / SPEC_CRITIC_UPDATE_URL
+    exported (both documented operator switches) would otherwise see spurious
+    failures. Tests that exercise the env paths setenv via their own
+    monkeypatch, which layers cleanly on top of this.
+    """
+    for var in (
+        "SPEC_CRITIC_DISABLE_UPDATE_CHECK",
+        "SPEC_CRITIC_UPDATE_URL",
+        "SPEC_CRITIC_UPDATE_STATE_PATH",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 def _manifest(**overrides) -> dict:
     payload = {
         "version": "99.0.0",
@@ -294,8 +311,8 @@ def test_default_state_path_env_override(monkeypatch, tmp_path: Path) -> None:
     assert updates.default_state_path() == override
 
 
-def test_default_state_path_in_dot_dir(monkeypatch) -> None:
-    monkeypatch.delenv("SPEC_CRITIC_UPDATE_STATE_PATH", raising=False)
+def test_default_state_path_in_dot_dir() -> None:
+    # The autouse _isolate_update_env fixture guarantees the override is unset.
     path = updates.default_state_path()
     assert path.parent.name == ".spec_critic"
     assert path.name == "update_check.json"

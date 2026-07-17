@@ -34,11 +34,13 @@ AppUpdatesURL={#MyAppURL}/releases/latest
 DefaultDirName={autopf}\Spec Critic
 DefaultGroupName=Spec Critic
 DisableProgramGroupPage=yes
-; Per-user install: no admin/UAC prompt, which keeps the unsigned experience as
-; smooth as possible (the user only sees the one SmartScreen notice, not an
-; elevation prompt on top of it).
+; Per-user install: no admin/UAC prompt and no install-mode dialog, which keeps
+; the unsigned experience as smooth as possible (the user only sees the one
+; SmartScreen notice). "commandline" (vs "dialog") means an interactive
+; double-click install is unconditionally per-user; power users can still pass
+; /ALLUSERS on the command line for a machine-wide install.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequiredOverridesAllowed=commandline
 OutputDir=..\..\dist\installer
 OutputBaseFilename=SpecCriticSetup
 Compression=lzma2
