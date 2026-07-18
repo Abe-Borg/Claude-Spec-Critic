@@ -16,6 +16,7 @@ from src.gui.context_attachment import (
     context_has_drawing_digest,
     context_within_token_cap,
     digested_drawing_filenames,
+    drawing_filenames_with_failed_chunks,
     merge_into_context,
     wrap_attachment,
 )
@@ -183,3 +184,22 @@ def test_digested_drawing_filenames_excludes_failed_chunks():
 def test_digested_drawing_filenames_empty_when_all_failed():
     statuses = [_FakeChunkStatus("failed", ["a.pdf", "b.pdf"])]
     assert digested_drawing_filenames(statuses) == []
+
+
+def test_drawing_filenames_with_failed_chunks_flags_split_partials():
+    # big.pdf is split across two chunks; the second page range failed, so
+    # big.pdf must be flagged (its full page count would overstate what
+    # reached Project Context). small.pdf fully succeeded and is not flagged.
+    statuses = [
+        _FakeChunkStatus("completed", ["big.pdf (pages 1-300)", "small.pdf"]),
+        _FakeChunkStatus("failed", ["big.pdf (pages 301-600)"]),
+    ]
+    assert drawing_filenames_with_failed_chunks(statuses) == {"big.pdf"}
+
+
+def test_drawing_filenames_with_failed_chunks_empty_when_all_completed():
+    statuses = [
+        _FakeChunkStatus("completed", ["a.pdf"]),
+        _FakeChunkStatus("truncated", ["b.pdf (pages 1-100)"]),
+    ]
+    assert drawing_filenames_with_failed_chunks(statuses) == set()

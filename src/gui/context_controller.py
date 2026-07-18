@@ -40,6 +40,7 @@ from .context_attachment import (
     context_has_drawing_digest,
     context_within_token_cap,
     digested_drawing_filenames,
+    drawing_filenames_with_failed_chunks,
     merge_into_context,
     wrap_attachment,
 )
@@ -432,12 +433,16 @@ def _surface_attached_drawings(app, drawing_files, result) -> None:
     Drawings…" actions (de-duped by filename), mirroring how each digest is
     appended to Project Context. Only the sheets that landed in a non-failed
     chunk are listed (``digested_drawing_filenames``); failed sheets are named
-    in the separate partial-failure warning instead.
+    in the separate partial-failure warning instead. The page count is dropped
+    for a file that was split across chunks and only partially digested (a
+    failed range), since its *full* page count would overstate what actually
+    reached Project Context.
     """
     panel = getattr(app, "file_list_panel", None)
     if panel is None:
         return
     pages_by_name = {f.name: f.page_count for f in drawing_files}
+    partial = drawing_filenames_with_failed_chunks(result.chunk_statuses)
     attached = list(getattr(app, "_attached_drawings", []))
     seen = {d["name"] for d in attached}
     for name in digested_drawing_filenames(result.chunk_statuses):
@@ -445,7 +450,8 @@ def _surface_attached_drawings(app, drawing_files, result) -> None:
             continue
         seen.add(name)
         page_count = pages_by_name.get(name)
-        pages = f"{page_count} pp." if isinstance(page_count, int) else ""
+        show_pages = isinstance(page_count, int) and name not in partial
+        pages = f"{page_count} pp." if show_pages else ""
         attached.append({"name": name, "pages": pages})
     app._attached_drawings = attached
     try:

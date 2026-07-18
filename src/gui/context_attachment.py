@@ -91,3 +91,26 @@ def digested_drawing_filenames(chunk_statuses) -> list[str]:
                 seen.add(name)
                 names.append(name)
     return names
+
+
+def drawing_filenames_with_failed_chunks(chunk_statuses) -> set[str]:
+    """Base filenames that had at least one *failed* digest chunk.
+
+    A large PDF can be split into page-range chunks; when only some of its
+    chunks fail, the file still appears in :func:`digested_drawing_filenames`
+    (its surviving ranges are in the digest), but its *full* page count would
+    overstate what actually landed in Project Context. Callers use this to
+    drop the page count for such partial files — the filename still shows,
+    and the separate partial-failure warning names the missing ranges. Labels
+    are stripped of their ``" (pages ...)"`` suffix, mirroring
+    :func:`digested_drawing_filenames`.
+    """
+    failed: set[str] = set()
+    for status in chunk_statuses:
+        if getattr(status, "status", "") != "failed":
+            continue
+        for label in getattr(status, "file_labels", ()) or ():
+            name = label.split(" (pages ")[0].strip()
+            if name:
+                failed.add(name)
+    return failed
