@@ -13,10 +13,14 @@ from docx import Document
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS
 from src.gui import context_attachment as ca
 from src.gui.context_attachment import (
+    context_has_drawing_digest,
     context_within_token_cap,
+    digested_drawing_filenames,
+    drawing_filenames_with_failed_chunks,
     merge_into_context,
     wrap_attachment,
 )
+from src.input.drawing_digest import DIGEST_ATTACHMENT_LABEL
 from src.input.extractor import CONTEXT_ATTACHMENT_EXTENSIONS, extract_context_text
 
 
@@ -126,3 +130,76 @@ def test_context_within_token_cap_rejects_oversized():
     tokens, fits = context_within_token_cap(_OVER_CAP_TEXT)
     assert tokens > PROJECT_CONTEXT_MAX_TOKENS
     assert fits is False
+
+
+# --------------------------------------------------------------------------- #
+# Drawing-readout helpers (FILES-panel drawing feedback)
+# --------------------------------------------------------------------------- #
+
+
+def test_context_has_drawing_digest_detects_merged_block():
+    digest = wrap_attachment(DIGEST_ATTACHMENT_LABEL, "PROJECT IDENTITY & OVERVIEW ...")
+    assert context_has_drawing_digest(f"project notes\n\n{digest}") is True
+
+
+def test_context_has_drawing_digest_false_without_block():
+    assert context_has_drawing_digest("just some project notes") is False
+    assert context_has_drawing_digest("") is False
+    assert context_has_drawing_digest(None) is False
+
+
+def test_context_has_drawing_digest_ignores_lookalike_attachment():
+    # A context *file* named like the digest carries an extension in its
+    # label, so it must not be mistaken for the vision digest block.
+    lookalike = wrap_attachment(f"{DIGEST_ATTACHMENT_LABEL}.docx", "body")
+    assert context_has_drawing_digest(lookalike) is False
+
+
+class _FakeChunkStatus:
+    def __init__(self, status, file_labels):
+        self.status = status
+        self.file_labels = file_labels
+
+
+def test_digested_drawing_filenames_strips_page_suffix_and_dedups():
+    statuses = [
+        _FakeChunkStatus("completed", ["a.pdf", "big.pdf (pages 1-300)"]),
+        _FakeChunkStatus("truncated", ["big.pdf (pages 301-600)", "d.pdf"]),
+    ]
+    # Order-preserving, de-duped: the split "big.pdf" collapses to one entry.
+    assert digested_drawing_filenames(statuses) == ["a.pdf", "big.pdf", "d.pdf"]
+
+
+def test_digested_drawing_filenames_excludes_failed_chunks():
+    statuses = [
+        _FakeChunkStatus("completed", ["kept.pdf"]),
+        _FakeChunkStatus("failed", ["dropped.pdf"]),
+    ]
+    # A failed chunk's sheets are not in the digest text, so they are not
+    # surfaced in the FILES-panel readout (the partial-failure warning names
+    # them instead).
+    assert digested_drawing_filenames(statuses) == ["kept.pdf"]
+
+
+def test_digested_drawing_filenames_empty_when_all_failed():
+    statuses = [_FakeChunkStatus("failed", ["a.pdf", "b.pdf"])]
+    assert digested_drawing_filenames(statuses) == []
+
+
+def test_drawing_filenames_with_failed_chunks_flags_split_partials():
+    # big.pdf is split across two chunks; the second page range failed, so
+    # big.pdf must be flagged (its full page count would overstate what
+    # reached Project Context). small.pdf fully succeeded and is not flagged.
+    statuses = [
+        _FakeChunkStatus("completed", ["big.pdf (pages 1-300)", "small.pdf"]),
+        _FakeChunkStatus("failed", ["big.pdf (pages 301-600)"]),
+    ]
+    assert drawing_filenames_with_failed_chunks(statuses) == {"big.pdf"}
+
+
+def test_drawing_filenames_with_failed_chunks_empty_when_all_completed():
+    statuses = [
+        _FakeChunkStatus("completed", ["a.pdf"]),
+        _FakeChunkStatus("truncated", ["b.pdf (pages 1-100)"]),
+    ]
+    assert drawing_filenames_with_failed_chunks(statuses) == set()
