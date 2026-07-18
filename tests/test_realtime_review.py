@@ -829,6 +829,48 @@ class TestUiStateTransport:
         assert load_review_transport() == "realtime"
 
 
+class TestUiStateRealtimeCostWarningSuppression:
+    @pytest.fixture(autouse=True)
+    def _tmp_state(self, monkeypatch, tmp_path):
+        self.state_path = tmp_path / "ui_state.json"
+        monkeypatch.setenv("SPEC_CRITIC_UI_STATE_PATH", str(self.state_path))
+
+    def test_default_is_false(self):
+        from src.core.ui_state import load_suppress_realtime_cost_warning
+
+        assert load_suppress_realtime_cost_warning() is False
+
+    def test_round_trip(self):
+        from src.core.ui_state import (
+            load_suppress_realtime_cost_warning,
+            save_suppress_realtime_cost_warning,
+        )
+
+        save_suppress_realtime_cost_warning(True)
+        assert load_suppress_realtime_cost_warning() is True
+        save_suppress_realtime_cost_warning(False)
+        assert load_suppress_realtime_cost_warning() is False
+
+    def test_malformed_file_reads_as_false(self):
+        from src.core.ui_state import load_suppress_realtime_cost_warning
+
+        self.state_path.write_text("{not json", encoding="utf-8")
+        assert load_suppress_realtime_cost_warning() is False
+
+    def test_coexists_with_transport_without_clobbering(self):
+        from src.core.ui_state import (
+            load_review_transport,
+            load_suppress_realtime_cost_warning,
+            save_review_transport,
+            save_suppress_realtime_cost_warning,
+        )
+
+        save_review_transport("realtime")
+        save_suppress_realtime_cost_warning(True)
+        assert load_review_transport() == "realtime"
+        assert load_suppress_realtime_cost_warning() is True
+
+
 # ===========================================================================
 # 13. Diagnostics telemetry from the runner
 # ===========================================================================

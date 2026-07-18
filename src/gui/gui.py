@@ -52,6 +52,7 @@ from src.core.ui_state import (
     load_project_profile,
     load_review_transport,
     load_selected_module_id,
+    load_suppress_realtime_cost_warning,
     save_project_profile,
     save_review_transport,
     save_selected_module_id,
@@ -81,6 +82,7 @@ from src.core.api_key_store import load_api_key_from_file
 from src.gui.about_usage_dialogs import (
     show_about_dialog,
     show_license_dialog,
+    show_realtime_cost_warning,
     show_trust_dialog,
     show_usage_dialog,
 )
@@ -681,17 +683,33 @@ class SpecReviewApp(_CTkDnDRoot):
             return "Start Review (live)"
         return "Submit Batch"
 
-    def _on_transport_toggle(self) -> None:
-        """Persist the review-transport choice and refresh the idle button.
+    def _apply_transport_choice(self, realtime: bool) -> None:
+        """Commit a review-transport choice: sync the checkbox, persist, refresh.
 
         Only affects runs started after the toggle — an in-flight run keeps
         the transport its submission recorded (same discipline as the module
         selector).
         """
-        transport = "realtime" if self._realtime_var.get() else "batch"
-        save_review_transport(transport)
+        if self._realtime_var.get() != realtime:
+            self._realtime_var.set(realtime)
+        save_review_transport("realtime" if realtime else "batch")
         if not getattr(self, "is_processing", False):
             self.run_button.configure(text=self._run_button_idle_text())
+
+    def _on_transport_toggle(self) -> None:
+        """Handle a real-time toggle, warning once about the compounding cost.
+
+        Switching *into* real-time pops a one-time cost warning (unless the
+        user has dismissed it for good); the popup's buttons finalize the
+        choice via :meth:`_apply_transport_choice`, so persistence is deferred
+        until the user confirms. Switching to batch — or when the warning is
+        suppressed — commits immediately, unchanged from before.
+        """
+        realtime = self._realtime_var.get()
+        if realtime and not load_suppress_realtime_cost_warning():
+            show_realtime_cost_warning(self)
+            return
+        self._apply_transport_choice(realtime)
 
     def _on_trace_toggle(self) -> None:
         """Translate the checkboxes into env vars the recorder reads.

@@ -27,6 +27,10 @@ _PROFILES_KEY = "project_profiles"
 # (50% cheaper, resumable).
 _TRANSPORT_KEY = "review_transport"
 _VALID_TRANSPORTS = ("batch", "realtime")
+# One-time "Don't show this again" acknowledgement for the real-time cost
+# warning popup. Absent/unset reads as False (show the warning), so a fresh
+# install always warns on the first switch into real-time mode.
+_SUPPRESS_REALTIME_COST_WARNING_KEY = "suppress_realtime_cost_warning"
 
 
 def ui_state_path() -> Path:
@@ -71,6 +75,21 @@ def save_review_transport(transport: str, *, path: Path | None = None) -> None:
     if transport not in _VALID_TRANSPORTS:
         return
     _write_key(_TRANSPORT_KEY, transport, path=path)
+
+
+def load_suppress_realtime_cost_warning(*, path: Path | None = None) -> bool:
+    """Whether the user asked not to see the real-time cost warning again.
+
+    Defaults to ``False`` (show the warning) when unset or unreadable.
+    """
+    return bool(_load(path).get(_SUPPRESS_REALTIME_COST_WARNING_KEY, False))
+
+
+def save_suppress_realtime_cost_warning(
+    value: bool, *, path: Path | None = None
+) -> None:
+    """Persist the real-time cost-warning suppression flag. Never raises."""
+    _write_key(_SUPPRESS_REALTIME_COST_WARNING_KEY, bool(value), path=path)
 
 
 def load_project_profile(module_id: str, *, path: Path | None = None) -> dict:
