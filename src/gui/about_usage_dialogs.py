@@ -106,20 +106,24 @@ def _grab_dialog(win) -> None:
         pass
 
 
-def show_realtime_cost_warning(app) -> None:
+def show_realtime_cost_warning(app, *, on_keep=None, on_revert=None) -> None:
     """Warn once (dismissable) about real-time review's compounding cost.
 
-    Shown the moment the operator switches Options into real-time mode.
-    Real-time forfeits the 50% Batch API discount **and** runs verification
-    live too, so the total spend compounds well past a simple doubling — a
-    surprise the one-line Options hint under-sells. The trade is honest speed:
-    a real-time run can finish in as little as ~10 minutes versus up to ~2
-    hours for batch.
+    Shown when the operator switches Options into real-time mode, and — for
+    the upgrade path where real-time is already persisted so the toggle never
+    fires — again just before a live run starts. Real-time forfeits the 50%
+    Batch API discount **and** runs verification live too, so the total spend
+    compounds well past a simple doubling — a surprise the one-line Options
+    hint under-sells. The trade is honest speed: a real-time run can finish in
+    as little as ~10 minutes versus up to ~2 hours for batch.
 
-    Two outcomes finalize the choice through ``app._apply_transport_choice``:
-    **Keep Real-time** commits real-time; **Use Batch instead** (and closing
-    the window) reverts to batch. A "Don't show this again" checkbox persists
-    the suppression via ``ui_state`` so power users aren't nagged.
+    **Keep Real-time** runs ``on_keep``; **Use Batch instead** (and closing
+    the window) runs ``on_revert``. Both default to
+    ``app._apply_transport_choice`` (the Options-toggle behavior); the
+    run-start gate passes callbacks that proceed with / abort the pending run
+    instead. Either dismissal sets ``app._realtime_cost_warning_shown_this_session``
+    so a user already warned this session isn't warned twice, and a ticked
+    "Don't show this again" checkbox persists the suppression via ``ui_state``.
     """
     from ..core.ui_state import save_suppress_realtime_cost_warning
 
@@ -145,13 +149,19 @@ def show_realtime_cost_warning(app) -> None:
     def _finish(realtime: bool) -> None:
         if suppress_var.get():
             save_suppress_realtime_cost_warning(True)
-        app._apply_transport_choice(realtime)
+        app._realtime_cost_warning_shown_this_session = True
         app._realtime_cost_dialog = None
         try:
             win.grab_release()
         except Exception:  # pragma: no cover - platform dependent
             pass
         win.destroy()
+        # Callbacks run after teardown so a re-entrant run-start sees a clean
+        # dialog handle. Default to the Options-toggle transport commit.
+        if realtime:
+            (on_keep or (lambda: app._apply_transport_choice(True)))()
+        else:
+            (on_revert or (lambda: app._apply_transport_choice(False)))()
 
     # Closing the window is the same as declining: fall back to batch.
     win.protocol("WM_DELETE_WINDOW", lambda: _finish(False))

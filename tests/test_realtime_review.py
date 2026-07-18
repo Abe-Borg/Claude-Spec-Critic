@@ -872,6 +872,59 @@ class TestUiStateRealtimeCostWarningSuppression:
 
 
 # ===========================================================================
+# 13. Run-start cost-warning gate (tkinter-free predicate)
+# ===========================================================================
+
+
+class _GateApp:
+    """Minimal stand-in for the app: only the session flag the gate reads."""
+
+    def __init__(self, shown: bool = False):
+        if shown:
+            self._realtime_cost_warning_shown_this_session = True
+
+
+class TestRealtimeCostGate:
+    """The upgrade-path gate: warn once per session before a live run unless
+    the operator permanently dismissed the warning. Covers the case Codex
+    flagged — a persisted real-time preference that never fires the toggle."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp_state(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SPEC_CRITIC_UI_STATE_PATH", str(tmp_path / "ui_state.json"))
+
+    def test_batch_never_warns(self):
+        from src.gui.realtime_cost_gate import should_warn_before_live_run
+
+        assert should_warn_before_live_run(_GateApp(), "batch") is False
+
+    def test_realtime_unseen_and_unsuppressed_warns(self):
+        from src.gui.realtime_cost_gate import should_warn_before_live_run
+
+        # This is the persisted-realtime upgrade path: box checked at startup,
+        # toggle never fired, warning not yet shown this session.
+        assert should_warn_before_live_run(_GateApp(shown=False), "realtime") is True
+
+    def test_realtime_already_shown_this_session_does_not_rewarn(self):
+        from src.gui.realtime_cost_gate import should_warn_before_live_run
+
+        assert should_warn_before_live_run(_GateApp(shown=True), "realtime") is False
+
+    def test_realtime_suppressed_does_not_warn(self):
+        from src.core.ui_state import save_suppress_realtime_cost_warning
+        from src.gui.realtime_cost_gate import should_warn_before_live_run
+
+        save_suppress_realtime_cost_warning(True)
+        assert should_warn_before_live_run(_GateApp(shown=False), "realtime") is False
+
+    def test_missing_session_attr_defaults_to_warn(self):
+        from src.gui.realtime_cost_gate import should_warn_before_live_run
+
+        # A bare object without the attribute (defensive getattr) still warns.
+        assert should_warn_before_live_run(object(), "realtime") is True
+
+
+# ===========================================================================
 # 13. Diagnostics telemetry from the runner
 # ===========================================================================
 
