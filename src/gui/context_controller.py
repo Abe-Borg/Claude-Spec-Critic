@@ -37,7 +37,9 @@ from ..input.drawing_digest import (
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from ..modules import get_module
 from .context_attachment import (
+    context_has_drawing_digest,
     context_within_token_cap,
+    digested_drawing_filenames,
     merge_into_context,
     wrap_attachment,
 )
@@ -94,9 +96,30 @@ def do_context_change(app) -> None:
         app._project_context_tokens = count_tokens(ctx)
     else:
         app._project_context_tokens = 0
+    _sync_drawings_readout(app, ctx)
     update_context_token_label(app)
     if app._loaded_file_data:
         app._on_file_selection_change()
+
+
+def _sync_drawings_readout(app, ctx: str) -> None:
+    """Clear the FILES-panel drawing readout if the digest is no longer present.
+
+    The operator can delete the merged digest straight out of the Project
+    Context textbox; when that happens the read-only readout must not linger.
+    A no-op when no drawings are tracked or the digest block is still present.
+    """
+    if not getattr(app, "_attached_drawings", None):
+        return
+    if context_has_drawing_digest(ctx):
+        return
+    app._attached_drawings = []
+    panel = getattr(app, "file_list_panel", None)
+    if panel is not None:
+        try:
+            panel.set_drawings([])
+        except Exception:  # noqa: BLE001 — a panel render must never break input
+            pass
 
 
 def update_context_token_label(app) -> None:
@@ -374,6 +397,7 @@ def attach_drawing_files(app) -> None:
             )
             return
         set_context_text(app, merged)
+        _surface_attached_drawings(app, drawing_files, result)
         if result.failed_chunks:
             failed = "\n".join(
                 f"- request {s.chunk_index + 1}: {', '.join(s.file_labels)} — {s.error}"
@@ -398,6 +422,36 @@ def attach_drawing_files(app) -> None:
         )
 
     threading.Thread(target=_preflight_worker, daemon=True).start()
+
+
+def _surface_attached_drawings(app, drawing_files, result) -> None:
+    """Show the just-digested drawings in the FILES panel (read-only).
+
+    Gives the operator visible confirmation that the drawings were uploaded,
+    beyond the activity-log line. Accumulates across repeated "Attach
+    Drawings…" actions (de-duped by filename), mirroring how each digest is
+    appended to Project Context. Only the sheets that landed in a non-failed
+    chunk are listed (``digested_drawing_filenames``); failed sheets are named
+    in the separate partial-failure warning instead.
+    """
+    panel = getattr(app, "file_list_panel", None)
+    if panel is None:
+        return
+    pages_by_name = {f.name: f.page_count for f in drawing_files}
+    attached = list(getattr(app, "_attached_drawings", []))
+    seen = {d["name"] for d in attached}
+    for name in digested_drawing_filenames(result.chunk_statuses):
+        if name in seen:
+            continue
+        seen.add(name)
+        page_count = pages_by_name.get(name)
+        pages = f"{page_count} pp." if isinstance(page_count, int) else ""
+        attached.append({"name": name, "pages": pages})
+    app._attached_drawings = attached
+    try:
+        panel.set_drawings(attached)
+    except Exception:  # noqa: BLE001 — a panel render must never break attach
+        pass
 
 
 def _set_drawings_button_state(app, state: str) -> None:

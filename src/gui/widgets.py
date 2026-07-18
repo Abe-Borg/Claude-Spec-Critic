@@ -174,7 +174,7 @@ class TokenGauge(ctk.CTkFrame):
 class FileListPanel(ctk.CTkFrame):
     def __init__(self, master, on_selection_change=None, pack_after=None, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
-        self._expanded = False; self._animating = False; self._file_data = []
+        self._expanded = False; self._animating = False; self._file_data = []; self._drawing_data = []
         self._on_selection_change = on_selection_change; self._pack_after = pack_after
         self._is_over_limit = False; self._glow_animation_id = None
 
@@ -184,6 +184,8 @@ class FileListPanel(ctk.CTkFrame):
         self.expand_label.pack(side="left"); self.expand_label.bind("<Button-1>", self._toggle)
         self.title_label = ctk.CTkLabel(self.header, text="FILES", font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=COLORS["text_muted"])
         self.title_label.pack(side="left", padx=(4, 0)); self.title_label.bind("<Button-1>", self._toggle)
+        self.drawings_label = ctk.CTkLabel(self.header, text="", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["accent"])
+        self.drawings_label.pack(side="left", padx=(8, 0)); self.drawings_label.bind("<Button-1>", self._toggle)
         self.count_label = ctk.CTkLabel(self.header, text="", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_secondary"])
         self.count_label.pack(side="right"); self.count_label.bind("<Button-1>", self._toggle)
         btn_frame = ctk.CTkFrame(self.header, fg_color="transparent"); btn_frame.pack(side="right", padx=(0, 16))
@@ -191,7 +193,13 @@ class FileListPanel(ctk.CTkFrame):
         ctk.CTkButton(btn_frame, text="None", width=40, height=22, font=ctk.CTkFont(size=10), fg_color="transparent", hover_color=COLORS["bg_input"], text_color=COLORS["text_muted"], command=self._select_none).pack(side="left")
         self.content_container = ctk.CTkFrame(self, fg_color="transparent")
         self.file_list = ctk.CTkScrollableFrame(self.content_container, fg_color=COLORS["bg_input"], corner_radius=4, height=150)
-        self.file_list.pack(fill="both", expand=True, padx=16, pady=(0, 12)); self.pack_forget()
+        self.file_list.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        # Read-only readout of drawings digested into Project Context. Packed
+        # below the spec list only when drawings are attached; survives spec
+        # re-analysis (which rebuilds file_list) because it lives in its own
+        # frame driven by the persistent self._drawing_data.
+        self.drawings_section = ctk.CTkFrame(self.content_container, fg_color="transparent")
+        self.pack_forget()
 
     def load_files(self, file_data, selection=None):
         # ``selection`` is an optional {path: is_checked} map (built by
@@ -211,8 +219,7 @@ class FileListPanel(ctk.CTkFrame):
             ctk.CTkLabel(row, text=f"{data['tokens']:,}", font=ctk.CTkFont(family="Consolas", size=10), text_color=COLORS["text_muted"], width=60, anchor="e").pack(side="right", padx=(8, 4))
             self._file_data.append({"path": data["path"], "filename": data["filename"], "tokens": data["tokens"], "var": var, "name_label": nl})
         self._update_count()
-        if self._pack_after: self.pack(fill="x", pady=(16, 0), after=self._pack_after)
-        else: self.pack(fill="x", pady=(16, 0))
+        self._pack_self()
         self._expanded = False; self.expand_label.configure(text="\u25b6")
 
     def selection_state_by_path(self):
@@ -229,7 +236,44 @@ class FileListPanel(ctk.CTkFrame):
         self._update_count()
         for d in self._file_data: d["name_label"].configure(text_color=COLORS["text_secondary"] if d["var"].get() else COLORS["text_muted"])
         if self._on_selection_change: self._on_selection_change()
-    def _update_count(self): self.count_label.configure(text=f"{self.get_selected_count()}/{len(self._file_data)} selected")
+    def _update_count(self):
+        # Blank rather than "0/0 selected" when no specs are loaded, so a
+        # panel shown only for attached drawings doesn't read as an empty
+        # spec selection.
+        self.count_label.configure(text=f"{self.get_selected_count()}/{len(self._file_data)} selected" if self._file_data else "")
+
+    def _pack_self(self):
+        if self._pack_after: self.pack(fill="x", pady=(16, 0), after=self._pack_after)
+        else: self.pack(fill="x", pady=(16, 0))
+
+    def set_drawings(self, drawing_data):
+        """Set the read-only drawings readout from ``[{name, pages}]`` dicts.
+
+        Called after each successful drawing digest (and with ``[]`` to clear
+        when the digest is removed from Project Context). Independent of the
+        spec list, so it survives spec re-analysis; the panel is shown while
+        either specs or drawings are present and hidden only when both empty.
+        """
+        self._drawing_data = list(drawing_data or [])
+        self._render_drawings()
+        if self._file_data or self._drawing_data: self._pack_self()
+        else: self.pack_forget()
+
+    def _render_drawings(self):
+        for w in self.drawings_section.winfo_children(): w.destroy()
+        n = len(self._drawing_data)
+        if not n:
+            self.drawings_label.configure(text=""); self.drawings_section.pack_forget(); return
+        self.drawings_label.configure(text=f"◆ {n} drawing{'s' if n != 1 else ''}")
+        hdr = ctk.CTkFrame(self.drawings_section, fg_color="transparent"); hdr.pack(fill="x", padx=16, pady=(4, 2))
+        ctk.CTkLabel(hdr, text="DRAWINGS (in Project Context)", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLORS["text_muted"]).pack(side="left")
+        for d in self._drawing_data:
+            row = ctk.CTkFrame(self.drawings_section, fg_color="transparent"); row.pack(fill="x", padx=16, pady=1)
+            ctk.CTkLabel(row, text="◆", font=ctk.CTkFont(size=11), text_color=COLORS["accent"], width=18).pack(side="left")
+            ctk.CTkLabel(row, text=d.get("name", ""), font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLORS["text_secondary"], anchor="w").pack(side="left", padx=(4, 0), fill="x", expand=True)
+            pages = d.get("pages")
+            if pages: ctk.CTkLabel(row, text=pages, font=ctk.CTkFont(family="Consolas", size=10), text_color=COLORS["text_muted"], width=60, anchor="e").pack(side="right", padx=(8, 4))
+        self.drawings_section.pack(fill="x", pady=(0, 12))
     def _select_all(self):
         for d in self._file_data: d["var"].set(True)
     def _select_none(self):
@@ -255,10 +299,16 @@ class FileListPanel(ctk.CTkFrame):
         self._glow_step += 1; self._glow_animation_id = self.after(ANIM["glow_step_ms"], self._animate_glow)
 
     def reset(self):
+        # Clears the spec list only. The drawings readout belongs to Project
+        # Context (not the spec selection), so it survives both the transient
+        # clear before each re-analysis and the explicit spec Clear button;
+        # it is cleared separately when the digest leaves Project Context.
         if self._glow_animation_id: self.after_cancel(self._glow_animation_id); self._glow_animation_id = None
         self._is_over_limit = False; self.title_label.configure(text_color=COLORS["text_muted"])
         for w in self.file_list.winfo_children(): w.destroy()
-        self._file_data.clear(); self.pack_forget()
+        self._file_data.clear(); self._update_count()
+        if self._drawing_data: self._pack_self()
+        else: self.pack_forget()
 
 
 # ============================================================================
