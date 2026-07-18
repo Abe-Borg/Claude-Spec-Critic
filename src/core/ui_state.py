@@ -27,6 +27,11 @@ _PROFILES_KEY = "project_profiles"
 # (50% cheaper, resumable).
 _TRANSPORT_KEY = "review_transport"
 _VALID_TRANSPORTS = ("batch", "realtime")
+# Whether the developer/diagnostic agent-tracing controls are revealed in the
+# GUI. Default False — regular users don't see the tracing row; an operator
+# opts in via the Options toggle. Anything non-bool (missing / hand-edited)
+# reads as False.
+_SHOW_TRACING_KEY = "show_tracing_tools"
 
 
 def ui_state_path() -> Path:
@@ -71,6 +76,21 @@ def save_review_transport(transport: str, *, path: Path | None = None) -> None:
     if transport not in _VALID_TRANSPORTS:
         return
     _write_key(_TRANSPORT_KEY, transport, path=path)
+
+
+def load_show_tracing_tools(*, path: Path | None = None) -> bool:
+    """Whether the agent-tracing controls are revealed; ``False`` by default.
+
+    Any non-bool stored value (missing key or a hand-edited file) reads as
+    ``False`` so the tracing row stays hidden unless explicitly enabled.
+    """
+    value = _load(path).get(_SHOW_TRACING_KEY, False)
+    return value if isinstance(value, bool) else False
+
+
+def save_show_tracing_tools(value: bool, *, path: Path | None = None) -> None:
+    """Persist the tracing-tools reveal toggle. Best-effort: never raises."""
+    _write_key(_SHOW_TRACING_KEY, bool(value), path=path)
 
 
 def load_project_profile(module_id: str, *, path: Path | None = None) -> dict:
