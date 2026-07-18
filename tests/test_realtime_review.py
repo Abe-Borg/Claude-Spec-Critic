@@ -871,6 +871,58 @@ class TestUiStateRealtimeCostWarningSuppression:
         assert load_suppress_realtime_cost_warning() is True
 
 
+class TestUiStateShowTracing:
+    @pytest.fixture(autouse=True)
+    def _tmp_state(self, monkeypatch, tmp_path):
+        self.state_path = tmp_path / "ui_state.json"
+        monkeypatch.setenv("SPEC_CRITIC_UI_STATE_PATH", str(self.state_path))
+
+    def test_default_is_false(self):
+        from src.core.ui_state import load_show_tracing_tools
+
+        assert load_show_tracing_tools() is False
+
+    def test_round_trip(self):
+        from src.core.ui_state import (
+            load_show_tracing_tools,
+            save_show_tracing_tools,
+        )
+
+        save_show_tracing_tools(True)
+        assert load_show_tracing_tools() is True
+        save_show_tracing_tools(False)
+        assert load_show_tracing_tools() is False
+
+    def test_malformed_file_reads_as_false(self):
+        from src.core.ui_state import load_show_tracing_tools
+
+        self.state_path.write_text("{not json", encoding="utf-8")
+        assert load_show_tracing_tools() is False
+
+    def test_non_bool_value_degrades_to_false(self):
+        import json
+
+        from src.core.ui_state import load_show_tracing_tools
+
+        self.state_path.write_text(
+            json.dumps({"show_tracing_tools": "yes"}), encoding="utf-8"
+        )
+        assert load_show_tracing_tools() is False
+
+    def test_preserves_other_keys(self):
+        from src.core.ui_state import (
+            load_selected_module_id,
+            load_show_tracing_tools,
+            save_selected_module_id,
+            save_show_tracing_tools,
+        )
+
+        save_selected_module_id("california_k12_mep")
+        save_show_tracing_tools(True)
+        assert load_selected_module_id() == "california_k12_mep"
+        assert load_show_tracing_tools() is True
+
+
 # ===========================================================================
 # 13. Run-start cost-warning gate (tkinter-free predicate)
 # ===========================================================================
@@ -925,7 +977,7 @@ class TestRealtimeCostGate:
 
 
 # ===========================================================================
-# 13. Diagnostics telemetry from the runner
+# 14. Diagnostics telemetry from the runner
 # ===========================================================================
 
 

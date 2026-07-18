@@ -52,10 +52,12 @@ from src.core.ui_state import (
     load_project_profile,
     load_review_transport,
     load_selected_module_id,
+    load_show_tracing_tools,
     load_suppress_realtime_cost_warning,
     save_project_profile,
     save_review_transport,
     save_selected_module_id,
+    save_show_tracing_tools,
 )
 from src.gui.project_profile_inputs import (
     COUNTRY_OPTIONS,
@@ -460,10 +462,32 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._realtime_hint.pack(side="left", padx=(12, 0))
 
-        # --- Row 4: Agent tracing ---
-        ctk.CTkLabel(self.inputs_content, text="Tracing", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=4, column=0, sticky="w", pady=8)
-        tracing_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
-        tracing_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
+        # Reveal toggle for the developer/diagnostic tracing controls (Row 4).
+        # Off by default so regular users never see the tracing row; ticking it
+        # grid()-restores the row below. Persisted across launches.
+        options_line3 = ctk.CTkFrame(options_frame, fg_color="transparent")
+        options_line3.pack(anchor="w", pady=(6, 0))
+        self._show_tracing_var = ctk.BooleanVar(value=load_show_tracing_tools())
+        self._show_tracing_cb = ctk.CTkCheckBox(
+            options_line3, text="Show agent tracing tools", variable=self._show_tracing_var,
+            command=self._on_show_tracing_toggle,
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
+            checkmark_color=COLORS["text_primary"], text_color=COLORS["text_secondary"],
+            checkbox_width=20, checkbox_height=20,
+        )
+        self._show_tracing_cb.pack(side="left")
+        self._show_tracing_hint = ctk.CTkLabel(options_line3,
+            text="developer / diagnostics",
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
+        self._show_tracing_hint.pack(side="left", padx=(12, 0))
+
+        # --- Row 4: Agent tracing (hidden unless the reveal toggle is on) ---
+        self._tracing_label = ctk.CTkLabel(self.inputs_content, text="Tracing", font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_secondary"], width=100, anchor="w")
+        self._tracing_label.grid(row=4, column=0, sticky="w", pady=8)
+        self._tracing_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
+        self._tracing_frame.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=8)
+        tracing_frame = self._tracing_frame
         self._trace_var = ctk.BooleanVar(value=True)
         self._trace_cb = ctk.CTkCheckBox(
             tracing_frame, text="Record agent trace", variable=self._trace_var,
@@ -503,6 +527,8 @@ class SpecReviewApp(_CTkDnDRoot):
         # Apply initial state to env vars so the recorder picks them up
         # on the first run without needing to toggle first.
         self._on_trace_toggle()
+        # Hide the whole tracing row unless the reveal toggle is on (default off).
+        self._update_tracing_visibility()
 
         # --- Row 5: Project profile (location + client) -------------------
         # Only shown when the selected module opts in (project_profile_enabled).
@@ -710,6 +736,27 @@ class SpecReviewApp(_CTkDnDRoot):
             show_realtime_cost_warning(self)
             return
         self._apply_transport_choice(realtime)
+
+    def _on_show_tracing_toggle(self) -> None:
+        """Persist the reveal choice and show/hide the tracing row."""
+        save_show_tracing_tools(self._show_tracing_var.get())
+        self._update_tracing_visibility()
+
+    def _update_tracing_visibility(self) -> None:
+        """Show the tracing row iff the reveal toggle is on.
+
+        ``grid_remove()`` hides while remembering the grid options, so a later
+        bare ``grid()`` restores the label + frame in place (same idiom as the
+        project-profile row).
+        """
+        if not hasattr(self, "_tracing_frame"):
+            return
+        if self._show_tracing_var.get():
+            self._tracing_label.grid()
+            self._tracing_frame.grid()
+        else:
+            self._tracing_label.grid_remove()
+            self._tracing_frame.grid_remove()
 
     def _on_trace_toggle(self) -> None:
         """Translate the checkboxes into env vars the recorder reads.
