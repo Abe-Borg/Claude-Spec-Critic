@@ -94,6 +94,132 @@ def _link_label(scroll, url: str) -> None:
     link.bind("<Button-1>", lambda _event: webbrowser.open(url))
 
 
+def _grab_dialog(win) -> None:
+    """Modal-grab a toplevel defensively.
+
+    Grabbing before the window is viewable raises on some platforms, so
+    callers schedule this via ``after(...)`` and we swallow the failure.
+    """
+    try:
+        win.grab_set()
+    except Exception:  # pragma: no cover - platform dependent
+        pass
+
+
+def show_realtime_cost_warning(app, *, on_keep=None, on_revert=None) -> None:
+    """Warn once (dismissable) about real-time review's compounding cost.
+
+    Shown when the operator switches Options into real-time mode, and — for
+    the upgrade path where real-time is already persisted so the toggle never
+    fires — again just before a live run starts. Real-time forfeits the 50%
+    Batch API discount **and** runs verification live too, so the total spend
+    compounds well past a simple doubling — a surprise the one-line Options
+    hint under-sells. The trade is honest speed: a real-time run can finish in
+    as little as ~10 minutes versus up to ~2 hours for batch.
+
+    **Keep Real-time** runs ``on_keep``; **Use Batch instead** (and closing
+    the window) runs ``on_revert``. Both default to
+    ``app._apply_transport_choice`` (the Options-toggle behavior); the
+    run-start gate passes callbacks that proceed with / abort the pending run
+    instead. Either dismissal sets ``app._realtime_cost_warning_shown_this_session``
+    so a user already warned this session isn't warned twice, and a ticked
+    "Don't show this again" checkbox persists the suppression via ``ui_state``.
+    """
+    from ..core.ui_state import save_suppress_realtime_cost_warning
+
+    existing = getattr(app, "_realtime_cost_dialog", None)
+    if existing is not None and existing.winfo_exists():
+        existing.lift()
+        existing.focus_force()
+        return
+
+    win = ctk.CTkToplevel(app)
+    app._realtime_cost_dialog = win
+    win.title("Real-time review — cost warning")
+    win.configure(fg_color=COLORS["bg_dark"])
+    win.geometry("560x440")
+    win.minsize(460, 380)
+    win.transient(app)
+    # Grab deferred: grabbing before the window is viewable raises on some
+    # platforms (the update dialog learned this the hard way).
+    win.after(150, lambda: _grab_dialog(win))
+
+    suppress_var = ctk.BooleanVar(value=False)
+
+    def _finish(realtime: bool) -> None:
+        if suppress_var.get():
+            save_suppress_realtime_cost_warning(True)
+        app._realtime_cost_warning_shown_this_session = True
+        app._realtime_cost_dialog = None
+        try:
+            win.grab_release()
+        except Exception:  # pragma: no cover - platform dependent
+            pass
+        win.destroy()
+        # Callbacks run after teardown so a re-entrant run-start sees a clean
+        # dialog handle. Default to the Options-toggle transport commit.
+        if realtime:
+            (on_keep or (lambda: app._apply_transport_choice(True)))()
+        else:
+            (on_revert or (lambda: app._apply_transport_choice(False)))()
+
+    # Closing the window is the same as declining: fall back to batch.
+    win.protocol("WM_DELETE_WINDOW", lambda: _finish(False))
+
+    card = ctk.CTkFrame(win, fg_color=COLORS["bg_card"], corner_radius=8)
+    card.pack(fill="both", expand=True, padx=12, pady=12)
+
+    ctk.CTkLabel(
+        card, text="Real-time review costs much more",
+        font=ctk.CTkFont(family="Segoe UI", size=17, weight="bold"),
+        text_color=COLORS["text_primary"], justify="left",
+    ).pack(anchor="w", padx=18, pady=(16, 2))
+    ctk.CTkLabel(
+        card,
+        text=(
+            "Real-time (streaming) review bills at standard API pricing — it "
+            "forfeits the 50% Batch API discount. And because verification "
+            "runs live too, the extra cost compounds across every phase, so a "
+            "real-time run can cost several times what the same review costs "
+            "in batch mode.\n\n"
+            "The upside is speed: real-time is much faster — results can "
+            "arrive in as little as ~10 minutes, versus up to ~2 hours for a "
+            "batch run. If the cost is worth it to you, real-time is the "
+            "quicker way to get findings.\n\n"
+            "Very large specs (≥200k input tokens) still require batch mode."
+        ),
+        font=ctk.CTkFont(family="Segoe UI", size=12),
+        text_color=COLORS["text_secondary"], wraplength=500, justify="left",
+    ).pack(anchor="w", padx=18, pady=(0, 10))
+
+    # Bottom button bar first so pack reserves the bottom edge.
+    bottom = ctk.CTkFrame(card, fg_color="transparent")
+    bottom.pack(side="bottom", fill="x", padx=18, pady=(4, 14))
+    ctk.CTkButton(
+        bottom, text="Keep Real-time", width=150, height=34,
+        font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+        fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+        command=lambda: _finish(True),
+    ).pack(side="right")
+    ctk.CTkButton(
+        bottom, text="Use Batch instead", width=150, height=34,
+        font=ctk.CTkFont(family="Segoe UI", size=12),
+        fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
+        border_width=1, border_color=COLORS["border"],
+        text_color=COLORS["text_secondary"],
+        command=lambda: _finish(False),
+    ).pack(side="right", padx=(0, 8))
+
+    ctk.CTkCheckBox(
+        card, text="Don't show this again", variable=suppress_var,
+        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+        fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+        border_color=COLORS["border"], checkmark_color=COLORS["text_primary"],
+        text_color=COLORS["text_secondary"],
+        checkbox_width=20, checkbox_height=20,
+    ).pack(side="bottom", anchor="w", padx=18, pady=(0, 4))
+
+
 def show_about_dialog(parent) -> None:
     dialog = _build_modal(parent, "How Spec Critic Works")
 
@@ -298,13 +424,17 @@ def show_usage_dialog(parent) -> None:
         ("5.  Batch Processing (Default) or Real-Time", (
             "By default, all specs are queued and processed through the Batch "
             f"API on Claude {_model_label(REVIEW_MODEL_DEFAULT)} at 50% cost "
-            f"savings, with results {_BATCH_TIMING_COPY}. Check “Real-time "
-            "review (streaming)” in Options to stream the reviews "
-            "synchronously instead: results arrive in minutes for small runs, "
-            "verification runs live too (no batch queues anywhere), but the "
-            "run bills at standard API pricing and has no crash resume — if "
-            "the app closes mid-run, in-flight review work is lost. Very "
-            "large specs (≥200k input tokens) still require batch mode."
+            f"savings. Batch turnaround is slower — {_BATCH_TIMING_COPY}, "
+            "typically under 2 hours. Check “Real-time review (streaming)” in "
+            "Options to stream the reviews synchronously instead: results "
+            "arrive in as little as ~10 minutes for small runs, and "
+            "verification runs live too (no batch queues anywhere). The trade "
+            "is cost — real-time forfeits the 50% batch discount and, because "
+            "verification also runs live, the spend compounds across every "
+            "phase, so a run can cost several times its batch price. It also "
+            "has no crash resume: if the app closes mid-run, in-flight review "
+            "work is lost. Very large specs (≥200k input tokens) still require "
+            "batch mode."
         )),
         ("6.  Enable Cross-Spec Coordination (Optional)", (
             "Check this option to run a separate coordination analysis that "

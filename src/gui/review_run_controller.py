@@ -22,6 +22,7 @@ from ..review.reviewer import REVIEW_MODEL_DEFAULT
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from ..core.ui_state import save_project_profile
 from .project_profile_inputs import completeness_error
+from .realtime_cost_gate import should_warn_before_live_run
 from ..tracing.session import (
     start_run_recorder,
     stop_run_recorder as _stop_recorder,
@@ -91,6 +92,19 @@ def dispatch_if_current(app, epoch: int, fn) -> None:
     app.after(0, lambda: fn() if app._run_epoch == epoch else None)
 
 
+def _revert_run_to_batch(app) -> None:
+    """Cancel a pending live run and switch the app back to batch mode.
+
+    Used by the run-start cost gate's "Use Batch instead" choice. Nothing has
+    started yet (the gate sits before ``is_processing`` is set), so this only
+    flips the transport + button and tells the user to re-run in batch.
+    """
+    apply = getattr(app, "_apply_transport_choice", None)
+    if apply is not None:
+        apply(False)
+    app.log.log("Switched to batch mode — click Submit Batch to run.", level="info")
+
+
 def start_review(app) -> None:
     if app.is_processing:
         return
@@ -111,6 +125,24 @@ def start_review(app) -> None:
         "realtime" if (realtime_var is not None and realtime_var.get()) else "batch"
     )
     transport = app._review_transport_for_review
+    # Run-start cost gate. The Options toggle warns when the user switches
+    # into real-time, but an operator whose real-time preference was already
+    # persisted starts up with the box checked and never fires that toggle —
+    # so warn here too, once per session, before any live spend. "Keep
+    # Real-time" re-enters start_review (now past the gate via the session
+    # flag); "Use Batch instead" flips the transport back to batch without
+    # starting, so the user re-initiates as a batch run.
+    if should_warn_before_live_run(app, transport):
+        # Lazy import keeps this module's import surface at ``tkinter`` only
+        # (the hermetic GUI tests gate on tkinter, not customtkinter).
+        from .about_usage_dialogs import show_realtime_cost_warning
+
+        show_realtime_cost_warning(
+            app,
+            on_keep=lambda: start_review(app),
+            on_revert=lambda: _revert_run_to_batch(app),
+        )
+        return
     # The module is the single source: resolve the selected id (unknown /
     # unset degrades to the default California module) and derive the cycle
     # label from it so the two app attrs can never disagree.
