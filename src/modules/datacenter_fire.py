@@ -45,6 +45,25 @@ goldens stay byte-identical (this module touches no engine file).
 from __future__ import annotations
 
 from ..core.code_cycles import BaseCode, CodeCycle, StandardEdition
+from ._datacenter_shared import (
+    DC_ASCE7_PLAUSIBLE_EDITIONS,
+    DC_ICODE_PLAUSIBLE_YEARS,
+    DC_ICODE_VALID_YEARS,
+    DC_STALE_LONGFORM_BUILDING_FIRE,
+    POLITY_CA_115V,
+    POLITY_CA_IBC_IFC,
+    POLITY_CA_LIFE_SAFETY_CODE,
+    POLITY_CA_MADE_IN_USA,
+    POLITY_CA_NEC,
+    POLITY_CA_OSHA,
+    POLITY_CA_SEISMIC_NOTATION,
+    POLITY_CA_UL_LISTED,
+    POLITY_US_CSA_C221,
+    POLITY_US_NBC,
+    POLITY_US_OREG,
+    POLITY_US_ULC,
+    SHARED_DC_CORPUS_SIGNAL_PATTERNS,
+)
 from .base import (
     ChunkGroup,
     DetectorVocabulary,
@@ -332,28 +351,20 @@ _VERIFIER_SOURCE_PRIORITIES = """\
 
 # The deterministic preprocessor's I-code vocabulary. The detector logic (regex
 # assembly, span dedup, negation suppression) is engine-owned in
-# ``input/preprocessor.py``; these are the domain facts it scans for. NBC/NFC
-# (Canadian) years are intentionally NOT added — one shared cycle-year set can't
-# hold both I-code and NBC year families without the stale/invalid detectors
-# misfiring (documented v1 limitation, ``hyperscale_datacenter_module_plan.md``
-# D-10); Canadian deterministic coverage arrives via the profile-gated
-# wrong-polity token detector in a later workstream.
+# ``input/preprocessor.py``; these are the domain facts it scans for. The
+# I-code year families, ASCE 7 whitelist, and long-form citation pattern are
+# shared across the data-center modules via ``_datacenter_shared`` — including
+# the documented D-10 limitation that NBC/NFC (Canadian) years stay out of the
+# shared set (Canadian deterministic coverage arrives via the profile-gated
+# wrong-polity token detector instead). The abbreviation set is this module's
+# own.
 _DETECTOR_VOCABULARY = DetectorVocabulary(
     # Abbreviations recognized next to a year ("2018 IBC" / "IBC 2018").
     code_abbreviations=("IBC", "IFC", "IEBC", "IFGC"),
-    # Real, published I-code editions in the recent window the stale detector
-    # flags (a found year in this set that differs from the primary 2024 alerts).
-    plausible_cycle_years=("2009", "2012", "2015", "2018", "2021", "2024"),
-    # Every published cycle plus the next anticipated one (2027); a year/code
-    # citation outside this set is a typo or fabrication ("2019 IBC").
-    valid_cycle_years=("2009", "2012", "2015", "2018", "2021", "2024", "2027"),
-    # Real, published ASCE 7 editions (recognition whitelist) — same as the CA
-    # module until research says otherwise.
-    asce7_plausible_editions=("88", "93", "95", "98", "02", "05", "10", "16", "22"),
-    # Long-form citations ("2015 International Building Code"); year is group 1.
-    stale_cycle_extra_patterns=(
-        r"\b(20\d{2})\s+International\s+(?:Building|Fire)\s+Code\b",
-    ),
+    plausible_cycle_years=DC_ICODE_PLAUSIBLE_YEARS,
+    valid_cycle_years=DC_ICODE_VALID_YEARS,
+    asce7_plausible_editions=DC_ASCE7_PLAUSIBLE_EDITIONS,
+    stale_cycle_extra_patterns=(DC_STALE_LONGFORM_BUILDING_FIRE,),
     # Data-center projects genuinely pursue LEED — references are legitimate
     # scope, not copy/paste errors, so the LEED detector must NOT fire here.
     flag_leed_references=False,
@@ -632,164 +643,63 @@ GRIPES — editorial gaps in how requirements are referenced."""
 
 # §5.13 [FT] — wrong-polity token seed sets. Each rule is a pure function of the
 # run's project country; the pre-screen applies the profile country's rules
-# ONLY when a profile is present, so profile-less runs stay byte-identical. The
-# engine applies each pattern flat (no proximity suppression), so the bare
-# ``UL listed`` rule relies on a word boundary — ``cULus``/``ULC`` have no
-# boundary before the ``U`` and are not matched. Patterns are compile-checked
-# at registration; scoped ``(?i:…)`` handles the phrase families case-blindly
-# while keeping acronyms case-sensitive. Notes render into the alert so the
-# operator sees WHY the token is suspicious.
+# ONLY when a profile is present, so profile-less runs stay byte-identical.
+# The jurisdiction-generic rules (per-rule pattern rationale included) are
+# shared across the data-center modules via ``_datacenter_shared``; the two
+# pressure-vessel rules below stay fire-suppression-local (dry/pre-action air
+# and nitrogen receivers are this discipline's vessels). Tuple order is
+# preserved exactly as originally shipped.
+_POLITY_DOT_VESSEL = PolityTokenRule(
+    country="CA",
+    pattern=(
+        r"\bDOT\b[^.\n]{0,80}\b(?i:tank|vessel|receiver|cylinder)\b"
+        r"|\b(?i:tank|vessel|receiver|cylinder)\b[^.\n]{0,80}\bDOT\b"
+    ),
+    note=(
+        "A DOT cylinder/vessel rating is a US pressure-vessel regime; "
+        "Canadian vessels require ASME construction with CRN registration "
+        "under CSA B51."
+    ),
+)
+
+_POLITY_CRN = PolityTokenRule(
+    country="US",
+    pattern=r"\bCRN\b",
+    note=(
+        "A CRN (Canadian Registration Number) is a Canadian pressure-vessel "
+        "registration under CSA B51; US vessels use the ASME / National "
+        "Board regime."
+    ),
+)
+
 _POLITY_SUSPECT_TOKENS = (
     # --- country=CA: flag US-only vocabulary on a Canadian project ----------
-    PolityTokenRule(
-        country="CA",
-        pattern=r"\bNFPA\s*70\b|\bNEC\b",
-        note=(
-            "NFPA 70 / NEC is the US National Electrical Code; Canadian "
-            "electrical work is governed by CSA C22.1 (Canadian Electrical "
-            "Code)."
-        ),
-    ),
-    PolityTokenRule(
-        country="CA",
-        pattern=r"\bOSHA\b",
-        note=(
-            "OSHA is a US federal safety agency; Canadian occupational safety "
-            "is provincially regulated."
-        ),
-    ),
-    PolityTokenRule(
-        country="CA",
-        # Allow the hyphenated compound "life-safety code" as well as the
-        # spaced form.
-        pattern=r"(?i:\blife[- ]safety code\b)",
-        note=(
-            "The Life Safety Code (NFPA 101) is a US code; Canadian life "
-            "safety is governed by the National / provincial Building Code."
-        ),
-    ),
-    PolityTokenRule(
-        country="CA",
-        # Case-insensitive on "listed" so "UL Listed" / "U.L. Listed" (the
-        # common title-case forms) are caught — the engine compiles polity
-        # patterns with NO flags, so the scoped ``(?i:…)`` is what makes it
-        # case-blind. ``UL`` stays uppercase-required, and the word boundary
-        # before ``U`` still excludes ``cULus``/``ULC`` (no boundary there).
-        pattern=r"\bU\.?L\.?[- ](?i:listed)\b",
-        note=(
-            "A bare UL listing may not be recognized in Canada; "
-            "fire-protection and electrical components generally require "
-            "cULus or ULC listing."
-        ),
-    ),
-    PolityTokenRule(
-        country="CA",
-        pattern=(
-            r"\bDOT\b[^.\n]{0,80}\b(?i:tank|vessel|receiver|cylinder)\b"
-            r"|\b(?i:tank|vessel|receiver|cylinder)\b[^.\n]{0,80}\bDOT\b"
-        ),
-        note=(
-            "A DOT cylinder/vessel rating is a US pressure-vessel regime; "
-            "Canadian vessels require ASME construction with CRN registration "
-            "under CSA B51."
-        ),
-    ),
-    PolityTokenRule(
-        country="CA",
-        pattern=r"(?i:\bmade in (?:the )?usa\b|\bdomestically made\b)",
-        note=(
-            "US-origin / domestic-sourcing language is a US procurement clause; "
-            "on a Canadian project it may be non-compliant or tariff-exposed — "
-            "revise to a listing/standard-based basis."
-        ),
-    ),
-    PolityTokenRule(
-        country="CA",
-        # Match the ASCE 7 seismic *notation* (S_DS / S_D1 design spectral
-        # accelerations, SDC) and the phrase — NOT bare "SDS", which collides
-        # with the ubiquitous "Safety Data Sheets (SDS)" submittal requirement
-        # and would fire a spurious seismic alert on every submittal section.
-        pattern=r"\bS_DS\b|\bS_D1\b|\bSDC\b|(?i:\bseismic design category\b)",
-        note=(
-            "S_DS / S_D1 / SDC / Seismic Design Category are the ASCE 7 / IBC "
-            "seismic parameters; Canadian projects use the NBC seismic-hazard "
-            "framework instead."
-        ),
-    ),
-    PolityTokenRule(
-        country="CA",
-        pattern=r"\bIBC\b|\bIFC\b",
-        note=(
-            "This project's governing codes are the NBC/NFC family per the "
-            "requirements profile; a bare IBC/IFC citation is likely a US "
-            "master-spec remnant unless the profile confirms I-code adoption."
-        ),
-    ),
-    PolityTokenRule(
-        country="CA",
-        pattern=r"\b115[- ]?V(?:AC)?\b",
-        note=(
-            "115 V is a US nominal-voltage convention; Canadian systems are "
-            "specified at 120 / 208 / 347 / 600 V."
-        ),
-    ),
+    POLITY_CA_NEC,
+    POLITY_CA_OSHA,
+    POLITY_CA_LIFE_SAFETY_CODE,
+    POLITY_CA_UL_LISTED,
+    _POLITY_DOT_VESSEL,
+    POLITY_CA_MADE_IN_USA,
+    POLITY_CA_SEISMIC_NOTATION,
+    POLITY_CA_IBC_IFC,
+    POLITY_CA_115V,
     # --- country=US: flag Canada-only vocabulary on a US project ------------
-    PolityTokenRule(
-        country="US",
-        pattern=r"\bNBC\b|(?i:\bnational building code of canada\b)",
-        note=(
-            "The NBC / National Building Code of Canada is a Canadian model "
-            "code; a US project is governed by the IBC/IFC family."
-        ),
-    ),
-    PolityTokenRule(
-        country="US",
-        pattern=r"\bULC\b",
-        note=(
-            "A ULC (Underwriters Laboratories of Canada) listing is Canadian; "
-            "a US project generally requires a UL or cULus listing."
-        ),
-    ),
-    PolityTokenRule(
-        country="US",
-        pattern=r"\bCRN\b",
-        note=(
-            "A CRN (Canadian Registration Number) is a Canadian pressure-vessel "
-            "registration under CSA B51; US vessels use the ASME / National "
-            "Board regime."
-        ),
-    ),
-    PolityTokenRule(
-        country="US",
-        pattern=r"O\. ?Reg\.",
-        note=(
-            "'O. Reg.' cites an Ontario regulation; a US project is not "
-            "governed by Ontario law."
-        ),
-    ),
-    PolityTokenRule(
-        country="US",
-        pattern=r"\bCSA\s*C22\.1\b",
-        note=(
-            "CSA C22.1 (Canadian Electrical Code) governs Canadian electrical "
-            "work; a US project's electrical code is NFPA 70 (NEC)."
-        ),
-    ),
+    POLITY_US_NBC,
+    POLITY_US_ULC,
+    _POLITY_CRN,
+    POLITY_US_OREG,
+    POLITY_US_CSA_C221,
 )
 
 
 # Module-owned corpus-signal patterns (family (a), D-3 [FT]): document-name
 # vocabulary the deterministic scrape looks for so research searches with the
-# project's own terms. Compiled case-insensitive at scrape time; the other
-# three signal families (risk consultant/insurer, edition-governance,
-# standards-with-editions) are engine-owned.
-_CORPUS_SIGNAL_PATTERNS = (
-    r"\bbasis of design\b",
-    r"\bBoD\b",
-    r"\bowner'?s? project requirements\b",
-    r"\bOPR\b",
-    r"\bdesign (?:basis|criteria|guide(?:lines)?|standard)s?\b",
-    r"\b(?:master|guide)[ -]?spec(?:ification)?s?\b",
+# project's own terms. The generic owner-document vocabulary is shared across
+# the data-center modules via ``_datacenter_shared``; the fire-protection-
+# specific document name is appended module-locally. Compiled case-insensitive
+# at scrape time; the other three signal families (risk consultant/insurer,
+# edition-governance, standards-with-editions) are engine-owned.
+_CORPUS_SIGNAL_PATTERNS = SHARED_DC_CORPUS_SIGNAL_PATTERNS + (
     r"\bfire protection design (?:guide|standard|criteria)\b",
 )
 
