@@ -1,0 +1,23 @@
+Review the following 2 specs for cross-spec coordination only.
+
+<project_context>
+Hyperscale data-center new-build program.
+</project_context>
+
+<corpus>
+<spec filename="08 11 13 - Hollow Metal Doors and Frames.docx">
+<heading id="p0">1.01 SUMMARY</heading>
+<para id="p1" section="1.01 SUMMARY">A. Comply with 2015 IBC Chapter 7 for all fire-rated door assemblies.</para>
+<row id="t0r0" section="1.01 SUMMARY">D-101 | 90 min | Steelcraft H-series</row>
+</spec>
+<spec filename="07 84 13 - Penetration Firestopping.docx">
+1.01 SUMMARY
+
+A. Provide penetration firestopping as indicated.
+</spec>
+</corpus>
+
+<already_identified note="Do not repeat these findings.">
+  <prior severity="HIGH" file="08 11 13 - Hollow Metal Doors and Frames.docx" section="2.02" id="rf-0123456789ab">Door schedule assigns 90-minute opening protectives at openings the wall-types section describes as 1-hour partitions.</prior>
+  <prior severity="HIGH" file="07 84 13 - Penetration Firestopping.docx">Firestop system schedule references wall types absent from the wall-types section.</prior>
+</already_identified>

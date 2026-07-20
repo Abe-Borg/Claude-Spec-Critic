@@ -1,0 +1,122 @@
+{
+  "code_cycle_alerts": [
+    {
+      "context": "1.01 SUMMARY  A. Provide fire-rated door assemblies per 2018 IBC Chapter 7 and anchor curtain-wall framing per ASCE 7-10.  B",
+      "deterministic_rule": "stale_code_cycle",
+      "expected_year": "2024",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "found_year": "2018",
+      "match": "2018 IBC",
+      "position": 56,
+      "type": "Stale code cycle reference (2018 vs selected 2024)"
+    },
+    {
+      "context": "e-rated glazing.  D. Provide protection consistent with the 2015 International Building Code where referenced.  E. Envelope insulation shall comply with",
+      "deterministic_rule": "stale_code_cycle",
+      "expected_year": "2024",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "found_year": "2015",
+      "match": "2015 International Building Code",
+      "position": 289,
+      "type": "Stale code cycle reference (2015 vs selected 2024)"
+    },
+    {
+      "context": "e referenced.  E. Envelope insulation shall comply with the 2015 International Energy Conservation Code.  F. Contractor shall document LEED-NC credits and USGBC ch",
+      "deterministic_rule": "stale_code_cycle",
+      "expected_year": "2024",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "found_year": "2015",
+      "match": "2015 International Energy Conservation Code",
+      "position": 386,
+      "type": "Stale code cycle reference (2015 vs selected 2024)"
+    },
+    {
+      "context": "per 2018 IBC Chapter 7 and anchor curtain-wall framing per ASCE 7-10.  B. The building was previously permitted under the 2021 I",
+      "deterministic_rule": "stale_asce7",
+      "expected_edition": "7-22",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "found_edition": "7-10",
+      "match": "ASCE 7-10",
+      "position": 111,
+      "type": "Stale ASCE 7 edition (7-10 vs selected 7-22)"
+    }
+  ],
+  "duplicate_paragraph_alerts": [
+    {
+      "context": "Provide fire-rated joint systems at all head-of-wall conditions in accordance with the approved details and project drawings.",
+      "deterministic_rule": "duplicate_paragraph",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "match": "Provide fire-rated joint systems at all head-of-wall conditions in accordance with the approved details and project drawings.",
+      "occurrence_count": 2,
+      "position": 952,
+      "type": "Duplicate paragraph"
+    }
+  ],
+  "inconsistent_file_naming_alerts": [
+    {
+      "context": "07-84-13-Penetration-Firestopping.docx",
+      "deterministic_rule": "inconsistent_filename",
+      "dominant_style": "space",
+      "filename": "07-84-13-Penetration-Firestopping.docx",
+      "found_style": "dash",
+      "match": "07-84-13-Penetration-Firestopping.docx",
+      "position": 0,
+      "type": "Inconsistent CSI filename style (expected space-separated)"
+    }
+  ],
+  "invalid_code_cycle_alerts": [
+    {
+      "context": "as previously permitted under the 2021 IBC.  C. Comply with 2019 IBC requirements for fire-rated glazing.  D. Provide protection",
+      "deterministic_rule": "invalid_code_cycle",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "found_year": "2019",
+      "match": "2019 IBC",
+      "position": 200,
+      "type": "Invalid code cycle year (2019)"
+    }
+  ],
+  "leed_alerts": [],
+  "placeholder_alerts": [
+    {
+      "context": "e.  G. Furnish door hardware sets per the hardware schedule [SELECT FINISH] prior to submittal review.  H. TODO: confirm frame elevatio",
+      "deterministic_rule": "placeholder",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "match": "[SELECT FINISH]",
+      "position": 573,
+      "type": "SELECT placeholder"
+    }
+  ],
+  "polity_alerts": [],
+  "structural_alerts": [
+    {
+      "context": ". Reference standards apply as listed.  2.01 PRODUCTS  2.02 WARRANTY  Provide fire-rated joint",
+      "deterministic_rule": "empty_section",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "match": "2.01 PRODUCTS",
+      "position": 922,
+      "section_number": "2.01",
+      "section_title": "PRODUCTS",
+      "type": "Empty section"
+    },
+    {
+      "context": "1.02 REFERENCES  A. Reference standards apply as listed.  1.02 REFERENCES  A. Reference standards apply as listed.  2.01 PRODUCTS  2.02 WARRANTY  Provide fire-rated joint systems",
+      "deterministic_rule": "duplicate_heading",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "match": "1.02 REFERENCES",
+      "occurrence_count": 2,
+      "position": 864,
+      "section_number": "1.02",
+      "type": "Duplicate section heading"
+    }
+  ],
+  "template_marker_alerts": [
+    {
+      "context": "are schedule [SELECT FINISH] prior to submittal review.  H. TODO: confirm frame elevations against the door schedule.  Provid",
+      "deterministic_rule": "template_marker",
+      "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+      "match": "TODO:",
+      "position": 620,
+      "type": "TODO marker"
+    }
+  ]
+}

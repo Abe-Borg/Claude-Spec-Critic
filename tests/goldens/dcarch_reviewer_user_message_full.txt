@@ -1,0 +1,34 @@
+Review the following architectural specification for a hyperscale data-center project. Where the project context includes a Project Requirements Profile, treat its governing-code, local-amendment, AHJ, and client-standard entries as the project's controlling requirements — they take precedence over the model-code defaults for edition and requirement checks. Where the specification declares its own edition-governance rule, check that rule for consistency with the profile's adopted editions. Where the specification cites its own basis-of-design or owner documents that are not provided for review, phrase findings about them conditionally ('per the BoD section the spec cites — confirm against that document') rather than asserting their content.
+
+Current code basis: IBC 2024, IECC 2024, ASCE 7-22.
+
+Reminders:
+- Review every section in the file.
+- Submit findings via the submit_review_findings tool.
+- Include confidence (0.0-1.0) with each finding.
+- Each spec element is wrapped in <para id="…">, <row id="…">, or <heading id="…"> tags. When you can identify the exact element the finding refers to, include its id in evidenceElementId (and still quote the exact text in existingText / anchorText).
+
+<project_context>
+New hyperscale data-center campus. Governing code and AHJ supplied separately; pursuing LEED certification.
+</project_context>
+
+<spec filename="08 11 13 - Hollow Metal Doors and Frames.docx">
+<heading id="p0">1.01 SUMMARY</heading>
+<para id="p1" section="1.01 SUMMARY">A. Comply with 2015 IBC Chapter 7 for all fire-rated door assemblies.</para>
+<row id="t0r0" section="1.01 SUMMARY">D-101 | 90 min | Steelcraft H-series</row>
+</spec>
+
+<pre_detected>
+The following items have already been detected by deterministic local rules. Do not duplicate them as new findings — focus on issues beyond this list. The final report already records every item below.
+- placeholder (count=1): [SELECT FINISH]
+- stale_code_cycle (count=1): 2015 IBC
+</pre_detected>
+
+<final_task>
+- Review only the document above. Do not invent findings about other specs.
+- Submit findings once via the submit_review_findings tool. Do not call it twice.
+- Drop any finding that lacks concrete evidence quoted from the document above.
+- When you can identify the exact element a finding cites, include its id in evidenceElementId.
+- Ensure every edit field matches its actionType (see the output rules in the system prompt).
+- Do not duplicate items already flagged as pre-detected alerts above.
+</final_task>

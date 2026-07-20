@@ -1,0 +1,32 @@
+Evaluate the following 2 specs against the project requirements profile.
+
+<project_context>
+Hyperscale data-center new-build program.
+</project_context>
+
+<project_requirements_profile>
+CONTROLLING REQUIREMENTS (grounded in retrieved sources — evaluate the package against each of these):
+- [r-000000000001] The 2021 Virginia USBC (2021 IBC basis) governs, effective 2024-01-18. (Authority: Virginia DHCD; Ref: 13VAC5-63)
+- [r-000000000002] The adopted code references NFPA 80-2019 for fire door and opening-protective installation. (Authority: Virginia DHCD; Ref: IBC 716)
+- [r-000000000005] ASCE 7-22 Seismic Design Category B applies at this site. (Authority: ASCE 7-22)
+
+NOT INDEPENDENTLY VERIFIED (could not be grounded — do not treat as controlling; at most recommend confirmation via REPORT_ONLY):
+- [r-000000000004] ExampleCo standards prefer mechanically attached single-ply roofing on data halls. (Authority: ExampleCo) [UNVERIFIED]
+</project_requirements_profile>
+
+<already_identified note="Do not repeat these findings.">
+  <prior severity="HIGH" file="08 11 13 - Hollow Metal Doors and Frames.docx" section="2.02" id="rf-0123456789ab">Door schedule assigns 90-minute opening protectives at openings the wall-types section describes as 1-hour partitions.</prior>
+</already_identified>
+
+<corpus>
+<spec filename="08 11 13 - Hollow Metal Doors and Frames.docx">
+<heading id="p0">1.01 SUMMARY</heading>
+<para id="p1" section="1.01 SUMMARY">A. Comply with 2015 IBC Chapter 7 for all fire-rated door assemblies.</para>
+<row id="t0r0" section="1.01 SUMMARY">D-101 | 90 min | Steelcraft H-series</row>
+</spec>
+<spec filename="07 84 13 - Penetration Firestopping.docx">
+1.01 SUMMARY
+
+A. Provide penetration firestopping as indicated.
+</spec>
+</corpus>

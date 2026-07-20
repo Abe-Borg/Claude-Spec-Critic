@@ -273,6 +273,65 @@ class TestPolityTokenDetector:
         assert "O. Reg." in _matches("Comply with O. Reg. 213/07.", "US")
         assert not _matches("Provide UL Listed valves.", "US")
 
+    def test_real_datacenter_architectural_module_rules_behavior(self):
+        """Pin the SHIPPED datacenter_architectural polity rules.
+
+        The arch module assembles the shared jurisdiction-generic rules (from
+        ``modules._datacenter_shared``) plus its own accessibility / fire-test
+        / energy-code additions. Pins: the shared rules behave identically
+        under the arch tuple (the shared-file refactor's behavior proof from
+        the consuming side), the arch additions fire on the right country, and
+        the case-sensitivity that keeps ``\\bADA\\b`` from matching inside
+        "Canada" holds.
+        """
+        from src.modules import DATACENTER_ARCHITECTURAL
+
+        rules = DATACENTER_ARCHITECTURAL.polity_suspect_tokens
+
+        def _matches(text: str, country: str) -> set[str]:
+            return {
+                a["match"]
+                for a in detect_wrong_polity_tokens(
+                    text, "a.docx", rules=rules, country=country
+                )
+            }
+
+        # Shared rules ride along unchanged: UL-listed case handling and the
+        # SDS / Safety-Data-Sheet collision guard behave exactly as under fire.
+        assert _matches("Provide UL Listed door hardware.", "CA")
+        assert not _matches("Provide cULus-listed hardware.", "CA")
+        assert not any(
+            "SDS" in m
+            for m in _matches(
+                "Submit Safety Data Sheets (SDS) for all products.", "CA"
+            )
+        )
+
+        # Arch CA-run additions: US accessibility / energy / fire-test regimes.
+        assert _matches("Comply with ADA requirements at all entrances.", "CA")
+        assert _matches("Meet ADAAG clearances at doors.", "CA")
+        # \bADA\b is case-sensitive — it must never fire inside "Canada".
+        assert not _matches("Projects across Canada use this section.", "CA")
+        assert _matches("Comply with ICC A117.1 for accessible routes.", "CA")
+        assert _matches("Meet ANSI A117.1 reach ranges.", "CA")
+        assert _matches("Envelope shall comply with the IECC.", "CA")
+        assert _matches("Fire-resistance ratings established per ASTM E119.", "CA")
+        assert _matches("Fire door assemblies tested per UL 10C.", "CA")
+
+        # Arch US-run additions: Canadian standards/regimes flag on US runs.
+        assert _matches("Rated per CAN/ULC-S101 for two hours.", "US")
+        assert _matches("Comply with the NECB for envelope performance.", "US")
+        assert _matches("Ratings per OBC 3.1.7 apply.", "US")
+        # ...and stay silent on the matching country's own runs.
+        assert not any(
+            "NECB" in m
+            for m in _matches("Comply with the NECB for envelope performance.", "CA")
+        )
+        assert not any(
+            "ADA" in m
+            for m in _matches("Comply with ADA requirements at entrances.", "US")
+        )
+
     def test_rule_validation_rejects_bad_country_and_pattern(self):
         def _module(**overrides):
             from src.modules import ResearchDimension
