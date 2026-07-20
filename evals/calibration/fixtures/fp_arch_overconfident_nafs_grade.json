@@ -1,0 +1,57 @@
+{
+  "fixture_id": "fp_arch_overconfident_nafs_grade",
+  "category": "constructability",
+  "severity": "MEDIUM",
+  "description": "False-positive guard: the review flagged a NAFS performance grade as insufficient, but the specified grade meets the design pressures the section states; the verifier's grounded CORRECTED must override the reviewer's confident-but-wrong claim.",
+  "finding": {
+    "severity": "MEDIUM",
+    "fileName": "08 51 13 - Aluminum Windows.docx",
+    "section": "2.01",
+    "issue": "Specified NAFS Class CW-PG50 windows are insufficient for the stated 45 psf design pressure and must be upgraded.",
+    "actionType": "EDIT",
+    "existingText": "AAMA/WDMA/CSA 101/I.S.2/A440 Class CW-PG50",
+    "replacementText": "AAMA/WDMA/CSA 101/I.S.2/A440 Class CW-PG70",
+    "codeReference": "NAFS (AAMA/WDMA/CSA 101/I.S.2/A440)",
+    "confidence": 0.85,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p5"
+  },
+  "spec_context": {
+    "filename": "08 51 13 - Aluminum Windows.docx",
+    "cycle_label": "Data Center Architectural IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 4, "id": "p4", "text": "A. Design pressure: 45 psf positive and negative."},
+      {"index": 5, "id": "p5", "text": "B. Windows: AAMA/WDMA/CSA 101/I.S.2/A440 Class CW-PG50."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "A NAFS Performance Grade of 50 corresponds to a design pressure of 50 psf, which meets and exceeds the stated 45 psf requirement; PG is defined directly in psf under the NAFS rating system. The specified CW-PG50 product is adequate and the proposed upgrade to PG70 is unnecessary — the finding overstates the deficiency.",
+    "sources": [
+      "https://www.fgiaonline.org/pages/aama-standards",
+      "https://www.csagroup.org/store/product/A440/"
+    ],
+    "correction": "The specified Class CW-PG50 meets the stated 45 psf design pressure; no upgrade is required.",
+    "confidence": 0.88,
+    "model_used": "claude-sonnet-5",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "constructability",
+    "web_search_requests": 4,
+    "successful_source_count": 4,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.fgiaonline.org/pages/aama-standards",
+      "https://www.csagroup.org/store/product/A440/",
+      "https://codes.iccsafe.org/content/IBC2024P1"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "correct_correction_text": "The specified Class CW-PG50 meets the stated 45 psf design pressure; no upgrade is required.",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "The reviewer's confident numeric claim is wrong (PG50 = 50 psf >= 45 psf); the grounded verifier verdict must supersede the review confidence. Mirrors the CA fp_overconfident_numeric_swap pattern in architectural terms."
+  }
+}

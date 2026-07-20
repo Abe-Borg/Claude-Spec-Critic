@@ -13,6 +13,9 @@ Sections:
   below.
 - **Data-center IBC/IFC 2024 cycle** (`DATACENTER_IBC_2024`, `datacenter_fire`
   module) — at the end of this file.
+- **Data-center architectural IBC/IECC 2024 cycle** (`DATACENTER_ARCH_IBC_2024`,
+  `datacenter_architectural` module) — at the end of this file. Pins **zero**
+  standards editions by design; only the base-code identities need provenance.
 
 ---
 
@@ -265,3 +268,46 @@ automatically re-grounds affected verdicts — no manual cache clear needed.
 - NPS NFPA/IFC crosswalk (nps.gov PDF). *(403 to automated fetch; via search.)*
 - NFPA / ANSI / ICC store listings — current editions of NFPA 75 (2024), NFPA 76
   (2024), NFPA 855 (2023).
+
+---
+
+# Data-center architectural IBC/IECC 2024 cycle (`DATACENTER_ARCH_IBC_2024`)
+
+Module: `datacenter_architectural`. Cycle label: `dc-arch-ibc-2024`.
+
+## The zero-pins decision (research-first code basis)
+
+This cycle pins **no `StandardEdition` entries** (`standards=()`), the first
+module to do so. The rationale, decided with the sponsor during the
+flexibility/hardcoding review (2026-07):
+
+- The fire module's experience showed that pinned referenced-standard editions
+  for a multi-state model-code domain end up **100% `UNVERIFIED`** (the primary
+  ICC tables are paywalled to automated research), while the per-run
+  requirements-research phase retrieves the *actual* adopting instrument's
+  referenced-standards table for the project's own jurisdiction — which the
+  review's three-way precedence already treats as controlling.
+- A wrong pinned edition produces confidently-wrong stale-edition findings; an
+  absent pin degrades to honest "current editions" phrasing plus the researched
+  profile. Honest-vague beats specific-unverified for a critic tool.
+- The deterministic detectors never read `standards` (they use the primary
+  base-code year, the shared I-code year vocabulary, and the ASCE 7 fields), so
+  zero pins costs zero deterministic coverage.
+
+Consequently there are **no `UNVERIFIED` standard entries for this module** and
+no per-standard rows to maintain. Adopted editions for a given project live in
+that run's Project Requirements Profile (`<report-stem>.profile.json`), stamped
+with the research date.
+
+## Base-code provenance (the only pinned facts)
+
+| Fact | Value | Source | Date checked | Confidence |
+|---|---|---|---|---|
+| IBC current published edition | 2024 | ICC publication of the 2024 I-codes (public record; same basis as the fire module's `ibc` entry) | 2026-07 | High |
+| IECC current published edition | 2024 | ICC publication of the 2024 I-codes (public record) | 2026-07 | High |
+| ASCE 7 edition referenced by the 2024 IBC | 7-22 (prior: 7-16) | Same corroboration as the fire module (ASCE / StructureMag / SEAO summaries of the 2024 IBC structural chapter) | 2026-07 | High (secondary corroboration) |
+
+Maintenance: when ICC publishes the 2027 I-codes and they become the current
+editions, bump the two `BaseCode` years and the shared detector year tuples in
+`src/modules/_datacenter_shared.py` (one edit shared with the fire module), and
+regenerate the arch goldens. There is nothing else to re-verify for this cycle.

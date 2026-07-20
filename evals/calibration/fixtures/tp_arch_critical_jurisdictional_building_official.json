@@ -1,0 +1,59 @@
+{
+  "fixture_id": "tp_arch_critical_jurisdictional_building_official",
+  "category": "jurisdictional",
+  "severity": "CRITICAL",
+  "description": "CRITICAL jurisdictional finding (building-official special-inspection requirement missing from the envelope section) that rides the deep-reasoning initial pass and confirms with grounded government sources.",
+  "finding": {
+    "severity": "CRITICAL",
+    "fileName": "07 42 13 - Metal Wall Panels.docx",
+    "section": "1.06",
+    "issue": "The exterior-wall section omits the special-inspection requirements the building official enforces for the panel anchorage under the adopted building code, which is a plan-review rejection trigger.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": "IBC Chapter 17 (special inspections, adopted edition)",
+    "confidence": 0.7,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p8"
+  },
+  "spec_context": {
+    "filename": "07 42 13 - Metal Wall Panels.docx",
+    "cycle_label": "Data Center Architectural IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 8, "id": "p8", "text": "1.06 QUALITY ASSURANCE"},
+      {"index": 9, "id": "p9", "text": "A. Manufacturer qualifications: five years of documented experience."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "The adopted building code's special-inspection chapter requires periodic special inspection of exterior cladding anchorage in the categories this project falls under, and the local building department's published submittal checklist lists the statement of special inspections as a permit prerequisite. Omitting it from the quality-assurance article is a genuine permit-blocking gap.",
+    "sources": [
+      "https://codes.iccsafe.org/content/IBC2024P1/chapter-17-special-inspections-and-tests",
+      "https://www.loudoun.gov/building"
+    ],
+    "correction": null,
+    "confidence": 0.88,
+    "model_used": "claude-opus-4-8",
+    "verification_mode": "deep_reasoning",
+    "verification_profile": "jurisdictional",
+    "web_search_requests": 6,
+    "successful_source_count": 5,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://codes.iccsafe.org/content/IBC2024P1/chapter-17-special-inspections-and-tests",
+      "https://www.loudoun.gov/building",
+      "https://law.lis.virginia.gov/admincode/title13/agency5/chapter63/",
+      "https://www.dhcd.virginia.gov/codes",
+      "https://codes.iccsafe.org/content/IBC2024P1"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CONFIRMED",
+    "correct_correction_text": null,
+    "expected_status": "VERIFIED_SUPPORTED",
+    "notes": "CRITICAL + jurisdictional routes to the deep-reasoning initial pass under the arch module's keywords ('building official', 'special inspection'); grounded CONFIRMED is correct."
+  }
+}

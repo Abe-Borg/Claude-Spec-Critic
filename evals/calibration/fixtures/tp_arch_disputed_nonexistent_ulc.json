@@ -1,0 +1,56 @@
+{
+  "fixture_id": "tp_arch_disputed_nonexistent_ulc",
+  "category": "code_standard",
+  "severity": "HIGH",
+  "description": "Refutation fixture: spec cites a fabricated ULC designation ('CAN/ULC-S199') as the fire-door test standard; verifier correctly DISPUTED it, and the intended replacement is uncertain, so a human must resolve.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "08 11 13 - Hollow Metal Doors and Frames.docx",
+    "section": "2.01",
+    "issue": "Specification cites 'CAN/ULC-S199' as the fire-door test standard; no such ULC standard exists.",
+    "actionType": "EDIT",
+    "existingText": "CAN/ULC-S199",
+    "replacementText": "CAN/ULC-S104",
+    "codeReference": "CAN/ULC-S199",
+    "confidence": 0.6,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p7"
+  },
+  "spec_context": {
+    "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+    "cycle_label": "Data Center Architectural IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 7, "id": "p7", "text": "A. Fire door assemblies: tested per CAN/ULC-S199."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "DISPUTED",
+    "explanation": "There is no CAN/ULC-S199. The Canadian fire-door test standard is CAN/ULC-S104 (Fire Tests of Door Assemblies), and frames are covered by CAN/ULC-S105 — but depending on what the author meant (door assembly vs. frame vs. glazing, which would be CAN/ULC-S106) the single replacement cannot be asserted with confidence. The designation is fabricated and must be corrected by a human.",
+    "sources": [
+      "https://www.scc-ccn.ca/standardsdb",
+      "https://www.csagroup.org/store/"
+    ],
+    "correction": null,
+    "confidence": 0.8,
+    "model_used": "claude-sonnet-5",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 4,
+    "successful_source_count": 3,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.scc-ccn.ca/standardsdb",
+      "https://www.csagroup.org/store/",
+      "https://www.ul.com/services/ulc-standards"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "DISPUTED",
+    "correct_correction_text": null,
+    "expected_status": "DISPUTED",
+    "notes": "Fabricated designation in the S-series pattern the field trial warned about. Refutation is where verification earns its cost; the model's single replacement is uncertain, so DISPUTED (not CORRECTED) is right."
+  }
+}

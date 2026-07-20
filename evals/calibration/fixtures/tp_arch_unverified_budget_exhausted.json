@@ -1,0 +1,54 @@
+{
+  "fixture_id": "tp_arch_unverified_budget_exhausted",
+  "category": "jurisdictional",
+  "severity": "HIGH",
+  "description": "HIGH-severity municipal-amendment lookup (envelope airtightness testing mandate) that consumed all 7 searches without grounding a verdict; surfaces the budget-exhausted UNVERIFIED telemetry.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "07 27 00 - Air Barriers.docx",
+    "section": "1.05",
+    "issue": "Spec assumes no local amendment mandating whole-building airtightness testing; the municipal amendment status for the project location could not be located to confirm.",
+    "actionType": "REPORT_ONLY",
+    "existingText": null,
+    "replacementText": null,
+    "codeReference": "Local energy-code amendment (unconfirmed)",
+    "confidence": 0.5,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p6"
+  },
+  "spec_context": {
+    "filename": "07 27 00 - Air Barriers.docx",
+    "cycle_label": "Data Center Architectural IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 6, "id": "p6", "text": "A. Air-barrier testing: manufacturer's standard field quality control only."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "UNVERIFIED",
+    "explanation": "Searched the municipal code portal, county amendments, and the state building-code agency bulletins but could not locate a published local amendment (or its absence) mandating whole-building airtightness testing at this location. Insufficient grounded evidence to confirm or contradict the spec's assumption.",
+    "sources": [],
+    "correction": null,
+    "confidence": 0.3,
+    "model_used": "claude-sonnet-5",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "jurisdictional",
+    "web_search_requests": 7,
+    "successful_source_count": 4,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://library.municode.com",
+      "https://www.dhcd.virginia.gov/codes",
+      "https://codes.iccsafe.org/content/IECC2024P1",
+      "https://www.loudoun.gov/building"
+    ],
+    "grounded": false,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "UNVERIFIED",
+    "correct_correction_text": null,
+    "expected_status": "INSUFFICIENT_EVIDENCE",
+    "notes": "Consumed the full HIGH search budget (7) without grounding — the harness should flag budget_exhausted while the status stays INSUFFICIENT_EVIDENCE."
+  }
+}

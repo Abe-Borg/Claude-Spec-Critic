@@ -1,0 +1,58 @@
+{
+  "fixture_id": "tp_arch_confirmed_nfpa80",
+  "category": "code_standard",
+  "severity": "HIGH",
+  "description": "Finding asserts fire door assemblies require installation per NFPA 80 and annual inspection; verifier confirmed against NFPA and code-publisher sources.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "08 11 13 - Hollow Metal Doors and Frames.docx",
+    "section": "3.01",
+    "issue": "Section requires field-modified fire door assemblies without the NFPA 80 installation and acceptance-testing requirements the code makes mandatory for rated openings.",
+    "actionType": "ADD",
+    "existingText": null,
+    "replacementText": "C. Install and field-modify fire door assemblies per NFPA 80, and perform the acceptance testing NFPA 80 requires before closing in rated openings.",
+    "codeReference": "NFPA 80",
+    "confidence": 0.8,
+    "anchorText": "3.01 INSTALLATION",
+    "insertPosition": "after",
+    "evidenceElementId": "p12"
+  },
+  "spec_context": {
+    "filename": "08 11 13 - Hollow Metal Doors and Frames.docx",
+    "cycle_label": "Data Center Architectural IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 12, "id": "p12", "text": "3.01 INSTALLATION"},
+      {"index": 13, "id": "p13", "text": "A. Field-modify frames as required to suit conditions."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CONFIRMED",
+    "explanation": "The IBC references NFPA 80 for the installation and maintenance of fire door assemblies, and NFPA 80 restricts field modifications of listed assemblies and requires acceptance testing. A rated-opening section permitting unrestricted field modification without NFPA 80 requirements is a genuine gap.",
+    "sources": [
+      "https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=80",
+      "https://codes.iccsafe.org/content/IBC2024P1"
+    ],
+    "correction": null,
+    "confidence": 0.9,
+    "model_used": "claude-sonnet-5",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "code_standard",
+    "web_search_requests": 4,
+    "successful_source_count": 4,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.nfpa.org/codes-and-standards/all-codes-and-standards/list-of-codes-and-standards/detail?code=80",
+      "https://codes.iccsafe.org/content/IBC2024P1",
+      "https://www.nfpa.org/news-blogs-and-articles/blogs/2021/04/16/fire-door-inspections",
+      "https://codes.iccsafe.org/content/IBC2024P1/chapter-7-fire-and-smoke-protection-features"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CONFIRMED",
+    "correct_correction_text": null,
+    "expected_status": "VERIFIED_SUPPORTED",
+    "notes": "NFPA 80 installation/acceptance requirements for rated openings are code-referenced and well documented; CONFIRMED with grounded citations is correct."
+  }
+}

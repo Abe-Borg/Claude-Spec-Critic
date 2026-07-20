@@ -1,0 +1,57 @@
+{
+  "fixture_id": "tp_arch_corrected_wrong_polity_accessibility",
+  "category": "jurisdictional",
+  "severity": "HIGH",
+  "description": "Refutation-shaped jurisdiction misattribution: a Canadian (Ontario) project spec names ADA / ICC A117.1 as the governing accessibility basis; verifier corrected to the OBC barrier-free framework with CSA B651 where invoked.",
+  "finding": {
+    "severity": "HIGH",
+    "fileName": "08 71 00 - Door Hardware.docx",
+    "section": "1.04",
+    "issue": "Spec names the ADA Standards and ICC A117.1 as the governing accessibility basis; the project is in Ontario, where the OBC barrier-free requirements govern and ADA has no legal force.",
+    "actionType": "EDIT",
+    "existingText": "Comply with the ADA Standards for Accessible Design and ICC A117.1.",
+    "replacementText": "Comply with the barrier-free design requirements of the governing building code for the project location, including CSA B651 where invoked.",
+    "codeReference": "OBC 3.8 (barrier-free design)",
+    "confidence": 0.8,
+    "anchorText": null,
+    "insertPosition": null,
+    "evidenceElementId": "p6"
+  },
+  "spec_context": {
+    "filename": "08 71 00 - Door Hardware.docx",
+    "cycle_label": "Data Center Architectural IBC 2024",
+    "paragraph_map_slice": [
+      {"index": 6, "id": "p6", "text": "A. Comply with the ADA Standards for Accessible Design and ICC A117.1."}
+    ]
+  },
+  "captured_verifier_response": {
+    "verdict": "CORRECTED",
+    "explanation": "The ADA is US federal civil-rights law and ICC A117.1 is the US accessibility standard; neither governs an Ontario project. Ontario accessibility for building design is governed by the Ontario Building Code's barrier-free requirements (with AODA-driven amendments), and CSA B651 applies where invoked. The citation is a US master-spec remnant and must be re-based.",
+    "sources": [
+      "https://www.ontario.ca/laws/regulation/120332",
+      "https://www.csagroup.org/store/product/CSA%20B651/"
+    ],
+    "correction": "Comply with the barrier-free design requirements of the governing building code for the project location, including CSA B651 where invoked.",
+    "confidence": 0.9,
+    "model_used": "claude-sonnet-5",
+    "verification_mode": "standard_reasoning",
+    "verification_profile": "jurisdictional",
+    "web_search_requests": 5,
+    "successful_source_count": 4,
+    "search_error_count": 0,
+    "searched_urls": [
+      "https://www.ontario.ca/laws/regulation/120332",
+      "https://www.csagroup.org/store/product/CSA%20B651/",
+      "https://www.ontario.ca/page/accessibility-rules-businesses-and-non-profits",
+      "https://nrc.canada.ca/en/certifications-evaluations-standards/codes-canada"
+    ],
+    "grounded": true,
+    "cache_status": "miss"
+  },
+  "ground_truth": {
+    "correct_verdict": "CORRECTED",
+    "correct_correction_text": "Comply with the barrier-free design requirements of the governing building code for the project location, including CSA B651 where invoked.",
+    "expected_status": "VERIFIED_CONTRADICTED",
+    "notes": "The wrong-polity archetype for architectural scope (the polity token detector flags ADA/A117.1 deterministically on country=CA runs; verification grounds the correction). Mirrors the fire module's jurisdiction-misattribution refutation fixture."
+  }
+}
