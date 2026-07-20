@@ -10,7 +10,7 @@ The default module pins the **California 2025 code cycle** (`src/core/code_cycle
 
 Everything domain-specific — the jurisdiction/code basis and pinned standards, the reviewer/cross-check/verifier prompt content, the deterministic detectors' vocabulary (including whether LEED references are flagged), the verification-routing keywords and source tiers, the cross-check chunk map, and the report wording — lives on one frozen, registry-validated `ReviewModule` object (`src/modules/`). The engine holds only behavior and prompt *protocol* and contains no domain strings of its own. Pick the module from the selector in the app header (the choice persists across launches); each run's module id is recorded in the resume state, the trace metadata, and the report.
 
-Currently registered: `california_k12_mep` (the default). A hyperscale data-center fire-suppression module is fully specified but not yet built — `docs/datacenter_fire_module_plan.md` is the self-contained work order (module contract, standards-research protocol, tests, and hard constraints) for adding it or any future module. Modules are validated at import: bad prompt slots, few-shot examples the parser would reject, inconsistent detector vocabulary, or an ambiguous chunk map fail app startup rather than a run.
+Currently registered: `california_k12_mep` (the default) and `datacenter_fire` (hyperscale data-center fire suppression). The data-center module additionally turns on a **location-aware pipeline** via its `project_profile_enabled` flag — see "Location-Aware Review" below; the California module leaves it off and is unaffected by the machinery existing. `docs/datacenter_fire_module_plan.md` is the work order used to build the data-center module and doubles as the general guide for adding future modules. Modules are validated at import: bad prompt slots, few-shot examples the parser would reject, inconsistent detector vocabulary, or an ambiguous chunk map fail app startup rather than a run.
 
 ## Design Emphasis
 
@@ -26,7 +26,7 @@ Currently registered: `california_k12_mep` (the default). A hyperscale data-cent
 2. **Local Pre-Screening** — Deterministic detectors run before any API call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles (per the module's code-abbreviation vocabulary), empty sections, duplicate headings/paragraphs, inconsistent file naming.
 3. **Per-Spec Review** — Each spec sent to Claude Opus 4.8 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
 4. **Deduplication** — Identical findings consolidated across specs; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text.
-5. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 4.6 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 4.8. Persistent on-disk cache.
+5. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 4.8. Persistent on-disk cache.
 6. **Cross-Spec Coordination** *(optional)* — Runs after verification using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). Chunked by the module's CSI division families (CA module: 21 / 22 / 23 / Controls 25 + 01) on large projects. Its own coordination findings are then put through a second verification pass.
 7. **Report + Edit Sidecar** — A Word report is exported with every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar lists each finding's edit proposal for a downstream applier. Spec Critic does not modify spec documents.
 
@@ -52,17 +52,36 @@ All reviews submit via the Message Batches API — queued at 50% cost savings, t
 
 A submitted review batch keeps running on Anthropic's servers even if the app closes or the network drops. Spec Critic persists the small amount of state needed to reconnect — the batch id, its request map, and your project-context text (which can include text extracted from attached `.docx`/`.pdf` context files); the spec bodies themselves are re-extracted rather than stored — so an interrupted run can be finished without re-submitting or re-paying for the review. The startup resume prompt rejoins a still-running batch from that saved state; the manual **Recover batch…** action (and `scripts/recover_batch.py`) recover a batch by id even with no saved state, rebuilding the request map from the batch's results — which requires the batch to have **ended** first. The state file lives at `~/.spec_critic/pending_batch.json` (override with `SPEC_CRITIC_PENDING_BATCH_PATH`).
 
+**Real-time review transport (opt-in).** The GUI's Options block has a "Real-time review (streaming)" toggle that runs the per-spec reviews and verification synchronously instead of via the Batches API — results arrive immediately (as little as ~10 minutes vs. batch's typical under-2-hours) at standard, non-discounted API pricing, since real-time forfeits the 50% batch savings and verification runs live too. Switching into real-time pops a one-time cost-warning dialog (dismissable). Real-time runs have no resume story — nothing is persisted for an in-progress synchronous run — so the startup resume prompt and **Recover batch…** stay batch-only. Batch remains the default transport.
+
 ## Model Stack
 
-Defaults (each overridable via its `SPEC_CRITIC_*_MODEL` env var **except cross-check**, which is bound directly to `CROSS_CHECK_MODEL_DEFAULT`; see `api_config.py`):
+Defaults (each overridable via its `SPEC_CRITIC_*_MODEL` env var **except cross-check and compliance**, which are bound directly to `CROSS_CHECK_MODEL_DEFAULT` / `COMPLIANCE_MODEL_DEFAULT`; see `api_config.py`):
 
 - Review: Claude Opus 4.8
-- Cross-check: Claude Sonnet 4.6
-- Verification (initial): Claude Sonnet 4.6
+- Cross-check: Claude Sonnet 5
+- Verification (initial): Claude Sonnet 5
 - Verification (escalation / deep-reasoning): Claude Opus 4.8
+- Requirements research / compliance / drawing digest / drawing impact: Claude Sonnet 5
 - Triage: Claude Haiku 4.5
 
 Unknown model ids degrade to safe defaults via `api_config.model_capabilities(...)` — a misconfigured `SPEC_CRITIC_*_MODEL` env var produces a smaller request rather than an API rejection.
+
+## Construction Drawing Attachments
+
+The **Attach Drawings…** action in the Project Context panel accepts construction-drawing PDFs and turns them into plain text: one synchronous vision pass digests each drawing set into a structured summary (sheet index, general notes, schedules, coordination observations) that's merged into Project Context, so every review, cross-check, and verification call sees it at ordinary text cost. The vision cost is paid once at attach time, not re-paid on resume.
+
+When a drawing digest is attached, a final synthesis pass ("drawing-impact synthesis") runs after cross-check and verification to explain how the drawings actually informed the review — an impact rating (substantial/moderate/minimal/none), a short narrative, and per-finding links back to specific findings, rendered as a "How the Drawings Informed This Review" report section. Works under any module, including the default California one; a run with no drawings attached is unaffected.
+
+## Location-Aware Review (Data-Center Module)
+
+The `datacenter_fire` module turns on a location-aware pipeline layered on top of the ordinary review flow, gated by a per-run **project profile** (city / state or province / country / client, entered in the GUI when that module is selected):
+
+- **Requirements research** — before review submission, a fan-out of grounded web searches gathers jurisdiction- and client-specific requirements for the project's location and folds a rendered summary into Project Context.
+- **Compliance pass** — a synchronous pass (modeled on cross-spec coordination) checks the specs against that requirements profile and reports coverage — represented / contradicted / unclear / missing — for anything that's an actual controlling requirement (advisory items are excluded).
+- **Location-aware verification** — the project's city/state feeds the verifier's web-search tool so grounding favors sources local to the project, and the verification cache key folds in a jurisdiction fingerprint so a verdict grounded for one city never replays for another.
+
+Output includes a "Jurisdiction & Client Requirements" report section and a standalone `<report-stem>.profile.json` sidecar. A profile-less run (every run under the default California module) is untouched by any of this — the flag is the switch.
 
 ## Download & Install (Windows)
 
@@ -221,6 +240,10 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 
 ### v3.1.0
 - **Windows desktop app + auto-updater.** Spec Critic now ships as a downloadable Windows installer (`SpecCriticSetup.exe`, PyInstaller one-folder + Inno Setup, distributed via GitHub Releases — see the install section above and `docs/RELEASE_WINDOWS.md`). The app checks for updates once a day at launch and on demand via the footer's **Check for Updates** button; downloads are SHA-256-verified against the release manifest before they ever run, with https enforced end-to-end (including post-redirect URLs). The updater is Windows-gated (source runs on macOS/Linux are never offered the installer), and the update dialog defers to in-flight reviews/digests. New env vars: `SPEC_CRITIC_UPDATE_URL`, `SPEC_CRITIC_DISABLE_UPDATE_CHECK`, `SPEC_CRITIC_UPDATE_STATE_PATH`.
+- **`datacenter_fire` review module** added alongside the default California K-12 module, opting into a new **location-aware pipeline**: a per-run project profile, a requirements-research fan-out, a local-code compliance pass, and location-aware verification (see "Location-Aware Review" above).
+- **Real-time review transport.** An opt-in GUI toggle streams per-spec review and verification synchronously instead of via the Message Batches API, trading the 50% batch discount for immediate results (see "Processing Mode" above).
+- **Construction drawing attachments.** Drawing-set PDFs can be attached and digested into Project Context via a one-time vision pass, plus a post-review "drawing-impact synthesis" pass that explains how the drawings informed the findings (see "Construction Drawing Attachments" above).
+- Default verification (initial) and cross-check models moved from Sonnet 4.6 to Sonnet 5.
 
 ### v3.0.0
 - **Emit-but-don't-apply edits.** Removed the surgical write-back stack (the `src/editing/` package: locator, spec_editor, apply_edits, replacement_style, edit_candidates), the GUI apply dialogs, and the auto-edit confidence gating (composite confidence, numeric/standards demotion, the auto-edit floor). Spec Critic now emits structured edit proposals — rendered inline in the Word report and written to a machine-readable `<report-stem>.edits.json` sidecar — for a separate, future applier to ingest.
