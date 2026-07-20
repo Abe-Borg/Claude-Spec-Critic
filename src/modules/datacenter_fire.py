@@ -1,8 +1,11 @@
 """The hyperscale data-center fire-suppression module (US / Canada).
 
-The second reviewable domain: fire-suppression (Division 21/28) specifications
+Fire-suppression (Division 21) specifications
 for hyperscale data-center projects, reviewed against the International Building
-Code and International Fire Code as base model codes.
+Code and International Fire Code as base model codes. Fire-alarm and releasing
+knowledge remains here for suppression-interface review and legacy pending-run
+compatibility; new Division 28 fire-alarm specifications route to the dedicated
+electronic safety and security module.
 
 WS-1 of ``docs/hyperscale_datacenter_module_plan.md`` shipped the *module
 data* half; **WS-5 turns the location-aware features on** — this module now
@@ -798,9 +801,10 @@ DATACENTER_FIRE = ReviewModule(
     module_id="datacenter_fire",
     display_name="Hyperscale Data Center — Fire Suppression (US/Canada)",
     description=(
-        "Fire-suppression (Division 21/28) specs for hyperscale data-center "
+        "Fire-suppression (Division 21) specs for hyperscale data-center "
         "projects in the US and Canada, reviewed against the International "
-        "Building Code and International Fire Code as base model codes. Put the "
+        "Building Code and International Fire Code as base model codes, including "
+        "coordination with fire-alarm and releasing interfaces. Put the "
         "governing state or provincial code, local amendments, and "
         "authority-having-jurisdiction requirements for the project location "
         "into Project Context."

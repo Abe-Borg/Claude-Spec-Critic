@@ -1,4 +1,4 @@
-"""Deterministic architecture/fire/electrical routing for the hyperscale program.
+"""Deterministic per-discipline routing for the hyperscale program.
 
 The classifier is intentionally conservative.  CSI metadata and a strongly
 matching title can produce an executable route.  Content-only hints usually
@@ -6,8 +6,10 @@ produce an ambiguous candidate unless several independent, discipline-specific
 signals agree.  This prevents a cross-reference to another discipline from
 silently sending an otherwise unrelated specification to that module.
 
-Division 26 and explicit electrical utility/generation sections route to the
-electrical module.  Division 27 and non-fire Division 28 remain outside the
+Division 21 routes to fire suppression, Division 26 and explicit electrical
+utility/generation sections route to electrical, and Division 28 fire-alarm
+families route to the fire detection/alarm phase of electronic safety and
+security.  Division 27 and other Division 28 systems remain outside the
 implemented scope; even a suggestive title cannot silently route them.
 """
 from __future__ import annotations
@@ -19,6 +21,7 @@ from typing import Iterable
 from .catalog import (
     DATACENTER_ARCHITECTURE_MODULE_ID,
     DATACENTER_ELECTRICAL_MODULE_ID,
+    DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
     DATACENTER_FIRE_MODULE_ID,
     HYPERSCALE_DATACENTER_PROGRAM,
 )
@@ -40,10 +43,11 @@ _ARCHITECTURE_DIVISIONS = frozenset(
 )
 
 # Division 21 is fire suppression.  Division 28 is much broader than fire
-# alarm, so only its fire detection/alarm families route directly to the fire
-# module; access control, CCTV, and other electronic-safety sections do not.
+# alarm, so only its current and legacy fire detection/alarm families route to
+# the electronic-safety module.  Access control, video, intrusion detection,
+# and other electronic-safety sections do not.
 _FIRE_DIVISION = "21"
-_FIRE_DIVISION_28_FAMILIES = frozenset({"31", "46"})
+_FIRE_ALARM_DIVISION_28_FAMILIES = frozenset({"31", "46"})
 
 # Division 26 is electrical work.  Division 33 families 71-73 cover utility
 # electrical transmission/distribution, substations, and utility transformers;
@@ -104,12 +108,80 @@ _FIRE_TITLE_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("sprinkler", re.compile(r"\bsprinklers?\b", re.I)),
     ("standpipe", re.compile(r"\bstandpipes?\b", re.I)),
     ("fire pump", re.compile(r"\bfire pumps?\b", re.I)),
-    ("fire alarm", re.compile(r"\bfire alarm\b", re.I)),
-    ("fire detection", re.compile(r"\bfire detection\b", re.I)),
     ("clean agent", re.compile(r"\bclean[- ]agent\b", re.I)),
     ("preaction", re.compile(r"\bpre[- ]?action\b", re.I)),
-    ("aspirating smoke detection", re.compile(r"\baspirating smoke\b", re.I)),
     ("water mist", re.compile(r"\bwater mist\b", re.I)),
+)
+
+_FIRE_ALARM_TITLE_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "fire detection and alarm",
+        re.compile(r"\bfire detection (?:and|&) alarm\b", re.I),
+    ),
+    (
+        "fire alarm",
+        re.compile(
+            r"\bfire alarm\b"
+            r"(?!(?:\s+systems?)?\s+(?:interfaces?|coordination)\b)",
+            re.I,
+        ),
+    ),
+    (
+        "fire alarm system",
+        re.compile(r"\bfire alarm systems?\b(?!\s+interfaces?\b)", re.I),
+    ),
+    ("fire detection", re.compile(r"\bfire detection\b", re.I)),
+    (
+        "fire alarm control unit",
+        re.compile(
+            r"\bfire alarm control (?:unit|panel)s?\b|\bFAC[PU]s?\b",
+            re.I,
+        ),
+    ),
+    ("initiating devices", re.compile(r"\binitiating devices?\b", re.I)),
+    (
+        "notification appliances",
+        re.compile(r"\bnotification appliances?\b", re.I),
+    ),
+    (
+        "emergency voice/alarm communications",
+        re.compile(
+            r"\bemergency voice(?:/alarm)? communication systems?\b|\bEVACS\b",
+            re.I,
+        ),
+    ),
+    (
+        "aspirating smoke detection",
+        re.compile(r"\baspirating smoke detection\b|\bVESDA\b", re.I),
+    ),
+    (
+        "supervising station fire alarm",
+        re.compile(r"\bsupervising[- ]station fire alarm\b", re.I),
+    ),
+    (
+        "fire-alarm releasing controls",
+        re.compile(r"\bfire[- ]alarm releasing control(?: unit| panel)?s?\b", re.I),
+    ),
+)
+
+_NON_ALARM_SECURITY_TITLE_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("access control", re.compile(r"\baccess control\b", re.I)),
+    (
+        "credentials/card readers",
+        re.compile(r"\bcredentials?\b|\bcard readers?\b", re.I),
+    ),
+    (
+        "video surveillance/CCTV",
+        re.compile(r"\bvideo surveillance\b|\bCCTV\b", re.I),
+    ),
+    ("intrusion detection", re.compile(r"\bintrusion detection\b", re.I)),
+    ("duress", re.compile(r"\bduress\b", re.I)),
+    ("intercom", re.compile(r"\bintercom\b", re.I)),
+    (
+        "security management",
+        re.compile(r"\bsecurity management systems?\b", re.I),
+    ),
+    ("electronic security", re.compile(r"\belectronic security\b", re.I)),
 )
 
 _ELECTRICAL_TITLE_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -186,14 +258,57 @@ _FIRE_CONTENT_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("sprinkler", re.compile(r"\bsprinklers?\b", re.I)),
     ("standpipe", re.compile(r"\bstandpipes?\b", re.I)),
     ("fire pump", re.compile(r"\bfire pumps?\b", re.I)),
-    ("NFPA 72", re.compile(r"\bNFPA\s*72\b", re.I)),
-    ("fire alarm", re.compile(r"\bfire alarm\b", re.I)),
     ("clean agent", re.compile(r"\bclean[- ]agent\b", re.I)),
     ("NFPA 2001", re.compile(r"\bNFPA\s*2001\b", re.I)),
     ("preaction", re.compile(r"\bpre[- ]?action\b", re.I)),
-    ("releasing panel", re.compile(r"\breleasing panel\b", re.I)),
-    ("VESDA", re.compile(r"\bVESDA\b", re.I)),
-    ("aspirating smoke detection", re.compile(r"\baspirating smoke\b", re.I)),
+)
+
+_FIRE_ALARM_CONTENT_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("NFPA 72", re.compile(r"\bNFPA\s*72\b", re.I)),
+    ("fire alarm", re.compile(r"\bfire alarm\b", re.I)),
+    ("fire detection", re.compile(r"\bfire detection\b", re.I)),
+    (
+        "fire alarm control unit",
+        re.compile(
+            r"\bfire alarm control (?:unit|panel)s?\b|\bFAC[PU]s?\b",
+            re.I,
+        ),
+    ),
+    (
+        "signaling line circuit",
+        re.compile(r"\bsignaling[- ]line circuits?\b|\bSLCs?\b", re.I),
+    ),
+    (
+        "notification appliance circuit",
+        re.compile(r"\bnotification appliance circuits?\b|\bNACs?\b", re.I),
+    ),
+    (
+        "notification appliance",
+        re.compile(r"\bnotification appliances?\b(?!\s+circuits?\b)", re.I),
+    ),
+    ("initiating device", re.compile(r"\binitiating devices?\b", re.I)),
+    (
+        "aspirating smoke detection",
+        re.compile(
+            r"\baspirating smoke detection\b|\bair[- ]sampling smoke detection\b|"
+            r"\bVESDA\b|\bASD system\b",
+            re.I,
+        ),
+    ),
+    (
+        "emergency voice/alarm communications",
+        re.compile(
+            r"\bemergency voice(?:/alarm)? communication systems?\b|"
+            r"\bvoice evacuation\b|\bEVACS\b",
+            re.I,
+        ),
+    ),
+    ("supervising station", re.compile(r"\bsupervising station\b", re.I)),
+    (
+        "cause-and-effect",
+        re.compile(r"\bcause[- ]and[- ]effect\b|\binput/output matrix\b", re.I),
+    ),
+    ("releasing panel", re.compile(r"\breleasing (?:control )?panel\b", re.I)),
 )
 
 _ELECTRICAL_CONTENT_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -261,9 +376,9 @@ def _section_module_ids(section: tuple[str, ...]) -> tuple[str, ...]:
     if (
         division == "28"
         and len(section) >= 2
-        and section[1] in _FIRE_DIVISION_28_FAMILIES
+        and section[1] in _FIRE_ALARM_DIVISION_28_FAMILIES
     ):
-        return (DATACENTER_FIRE_MODULE_ID,)
+        return (DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,)
     if division == _ELECTRICAL_DIVISION:
         return (DATACENTER_ELECTRICAL_MODULE_ID,)
     if (
@@ -326,6 +441,7 @@ def route_spec(
             DATACENTER_FIRE_MODULE_ID,
             DATACENTER_ARCHITECTURE_MODULE_ID,
             DATACENTER_ELECTRICAL_MODULE_ID,
+            DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
         )
         if module_id in program.module_ids
     }
@@ -364,7 +480,7 @@ def route_spec(
                     signal=canonical_section,
                     detail=(
                         "CSI section is outside the implemented "
-                        "architecture/fire/electrical map"
+                        "hyperscale discipline map"
                     ),
                     module_id=None,
                     weight=0.0,
@@ -380,6 +496,9 @@ def route_spec(
         ),
         DATACENTER_ELECTRICAL_MODULE_ID: _matched_terms(
             spec.section_title, _ELECTRICAL_TITLE_TERMS
+        ),
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID: _matched_terms(
+            spec.section_title, _FIRE_ALARM_TITLE_TERMS
         ),
     }
     title_ids: set[str] = set()
@@ -408,6 +527,9 @@ def route_spec(
         DATACENTER_ELECTRICAL_MODULE_ID: _matched_terms(
             spec.content, _ELECTRICAL_CONTENT_TERMS
         ),
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID: _matched_terms(
+            spec.content, _FIRE_ALARM_CONTENT_TERMS
+        ),
     }
     for module_id in program.module_ids:
         matches = content_matches.get(module_id, ())
@@ -426,6 +548,117 @@ def route_spec(
         )
 
     section_id_set = set(section_ids)
+    non_alarm_security_title_matches = _matched_terms(
+        spec.section_title,
+        _NON_ALARM_SECURITY_TITLE_TERMS,
+    )
+    is_mapped_division_28_alarm_family = bool(
+        section
+        and section[0] == "28"
+        and len(section) >= 2
+        and section[1] in _FIRE_ALARM_DIVISION_28_FAMILIES
+    )
+    is_legacy_division_28_31 = bool(
+        is_mapped_division_28_alarm_family and section[1] == "31"
+    )
+    alarm_title_matches = title_matches[
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID
+    ]
+    if (
+        non_alarm_security_title_matches
+        and alarm_title_matches
+        and DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID in scores
+    ):
+        # A title that substantively names both fire alarm and an unsupported
+        # security system may be a legitimate interface specification, but
+        # phase 1 cannot silently claim the whole document.  Apply this guard
+        # even when section metadata is absent.
+        evidence.append(
+            RoutingEvidence(
+                source=RoutingEvidenceSource.SECTION_TITLE,
+                signal=", ".join(non_alarm_security_title_matches),
+                detail=(
+                    "Section title combines fire alarm with Division 28 work "
+                    "outside the implemented fire detection/alarm phase"
+                ),
+                module_id=None,
+                weight=0.0,
+            )
+        )
+        candidates = _ordered_module_ids(section_id_set | title_ids, program)
+        return SpecRoutingDecision(
+            spec_id=spec.spec_id,
+            program_id=program.program_id,
+            automatic_state=RoutingState.AMBIGUOUS,
+            automatic_module_ids=candidates,
+            confidence=0.50,
+            evidence=tuple(evidence),
+        )
+
+    if (
+        is_mapped_division_28_alarm_family
+        and section_id_set
+        and non_alarm_security_title_matches
+    ):
+        # 28 31 is a legacy fire-alarm family but is also used for intrusion
+        # detection in newer MasterFormat editions.  Likewise, mislabeled
+        # 28 46 files occur.  Explicit non-alarm security titles therefore
+        # remain an explicit coverage gap instead of silently entering phase 1.
+        evidence.append(
+            RoutingEvidence(
+                source=RoutingEvidenceSource.SECTION_TITLE,
+                signal=", ".join(non_alarm_security_title_matches),
+                detail=(
+                    "Section title identifies Division 28 work outside the "
+                    "implemented fire detection/alarm phase"
+                ),
+                module_id=None,
+                weight=0.0,
+            )
+        )
+        return SpecRoutingDecision(
+            spec_id=spec.spec_id,
+            program_id=program.program_id,
+            automatic_state=RoutingState.UNSUPPORTED,
+            automatic_module_ids=(),
+            confidence=0.95,
+            evidence=tuple(evidence),
+        )
+
+    if (
+        is_legacy_division_28_31
+        and section_id_set
+        and not title_matches[DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID]
+        and len(
+            content_matches[DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID]
+        )
+        < 4
+    ):
+        # Older project manuals used 28 31 for fire detection/alarm, while
+        # current MasterFormat places intrusion work in that family.  Require
+        # corroborating fire-alarm metadata or content before auto-routing.
+        evidence.append(
+            RoutingEvidence(
+                source=section_source,
+                signal=canonical_section,
+                detail=(
+                    "Legacy CSI 28 31 requires a corroborating fire-alarm "
+                    "title or strong fire-alarm content"
+                ),
+                module_id=None,
+                weight=0.0,
+            )
+        )
+        candidates = _ordered_module_ids(section_id_set, program)
+        return SpecRoutingDecision(
+            spec_id=spec.spec_id,
+            program_id=program.program_id,
+            automatic_state=RoutingState.AMBIGUOUS,
+            automatic_module_ids=candidates,
+            confidence=0.50,
+            evidence=tuple(evidence),
+        )
+
     if section_id_set and title_ids and section_id_set.isdisjoint(title_ids):
         # A strong section/title disagreement is likely a mislabeled file or a
         # multi-discipline document.  Do not execute either route silently.
@@ -445,7 +678,7 @@ def route_spec(
         and section[0] in _RESTRICTED_UNIMPLEMENTED_DIVISIONS
     )
     if restricted_unimplemented_section:
-        # Communications and non-fire electronic safety/security do not yet
+        # Communications and non-alarm electronic safety/security do not yet
         # have reviewers.  A discipline-flavored title or body may be useful
         # as a user-confirmed candidate, but never overrides the explicit CSI
         # coverage gap automatically.

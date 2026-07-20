@@ -174,14 +174,9 @@ def _build_program_assignments(app, selected_files: list) -> tuple[SpecAssignmen
                 f"Suggested reviewer: {candidate_names[0]}\n"
                 f"Router confidence: {assignment.decision.confidence:.0%}"
                 f"{evidence_text}\n\n"
-                "Choose No to cancel the run.",
+                "Choose No to skip this specification as a coverage gap.",
             )
-            if not confirmed:
-                app.log.log(
-                    "Review canceled during routing confirmation.", level="muted"
-                )
-                return None
-            chosen = candidates
+            chosen = candidates if confirmed else ()
         else:
             option_lines = [
                 f"{choice}. {name}"
@@ -214,7 +209,11 @@ def _build_program_assignments(app, selected_files: list) -> tuple[SpecAssignmen
             decision=apply_user_override(
                 assignment.decision,
                 chosen,
-                reason="Confirmed in the pre-review routing dialog.",
+                reason=(
+                    "Confirmed in the pre-review routing dialog."
+                    if chosen
+                    else "Skipped as a coverage gap in the pre-review routing dialog."
+                ),
                 program=program,
             ),
         )
@@ -223,8 +222,7 @@ def _build_program_assignments(app, selected_files: list) -> tuple[SpecAssignmen
     if unsupported:
         proceed = messagebox.askyesno(
             "Unsupported specifications",
-            "No implemented Architecture, Fire, or Electrical module can safely "
-            "review:\n\n"
+            "No implemented module in this program can safely review:\n\n"
             + "\n".join(f"• {name}" for name in unsupported)
             + "\n\nContinue and record these files as skipped coverage gaps?",
         )

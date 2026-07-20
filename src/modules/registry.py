@@ -16,6 +16,9 @@ from .base import ReviewModule, validate_module_registry
 from .california_k12_mep import CALIFORNIA_K12_MEP
 from .datacenter_architecture import DATACENTER_ARCHITECTURE
 from .datacenter_electrical import DATACENTER_ELECTRICAL
+from .datacenter_electronic_safety_security import (
+    DATACENTER_ELECTRONIC_SAFETY_SECURITY,
+)
 from .datacenter_fire import DATACENTER_FIRE
 
 _ALL_MODULES: tuple[ReviewModule, ...] = (
@@ -23,6 +26,7 @@ _ALL_MODULES: tuple[ReviewModule, ...] = (
     DATACENTER_FIRE,
     DATACENTER_ARCHITECTURE,
     DATACENTER_ELECTRICAL,
+    DATACENTER_ELECTRONIC_SAFETY_SECURITY,
 )
 
 validate_module_registry(_ALL_MODULES)

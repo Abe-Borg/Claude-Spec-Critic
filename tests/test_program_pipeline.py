@@ -100,6 +100,10 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
         _assignment("21 13 13 Fire Sprinklers.docx", ("datacenter_fire",)),
         _assignment("07 27 26 Air Barriers.docx", ("datacenter_architecture",)),
         _assignment("26 24 13 Switchboards.docx", ("datacenter_electrical",)),
+        _assignment(
+            "28 46 00 Fire Detection and Alarm.docx",
+            ("datacenter_electronic_safety_security",),
+        ),
     )
     events: list[str] = []
 
@@ -133,14 +137,17 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
         "prepare:datacenter_fire",
         "prepare:datacenter_architecture",
         "prepare:datacenter_electrical",
+        "prepare:datacenter_electronic_safety_security",
         "submit:datacenter_fire",
         "submit:datacenter_architecture",
         "submit:datacenter_electrical",
+        "submit:datacenter_electronic_safety_security",
     ]
     assert tuple(submission.partitions) == (
         "datacenter_fire",
         "datacenter_architecture",
         "datacenter_electrical",
+        "datacenter_electronic_safety_security",
     )
 
 
@@ -152,6 +159,7 @@ def test_program_result_marks_skips_and_missing_partitions_partial():
                 "datacenter_fire",
                 "datacenter_architecture",
                 "datacenter_electrical",
+                "datacenter_electronic_safety_security",
             ),
         ),
         _assignment("27 10 00 Structured Cabling.docx", ()),
@@ -171,9 +179,10 @@ def test_program_result_marks_skips_and_missing_partitions_partial():
     assert result.missing_module_ids == [
         "datacenter_architecture",
         "datacenter_electrical",
+        "datacenter_electronic_safety_security",
     ]
     assert result.routed_request_count == 1
-    assert result.expected_routed_request_count == 3
+    assert result.expected_routed_request_count == 4
 
 
 def test_partial_submission_counts_only_partitions_actually_submitted():
@@ -282,6 +291,15 @@ def test_bare_batch_recovery_resolves_hyperscale_module_short_name():
     assert gui_batch._resolve_recovery_module(
         program, "electrical"
     ).module_id == "datacenter_electrical"
+    assert gui_batch._resolve_recovery_module(program, "4").module_id == (
+        "datacenter_electronic_safety_security"
+    )
+    assert gui_batch._resolve_recovery_module(
+        program, "datacenter_electronic_safety_security"
+    ).module_id == "datacenter_electronic_safety_security"
+    assert gui_batch._resolve_recovery_module(program, "security").module_id == (
+        "datacenter_electronic_safety_security"
+    )
 
 
 def test_stale_saved_program_falls_back_to_valid_legacy_module():
@@ -297,6 +315,7 @@ def test_program_collection_runs_one_qualified_drawing_pass(monkeypatch):
             "datacenter_fire",
             "datacenter_architecture",
             "datacenter_electrical",
+            "datacenter_electronic_safety_security",
         ),
     )
     digest_context = (
@@ -327,6 +346,7 @@ def test_program_collection_runs_one_qualified_drawing_pass(monkeypatch):
             "datacenter_fire::rf-shared",
             "datacenter_architecture::rf-shared",
             "datacenter_electrical::rf-shared",
+            "datacenter_electronic_safety_security::rf-shared",
         }
         return sentinel
 
@@ -341,6 +361,7 @@ def test_program_collection_runs_one_qualified_drawing_pass(monkeypatch):
         ("datacenter_fire", False),
         ("datacenter_architecture", False),
         ("datacenter_electrical", False),
+        ("datacenter_electronic_safety_security", False),
     ]
     assert result.drawing_impact_result is sentinel
 
@@ -396,6 +417,7 @@ def test_pending_program_manifest_round_trip_and_strict_membership(tmp_path):
             "datacenter_fire",
             "datacenter_architecture",
             "datacenter_electrical",
+            "datacenter_electronic_safety_security",
         ),
     )
     submission = pp.ProgramSubmission(
@@ -418,6 +440,7 @@ def test_pending_program_manifest_round_trip_and_strict_membership(tmp_path):
         "datacenter_fire",
         "datacenter_architecture",
         "datacenter_electrical",
+        "datacenter_electronic_safety_security",
     }
 
     loaded.partitions["california_k12_mep"] = loaded.partitions.pop(
@@ -460,6 +483,35 @@ def test_pending_program_manifest_accepts_legacy_two_module_run(tmp_path):
     assert resumed.missing_module_ids == ()
 
 
+def test_pending_program_manifest_accepts_pre_security_three_module_run(tmp_path):
+    """A pre-security fire/architecture/electrical manifest remains resumable."""
+    name = "00 00 00 Combined.docx"
+    legacy_module_ids = (
+        "datacenter_fire",
+        "datacenter_architecture",
+        "datacenter_electrical",
+    )
+    assignment = _assignment(name, legacy_module_ids)
+    submission = pp.ProgramSubmission(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(assignment,),
+        partitions={
+            module_id: _submission(module_id, name)
+            for module_id in legacy_module_ids
+        },
+    )
+    path = tmp_path / "pending-three-module.json"
+    save_pending_program_run(
+        PendingProgramRun.from_submission(submission), path=path
+    )
+
+    loaded = load_pending_run(path=path)
+    assert isinstance(loaded, PendingProgramRun)
+    resumed = loaded.to_submission()
+    assert tuple(resumed.partitions) == legacy_module_ids
+    assert resumed.missing_module_ids == ()
+
+
 def test_single_batch_resume_never_falls_back_or_changes_cycle():
     child = _submission(
         "datacenter_architecture", "07 27 26 Air Barriers.docx"
@@ -491,6 +543,7 @@ def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
             "datacenter_fire",
             "datacenter_architecture",
             "datacenter_electrical",
+            "datacenter_electronic_safety_security",
         ),
     )
     result = pp.ProgramPipelineResult(
@@ -509,6 +562,10 @@ def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
     assert require_module("datacenter_fire").display_name in text
     assert require_module("datacenter_architecture").display_name in text
     assert require_module("datacenter_electrical").display_name in text
+    assert (
+        require_module("datacenter_electronic_safety_security").display_name
+        in text
+    )
 
     sidecar = build_edit_instructions(result, report_path=report_path)
     assert sidecar["schema_version"] == 5
@@ -517,14 +574,15 @@ def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
     assert sidecar["submission_coverage"] == {
         "submitted_files": [name],
         "expected_files": [name],
-        "submitted_requests": 3,
-        "expected_requests": 3,
+        "submitted_requests": 4,
+        "expected_requests": 4,
     }
-    assert sidecar["edit_count"] == 3
+    assert sidecar["edit_count"] == 4
     assert {entry["module_id"] for entry in sidecar["edits"]} == {
         "datacenter_fire",
         "datacenter_architecture",
         "datacenter_electrical",
+        "datacenter_electronic_safety_security",
     }
 
 

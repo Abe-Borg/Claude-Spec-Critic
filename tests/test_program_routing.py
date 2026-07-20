@@ -1,13 +1,16 @@
 """Focused tests for hyperscale program and per-spec routing primitives."""
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from src.gui import review_run_controller
 from src.programs import (
     DATACENTER_ARCHITECTURE_MODULE_ID,
     DATACENTER_ELECTRICAL_MODULE_ID,
+    DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
     DATACENTER_FIRE_MODULE_ID,
     HYPERSCALE_DATACENTER_PROGRAM,
     ProgramDefinition,
@@ -29,11 +32,13 @@ def test_hyperscale_program_models_current_and_future_modules() -> None:
         DATACENTER_FIRE_MODULE_ID,
         DATACENTER_ARCHITECTURE_MODULE_ID,
         DATACENTER_ELECTRICAL_MODULE_ID,
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
     )
     assert program.implemented_module_ids == (
         DATACENTER_FIRE_MODULE_ID,
         DATACENTER_ARCHITECTURE_MODULE_ID,
         DATACENTER_ELECTRICAL_MODULE_ID,
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
     )
     assert program.planned_module_ids == ()
 
@@ -54,10 +59,9 @@ def test_program_rejects_planned_module_outside_membership() -> None:
     [
         ("SECTION 21 13 13", "Wet-Pipe Sprinkler Systems"),
         ("213113", "Electric-Drive Fire Pumps"),
-        ("28-31-00", "Fire Detection and Alarm"),
     ],
 )
-def test_fire_csi_families_route_to_existing_fire_module(
+def test_division_21_routes_to_fire_suppression_module(
     section_number: str, section_title: str
 ) -> None:
     decision = route_spec(
@@ -75,6 +79,37 @@ def test_fire_csi_families_route_to_existing_fire_module(
     assert any(
         item.source is RoutingEvidenceSource.CSI_SECTION
         and item.module_id == DATACENTER_FIRE_MODULE_ID
+        for item in decision.evidence
+    )
+
+
+@pytest.mark.parametrize(
+    "section_number,section_title",
+    [
+        ("28-31-00", "Fire Detection and Alarm"),
+        ("28 46 00", "Fire Detection and Alarm"),
+    ],
+)
+def test_fire_alarm_csi_families_route_to_electronic_safety_module(
+    section_number: str, section_title: str
+) -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="fire-alarm.docx",
+            section_number=section_number,
+            section_title=section_title,
+            content="Provide the complete system.",
+        )
+    )
+
+    assert decision.state is RoutingState.SUPPORTED
+    assert decision.module_ids == (
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
+    )
+    assert decision.confidence >= 0.95
+    assert any(
+        item.source is RoutingEvidenceSource.CSI_SECTION
+        and item.module_id == DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID
         for item in decision.evidence
     )
 
@@ -276,7 +311,7 @@ def test_assignments_for_specs_does_not_grant_filenames_section_authority() -> N
     assert tuple(assignment.source_path for assignment in assignments) == source_paths
 
 
-def test_non_fire_division_28_does_not_route_as_fire_or_electrical() -> None:
+def test_non_alarm_division_28_does_not_route_to_an_implemented_module() -> None:
     decision = route_spec(
         SpecRoutingInput(
             spec_id="28 13 00.docx",
@@ -290,6 +325,130 @@ def test_non_fire_division_28_does_not_route_as_fire_or_electrical() -> None:
     assert decision.module_ids == ()
     assert decision.automatic_module_ids == ()
     assert all("electrical" not in module_id for module_id in decision.module_ids)
+
+
+@pytest.mark.parametrize(
+    "section_number,section_title",
+    [
+        ("28 31 00", "Intrusion Detection"),
+        ("28 46 00", "Access Control"),
+    ],
+)
+def test_mapped_alarm_family_with_non_alarm_title_is_unsupported(
+    section_number: str,
+    section_title: str,
+) -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id=f"{section_number}.docx",
+            section_number=section_number,
+            section_title=section_title,
+            content="Provide the complete security system.",
+        )
+    )
+
+    assert decision.state is RoutingState.UNSUPPORTED
+    assert decision.module_ids == ()
+    assert decision.candidate_module_ids == ()
+    assert decision.confidence == 0.95
+    assert any(
+        item.module_id is None and "outside" in item.detail
+        for item in decision.evidence
+    )
+
+
+@pytest.mark.parametrize("section_number", ["28 46 00", ""])
+def test_mixed_alarm_and_non_alarm_title_requires_confirmation(
+    section_number: str,
+) -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="28 46 00.docx",
+            section_number=section_number,
+            section_title="Access Control and Fire Alarm Systems",
+            content="Provide both systems.",
+        )
+    )
+
+    assert decision.state is RoutingState.AMBIGUOUS
+    assert decision.candidate_module_ids == (
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
+    )
+    assert decision.confidence == 0.50
+
+
+def test_uncorroborated_legacy_28_31_requires_confirmation() -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="28 31 00.docx",
+            section_number="28 31 00",
+            section_title="General System Requirements",
+            content="Provide the complete system.",
+        )
+    )
+
+    assert decision.state is RoutingState.AMBIGUOUS
+    assert decision.candidate_module_ids == (
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
+    )
+    assert any(
+        item.module_id is None and "corroborating" in item.detail
+        for item in decision.evidence
+    )
+
+
+def test_single_candidate_confirmation_can_skip_only_that_spec(monkeypatch) -> None:
+    filename = "28 31 00.docx"
+    supported_filename = "26 05 00 Electrical.docx"
+    app = SimpleNamespace(
+        _selected_program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        _extracted_specs=[
+            SimpleNamespace(
+                filename=filename,
+                section_number="28 31 00",
+                section_title="General System Requirements",
+                content="Provide the complete system.",
+            ),
+            SimpleNamespace(
+                filename=supported_filename,
+                section_number="26 05 00",
+                section_title="Common Work Results for Electrical",
+                content="Provide the complete electrical system.",
+            ),
+        ],
+        log=SimpleNamespace(
+            log=lambda *args, **kwargs: None,
+            log_error=lambda *args: None,
+        ),
+    )
+    prompts: list[tuple[str, str]] = []
+    answers = iter((False, True, True))
+
+    def _answer(title: str, message: str) -> bool:
+        prompts.append((title, message))
+        return next(answers)
+
+    monkeypatch.setattr(review_run_controller.messagebox, "askyesno", _answer)
+
+    assignments = review_run_controller._build_program_assignments(
+        app,
+        [Path("C:/specs") / filename, Path("C:/specs") / supported_filename],
+    )
+
+    assert assignments is not None
+    assert len(assignments) == 2
+    assert assignments[0].state is RoutingState.UNSUPPORTED
+    assert assignments[0].decision.is_user_overridden is True
+    assert assignments[0].module_ids == ()
+    assert assignments[0].decision.user_override is not None
+    assert assignments[0].decision.user_override.reason.startswith("Skipped")
+    assert assignments[1].module_ids == (DATACENTER_ELECTRICAL_MODULE_ID,)
+    assert [title for title, _ in prompts] == [
+        "Confirm specification routing",
+        "Unsupported specifications",
+        "Confirm hyperscale routing",
+    ]
+    assert "skip this specification" in prompts[0][1]
 
 
 @pytest.mark.parametrize("section_number", ["27 15 00", "28 13 00"])
@@ -330,6 +489,24 @@ def test_content_only_route_requires_several_independent_signals() -> None:
     )
 
 
+def test_content_only_fire_alarm_route_requires_several_independent_signals() -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="unlabeled-fire-alarm.docx",
+            content=(
+                "Comply with NFPA 72 for the fire alarm system. Provide the FACP, "
+                "signaling-line circuits, notification appliance circuits, and "
+                "initiating devices."
+            ),
+        )
+    )
+
+    assert decision.state is RoutingState.SUPPORTED
+    assert decision.module_ids == (
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
+    )
+
+
 def test_division_26_with_single_fire_cross_reference_stays_electrical() -> None:
     decision = route_spec(
         SpecRoutingInput(
@@ -358,8 +535,8 @@ def test_division_26_with_explicit_fire_alarm_title_requires_confirmation() -> N
     assert decision.state is RoutingState.AMBIGUOUS
     assert decision.module_ids == ()
     assert decision.candidate_module_ids == (
-        DATACENTER_FIRE_MODULE_ID,
         DATACENTER_ELECTRICAL_MODULE_ID,
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
     )
     assert decision.confidence == 0.50
 
@@ -402,15 +579,32 @@ def test_title_can_deliberately_route_one_spec_to_multiple_modules() -> None:
     decision = route_spec(
         SpecRoutingInput(
             spec_id="combined.docx",
-            section_title="Architectural Door Hardware and Fire Alarm Interfaces",
+            section_title="Architectural Door Hardware and Fire Alarm Systems",
             content="Combined owner specification.",
         )
     )
 
     assert decision.state is RoutingState.SUPPORTED
     assert decision.module_ids == (
-        DATACENTER_FIRE_MODULE_ID,
         DATACENTER_ARCHITECTURE_MODULE_ID,
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
+    )
+
+
+def test_fire_alarm_interface_phrase_does_not_claim_an_architectural_spec() -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="interfaces.docx",
+            section_title="Architectural Door Hardware and Fire Alarm Interfaces",
+            content="Coordinate interface requirements.",
+        )
+    )
+
+    assert decision.state is RoutingState.SUPPORTED
+    assert decision.module_ids == (DATACENTER_ARCHITECTURE_MODULE_ID,)
+    assert all(
+        item.module_id != DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID
+        for item in decision.evidence
     )
 
 
@@ -487,7 +681,7 @@ def test_route_specs_preserves_input_order_and_zero_to_many_cardinality() -> Non
             ),
             SpecRoutingInput(
                 spec_id="both.docx",
-                section_title="Architectural Doors and Fire Alarm Interfaces",
+                section_title="Architectural Doors and Fire Alarm Systems",
             ),
             SpecRoutingInput(
                 spec_id="electrical.docx",

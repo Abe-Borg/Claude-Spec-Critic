@@ -12,6 +12,9 @@ from .models import ProgramDefinition
 DATACENTER_FIRE_MODULE_ID = "datacenter_fire"
 DATACENTER_ARCHITECTURE_MODULE_ID = "datacenter_architecture"
 DATACENTER_ELECTRICAL_MODULE_ID = "datacenter_electrical"
+DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID = (
+    "datacenter_electronic_safety_security"
+)
 CALIFORNIA_K12_MODULE_ID = "california_k12_mep"
 
 
@@ -37,6 +40,7 @@ HYPERSCALE_DATACENTER_PROGRAM = ProgramDefinition(
         DATACENTER_FIRE_MODULE_ID,
         DATACENTER_ARCHITECTURE_MODULE_ID,
         DATACENTER_ELECTRICAL_MODULE_ID,
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY_MODULE_ID,
     ),
     planned_module_ids=(),
 )

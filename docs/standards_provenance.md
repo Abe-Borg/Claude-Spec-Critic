@@ -395,3 +395,74 @@ applicability and edition.
 - National Research Council Canada, [Canada's construction system and model-code context](https://nrc.canada.ca/en/certifications-evaluations-standards/codes-canada/canadas-construction-system-context-model-codes),
   for the provincial/territorial adoption model that makes Canadian code basis
   project-specific.
+
+---
+
+# Data-center electronic safety and security: fire-alarm IBC 2024 fallback
+
+Provenance record for the US model-code fallback in
+`src/modules/datacenter_electronic_safety_security.py::DATACENTER_ELECTRONIC_SAFETY_SECURITY_IBC_2024`.
+This is the first, deliberately narrow phase of the hyperscale Electronic
+Safety & Security module: it reviews fire detection and alarm specifications,
+not access control, video surveillance, intrusion detection, or general
+communications. The per-spec router recognizes fire-alarm work in legacy
+Division 28 31 and current Division 28 46. Division 27 and other Division 28
+families remain explicit coverage gaps.
+
+The module is one of four independently versioned modules behind the single
+**Hyperscale Data Centers — USA and Canada** GUI choice. Division 21 remains
+with Fire Suppression, architectural specifications route to Architecture,
+and Division 26 remains with Electrical. The shared project profile preserves
+the existing city, state/province, country, and client inputs while each routed
+module performs its own requirements research and review.
+
+Cross-spec coordination currently runs within each module partition. Direct
+package-level comparison between a Division 21 suppression specification and a
+Division 28 alarm specification is reserved for a future program-level pass;
+the phase-one reviewers still evaluate interface requirements present in the
+documents assigned to them.
+
+The Project Requirements Profile remains controlling. For US projects, every
+run researches the actual state/local adoption, amendments, AHJ requirements,
+monitoring rules, and client criteria. For Canadian projects, every run
+researches the applicable national model-code lineage, provincial or
+territorial adoption and amendments, local requirements, and the governing
+editions of applicable CAN/ULC standards such as CAN/ULC-S524, S536, S537,
+S561, and S1001. Those Canadian editions are intentionally not hard-coded as a
+universal fallback.
+
+Date checked against primary publisher sources: **2026-07-20**.
+
+## Model-code and fire-alarm fallback
+
+| Code or standard | Fallback edition | Status and scope |
+|---|---|---|
+| IBC / IFC / IEBC | 2024 | Published US model-code fallback; actual adoption and amendments are researched per project. |
+| ASCE 7 | 7-22 | Base 2024 IBC reference; project-location adoption remains controlling. |
+| NFPA 72 | 2022 | Core US fire-alarm fallback referenced by the 2024 IBC/IFC; actual jurisdictional adoption governs. |
+| NFPA 70 (NEC) | 2023 | Core US fire-alarm wiring fallback referenced by the 2024 IFC; actual state/local adoption governs. |
+
+Only NFPA 72-2022 and NFPA 70-2023 are pinned as the module's core
+fire-alarm standards. Product standards, monitoring standards, special-hazard
+standards, and Canadian standards are researched or applied conditionally when
+the project profile and submitted documents establish their applicability.
+Pinning the US fallback does not make it governing in Canada or in a US
+jurisdiction that adopted another edition.
+
+## Primary sources
+
+- ICC [2024 IBC Chapter 35](https://codes.iccsafe.org/content/IBC2024V2.0/chapter-35-referenced-standards)
+  and [2024 IFC Chapter 80](https://codes.iccsafe.org/content/IFC2024P1/chapter-80-referenced-standards)
+  for the referenced NFPA editions.
+- ICC [2024 IFC Chapter 9](https://codes.iccsafe.org/content/IFC2024V2.0/chapter-9-fire-protection-and-life-safety-systems)
+  for the fire-alarm system and wiring requirements that invoke NFPA 72 and
+  NFPA 70.
+- NFPA [NFPA 72-2022](https://link.nfpa.org/all-publications/72/2022).
+- National Research Council Canada,
+  [Canada's construction system and model-code context](https://nrc.canada.ca/en/certifications-evaluations-standards/codes-canada/canadas-construction-system-context-model-codes)
+  and [provincial and territorial ministries](https://nrc.canada.ca/en/certifications-evaluations-standards/codes-canada/provincial-territorial-ministries),
+  for the adoption model that requires Canadian code and standard editions to
+  be resolved per project location.
+- CSI [MasterFormat numbers and titles](https://crmservice.csinet.org/widgets/masterformat/numbersandtitles.aspx?id=e2def49d-bed5-ea11-80f3-000d3a04ff75)
+  and [MasterFormat revisions](https://crmservice.csinet.org/widgets/masterformat/revisions.aspx)
+  for the current classification and revision history used by the router.

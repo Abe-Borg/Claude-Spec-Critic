@@ -40,6 +40,7 @@ from src.modules import (
     CALIFORNIA_K12_MEP,
     DATACENTER_ARCHITECTURE,
     DATACENTER_ELECTRICAL,
+    DATACENTER_ELECTRONIC_SAFETY_SECURITY,
     DATACENTER_FIRE,
     ChunkGroup,
     DEFAULT_MODULE,
@@ -187,6 +188,9 @@ class TestRegistry:
             "datacenter_fire": DATACENTER_FIRE,
             "datacenter_architecture": DATACENTER_ARCHITECTURE,
             "datacenter_electrical": DATACENTER_ELECTRICAL,
+            "datacenter_electronic_safety_security": (
+                DATACENTER_ELECTRONIC_SAFETY_SECURITY
+            ),
         }
 
     def test_get_module_resolves_known_id(self):
@@ -194,6 +198,10 @@ class TestRegistry:
         assert get_module("datacenter_fire") is DATACENTER_FIRE
         assert get_module("datacenter_architecture") is DATACENTER_ARCHITECTURE
         assert get_module("datacenter_electrical") is DATACENTER_ELECTRICAL
+        assert (
+            get_module("datacenter_electronic_safety_security")
+            is DATACENTER_ELECTRONIC_SAFETY_SECURITY
+        )
 
     @pytest.mark.parametrize("bad_id", [None, "", "  ", "not_a_module"])
     def test_get_module_degrades_to_default(self, bad_id):
