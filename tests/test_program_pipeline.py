@@ -99,6 +99,7 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
     assignments = (
         _assignment("21 13 13 Fire Sprinklers.docx", ("datacenter_fire",)),
         _assignment("07 27 26 Air Barriers.docx", ("datacenter_architecture",)),
+        _assignment("26 24 13 Switchboards.docx", ("datacenter_electrical",)),
     )
     events: list[str] = []
 
@@ -131,12 +132,15 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
     assert events == [
         "prepare:datacenter_fire",
         "prepare:datacenter_architecture",
+        "prepare:datacenter_electrical",
         "submit:datacenter_fire",
         "submit:datacenter_architecture",
+        "submit:datacenter_electrical",
     ]
     assert tuple(submission.partitions) == (
         "datacenter_fire",
         "datacenter_architecture",
+        "datacenter_electrical",
     )
 
 
@@ -144,9 +148,13 @@ def test_program_result_marks_skips_and_missing_partitions_partial():
     assignments = (
         _assignment(
             "00 00 00 Combined.docx",
-            ("datacenter_fire", "datacenter_architecture"),
+            (
+                "datacenter_fire",
+                "datacenter_architecture",
+                "datacenter_electrical",
+            ),
         ),
-        _assignment("26 05 00 Electrical.docx", ()),
+        _assignment("27 10 00 Structured Cabling.docx", ()),
     )
     result = pp.ProgramPipelineResult(
         program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
@@ -159,10 +167,13 @@ def test_program_result_marks_skips_and_missing_partitions_partial():
     )
 
     assert result.status == "partial"
-    assert result.skipped_files == ["26 05 00 Electrical.docx"]
-    assert result.missing_module_ids == ["datacenter_architecture"]
+    assert result.skipped_files == ["27 10 00 Structured Cabling.docx"]
+    assert result.missing_module_ids == [
+        "datacenter_architecture",
+        "datacenter_electrical",
+    ]
     assert result.routed_request_count == 1
-    assert result.expected_routed_request_count == 2
+    assert result.expected_routed_request_count == 3
 
 
 def test_partial_submission_counts_only_partitions_actually_submitted():
@@ -260,7 +271,7 @@ def test_partial_batch_submission_log_reports_actual_and_expected_counts():
     assert any("1 of 2 module request(s)" in item for item in warnings)
 
 
-def test_bare_batch_recovery_requires_explicit_hyperscale_module():
+def test_bare_batch_recovery_resolves_hyperscale_module_short_name():
     program = HYPERSCALE_DATACENTER_PROGRAM
     assert gui_batch._resolve_recovery_module(program, "1").module_id == (
         program.implemented_module_ids[0]
@@ -268,7 +279,9 @@ def test_bare_batch_recovery_requires_explicit_hyperscale_module():
     assert gui_batch._resolve_recovery_module(
         program, "datacenter_architecture"
     ).module_id == "datacenter_architecture"
-    assert gui_batch._resolve_recovery_module(program, "electrical") is None
+    assert gui_batch._resolve_recovery_module(
+        program, "electrical"
+    ).module_id == "datacenter_electrical"
 
 
 def test_stale_saved_program_falls_back_to_valid_legacy_module():
@@ -279,7 +292,12 @@ def test_stale_saved_program_falls_back_to_valid_legacy_module():
 def test_program_collection_runs_one_qualified_drawing_pass(monkeypatch):
     name = "00 00 00 Combined.docx"
     assignment = _assignment(
-        name, ("datacenter_fire", "datacenter_architecture")
+        name,
+        (
+            "datacenter_fire",
+            "datacenter_architecture",
+            "datacenter_electrical",
+        ),
     )
     digest_context = (
         "--- BEGIN ATTACHMENT: Construction Drawing Digest ---\n"
@@ -308,6 +326,7 @@ def test_program_collection_runs_one_qualified_drawing_pass(monkeypatch):
         assert {finding.finding_id for finding in findings} == {
             "datacenter_fire::rf-shared",
             "datacenter_architecture::rf-shared",
+            "datacenter_electrical::rf-shared",
         }
         return sentinel
 
@@ -321,6 +340,7 @@ def test_program_collection_runs_one_qualified_drawing_pass(monkeypatch):
     assert child_calls == [
         ("datacenter_fire", False),
         ("datacenter_architecture", False),
+        ("datacenter_electrical", False),
     ]
     assert result.drawing_impact_result is sentinel
 
@@ -371,7 +391,12 @@ def test_later_collection_failure_retains_completed_module_result(monkeypatch):
 def test_pending_program_manifest_round_trip_and_strict_membership(tmp_path):
     name = "00 00 00 Combined.docx"
     assignment = _assignment(
-        name, ("datacenter_fire", "datacenter_architecture")
+        name,
+        (
+            "datacenter_fire",
+            "datacenter_architecture",
+            "datacenter_electrical",
+        ),
     )
     submission = pp.ProgramSubmission(
         program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
@@ -392,6 +417,7 @@ def test_pending_program_manifest_round_trip_and_strict_membership(tmp_path):
     assert set(loaded.partitions) == {
         "datacenter_fire",
         "datacenter_architecture",
+        "datacenter_electrical",
     }
 
     loaded.partitions["california_k12_mep"] = loaded.partitions.pop(
@@ -403,6 +429,35 @@ def test_pending_program_manifest_round_trip_and_strict_membership(tmp_path):
         assert "not a member" in str(exc)
     else:  # pragma: no cover - explicit honesty contract
         raise AssertionError("out-of-program resume partition was accepted")
+
+
+def test_pending_program_manifest_accepts_legacy_two_module_run(tmp_path):
+    """A pre-electrical fire/architecture manifest remains resumable."""
+    name = "00 00 00 Combined.docx"
+    assignment = _assignment(
+        name, ("datacenter_fire", "datacenter_architecture")
+    )
+    submission = pp.ProgramSubmission(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(assignment,),
+        partitions={
+            module_id: _submission(module_id, name)
+            for module_id in ("datacenter_fire", "datacenter_architecture")
+        },
+    )
+    path = tmp_path / "pending-two-module.json"
+    save_pending_program_run(
+        PendingProgramRun.from_submission(submission), path=path
+    )
+
+    loaded = load_pending_run(path=path)
+    assert isinstance(loaded, PendingProgramRun)
+    resumed = loaded.to_submission()
+    assert tuple(resumed.partitions) == (
+        "datacenter_fire",
+        "datacenter_architecture",
+    )
+    assert resumed.missing_module_ids == ()
 
 
 def test_single_batch_resume_never_falls_back_or_changes_cycle():
@@ -431,7 +486,12 @@ def test_single_batch_resume_never_falls_back_or_changes_cycle():
 def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
     name = "00 00 00 Combined.docx"
     assignment = _assignment(
-        name, ("datacenter_fire", "datacenter_architecture")
+        name,
+        (
+            "datacenter_fire",
+            "datacenter_architecture",
+            "datacenter_electrical",
+        ),
     )
     result = pp.ProgramPipelineResult(
         program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
@@ -448,6 +508,7 @@ def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
     assert "Hyperscale Data Center Specification Review Report" in text
     assert require_module("datacenter_fire").display_name in text
     assert require_module("datacenter_architecture").display_name in text
+    assert require_module("datacenter_electrical").display_name in text
 
     sidecar = build_edit_instructions(result, report_path=report_path)
     assert sidecar["schema_version"] == 5
@@ -456,13 +517,14 @@ def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
     assert sidecar["submission_coverage"] == {
         "submitted_files": [name],
         "expected_files": [name],
-        "submitted_requests": 2,
-        "expected_requests": 2,
+        "submitted_requests": 3,
+        "expected_requests": 3,
     }
-    assert sidecar["edit_count"] == 2
+    assert sidecar["edit_count"] == 3
     assert {entry["module_id"] for entry in sidecar["edits"]} == {
         "datacenter_fire",
         "datacenter_architecture",
+        "datacenter_electrical",
     }
 
 

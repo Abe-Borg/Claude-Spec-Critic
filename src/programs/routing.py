@@ -1,4 +1,4 @@
-"""Deterministic architecture/fire routing for the hyperscale program.
+"""Deterministic architecture/fire/electrical routing for the hyperscale program.
 
 The classifier is intentionally conservative.  CSI metadata and a strongly
 matching title can produce an executable route.  Content-only hints usually
@@ -6,8 +6,9 @@ produce an ambiguous candidate unless several independent, discipline-specific
 signals agree.  This prevents a cross-reference to another discipline from
 silently sending an otherwise unrelated specification to that module.
 
-No electrical module or electrical fallback exists here.  Unmatched Division
-26 and non-fire Division 28 specifications remain unsupported.
+Division 26 and explicit electrical utility/generation sections route to the
+electrical module.  Division 27 and non-fire Division 28 remain outside the
+implemented scope; even a suggestive title cannot silently route them.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from typing import Iterable
 
 from .catalog import (
     DATACENTER_ARCHITECTURE_MODULE_ID,
+    DATACENTER_ELECTRICAL_MODULE_ID,
     DATACENTER_FIRE_MODULE_ID,
     HYPERSCALE_DATACENTER_PROGRAM,
 )
@@ -42,6 +44,16 @@ _ARCHITECTURE_DIVISIONS = frozenset(
 # module; access control, CCTV, and other electronic-safety sections do not.
 _FIRE_DIVISION = "21"
 _FIRE_DIVISION_28_FAMILIES = frozenset({"31", "46"})
+
+# Division 26 is electrical work.  Division 33 families 71-73 cover utility
+# electrical transmission/distribution, substations, and utility transformers;
+# Division 48 covers electrical power generation.  Division 27 communications
+# and non-fire Division 28 electronic safety/security stay unsupported until
+# their own discipline modules exist.
+_ELECTRICAL_DIVISION = "26"
+_ELECTRICAL_DIVISION_33_FAMILIES = frozenset({"71", "72", "73"})
+_ELECTRICAL_DIVISION_48 = "48"
+_RESTRICTED_UNIMPLEMENTED_DIVISIONS = frozenset({"27", "28"})
 
 # CSI metadata must be recognizably metadata, not merely the first 2–6 digits
 # found anywhere in a filename.  The old unanchored optional-separator regex
@@ -100,6 +112,62 @@ _FIRE_TITLE_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("water mist", re.compile(r"\bwater mist\b", re.I)),
 )
 
+_ELECTRICAL_TITLE_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("electrical", re.compile(r"\belectrical\b", re.I)),
+    ("power distribution", re.compile(r"\bpower distribution\b", re.I)),
+    (
+        "medium voltage",
+        re.compile(r"\bmedium[- ]voltage\b|\bMV distribution\b", re.I),
+    ),
+    ("switchgear", re.compile(r"\bswitchgear\b", re.I)),
+    ("switchboard", re.compile(r"\bswitchboards?\b", re.I)),
+    ("panelboard", re.compile(r"\bpanelboards?\b", re.I)),
+    ("transformer", re.compile(r"\btransformers?\b", re.I)),
+    ("busway", re.compile(r"\bbusways?\b", re.I)),
+    (
+        "generator",
+        re.compile(r"\bgenerators?\b|\bengine[- ]generators?\b", re.I),
+    ),
+    (
+        "paralleling",
+        re.compile(r"\bparalleling (?:gear|switchgear|system)\b", re.I),
+    ),
+    (
+        "UPS",
+        re.compile(r"\buninterruptible power(?: supply| system)?\b|\bUPS\b", re.I),
+    ),
+    (
+        "battery energy storage",
+        re.compile(r"\bbattery energy storage\b|\bBESS\b", re.I),
+    ),
+    (
+        "transfer switch",
+        re.compile(r"\b(?:automatic|static) transfer switches?\b", re.I),
+    ),
+    (
+        "grounding and bonding",
+        re.compile(r"\bgrounding(?: and| &) bonding\b", re.I),
+    ),
+    (
+        "power monitoring",
+        re.compile(r"\b(?:electrical )?power monitoring\b|\bEPMS\b", re.I),
+    ),
+    ("protective relaying", re.compile(r"\bprotective relay(?:ing|s)?\b", re.I)),
+    ("metering", re.compile(r"\bmetering\b", re.I)),
+    ("lighting controls", re.compile(r"\blighting controls?\b", re.I)),
+    ("branch circuits", re.compile(r"\bbranch circuits?\b", re.I)),
+    ("raceways", re.compile(r"\braceways?\b|\bconduits?\b|\bcable trays?\b", re.I)),
+    ("surge protection", re.compile(r"\bsurge protect(?:ion|ive device)s?\b", re.I)),
+    ("lightning protection", re.compile(r"\blightning protection\b", re.I)),
+    ("power-system studies", re.compile(r"\bpower[- ]system studies\b", re.I)),
+    (
+        "short-circuit study",
+        re.compile(r"\bshort[- ]circuit stud(?:y|ies)\b", re.I),
+    ),
+    ("selective coordination", re.compile(r"\bselective coordination\b", re.I)),
+    ("arc-flash study", re.compile(r"\barc[- ]flash stud(?:y|ies)\b", re.I)),
+)
+
 _ARCHITECTURE_CONTENT_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("air barrier", re.compile(r"\bair barriers?\b", re.I)),
     ("curtain wall", re.compile(r"\bcurtain walls?\b", re.I)),
@@ -126,6 +194,33 @@ _FIRE_CONTENT_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("releasing panel", re.compile(r"\breleasing panel\b", re.I)),
     ("VESDA", re.compile(r"\bVESDA\b", re.I)),
     ("aspirating smoke detection", re.compile(r"\baspirating smoke\b", re.I)),
+)
+
+_ELECTRICAL_CONTENT_TERMS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("NFPA 70", re.compile(r"\bNFPA\s*70\b", re.I)),
+    ("NEC", re.compile(r"\bNEC\b|\bNational Electrical Code\b", re.I)),
+    ("CSA C22.1", re.compile(r"\bCSA\s*C22\.1\b", re.I)),
+    (
+        "Canadian Electrical Code",
+        re.compile(r"\bCanadian Electrical Code\b", re.I),
+    ),
+    ("NFPA 110", re.compile(r"\bNFPA\s*110\b", re.I)),
+    ("IEEE 1584", re.compile(r"\bIEEE\s*1584\b", re.I)),
+    ("NETA ATS", re.compile(r"\bNETA\s+ATS\b", re.I)),
+    ("fault current", re.compile(r"\bfault current\b", re.I)),
+    ("selective coordination", re.compile(r"\bselective coordination\b", re.I)),
+    ("SCCR", re.compile(r"\bSCCR\b|\bshort[- ]circuit current rating\b", re.I)),
+    ("arc flash", re.compile(r"\barc[- ]flash\b", re.I)),
+    ("grounding electrode", re.compile(r"\bgrounding electrode\b", re.I)),
+    ("A/B power path", re.compile(r"\bA\s*[/&-]\s*B power paths?\b", re.I)),
+    ("EPMS", re.compile(r"\bEPMS\b|\belectrical power monitoring system\b", re.I)),
+    ("switchgear", re.compile(r"\bswitchgear\b", re.I)),
+    ("busway", re.compile(r"\bbusways?\b", re.I)),
+    (
+        "UPS",
+        re.compile(r"\buninterruptible power(?: supply| system)?\b|\bUPS\b", re.I),
+    ),
+    ("generator paralleling", re.compile(r"\bgenerator paralleling\b", re.I)),
 )
 
 
@@ -169,6 +264,16 @@ def _section_module_ids(section: tuple[str, ...]) -> tuple[str, ...]:
         and section[1] in _FIRE_DIVISION_28_FAMILIES
     ):
         return (DATACENTER_FIRE_MODULE_ID,)
+    if division == _ELECTRICAL_DIVISION:
+        return (DATACENTER_ELECTRICAL_MODULE_ID,)
+    if (
+        division == "33"
+        and len(section) >= 2
+        and section[1] in _ELECTRICAL_DIVISION_33_FAMILIES
+    ):
+        return (DATACENTER_ELECTRICAL_MODULE_ID,)
+    if division == _ELECTRICAL_DIVISION_48:
+        return (DATACENTER_ELECTRICAL_MODULE_ID,)
     return ()
 
 
@@ -208,7 +313,7 @@ def route_spec(
     *,
     program: ProgramDefinition = HYPERSCALE_DATACENTER_PROGRAM,
 ) -> SpecRoutingDecision:
-    """Return a deterministic architecture/fire assessment for one spec.
+    """Return a deterministic discipline assessment for one spec.
 
     Ambiguous decisions expose candidates through ``candidate_module_ids``
     but have no executable ``module_ids`` until a user applies an override.
@@ -220,6 +325,7 @@ def route_spec(
         for module_id in (
             DATACENTER_FIRE_MODULE_ID,
             DATACENTER_ARCHITECTURE_MODULE_ID,
+            DATACENTER_ELECTRICAL_MODULE_ID,
         )
         if module_id in program.module_ids
     }
@@ -256,7 +362,10 @@ def route_spec(
                 RoutingEvidence(
                     source=section_source,
                     signal=canonical_section,
-                    detail="CSI section is outside the implemented architecture/fire map",
+                    detail=(
+                        "CSI section is outside the implemented "
+                        "architecture/fire/electrical map"
+                    ),
                     module_id=None,
                     weight=0.0,
                 )
@@ -268,6 +377,9 @@ def route_spec(
         ),
         DATACENTER_FIRE_MODULE_ID: _matched_terms(
             spec.section_title, _FIRE_TITLE_TERMS
+        ),
+        DATACENTER_ELECTRICAL_MODULE_ID: _matched_terms(
+            spec.section_title, _ELECTRICAL_TITLE_TERMS
         ),
     }
     title_ids: set[str] = set()
@@ -293,6 +405,9 @@ def route_spec(
             spec.content, _ARCHITECTURE_CONTENT_TERMS
         ),
         DATACENTER_FIRE_MODULE_ID: _matched_terms(spec.content, _FIRE_CONTENT_TERMS),
+        DATACENTER_ELECTRICAL_MODULE_ID: _matched_terms(
+            spec.content, _ELECTRICAL_CONTENT_TERMS
+        ),
     }
     for module_id in program.module_ids:
         matches = content_matches.get(module_id, ())
@@ -323,6 +438,34 @@ def route_spec(
             confidence=0.50,
             evidence=tuple(evidence),
         )
+
+    restricted_unimplemented_section = bool(
+        section
+        and not section_ids
+        and section[0] in _RESTRICTED_UNIMPLEMENTED_DIVISIONS
+    )
+    if restricted_unimplemented_section:
+        # Communications and non-fire electronic safety/security do not yet
+        # have reviewers.  A discipline-flavored title or body may be useful
+        # as a user-confirmed candidate, but never overrides the explicit CSI
+        # coverage gap automatically.
+        candidates = _ordered_module_ids(
+            (module_id for module_id, score in scores.items() if score >= 0.20),
+            program,
+        )
+        if candidates:
+            confidence = min(
+                0.69,
+                max(0.35, max(scores[mid] for mid in candidates)),
+            )
+            return SpecRoutingDecision(
+                spec_id=spec.spec_id,
+                program_id=program.program_id,
+                automatic_state=RoutingState.AMBIGUOUS,
+                automatic_module_ids=candidates,
+                confidence=confidence,
+                evidence=tuple(evidence),
+            )
 
     supported: list[str] = []
     for module_id in program.module_ids:

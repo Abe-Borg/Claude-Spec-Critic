@@ -77,7 +77,7 @@ def _continue_partial_program(app, submission: ProgramSubmission) -> None:
 
 
 def _resolve_recovery_module(program, choice: str):
-    """Resolve a displayed index, module id, or display name strictly."""
+    """Resolve an index, id, display name, or unambiguous discipline name."""
     value = (choice or "").strip()
     if value.isdigit():
         index = int(value) - 1
@@ -88,6 +88,13 @@ def _resolve_recovery_module(program, choice: str):
         module = require_module(module_id)
         if folded in {module_id.casefold(), module.display_name.casefold()}:
             return module
+    discipline_matches = [
+        require_module(module_id)
+        for module_id in program.implemented_module_ids
+        if folded == module_id.casefold().rsplit("_", 1)[-1]
+    ]
+    if len(discipline_matches) == 1:
+        return discipline_matches[0]
     return None
 
 

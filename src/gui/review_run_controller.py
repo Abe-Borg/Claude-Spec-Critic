@@ -223,7 +223,8 @@ def _build_program_assignments(app, selected_files: list) -> tuple[SpecAssignmen
     if unsupported:
         proceed = messagebox.askyesno(
             "Unsupported specifications",
-            "No implemented Architecture or Fire module can safely review:\n\n"
+            "No implemented Architecture, Fire, or Electrical module can safely "
+            "review:\n\n"
             + "\n".join(f"• {name}" for name in unsupported)
             + "\n\nContinue and record these files as skipped coverage gaps?",
         )

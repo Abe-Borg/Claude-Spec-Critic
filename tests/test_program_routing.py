@@ -7,6 +7,7 @@ import pytest
 
 from src.programs import (
     DATACENTER_ARCHITECTURE_MODULE_ID,
+    DATACENTER_ELECTRICAL_MODULE_ID,
     DATACENTER_FIRE_MODULE_ID,
     HYPERSCALE_DATACENTER_PROGRAM,
     ProgramDefinition,
@@ -27,10 +28,12 @@ def test_hyperscale_program_models_current_and_future_modules() -> None:
     assert program.module_ids == (
         DATACENTER_FIRE_MODULE_ID,
         DATACENTER_ARCHITECTURE_MODULE_ID,
+        DATACENTER_ELECTRICAL_MODULE_ID,
     )
     assert program.implemented_module_ids == (
         DATACENTER_FIRE_MODULE_ID,
         DATACENTER_ARCHITECTURE_MODULE_ID,
+        DATACENTER_ELECTRICAL_MODULE_ID,
     )
     assert program.planned_module_ids == ()
 
@@ -88,6 +91,31 @@ def test_architectural_csi_family_routes_to_architecture_module() -> None:
 
     assert decision.state is RoutingState.SUPPORTED
     assert decision.module_ids == (DATACENTER_ARCHITECTURE_MODULE_ID,)
+    assert decision.confidence >= 0.95
+
+
+@pytest.mark.parametrize(
+    "section_number,section_title",
+    [
+        ("26 05 00", "Common Work Results for Electrical"),
+        ("33 71 00", "Electrical Utility Transmission and Distribution"),
+        ("48 11 00", "Fossil Fuel Electrical Power Generation"),
+    ],
+)
+def test_electrical_csi_families_route_to_electrical_module(
+    section_number: str, section_title: str
+) -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="electrical.docx",
+            section_number=section_number,
+            section_title=section_title,
+            content="Provide the complete system.",
+        )
+    )
+
+    assert decision.state is RoutingState.SUPPORTED
+    assert decision.module_ids == (DATACENTER_ELECTRICAL_MODULE_ID,)
     assert decision.confidence >= 0.95
 
 
@@ -264,6 +292,24 @@ def test_non_fire_division_28_does_not_route_as_fire_or_electrical() -> None:
     assert all("electrical" not in module_id for module_id in decision.module_ids)
 
 
+@pytest.mark.parametrize("section_number", ["27 15 00", "28 13 00"])
+def test_unimplemented_low_voltage_division_cannot_auto_route_from_title(
+    section_number: str,
+) -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="low-voltage.docx",
+            section_number=section_number,
+            section_title="Electrical Power Monitoring and Access Control",
+            content="Provide an EPMS interface.",
+        )
+    )
+
+    assert decision.state is RoutingState.AMBIGUOUS
+    assert decision.module_ids == ()
+    assert decision.candidate_module_ids == (DATACENTER_ELECTRICAL_MODULE_ID,)
+
+
 def test_content_only_route_requires_several_independent_signals() -> None:
     decision = route_spec(
         SpecRoutingInput(
@@ -284,7 +330,7 @@ def test_content_only_route_requires_several_independent_signals() -> None:
     )
 
 
-def test_single_cross_discipline_content_reference_is_ambiguous_not_executable() -> None:
+def test_division_26_with_single_fire_cross_reference_stays_electrical() -> None:
     decision = route_spec(
         SpecRoutingInput(
             spec_id="26 05 00.docx",
@@ -294,10 +340,43 @@ def test_single_cross_discipline_content_reference_is_ambiguous_not_executable()
         )
     )
 
+    assert decision.state is RoutingState.SUPPORTED
+    assert decision.module_ids == (DATACENTER_ELECTRICAL_MODULE_ID,)
+    assert decision.confidence >= 0.95
+
+
+def test_division_26_with_explicit_fire_alarm_title_requires_confirmation() -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="26 50 00.docx",
+            section_number="26 50 00",
+            section_title="Fire Alarm Systems",
+            content="Provide the complete system.",
+        )
+    )
+
     assert decision.state is RoutingState.AMBIGUOUS
     assert decision.module_ids == ()
-    assert decision.candidate_module_ids == (DATACENTER_FIRE_MODULE_ID,)
-    assert decision.confidence <= 0.69
+    assert decision.candidate_module_ids == (
+        DATACENTER_FIRE_MODULE_ID,
+        DATACENTER_ELECTRICAL_MODULE_ID,
+    )
+    assert decision.confidence == 0.50
+
+
+def test_content_only_electrical_route_requires_several_independent_signals() -> None:
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="unlabeled-electrical.docx",
+            content=(
+                "Comply with NFPA 70 and IEEE 1584. Provide switchgear with SCCR "
+                "ratings, selective coordination, and an arc-flash study."
+            ),
+        )
+    )
+
+    assert decision.state is RoutingState.SUPPORTED
+    assert decision.module_ids == (DATACENTER_ELECTRICAL_MODULE_ID,)
 
 
 def test_conflicting_csi_and_title_are_ambiguous_with_both_candidates() -> None:
@@ -388,7 +467,7 @@ def test_user_override_rejects_module_outside_program() -> None:
     with pytest.raises(ValueError, match="outside the program"):
         apply_user_override(
             automatic,
-            ("datacenter_electrical",),
+            ("future_datacenter_structural",),
             reason="Not a valid program member.",
         )
 
@@ -398,8 +477,8 @@ def test_route_specs_preserves_input_order_and_zero_to_many_cardinality() -> Non
         (
             SpecRoutingInput(
                 spec_id="unsupported.docx",
-                section_number="26 05 00",
-                section_title="Electrical Common Work",
+                section_number="27 15 00",
+                section_title="Communications Horizontal Cabling",
             ),
             SpecRoutingInput(
                 spec_id="fire.docx",
@@ -410,6 +489,11 @@ def test_route_specs_preserves_input_order_and_zero_to_many_cardinality() -> Non
                 spec_id="both.docx",
                 section_title="Architectural Doors and Fire Alarm Interfaces",
             ),
+            SpecRoutingInput(
+                spec_id="electrical.docx",
+                section_number="26 05 00",
+                section_title="Electrical Common Work",
+            ),
         )
     )
 
@@ -417,5 +501,6 @@ def test_route_specs_preserves_input_order_and_zero_to_many_cardinality() -> Non
         "unsupported.docx",
         "fire.docx",
         "both.docx",
+        "electrical.docx",
     )
-    assert tuple(len(decision.module_ids) for decision in decisions) == (0, 1, 2)
+    assert tuple(len(decision.module_ids) for decision in decisions) == (0, 1, 2, 1)

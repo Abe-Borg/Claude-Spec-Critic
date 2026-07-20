@@ -11,6 +11,7 @@ from .models import ProgramDefinition
 
 DATACENTER_FIRE_MODULE_ID = "datacenter_fire"
 DATACENTER_ARCHITECTURE_MODULE_ID = "datacenter_architecture"
+DATACENTER_ELECTRICAL_MODULE_ID = "datacenter_electrical"
 CALIFORNIA_K12_MODULE_ID = "california_k12_mep"
 
 
@@ -35,6 +36,7 @@ HYPERSCALE_DATACENTER_PROGRAM = ProgramDefinition(
     module_ids=(
         DATACENTER_FIRE_MODULE_ID,
         DATACENTER_ARCHITECTURE_MODULE_ID,
+        DATACENTER_ELECTRICAL_MODULE_ID,
     ),
     planned_module_ids=(),
 )
@@ -53,9 +55,9 @@ DEFAULT_PROGRAM = CALIFORNIA_K12_PROGRAM
 _PROGRAM_BY_MODULE_ID: dict[str, ProgramDefinition] = {}
 for _program in _ALL_PROGRAMS:
     for _module_id in _program.module_ids:
-        # The data-center fire and architecture modules intentionally map to
-        # the same user-facing program. Program ids themselves are also
-        # accepted by ``get_program`` below.
+        # The data-center discipline modules intentionally map to the same
+        # user-facing program. Program ids themselves are also accepted by
+        # ``get_program`` below.
         _PROGRAM_BY_MODULE_ID[_module_id] = _program
 
 

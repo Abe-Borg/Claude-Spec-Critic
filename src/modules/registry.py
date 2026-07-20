@@ -15,12 +15,14 @@ from __future__ import annotations
 from .base import ReviewModule, validate_module_registry
 from .california_k12_mep import CALIFORNIA_K12_MEP
 from .datacenter_architecture import DATACENTER_ARCHITECTURE
+from .datacenter_electrical import DATACENTER_ELECTRICAL
 from .datacenter_fire import DATACENTER_FIRE
 
 _ALL_MODULES: tuple[ReviewModule, ...] = (
     CALIFORNIA_K12_MEP,
     DATACENTER_FIRE,
     DATACENTER_ARCHITECTURE,
+    DATACENTER_ELECTRICAL,
 )
 
 validate_module_registry(_ALL_MODULES)

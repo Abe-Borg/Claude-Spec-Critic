@@ -123,8 +123,8 @@ class TestTerminalState:
         app = _make_app()
         result = _result(error=None)
         result.status = "partial"
-        result.skipped_files = ["26 05 00 Electrical.docx"]
-        result.missing_module_ids = []
+        result.skipped_files = ["27 10 00 Structured Cabling.docx"]
+        result.missing_module_ids = ["datacenter_electrical"]
 
         on_review_complete(app, result)
 

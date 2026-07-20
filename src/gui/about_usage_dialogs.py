@@ -274,7 +274,8 @@ def show_about_dialog(parent) -> None:
         )),
         ("3.  Location & Client Research  (module-dependent)", (
             "Programs with location-sensitive reviewers (including the data-center "
-            "architecture and fire modules) ask for the project's city, state/province, "
+            "architecture, fire, and electrical modules) ask for the project's city, "
+            "state/province, "
             "and client before the run. A research pass then fans out one "
             "web-search call per topic — governing codes, AHJ requirements, "
             "client standards, site environment — and builds a grounded "
@@ -406,7 +407,8 @@ def show_usage_dialog(parent) -> None:
             "Pick the review program in the header. The default is California "
             "K-12 DSA mechanical/plumbing. Hyperscale Data Centers is one visible "
             "choice: after extraction, it routes each specification to the "
-            "Architecture module, the Fire module, both, or an explicit unsupported "
+            "Architecture, Fire, and Electrical modules, a justified combination, "
+            "or an explicit unsupported "
             "coverage gap. It also asks for the project's city, state/province, "
             "country, and client so each assigned module can research "
             "location-specific requirements before the review. Double-check "

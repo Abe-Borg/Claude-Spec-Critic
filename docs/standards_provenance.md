@@ -16,6 +16,9 @@ Sections:
 - **Data-center architecture IBC 2024 fallback**
   (`DATACENTER_ARCHITECTURE_IBC_2024`, `datacenter_architecture` module) — after
   the fire-protection cycle.
+- **Data-center electrical IBC 2024 fallback**
+  (`DATACENTER_ELECTRICAL_IBC_2024`, `datacenter_electrical` module) — after
+  the architecture cycle.
 
 ---
 
@@ -329,3 +332,66 @@ a voluntary standard legally applicable to a particular project.
   [NFPA 285-2023](https://link.nfpa.org/all-publications/285/2023).
 - ASTM [E119-20](https://store.astm.org/e0119-20.html) and
   [E84-21a](https://store.astm.org/e0084-21a.html).
+
+---
+
+# Data-center electrical IBC 2024 fallback
+
+Provenance record for the model-code fallback in
+`src/modules/datacenter_electrical.py::DATACENTER_ELECTRICAL_IBC_2024`. It
+supports electrical specification reviews for hyperscale data-center projects
+in the United States and Canada. It is a review baseline, not a claim that the
+2024 I-codes or one national electrical-code edition governs every project.
+
+The Project Requirements Profile remains controlling. Every run researches the
+actual state, provincial/territorial, and local adoption and amendments; utility
+service/interconnection rules; AHJ requirements; and client reliability and
+commissioning criteria for the entered city, state/province, country, and
+client. Canadian projects dynamically resolve the applicable provincial or
+territorial electrical and building-code basis. CSA C22.1 and related Canadian
+standards are therefore not hard-coded as universal fallback editions.
+
+Date checked against primary publisher sources: **2026-07-20**.
+
+## Model-code and electrical fallback
+
+| Code or standard | Fallback edition | Status and scope |
+|---|---|---|
+| IBC / IFC / IECC / IEBC | 2024 | Published US model-code fallback; actual adoption and amendments are researched per project. |
+| ASCE 7 | 7-22 with Supplement No. 1 | Base 2024 IBC Version 2.0 reference; jurisdiction-specific incorporation remains project data. |
+| NFPA 70 (NEC) | 2023 | 2024 IBC/IFC referenced edition for the US fallback; actual state/local adoption governs. |
+| NFPA 110 | 2022 | Applies where the emergency power supply system or controlling owner criterion invokes it. |
+| NFPA 111 | 2022 | Applies where a stored-energy emergency/standby system invokes it. |
+| ASHRAE 90.1 | 2022 | 2024 IECC reference; adoption and chosen energy-code path remain project-specific. |
+| ASHRAE 90.4 | 2022, with published errata through Dec. 11, 2023 | Data-center energy-performance reference; applicability follows the adopted energy-code path. |
+| IEEE 1584 | 2018, with Aug. 30, 2019 errata | Arc-flash calculation reference where the study scope invokes it. |
+| UL 2200 | 2020 | Stationary generator-set listing reference where applicable. |
+
+Every electrical `StandardEdition.source` records primary publisher evidence,
+so `cycle.unverified_standards()` is empty. Conditional entries remain
+conditional: pinning an edition gives the reviewer a precise comparison basis
+when that standard applies, but does not independently make it legally or
+contractually applicable.
+
+NFPA 70E, NFPA 70B, NFPA 780, broad product families, and Canadian standards
+are intentionally not universal pins. They may be controlling workplace,
+maintenance, lightning-protection, product, owner, or Canadian requirements,
+but the project profile and submitted documents must establish their
+applicability and edition.
+
+## Primary sources
+
+- ICC [2024 IBC Section 2702.1.3](https://codes.iccsafe.org/s/IBC2024V2.0/chapter-27-electrical/IBC2024V2.0-Ch27-Sec2702.1.3)
+  for code-required emergency/standby systems and NFPA 70, 110, and 111.
+- ICC [2024 IBC Chapter 35](https://codes.iccsafe.org/content/IBC2024V2.0/chapter-35-referenced-standards)
+  and [2024 IFC Chapter 80](https://codes.iccsafe.org/content/IFC2024P1/chapter-80-referenced-standards)
+  for referenced electrical standards and editions.
+- ICC [2024 IECC Chapter 6](https://codes.iccsafe.org/content/IECC2024P1/chapter-6-ce-referenced-standards)
+  for ASHRAE 90.1-2022 and 90.4-2022.
+- ASHRAE [Standard 90.4-2022 errata](https://www.ashrae.org/file%20library/technical%20resources/standards%20and%20guidelines/standards%20errata/standards/90.4-2022errata-12-11-2023-.pdf).
+- IEEE [1584-2018 publication record](https://standards.ieee.org/ieee/1584/5802/)
+  and [official errata](https://standards.ieee.org/wp-content/uploads/import/documents/erratas/1584-2018_errata.pdf).
+- UL [UL 2200 Edition 3](https://www.shopulstandards.com/ProductDetail.aspx?productId=UL2200).
+- National Research Council Canada, [Canada's construction system and model-code context](https://nrc.canada.ca/en/certifications-evaluations-standards/codes-canada/canadas-construction-system-context-model-codes),
+  for the provincial/territorial adoption model that makes Canadian code basis
+  project-specific.
