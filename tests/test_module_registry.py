@@ -38,6 +38,7 @@ from src.core.code_cycles import BaseCode, CALIFORNIA_2025, CodeCycle
 from src.modules import (
     AVAILABLE_MODULES,
     CALIFORNIA_K12_MEP,
+    DATACENTER_ARCHITECTURAL,
     DATACENTER_FIRE,
     ChunkGroup,
     DEFAULT_MODULE,
@@ -183,11 +184,13 @@ class TestRegistry:
         assert AVAILABLE_MODULES == {
             "california_k12_mep": CALIFORNIA_K12_MEP,
             "datacenter_fire": DATACENTER_FIRE,
+            "datacenter_architectural": DATACENTER_ARCHITECTURAL,
         }
 
     def test_get_module_resolves_known_id(self):
         assert get_module("california_k12_mep") is CALIFORNIA_K12_MEP
         assert get_module("datacenter_fire") is DATACENTER_FIRE
+        assert get_module("datacenter_architectural") is DATACENTER_ARCHITECTURAL
 
     @pytest.mark.parametrize("bad_id", [None, "", "  ", "not_a_module"])
     def test_get_module_degrades_to_default(self, bad_id):
@@ -242,6 +245,66 @@ class TestDatacenterFireModule:
         assert (
             DATACENTER_FIRE.report_context_phrase
             == "hyperscale data-center fire protection projects"
+        )
+
+
+class TestDatacenterArchitecturalModule:
+    """Contract pins for the third module (hyperscale DC architectural)."""
+
+    def test_registers_and_pins_arch_cycle(self):
+        assert DATACENTER_ARCHITECTURAL.module_id == "datacenter_architectural"
+        assert DATACENTER_ARCHITECTURAL.cycle.label == "dc-arch-ibc-2024"
+        # First base code is primary — the stale-detector target.
+        assert DATACENTER_ARCHITECTURAL.cycle.primary_code_year == "2024"
+        assert [c.key for c in DATACENTER_ARCHITECTURAL.cycle.base_codes] == [
+            "ibc",
+            "iecc",
+        ]
+        assert DATACENTER_ARCHITECTURAL.cycle.asce7 == "7-22"
+
+    def test_cycle_is_not_in_the_california_cycle_registry(self):
+        # The module carries its cycle directly; AVAILABLE_CYCLES is the
+        # California-cycle registry and must NOT gain the arch label (its
+        # label is registry-unique across modules, which is what namespaces
+        # the verification cache and backs the module_for_cycle bridge).
+        from src.core.code_cycles import AVAILABLE_CYCLES
+
+        assert "dc-arch-ibc-2024" not in AVAILABLE_CYCLES
+        assert (
+            module_for_cycle(DATACENTER_ARCHITECTURAL.cycle)
+            is DATACENTER_ARCHITECTURAL
+        )
+
+    def test_leed_detector_is_disabled(self):
+        # LEED is genuine scope for data centers, not a copy/paste error.
+        assert (
+            DATACENTER_ARCHITECTURAL.detector_vocabulary.flag_leed_references
+            is False
+        )
+
+    def test_cycle_pins_zero_standards(self):
+        # The flexibility-first decision: adopted standard editions come
+        # exclusively from the per-run research profile (the fire module's
+        # pinned set shipped 100% UNVERIFIED — see the module docstring), so
+        # this module pins NOTHING. The engine degrades every pinned-editions
+        # surface gracefully; the goldens freeze those renderings.
+        assert DATACENTER_ARCHITECTURAL.cycle.standards == ()
+        assert DATACENTER_ARCHITECTURAL.cycle.unverified_standards() == ()
+
+    def test_display_name_is_unique_in_registry(self):
+        # The GUI selector is a {display_name: module_id} dict — a duplicate
+        # display name would silently drop a module from the dropdown, and
+        # display-name uniqueness is not registry-validated.
+        names = [m.display_name for m in AVAILABLE_MODULES.values()]
+        assert len(set(names)) == len(names)
+
+    def test_report_surfaces_are_architectural(self):
+        assert DATACENTER_ARCHITECTURAL.report_title == (
+            "Spec Critic — Architectural Specification Review Report"
+        )
+        assert (
+            DATACENTER_ARCHITECTURAL.report_context_phrase
+            == "hyperscale data-center architectural projects"
         )
 
 

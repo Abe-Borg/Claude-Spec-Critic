@@ -7,6 +7,8 @@ Public surface — import from this package, not the submodules:
   — the registry, mirroring the ``AVAILABLE_CYCLES`` pattern.
 - :data:`CALIFORNIA_K12_MEP` — the California K-12 module instance.
 - :data:`DATACENTER_FIRE` — the hyperscale data-center fire-suppression module.
+- :data:`DATACENTER_ARCHITECTURAL` — the hyperscale data-center architectural
+  module.
 """
 from .base import (
     ChunkGroup,
@@ -20,6 +22,7 @@ from .base import (
     validate_module_registry,
 )
 from .california_k12_mep import CALIFORNIA_K12_MEP
+from .datacenter_architectural import DATACENTER_ARCHITECTURAL
 from .datacenter_fire import DATACENTER_FIRE
 from .registry import (
     AVAILABLE_MODULES,
@@ -40,6 +43,7 @@ __all__ = [
     "validate_module_registry",
     "CALIFORNIA_K12_MEP",
     "DATACENTER_FIRE",
+    "DATACENTER_ARCHITECTURAL",
     "AVAILABLE_MODULES",
     "DEFAULT_MODULE",
     "get_module",
