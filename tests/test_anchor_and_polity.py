@@ -321,7 +321,10 @@ class TestPolityTokenDetector:
         # Arch US-run additions: Canadian standards/regimes flag on US runs.
         assert _matches("Rated per CAN/ULC-S101 for two hours.", "US")
         assert _matches("Comply with the NECB for envelope performance.", "US")
-        assert _matches("Ratings per OBC 3.1.7 apply.", "US")
+        assert _matches("Ratings per the Ontario Building Code apply.", "US")
+        # Bare "OBC" is deliberately NOT flagged — on US runs it is also the
+        # Ohio Building Code, a legitimate governing-code citation there.
+        assert not _matches("Comply with OBC 1301.1 for rated assemblies.", "US")
         # ...and stay silent on the matching country's own runs.
         assert not any(
             "NECB" in m

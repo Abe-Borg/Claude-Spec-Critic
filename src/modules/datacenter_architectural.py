@@ -366,14 +366,19 @@ _PROFILE_KEYWORDS = ProfileKeywords(
 # CSI MasterFormat division families for chunked cross-check. Architectural
 # data-center packages span Divisions 03–14; the groups below pair the
 # divisions that coordinate most (each CSI prefix lands in exactly one group —
-# engine invariant). Unmatched prefixes (e.g. Division 01/21/23/26) pool into
-# the engine's reserved ``general`` chunk. Chunked runs are within-chunk-only
-# coordination (documented engine limitation).
+# engine invariant), because chunked runs are within-chunk-only coordination
+# (documented engine limitation). **Division 08 is deliberately co-chunked
+# with Division 09**: the module's highest-priority coordination scenario —
+# opening-protective ratings vs. the wall/partition types they serve — spans
+# 08 (door/hardware schedules) and 09 (gypsum assemblies / wall types), and
+# splitting them would make that check invisible exactly when the package is
+# large enough to chunk. Unmatched prefixes (e.g. Division 01/21/23/26) pool
+# into the engine's reserved ``general`` chunk.
 _CROSS_CHECK_CHUNK_GROUPS = (
     ChunkGroup("shell_structure", "Divisions 03–06 — Shell & Structure", ("03", "04", "05", "06")),
     ChunkGroup("envelope", "Division 07 — Thermal & Moisture Protection", ("07",)),
-    ChunkGroup("openings", "Division 08 — Openings", ("08",)),
-    ChunkGroup("interiors_specialties", "Divisions 09–12 — Interiors & Specialties", ("09", "10", "11", "12")),
+    ChunkGroup("openings_interiors", "Divisions 08–09 — Openings & Interiors", ("08", "09")),
+    ChunkGroup("specialties", "Divisions 10–12 — Specialties & Furnishings", ("10", "11", "12")),
     ChunkGroup("special_conveying", "Divisions 13–14 — Special Construction & Conveying", ("13", "14")),
 )
 
@@ -643,12 +648,16 @@ _POLITY_US_NECB = PolityTokenRule(
     ),
 )
 
-_POLITY_US_OBC = PolityTokenRule(
+# Deliberately the spelled-out form only: bare "OBC" is ambiguous on US runs
+# (it is also the common abbreviation for the OHIO Building Code, a legitimate
+# governing-code citation there). A bare-OBC Ontario remnant still gets caught
+# by the shared "O. Reg." rule and the other Canadian-vocabulary tokens.
+_POLITY_US_ONTARIO_BUILDING_CODE = PolityTokenRule(
     country="US",
-    pattern=r"\bOBC\b",
+    pattern=r"(?i:\bOntario Building Code\b)",
     note=(
-        "OBC commonly cites the Ontario Building Code; a US project is not "
-        "governed by Ontario law."
+        "The Ontario Building Code is Canadian provincial law; a US project "
+        "is not governed by it."
     ),
 )
 
@@ -674,7 +683,7 @@ _POLITY_SUSPECT_TOKENS = (
     POLITY_US_CSA_C221,
     _POLITY_US_CAN_ULC,
     _POLITY_US_NECB,
-    _POLITY_US_OBC,
+    _POLITY_US_ONTARIO_BUILDING_CODE,
 )
 
 

@@ -124,14 +124,18 @@ class TestDatacenterArchChunkAssignment:
         assert _assign_chunk("03 30 00 - Cast-in-Place Concrete.docx", groups) == "shell_structure"
         assert _assign_chunk("05 50 00 - Metal Fabrications.docx", groups) == "shell_structure"
         assert _assign_chunk("07 84 13 - Penetration Firestopping.docx", groups) == "envelope"
-        assert _assign_chunk("08 11 13 - Hollow Metal Doors and Frames.docx", groups) == "openings"
-        assert _assign_chunk("09 91 23 - Interior Painting.docx", groups) == "interiors_specialties"
+        # Division 08 and 09 are deliberately CO-chunked: the door-rating vs
+        # wall-type coordination scenario spans them, and chunked runs are
+        # within-chunk-only.
+        assert _assign_chunk("08 11 13 - Hollow Metal Doors and Frames.docx", groups) == "openings_interiors"
+        assert _assign_chunk("09 21 16 - Gypsum Board Assemblies.docx", groups) == "openings_interiors"
+        assert _assign_chunk("10 44 00 - Fire Protection Specialties.docx", groups) == "specialties"
         assert _assign_chunk("14 21 00 - Electric Traction Elevators.docx", groups) == "special_conveying"
         # Divisions with no arch chunk group pool into the reserved general —
         # including Division 01 and any MEP sections mixed into the package.
         assert _assign_chunk("01 33 00 - Submittal Procedures.docx", groups) == "general"
         assert _assign_chunk("23 05 00 - Common HVAC.docx", groups) == "general"
-        assert _chunk_label("openings", groups) == "Division 08 — Openings"
+        assert _chunk_label("openings_interiors", groups) == "Divisions 08–09 — Openings & Interiors"
 
 
 # ---------------------------------------------------------------------------
