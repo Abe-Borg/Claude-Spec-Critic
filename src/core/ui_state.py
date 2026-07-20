@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 
 _MODULE_KEY = "module_id"
+_PROGRAM_KEY = "program_id"
 # Per-module last-entered project profile, keyed by module id. A nested map so
 # switching modules restores the profile last used for THAT module rather than
 # carrying one domain's city/client into another.
@@ -63,6 +64,21 @@ def load_selected_module_id(*, path: Path | None = None) -> str:
 def save_selected_module_id(module_id: str, *, path: Path | None = None) -> None:
     """Persist the selected module id. Best-effort: never raises."""
     _write_key(_MODULE_KEY, module_id, path=path)
+
+
+def load_selected_program_id(*, path: Path | None = None) -> str:
+    """Last-selected program id, falling back to the legacy module id."""
+    state = _load(path)
+    value = state.get(_PROGRAM_KEY, "")
+    if isinstance(value, str) and value.strip():
+        return value
+    legacy = state.get(_MODULE_KEY, "")
+    return legacy if isinstance(legacy, str) else ""
+
+
+def save_selected_program_id(program_id: str, *, path: Path | None = None) -> None:
+    """Persist the user-facing program without deleting legacy state keys."""
+    _write_key(_PROGRAM_KEY, program_id, path=path)
 
 
 def load_review_transport(*, path: Path | None = None) -> str:

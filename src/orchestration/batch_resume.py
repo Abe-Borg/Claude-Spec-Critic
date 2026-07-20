@@ -39,7 +39,9 @@ from typing import Any
 
 from ..core.api_config import REVIEW_MODEL_DEFAULT
 from ..core.code_cycles import DEFAULT_CYCLE
-from ..modules import DEFAULT_MODULE, ReviewModule, get_module
+from ..modules import DEFAULT_MODULE, ReviewModule, require_module
+from ..programs import SpecAssignment, require_program
+from .program_pipeline import ProgramSubmission
 from .pipeline import (
     BatchSubmission,
     LogFn,
@@ -51,7 +53,8 @@ from .pipeline import (
 
 # Bump when the persisted shape changes incompatibly; a mismatched/older file is
 # ignored on load (treated as "no pending batch") rather than mis-parsed.
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+_LEGACY_SCHEMA_VERSION = 1
 
 
 def pending_batch_path() -> Path:
@@ -104,7 +107,10 @@ class PendingBatch:
     submitted_at: float = 0.0
     run_id: str = ""
     app_version: str = ""
-    schema_version: int = _SCHEMA_VERSION
+    # Keep the established single-batch format at v1. Schema v2 is reserved
+    # for the composite program manifest, so older builds can still resume a
+    # newly-written traditional one-module batch.
+    schema_version: int = _LEGACY_SCHEMA_VERSION
 
     @classmethod
     def from_submission(
@@ -148,7 +154,17 @@ class PendingBatch:
     def to_submission(
         self, *, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress
     ) -> BatchSubmission:
-        module = get_module(self.module_id)
+        # A missing module field in a true legacy v1 record was normalized to
+        # DEFAULT_MODULE by the loader. Any other unknown id is stale explicit
+        # state and must never degrade into a California K-12 review.
+        module = require_module(self.module_id)
+        if self.cycle_label != module.cycle.label:
+            raise ValueError(
+                f"Pending batch {self.batch_id!r} was submitted under cycle "
+                f"{self.cycle_label!r}, but module {module.module_id!r} now uses "
+                f"{module.cycle.label!r}. Resume is blocked to avoid verifying "
+                "results under a different code basis."
+            )
         return reconstruct_batch_submission(
             batch_id=self.batch_id,
             request_map=self.request_map,
@@ -168,6 +184,102 @@ class PendingBatch:
         )
 
 
+@dataclass
+class PendingProgramRun:
+    """Serializable manifest for every child batch in one routed program."""
+
+    program_id: str
+    assignments: list[dict] = field(default_factory=list)
+    partitions: dict[str, dict] = field(default_factory=dict)
+    project_profile: dict | None = None
+    review_transport: str = "batch"
+    submitted_at: float = 0.0
+    run_id: str = ""
+    app_version: str = ""
+    schema_version: int = _SCHEMA_VERSION
+    record_type: str = "program"
+
+    @classmethod
+    def from_submission(
+        cls,
+        submission: ProgramSubmission,
+        *,
+        input_dir: Any = "",
+        files: list | None = None,
+        run_id: str = "",
+        app_version: str = "",
+    ) -> "PendingProgramRun":
+        if submission.review_transport == "realtime":
+            raise ValueError(
+                "Real-time program runs have no pending-batch resume state"
+            )
+        children: dict[str, dict] = {}
+        for module_id, child in submission.partitions.items():
+            pending = PendingBatch.from_submission(
+                child,
+                input_dir=input_dir,
+                files=[
+                    item.source_path
+                    for item in submission.assignments
+                    if module_id in item.module_ids
+                ],
+                run_id=run_id,
+                app_version=app_version,
+            )
+            children[module_id] = asdict(pending)
+        return cls(
+            program_id=submission.program_id,
+            assignments=[item.to_dict() for item in submission.assignments],
+            partitions=children,
+            project_profile=submission.project_profile,
+            review_transport=submission.review_transport,
+            submitted_at=submission.submitted_at,
+            run_id=run_id,
+            app_version=app_version,
+        )
+
+    def to_submission(
+        self, *, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress
+    ) -> ProgramSubmission:
+        program = require_program(self.program_id)
+        assignments = tuple(SpecAssignment.from_dict(item) for item in self.assignments)
+        for assignment in assignments:
+            if assignment.decision.program_id != program.program_id:
+                raise ValueError(
+                    f"Pending assignment {assignment.spec_id!r} belongs to "
+                    f"{assignment.decision.program_id!r}, not {program.program_id!r}"
+                )
+            unknown = set(assignment.module_ids) - set(program.implemented_module_ids)
+            if unknown:
+                raise ValueError(
+                    f"Pending assignment {assignment.spec_id!r} names module(s) "
+                    f"outside the program: {', '.join(sorted(unknown))}"
+                )
+        children: dict[str, BatchSubmission] = {}
+        for module_id, data in self.partitions.items():
+            if module_id not in program.implemented_module_ids:
+                raise ValueError(
+                    f"Pending program partition {module_id!r} is not a member of "
+                    f"{program.program_id!r}"
+                )
+            module = require_module(module_id)
+            child_pending = _pending_batch_from_mapping(data)
+            if child_pending.module_id != module.module_id:
+                raise ValueError(
+                    f"Pending program partition {module_id!r} contains module "
+                    f"{child_pending.module_id!r}"
+                )
+            children[module_id] = child_pending.to_submission(log=log, progress=progress)
+        return ProgramSubmission(
+            program_id=self.program_id,
+            assignments=assignments,
+            partitions=children,
+            project_profile=self.project_profile,
+            review_transport=self.review_transport,
+            submitted_at=self.submitted_at,
+        )
+
+
 def save_pending_batch(pending: PendingBatch, *, path: Path | None = None) -> None:
     """Atomically persist ``pending``. Best-effort: never raise on I/O error."""
     target = path or pending_batch_path()
@@ -180,42 +292,46 @@ def save_pending_batch(pending: PendingBatch, *, path: Path | None = None) -> No
         pass
 
 
-def load_pending_batch(*, path: Path | None = None) -> PendingBatch | None:
-    """Load persisted pending-batch state, or ``None`` when absent/unusable.
-
-    Defensive on every axis — a missing file, malformed JSON, wrong schema
-    version, or a record without a usable ``batch_id`` all read as "no pending
-    batch" rather than raising into the startup path.
-    """
+def save_pending_program_run(
+    pending: PendingProgramRun, *, path: Path | None = None
+) -> None:
+    """Atomically persist a routed program manifest. Best-effort."""
     target = path or pending_batch_path()
     try:
-        raw = target.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(data, dict) or data.get("schema_version") != _SCHEMA_VERSION:
-        return None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(asdict(pending), indent=2), encoding="utf-8")
+        tmp.replace(target)
+    except OSError:
+        pass
 
-    batch_id = data.get("batch_id")
-    if not isinstance(batch_id, str) or not batch_id.strip():
-        return None
+
+def save_pending_run(
+    pending: PendingBatch | PendingProgramRun, *, path: Path | None = None
+) -> None:
+    if isinstance(pending, PendingProgramRun):
+        save_pending_program_run(pending, path=path)
+    else:
+        save_pending_batch(pending, path=path)
+
+
+def _pending_batch_from_mapping(data: object) -> PendingBatch:
+    if not isinstance(data, dict):
+        raise ValueError("pending batch entry must be an object")
 
     def _str(key: str, default: str = "") -> str:
-        v = data.get(key, default)
-        return v if isinstance(v, str) else default
+        value = data.get(key, default)
+        return value if isinstance(value, str) else default
 
     def _list(key: str) -> list:
-        v = data.get(key)
-        return list(v) if isinstance(v, list) else []
+        value = data.get(key)
+        return list(value) if isinstance(value, list) else []
 
+    batch_id = _str("batch_id").strip()
+    if not batch_id:
+        raise ValueError("pending batch has no usable batch_id")
     submitted = data.get("submitted_at")
-    submitted_at = float(submitted) if isinstance(submitted, (int, float)) else 0.0
     request_map = data.get("request_map")
-    # Additive, defensive: absent (legacy) or non-dict reads as None (a valid
-    # profile-less run). No schema bump.
     profile = data.get("project_profile")
     requirements = data.get("requirements_profile")
     return PendingBatch(
@@ -232,9 +348,112 @@ def load_pending_batch(*, path: Path | None = None) -> PendingBatch | None:
         requirements_profile=requirements if isinstance(requirements, dict) else None,
         project_context=_str("project_context"),
         cross_check_enabled=bool(data.get("cross_check_enabled", False)),
-        submitted_at=submitted_at,
+        submitted_at=(
+            float(submitted) if isinstance(submitted, (int, float)) else 0.0
+        ),
         run_id=_str("run_id"),
         app_version=_str("app_version"),
+        schema_version=(
+            int(data.get("schema_version"))
+            if data.get("schema_version") in (_LEGACY_SCHEMA_VERSION, _SCHEMA_VERSION)
+            else _LEGACY_SCHEMA_VERSION
+        ),
+    )
+
+
+def _read_pending_mapping(path: Path | None = None) -> dict | None:
+    target = path or pending_batch_path()
+    try:
+        raw = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    version = data.get("schema_version")
+    if version not in (_LEGACY_SCHEMA_VERSION, _SCHEMA_VERSION):
+        return None
+    return data
+
+
+def load_pending_batch(*, path: Path | None = None) -> PendingBatch | None:
+    """Load persisted pending-batch state, or ``None`` when absent/unusable.
+
+    Defensive on every axis — a missing file, malformed JSON, wrong schema
+    version, or a record without a usable ``batch_id`` all read as "no pending
+    batch" rather than raising into the startup path.
+    """
+    data = _read_pending_mapping(path)
+    if data is None or data.get("record_type") == "program":
+        return None
+    try:
+        return _pending_batch_from_mapping(data)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_pending_run(
+    *, path: Path | None = None
+) -> PendingBatch | PendingProgramRun | None:
+    """Load either a routed-program manifest or a legacy/single batch."""
+    data = _read_pending_mapping(path)
+    if data is None:
+        return None
+    if data.get("record_type") != "program":
+        try:
+            return _pending_batch_from_mapping(data)
+        except (TypeError, ValueError):
+            return None
+    program_id = data.get("program_id")
+    assignments = data.get("assignments")
+    partitions = data.get("partitions")
+    if (
+        not isinstance(program_id, str)
+        or not program_id.strip()
+        or not isinstance(assignments, list)
+        or not isinstance(partitions, dict)
+        or not partitions
+    ):
+        return None
+    profile = data.get("project_profile")
+    submitted = data.get("submitted_at")
+    try:
+        program = require_program(program_id)
+        # Validate assignment/child shapes now; resume should fail before the
+        # GUI offers an unusable manifest.
+        for item in assignments:
+            assignment = SpecAssignment.from_dict(item)
+            if assignment.decision.program_id != program.program_id:
+                raise ValueError("assignment belongs to a different program")
+            if set(assignment.module_ids) - set(program.implemented_module_ids):
+                raise ValueError("assignment names a module outside the program")
+        for module_id, child in partitions.items():
+            if module_id not in program.implemented_module_ids:
+                raise ValueError("partition module is outside the program")
+            require_module(str(module_id))
+            child_pending = _pending_batch_from_mapping(child)
+            if child_pending.module_id != module_id:
+                raise ValueError("partition module does not match child state")
+    except (KeyError, TypeError, ValueError):
+        return None
+    return PendingProgramRun(
+        program_id=program_id,
+        assignments=list(assignments),
+        partitions=dict(partitions),
+        project_profile=profile if isinstance(profile, dict) else None,
+        review_transport=(
+            str(data.get("review_transport"))
+            if data.get("review_transport") in ("batch", "realtime")
+            else "batch"
+        ),
+        submitted_at=(
+            float(submitted) if isinstance(submitted, (int, float)) else 0.0
+        ),
+        run_id=str(data.get("run_id") or ""),
+        app_version=str(data.get("app_version") or ""),
     )
 
 

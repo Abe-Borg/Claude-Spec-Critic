@@ -35,7 +35,6 @@ from ..input.drawing_digest import (
     wrapped_digest_block,
 )
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
-from ..modules import get_module
 from .context_attachment import (
     context_has_drawing_digest,
     context_within_token_cap,
@@ -292,8 +291,13 @@ def attach_drawing_files(app) -> None:
     if not chunks:
         return
 
-    module = get_module(getattr(app, "_selected_module_id", None))
-    module_display_name = module.display_name
+    from ..programs import get_program
+
+    program = get_program(
+        getattr(app, "_selected_program_id", None)
+        or getattr(app, "_selected_module_id", None)
+    )
+    module_display_name = program.display_name
 
     app._drawing_digest_running = True
     _set_drawings_button_state(app, "disabled")

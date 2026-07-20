@@ -50,7 +50,8 @@ from ..core.api_config import (
 from ..core.pricing import price_for
 from ..core.code_cycles import CodeCycle
 from ..core.project_profile import ProjectProfile
-from ..modules import ReviewModule, get_module
+from ..modules import ReviewModule, get_module, require_module
+from ..programs import get_program
 from ..research import (
     PROFILE_CATEGORY_SECTIONS,
     PROFILE_SECTION_ORDER,
@@ -2887,6 +2888,227 @@ def _write_narrative_text(doc: Document, text: str) -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _new_report_document() -> Document:
+    """Create a report document with the shared typography and margins."""
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Arial"
+    style.font.size = Pt(11)
+    h3_style = doc.styles["Heading 3"]
+    h3_style.font.name = "Arial"
+    h3_style.font.size = Pt(11)
+    h3_style.paragraph_format.space_before = Pt(12)
+    h3_style.paragraph_format.space_after = Pt(4)
+    h3_style.font.color.rgb = RGBColor(0, 0, 0)
+    for section in doc.sections:
+        section.top_margin = Inches(0.75)
+        section.bottom_margin = Inches(0.75)
+        section.left_margin = Inches(1.0)
+        section.right_margin = Inches(1.0)
+    return doc
+
+
+def _write_program_routing_table(doc: Document, program_result) -> None:
+    doc.add_heading("Review Coverage and Routing", level=1)
+    intro = doc.add_paragraph(
+        "Each specification was routed independently. A file may be reviewed "
+        "by more than one module; unsupported files are retained as explicit "
+        "coverage gaps. Cross-check and compliance passes run within each "
+        "module, not across disciplines."
+    )
+    intro.runs[0].font.size = Pt(9)
+    intro.runs[0].font.italic = True
+    table = doc.add_table(rows=1, cols=4)
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    for index, label in enumerate(("Specification", "Assigned reviewer(s)", "Routing", "Confidence")):
+        cell = table.rows[0].cells[index]
+        _set_cell_shading(cell, "F0F0F0")
+        run = cell.paragraphs[0].add_run(label)
+        run.bold = True
+        run.font.size = Pt(9)
+    for assignment in program_result.assignments:
+        cells = table.add_row().cells
+        cells[0].text = assignment.spec_id
+        cells[1].text = (
+            ", ".join(require_module(mid).display_name for mid in assignment.module_ids)
+            if assignment.module_ids
+            else "None — unsupported/skipped"
+        )
+        cells[2].text = (
+            "User confirmed"
+            if assignment.decision.is_user_overridden
+            else assignment.state.value.title()
+        )
+        cells[3].text = f"{round(assignment.decision.confidence * 100)}%"
+        for cell in cells:
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.font.size = Pt(8)
+
+
+def export_program_report(program_result, output_path: Path) -> Path:
+    """Export one routed-program report while preserving module provenance."""
+    if not program_result.module_results:
+        raise ValueError("Cannot export program report: no module results available")
+    program = get_program(program_result.program_id)
+    doc = _new_report_document()
+    title = doc.add_heading(
+        "Spec Critic — Hyperscale Data Center Specification Review Report",
+        level=0,
+    )
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    aggregate_review = program_result.review_result
+    meta_lines = [
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"Program: {program.display_name}",
+        f"Model: {aggregate_review.model}",
+        f"Selected Specifications: {len(program_result.selected_files)}",
+        "Routed Specifications Submitted: "
+        f"{len(program_result.files_reviewed)} of "
+        f"{len(program_result.expected_files_reviewed)}",
+        "Routed Review Requests Submitted: "
+        f"{program_result.routed_request_count} of "
+        f"{program_result.expected_routed_request_count}",
+        "Code Basis: Determined separately by each routed review module",
+    ]
+    profile = ProjectProfile.from_dict(program_result.project_profile)
+    if profile is not None:
+        meta_lines.extend(
+            [
+                f"Project: {profile.city}, {profile.state_display}, {profile.country_display}",
+                f"Client: {profile.client_name}",
+            ]
+        )
+    for line in meta_lines:
+        paragraph = doc.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = paragraph.add_run(line)
+        run.font.size = Pt(10)
+
+    _write_program_routing_table(doc, program_result)
+    _write_summary_table(
+        doc,
+        aggregate_review,
+        program_result.cross_check_result,
+        total_elapsed_seconds=program_result.total_elapsed_seconds,
+    )
+
+    skipped = list(getattr(program_result, "skipped_files", None) or [])
+    missing_modules = list(
+        getattr(program_result, "missing_module_ids", None) or []
+    )
+    module_errors = dict(getattr(program_result, "module_errors", None) or {})
+    if skipped or missing_modules or module_errors:
+        warning = doc.add_paragraph()
+        warning_run = warning.add_run("Coverage status: PARTIAL. ")
+        warning_run.bold = True
+        warning_run.font.color.rgb = RGBColor(192, 112, 0)
+        details: list[str] = []
+        if skipped:
+            details.append(
+                f"{len(skipped)} selected specification(s) were unsupported and skipped"
+            )
+        if missing_modules:
+            labels = ", ".join(
+                require_module(module_id).display_name
+                for module_id in missing_modules
+            )
+            details.append(f"no completed result is available for {labels}")
+        if module_errors:
+            failures = "; ".join(
+                f"{require_module(module_id).display_name}: {message}"
+                for module_id, message in module_errors.items()
+            )
+            details.append(f"module collection error(s): {failures}")
+        warning.add_run("; ".join(details) + ".")
+
+    drawing_impact = getattr(program_result, "drawing_impact_result", None)
+    if drawing_impact is not None:
+        qualified_findings: dict[str, object] = {}
+        for module_id, child in program_result.module_results.items():
+            for phase_result in (
+                child.review_result,
+                child.cross_check_result,
+                child.compliance_result,
+            ):
+                for finding in getattr(phase_result, "findings", None) or []:
+                    finding_id = str(getattr(finding, "finding_id", "") or "")
+                    if finding_id:
+                        qualified_findings[f"{module_id}::{finding_id}"] = finding
+        _write_drawing_impact_section(doc, drawing_impact, qualified_findings)
+
+    for position, module_id in enumerate(program.implemented_module_ids):
+        child = program_result.module_results.get(module_id)
+        if child is None:
+            continue
+        if position or len(program_result.module_results) > 1:
+            doc.add_page_break()
+        module = require_module(module_id)
+        doc.add_heading(module.display_name, level=1)
+        basis = doc.add_paragraph()
+        basis.add_run("Module code basis: ").bold = True
+        basis.add_run(
+            f"{module.detector_vocabulary.jurisdiction_label} {module.cycle.label}; "
+            + ", ".join(code.name + " " + code.year for code in module.cycle.base_codes)
+        )
+        _write_files_reviewed(
+            doc,
+            child.files_reviewed,
+            failed_review_specs=set(child.failed_review_specs or []),
+        )
+        profile_data = RequirementsProfile.from_dict(child.requirements_profile)
+        if profile_data is not None:
+            _write_requirements_section(
+                doc, profile_data, child.compliance_result, module
+            )
+        child_findings = list(child.review_result.findings if child.review_result else [])
+        if child.cross_check_result and child.cross_check_result.findings:
+            child_findings.extend(child.cross_check_result.findings)
+        if child.compliance_result and child.compliance_result.findings:
+            child_findings.extend(child.compliance_result.findings)
+        child_stats = _summarize_verification_outcomes(child_findings)
+        _write_methodology_note(
+            doc,
+            cross_check_enabled=(child.cross_check_result is not None),
+            cycle_label=child.cycle_label,
+            cross_check_status=(
+                child.cross_check_result.cross_check_status
+                if child.cross_check_result is not None
+                else None
+            ),
+            verification_stats=child_stats,
+            module=module,
+        )
+        _write_summary_table(
+            doc,
+            child.review_result,
+            child.cross_check_result,
+            total_elapsed_seconds=child.total_elapsed_seconds,
+        )
+        _write_alerts(
+            doc,
+            child.leed_alerts,
+            child.placeholder_alerts,
+            code_cycle_alerts=child.code_cycle_alerts,
+            structural_alerts=child.structural_alerts,
+            naming_alerts=child.naming_alerts,
+            template_marker_alerts=child.template_marker_alerts,
+            invalid_code_cycle_alerts=child.invalid_code_cycle_alerts,
+            duplicate_paragraph_alerts=child.duplicate_paragraph_alerts,
+            polity_alerts=child.polity_alerts,
+            module=module,
+        )
+        _write_findings_section(doc, child.review_result)
+        _write_cross_check_section(doc, child.cross_check_result)
+        _write_compliance_section(doc, child.compliance_result)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(output_path))
+    return output_path
+
+
 def export_report(
     pipeline_result,
     output_path: Path,
@@ -2910,6 +3132,8 @@ def export_report(
         ValueError: If pipeline_result has no review_result
         OSError: If the file cannot be written
     """
+    if hasattr(pipeline_result, "module_results") and hasattr(pipeline_result, "program_id"):
+        return export_program_report(pipeline_result, output_path)
     if pipeline_result.review_result is None:
         raise ValueError("Cannot export report: no review results available")
 

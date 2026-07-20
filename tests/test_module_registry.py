@@ -38,6 +38,7 @@ from src.core.code_cycles import BaseCode, CALIFORNIA_2025, CodeCycle
 from src.modules import (
     AVAILABLE_MODULES,
     CALIFORNIA_K12_MEP,
+    DATACENTER_ARCHITECTURE,
     DATACENTER_FIRE,
     ChunkGroup,
     DEFAULT_MODULE,
@@ -183,11 +184,13 @@ class TestRegistry:
         assert AVAILABLE_MODULES == {
             "california_k12_mep": CALIFORNIA_K12_MEP,
             "datacenter_fire": DATACENTER_FIRE,
+            "datacenter_architecture": DATACENTER_ARCHITECTURE,
         }
 
     def test_get_module_resolves_known_id(self):
         assert get_module("california_k12_mep") is CALIFORNIA_K12_MEP
         assert get_module("datacenter_fire") is DATACENTER_FIRE
+        assert get_module("datacenter_architecture") is DATACENTER_ARCHITECTURE
 
     @pytest.mark.parametrize("bad_id", [None, "", "  ", "not_a_module"])
     def test_get_module_degrades_to_default(self, bad_id):

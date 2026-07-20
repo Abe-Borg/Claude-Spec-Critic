@@ -52,11 +52,12 @@ from src.core.ui_state import (
     load_project_profile,
     load_review_transport,
     load_selected_module_id,
+    load_selected_program_id,
     load_show_tracing_tools,
     load_suppress_realtime_cost_warning,
-    save_project_profile,
     save_review_transport,
     save_selected_module_id,
+    save_selected_program_id,
     save_show_tracing_tools,
 )
 from src.gui.project_profile_inputs import (
@@ -65,7 +66,8 @@ from src.gui.project_profile_inputs import (
     build_profile,
     state_options_for_country,
 )
-from src.modules import AVAILABLE_MODULES, DEFAULT_MODULE, get_module
+from src.modules import get_module, require_module
+from src.programs import AVAILABLE_PROGRAMS, get_program, resolve_saved_program
 
 from src.gui.widgets import (
     AnimatedButton,
@@ -213,10 +215,17 @@ class SpecReviewApp(_CTkDnDRoot):
         # to the default module via get_module). Controllers resolve this
         # via ``modules.get_module`` and derive the cycle from it — the
         # module is the single source.
-        self._selected_module_id: str = get_module(
-            load_selected_module_id()
-        ).module_id
+        selected_program = resolve_saved_program(
+            load_selected_program_id(), load_selected_module_id()
+        )
+        self._selected_program_id: str = selected_program.program_id
+        self._selected_program_id_for_review: str = ""
+        # Legacy controllers still need one scalar module/cycle for token
+        # display and tracing. Routed execution uses per-spec assignments.
+        self._selected_module_id: str = selected_program.implemented_module_ids[0]
         self._selected_cycle_label = get_module(self._selected_module_id).cycle.label
+        self._routing_assignments_for_review = ()
+        self._routed_module_ids_for_review = ()
         self._font_scale_label: str = "Default (100%)"
         # Self-update checker (Windows desktop build). The last-check date and
         # any "skipped" version persist in ~/.spec_critic/update_check.json;
@@ -278,17 +287,16 @@ class SpecReviewApp(_CTkDnDRoot):
         self._header_subtitle = ctk.CTkLabel(self.hdr, text=self._module_subtitle(), font=ctk.CTkFont(family="Segoe UI", size=13), text_color=COLORS["text_secondary"])
         self._header_subtitle.pack(anchor="w", pady=(4, 0))
 
-        # Module selector: which domain configuration the next run reviews
-        # under. Single-entry today; additional modules appear here as they
-        # are registered in ``src/modules``.
+        # Program selector: one user-facing choice may route specifications
+        # among multiple independently versioned review modules.
         module_row = ctk.CTkFrame(self.hdr, fg_color="transparent")
         module_row.pack(fill="x", pady=(6, 0))
-        ctk.CTkLabel(module_row, text="Review module", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"]).pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(module_row, text="Review program", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"]).pack(side="left", padx=(0, 10))
         self._module_names_by_display = {
-            m.display_name: m.module_id for m in AVAILABLE_MODULES.values()
+            p.display_name: p.program_id for p in AVAILABLE_PROGRAMS.values()
         }
         self._module_selector_var = ctk.StringVar(
-            value=get_module(self._selected_module_id).display_name
+            value=get_program(self._selected_program_id).display_name
         )
         self.module_selector = ctk.CTkOptionMenu(
             module_row,
@@ -601,7 +609,7 @@ class SpecReviewApp(_CTkDnDRoot):
 
         self._profile_hint = ctk.CTkLabel(
             self._profile_frame,
-            text="Required for this module — drives location-aware review.",
+            text="Required for this program — drives location-aware review.",
             **lkw,
         )
         self._profile_hint.grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 0))
@@ -613,14 +621,22 @@ class SpecReviewApp(_CTkDnDRoot):
         self._profile_state_var.set(STATE_PLACEHOLDER)
 
     def _update_project_profile_visibility(self) -> None:
-        """Show the project row iff the selected module opts into a profile."""
-        module = get_module(getattr(self, "_selected_module_id", None))
+        """Show the project row iff an implemented program module needs it."""
+        program = get_program(getattr(self, "_selected_program_id", None))
         if not hasattr(self, "_profile_frame"):
             return
-        if module.project_profile_enabled:
+        profile_modules = [
+            require_module(module_id)
+            for module_id in program.implemented_module_ids
+            if require_module(module_id).project_profile_enabled
+        ]
+        if profile_modules:
             self._profile_label.grid()
             self._profile_frame.grid()
-            self._load_project_profile_into_widgets(module.module_id)
+            self._load_project_profile_into_widgets(
+                program.program_id,
+                fallback_ids=[module.module_id for module in profile_modules],
+            )
         else:
             self._profile_label.grid_remove()
             self._profile_frame.grid_remove()
@@ -635,8 +651,10 @@ class SpecReviewApp(_CTkDnDRoot):
         self._profile_city_entry.delete(0, "end")
         self._profile_client_entry.delete(0, "end")
 
-    def _load_project_profile_into_widgets(self, module_id: str) -> None:
-        """Restore the last-entered profile for ``module_id`` into the widgets.
+    def _load_project_profile_into_widgets(
+        self, storage_id: str, *, fallback_ids: list[str] | None = None
+    ) -> None:
+        """Restore a program profile, with legacy module-key fallback.
 
         The city/state/country/client widgets are shared across modules, so a
         module with no saved profile must RESET them — otherwise the previous
@@ -644,7 +662,12 @@ class SpecReviewApp(_CTkDnDRoot):
         ``_gather_project_profile`` would accept and persist them under the
         newly-selected module.
         """
-        saved = load_project_profile(module_id)
+        saved = load_project_profile(storage_id)
+        if not saved:
+            for fallback_id in fallback_ids or []:
+                saved = load_project_profile(fallback_id)
+                if saved:
+                    break
         profile = ProjectProfile.from_dict(saved) if saved else None
         if profile is None:
             self._reset_project_profile_widgets()
@@ -666,9 +689,13 @@ class SpecReviewApp(_CTkDnDRoot):
         self._profile_client_entry.insert(0, profile.client_name)
 
     def _gather_project_profile(self) -> ProjectProfile | None:
-        """Build the profile from the widgets, or ``None`` for a profile-less module."""
-        module = get_module(getattr(self, "_selected_module_id", None))
-        if not module.project_profile_enabled or not hasattr(self, "_profile_frame"):
+        """Build the shared profile, or ``None`` for a profile-less program."""
+        program = get_program(getattr(self, "_selected_program_id", None))
+        wants_profile = any(
+            require_module(module_id).project_profile_enabled
+            for module_id in program.implemented_module_ids
+        )
+        if not wants_profile or not hasattr(self, "_profile_frame"):
             return None
         return build_profile(
             city=self._profile_city_entry.get(),
@@ -683,24 +710,39 @@ class SpecReviewApp(_CTkDnDRoot):
         self._font_scale_label = value
 
     def _module_subtitle(self) -> str:
-        module = get_module(self._selected_module_id)
-        return f"{module.display_name}  •  Opus 4.8"
+        program = get_program(self._selected_program_id)
+        return f"{program.display_name}  •  Opus 4.8"
 
     def _on_module_selected(self, display_name: str) -> None:
-        """Switch the review module for the next run and persist the choice.
+        """Switch the review program for the next run and persist the choice.
 
         Only affects runs started after the switch — an in-flight run keeps
-        the module its submission recorded.
+        the program and routed modules its submission recorded.
         """
-        module_id = self._module_names_by_display.get(display_name, "")
-        module = get_module(module_id)
-        self._selected_module_id = module.module_id
-        self._selected_cycle_label = module.cycle.label
+        if self.is_processing:
+            self._module_selector_var.set(
+                get_program(self._selected_program_id).display_name
+            )
+            return
+        program_id = self._module_names_by_display.get(display_name, "")
+        program = get_program(program_id)
+        primary_module = require_module(program.implemented_module_ids[0])
+        self._selected_program_id = program.program_id
+        self._selected_module_id = primary_module.module_id
+        self._selected_cycle_label = primary_module.cycle.label
+        self._routing_assignments_for_review = ()
         self._header_subtitle.configure(text=self._module_subtitle())
-        save_selected_module_id(module.module_id)
+        save_selected_program_id(program.program_id)
+        # Continue writing the legacy scalar selection for older builds.
+        save_selected_module_id(primary_module.module_id)
         # Show/hide the project-profile inputs for the newly-selected module
         # (the first dynamic field behavior on module change).
         self._update_project_profile_visibility()
+        # Prompt overhead differs by program/module. Recompute the gauge from
+        # the already-loaded files so the next run is not judged against the
+        # prior program's token budget.
+        if self._selected_files:
+            self._analyze_tokens(list(self._selected_files))
 
     def _run_button_idle_text(self) -> str:
         """Idle run-button label for the selected review transport."""

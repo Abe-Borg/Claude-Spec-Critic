@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tkinter import messagebox
 
@@ -30,13 +31,22 @@ from ..batch.batch_runtime import (
     poll_batch_bounded,
 )
 from ..core.project_profile import ProjectProfile
-from ..modules import DEFAULT_MODULE, get_module
+from ..modules import DEFAULT_MODULE, get_module, require_module
+from ..programs import SpecAssignment, get_program, routed_module_ids
 from ..orchestration.batch_resume import (
     PendingBatch,
+    PendingProgramRun,
     clear_pending_batch,
-    load_pending_batch,
+    load_pending_run,
     save_pending_batch,
+    save_pending_program_run,
     thin_submission_from_batch_results,
+)
+from ..orchestration.program_pipeline import (
+    ProgramSubmission,
+    ProgramSubmissionError,
+    collect_program_results,
+    start_program_review,
 )
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..orchestration.pipeline import (
@@ -58,6 +68,64 @@ from .review_run_controller import _maybe_start_recorder, _stop_recorder
 _BATCH_TIMING_COPY = "Usually 45 min to 2 hrs, 24 hrs maximum (Extremely Rare)"
 
 
+def _continue_partial_program(app, submission: ProgramSubmission) -> None:
+    """Resume the correct lifecycle after a later child submission fails."""
+    if submission.review_transport == "realtime":
+        on_realtime_reviewed(app, submission)
+    else:
+        on_batch_submitted(app, submission)
+
+
+def _resolve_recovery_module(program, choice: str):
+    """Resolve a displayed index, module id, or display name strictly."""
+    value = (choice or "").strip()
+    if value.isdigit():
+        index = int(value) - 1
+        if 0 <= index < len(program.implemented_module_ids):
+            return require_module(program.implemented_module_ids[index])
+    folded = value.casefold()
+    for module_id in program.implemented_module_ids:
+        module = require_module(module_id)
+        if folded in {module_id.casefold(), module.display_name.casefold()}:
+            return module
+    return None
+
+
+def _start_selected_review(app, program, run_epoch: int, diag, **kwargs):
+    """Dispatch a one-module program or a routed multi-module program."""
+    if len(program.implemented_module_ids) == 1:
+        return start_batch_review(**kwargs)
+
+    module = kwargs.pop("module", None)
+    del module  # the routed program resolves every partition strictly
+    # ``files`` is the legacy single-module execution surface.  A routed
+    # program derives each child file list from the confirmed assignments;
+    # forwarding the scalar list would both bypass that contract and be an
+    # unexpected argument to ``prepare_program_review``.
+    kwargs.pop("files", None)
+    transport = kwargs.get("review_transport", "batch") or "batch"
+
+    def persist_partition(current: ProgramSubmission) -> None:
+        if transport != "batch":
+            return
+        save_pending_program_run(
+            PendingProgramRun.from_submission(
+                current,
+                input_dir=app.input_dir,
+                files=app._selected_files_for_review,
+                run_id=diag.run_id if diag is not None else "",
+                app_version=__version__,
+            )
+        )
+
+    return start_program_review(
+        program_id=program.program_id,
+        assignments=app._routing_assignments_for_review,
+        on_partition_submitted=persist_partition,
+        **kwargs,
+    )
+
+
 def submit_batch_thread(app, run_epoch: int) -> None:
     diag = app._diagnostics_report
     transport = getattr(app, "_review_transport_for_review", "batch") or "batch"
@@ -65,15 +133,35 @@ def submit_batch_thread(app, run_epoch: int) -> None:
     # for the entire run lifecycle (submit → [poll] → collect → verify →
     # finalize) and is stopped after collect_batch_results completes.
     # Store on the app so the collect path can reach it.
-    module = get_module(getattr(app, "_selected_module_id", None))
+    program = get_program(
+        getattr(app, "_selected_program_id_for_review", None)
+        or getattr(app, "_selected_program_id", None)
+    )
+    active_module_ids = tuple(
+        getattr(app, "_routed_module_ids_for_review", None) or ()
+    )
+    if not active_module_ids:
+        active_module_ids = routed_module_ids(
+            getattr(app, "_routing_assignments_for_review", None) or (),
+            program=program,
+        )
+    if not active_module_ids:
+        active_module_ids = (program.implemented_module_ids[0],)
+    module = require_module(active_module_ids[0])
     profile = getattr(app, "_project_profile_for_review", None)
     profile_dict = profile.to_dict() if profile is not None else None
     app._trace_recorder = _maybe_start_recorder(
         run_id=diag.run_id if diag is not None else "no_run_id",
         mode=transport,
         model=REVIEW_MODEL_DEFAULT,
-        cycle_label=module.cycle.label,
-        module_id=module.module_id,
+        cycle_label=(
+            module.cycle.label if len(active_module_ids) == 1 else "per-module"
+        ),
+        module_id=(
+            module.module_id
+            if len(active_module_ids) == 1
+            else ",".join(active_module_ids)
+        ),
         files=app._selected_files_for_review,
         project_profile=profile_dict,
     )
@@ -111,7 +199,7 @@ def submit_batch_thread(app, run_epoch: int) -> None:
                 ),
             )
 
-        submission = start_batch_review(
+        submission = _start_selected_review(app, program, run_epoch, diag,
             input_dir=app.input_dir,
             files=app._selected_files_for_review,
             project_context=app._project_context_for_review,
@@ -136,28 +224,119 @@ def submit_batch_thread(app, run_epoch: int) -> None:
             if diag:
                 diag.log("batch_submit", "success", "Real-time review complete", {
                     "files_reviewed": len(submission.files_reviewed),
+                    "files_expected": (
+                        len(submission.expected_files_reviewed)
+                        if isinstance(submission, ProgramSubmission)
+                        else len(submission.files_reviewed)
+                    ),
+                    "routed_requests": (
+                        submission.routed_request_count
+                        if isinstance(submission, ProgramSubmission)
+                        else len(submission.review_request_ids)
+                    ),
+                    "expected_routed_requests": (
+                        submission.expected_routed_request_count
+                        if isinstance(submission, ProgramSubmission)
+                        else len(submission.review_request_ids)
+                    ),
+                    "unsupported_skipped": (
+                        len(submission.skipped_assignments)
+                        if isinstance(submission, ProgramSubmission)
+                        else 0
+                    ),
                 })
             app._dispatch_if_current(run_epoch, lambda: on_realtime_reviewed(app, submission))
             return
         if diag:
-            diag.log("batch_submit", "success", f"Batch submitted: {submission.job.batch_id}", {
-                "batch_id": submission.job.batch_id,
+            batch_label = (
+                ", ".join(submission.batch_ids.values())
+                if isinstance(submission, ProgramSubmission)
+                else submission.job.batch_id
+            )
+            routed_requests = (
+                submission.routed_request_count
+                if isinstance(submission, ProgramSubmission)
+                else len(submission.review_request_ids)
+            )
+            skipped_count = (
+                len(submission.skipped_assignments)
+                if isinstance(submission, ProgramSubmission)
+                else 0
+            )
+            diag.log("batch_submit", "success", f"Batch submitted: {batch_label}", {
+                "batch_ids": (
+                    submission.batch_ids
+                    if isinstance(submission, ProgramSubmission)
+                    else {submission.module_id: submission.job.batch_id}
+                ),
                 "files_queued": len(submission.files_reviewed),
+                "files_expected": (
+                    len(submission.expected_files_reviewed)
+                    if isinstance(submission, ProgramSubmission)
+                    else len(submission.files_reviewed)
+                ),
+                "routed_requests": routed_requests,
+                "expected_routed_requests": (
+                    submission.expected_routed_request_count
+                    if isinstance(submission, ProgramSubmission)
+                    else routed_requests
+                ),
+                "unsupported_skipped": skipped_count,
             })
         # Persist enough state to reconnect to this batch if the poller
         # detaches (closed app, lost network, no-progress / max-elapsed
         # timeout). The batch keeps running remotely; on next launch the user
         # is offered to resume it. Best-effort — never block the run.
-        save_pending_batch(
-            PendingBatch.from_submission(
-                submission,
-                input_dir=app.input_dir,
-                files=app._selected_files_for_review,
-                run_id=diag.run_id if diag is not None else "",
-                app_version=__version__,
+        if isinstance(submission, ProgramSubmission):
+            save_pending_program_run(
+                PendingProgramRun.from_submission(
+                    submission,
+                    input_dir=app.input_dir,
+                    files=app._selected_files_for_review,
+                    run_id=diag.run_id if diag is not None else "",
+                    app_version=__version__,
+                )
             )
-        )
+        else:
+            save_pending_batch(
+                PendingBatch.from_submission(
+                    submission,
+                    input_dir=app.input_dir,
+                    files=app._selected_files_for_review,
+                    run_id=diag.run_id if diag is not None else "",
+                    app_version=__version__,
+                )
+            )
         app._dispatch_if_current(run_epoch, lambda: on_batch_submitted(app, submission))
+    except ProgramSubmissionError as e:
+        partial = e.partial_submission
+        if not partial.partitions:
+            if diag:
+                diag.log("batch_submit", "error", f"Program submission failed: {e}")
+            _stop_recorder(getattr(app, "_trace_recorder", None))
+            app._trace_recorder = None
+            app._dispatch_if_current(
+                run_epoch,
+                lambda msg=str(e): app._on_review_error(msg),
+            )
+            return
+        if diag:
+            diag.log(
+                "batch_submit",
+                "warning",
+                f"Partial program submission: {e}",
+                {"batch_ids": partial.batch_ids},
+            )
+        app._dispatch_if_current(
+            run_epoch,
+            lambda msg=str(e): app.log.log_warning(
+                f"{msg} Completed or submitted module work will be retained; the "
+                "combined report will mark missing coverage."
+            ),
+        )
+        app._dispatch_if_current(
+            run_epoch, lambda s=partial: _continue_partial_program(app, s)
+        )
     except Exception as e:
         import traceback
         err = f"{e}\n{traceback.format_exc()}"
@@ -169,17 +348,51 @@ def submit_batch_thread(app, run_epoch: int) -> None:
         app._dispatch_if_current(run_epoch, lambda: app._on_review_error(err))
 
 
-def on_batch_submitted(app, submission: BatchSubmission) -> None:
+def on_batch_submitted(app, submission: BatchSubmission | ProgramSubmission) -> None:
     app._batch_submission = submission
     app.progress_bar.set(0.4)
-    app.log.log_success(f"Batch submitted: {submission.job.batch_id}")
-    app.log.log(f"  {len(submission.files_reviewed)} specs queued • 50% cost savings", level="muted")
+    batch_label = (
+        ", ".join(
+            f"{require_module(module_id).display_name}: {batch_id}"
+            for module_id, batch_id in submission.batch_ids.items()
+        )
+        if isinstance(submission, ProgramSubmission)
+        else submission.job.batch_id
+    )
+    if isinstance(submission, ProgramSubmission) and submission.missing_module_ids:
+        app.log.log_warning(f"Partial batch submission retained: {batch_label}")
+    else:
+        app.log.log_success(f"Batch submitted: {batch_label}")
+    if isinstance(submission, ProgramSubmission):
+        if submission.missing_module_ids:
+            app.log.log_warning(
+                f"  Partial submission: {len(submission.files_reviewed)} of "
+                f"{len(submission.expected_files_reviewed)} routed spec(s), "
+                f"{submission.routed_request_count} of "
+                f"{submission.expected_routed_request_count} module request(s) "
+                "submitted."
+            )
+        else:
+            app.log.log(
+                f"  {len(submission.files_reviewed)} specs routed as "
+                f"{submission.routed_request_count} module request(s) • "
+                f"{len(submission.skipped_assignments)} unsupported/skipped • "
+                "50% cost savings",
+                level="muted",
+            )
+    else:
+        app.log.log(
+            f"  {len(submission.files_reviewed)} specs queued • 50% cost savings",
+            level="muted",
+        )
     app.log.log_step(f"Polling for results ({_BATCH_TIMING_COPY})...")
     app.run_button.configure(text="Polling...")
     app._poll_batch()
 
 
-def on_realtime_reviewed(app, submission: BatchSubmission) -> None:
+def on_realtime_reviewed(
+    app, submission: BatchSubmission | ProgramSubmission
+) -> None:
     """Real-time counterpart to ``on_batch_submitted``: no polling phase.
 
     The streaming reviews already ran inside ``start_batch_review``, so the
@@ -188,10 +401,26 @@ def on_realtime_reviewed(app, submission: BatchSubmission) -> None:
     """
     app._batch_submission = submission
     app.progress_bar.set(0.55)
-    app.log.log_success(
-        f"Real-time review complete — {len(submission.files_reviewed)} spec(s) reviewed"
-    )
-    app.log.log("  streamed live • standard API pricing", level="muted")
+    if isinstance(submission, ProgramSubmission) and submission.missing_module_ids:
+        app.log.log_warning(
+            "Real-time review partially complete — "
+            f"{submission.routed_request_count} of "
+            f"{submission.expected_routed_request_count} routed module request(s) "
+            "completed"
+        )
+    else:
+        app.log.log_success(
+            f"Real-time review complete — {len(submission.files_reviewed)} spec(s) reviewed"
+        )
+    if isinstance(submission, ProgramSubmission):
+        app.log.log(
+            f"  {submission.routed_request_count} module request(s) • "
+            f"{len(submission.skipped_assignments)} unsupported/skipped • "
+            "streamed live • standard API pricing",
+            level="muted",
+        )
+    else:
+        app.log.log("  streamed live • standard API pricing", level="muted")
     app._collect_batch_results()
 
 
@@ -223,8 +452,96 @@ def update_poll_progress(app, status: BatchStatus) -> None:
         })
 
 
+def _poll_program_partitions(app, submission: ProgramSubmission, run_epoch: int):
+    """Poll all child batch ids concurrently and aggregate request progress."""
+    statuses: dict[str, BatchStatus] = {
+        module_id: BatchStatus(
+            status="in_progress",
+            processing=len(child.review_request_ids),
+            succeeded=0,
+            errored=0,
+            canceled=0,
+            expired=0,
+            total=len(child.review_request_ids),
+        )
+        for module_id, child in submission.partitions.items()
+    }
+    lock = threading.Lock()
+
+    def aggregate() -> BatchStatus:
+        values = list(statuses.values())
+        return BatchStatus(
+            status=("ended" if all(v.completed >= v.total for v in values) else "in_progress"),
+            processing=sum(v.processing for v in values),
+            succeeded=sum(v.succeeded for v in values),
+            errored=sum(v.errored for v in values),
+            canceled=sum(v.canceled for v in values),
+            expired=sum(v.expired for v in values),
+            total=sum(v.total for v in values),
+        )
+
+    def poll_one(module_id: str, child: BatchSubmission):
+        def on_progress(status: BatchStatus) -> None:
+            with lock:
+                statuses[module_id] = status
+                combined = aggregate()
+            app._dispatch_if_current(
+                run_epoch, lambda s=combined: app._update_poll_progress(s)
+            )
+
+        return poll_batch_bounded(
+            child.job.batch_id,
+            policy=DEFAULT_REVIEW_POLL_POLICY,
+            log=app._make_diag_log("batch_poll", run_epoch),
+            progress_cb=on_progress,
+        )
+
+    outcomes = {}
+    with ThreadPoolExecutor(max_workers=max(1, len(submission.partitions))) as pool:
+        futures = {
+            pool.submit(poll_one, module_id, child): module_id
+            for module_id, child in submission.partitions.items()
+        }
+        for future in as_completed(futures):
+            module_id = futures[future]
+            try:
+                outcomes[module_id] = future.result()
+            except Exception as exc:  # keep other remote batches resumable
+                outcomes[module_id] = exc
+    failures = []
+    for module_id, outcome in outcomes.items():
+        if isinstance(outcome, Exception):
+            failures.append(f"{module_id}: {outcome}")
+        elif outcome.detached or outcome.poll_failed:
+            reason = outcome.detach_reason or outcome.poll_error or "unknown"
+            failures.append(f"{module_id}: {reason}")
+    return failures
+
+
 def poll_and_collect_thread(app, run_epoch: int) -> None:
     if app._batch_submission is None:
+        return
+    if isinstance(app._batch_submission, ProgramSubmission):
+        failures = _poll_program_partitions(
+            app, app._batch_submission, run_epoch
+        )
+        if failures:
+            batch_ids = ", ".join(app._batch_submission.batch_ids.values())
+            msg = (
+                "Program batch polling stopped: " + "; ".join(failures)
+                + f". Batch IDs {batch_ids} may still be running remotely."
+            )
+            _stop_recorder(getattr(app, "_trace_recorder", None))
+            app._trace_recorder = None
+            app._dispatch_if_current(run_epoch, lambda m=msg: app._on_review_error(m))
+            return
+        app._dispatch_if_current(
+            run_epoch,
+            lambda: app.log.log_success(
+                "All module batches complete — collecting results..."
+            ),
+        )
+        app._dispatch_if_current(run_epoch, app._collect_batch_results)
         return
     outcome = poll_batch_bounded(
         app._batch_submission.job.batch_id,
@@ -263,6 +580,28 @@ def collect_batch_results(app) -> None:
         try:
             if app._batch_submission is None:
                 raise RuntimeError("No active batch submission to collect.")
+            if isinstance(app._batch_submission, ProgramSubmission):
+                if diag:
+                    diag.log(
+                        "batch_collect",
+                        "step",
+                        "Collecting routed module results",
+                        {"batch_ids": app._batch_submission.batch_ids},
+                    )
+                final_result = collect_program_results(
+                    app._batch_submission,
+                    log=app._make_diag_log("batch_collect", run_epoch),
+                    progress=app._make_diag_progress("batch_collect", run_epoch),
+                )
+                if (
+                    final_result.review_transport == "batch"
+                    and not final_result.module_errors
+                ):
+                    clear_pending_batch()
+                app._dispatch_if_current(
+                    run_epoch, lambda r=final_result: app._on_review_complete(r)
+                )
+                return
             module = get_module(getattr(app._batch_submission, "module_id", None))
             transport = getattr(app._batch_submission, "review_transport", "batch") or "batch"
 
@@ -597,10 +936,14 @@ def offer_batch_resume(app) -> None:
     """
     if getattr(app, "is_processing", False):
         return
-    pending = load_pending_batch()
+    pending = load_pending_run()
     if pending is None:
         return
-    n = len(pending.files_reviewed)
+    n = (
+        len(pending.assignments)
+        if isinstance(pending, PendingProgramRun)
+        else len(pending.files_reviewed)
+    )
     spec_word = "spec" if n == 1 else "specs"
     when = ""
     if pending.submitted_at:
@@ -622,8 +965,47 @@ def offer_batch_resume(app) -> None:
     start_batch_resume(app, pending)
 
 
-def start_batch_resume(app, pending: PendingBatch) -> None:
+def start_batch_resume(app, pending: PendingBatch | PendingProgramRun) -> None:
     """Resume an unfinished batch persisted by a prior session."""
+    if isinstance(pending, PendingProgramRun):
+        first_module_id, first = next(iter(pending.partitions.items()))
+        files = list(dict.fromkeys(
+            str(item.get("source_path"))
+            for item in pending.assignments
+            if isinstance(item, dict) and item.get("source_path")
+        ))
+        batch_ids = [
+            str(child.get("batch_id"))
+            for child in pending.partitions.values()
+            if isinstance(child, dict) and child.get("batch_id")
+        ]
+        _begin_reconnect_run(
+            app,
+            reconstruct_fn=lambda log, progress: pending.to_submission(
+                log=log, progress=progress
+            ),
+            model=str(first.get("model") or REVIEW_MODEL_DEFAULT),
+            cycle_label=str(first.get("cycle_label") or "per-module"),
+            module_id=first_module_id,
+            program_id=pending.program_id,
+            project_context=str(first.get("project_context") or ""),
+            project_profile=pending.project_profile,
+            cross_check_enabled=any(
+                bool(child.get("cross_check_enabled", False))
+                for child in pending.partitions.values()
+                if isinstance(child, dict)
+            ),
+            files_for_review=[Path(path) for path in files],
+            input_dir=str(first.get("input_dir") or ""),
+            run_id=pending.run_id,
+            routing_assignments=tuple(
+                SpecAssignment.from_dict(item) for item in pending.assignments
+            ),
+            files_reviewed_label=[Path(path).name for path in files],
+            batch_label=", ".join(batch_ids),
+            verb="Resuming",
+        )
+        return
     _begin_reconnect_run(
         app,
         reconstruct_fn=lambda log, progress: pending.to_submission(log=log, progress=progress),
@@ -674,7 +1056,36 @@ def recover_batch_dialog(app) -> None:
     files = [Path(f) for f in (selected or [])]
     file_strs = [str(f) for f in files]
     input_dir = str(files[0].parent) if files else ""
-    module = get_module(getattr(app, "_selected_module_id", None))
+    program = get_program(
+        getattr(app, "_selected_program_id", None)
+        or getattr(app, "_selected_module_id", None)
+    )
+    if len(program.implemented_module_ids) == 1:
+        module = require_module(program.implemented_module_ids[0])
+    else:
+        option_lines = [
+            f"{index}. {require_module(module_id).display_name}"
+            for index, module_id in enumerate(
+                program.implemented_module_ids, start=1
+            )
+        ]
+        choice = simpledialog.askstring(
+            "Select batch reviewer",
+            "A bare batch id does not contain its discipline. Enter the number "
+            "of the module that originally submitted this batch:\n\n"
+            + "\n".join(option_lines),
+            parent=app,
+        )
+        if choice is None:
+            return
+        module = _resolve_recovery_module(program, choice)
+        if module is None:
+            messagebox.showerror(
+                "Reviewer required",
+                "The batch reviewer was not recognized. Recovery was canceled "
+                "so the batch cannot be verified under the wrong discipline.",
+            )
+            return
     cycle_label = module.cycle.label
     project_context = app._get_project_context() if hasattr(app, "_get_project_context") else ""
     # Re-gather the project profile from the live widgets (like project_context)
@@ -727,6 +1138,7 @@ def recover_batch_dialog(app) -> None:
         model=REVIEW_MODEL_DEFAULT,
         cycle_label=cycle_label,
         module_id=module.module_id,
+        program_id=program.program_id,
         project_context=project_context,
         project_profile=profile_dict,
         cross_check_enabled=cross_check_enabled,
@@ -748,6 +1160,8 @@ def _begin_reconnect_run(
     cross_check_enabled: bool,
     files_for_review: list,
     module_id: str = "",
+    program_id: str = "",
+    routing_assignments: tuple = (),
     input_dir: str = "",
     run_id: str = "",
     project_profile: dict | None = None,
@@ -775,8 +1189,39 @@ def _begin_reconnect_run(
         return
     os.environ["ANTHROPIC_API_KEY"] = key
 
-    app._selected_cycle_label = cycle_label
     app._selected_module_id = module_id or DEFAULT_MODULE.module_id
+    selected_program = get_program(program_id or app._selected_module_id)
+    active_module_ids = (
+        routed_module_ids(routing_assignments, program=selected_program)
+        if routing_assignments
+        else (app._selected_module_id,)
+    )
+    if not active_module_ids:
+        active_module_ids = (app._selected_module_id,)
+    app._routed_module_ids_for_review = active_module_ids
+    effective_cycle_label = (
+        require_module(active_module_ids[0]).cycle.label
+        if len(active_module_ids) == 1
+        else "per-module"
+    )
+    diagnostic_module_id = (
+        active_module_ids[0]
+        if len(active_module_ids) == 1
+        else ",".join(active_module_ids)
+    )
+    app._selected_cycle_label = effective_cycle_label
+    app._selected_program_id = selected_program.program_id
+    app._selected_program_id_for_review = app._selected_program_id
+    selector_var = getattr(app, "_module_selector_var", None)
+    if selector_var is not None:
+        selector_var.set(selected_program.display_name)
+    subtitle = getattr(app, "_header_subtitle", None)
+    if subtitle is not None:
+        subtitle.configure(text=app._module_subtitle())
+    update_profile_visibility = getattr(app, "_update_project_profile_visibility", None)
+    if callable(update_profile_visibility):
+        update_profile_visibility()
+    app._routing_assignments_for_review = tuple(routing_assignments or ())
     app._project_context_for_review = project_context
     # Restore the per-run profile snapshot so the reconnected run's report /
     # tracing / routing see the same location the original submission used.
@@ -787,6 +1232,8 @@ def _begin_reconnect_run(
         app.input_dir = input_dir
 
     app.is_processing = True
+    if hasattr(app, "module_selector"):
+        app.module_selector.configure(state="disabled")
     app.run_button.set_processing()
     app.run_button.configure(text=f"{verb}...")
     app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
@@ -796,8 +1243,14 @@ def _begin_reconnect_run(
     diag_kwargs = dict(
         mode="batch",
         model=model,
-        cycle_label=cycle_label,
-        module_id=app._selected_module_id,
+        cycle_label=effective_cycle_label,
+        module_id=diagnostic_module_id,
+        program_id=selected_program.program_id,
+        module_ids=list(active_module_ids),
+        cycle_labels={
+            active_id: require_module(active_id).cycle.label
+            for active_id in active_module_ids
+        },
         project_profile_summary=(
             app._project_profile_for_review.display_line()
             if app._project_profile_for_review is not None
@@ -821,7 +1274,7 @@ def _begin_reconnect_run(
     run_epoch = app._next_run_epoch()
     threading.Thread(
         target=lambda: _reconnect_worker(
-            app, reconstruct_fn, model, cycle_label, app._selected_module_id,
+            app, reconstruct_fn, model, effective_cycle_label, diagnostic_module_id,
             run_id, run_epoch, batch_label, project_profile
         ),
         daemon=True,

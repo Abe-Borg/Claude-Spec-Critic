@@ -14,11 +14,13 @@ from __future__ import annotations
 
 from .base import ReviewModule, validate_module_registry
 from .california_k12_mep import CALIFORNIA_K12_MEP
+from .datacenter_architecture import DATACENTER_ARCHITECTURE
 from .datacenter_fire import DATACENTER_FIRE
 
 _ALL_MODULES: tuple[ReviewModule, ...] = (
     CALIFORNIA_K12_MEP,
     DATACENTER_FIRE,
+    DATACENTER_ARCHITECTURE,
 )
 
 validate_module_registry(_ALL_MODULES)
@@ -47,6 +49,21 @@ def get_module(module_id: str | None) -> ReviewModule:
     if not module_id:
         return DEFAULT_MODULE
     return AVAILABLE_MODULES.get(module_id.strip(), DEFAULT_MODULE)
+
+
+def require_module(module_id: str) -> ReviewModule:
+    """Resolve an explicit module assignment or fail without a fallback.
+
+    ``get_module`` intentionally preserves the historical unknown-id-to-K-12
+    fallback for legacy saved runs. Program routing is different: silently
+    turning an unavailable routed discipline into a California K-12 review
+    would be a false review, so per-spec assignments use this strict resolver.
+    """
+    normalized = (module_id or "").strip()
+    try:
+        return AVAILABLE_MODULES[normalized]
+    except KeyError as exc:
+        raise KeyError(f"Unknown review module assignment: {module_id!r}") from exc
 
 
 def module_for_cycle(cycle) -> ReviewModule:

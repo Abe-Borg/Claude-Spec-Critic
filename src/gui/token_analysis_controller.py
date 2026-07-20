@@ -18,7 +18,8 @@ from __future__ import annotations
 import threading
 from typing import NamedTuple
 
-from ..modules import get_module
+from ..modules import get_module, require_module
+from ..programs import get_program
 from ..input.extractor import ExtractedSpec, extract_text
 from ..review.prompts import get_system_prompt
 from ..core.tokenizer import count_tokens, exceeds_per_call_limit
@@ -30,6 +31,25 @@ from ..core.tokenizer import count_tokens, exceeds_per_call_limit
 # uses 300 ms, and a slightly longer window here covers file-load churn
 # (drops + browse) which is naturally slower than keystroke typing.
 EXACT_TOKEN_REFRESH_DEBOUNCE_MS = 400
+
+
+def _token_cycle_for_app(app):
+    """Use the largest routed-module prompt as the program's safe gauge basis.
+
+    Hand-built/legacy callers that only expose ``_selected_module_id`` retain
+    the historical scalar behavior. The real GUI always carries a program id.
+    """
+    program_id = getattr(app, "_selected_program_id", None)
+    if not program_id:
+        return get_module(getattr(app, "_selected_module_id", None)).cycle
+    program = get_program(program_id)
+    modules = [
+        require_module(module_id) for module_id in program.implemented_module_ids
+    ]
+    return max(
+        modules,
+        key=lambda module: count_tokens(get_system_prompt(module.cycle)),
+    ).cycle
 
 
 def resolve_initial_selection(paths, prior_selection):
@@ -126,7 +146,7 @@ def analyze_tokens(app, file_paths) -> None:
     # the thread; reading Tkinter state from a background thread is not
     # safe.
     project_context = app._get_project_context()
-    cycle = get_module(getattr(app, "_selected_module_id", None)).cycle
+    cycle = _token_cycle_for_app(app)
 
     # Snapshot the current checkbox state (on the UI thread, before the worker
     # clears + rebuilds the panel) so an accumulation reload doesn't silently
@@ -321,7 +341,7 @@ def on_file_selection_change(app) -> None:
         refresh_exact_token_count(
             app, selected_data, app._extracted_specs,
             app._get_project_context(),
-            get_module(getattr(app, "_selected_module_id", None)).cycle,
+            _token_cycle_for_app(app),
             getattr(app, "_system_prompt_tokens", 0),
             getattr(app, "_project_context_tokens", 0),
             lambda fn: app.after(0, fn),

@@ -118,3 +118,17 @@ class TestTerminalState:
         levels = [lvl for _phase, lvl, _msg in app.finalize_calls]
         assert "warning" in levels
         assert "success" not in levels
+
+    def test_program_coverage_gap_is_amber_even_without_review_error(self):
+        app = _make_app()
+        result = _result(error=None)
+        result.status = "partial"
+        result.skipped_files = ["26 05 00 Electrical.docx"]
+        result.missing_module_ids = []
+
+        on_review_complete(app, result)
+
+        assert app.button_calls == ["complete_with_errors"]
+        levels = [lvl for _phase, lvl, _msg in app.finalize_calls]
+        assert "warning" in levels
+        assert "success" not in levels

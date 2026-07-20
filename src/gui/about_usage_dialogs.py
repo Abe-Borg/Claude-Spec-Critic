@@ -27,7 +27,8 @@ from ..core.api_config import (
     VERIFICATION_MODEL_DEFAULT,
 )
 from ..core.pricing import price_for
-from ..modules import get_module
+from ..modules import require_module
+from ..programs import get_program
 from .widgets import COLORS
 
 _UI_FONT_SIZE = 12
@@ -232,10 +233,14 @@ def show_about_dialog(parent) -> None:
         text_color=COLORS["text_primary"],
     ).pack(anchor="w", padx=20, pady=(20, 4))
 
-    module = get_module(getattr(parent, "_selected_module_id", None))
+    program = get_program(
+        getattr(parent, "_selected_program_id", None)
+        or getattr(parent, "_selected_module_id", None)
+    )
+    modules = [require_module(module_id) for module_id in program.implemented_module_ids]
     ctk.CTkLabel(
         outer,
-        text=f"AI-assisted specification review — {module.display_name}",
+        text=f"AI-assisted specification review — {program.display_name}",
         font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
         text_color=COLORS["text_muted"],
     ).pack(anchor="w", padx=20, pady=(0, 12))
@@ -243,7 +248,10 @@ def show_about_dialog(parent) -> None:
     scroll = ctk.CTkScrollableFrame(outer, fg_color="transparent")
     scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-    code_basis = ", ".join(bc.name for bc in module.cycle.base_codes)
+    code_basis = "; ".join(
+        f"{module.display_name}: {', '.join(code.name for code in module.cycle.base_codes)}"
+        for module in modules
+    )
     review_label = _model_label(REVIEW_MODEL_DEFAULT)
     verifier_label = _model_label(VERIFICATION_MODEL_DEFAULT)
     escalation_label = _model_label(VERIFICATION_ESCALATION_MODEL)
@@ -265,8 +273,8 @@ def show_about_dialog(parent) -> None:
             "mismatches. These alerts are flagged locally and don’t cost any tokens."
         )),
         ("3.  Location & Client Research  (module-dependent)", (
-            "Modules that review location-sensitive work (like the data-center "
-            "fire-suppression module) ask for the project's city, state/province, "
+            "Programs with location-sensitive reviewers (including the data-center "
+            "architecture and fire modules) ask for the project's city, state/province, "
             "and client before the run. A research pass then fans out one "
             "web-search call per topic — governing codes, AHJ requirements, "
             "client standards, site environment — and builds a grounded "
@@ -276,7 +284,7 @@ def show_about_dialog(parent) -> None:
         )),
         ("4.  Per-Spec Review", (
             f"Each specification is sent individually to Claude {review_label}. "
-            f"Claude checks for code compliance issues against the module's "
+            f"Claude checks for code compliance issues against the assigned module's "
             f"code basis ({code_basis}), jurisdiction-specific requirements, "
             "outdated standards, coordination problems, and constructability "
             "concerns. Each finding is assigned a severity (Critical, High, "
@@ -306,7 +314,7 @@ def show_about_dialog(parent) -> None:
             "all your specs together using the 1M token context window. It catches "
             "contradictions between specs, missing cross-references, scope gaps and "
             "overlaps, inconsistent equipment data, and division-of-work conflicts. "
-            "Large projects are chunked by CSI division (per the module's chunk map) "
+            "Large projects are chunked by CSI division within each assigned module "
             "and merged. Cross-check runs after verification so it can use verified "
             "verdicts as context (Disputed review findings are filtered out of the "
             "“already identified” list it sees). Any coordination findings it produces "
@@ -394,12 +402,13 @@ def show_usage_dialog(parent) -> None:
             "'spec_critic_api_key.txt' next to the application — it will "
             "be loaded automatically on startup."
         )),
-        ("2.  Choose a Review Module", (
-            "Pick the review module in the header — one validated domain "
-            "configuration (jurisdiction, code basis, prompts, detectors). "
-            "The default is California K-12 DSA mechanical/plumbing; the "
-            "data-center fire-suppression module additionally asks for the "
-            "project's city, state/province, and client so it can research "
+        ("2.  Choose a Review Program", (
+            "Pick the review program in the header. The default is California "
+            "K-12 DSA mechanical/plumbing. Hyperscale Data Centers is one visible "
+            "choice: after extraction, it routes each specification to the "
+            "Architecture module, the Fire module, both, or an explicit unsupported "
+            "coverage gap. It also asks for the project's city, state/province, "
+            "country, and client so each assigned module can research "
             "location-specific requirements before the review. Double-check "
             "the location spelling — it steers every web search and the "
             "verification cache, and the run echoes the parsed location back "

@@ -156,6 +156,36 @@ def _group_entries(group) -> list[dict]:
 
 def build_edit_instructions(pipeline_result, *, report_path: Path | None = None) -> dict:
     """Build the sidecar payload from a pipeline result."""
+    if hasattr(pipeline_result, "module_results") and hasattr(pipeline_result, "program_id"):
+        entries: list[dict] = []
+        coverage_by_module: dict[str, list[dict]] = {}
+        for module_id, child in pipeline_result.module_results.items():
+            child_payload = build_edit_instructions(child, report_path=report_path)
+            for entry in child_payload["edits"]:
+                entries.append({"module_id": module_id, **entry})
+            coverage_by_module[module_id] = list(
+                child_payload.get("requirements_coverage") or []
+            )
+        return {
+            "schema_version": 5,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "report_file": report_path.name if report_path is not None else None,
+            "program_id": pipeline_result.program_id,
+            "project": getattr(pipeline_result, "project_profile", None),
+            "assignments": [item.to_dict() for item in pipeline_result.assignments],
+            "submission_coverage": {
+                "submitted_files": list(pipeline_result.files_reviewed),
+                "expected_files": list(pipeline_result.expected_files_reviewed),
+                "submitted_requests": pipeline_result.routed_request_count,
+                "expected_requests": pipeline_result.expected_routed_request_count,
+            },
+            "module_errors": dict(
+                getattr(pipeline_result, "module_errors", None) or {}
+            ),
+            "requirements_coverage_by_module": coverage_by_module,
+            "edit_count": len(entries),
+            "edits": entries,
+        }
     review = getattr(pipeline_result, "review_result", None)
     cross_check = getattr(pipeline_result, "cross_check_result", None)
     compliance = getattr(pipeline_result, "compliance_result", None)
@@ -215,6 +245,20 @@ def build_requirements_profile_export(pipeline_result) -> dict | None:
     not be its only container. Returns ``None`` when the run produced no
     requirements profile (every profile-less run) so no file is written.
     """
+    if hasattr(pipeline_result, "module_results") and hasattr(pipeline_result, "program_id"):
+        module_profiles = {}
+        for module_id, child in pipeline_result.module_results.items():
+            exported = build_requirements_profile_export(child)
+            if exported is not None:
+                module_profiles[module_id] = exported
+        if not module_profiles:
+            return None
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "program_id": pipeline_result.program_id,
+            "project": getattr(pipeline_result, "project_profile", None),
+            "module_profiles": module_profiles,
+        }
     profile = getattr(pipeline_result, "requirements_profile", None)
     if not isinstance(profile, dict) or not profile:
         return None

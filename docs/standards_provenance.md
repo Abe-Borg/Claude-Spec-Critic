@@ -12,7 +12,10 @@ Sections:
 - **California 2025 cycle** (`CALIFORNIA_2025`, `california_k12_mep` module) —
   below.
 - **Data-center IBC/IFC 2024 cycle** (`DATACENTER_IBC_2024`, `datacenter_fire`
-  module) — at the end of this file.
+  module) — later in this file.
+- **Data-center architecture IBC 2024 fallback**
+  (`DATACENTER_ARCHITECTURE_IBC_2024`, `datacenter_architecture` module) — after
+  the fire-protection cycle.
 
 ---
 
@@ -265,3 +268,64 @@ automatically re-grounds affected verdicts — no manual cache clear needed.
 - NPS NFPA/IFC crosswalk (nps.gov PDF). *(403 to automated fetch; via search.)*
 - NFPA / ANSI / ICC store listings — current editions of NFPA 75 (2024), NFPA 76
   (2024), NFPA 855 (2023).
+
+---
+
+# Data-center architecture IBC 2024 fallback
+
+Provenance record for the model-code fallback in
+`src/modules/datacenter_architecture.py::DATACENTER_ARCHITECTURE_IBC_2024`. It
+supports architectural specification reviews for hyperscale data-center
+projects in the United States and Canada. It is deliberately a fallback, not a
+claim that every project has adopted the 2024 I-codes.
+
+The Project Requirements Profile remains controlling: each run researches the
+actual state, provincial, and local adoption; amendments; accessibility law;
+AHJs; and client requirements for the entered city, state/province, country,
+and client. Canadian projects use their researched NBC/NFC/NECB or provincial
+lineage and do not treat the US model-code fallback as governing.
+
+Date checked against primary publisher sources: **2026-07-20**.
+
+## Model-code fallback
+
+| Code or standard | Fallback edition | Status and scope |
+|---|---|---|
+| IBC | 2024, ICC Digital Codes Version 2.0 | Verified published model code; actual adoption is researched per project. |
+| IFC | 2024, Version 1.0 | Verified published model code; actual adoption is researched per project. |
+| IECC | 2024 | Verified published model code; jurisdictional compliance path is researched per project. |
+| IEBC | 2024, Version 1.0 | Verified published model code; relevant only when the project scope invokes existing-building provisions. |
+| ASCE 7 | 7-22 with Supplement No. 1 | Exact base 2024 IBC Version 2.0 reference; the detector retains `7-22` as its machine comparison token. Project-location research can identify additional supplements incorporated by an adopting jurisdiction. |
+| ICC A117.1 | 2017 with Supplement 1 | Exact accessibility-standard form published with the 2024 IBC provisions; federal, provincial, state, and local accessibility requirements still govern applicability. |
+| ASHRAE 90.1 | 2022 | Verified 2024 IECC/ASHRAE alternate compliance publication; adoption and selected compliance path are researched per project. |
+| NFPA 80 | 2022 | Verified 2024 IBC Chapter 35 reference. |
+| NFPA 101 | 2024 | Referenced by the 2024 IBC/IFC only for the narrow Section 1030.6.2 condition; otherwise owner/AHJ-invoked where applicable. |
+| NFPA 285 | 2023 | Verified 2024 IBC Chapter 35 reference and NFPA publication edition. |
+| ASTM E119 | 20 | Verified 2024 IBC reference; corrected from the initial E119-2022 candidate. |
+| ASTM E84 | 21a | Verified 2024 IBC reference; corrected from the initial E84-2023 candidate. |
+
+Every architecture `StandardEdition.source` records a primary publisher page,
+so `cycle.unverified_standards()` is empty. That means the edition was verified
+for the model-code fallback only. It does not bypass location research or make
+a voluntary standard legally applicable to a particular project.
+
+## Primary sources
+
+- ICC Digital Codes: [2024 IBC Version 2.0](https://codes.iccsafe.org/content/IBC2024V2.0),
+  [2024 IFC Version 1.0](https://codes.iccsafe.org/content/IFC2024V1.0),
+  [2024 IECC](https://codes.iccsafe.org/content/IECC2024P1), and
+  [2024 IEBC Version 1.0](https://codes.iccsafe.org/content/IEBC2024V1.0/preface).
+- ICC [2024 IBC Version 2.0 content updates](https://codes.iccsafe.org/content/IBC2024V2.0/content-updates-version-2-0)
+  for ASCE 7-22 with Supplement No. 1, and
+  [Chapter 35](https://codes.iccsafe.org/content/IBC2024V2.0/chapter-35-referenced-standards)
+  for ICC A117.1, NFPA 80, NFPA 285, and ASTM references.
+- ICC [2024 IFC Chapter 80](https://codes.iccsafe.org/content/IFC2024P1/chapter-80-referenced-standards)
+  for the narrow NFPA 101-2024 reference at Section 1030.6.2.
+- ICC [A117.1-2017 with Supplement 1](https://codes.iccsafe.org/content/IBCACCPB2024P1/icc-a117-1-2017-with-supplement-1-american-national-standard-standard-for-accessible-and-usable-buildings-and-facilities).
+- ICC/ASHRAE [2024 IECC with ASHRAE 90.1-2022](https://codes.iccsafe.org/content/IECCASHRAE2024P1).
+- ASCE [ASCE/SEI 7-22](https://www.asce.org/publications-and-news/codes-and-standards/asce-sei-7-22).
+- NFPA [NFPA 80-2022](https://link.nfpa.org/all-publications/80/2022),
+  [NFPA 101-2024](https://link.nfpa.org/all-publications/101/2024), and
+  [NFPA 285-2023](https://link.nfpa.org/all-publications/285/2023).
+- ASTM [E119-20](https://store.astm.org/e0119-20.html) and
+  [E84-21a](https://store.astm.org/e0084-21a.html).

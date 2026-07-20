@@ -481,13 +481,18 @@ class DiagnosticsWindow(ctk.CTkToplevel):
         module_part = (
             f"  •  Module: {r.module_id}" if getattr(r, "module_id", "") else ""
         )
+        program_part = (
+            f"  •  Program: {r.program_id}" if getattr(r, "program_id", "") else ""
+        )
         lines = [
             f"Run ID: {r.run_id}",
-            f"Mode: {r.mode}  •  Model: {r.model}  •  Cycle: {r.cycle_label}{module_part}",
+            f"Mode: {r.mode}  •  Model: {r.model}  •  Cycle: {r.cycle_label}{program_part}{module_part}",
             f"Files: {len(r.files_selected)}  •  Context Tokens: {r.project_context_tokens:,}",
             f"Cross-Check: {'Enabled' if r.cross_check_enabled else 'Disabled'}",
             f"Started: {started}  •  Duration: {duration}",
         ]
+        if getattr(r, "cycle_labels", None):
+            lines.insert(2, f"Module cycles: {r.cycle_labels}")
         if r.files_selected:
             lines.append("Files: " + ", ".join(r.files_selected))
 

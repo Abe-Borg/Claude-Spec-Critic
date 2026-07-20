@@ -997,7 +997,42 @@ def _run_research_phase(
     return effective_context, research_profile.to_dict()
 
 
-def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", model: str = REVIEW_MODEL_DEFAULT, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, module: ReviewModule = DEFAULT_MODULE, cross_check_enabled: bool = False, project_profile: ProjectProfile | None = None, diagnostics=None, review_transport: str = "batch") -> BatchSubmission:
+@dataclass
+class PreparedBatchReview:
+    """A fully researched and locally preflighted single-module partition.
+
+    Separating preparation from remote submission lets a routed program
+    prepare *every* module partition before it creates the first remote batch.
+    The legacy :func:`start_batch_review` remains a prepare-then-submit wrapper.
+    """
+
+    module: ReviewModule
+    prepared: _PreparedSpecs
+    effective_context: str
+    requirements_profile: dict | None
+    project_profile: dict | None
+    model: str
+    cross_check_enabled: bool
+    review_transport: str
+    diagnostics: object | None = None
+    trace_pipeline: object | None = None
+
+
+def prepare_batch_review(
+    *,
+    input_dir: Path,
+    files: Optional[list[Path]] = None,
+    project_context: str = "",
+    model: str = REVIEW_MODEL_DEFAULT,
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+    module: ReviewModule = DEFAULT_MODULE,
+    cross_check_enabled: bool = False,
+    project_profile: ProjectProfile | None = None,
+    diagnostics=None,
+    review_transport: str = "batch",
+) -> PreparedBatchReview:
+    """Research and preflight one module partition without submitting it."""
     cycle = module.cycle
     profile_dict = project_profile.to_dict() if project_profile is not None else None
     trace_pipeline = _trace.capture_pipeline_start(
@@ -1050,6 +1085,35 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         placeholder_alerts=len(prepared.placeholder_alerts),
         cross_check_enabled=cross_check_enabled,
     )
+    return PreparedBatchReview(
+        module=module,
+        prepared=prepared,
+        effective_context=effective_context,
+        requirements_profile=requirements_profile_dict,
+        project_profile=profile_dict,
+        model=model,
+        cross_check_enabled=cross_check_enabled,
+        review_transport=review_transport,
+        diagnostics=diagnostics,
+        trace_pipeline=trace_pipeline,
+    )
+
+
+def submit_prepared_batch_review(
+    prepared_run: PreparedBatchReview,
+    *,
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+) -> BatchSubmission:
+    """Submit an already-researched/preflighted module partition."""
+    module = prepared_run.module
+    cycle = module.cycle
+    prepared = prepared_run.prepared
+    effective_context = prepared_run.effective_context
+    model = prepared_run.model
+    diagnostics = prepared_run.diagnostics
+    trace_pipeline = prepared_run.trace_pipeline
+    review_transport = prepared_run.review_transport
     realtime_results: dict[str, ReviewResult] | None = None
     if review_transport == "realtime":
         # Real-time transport: the reviews run to completion HERE (streaming
@@ -1109,9 +1173,9 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         prepared_specs=prepared.specs,
         cycle_label=cycle.label,
         module_id=module.module_id,
-        project_profile=profile_dict,
-        requirements_profile=requirements_profile_dict,
-        cross_check_enabled=cross_check_enabled,
+        project_profile=prepared_run.project_profile,
+        requirements_profile=prepared_run.requirements_profile,
+        cross_check_enabled=prepared_run.cross_check_enabled,
         code_cycle_alerts=prepared.code_cycle_alerts,
         structural_alerts=prepared.structural_alerts,
         naming_alerts=prepared.naming_alerts,
@@ -1122,6 +1186,41 @@ def start_batch_review(*, input_dir: Path, files: Optional[list[Path]] = None, p
         trace_span_id=(trace_pipeline.span_id if trace_pipeline is not None else ""),
         review_transport=review_transport,
         realtime_results=realtime_results,
+    )
+
+
+def start_batch_review(
+    *,
+    input_dir: Path,
+    files: Optional[list[Path]] = None,
+    project_context: str = "",
+    model: str = REVIEW_MODEL_DEFAULT,
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+    module: ReviewModule = DEFAULT_MODULE,
+    cross_check_enabled: bool = False,
+    project_profile: ProjectProfile | None = None,
+    diagnostics=None,
+    review_transport: str = "batch",
+) -> BatchSubmission:
+    """Prepare and submit one traditional single-module review batch."""
+    prepared_run = prepare_batch_review(
+        input_dir=input_dir,
+        files=files,
+        project_context=project_context,
+        model=model,
+        log=log,
+        progress=progress,
+        module=module,
+        cross_check_enabled=cross_check_enabled,
+        project_profile=project_profile,
+        diagnostics=diagnostics,
+        review_transport=review_transport,
+    )
+    return submit_prepared_batch_review(
+        prepared_run,
+        log=log,
+        progress=progress,
     )
 
 
@@ -2012,6 +2111,7 @@ def run_batch_collection_headless(
     cache: VerificationCache | None = None,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
+    include_drawing_impact: bool = True,
 ) -> PipelineResult:
     """Collect → verify → cross-check → finalize a submitted batch, headlessly.
 
@@ -2076,11 +2176,12 @@ def run_batch_collection_headless(
     # WS-5 drawing-impact synthesis: last, so it can link findings that only
     # just picked up their verdicts. No-op (state unchanged) when no drawing
     # digest is in Project Context.
-    review_state = run_drawing_impact_for_batch(
-        review_state,
-        project_context=submission.project_context,
-        log=log,
-    )
+    if include_drawing_impact:
+        review_state = run_drawing_impact_for_batch(
+            review_state,
+            project_context=submission.project_context,
+            log=log,
+        )
 
     if owns_cache:
         _persist_verification_cache(cache, log=log)

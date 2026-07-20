@@ -14,9 +14,18 @@ from __future__ import annotations
 
 import os
 import threading
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 
-from ..modules import get_module
+from ..modules import require_module
+from ..programs import (
+    RoutingState,
+    SpecAssignment,
+    SpecRoutingDecision,
+    apply_user_override,
+    assignments_for_specs,
+    get_program,
+    routed_module_ids,
+)
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..review.reviewer import REVIEW_MODEL_DEFAULT
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
@@ -105,6 +114,151 @@ def _revert_run_to_batch(app) -> None:
     app.log.log("Switched to batch mode — click Submit Batch to run.", level="info")
 
 
+def _build_program_assignments(app, selected_files: list) -> tuple[SpecAssignment, ...] | None:
+    """Route selected specs and obtain explicit confirmation where needed."""
+    program = get_program(getattr(app, "_selected_program_id", None))
+    selected_names = {path.name for path in selected_files}
+    extracted = [
+        spec
+        for spec in (getattr(app, "_extracted_specs", None) or [])
+        if spec.filename in selected_names
+    ]
+    if len(extracted) != len(selected_files):
+        app.log.log_error(
+            "Routing could not read every selected specification; reselect the "
+            "files and wait for analysis to finish."
+        )
+        return None
+
+    if len(program.implemented_module_ids) == 1:
+        module_id = program.implemented_module_ids[0]
+        by_name = {path.name: str(path) for path in selected_files}
+        return tuple(
+            SpecAssignment(
+                source_path=by_name[spec.filename],
+                decision=SpecRoutingDecision(
+                    spec_id=spec.filename,
+                    program_id=program.program_id,
+                    automatic_state=RoutingState.SUPPORTED,
+                    automatic_module_ids=(module_id,),
+                    confidence=1.0,
+                    evidence=(),
+                ),
+            )
+            for spec in extracted
+        )
+
+    assignments = list(
+        assignments_for_specs(extracted, selected_files, program=program)
+    )
+    for index, assignment in enumerate(assignments):
+        if assignment.decision.state is not RoutingState.AMBIGUOUS:
+            continue
+        candidates = assignment.decision.candidate_module_ids
+        candidate_names = [
+            require_module(module_id).display_name for module_id in candidates
+        ]
+        evidence_lines = [
+            f"• {item.source.value}: {item.detail}"
+            for item in assignment.decision.evidence[:4]
+        ]
+        evidence_text = (
+            "\n\nRouting evidence:\n" + "\n".join(evidence_lines)
+            if evidence_lines
+            else ""
+        )
+        if len(candidates) == 1:
+            confirmed = messagebox.askyesno(
+                "Confirm specification routing",
+                f"{assignment.spec_id}\n\n"
+                f"Suggested reviewer: {candidate_names[0]}\n"
+                f"Router confidence: {assignment.decision.confidence:.0%}"
+                f"{evidence_text}\n\n"
+                "Choose No to cancel the run.",
+            )
+            if not confirmed:
+                app.log.log(
+                    "Review canceled during routing confirmation.", level="muted"
+                )
+                return None
+            chosen = candidates
+        else:
+            option_lines = [
+                f"{choice}. {name}"
+                for choice, name in enumerate(candidate_names, start=1)
+            ]
+            all_choice = len(candidates) + 1
+            option_lines.append(
+                f"{all_choice}. All listed reviewers (intentional multi-route)"
+            )
+            choice = simpledialog.askinteger(
+                "Resolve specification routing",
+                f"{assignment.spec_id}\n\n"
+                "The section metadata and text point to different disciplines. "
+                "Choose the correct reviewer:\n\n"
+                + "\n".join(option_lines)
+                + f"\n\nRouter confidence: {assignment.decision.confidence:.0%}"
+                + evidence_text,
+                parent=app,
+                minvalue=1,
+                maxvalue=all_choice,
+            )
+            if choice is None:
+                app.log.log(
+                    "Review canceled during routing confirmation.", level="muted"
+                )
+                return None
+            chosen = candidates if choice == all_choice else (candidates[choice - 1],)
+        assignments[index] = SpecAssignment(
+            source_path=assignment.source_path,
+            decision=apply_user_override(
+                assignment.decision,
+                chosen,
+                reason="Confirmed in the pre-review routing dialog.",
+                program=program,
+            ),
+        )
+
+    unsupported = [item.spec_id for item in assignments if not item.module_ids]
+    if unsupported:
+        proceed = messagebox.askyesno(
+            "Unsupported specifications",
+            "No implemented Architecture or Fire module can safely review:\n\n"
+            + "\n".join(f"• {name}" for name in unsupported)
+            + "\n\nContinue and record these files as skipped coverage gaps?",
+        )
+        if not proceed:
+            app.log.log(
+                "Review canceled because unsupported files were selected.",
+                level="muted",
+            )
+            return None
+
+    routed = [item for item in assignments if item.module_ids]
+    if not routed:
+        app.log.log_error(
+            "None of the selected specifications has an implemented reviewer."
+        )
+        return None
+    route_lines = []
+    for item in assignments:
+        labels = (
+            ", ".join(require_module(mid).display_name for mid in item.module_ids)
+            if item.module_ids
+            else "Skipped — unsupported"
+        )
+        route_lines.append(f"• {item.spec_id}: {labels}")
+    if not messagebox.askyesno(
+        "Confirm hyperscale routing",
+        "The program will use these per-spec reviewers:\n\n"
+        + "\n".join(route_lines)
+        + "\n\nProceed with the review?",
+    ):
+        app.log.log("Review canceled during routing confirmation.", level="muted")
+        return None
+    return tuple(assignments)
+
+
 def start_review(app) -> None:
     if app.is_processing:
         return
@@ -143,25 +297,37 @@ def start_review(app) -> None:
             on_revert=lambda: _revert_run_to_batch(app),
         )
         return
+    assignments = _build_program_assignments(app, selected_files)
+    if assignments is None:
+        return
+    app._routing_assignments_for_review = assignments
     # The module is the single source: resolve the selected id (unknown /
     # unset degrades to the default California module) and derive the cycle
     # label from it so the two app attrs can never disagree.
-    module = get_module(getattr(app, "_selected_module_id", None))
+    program = get_program(getattr(app, "_selected_program_id", None))
+    app._selected_program_id_for_review = program.program_id
+    active_module_ids = routed_module_ids(assignments, program=program)
+    app._routed_module_ids_for_review = active_module_ids
+    module = require_module(active_module_ids[0])
     app._selected_module_id = module.module_id
-    app._selected_cycle_label = module.cycle.label
+    app._selected_cycle_label = (
+        module.cycle.label if len(active_module_ids) == 1 else "per-module"
+    )
     # Snapshot the per-run project profile (None for a profile-less module).
     # Persist the entered values per module and echo the parsed location back
     # so a typo is visible before review spend begins (D-1).
     app._project_profile_for_review = app._gather_project_profile()
     if app._project_profile_for_review is not None:
         save_project_profile(
-            module.module_id, app._project_profile_for_review.to_dict()
+            program.program_id, app._project_profile_for_review.to_dict()
         )
         app.log.log(
             f"Project: {app._project_profile_for_review.display_line()}",
             level="info",
         )
     app.is_processing = True
+    if hasattr(app, "module_selector"):
+        app.module_selector.configure(state="disabled")
     app.log.log("─" * 40, level="muted", timestamp=False, paced=False)
     app.run_button.set_processing()
     app.progress_bar.pack(fill="x", pady=(8, 0), after=app.run_button)
@@ -173,7 +339,17 @@ def start_review(app) -> None:
         mode=transport,
         model=REVIEW_MODEL_DEFAULT,
         cycle_label=app._selected_cycle_label,
-        module_id=app._selected_module_id,
+        module_id=(
+            active_module_ids[0]
+            if len(active_module_ids) == 1
+            else ",".join(active_module_ids)
+        ),
+        program_id=program.program_id,
+        module_ids=list(active_module_ids),
+        cycle_labels={
+            module_id: require_module(module_id).cycle.label
+            for module_id in active_module_ids
+        },
         project_profile_summary=(
             app._project_profile_for_review.display_line()
             if app._project_profile_for_review is not None
@@ -206,13 +382,32 @@ def on_review_complete(app, result) -> None:
     # clean run. ``rv.error`` is the spec-error summary set by
     # ``collect_review_batch_results`` whenever any spec truncated /
     # parse-errored / errored / returned nothing.
-    has_review_errors = False
+    has_review_errors = getattr(result, "status", "") == "partial"
     if result.review_result:
         rv = result.review_result
-        has_review_errors = bool(rv.error)
+        has_review_errors = has_review_errors or bool(rv.error)
         if has_review_errors:
-            app.log.log_warning("Review completed with errors — some specs failed. See report for details.")
-            app.log.log_warning(rv.error)
+            app.log.log_warning(
+                "Review completed with partial coverage or errors; see the report for details."
+            )
+            if rv.error:
+                app.log.log_warning(rv.error)
+            skipped = list(getattr(result, "skipped_files", None) or [])
+            if skipped:
+                app.log.log_warning(
+                    "Unsupported specifications skipped: " + ", ".join(skipped)
+                )
+            missing = list(getattr(result, "missing_module_ids", None) or [])
+            if missing:
+                app.log.log_warning(
+                    "No result available for routed module(s): " + ", ".join(missing)
+                )
+            module_errors = dict(getattr(result, "module_errors", None) or {})
+            for module_id, message in module_errors.items():
+                app.log.log_warning(
+                    f"{module_id} collection failed; pending batch state was retained: "
+                    f"{message}"
+                )
         else:
             app.log.log_success("Review complete!")
         app.log.log(
@@ -268,6 +463,8 @@ def on_review_error(app, err) -> None:
     app.log.log_error(f"Review failed: {err}")
     app._finalize_diagnostics("error", "error", f"Run failed: {err}")
     app.run_button.set_ready()
+    if hasattr(app, "module_selector"):
+        app.module_selector.configure(state="normal")
     app.is_processing = False
 
 
@@ -280,6 +477,8 @@ def reset_ui(app) -> None:
         text=idle_text_fn() if callable(idle_text_fn) else "Submit Batch"
     )
     app.progress_bar.pack_forget()
+    if hasattr(app, "module_selector"):
+        app.module_selector.configure(state="normal")
     app.is_processing = False
     app._batch_submission = None
     # Defensive idempotent net. Every terminal worker path now stops the

@@ -229,6 +229,12 @@ class DiagnosticsReport:
     # Registry id of the module the run reviewed under ("" for legacy
     # callers). Display-only — the run summary renders it next to the cycle.
     module_id: str = ""
+    # Composite-program identity. Empty/default values preserve every legacy
+    # single-module caller; routed runs populate all three so diagnostics do
+    # not masquerade as the program's first module.
+    program_id: str = ""
+    module_ids: list[str] = field(default_factory=list)
+    cycle_labels: dict[str, str] = field(default_factory=dict)
     # One-line project identity for the run summary (D-13), e.g.
     # "Ashburn, Virginia, USA — Client: ExampleCo". Display-only, additive,
     # empty on every profile-less run (so the summary is unchanged there).
@@ -732,6 +738,9 @@ class DiagnosticsReport:
             "mode": self.mode,
             "model": self.model,
             "cycle_label": self.cycle_label,
+            "program_id": self.program_id,
+            "module_ids": list(self.module_ids),
+            "cycle_labels": dict(self.cycle_labels),
             "total_time_seconds": round(total_time, 2),
             "files_selected": len(self.files_selected),
             "total_events": len(self.events),
@@ -826,6 +835,12 @@ class DiagnosticsReport:
         lines.append(f"  Mode:            {self.mode}")
         lines.append(f"  Model:           {self.model}")
         lines.append(f"  Code Cycle:      {self.cycle_label}")
+        if self.program_id:
+            lines.append(f"  Program:         {self.program_id}")
+        if self.module_ids:
+            lines.append(f"  Modules:         {', '.join(self.module_ids)}")
+        if self.cycle_labels:
+            lines.append(f"  Module Cycles:   {self.cycle_labels}")
         lines.append(f"  Files:           {len(self.files_selected)}")
         for f in self.files_selected:
             lines.append(f"                   - {f}")
