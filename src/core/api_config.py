@@ -248,9 +248,9 @@ def review_max_tokens(*, model: str = REVIEW_MODEL_DEFAULT, allow_extended_outpu
 # Real-time review fan-out concurrency. Review streams are the app's heaviest
 # synchronous calls (xhigh effort, up to the 128k phase cap of output — 5-8x
 # the output budget of any other streaming phase), so the default pool is
-# deliberately smaller than the research fan-out (4) and the verification
-# real-time fallback (5): two concurrent streams keep a multi-spec run
-# parallel without inviting output-TPM rate-limit storms on lower API tiers
+# aligned with the research fan-out (4) while remaining below the verification
+# real-time fallback (5): four concurrent streams keep a multi-spec run moving
+# without immediately jumping to the app's maximum pressure on lower API tiers
 # (429s are retryable, but a storm burns the retry budget and surfaces as
 # failed-review specs). Higher-tier orgs raise the env knob.
 ENV_REALTIME_REVIEW_WORKERS = "SPEC_CRITIC_REALTIME_REVIEW_WORKERS"
@@ -263,7 +263,7 @@ def realtime_review_max_workers() -> int:
 
     Reads ``SPEC_CRITIC_REALTIME_REVIEW_WORKERS`` fresh on each call (test
     seam; no import-order surprises), clamps to [1, 8], and falls back to
-    the default (2) on a missing or malformed value so a typo never
+    the default (4) on a missing or malformed value so a typo never
     serializes — or stampedes — a run.
     """
     raw = os.environ.get(ENV_REALTIME_REVIEW_WORKERS)
