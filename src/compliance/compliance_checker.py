@@ -677,9 +677,15 @@ def run_chunked_compliance_check(
     construction).
     """
     system_tokens = count_tokens(_compliance_system_prompt(cycle))
+    # Size the SAME message the non-chunked path would send — including the
+    # subset note when ``package_subset`` is set. Sizing without the note
+    # let a corpus within a few dozen tokens of the cap take this branch,
+    # then fail run_compliance_check's own over-limit guard (a skipped pass)
+    # instead of chunking.
     full_message = _build_compliance_user_message(
         specs, requirements_profile, existing_findings,
         project_context=project_context,
+        chunk_subset=package_subset,
     )
     if system_tokens + count_tokens(full_message) <= COMPLIANCE_RECOMMENDED_MAX:
         return run_compliance_check(

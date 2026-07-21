@@ -1081,3 +1081,51 @@ class TestPackageSubsetNote:
         assert "one subset of a larger specification package" not in (
             call["messages"][0]["content"]
         )
+
+    def test_sizing_counts_the_subset_note_near_the_limit(
+        self, fake_client, monkeypatch
+    ):
+        """Codex review (PR #320): the size check must measure the SAME
+        message the non-chunked path sends. A package_subset corpus whose
+        noteless prompt is just under the cap must take the CHUNKED path
+        (the with-note prompt is over), never the non-chunked branch that
+        then hits run_compliance_check's own over-limit guard and skips."""
+        monkeypatch.setattr(cc, "count_tokens", lambda text: len(text.split()))
+        # Two specs per division: singleton-division chunks pool into
+        # ``general`` (the ≥2-specs-per-chunk invariant), which would rebuild
+        # the full corpus in one chunk and defeat the fixture.
+        pad = "word " * 300
+        specs = [
+            _spec(pad + " DIV21SPEC alpha", "21 13 13 Wet.docx"),
+            _spec(pad + " DIV21SPEC beta", "21 13 16 Dry.docx"),
+            _spec(pad + " DIV22SPEC alpha", "22 11 13 Water.docx"),
+            _spec(pad + " DIV22SPEC beta", "22 11 16 Piping.docx"),
+        ]
+        cycle = _enabled_module().cycle
+        # Cap = exactly the noteless full-corpus size, so adding the ~20-word
+        # subset note pushes the full corpus over while each single-spec
+        # chunk (roughly half the corpus) still fits comfortably.
+        noteless_full = cc._build_compliance_user_message(specs, _profile(), [])
+        system_words = len(cc._compliance_system_prompt(cycle).split())
+        monkeypatch.setattr(
+            cc,
+            "COMPLIANCE_RECOMMENDED_MAX",
+            system_words + len(noteless_full.split()),
+        )
+        fake_client["route"] = _route_by_marker(
+            {
+                "DIV21SPEC": [compliance_tool_use_response()],
+                "DIV22SPEC": [compliance_tool_use_response()],
+            }
+        )
+        result = run_chunked_compliance_check(
+            specs,
+            _profile(),
+            [],
+            cycle=cycle,
+            package_subset=True,
+        )
+        # Chunked (two per-division calls), completed — not the pre-fix
+        # skipped outcome from the inner over-limit guard.
+        assert result.cross_check_status == "completed"
+        assert len(fake_client["client"].calls) == 2

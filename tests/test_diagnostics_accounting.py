@@ -157,6 +157,29 @@ class TestFinishAndPhaseDurations:
         durations = report.summary()["phase_durations"]
         assert durations["verification"] == 30.0
 
+    def test_multi_row_post_hoc_phase_uses_call_sum_over_tiny_span(self):
+        """Program runs append one batch_collect row per child, milliseconds
+        apart — the tiny non-zero append window must not mask the recorded
+        review durations (Codex review, PR #320)."""
+        report = DiagnosticsReport(mode="batch", model="m", cycle_label="2025")
+        report.record_api_call(
+            phase="batch_collect",
+            model="m",
+            message="Review results collected",
+            extra={"elapsed_seconds": 261.4},
+        )
+        report.record_api_call(
+            phase="batch_collect",
+            model="m",
+            message="Review results collected",
+            extra={"elapsed_seconds": 185.2},
+        )
+        # Simulate the milliseconds-apart append window.
+        report.events[-2].elapsed = 100.00
+        report.events[-1].elapsed = 100.02
+        durations = report.summary()["phase_durations"]
+        assert durations["batch_collect"] == 446.6
+
     def test_to_text_carries_overlap_footnote(self):
         report = DiagnosticsReport(mode="batch", model="m", cycle_label="2025")
         report.log("init", "info", "Run started")

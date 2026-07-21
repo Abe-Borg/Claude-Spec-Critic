@@ -403,10 +403,13 @@ class DiagnosticsReport:
 
         # Phase durations: first event to last event per phase. Phase windows
         # can overlap (events interleave across phases), and a phase whose
-        # work was recorded post-hoc as a single event spans 0.0 — for those,
-        # fall back to the per-call ``elapsed_seconds`` sum the events carry
-        # (e.g. the review batch collection records one row with the real
-        # call time), so a 261s review no longer reads as 0.0s.
+        # work was recorded post-hoc carries the real call time in its
+        # events' ``elapsed_seconds`` (e.g. the review batch collection
+        # records one row per child with the review's own duration) while
+        # its event-window span only measures the append window — 0.0 for a
+        # single row, milliseconds-to-seconds for a program run's per-child
+        # rows. Report whichever is larger, so a 261s review can never read
+        # as 0.0s (or as the tiny append window).
         phase_times: dict[str, dict] = {}
         phase_call_seconds: dict[str, float] = {}
         for e in self.events:
@@ -428,9 +431,8 @@ class DiagnosticsReport:
         phase_durations = {}
         for p, t in phase_times.items():
             span = round(t["end"] - t["start"], 2)
-            if span == 0.0 and phase_call_seconds.get(p, 0.0) > 0:
-                span = round(phase_call_seconds[p], 2)
-            phase_durations[p] = span
+            call_sum = round(phase_call_seconds.get(p, 0.0), 2)
+            phase_durations[p] = max(span, call_sum)
 
         # Aggregate token data from events
         total_input_tokens = 0
