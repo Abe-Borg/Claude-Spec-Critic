@@ -29,6 +29,7 @@ from ..core.api_config import (
 from ..core.pricing import price_for
 from ..modules import require_module
 from ..programs import get_program
+from .realtime_cost_gate import REALTIME_WORKER_TRADEOFF_TEXT
 from .widgets import COLORS
 
 _UI_FONT_SIZE = 12
@@ -138,8 +139,8 @@ def show_realtime_cost_warning(app, *, on_keep=None, on_revert=None) -> None:
     app._realtime_cost_dialog = win
     win.title("Real-time review — cost warning")
     win.configure(fg_color=COLORS["bg_dark"])
-    win.geometry("560x440")
-    win.minsize(460, 380)
+    win.geometry("560x490")
+    win.minsize(460, 420)
     win.transient(app)
     # Grab deferred: grabbing before the window is viewable raises on some
     # platforms (the update dialog learned this the hard way).
@@ -187,6 +188,9 @@ def show_realtime_cost_warning(app, *, on_keep=None, on_revert=None) -> None:
             "arrive in as little as ~10 minutes, versus up to ~2 hours for a "
             "batch run. If the cost is worth it to you, real-time is the "
             "quicker way to get findings.\n\n"
+            "The worker selector controls how many spec reviews run at once. "
+            f"{REALTIME_WORKER_TRADEOFF_TEXT} The planned spec reviews "
+            "themselves stay the same.\n\n"
             "Very large specs (≥200k input tokens) still require batch mode."
         ),
         font=ctk.CTkFont(family="Segoe UI", size=12),

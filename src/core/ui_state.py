@@ -17,6 +17,12 @@ import json
 import os
 from pathlib import Path
 
+from .api_config import (
+    REALTIME_REVIEW_MAX_WORKERS_DEFAULT,
+    REALTIME_REVIEW_WORKER_CHOICES,
+    realtime_review_max_workers,
+)
+
 _MODULE_KEY = "module_id"
 _PROGRAM_KEY = "program_id"
 # Per-module last-entered project profile, keyed by module id. A nested map so
@@ -28,6 +34,10 @@ _PROFILES_KEY = "project_profiles"
 # (50% cheaper, resumable).
 _TRANSPORT_KEY = "review_transport"
 _VALID_TRANSPORTS = ("batch", "realtime")
+# Real-time spec-review concurrency. The GUI deliberately offers a small,
+# explicit set rather than accepting arbitrary text; headless callers retain
+# the wider 1-8 environment-variable surface in ``api_config``.
+_REALTIME_REVIEW_WORKERS_KEY = "realtime_review_workers"
 # One-time "Don't show this again" acknowledgement for the real-time cost
 # warning popup. Absent/unset reads as False (show the warning), so a fresh
 # install always warns on the first switch into real-time mode.
@@ -96,6 +106,40 @@ def save_review_transport(transport: str, *, path: Path | None = None) -> None:
     if transport not in _VALID_TRANSPORTS:
         return
     _write_key(_TRANSPORT_KEY, transport, path=path)
+
+
+def load_realtime_review_workers(*, path: Path | None = None) -> int:
+    """Persisted GUI worker choice, with a backward-compatible first-run seed.
+
+    Before the GUI selector existed, operators could configure realtime
+    concurrency only through the environment. If no GUI key has ever been
+    written, preserve a 2/4/6/8 environment choice; unsupported odd values
+    remain valid for headless callers but degrade to the GUI default of 4.
+    Once saved, the explicit GUI preference wins over the environment.
+    """
+
+    state = _load(path)
+    if _REALTIME_REVIEW_WORKERS_KEY not in state:
+        configured = realtime_review_max_workers()
+        return (
+            configured
+            if configured in REALTIME_REVIEW_WORKER_CHOICES
+            else REALTIME_REVIEW_MAX_WORKERS_DEFAULT
+        )
+    value = state.get(_REALTIME_REVIEW_WORKERS_KEY)
+    if isinstance(value, bool) or value not in REALTIME_REVIEW_WORKER_CHOICES:
+        return REALTIME_REVIEW_MAX_WORKERS_DEFAULT
+    return int(value)
+
+
+def save_realtime_review_workers(
+    workers: int, *, path: Path | None = None
+) -> None:
+    """Persist one of the GUI's supported 2/4/6/8 worker choices."""
+
+    if isinstance(workers, bool) or workers not in REALTIME_REVIEW_WORKER_CHOICES:
+        return
+    _write_key(_REALTIME_REVIEW_WORKERS_KEY, int(workers), path=path)
 
 
 def load_suppress_realtime_cost_warning(*, path: Path | None = None) -> bool:

@@ -43,23 +43,28 @@ from src.input.extractor import ExtractedSpec
 from src.orchestration.pipeline import BatchSubmission
 
 # Constants used by widgets
-from src.core.api_config import CROSS_CHECK_MODEL_DEFAULT
+from src.core.api_config import (
+    CROSS_CHECK_MODEL_DEFAULT,
+    REALTIME_REVIEW_WORKER_CHOICES,
+)
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.core.pricing import price_for
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 from src.core.project_profile import ProjectProfile
 from src.core.ui_state import (
     load_project_profile,
+    load_realtime_review_workers,
     load_review_transport,
     load_selected_module_id,
     load_selected_program_id,
     load_show_tracing_tools,
-    load_suppress_realtime_cost_warning,
     save_review_transport,
+    save_realtime_review_workers,
     save_selected_module_id,
     save_selected_program_id,
     save_show_tracing_tools,
 )
+
 from src.gui.project_profile_inputs import (
     COUNTRY_OPTIONS,
     STATE_PLACEHOLDER,
@@ -128,6 +133,10 @@ from src.gui.file_selection_controller import (
     set_file_data,
 )
 from src.gui.report_controller import export_report_to_file
+from src.gui.realtime_cost_gate import (
+    REALTIME_WORKER_TRADEOFF_TEXT,
+    should_warn_before_live_run,
+)
 from src.gui.review_run_controller import (
     dispatch_if_current,
     next_run_epoch,
@@ -470,14 +479,60 @@ class SpecReviewApp(_CTkDnDRoot):
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._realtime_hint.pack(side="left", padx=(12, 0))
 
+        # Explicit real-time review concurrency. This is one GLOBAL pool across
+        # routed modules, not one pool per module. The choice remains visible
+        # in batch mode for transparency but is disabled because Anthropic
+        # controls Message Batch scheduling remotely.
+        options_line3 = ctk.CTkFrame(options_frame, fg_color="transparent")
+        options_line3.pack(anchor="w", pady=(6, 0))
+        ctk.CTkLabel(
+            options_line3,
+            text="Concurrent live spec reviews",
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+            text_color=COLORS["text_secondary"],
+        ).pack(side="left")
+        self._realtime_workers_var = ctk.StringVar(
+            value=str(load_realtime_review_workers())
+        )
+        self._realtime_workers_control = ctk.CTkSegmentedButton(
+            options_line3,
+            values=[str(value) for value in REALTIME_REVIEW_WORKER_CHOICES],
+            variable=self._realtime_workers_var,
+            command=self._on_realtime_workers_selected,
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+            selected_color=COLORS["accent"],
+            selected_hover_color=COLORS["accent_hover"],
+            unselected_color=COLORS["bg_input"],
+            unselected_hover_color=COLORS["border"],
+            fg_color=COLORS["bg_input"],
+            text_color=COLORS["text_primary"],
+            text_color_disabled=COLORS["text_muted"],
+            height=28,
+        )
+        self._realtime_workers_control.set(self._realtime_workers_var.get())
+        self._realtime_workers_control.pack(side="left", padx=(12, 0))
+        self._realtime_workers_hint = ctk.CTkLabel(
+            options_frame,
+            text=(
+                "Real-time only; Anthropic manages batch concurrency. "
+                + REALTIME_WORKER_TRADEOFF_TEXT
+            ),
+            font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+            text_color=COLORS["text_muted"],
+            wraplength=580,
+            justify="left",
+        )
+        self._realtime_workers_hint.pack(anchor="w", pady=(2, 0))
+        self._update_realtime_worker_control_state()
+
         # Reveal toggle for the developer/diagnostic tracing controls (Row 4).
         # Off by default so regular users never see the tracing row; ticking it
         # grid()-restores the row below. Persisted across launches.
-        options_line3 = ctk.CTkFrame(options_frame, fg_color="transparent")
-        options_line3.pack(anchor="w", pady=(6, 0))
+        options_line4 = ctk.CTkFrame(options_frame, fg_color="transparent")
+        options_line4.pack(anchor="w", pady=(6, 0))
         self._show_tracing_var = ctk.BooleanVar(value=load_show_tracing_tools())
         self._show_tracing_cb = ctk.CTkCheckBox(
-            options_line3, text="Show agent tracing tools", variable=self._show_tracing_var,
+            options_line4, text="Show agent tracing tools", variable=self._show_tracing_var,
             command=self._on_show_tracing_toggle,
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
@@ -485,7 +540,7 @@ class SpecReviewApp(_CTkDnDRoot):
             checkbox_width=20, checkbox_height=20,
         )
         self._show_tracing_cb.pack(side="left")
-        self._show_tracing_hint = ctk.CTkLabel(options_line3,
+        self._show_tracing_hint = ctk.CTkLabel(options_line4,
             text="developer / diagnostics",
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), text_color=COLORS["text_muted"])
         self._show_tracing_hint.pack(side="left", padx=(12, 0))
@@ -761,8 +816,26 @@ class SpecReviewApp(_CTkDnDRoot):
         if self._realtime_var.get() != realtime:
             self._realtime_var.set(realtime)
         save_review_transport("realtime" if realtime else "batch")
+        self._update_realtime_worker_control_state()
         if not getattr(self, "is_processing", False):
             self.run_button.configure(text=self._run_button_idle_text())
+
+    def _on_realtime_workers_selected(self, value: str) -> None:
+        """Persist the next run's explicit real-time spec-review concurrency."""
+
+        try:
+            workers = int(value)
+        except (TypeError, ValueError):
+            return
+        save_realtime_review_workers(workers)
+
+    def _update_realtime_worker_control_state(self) -> None:
+        """The worker selector is meaningful only for real-time review."""
+
+        control = getattr(self, "_realtime_workers_control", None)
+        if control is None:
+            return
+        control.configure(state="normal" if self._realtime_var.get() else "disabled")
 
     def _on_transport_toggle(self) -> None:
         """Handle a real-time toggle, warning once about the compounding cost.
@@ -774,7 +847,8 @@ class SpecReviewApp(_CTkDnDRoot):
         suppressed — commits immediately, unchanged from before.
         """
         realtime = self._realtime_var.get()
-        if realtime and not load_suppress_realtime_cost_warning():
+        self._update_realtime_worker_control_state()
+        if realtime and should_warn_before_live_run(self, "realtime"):
             show_realtime_cost_warning(self)
             return
         self._apply_transport_choice(realtime)

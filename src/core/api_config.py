@@ -252,10 +252,24 @@ def review_max_tokens(*, model: str = REVIEW_MODEL_DEFAULT, allow_extended_outpu
 # real-time fallback (5): four concurrent streams keep a multi-spec run moving
 # without immediately jumping to the app's maximum pressure on lower API tiers
 # (429s are retryable, but a storm burns the retry budget and surfaces as
-# failed-review specs). Higher-tier orgs raise the env knob.
+# failed-review specs). GUI runs pass their persisted 2/4/6/8 choice
+# explicitly; headless callers can tune the environment variable.
 ENV_REALTIME_REVIEW_WORKERS = "SPEC_CRITIC_REALTIME_REVIEW_WORKERS"
 REALTIME_REVIEW_MAX_WORKERS_DEFAULT = 4
-_REALTIME_REVIEW_WORKERS_CEILING = 8
+REALTIME_REVIEW_WORKER_CHOICES = (2, 4, 6, 8)
+_REALTIME_REVIEW_WORKERS_CEILING = max(REALTIME_REVIEW_WORKER_CHOICES)
+
+
+def normalize_realtime_review_workers(value: object) -> int:
+    """Clamp a programmatic worker selection to the supported runtime range."""
+
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return REALTIME_REVIEW_MAX_WORKERS_DEFAULT
+    return max(1, min(_REALTIME_REVIEW_WORKERS_CEILING, parsed))
 
 
 def realtime_review_max_workers() -> int:
@@ -269,11 +283,7 @@ def realtime_review_max_workers() -> int:
     raw = os.environ.get(ENV_REALTIME_REVIEW_WORKERS)
     if raw is None or not raw.strip():
         return REALTIME_REVIEW_MAX_WORKERS_DEFAULT
-    try:
-        value = int(raw.strip())
-    except ValueError:
-        return REALTIME_REVIEW_MAX_WORKERS_DEFAULT
-    return max(1, min(_REALTIME_REVIEW_WORKERS_CEILING, value))
+    return normalize_realtime_review_workers(raw.strip())
 
 
 def _bounded_worker_env(name: str, *, default: int, ceiling: int) -> int:

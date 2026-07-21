@@ -112,6 +112,7 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
     events: list[str] = []
     research_semaphores: list[object] = []
     trace_parent_settings: list[tuple[object | None, bool]] = []
+    submit_worker_settings: list[int | None] = []
     event_lock = threading.Lock()
     prepare_barrier = threading.Barrier(4)
 
@@ -138,6 +139,7 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
     def fake_submit(prepared, **_kwargs):
         with event_lock:
             events.append(f"submit:{prepared.module.module_id}")
+            submit_worker_settings.append(_kwargs.get("realtime_review_workers"))
         return _submission(
             prepared.module.module_id,
             prepared.prepared.specs[0].filename,
@@ -152,6 +154,7 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
         assignments=assignments,
         input_dir=Path("C:/specs"),
         model="test-model",
+        realtime_review_workers=6,
     )
 
     expected_prepares = {
@@ -164,6 +167,7 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
     assert set(events[:first_submit]) == expected_prepares
     assert len({id(semaphore) for semaphore in research_semaphores}) == 1
     assert trace_parent_settings == [(None, False)] * 4
+    assert submit_worker_settings == [6, 6, 6, 6]
     assert events[first_submit:] == [
         "submit:datacenter_fire",
         "submit:datacenter_architecture",
@@ -400,13 +404,15 @@ def test_program_realtime_review_uses_one_global_pool_and_local_child_ids(monkey
     )
 
     global_runs: list[list[object]] = []
+    configured_workers: list[int | None] = []
     built_children: dict[str, dict] = {}
     callbacks: list[tuple[str, ...]] = []
     progress_values: list[float] = []
 
-    def fake_global_run(jobs, *, progress, diagnostics, **_kwargs):
+    def fake_global_run(jobs, *, progress, diagnostics, max_workers=None, **_kwargs):
         assert diagnostics is diag
         global_runs.append(list(jobs))
+        configured_workers.append(max_workers)
         progress(50.0, "half complete")
         progress(100.0, "complete")
         return {
@@ -436,6 +442,7 @@ def test_program_realtime_review_uses_one_global_pool_and_local_child_ids(monkey
 
     submission = pp.submit_prepared_program_review(
         prepared,
+        realtime_review_workers=6,
         progress=lambda value, _message, **_kwargs: progress_values.append(value),
         on_partition_submitted=lambda current: callbacks.append(
             tuple(current.partitions)
@@ -443,6 +450,7 @@ def test_program_realtime_review_uses_one_global_pool_and_local_child_ids(monkey
     )
 
     assert len(global_runs) == 1
+    assert configured_workers == [6]
     jobs = global_runs[0]
     assert len(jobs) == 4
     # The same routed spec legitimately has the same child custom_id in each

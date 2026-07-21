@@ -1244,6 +1244,7 @@ def submit_prepared_batch_review(
     *,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
+    realtime_review_workers: int | None = None,
 ) -> BatchSubmission:
     """Submit an already-researched/preflighted module partition."""
     module = prepared_run.module
@@ -1267,6 +1268,7 @@ def submit_prepared_batch_review(
             model=model,
             cycle=cycle,
             pre_detected_alerts=prepared.pre_detected_by_filename,
+            max_workers=realtime_review_workers,
             log=log,
             # The runner reports 0-100 fan-out completion; map it into the
             # pipeline's review band (25→55), below the verification band
@@ -1312,6 +1314,7 @@ def start_batch_review(
     project_profile: ProjectProfile | None = None,
     diagnostics=None,
     review_transport: str = "batch",
+    realtime_review_workers: int | None = None,
 ) -> BatchSubmission:
     """Prepare and submit one traditional single-module review batch."""
     prepared_run = prepare_batch_review(
@@ -1332,6 +1335,7 @@ def start_batch_review(
             prepared_run,
             log=log,
             progress=progress,
+            realtime_review_workers=realtime_review_workers,
         )
     except BaseException as exc:
         # No BatchSubmission exists to carry this long-lived span into

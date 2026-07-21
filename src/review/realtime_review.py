@@ -62,6 +62,7 @@ from ..core.api_config import (
     LARGE_REVIEW_INPUT_THRESHOLD,
     REVIEW_MODEL_DEFAULT,
     model_supports_extended_output_beta,
+    normalize_realtime_review_workers,
     realtime_review_max_workers,
 )
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
@@ -586,7 +587,11 @@ def run_realtime_review_jobs(
     # build/preflight above.  A late invalid/oversize program partition must
     # abort before any earlier partition can incur review spend.
     client = _get_client()
-    configured = max_workers if max_workers is not None else realtime_review_max_workers()
+    configured = (
+        realtime_review_max_workers()
+        if max_workers is None
+        else normalize_realtime_review_workers(max_workers)
+    )
     workers = max(1, min(int(configured), len(prepared)))
     total = len(prepared)
     log(
@@ -655,6 +660,7 @@ def run_realtime_review_jobs(
             spec_count=group["spec_count"],
             failed=group["failed"],
             workers=min(workers, group["spec_count"]),
+            configured_workers=configured,
             global_workers=workers,
         )
     return results

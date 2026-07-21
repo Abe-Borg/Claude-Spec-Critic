@@ -41,7 +41,9 @@ from src.batch.batch import BatchJob
 from src.core.api_config import (
     MODEL_HAIKU_45,
     PHASE_REVIEW,
+    REALTIME_REVIEW_WORKER_CHOICES,
     REVIEW_MODEL_DEFAULT,
+    normalize_realtime_review_workers,
     phase_output_cap,
     realtime_review_max_workers,
 )
@@ -479,6 +481,37 @@ class TestConcurrency:
         monkeypatch.setenv(env, "   ")
         assert realtime_review_max_workers() == 4  # blank → default
 
+    def test_gui_choices_and_programmatic_clamp(self):
+        assert REALTIME_REVIEW_WORKER_CHOICES == (2, 4, 6, 8)
+        assert normalize_realtime_review_workers(6) == 6
+        assert normalize_realtime_review_workers(999) == 8
+        assert normalize_realtime_review_workers(0) == 1
+        assert normalize_realtime_review_workers(True) == 4
+        assert normalize_realtime_review_workers("bad") == 4
+
+    def test_eight_selected_with_four_jobs_uses_only_four_workers(self, monkeypatch):
+        active = {"now": 0, "max": 0}
+        lock = threading.Lock()
+
+        def route(_kwargs):
+            with lock:
+                active["now"] += 1
+                active["max"] = max(active["max"], active["now"])
+            _time.sleep(0.04)
+            with lock:
+                active["now"] -= 1
+            return review_tool_use_response()
+
+        client = FakeRealtimeClient(route)
+        monkeypatch.setattr(rt, "_get_client", lambda: client)
+
+        results, _ = run_realtime_review(
+            [_spec(f"s{i}.docx") for i in range(4)], max_workers=8
+        )
+
+        assert len(results) == 4
+        assert active["max"] == 4
+
     def test_heterogeneous_jobs_share_pool_with_child_id_collisions(self, monkeypatch):
         """Program identity is the opaque key, not the child custom id."""
         active = {"now": 0, "max": 0}
@@ -656,7 +689,12 @@ class TestModePlumbing:
 
         monkeypatch.setattr(pl, "run_realtime_review", fake_runner)
 
-        submission = pl.start_batch_review(input_dir=tmp_path, review_transport="realtime")
+        monkeypatch.setenv("SPEC_CRITIC_REALTIME_REVIEW_WORKERS", "8")
+        submission = pl.start_batch_review(
+            input_dir=tmp_path,
+            review_transport="realtime",
+            realtime_review_workers=6,
+        )
 
         assert submission.review_transport == "realtime"
         assert submission.realtime_results == fake_results
@@ -666,6 +704,7 @@ class TestModePlumbing:
         assert submission.job.status == "completed"
         assert submission.review_request_ids == ["review__a__0"]
         assert [s.filename for s in captured["specs"]] == ["a.docx"]
+        assert captured["kwargs"]["max_workers"] == 6
 
     def test_batch_default_is_untouched(self, monkeypatch, tmp_path):
         monkeypatch.setattr(pl, "_prepare_specs", lambda **kw: _fake_prepared())
@@ -690,6 +729,71 @@ class TestModePlumbing:
         assert submission.review_transport == "batch"
         assert submission.realtime_results is None
         assert submission.job.batch_id == "batch_1"
+
+    def test_gui_dispatch_forwards_workers_to_single_and_routed_paths(self, monkeypatch):
+        from src.gui import batch_controller as gui_batch
+        from src.programs import HYPERSCALE_DATACENTER_PROGRAM, get_program
+
+        captured: list[tuple[str, dict]] = []
+
+        def fake_single(**kwargs):
+            captured.append(("single", kwargs))
+            return "single-result"
+
+        def fake_routed(**kwargs):
+            captured.append(("routed", kwargs))
+            return "routed-result"
+
+        monkeypatch.setattr(gui_batch, "start_batch_review", fake_single)
+        monkeypatch.setattr(gui_batch, "start_program_review", fake_routed)
+
+        app = type("App", (), {})()
+        app._routing_assignments_for_review = ("assignment",)
+        single = get_program("california_k12_mep")
+        assert gui_batch._start_selected_review(
+            app,
+            single,
+            1,
+            None,
+            realtime_review_workers=6,
+            review_transport="realtime",
+        ) == "single-result"
+        assert gui_batch._start_selected_review(
+            app,
+            HYPERSCALE_DATACENTER_PROGRAM,
+            1,
+            None,
+            module=object(),
+            files=["ignored.docx"],
+            realtime_review_workers=8,
+            review_transport="realtime",
+        ) == "routed-result"
+
+        assert captured[0][1]["realtime_review_workers"] == 6
+        assert captured[1][1]["realtime_review_workers"] == 8
+        assert captured[1][1]["assignments"] == ("assignment",)
+        assert "module" not in captured[1][1]
+        assert "files" not in captured[1][1]
+
+    def test_gui_worker_value_is_snapshotted_for_the_run(self, monkeypatch, tmp_path):
+        from src.gui.review_run_controller import _selected_realtime_review_workers
+
+        monkeypatch.setenv(
+            "SPEC_CRITIC_UI_STATE_PATH", str(tmp_path / "ui_state.json")
+        )
+
+        class Var:
+            value = "6"
+
+            def get(self):
+                return self.value
+
+        var = Var()
+        app = type("App", (), {"_realtime_workers_var": var})()
+        app._realtime_review_workers_for_review = _selected_realtime_review_workers(app)
+        var.value = "2"
+
+        assert app._realtime_review_workers_for_review == 6
 
     def test_collect_never_touches_batch_retrieval(self, monkeypatch):
         spec = _spec("a.docx", content="body text for anchors")
@@ -1027,6 +1131,86 @@ class TestUiStateTransport:
         assert load_review_transport() == "realtime"
 
 
+class TestUiStateRealtimeWorkers:
+    @pytest.fixture(autouse=True)
+    def _tmp_state(self, monkeypatch, tmp_path):
+        self.state_path = tmp_path / "ui_state.json"
+        monkeypatch.setenv("SPEC_CRITIC_UI_STATE_PATH", str(self.state_path))
+        monkeypatch.delenv("SPEC_CRITIC_REALTIME_REVIEW_WORKERS", raising=False)
+
+    def test_default_is_four(self):
+        from src.core.ui_state import load_realtime_review_workers
+
+        assert load_realtime_review_workers() == 4
+
+    def test_unsaved_gui_choice_inherits_supported_legacy_environment(self, monkeypatch):
+        from src.core.ui_state import load_realtime_review_workers
+
+        monkeypatch.setenv("SPEC_CRITIC_REALTIME_REVIEW_WORKERS", "8")
+        assert load_realtime_review_workers() == 8
+
+    def test_unsaved_gui_choice_rejects_unsupported_odd_environment(self, monkeypatch):
+        from src.core.ui_state import load_realtime_review_workers
+
+        monkeypatch.setenv("SPEC_CRITIC_REALTIME_REVIEW_WORKERS", "7")
+        assert load_realtime_review_workers() == 4
+
+    def test_saved_gui_choice_wins_over_environment(self, monkeypatch):
+        from src.core.ui_state import (
+            load_realtime_review_workers,
+            save_realtime_review_workers,
+        )
+
+        monkeypatch.setenv("SPEC_CRITIC_REALTIME_REVIEW_WORKERS", "8")
+        save_realtime_review_workers(2)
+        assert load_realtime_review_workers() == 2
+
+    @pytest.mark.parametrize("workers", [2, 4, 6, 8])
+    def test_exact_gui_choices_round_trip(self, workers):
+        from src.core.ui_state import (
+            load_realtime_review_workers,
+            save_realtime_review_workers,
+        )
+
+        save_realtime_review_workers(workers)
+        assert load_realtime_review_workers() == workers
+
+    @pytest.mark.parametrize("invalid", [1, 3, 5, 7, 9, "6", True, None])
+    def test_invalid_choice_does_not_overwrite_last_valid(self, invalid):
+        from src.core.ui_state import (
+            load_realtime_review_workers,
+            save_realtime_review_workers,
+        )
+
+        save_realtime_review_workers(6)
+        save_realtime_review_workers(invalid)
+        assert load_realtime_review_workers() == 6
+
+    def test_malformed_file_reads_as_four(self):
+        from src.core.ui_state import load_realtime_review_workers
+
+        self.state_path.write_text("{not json", encoding="utf-8")
+        assert load_realtime_review_workers() == 4
+
+    def test_coexists_with_transport_and_warning_state(self):
+        from src.core.ui_state import (
+            load_realtime_review_workers,
+            load_review_transport,
+            load_suppress_realtime_cost_warning,
+            save_realtime_review_workers,
+            save_review_transport,
+            save_suppress_realtime_cost_warning,
+        )
+
+        save_review_transport("realtime")
+        save_suppress_realtime_cost_warning(True)
+        save_realtime_review_workers(8)
+
+        assert load_review_transport() == "realtime"
+        assert load_suppress_realtime_cost_warning() is True
+        assert load_realtime_review_workers() == 8
+
+
 class TestUiStateRealtimeCostWarningSuppression:
     @pytest.fixture(autouse=True)
     def _tmp_state(self, monkeypatch, tmp_path):
@@ -1147,6 +1331,14 @@ class TestRealtimeCostGate:
         from src.gui.realtime_cost_gate import should_warn_before_live_run
 
         assert should_warn_before_live_run(_GateApp(), "batch") is False
+
+    def test_worker_tradeoff_copy_is_cost_and_speed_honest(self):
+        from src.gui.realtime_cost_gate import REALTIME_WORKER_TRADEOFF_TEXT
+
+        copy = REALTIME_WORKER_TRADEOFF_TEXT.casefold()
+        assert "faster" in copy
+        assert "budget" in copy
+        assert "throttling-related retry costs" in copy
 
     def test_realtime_unseen_and_unsuppressed_warns(self):
         from src.gui.realtime_cost_gate import should_warn_before_live_run

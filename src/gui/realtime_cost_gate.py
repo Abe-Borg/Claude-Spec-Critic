@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from ..core.ui_state import load_suppress_realtime_cost_warning
 
+REALTIME_WORKER_TRADEOFF_TEXT = (
+    "More workers usually finish sooner, but spend API budget faster and can "
+    "increase throttling-related retry costs."
+)
+
 
 def should_warn_before_live_run(app, transport: str) -> bool:
     """Whether to show the real-time cost warning before a run starts.

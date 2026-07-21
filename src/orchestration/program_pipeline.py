@@ -711,6 +711,7 @@ def submit_prepared_program_review(
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
     on_partition_submitted: Callable[[ProgramSubmission], None] | None = None,
+    realtime_review_workers: int | None = None,
 ) -> ProgramSubmission:
     """Submit prepared partitions in program order, retaining partial state."""
 
@@ -764,6 +765,7 @@ def submit_prepared_program_review(
 
             results_by_job = run_realtime_review_jobs(
                 jobs,
+                max_workers=realtime_review_workers,
                 log=log,
                 progress=lambda value, message: progress(
                     25.0 + (max(0.0, min(float(value), 100.0)) / 100.0) * 30.0,
@@ -858,6 +860,7 @@ def submit_prepared_program_review(
                 child,
                 log=log,
                 progress=child_progress,
+                realtime_review_workers=realtime_review_workers,
             )
         except BaseException as exc:
             failed_index = active_module_ids.index(module_id)
@@ -915,6 +918,7 @@ def submit_prepared_program_review(
 def start_program_review(**kwargs) -> ProgramSubmission:
     """Compatibility-shaped prepare-then-submit entry point for GUI callers."""
     on_partition_submitted = kwargs.pop("on_partition_submitted", None)
+    realtime_review_workers = kwargs.pop("realtime_review_workers", None)
     log = kwargs.get("log", _noop_log)
     progress = kwargs.get("progress", _noop_progress)
     prepared = prepare_program_review(**kwargs)
@@ -923,6 +927,7 @@ def start_program_review(**kwargs) -> ProgramSubmission:
         log=log,
         progress=progress,
         on_partition_submitted=on_partition_submitted,
+        realtime_review_workers=realtime_review_workers,
     )
 
 

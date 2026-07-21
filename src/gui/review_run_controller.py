@@ -28,14 +28,29 @@ from ..programs import (
 )
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..review.reviewer import REVIEW_MODEL_DEFAULT
+from ..core.api_config import REALTIME_REVIEW_WORKER_CHOICES
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
-from ..core.ui_state import save_project_profile
+from ..core.ui_state import load_realtime_review_workers, save_project_profile
 from .project_profile_inputs import completeness_error
 from .realtime_cost_gate import should_warn_before_live_run
 from ..tracing.session import (
     start_run_recorder,
     stop_run_recorder as _stop_recorder,
 )
+
+
+def _selected_realtime_review_workers(app) -> int:
+    """Read the GUI choice defensively before the background run starts."""
+
+    fallback = load_realtime_review_workers()
+    value = getattr(app, "_realtime_workers_var", None)
+    if value is None:
+        return fallback
+    try:
+        selected = int(value.get())
+    except (AttributeError, TypeError, ValueError):
+        return fallback
+    return selected if selected in REALTIME_REVIEW_WORKER_CHOICES else fallback
 
 
 def _maybe_start_recorder(*, run_id: str, mode: str, model: str, cycle_label: str, files: list, module_id: str = "", project_profile: dict | None = None):
@@ -277,6 +292,9 @@ def start_review(app) -> None:
     app._review_transport_for_review = (
         "realtime" if (realtime_var is not None and realtime_var.get()) else "batch"
     )
+    # Snapshot concurrency before starting the worker thread. A later GUI
+    # selection affects only the next run, just like transport/program choice.
+    app._realtime_review_workers_for_review = _selected_realtime_review_workers(app)
     transport = app._review_transport_for_review
     # Run-start cost gate. The Options toggle warns when the user switches
     # into real-time, but an operator whose real-time preference was already
@@ -365,7 +383,10 @@ def start_review(app) -> None:
     app.diagnostics_button.configure(state="disabled")
 
     if transport == "realtime":
-        app.log.log_step(f"Starting real-time review of {num_specs} files (Opus 4.8)...")
+        app.log.log_step(
+            f"Starting real-time review of {num_specs} files (Opus 4.8) with up to "
+            f"{app._realtime_review_workers_for_review} concurrent spec reviews..."
+        )
     else:
         app.log.log_step(f"Submitting {num_specs} files for batch review (Opus 4.8)...")
     run_epoch = app._next_run_epoch()

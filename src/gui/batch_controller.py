@@ -222,6 +222,9 @@ def submit_batch_thread(app, run_epoch: int) -> None:
             # flag + a complete profile — profile-less runs are untouched.
             diagnostics=diag,
             review_transport=transport,
+            realtime_review_workers=getattr(
+                app, "_realtime_review_workers_for_review", None
+            ),
         )
         if transport == "realtime":
             # The reviews already ran to completion — nothing is pending
