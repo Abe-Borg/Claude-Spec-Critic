@@ -647,3 +647,178 @@ def test_partial_submission_report_distinguishes_submitted_from_expected(tmp_pat
         "submitted_requests": 1,
         "expected_requests": 2,
     }
+
+
+def _doc_all_text(path) -> str:
+    doc = Document(path)
+    parts = [p.text for p in doc.paragraphs]
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                parts.append(cell.text)
+    return "\n".join(parts)
+
+
+def test_single_module_program_report_has_one_summary_and_diagnostics(tmp_path):
+    """E6/E3: a one-module program renders a single 'Summary' heading (no
+    duplicate program-level block) plus the per-module Run Diagnostics
+    banner and Trust Model Summary that program mode previously omitted."""
+    name = "21 13 13 Fire Sprinklers.docx"
+    result = pp.ProgramPipelineResult(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(_assignment(name, ("datacenter_fire",)),),
+        module_results={"datacenter_fire": _result("datacenter_fire", name)},
+    )
+    report_path = export_report(result, tmp_path / "one-module.docx")
+    doc = Document(report_path)
+    headings = [p.text for p in doc.paragraphs if p.style.name.startswith("Heading")]
+    assert headings.count("Summary") == 1
+    assert "Program Summary" not in headings
+    assert "Run Diagnostics" in headings
+    assert "Trust Model Summary" in headings
+
+
+def test_multi_module_program_report_titles_summaries_distinctly(tmp_path):
+    """E6: a multi-module program gets one 'Program Summary' rollup plus a
+    per-module '<name> Summary' — never two verbatim 'Summary' H1 blocks."""
+    name = "00 00 00 Combined.docx"
+    result = pp.ProgramPipelineResult(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(
+            _assignment(name, ("datacenter_fire", "datacenter_architecture")),
+        ),
+        module_results={
+            "datacenter_fire": _result("datacenter_fire", name),
+            "datacenter_architecture": _result("datacenter_architecture", name),
+        },
+    )
+    report_path = export_report(result, tmp_path / "two-module.docx")
+    doc = Document(report_path)
+    headings = [p.text for p in doc.paragraphs if p.style.name.startswith("Heading")]
+    assert headings.count("Program Summary") == 1
+    assert headings.count("Summary") == 0
+    fire_name = require_module("datacenter_fire").display_name
+    arch_name = require_module("datacenter_architecture").display_name
+    assert f"{fire_name} Summary" in headings
+    assert f"{arch_name} Summary" in headings
+    # Per-module operational surfaces render once per module (E3).
+    assert headings.count("Run Diagnostics") == 2
+    assert headings.count("Trust Model Summary") == 2
+
+
+def test_program_basis_line_renders_display_label_not_machine_key(tmp_path):
+    """E10: the module code-basis line uses the cycle's display label and
+    joins non-empty identity parts (no raw machine key, no double space)."""
+    name = "21 13 13 Fire Sprinklers.docx"
+    result = pp.ProgramPipelineResult(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(_assignment(name, ("datacenter_fire",)),),
+        module_results={"datacenter_fire": _result("datacenter_fire", name)},
+    )
+    text = _doc_all_text(export_report(result, tmp_path / "basis.docx"))
+    assert "IBC/IFC 2024 model-code baseline (fallback);" in text
+    assert "dc-ibc-2024" not in text
+    assert "  ;" not in text and " ;" not in text
+
+
+def test_unsupported_routing_row_labels_confidence(tmp_path):
+    """E8i: an unsupported row's confidence is labeled as the router's
+    no-module-applies confidence, not left as a bare percentage."""
+    fire_name = "21 13 13 Fire Sprinklers.docx"
+    skipped_name = "27 10 00 Structured Cabling.docx"
+    result = pp.ProgramPipelineResult(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(
+            _assignment(fire_name, ("datacenter_fire",)),
+            _assignment(skipped_name, ()),
+        ),
+        module_results={
+            "datacenter_fire": _result("datacenter_fire", fire_name)
+        },
+    )
+    text = _doc_all_text(export_report(result, tmp_path / "routing.docx"))
+    assert "95% (confidence no module applies)" in text
+    # The supported row keeps the bare percentage.
+    assert "\n95%\n" in f"\n{text}\n".replace("95% (confidence no module applies)", "")
+
+
+def test_program_coverage_caveat_frames_subset(tmp_path):
+    """E1: a routed module whose corpus is a subset of the selection gets
+    the coverage-caveat framing above its Requirements Coverage matrix."""
+    from src.research.requirements_research import (
+        DimensionStatus,
+        RequirementsProfile,
+        ResearchItem,
+    )
+
+    fire_name = "21 13 13 Fire Sprinklers.docx"
+    skipped_name = "27 10 00 Structured Cabling.docx"
+    profile = RequirementsProfile(
+        items=[
+            ResearchItem(
+                item_id="r-aaaaaaaaaaaa",
+                dimension_id="governing_codes",
+                topic="Code",
+                category="governing_code",
+                requirement="The 2024 IBC governs.",
+                grounded=True,
+                accepted_sources=["https://example.gov/x"],
+                confidence=0.9,
+            )
+        ],
+        dimension_statuses=[
+            DimensionStatus(
+                dimension_id="governing_codes", status="completed", item_count=1
+            )
+        ],
+        research_date="2026-07-14",
+        project={"city": "Markham", "state_or_province": "ON", "country": "CA",
+                 "client_name": "ExampleCo"},
+    )
+    compliance = ReviewResult(
+        findings=[],
+        cross_check_status="completed",
+        coverage=[
+            {"requirement_id": "r-aaaaaaaaaaaa", "status": "missing",
+             "evidence": None, "fileName": None},
+        ],
+    )
+    module = require_module("datacenter_fire")
+    child = PipelineResult(
+        review_result=ReviewResult(findings=[], model="test-model"),
+        files_reviewed=[fire_name],
+        cycle_label=module.cycle.label,
+        module_id="datacenter_fire",
+        requirements_profile=profile.to_dict(),
+        compliance_result=compliance,
+    )
+    result = pp.ProgramPipelineResult(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(
+            _assignment(fire_name, ("datacenter_fire",)),
+            _assignment(skipped_name, ()),
+        ),
+        module_results={"datacenter_fire": child},
+    )
+    text = _doc_all_text(export_report(result, tmp_path / "caveat.docx"))
+    assert (
+        "Coverage was evaluated against the 1 specification(s) routed to "
+        "this module" in text
+    )
+    assert "missing from this module's subset, not from the project" in text
+    # E2: a MISSING row without evidence names the absence explicitly.
+    assert "(not found in reviewed package)" in text
+    # E4: the pinned-editions note uses fallback framing on a profile run.
+    assert "model-code fallback editions as its baseline" in text
+
+
+def test_program_report_without_subset_renders_no_caveat(tmp_path):
+    """The caveat is absent when the module reviewed every selected file."""
+    name = "21 13 13 Fire Sprinklers.docx"
+    result = pp.ProgramPipelineResult(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(_assignment(name, ("datacenter_fire",)),),
+        module_results={"datacenter_fire": _result("datacenter_fire", name)},
+    )
+    text = _doc_all_text(export_report(result, tmp_path / "no-caveat.docx"))
+    assert "Coverage was evaluated against" not in text

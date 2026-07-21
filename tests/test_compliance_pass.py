@@ -899,3 +899,185 @@ class TestEmptyDimensionReportSurface:
         text = _doc_text(out)
         assert "completed without finding any requirements" not in text
         assert "returned no items" not in text
+
+
+class TestWs6ReportSurfaces:
+    """WS6 fixes on the requirements/compliance report surfaces."""
+
+    def test_represented_evidence_cell_keeps_quote_and_file(self, tmp_path):
+        from src.output.report_exporter import export_report
+
+        compliance = ReviewResult(
+            findings=[],
+            cross_check_status="completed",
+            coverage=[
+                {"requirement_id": "r-aaaaaaaaaaaa", "status": "represented",
+                 "evidence": "Comply with the 2024 IBC.",
+                 "fileName": "21 13 13 Wet-Pipe.docx"},
+                {"requirement_id": "r-bbbbbbbbbbbb", "status": "missing",
+                 "evidence": None, "fileName": "21 13 13 Wet-Pipe.docx"},
+            ],
+        )
+        out = tmp_path / "report.docx"
+        export_report(
+            _pipeline_result(
+                _enabled_module(),
+                requirements_profile=_profile().to_dict(),
+                compliance_result=compliance,
+            ),
+            out,
+        )
+        text = _doc_text(out)
+        assert "Comply with the 2024 IBC. — 21 13 13 Wet-Pipe.docx" in text
+        # E2: a MISSING row never renders a bare filename as pseudo-evidence.
+        assert "(not found in reviewed package)" in text
+
+    def test_profile_section_headings_preserve_initialisms(self, tmp_path):
+        from src.output.report_exporter import export_report
+        from src.research.requirements_research import ResearchItem
+
+        profile = _profile(
+            [
+                _item(
+                    "r-aaaaaaaaaaaa",
+                    "AHJ requires witnessed flow tests.",
+                    category="ahj_requirement",
+                ),
+            ]
+        )
+        out = tmp_path / "report.docx"
+        export_report(
+            _pipeline_result(
+                _enabled_module(), requirements_profile=profile.to_dict()
+            ),
+            out,
+        )
+        text = _doc_text(out)
+        # E9: explicit display map, not str.title().
+        assert "AHJ Requirements" in text
+        assert "Ahj Requirements" not in text
+
+    def test_profile_less_pinned_editions_note_is_byte_identical(self):
+        """E4/E10 must not disturb the CA wording: exact string pin."""
+        from src.core.code_cycles import CALIFORNIA_2025
+        from src.output.report_exporter import _render_pinned_editions_note
+
+        note = _render_pinned_editions_note(CALIFORNIA_2025, "California")
+        assert note.startswith(
+            "This review pinned the following standards editions per the "
+            "2025 California cycle: NFPA 13 2025, as amended by California; "
+        )
+        assert note.endswith(
+            "Findings referencing other editions should be reviewed for "
+            "relevance to the current cycle."
+        )
+        assert "fallback" not in note
+
+    def test_profile_governed_pinned_editions_note_uses_fallback_framing(self):
+        from src.core.code_cycles import CALIFORNIA_2025
+        from src.output.report_exporter import _render_pinned_editions_note
+
+        note = _render_pinned_editions_note(
+            CALIFORNIA_2025, "California", profile_governed=True
+        )
+        assert note.startswith(
+            "This review carried the following model-code fallback editions "
+            "as its baseline: "
+        )
+        assert "Jurisdiction & Client Requirements section above" in note
+        assert "pinned the following standards editions per the" not in note
+
+    def test_verification_scope_note_only_with_compliance(self, tmp_path):
+        """E7: the clarifying sentence renders only when a compliance result
+        exists, so the CA summary block stays byte-identical."""
+        from docx import Document as _Document
+
+        from src.output.report_exporter import _write_summary_table
+        from src.verification.verifier import VerificationResult
+
+        f = Finding(
+            severity="HIGH",
+            fileName="a.docx",
+            section="1",
+            issue="x",
+            actionType="REPORT_ONLY",
+            existingText=None,
+            replacementText=None,
+            codeReference="",
+        )
+        f.verification = VerificationResult(
+            verdict="CONFIRMED", explanation="ok", grounded=True
+        )
+        comp_finding = Finding(
+            severity="HIGH",
+            fileName="a.docx",
+            section="[Compliance]",
+            issue="missing requirement",
+            actionType="REPORT_ONLY",
+            existingText=None,
+            replacementText=None,
+            codeReference="",
+        )
+        comp_finding.verification = VerificationResult(
+            verdict="CONFIRMED", explanation="ok", grounded=True
+        )
+        compliance = ReviewResult(
+            findings=[comp_finding], cross_check_status="completed"
+        )
+        review = ReviewResult(findings=[f])
+
+        with_comp = _Document()
+        _write_summary_table(with_comp, review, None, compliance_result=compliance)
+        with_text = "\n".join(p.text for p in with_comp.paragraphs)
+        # Tally includes the compliance finding: 2 confirmed.
+        assert "2 confirmed" in with_text
+        assert (
+            "Verification counts include review, cross-check, and compliance "
+            "findings." in with_text
+        )
+
+        without = _Document()
+        _write_summary_table(without, review, None)
+        without_text = "\n".join(p.text for p in without.paragraphs)
+        assert "1 confirmed" in without_text
+        assert "Verification counts include" not in without_text
+
+
+class TestPackageSubsetNote:
+    """E1 prompt side: a routed-subset run carries the subset note even on
+    the non-chunked path, so 'missing' is classified relative to the subset."""
+
+    def test_package_subset_adds_note_on_non_chunked_path(
+        self, fake_client, stub_compliance_tokens
+    ):
+        fake_client["route"] = _route_by_marker(
+            {"Comply": [compliance_tool_use_response()]}
+        )
+        run_chunked_compliance_check(
+            [_spec("Comply with the 2024 IBC as amended.")],
+            _profile(),
+            [],
+            cycle=_enabled_module().cycle,
+            package_subset=True,
+        )
+        (call,) = fake_client["client"].calls
+        assert "one subset of a larger specification package" in (
+            call["messages"][0]["content"]
+        )
+
+    def test_default_non_chunked_path_has_no_note(
+        self, fake_client, stub_compliance_tokens
+    ):
+        fake_client["route"] = _route_by_marker(
+            {"Comply": [compliance_tool_use_response()]}
+        )
+        run_chunked_compliance_check(
+            [_spec("Comply with the 2024 IBC as amended.")],
+            _profile(),
+            [],
+            cycle=_enabled_module().cycle,
+        )
+        (call,) = fake_client["client"].calls
+        assert "one subset of a larger specification package" not in (
+            call["messages"][0]["content"]
+        )

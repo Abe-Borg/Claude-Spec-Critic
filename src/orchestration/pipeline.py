@@ -1621,6 +1621,7 @@ def run_compliance_for_batch(
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
     band: tuple[float, float] | None = None,
+    package_subset: bool = False,
 ) -> CollectedBatchState:
     """Run the WS-4 local-code compliance pass over a collected batch.
 
@@ -1724,6 +1725,10 @@ def run_compliance_for_batch(
         existing,
         project_context=project_context,
         cycle=cycle,
+        # A routed program partition is a subset of the user's selection —
+        # tell the prompt so "missing" is classified relative to the subset,
+        # not the whole package (E1). Single-module runs default to False.
+        package_subset=package_subset,
         log=log,
     )
     # Deterministic anchor validation (WS-4, D-16): compliance ADD/EDIT
@@ -2234,6 +2239,7 @@ def run_batch_collection_headless(
     progress: ProgressFn = _noop_progress,
     include_drawing_impact: bool = True,
     progress_band: tuple[float, float] = COLLECT_PROGRESS_SPAN,
+    package_subset: bool = False,
 ) -> PipelineResult:
     """Collect → verify → cross-check → finalize a submitted batch, headlessly.
 
@@ -2285,6 +2291,7 @@ def run_batch_collection_headless(
         log=log,
         progress=progress,
         band=collect_stage_band("compliance", progress_band),
+        package_subset=package_subset,
     )
     cross_findings = (
         list(review_state.cross_check_result.findings)

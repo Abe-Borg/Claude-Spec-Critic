@@ -698,3 +698,36 @@ def test_route_specs_preserves_input_order_and_zero_to_many_cardinality() -> Non
         "electrical.docx",
     )
     assert tuple(len(decision.module_ids) for decision in decisions) == (0, 1, 2, 1)
+
+
+def test_labeled_compact_csi_is_accepted_in_titles() -> None:
+    """E8: ``SECTION 072726`` — the explicit SECTION label makes the compact
+    six digits credible CSI metadata even in a title/filename."""
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="SECTION 072726 Air Barriers.docx",
+            section_title="SECTION 072726 - Membrane Air Barriers",
+            content="Provide complete air-barrier work.",
+        )
+    )
+    assert decision.state is RoutingState.SUPPORTED
+    assert decision.module_ids == (DATACENTER_ARCHITECTURE_MODULE_ID,)
+    assert any(
+        item.source is RoutingEvidenceSource.SECTION_TITLE
+        and item.signal == "07 27 26"
+        for item in decision.evidence
+    )
+
+
+def test_bare_compact_numeric_in_title_stays_rejected() -> None:
+    """The SECTION label is load-bearing: a bare compact numeric in a title
+    is still not CSI metadata."""
+    decision = route_spec(
+        SpecRoutingInput(
+            spec_id="072726 Project Reference.docx",
+            section_title="072726 Project Reference",
+            content="General project requirements.",
+        )
+    )
+    assert decision.state is RoutingState.UNSUPPORTED
+    assert decision.evidence == ()

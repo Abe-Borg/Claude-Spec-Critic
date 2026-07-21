@@ -655,6 +655,7 @@ def run_chunked_compliance_check(
     cycle: CodeCycle = DEFAULT_CYCLE,
     model: str = COMPLIANCE_MODEL_DEFAULT,
     max_retries: int = 3,
+    package_subset: bool = False,
     log: LogFn = _noop_log,
 ) -> ReviewResult:
     """Size-aware compliance entry point (the pipeline calls this).
@@ -666,6 +667,14 @@ def run_chunked_compliance_check(
     output (status stays ``completed`` when ≥1 chunk completed), and the
     per-chunk tally is recorded in the summary plus
     ``chunk_failures`` / ``chunk_skips`` for the diagnostics banner.
+
+    ``package_subset`` marks the corpus as a routed subset of a larger
+    selection (a program run where other files went to other modules or
+    were skipped): the prompt's subset note then applies even on the
+    non-chunked path, so the model classifies absence relative to the
+    subset instead of declaring the whole package missing a requirement.
+    Chunked passes carry the note regardless (each chunk is a subset by
+    construction).
     """
     system_tokens = count_tokens(_compliance_system_prompt(cycle))
     full_message = _build_compliance_user_message(
@@ -681,6 +690,7 @@ def run_chunked_compliance_check(
             cycle=cycle,
             model=model,
             max_retries=max_retries,
+            chunk_subset=package_subset,
             log=log,
         )
 

@@ -667,12 +667,22 @@ def collect_program_results(
                 )
 
             log(f"Collecting routed module: {module.display_name}", level="step")
+            # This module's corpus is a routed subset whenever the program
+            # skipped files as unsupported or routed other selected files
+            # elsewhere — the compliance prompt then classifies "missing"
+            # relative to the subset, not the whole selection (E1).
+            selected = {Path(name).name for name in submission.selected_files}
+            child_files = {Path(name).name for name in child.files_reviewed}
+            package_subset = bool(submission.skipped_assignments) or (
+                child_files != selected
+            )
             try:
                 result = run_batch_collection_headless(
                     child,
                     cache=cache,
                     log=log,
                     progress=child_progress,
+                    package_subset=package_subset,
                     # Drawings are shared program context. Running this inside every
                     # child would multiply spend and produce competing narratives.
                     include_drawing_impact=False,

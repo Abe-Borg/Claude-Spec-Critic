@@ -142,6 +142,14 @@ class CodeCycle:
     asce7: str = ""
     asce7_previous: str = ""
     standards: tuple[StandardEdition, ...] = field(default_factory=tuple)
+    # Optional human-readable label for report prose. ``label`` is a
+    # machine key (it namespaces the verification cache and backs the
+    # module_for_cycle lookup) and reads poorly in a sentence — e.g.
+    # ``dc-architecture-ibc-2024``. When set, report surfaces render this
+    # instead; empty (the CA default) keeps every existing surface
+    # byte-identical. Additive last field so the frozen dataclass's
+    # positional construction is unchanged.
+    display_label: str = ""
 
     def code_year(self, key: str) -> str:
         """Year of the base code with template key ``key`` (``""`` if unknown)."""

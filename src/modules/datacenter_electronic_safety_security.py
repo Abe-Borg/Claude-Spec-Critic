@@ -45,6 +45,7 @@ _IFC_CH80 = (
 
 DATACENTER_ELECTRONIC_SAFETY_SECURITY_IBC_2024 = CodeCycle(
     label="dc-electronic-safety-fire-alarm-ibc-2024",
+    display_label="IBC 2024 / NFPA 72-2022 model-code baseline (fallback)",
     base_codes=(
         BaseCode(
             "ibc",
