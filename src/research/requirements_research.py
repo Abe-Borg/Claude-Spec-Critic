@@ -915,6 +915,19 @@ def run_requirements_research(
         level="step",
     )
     progress(0.0, f"Researching location requirements (0/{len(dimensions)} dimensions)...")
+    # Phase-start diagnostics row (D3): the per-dimension rows are recorded
+    # post-hoc as each worker completes, so without this the phase's first
+    # event lands minutes into the fan-out and its duration window under-
+    # reports. Best-effort — diagnostics must never sink research.
+    if diag is not None:
+        try:
+            diag.log(
+                "location_research",
+                "step",
+                f"Research started: {len(dimensions)} dimension(s)",
+            )
+        except Exception:  # noqa: BLE001 — diagnostics must never sink research
+            pass
 
     corpus_signals_block = ""
     if corpus_signals is not None:

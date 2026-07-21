@@ -947,6 +947,11 @@ class BatchSubmission:
     # pending-batch resume story by design (``PendingBatch.from_submission``
     # refuses it).
     realtime_results: dict[str, ReviewResult] | None = None
+    # Wall-clock start of the whole run (before research/extraction), so the
+    # report's total time covers everything the user paid for — not just
+    # post-submit. Additive: 0.0 (legacy states / callers) falls back to
+    # ``job.created_at`` in finalize_batch_result.
+    run_started_at: float = 0.0
 
 
 def _research_phase_applies(module: ReviewModule, profile: ProjectProfile | None, *, log: LogFn = _noop_log) -> bool:
@@ -1063,6 +1068,11 @@ class PreparedBatchReview:
     review_transport: str
     diagnostics: object | None = None
     trace_pipeline: object | None = None
+    # Wall-clock start of the whole run (stamped FIRST in
+    # prepare_batch_review, before research/extraction). Additive with a
+    # falsy default so legacy constructors keep the old
+    # ``job.created_at``-based elapsed math.
+    run_started_at: float = 0.0
 
 
 def prepare_batch_review(
@@ -1080,6 +1090,10 @@ def prepare_batch_review(
     review_transport: str = "batch",
 ) -> PreparedBatchReview:
     """Research and preflight one module partition without submitting it."""
+    # FIRST: the run's wall-clock start. Everything the user pays for —
+    # research, extraction, preflight — happens after this stamp, so the
+    # report's total elapsed time can cover it (D2).
+    run_started_at = time.time()
     cycle = module.cycle
     profile_dict = project_profile.to_dict() if project_profile is not None else None
     trace_pipeline = _trace.capture_pipeline_start(
@@ -1147,6 +1161,7 @@ def prepare_batch_review(
         review_transport=review_transport,
         diagnostics=diagnostics,
         trace_pipeline=trace_pipeline,
+        run_started_at=run_started_at,
     )
 
 
@@ -1248,6 +1263,7 @@ def submit_prepared_batch_review(
         trace_span_id=(trace_pipeline.span_id if trace_pipeline is not None else ""),
         review_transport=review_transport,
         realtime_results=realtime_results,
+        run_started_at=prepared_run.run_started_at,
     )
 
 
@@ -2041,7 +2057,14 @@ def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
         module_id=getattr(state.submission, "module_id", "") or DEFAULT_MODULE.module_id,
         project_profile=getattr(state.submission, "project_profile", None),
         requirements_profile=getattr(state.submission, "requirements_profile", None),
-        total_elapsed_seconds=time.time() - state.submission.job.created_at,
+        # Prefer the run's true wall-clock start (stamped before research /
+        # extraction) so the reported time covers the whole paid run;
+        # legacy/recovered submissions without it keep the submit-time base.
+        total_elapsed_seconds=time.time()
+        - (
+            getattr(state.submission, "run_started_at", 0.0)
+            or state.submission.job.created_at
+        ),
         # Pass the deterministic-check lists through to the report.
         code_cycle_alerts=list(state.code_cycle_alerts),
         structural_alerts=list(state.structural_alerts),
@@ -2074,6 +2097,7 @@ def reconstruct_batch_submission(
     created_at: float,
     project_profile: dict | None = None,
     requirements_profile: dict | None = None,
+    run_started_at: float = 0.0,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
 ) -> BatchSubmission:
@@ -2198,6 +2222,7 @@ def reconstruct_batch_submission(
         duplicate_paragraph_alerts=dup,
         polity_alerts=polity,
         trace_span_id="",
+        run_started_at=run_started_at,
     )
 
 

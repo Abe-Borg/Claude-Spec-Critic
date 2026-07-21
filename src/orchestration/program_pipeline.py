@@ -93,6 +93,10 @@ class PreparedProgramReview:
     project_profile: dict | None = None
     review_transport: str = "batch"
     prepared_at: float = field(default_factory=time.time)
+    # Wall-clock start of the whole run — stamped FIRST in
+    # prepare_program_review, before research/extraction, so total elapsed
+    # time covers the paid preparation phases (D2). Additive default 0.0.
+    run_started_at: float = 0.0
 
     def __post_init__(self) -> None:
         self.assignments = tuple(self.assignments)
@@ -121,6 +125,10 @@ class ProgramSubmission:
     project_profile: dict | None = None
     review_transport: str = "batch"
     submitted_at: float = field(default_factory=time.time)
+    # Wall-clock start of the whole run (see PreparedProgramReview). 0.0 on
+    # legacy/recovered submissions — elapsed math falls back to
+    # ``submitted_at``.
+    run_started_at: float = 0.0
 
     def __post_init__(self) -> None:
         self.assignments = tuple(self.assignments)
@@ -451,6 +459,9 @@ def prepare_program_review(
 ) -> PreparedProgramReview:
     """Prepare all routed partitions before creating any remote review batch."""
 
+    # FIRST line: the run's wall-clock start, before research / extraction /
+    # preflight, so total elapsed time covers everything the user paid for.
+    run_started_at = time.time()
     program = require_program(program_id)
     assignment_tuple = tuple(assignments)
     unresolved = [
@@ -504,6 +515,7 @@ def prepare_program_review(
         partitions=prepared_partitions,
         project_profile=(project_profile.to_dict() if project_profile is not None else None),
         review_transport=review_transport,
+        run_started_at=run_started_at,
     )
 
 
@@ -559,6 +571,7 @@ def submit_prepared_program_review(
                 project_profile=prepared.project_profile,
                 review_transport=prepared.review_transport,
                 submitted_at=prepared.prepared_at,
+                run_started_at=prepared.run_started_at,
             )
             raise ProgramSubmissionError(
                 f"Could not submit {module_id!r} after "
@@ -578,6 +591,7 @@ def submit_prepared_program_review(
             project_profile=prepared.project_profile,
             review_transport=prepared.review_transport,
             submitted_at=prepared.prepared_at,
+            run_started_at=prepared.run_started_at,
         )
         if on_partition_submitted is not None:
             on_partition_submitted(current)
@@ -588,6 +602,7 @@ def submit_prepared_program_review(
         project_profile=prepared.project_profile,
         review_transport=prepared.review_transport,
         submitted_at=prepared.prepared_at,
+        run_started_at=prepared.run_started_at,
     )
 
 
@@ -610,8 +625,17 @@ def collect_program_results(
     *,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
+    diagnostics=None,
 ) -> ProgramPipelineResult:
-    """Collect every child through its unchanged single-module pipeline."""
+    """Collect every child through its unchanged single-module pipeline.
+
+    ``diagnostics`` is an optional duck-typed ``DiagnosticsReport``; when
+    provided, each collected child's review / verification / cross-check /
+    compliance telemetry is recorded through the shared Tk-free recorders
+    (``diag_recording``) — the same rows the single-module GUI branch
+    records — so a program run's diagnostics no longer show zero
+    collection-stage API telemetry.
+    """
 
     program = require_program(submission.program_id)
     cache = _make_verification_cache(log=log)
@@ -668,6 +692,11 @@ def collect_program_results(
                 )
             else:
                 results[module_id] = result
+                _record_child_diagnostics(
+                    diagnostics,
+                    result,
+                    transport=submission.review_transport,
+                )
             completed += count
             progress(
                 55.0 + (completed / total) * 40.0,
@@ -707,7 +736,41 @@ def collect_program_results(
         module_errors=module_errors,
         submitted_files=tuple(submission.files_reviewed),
         submitted_request_count=submission.routed_request_count,
-        total_elapsed_seconds=time.time() - submission.submitted_at,
+        total_elapsed_seconds=time.time()
+        - (submission.run_started_at or submission.submitted_at),
+    )
+
+
+def _record_child_diagnostics(diagnostics, result: PipelineResult, *, transport: str) -> None:
+    """Record one collected child's telemetry through the shared recorders.
+
+    Mirrors the single-module GUI branch's recording order: review
+    collection, round-1 verification (review findings), cross-check,
+    compliance, then round-2 verification (cross-check + compliance
+    findings) under the ``cross_check_verification`` phase.
+    """
+    if diagnostics is None:
+        return
+    from .diag_recording import (
+        record_compliance,
+        record_cross_check,
+        record_review_collect,
+        record_verification_findings,
+    )
+
+    record_review_collect(diagnostics, result.review_result, transport=transport)
+    review_findings = (
+        list(result.review_result.findings) if result.review_result else []
+    )
+    record_verification_findings(diagnostics, review_findings, transport=transport)
+    record_cross_check(diagnostics, result.cross_check_result)
+    record_compliance(diagnostics, result.compliance_result)
+    round2 = [
+        *(result.cross_check_result.findings if result.cross_check_result else []),
+        *(result.compliance_result.findings if result.compliance_result else []),
+    ]
+    record_verification_findings(
+        diagnostics, round2, transport=transport, phase="cross_check_verification"
     )
 
 

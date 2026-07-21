@@ -105,6 +105,10 @@ class PendingBatch:
     project_context: str = ""
     cross_check_enabled: bool = False
     submitted_at: float = 0.0
+    # Wall-clock start of the whole run (pre-research/extraction; D2).
+    # Additive — legacy state files load the 0.0 default, and the elapsed
+    # math falls back to submit time.
+    run_started_at: float = 0.0
     run_id: str = ""
     app_version: str = ""
     # Keep the established single-batch format at v1. Schema v2 is reserved
@@ -147,6 +151,7 @@ class PendingBatch:
             project_context=submission.project_context,
             cross_check_enabled=submission.cross_check_enabled,
             submitted_at=float(submission.job.created_at or time.time()),
+            run_started_at=float(getattr(submission, "run_started_at", 0.0) or 0.0),
             run_id=run_id,
             app_version=app_version,
         )
@@ -179,6 +184,7 @@ class PendingBatch:
             created_at=self.submitted_at,
             project_profile=self.project_profile,
             requirements_profile=self.requirements_profile,
+            run_started_at=self.run_started_at,
             log=log,
             progress=progress,
         )
@@ -194,6 +200,9 @@ class PendingProgramRun:
     project_profile: dict | None = None
     review_transport: str = "batch"
     submitted_at: float = 0.0
+    # Wall-clock start of the whole run (pre-research/extraction; D2).
+    # Additive — legacy manifests load the 0.0 default.
+    run_started_at: float = 0.0
     run_id: str = ""
     app_version: str = ""
     schema_version: int = _SCHEMA_VERSION
@@ -234,6 +243,7 @@ class PendingProgramRun:
             project_profile=submission.project_profile,
             review_transport=submission.review_transport,
             submitted_at=submission.submitted_at,
+            run_started_at=float(getattr(submission, "run_started_at", 0.0) or 0.0),
             run_id=run_id,
             app_version=app_version,
         )
@@ -277,6 +287,7 @@ class PendingProgramRun:
             project_profile=self.project_profile,
             review_transport=self.review_transport,
             submitted_at=self.submitted_at,
+            run_started_at=self.run_started_at,
         )
 
 
@@ -331,6 +342,7 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
     if not batch_id:
         raise ValueError("pending batch has no usable batch_id")
     submitted = data.get("submitted_at")
+    run_started = data.get("run_started_at")
     request_map = data.get("request_map")
     profile = data.get("project_profile")
     requirements = data.get("requirements_profile")
@@ -350,6 +362,9 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
         cross_check_enabled=bool(data.get("cross_check_enabled", False)),
         submitted_at=(
             float(submitted) if isinstance(submitted, (int, float)) else 0.0
+        ),
+        run_started_at=(
+            float(run_started) if isinstance(run_started, (int, float)) else 0.0
         ),
         run_id=_str("run_id"),
         app_version=_str("app_version"),
@@ -451,6 +466,11 @@ def load_pending_run(
         ),
         submitted_at=(
             float(submitted) if isinstance(submitted, (int, float)) else 0.0
+        ),
+        run_started_at=(
+            float(data.get("run_started_at"))
+            if isinstance(data.get("run_started_at"), (int, float))
+            else 0.0
         ),
         run_id=str(data.get("run_id") or ""),
         app_version=str(data.get("app_version") or ""),

@@ -401,21 +401,36 @@ class DiagnosticsReport:
         warning_events = [e for e in self.events if e.level == "warning"]
         success_events = [e for e in self.events if e.level == "success"]
 
-        # Phase durations: first event to last event per phase
+        # Phase durations: first event to last event per phase. Phase windows
+        # can overlap (events interleave across phases), and a phase whose
+        # work was recorded post-hoc as a single event spans 0.0 — for those,
+        # fall back to the per-call ``elapsed_seconds`` sum the events carry
+        # (e.g. the review batch collection records one row with the real
+        # call time), so a 261s review no longer reads as 0.0s.
         phase_times: dict[str, dict] = {}
+        phase_call_seconds: dict[str, float] = {}
         for e in self.events:
             if e.phase not in phase_times:
                 phase_times[e.phase] = {"start": e.elapsed, "end": e.elapsed}
             else:
                 phase_times[e.phase]["end"] = e.elapsed
+            if e.data:
+                call_elapsed = e.data.get("elapsed_seconds")
+                if isinstance(call_elapsed, (int, float)) and call_elapsed > 0:
+                    phase_call_seconds[e.phase] = (
+                        phase_call_seconds.get(e.phase, 0.0) + float(call_elapsed)
+                    )
 
             if e.data and any(key in e.data for key in ("verdict", "confidence")):
                 synthetic = phase_times.setdefault("verification", {"start": e.elapsed, "end": e.elapsed})
                 synthetic["start"] = min(synthetic["start"], e.elapsed)
                 synthetic["end"] = max(synthetic["end"], e.elapsed)
-        phase_durations = {
-            p: round(t["end"] - t["start"], 2) for p, t in phase_times.items()
-        }
+        phase_durations = {}
+        for p, t in phase_times.items():
+            span = round(t["end"] - t["start"], 2)
+            if span == 0.0 and phase_call_seconds.get(p, 0.0) > 0:
+                span = round(phase_call_seconds[p], 2)
+            phase_durations[p] = span
 
         # Aggregate token data from events
         total_input_tokens = 0
@@ -937,6 +952,9 @@ class DiagnosticsReport:
             lines.append("  Phase Durations:")
             for phase, dur in s["phase_durations"].items():
                 lines.append(f"    {phase:20s} {dur:.1f}s")
+            lines.append(
+                "    (phase windows may overlap; single-call phases show per-call time)"
+            )
         # Surface output-size and search-budget usage so operators can see
         # whether dynamic caps and ``max_uses`` defaults match real
         # workloads.
