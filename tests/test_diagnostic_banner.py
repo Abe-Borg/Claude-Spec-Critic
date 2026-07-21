@@ -590,3 +590,69 @@ class TestTrackedChangesAdvisory:
                     assert shd is None  # no red highlight on an informational row
                     return
         raise AssertionError("tracked-changes advisory row not found")
+
+
+# ---------------------------------------------------------------------------
+# 6. Research honesty rows (WS3 / B1)
+# ---------------------------------------------------------------------------
+
+
+class TestResearchEmptyDimensionRow:
+    def _profile_dict(self, *, empty: bool) -> dict:
+        from src.research import RequirementsProfile
+        from src.research.requirements_research import DimensionStatus, ResearchItem
+
+        items = [
+            ResearchItem(
+                item_id="r-aaaaaaaaaaaa",
+                dimension_id="alpha",
+                topic="Building code",
+                category="governing_code",
+                requirement="The 2024 IBC as amended governs.",
+                grounded=True,
+                confidence=0.9,
+            )
+        ]
+        statuses = [
+            DimensionStatus(dimension_id="alpha", status="completed", item_count=1),
+            DimensionStatus(
+                dimension_id="beta",
+                status="completed",
+                item_count=0 if empty else 1,
+            ),
+        ]
+        return RequirementsProfile(
+            items=items, dimension_statuses=statuses, research_date="2026-07-21"
+        ).to_dict()
+
+    def _summary_for(self, *, empty: bool) -> dict:
+        class _Result:
+            requirements_profile = self._profile_dict(empty=empty)
+
+        return _findings_to_summary([], pipeline_result=_Result())
+
+    def test_summarizer_counts_empty_completed_dimensions(self):
+        summary = self._summary_for(empty=True)
+        assert summary["research"]["dimensions_empty"] == 1
+        assert summary["research"]["dimensions_failed"] == 0
+
+    def test_no_empty_dimensions_reports_zero(self):
+        summary = self._summary_for(empty=False)
+        assert summary["research"]["dimensions_empty"] == 0
+
+    def _banner_text_and_shading(self, summary: dict):
+        from docx import Document as _Document
+
+        doc = _Document()
+        _write_run_diagnostics_banner(doc, summary)
+        return _all_text_from(doc)
+
+    def test_banner_row_flags_empty_dimensions(self):
+        text = self._banner_text_and_shading(self._summary_for(empty=True))
+        assert "Location/client research" in text
+        assert "; 1 empty" in text
+
+    def test_banner_row_clean_when_no_empty_dimensions(self):
+        text = self._banner_text_and_shading(self._summary_for(empty=False))
+        assert "Location/client research" in text
+        assert "empty" not in text

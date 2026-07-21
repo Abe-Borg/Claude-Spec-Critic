@@ -698,6 +698,12 @@ def build_verification_request(
         # so oversized ones are elided (same guard as the realtime loops).
         messages.append({"role": "assistant", "content": assistant_content})
         messages = sanitize_messages_for_resend(messages)
+        # NOTE: the realtime continuation loops additionally mark a
+        # message-level cache breakpoint here (see
+        # ``core.continuation_cache.mark_continuation_cache_breakpoint``).
+        # Adopting it for batch continuations is a possible follow-up —
+        # batch items land at unpredictable times, so the cache-hit odds are
+        # lower and the marker has not been wired in yet.
 
     tools = build_verification_tools_from_decision(
         decision, user_location=user_location

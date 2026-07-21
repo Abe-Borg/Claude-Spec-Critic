@@ -36,6 +36,7 @@ from .base import (
 # particular project location.
 DATACENTER_ARCHITECTURE_IBC_2024 = CodeCycle(
     label="dc-architecture-ibc-2024",
+    display_label="IBC 2024 model-code baseline (fallback)",
     base_codes=(
         BaseCode(
             "ibc",

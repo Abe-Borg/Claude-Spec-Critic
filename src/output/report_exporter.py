@@ -58,6 +58,12 @@ from ..research import (
     RequirementsProfile,
 )
 from ..verification.verification_cache import default_cache_path
+from .verification_reconciliation import (
+    collect_verification_corrections,
+    correction_marker_text,
+    corrections_by_item_id,
+    unattributed_corrections,
+)
 from .report_status import (
     EDIT_ACTION_DISPLAY_ORDER,
     EditActionLabel,
@@ -569,6 +575,9 @@ def _summarize_run_diagnostics(
             "dimensions_total": len(profile.dimension_statuses),
             "dimensions_completed": profile.completed_dimensions,
             "dimensions_failed": profile.failed_dimensions,
+            # Completed-with-0-items dimensions: unresearched areas, not
+            # clean ones — the banner highlights them like failures.
+            "dimensions_empty": len(profile.empty_completed_dimensions),
             "item_count": len(profile.items),
             "ungrounded_count": sum(1 for i in profile.items if not i.grounded),
         }
@@ -805,13 +814,18 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         completed = int(research.get("dimensions_completed", 0) or 0)
         total = int(research.get("dimensions_total", 0) or 0)
         failed = int(research.get("dimensions_failed", 0) or 0)
+        empty = int(research.get("dimensions_empty", 0) or 0)
         items = int(research.get("item_count", 0) or 0)
         ungrounded = int(research.get("ungrounded_count", 0) or 0)
         research_value = (
             f"{completed} of {total} dimensions completed; "
             f"{items} item{'s' if items != 1 else ''} ({ungrounded} ungrounded)"
         )
-        rows.append(("Location/client research", research_value, failed > 0))
+        if empty:
+            research_value += f"; {empty} empty"
+        rows.append(
+            ("Location/client research", research_value, failed > 0 or empty > 0)
+        )
 
     compliance = summary.get("compliance")
     if compliance is not None:
@@ -1085,6 +1099,27 @@ _COVERAGE_STATUS_STYLES: dict[str, tuple[str, str, RGBColor]] = {
 # cite?" table, D-13 [FT]).
 _EDITION_CATEGORIES = ("governing_code", "referenced_standard", "local_amendment")
 
+# Display headings for the profile sections. The section names are rendered
+# ALL-CAPS in the context block; ``str.title()`` mangled the initialisms
+# ("Ahj Requirements"), so the report uses an explicit map (unknown names
+# fall back to title-case).
+_PROFILE_SECTION_HEADINGS: dict[str, str] = {
+    "GOVERNING CODES & AMENDMENTS": "Governing Codes & Amendments",
+    "AHJ REQUIREMENTS": "AHJ Requirements",
+    "CLIENT & INSURER STANDARDS": "Client & Insurer Standards",
+    "SITE ENVIRONMENT": "Site Environment",
+    "OTHER": "Other",
+}
+
+
+def _add_correction_marker(paragraph, corrections_for_item) -> None:
+    """Append the bold amber verification-correction marker(s) (E5)."""
+    for correction in corrections_for_item:
+        marker = paragraph.add_run(f"  {correction_marker_text(correction)}")
+        marker.bold = True
+        marker.font.size = Pt(9)
+        marker.font.color.rgb = RGBColor(204, 132, 0)
+
 
 def _requirements_detail_line(item) -> str:
     parts = []
@@ -1103,6 +1138,9 @@ def _write_requirements_section(
     requirements_profile: RequirementsProfile,
     compliance_result,
     module: ReviewModule,
+    *,
+    coverage_caveat: str | None = None,
+    corrections: list | None = None,
 ) -> None:
     """Render the "Jurisdiction & Client Requirements" section (D-13).
 
@@ -1114,7 +1152,14 @@ def _write_requirements_section(
     right" earns trust), and the Process & Schedule Advisories subsection.
     Rendered only when the run produced a requirements profile, so
     profile-less reports are byte-identical.
+
+    ``coverage_caveat`` (program mode) frames the coverage matrix against
+    the routed subset instead of the whole selection. ``corrections``
+    (:func:`verification_reconciliation.collect_verification_corrections`)
+    annotates researched claims that verification later corrected/disputed.
     """
+    corrections = list(corrections or [])
+    corrections_by_item = corrections_by_item_id(corrections)
     doc.add_heading("Jurisdiction & Client Requirements", level=1)
 
     project = ProjectProfile.from_dict(requirements_profile.project)
@@ -1129,7 +1174,8 @@ def _write_requirements_section(
         if project is not None
         else ""
     )
-    intro_run = intro.add_run(
+    empty_dimensions = requirements_profile.empty_completed_dimensions
+    intro_text = (
         f"{identity}Requirements researched via location/client web research "
         f"({requirements_profile.completed_dimensions} of {total} dimensions "
         f"completed, {searches} web searches), researched "
@@ -1137,6 +1183,11 @@ def _write_requirements_section(
         "as-of that date. Items marked [UNVERIFIED] could not be grounded in "
         "retrieved sources and are never treated as controlling."
     )
+    if empty_dimensions:
+        intro_text += (
+            f" {len(empty_dimensions)} dimension(s) returned no items."
+        )
+    intro_run = intro.add_run(intro_text)
     intro_run.font.size = Pt(10)
     intro_run.font.italic = True
     intro_run.font.color.rgb = RGBColor(100, 100, 100)
@@ -1154,6 +1205,32 @@ def _write_requirements_section(
         warn_run.font.size = Pt(10)
         warn_run.font.italic = True
         warn_run.font.color.rgb = RGBColor(192, 0, 0)
+    if empty_dimensions:
+        # A 0-item completion burned its search budget and produced nothing:
+        # coverage in that area is unverified, not confirmed-clean.
+        empty_warn = doc.add_paragraph()
+        empty_warn_run = empty_warn.add_run(
+            f"⚠ {len(empty_dimensions)} research dimension(s) completed "
+            "without finding any requirements "
+            f"({', '.join(s.dimension_id for s in empty_dimensions)}); "
+            "coverage in those areas is unverified, not confirmed-clean."
+        )
+        empty_warn_run.font.size = Pt(10)
+        empty_warn_run.font.italic = True
+        empty_warn_run.font.color.rgb = RGBColor(192, 0, 0)
+    # Profile-level reconciliation caution (E5): when verification
+    # corrected/disputed findings that name no specific requirement item,
+    # the per-item markers below can't attribute them — say so once.
+    if unattributed_corrections(corrections):
+        recon = doc.add_paragraph()
+        recon_run = recon.add_run(
+            "Verification corrected or disputed one or more claims in this "
+            "run (see Findings); individual requirement items may be "
+            "affected even where not flagged below."
+        )
+        recon_run.font.size = Pt(10)
+        recon_run.font.italic = True
+        recon_run.font.color.rgb = RGBColor(204, 132, 0)
 
     # --- Requirement items, grouped by the same sections as the rendered
     # context block so the report and the model saw the same organization.
@@ -1165,7 +1242,10 @@ def _write_requirements_section(
         section_items = sections[section_name]
         if not section_items:
             continue
-        doc.add_heading(section_name.title(), level=2)
+        doc.add_heading(
+            _PROFILE_SECTION_HEADINGS.get(section_name, section_name.title()),
+            level=2,
+        )
         for item in section_items:
             para = doc.add_paragraph(style="List Bullet")
             id_run = para.add_run(f"[{item.item_id}] ")
@@ -1178,6 +1258,7 @@ def _write_requirements_section(
                 marker.font.size = Pt(9)
                 marker.bold = True
                 marker.font.color.rgb = RGBColor(192, 0, 0)
+            _add_correction_marker(para, corrections_by_item.get(item.item_id, []))
             detail = para.add_run(f"\n{_requirements_detail_line(item)}")
             detail.font.size = Pt(8)
             detail.font.italic = True
@@ -1216,10 +1297,21 @@ def _write_requirements_section(
                 cells[col].text = ""
                 run = cells[col].paragraphs[0].add_run(value)
                 run.font.size = Pt(9)
+            _add_correction_marker(
+                cells[1].paragraphs[0], corrections_by_item.get(item.item_id, [])
+            )
 
     # --- Compliance coverage matrix.
     coverage = list(getattr(compliance_result, "coverage", None) or [])
     if coverage:
+        # Subset framing (E1, program mode): "missing" below is relative to
+        # the specs routed to THIS module, not the whole selection.
+        if coverage_caveat:
+            caveat = doc.add_paragraph()
+            caveat_run = caveat.add_run(coverage_caveat)
+            caveat_run.font.size = Pt(10)
+            caveat_run.font.italic = True
+            caveat_run.font.color.rgb = RGBColor(204, 132, 0)
         doc.add_heading("Requirements Coverage", level=2)
         requirement_by_id = {i.item_id: i for i in requirements_profile.items}
         table = doc.add_table(rows=len(coverage) + 1, cols=3)
@@ -1239,6 +1331,9 @@ def _write_requirements_section(
             cells[0].text = ""
             req_run = cells[0].paragraphs[0].add_run(f"[{rid}] {requirement_text}")
             req_run.font.size = Pt(9)
+            _add_correction_marker(
+                cells[0].paragraphs[0], corrections_by_item.get(rid, [])
+            )
 
             status = str(entry.get("status") or "unclear")
             label, shading, color = _COVERAGE_STATUS_STYLES.get(
@@ -1251,9 +1346,21 @@ def _write_requirements_section(
             status_run.font.size = Pt(9)
             status_run.font.color.rgb = color
 
-            evidence_parts = [p for p in (entry.get("evidence"), entry.get("fileName")) if p]
+            # Evidence cell (E2): a MISSING row has no evidence by
+            # definition — say so instead of rendering a bare filename that
+            # reads like evidence.
+            evidence = entry.get("evidence")
+            file_name = entry.get("fileName")
+            if evidence:
+                evidence_text = " — ".join(
+                    p for p in (evidence, file_name) if p
+                )
+            elif status == "missing":
+                evidence_text = "—  (not found in reviewed package)"
+            else:
+                evidence_text = file_name or "—"
             cells[2].text = ""
-            ev_run = cells[2].paragraphs[0].add_run(" — ".join(evidence_parts))
+            ev_run = cells[2].paragraphs[0].add_run(evidence_text)
             ev_run.font.size = Pt(8)
     elif compliance_result is not None:
         status = getattr(compliance_result, "cross_check_status", None) or "completed"
@@ -1489,13 +1596,19 @@ def _summarize_verification_outcomes(findings: list) -> dict[str, object]:
     return stats
 
 
-def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label: str = "2025", cross_check_status: str | None = None, cross_check_reason: str = "", verification_stats: dict[str, object] | None = None, module: ReviewModule | None = None) -> None:
+def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label: str = "2025", cross_check_status: str | None = None, cross_check_reason: str = "", verification_stats: dict[str, object] | None = None, module: ReviewModule | None = None, profile: RequirementsProfile | None = None) -> None:
     """Write a brief methodology note explaining how the review was produced.
 
     The run ``module`` supplies the domain phrase (``report_context_phrase``),
     the jurisdiction wording of the code-cycle sentence, and the cycle whose
     pinned editions are enumerated. ``None`` resolves to the default module,
     so legacy callers keep the original California sentences byte-for-byte.
+
+    ``profile`` is the run's researched :class:`RequirementsProfile` (or
+    ``None`` — every profile-less run). When present, the pinned-editions
+    paragraph frames the cycle's editions as a model-code FALLBACK deferring
+    to the researched location codes, instead of asserting them
+    unconditionally on a project another jurisdiction governs (E4).
     """
     module = module if module is not None else get_module(None)
     domain_phrase = module.report_context_phrase
@@ -1547,7 +1660,11 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
         )
 
     jurisdiction = module.detector_vocabulary.jurisdiction_label.strip()
-    cycle_phrase = f"{jurisdiction} {cycle_label}" if jurisdiction else cycle_label
+    # Prose renders the cycle's human-readable label when it has one; the
+    # machine key (e.g. ``dc-architecture-ibc-2024``) reads poorly in a
+    # sentence. CA cycles leave display_label empty → byte-identical.
+    display_cycle = module.cycle.display_label or cycle_label
+    cycle_phrase = f"{jurisdiction} {display_cycle}" if jurisdiction else display_cycle
     para2_text += f" This review used {cycle_phrase} code cycle references."
 
     if cross_check_enabled and cross_check_status == "completed":
@@ -1570,7 +1687,9 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
     # without opening the source; if the spec cites a different edition
     # for one of these standards, the finding's relevance to the
     # current cycle should be re-checked.
-    pinning_text = _render_pinned_editions_note(module.cycle, jurisdiction)
+    pinning_text = _render_pinned_editions_note(
+        module.cycle, jurisdiction, profile_governed=profile is not None
+    )
     if pinning_text:
         doc.add_paragraph(pinning_text)
 
@@ -1582,7 +1701,9 @@ def _write_methodology_note(doc, cross_check_enabled: bool = False, cycle_label:
     )
 
 
-def _render_pinned_editions_note(cycle: CodeCycle, jurisdiction: str) -> str:
+def _render_pinned_editions_note(
+    cycle: CodeCycle, jurisdiction: str, *, profile_governed: bool = False
+) -> str:
     """Render the methodology paragraph that enumerates pinned editions.
 
     Renders from the run module's own :class:`CodeCycle`, so the label in
@@ -1593,6 +1714,12 @@ def _render_pinned_editions_note(cycle: CodeCycle, jurisdiction: str) -> str:
     Pinning details only render when the cycle has populated edition
     fields \u2014 a cycle with no pinning falls back to an empty string so
     the methodology note degrades gracefully.
+
+    ``profile_governed`` (a location-aware run with a researched
+    requirements profile) switches to fallback framing: the cycle's model
+    codes are the baseline, NOT a claim about the codes adopted at the
+    project location \u2014 those are per the Jurisdiction & Client Requirements
+    section (E4). Profile-less runs keep the original wording byte-for-byte.
     """
     entries = [std for std in cycle.standards if std.edition]
     if not entries:
@@ -1600,9 +1727,19 @@ def _render_pinned_editions_note(cycle: CodeCycle, jurisdiction: str) -> str:
     # Join with semicolons because an individual description can itself contain a
     # comma (e.g. "NFPA 13 2025, as amended by California").
     rendered = "; ".join(std.description for std in entries)
+    if profile_governed:
+        return (
+            "This review carried the following model-code fallback editions "
+            f"as its baseline: {rendered}. These are a fallback, not the "
+            "governing codes \u2014 the codes adopted for this project location "
+            "are per the Jurisdiction & Client Requirements section above; "
+            "findings referencing other editions should be checked against "
+            "that section."
+        )
+    display_cycle = cycle.display_label or cycle.label
     cycle_phrase = (
-        f"{cycle.label} {jurisdiction} cycle" if jurisdiction
-        else f"{cycle.label} cycle"
+        f"{display_cycle} {jurisdiction} cycle" if jurisdiction
+        else f"{display_cycle} cycle"
     )
     return (
         f"This review pinned the following standards editions per the "
@@ -1615,9 +1752,17 @@ def _render_pinned_editions_note(cycle: CodeCycle, jurisdiction: str) -> str:
 # Summary table
 # ---------------------------------------------------------------------------
 
-def _write_summary_table(doc: Document, review, cross_check_result, *, total_elapsed_seconds: float | None = None) -> None:
-    """Write the summary section with a styled severity counts table."""
-    doc.add_heading("Summary", level=1)
+def _write_summary_table(doc: Document, review, cross_check_result, *, total_elapsed_seconds: float | None = None, heading: str = "Summary", compliance_result=None) -> None:
+    """Write the summary section with a styled severity counts table.
+
+    ``heading`` lets the program export title its tables distinctly
+    ("Program Summary" / "<module> Summary") so two verbatim "Summary" H1
+    blocks never appear (E6). ``compliance_result`` folds the compliance
+    findings into the verification verdict tally (E7) — the severity table
+    keeps its review-only scope (compliance carries its own headline count
+    in its section).
+    """
+    doc.add_heading(heading, level=1)
 
     cc_count = (len(cross_check_result.findings)
                 if cross_check_result and cross_check_result.findings else 0)
@@ -1691,6 +1836,10 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
     all_findings = list(review.findings)
     if cross_check_result and cross_check_result.findings:
         all_findings.extend(cross_check_result.findings)
+    # Compliance findings ride round-2 verification just like cross-check
+    # findings — excluding them under-counted the tally (E7).
+    if compliance_result is not None and getattr(compliance_result, "findings", None):
+        all_findings.extend(compliance_result.findings)
 
     verdicts: dict[str, int] = {}
     for f in all_findings:
@@ -1707,6 +1856,15 @@ def _write_summary_table(doc: Document, review, cross_check_result, *, total_ela
             if v in verdicts
         ]
         para.add_run(", ".join(verdict_parts))
+        if compliance_result is not None:
+            scope_note = doc.add_paragraph()
+            scope_run = scope_note.add_run(
+                "Verification counts include review, cross-check, and "
+                "compliance findings."
+            )
+            scope_run.italic = True
+            scope_run.font.size = Pt(9)
+            scope_run.font.color.rgb = RGBColor(100, 100, 100)
         # The UNVERIFIED *verdict* lumps locally-classified findings
         # (resolved without a web search — placeholders, stale cycles, etc.)
         # together with genuinely-unverifiable ones, so the raw count
@@ -2387,8 +2545,12 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
 # Single finding entry (collapsible via Heading 3)
 # ---------------------------------------------------------------------------
 
-def _write_finding_entry(doc: Document, finding, index: int) -> None:
+def _write_finding_entry(doc: Document, finding, index: int | str) -> None:
     """Write a single finding as a collapsible block.
+
+    ``index`` may be a plain running number (review findings) or a
+    prefixed label ("X-1" cross-check, "C-1" compliance) so per-section
+    numbering can't be mistaken for a continuation of the review sequence.
 
     The finding header is rendered as a Heading 3 paragraph, which enables
     Word's native heading-collapse feature. Users can click the collapse
@@ -2553,6 +2715,15 @@ def _write_finding_entry(doc: Document, finding, index: int) -> None:
         conf_note_run.italic = True
         conf_note_run.font.size = Pt(9)
         conf_note_run.font.color.rgb = RGBColor(150, 150, 150)
+
+    # Stable finding id (rf-/cf-/lc-), muted at the end of the status line —
+    # the sidecar, traces, and drawing-impact links all reference findings
+    # by this id, and the report previously never rendered it anywhere.
+    finding_id = str(getattr(finding, "finding_id", "") or "")
+    if finding_id:
+        id_run = status_para.add_run(f"   ·  id: {finding_id}")
+        id_run.font.size = Pt(8)
+        id_run.font.color.rgb = RGBColor(150, 150, 150)
 
     status_para.paragraph_format.space_after = Pt(3)
 
@@ -2787,8 +2958,10 @@ def _write_cross_check_section(doc: Document, cross_check_result) -> None:
         key=lambda f: (severity_rank.get(f.severity, 99), f.fileName or "", -f.confidence),
     )
 
+    # "X-" prefix: this section restarts numbering, and an unprefixed "1."
+    # here read as a confusing restart of the review findings sequence.
     for idx, finding in enumerate(sorted_findings, 1):
-        _write_finding_entry(doc, finding, idx)
+        _write_finding_entry(doc, finding, f"X-{idx}")
 
     # Coordination summary narrative
     if cross_check_result.thinking:
@@ -2848,8 +3021,9 @@ def _write_compliance_section(doc: Document, compliance_result) -> None:
         compliance_result.findings,
         key=lambda f: (severity_rank.get(f.severity, 99), f.fileName or "", -f.confidence),
     )
+    # "C-" prefix: distinct per-section numbering (see cross-check's "X-").
     for idx, finding in enumerate(sorted_findings, 1):
-        _write_finding_entry(doc, finding, idx)
+        _write_finding_entry(doc, finding, f"C-{idx}")
 
     if compliance_result.thinking:
         doc.add_heading("Compliance Summary", level=2)
@@ -2940,11 +3114,44 @@ def _write_program_routing_table(doc: Document, program_result) -> None:
             if assignment.decision.is_user_overridden
             else assignment.state.value.title()
         )
-        cells[3].text = f"{round(assignment.decision.confidence * 100)}%"
+        confidence_pct = round(assignment.decision.confidence * 100)
+        # An unsupported row's confidence is the router's confidence that NO
+        # module applies — rendered bare it read as review confidence (E8).
+        cells[3].text = (
+            f"{confidence_pct}% (confidence no module applies)"
+            if not assignment.module_ids
+            else f"{confidence_pct}%"
+        )
         for cell in cells:
             for paragraph in cell.paragraphs:
                 for run in paragraph.runs:
                     run.font.size = Pt(8)
+
+
+def _program_coverage_caveat(program_result, child) -> str | None:
+    """Subset framing for a routed module's coverage matrix (E1).
+
+    ``None`` when the module reviewed every selected file (coverage really
+    was evaluated against the whole selection) so nothing extra renders.
+    """
+    child_files = [
+        Path(name).name for name in (child.files_reviewed or [])
+    ]
+    child_set = set(child_files)
+    others = [
+        Path(name).name
+        for name in (program_result.selected_files or [])
+        if Path(name).name not in child_set
+    ]
+    if not others:
+        return None
+    return (
+        f"Coverage was evaluated against the {len(child_files)} "
+        f"specification(s) routed to this module ({', '.join(child_files)}). "
+        f"{len(others)} other selected file(s) were reviewed by a different "
+        "module or skipped as unsupported — 'missing' below means missing "
+        "from this module's subset, not from the project."
+    )
 
 
 def export_program_report(program_result, output_path: Path) -> Path:
@@ -2987,12 +3194,18 @@ def export_program_report(program_result, output_path: Path) -> Path:
         run.font.size = Pt(10)
 
     _write_program_routing_table(doc, program_result)
-    _write_summary_table(
-        doc,
-        aggregate_review,
-        program_result.cross_check_result,
-        total_elapsed_seconds=program_result.total_elapsed_seconds,
-    )
+    # Program-level rollup table only when more than one module reported —
+    # for a single-module program it would duplicate the per-module table
+    # verbatim (E6).
+    if len(program_result.module_results) > 1:
+        _write_summary_table(
+            doc,
+            aggregate_review,
+            program_result.cross_check_result,
+            total_elapsed_seconds=program_result.total_elapsed_seconds,
+            heading="Program Summary",
+            compliance_result=program_result.compliance_result,
+        )
 
     skipped = list(getattr(program_result, "skipped_files", None) or [])
     missing_modules = list(
@@ -3038,18 +3251,30 @@ def export_program_report(program_result, output_path: Path) -> Path:
                         qualified_findings[f"{module_id}::{finding_id}"] = finding
         _write_drawing_impact_section(doc, drawing_impact, qualified_findings)
 
+    multi_module = len(program_result.module_results) > 1
     for position, module_id in enumerate(program.implemented_module_ids):
         child = program_result.module_results.get(module_id)
         if child is None:
             continue
-        if position or len(program_result.module_results) > 1:
+        if position or multi_module:
             doc.add_page_break()
         module = require_module(module_id)
         doc.add_heading(module.display_name, level=1)
         basis = doc.add_paragraph()
         basis.add_run("Module code basis: ").bold = True
+        # Join only the non-empty identity parts (DC modules have an empty
+        # jurisdiction label — the bare f-string rendered a double space and
+        # a raw machine cycle key, E10).
+        basis_identity = " ".join(
+            part
+            for part in (
+                module.detector_vocabulary.jurisdiction_label.strip(),
+                module.cycle.display_label or module.cycle.label,
+            )
+            if part
+        )
         basis.add_run(
-            f"{module.detector_vocabulary.jurisdiction_label} {module.cycle.label}; "
+            f"{basis_identity}; "
             + ", ".join(code.name + " " + code.year for code in module.cycle.base_codes)
         )
         _write_files_reviewed(
@@ -3057,17 +3282,34 @@ def export_program_report(program_result, output_path: Path) -> Path:
             child.files_reviewed,
             failed_review_specs=set(child.failed_review_specs or []),
         )
-        profile_data = RequirementsProfile.from_dict(child.requirements_profile)
-        if profile_data is not None:
-            _write_requirements_section(
-                doc, profile_data, child.compliance_result, module
-            )
         child_findings = list(child.review_result.findings if child.review_result else [])
         if child.cross_check_result and child.cross_check_result.findings:
             child_findings.extend(child.cross_check_result.findings)
         if child.compliance_result and child.compliance_result.findings:
             child_findings.extend(child.compliance_result.findings)
         child_stats = _summarize_verification_outcomes(child_findings)
+        # Per-module Run Diagnostics banner (E3): program reports previously
+        # skipped the operational-health surface entirely.
+        child_diagnostics = _summarize_run_diagnostics(
+            findings=child_findings,
+            status_counts=child_stats.get("status_counts", {}),
+            edit_action_counts=child_stats.get("edit_action_counts", {}),
+            cross_check_result=child.cross_check_result,
+            pipeline_result=child,
+            compliance_result=child.compliance_result,
+        )
+        _write_run_diagnostics_banner(doc, child_diagnostics)
+        profile_data = RequirementsProfile.from_dict(child.requirements_profile)
+        child_corrections = collect_verification_corrections(child_findings)
+        if profile_data is not None:
+            _write_requirements_section(
+                doc,
+                profile_data,
+                child.compliance_result,
+                module,
+                coverage_caveat=_program_coverage_caveat(program_result, child),
+                corrections=child_corrections,
+            )
         _write_methodology_note(
             doc,
             cross_check_enabled=(child.cross_check_result is not None),
@@ -3079,12 +3321,22 @@ def export_program_report(program_result, output_path: Path) -> Path:
             ),
             verification_stats=child_stats,
             module=module,
+            profile=profile_data,
         )
         _write_summary_table(
             doc,
             child.review_result,
             child.cross_check_result,
             total_elapsed_seconds=child.total_elapsed_seconds,
+            heading=f"{module.display_name} Summary" if multi_module else "Summary",
+            compliance_result=child.compliance_result,
+        )
+        # Trust-model histogram per module (E3) — mirrors the single-module
+        # export's placement right after the summary table.
+        _write_trust_model_summary(
+            doc,
+            child_stats.get("status_counts", {}),
+            child_stats.get("edit_action_counts", {}),
         )
         _write_alerts(
             doc,
@@ -3233,7 +3485,13 @@ def export_report(
     # the methodology note (D-13); renders only when the run researched a
     # requirements profile, so profile-less reports are byte-identical.
     if requirements_profile is not None:
-        _write_requirements_section(doc, requirements_profile, compliance, module)
+        _write_requirements_section(
+            doc,
+            requirements_profile,
+            compliance,
+            module,
+            corrections=collect_verification_corrections(all_findings),
+        )
     cross_check_status = getattr(cross_check, "cross_check_status", None) if cross_check else None
     cross_check_reason = ""
     if cross_check and cross_check_status == "skipped":
@@ -3248,6 +3506,7 @@ def export_report(
         cross_check_reason=cross_check_reason,
         verification_stats=verification_stats,
         module=module,
+        profile=requirements_profile,
     )
     # WS-5 "How the Drawings Informed This Review" — rendered only when the
     # run carried attached construction drawings (a drawing-impact result),
@@ -3267,6 +3526,7 @@ def export_report(
         review,
         cross_check,
         total_elapsed_seconds=getattr(pipeline_result, "total_elapsed_seconds", None),
+        compliance_result=compliance,
     )
 
     # Trust-model histogram. Renders right after the severity

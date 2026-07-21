@@ -20,6 +20,7 @@ from ..batch.batch import (
 from ..batch.batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, poll_batch_bounded
 from ..review.reviewer import Finding, _get_client
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
+from ..core.continuation_cache import mark_continuation_cache_breakpoint
 from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..modules import code_basis_format_kwargs, module_for_cycle
 from ..core.api_config import (
@@ -1764,6 +1765,11 @@ def _run_verification_call(
                     # continuation it was meant to inform).
                     messages.append({"role": "assistant", "content": response.content})
                     messages = sanitize_messages_for_resend(messages)
+                    # Mark AFTER sanitizing (it may rebuild the just-appended
+                    # message): one message-level cache breakpoint so the
+                    # growing conversation prefix reads from cache on the
+                    # next resume instead of re-billing as uncached input.
+                    messages = mark_continuation_cache_breakpoint(messages)
                     _trace.capture_continuation_resume(trace_parent, continuation_index=continuation_count)
                     continue
                 return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")

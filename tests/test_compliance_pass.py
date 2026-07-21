@@ -834,3 +834,298 @@ class TestReportSurfaces:
         assert "Local-code compliance" in text
         assert "skipped" in text
         assert "NOT evaluated against the researched" in text
+
+
+class TestEmptyDimensionReportSurface:
+    """WS3 / B1: a 0-item completed research dimension renders a red honesty
+    paragraph in the Jurisdiction & Client Requirements section."""
+
+    def _profile_with_empty_dimension(self) -> RequirementsProfile:
+        return RequirementsProfile(
+            items=[_item("r-aaaaaaaaaaaa", "The 2024 IBC as amended governs.")],
+            dimension_statuses=[
+                DimensionStatus(
+                    dimension_id="governing_codes", status="completed", item_count=1
+                ),
+                DimensionStatus(
+                    dimension_id="accessibility", status="completed", item_count=0
+                ),
+            ],
+            research_date="2026-07-14",
+            project={"city": "Markham", "state_or_province": "ON", "country": "CA",
+                     "client_name": "ExampleCo"},
+        )
+
+    def test_empty_dimension_renders_red_paragraph(self, tmp_path):
+        from src.output.report_exporter import export_report
+
+        out = tmp_path / "report.docx"
+        export_report(
+            _pipeline_result(
+                _enabled_module(),
+                requirements_profile=self._profile_with_empty_dimension().to_dict(),
+            ),
+            out,
+        )
+        text = _doc_text(out)
+        assert (
+            "1 research dimension(s) completed without finding any requirements "
+            "(accessibility)" in text
+        )
+        assert "unverified, not confirmed-clean" in text
+        assert "1 dimension(s) returned no items." in text
+
+    def test_no_empty_dimensions_renders_no_note(self, tmp_path):
+        from src.output.report_exporter import export_report
+
+        profile = RequirementsProfile(
+            items=[_item("r-aaaaaaaaaaaa", "The 2024 IBC as amended governs.")],
+            dimension_statuses=[
+                DimensionStatus(
+                    dimension_id="governing_codes", status="completed", item_count=1
+                ),
+            ],
+            research_date="2026-07-14",
+            project={"city": "Markham", "state_or_province": "ON", "country": "CA",
+                     "client_name": "ExampleCo"},
+        )
+        out = tmp_path / "report.docx"
+        export_report(
+            _pipeline_result(
+                _enabled_module(), requirements_profile=profile.to_dict()
+            ),
+            out,
+        )
+        text = _doc_text(out)
+        assert "completed without finding any requirements" not in text
+        assert "returned no items" not in text
+
+
+class TestWs6ReportSurfaces:
+    """WS6 fixes on the requirements/compliance report surfaces."""
+
+    def test_represented_evidence_cell_keeps_quote_and_file(self, tmp_path):
+        from src.output.report_exporter import export_report
+
+        compliance = ReviewResult(
+            findings=[],
+            cross_check_status="completed",
+            coverage=[
+                {"requirement_id": "r-aaaaaaaaaaaa", "status": "represented",
+                 "evidence": "Comply with the 2024 IBC.",
+                 "fileName": "21 13 13 Wet-Pipe.docx"},
+                {"requirement_id": "r-bbbbbbbbbbbb", "status": "missing",
+                 "evidence": None, "fileName": "21 13 13 Wet-Pipe.docx"},
+            ],
+        )
+        out = tmp_path / "report.docx"
+        export_report(
+            _pipeline_result(
+                _enabled_module(),
+                requirements_profile=_profile().to_dict(),
+                compliance_result=compliance,
+            ),
+            out,
+        )
+        text = _doc_text(out)
+        assert "Comply with the 2024 IBC. — 21 13 13 Wet-Pipe.docx" in text
+        # E2: a MISSING row never renders a bare filename as pseudo-evidence.
+        assert "(not found in reviewed package)" in text
+
+    def test_profile_section_headings_preserve_initialisms(self, tmp_path):
+        from src.output.report_exporter import export_report
+        from src.research.requirements_research import ResearchItem
+
+        profile = _profile(
+            [
+                _item(
+                    "r-aaaaaaaaaaaa",
+                    "AHJ requires witnessed flow tests.",
+                    category="ahj_requirement",
+                ),
+            ]
+        )
+        out = tmp_path / "report.docx"
+        export_report(
+            _pipeline_result(
+                _enabled_module(), requirements_profile=profile.to_dict()
+            ),
+            out,
+        )
+        text = _doc_text(out)
+        # E9: explicit display map, not str.title().
+        assert "AHJ Requirements" in text
+        assert "Ahj Requirements" not in text
+
+    def test_profile_less_pinned_editions_note_is_byte_identical(self):
+        """E4/E10 must not disturb the CA wording: exact string pin."""
+        from src.core.code_cycles import CALIFORNIA_2025
+        from src.output.report_exporter import _render_pinned_editions_note
+
+        note = _render_pinned_editions_note(CALIFORNIA_2025, "California")
+        assert note.startswith(
+            "This review pinned the following standards editions per the "
+            "2025 California cycle: NFPA 13 2025, as amended by California; "
+        )
+        assert note.endswith(
+            "Findings referencing other editions should be reviewed for "
+            "relevance to the current cycle."
+        )
+        assert "fallback" not in note
+
+    def test_profile_governed_pinned_editions_note_uses_fallback_framing(self):
+        from src.core.code_cycles import CALIFORNIA_2025
+        from src.output.report_exporter import _render_pinned_editions_note
+
+        note = _render_pinned_editions_note(
+            CALIFORNIA_2025, "California", profile_governed=True
+        )
+        assert note.startswith(
+            "This review carried the following model-code fallback editions "
+            "as its baseline: "
+        )
+        assert "Jurisdiction & Client Requirements section above" in note
+        assert "pinned the following standards editions per the" not in note
+
+    def test_verification_scope_note_only_with_compliance(self, tmp_path):
+        """E7: the clarifying sentence renders only when a compliance result
+        exists, so the CA summary block stays byte-identical."""
+        from docx import Document as _Document
+
+        from src.output.report_exporter import _write_summary_table
+        from src.verification.verifier import VerificationResult
+
+        f = Finding(
+            severity="HIGH",
+            fileName="a.docx",
+            section="1",
+            issue="x",
+            actionType="REPORT_ONLY",
+            existingText=None,
+            replacementText=None,
+            codeReference="",
+        )
+        f.verification = VerificationResult(
+            verdict="CONFIRMED", explanation="ok", grounded=True
+        )
+        comp_finding = Finding(
+            severity="HIGH",
+            fileName="a.docx",
+            section="[Compliance]",
+            issue="missing requirement",
+            actionType="REPORT_ONLY",
+            existingText=None,
+            replacementText=None,
+            codeReference="",
+        )
+        comp_finding.verification = VerificationResult(
+            verdict="CONFIRMED", explanation="ok", grounded=True
+        )
+        compliance = ReviewResult(
+            findings=[comp_finding], cross_check_status="completed"
+        )
+        review = ReviewResult(findings=[f])
+
+        with_comp = _Document()
+        _write_summary_table(with_comp, review, None, compliance_result=compliance)
+        with_text = "\n".join(p.text for p in with_comp.paragraphs)
+        # Tally includes the compliance finding: 2 confirmed.
+        assert "2 confirmed" in with_text
+        assert (
+            "Verification counts include review, cross-check, and compliance "
+            "findings." in with_text
+        )
+
+        without = _Document()
+        _write_summary_table(without, review, None)
+        without_text = "\n".join(p.text for p in without.paragraphs)
+        assert "1 confirmed" in without_text
+        assert "Verification counts include" not in without_text
+
+
+class TestPackageSubsetNote:
+    """E1 prompt side: a routed-subset run carries the subset note even on
+    the non-chunked path, so 'missing' is classified relative to the subset."""
+
+    def test_package_subset_adds_note_on_non_chunked_path(
+        self, fake_client, stub_compliance_tokens
+    ):
+        fake_client["route"] = _route_by_marker(
+            {"Comply": [compliance_tool_use_response()]}
+        )
+        run_chunked_compliance_check(
+            [_spec("Comply with the 2024 IBC as amended.")],
+            _profile(),
+            [],
+            cycle=_enabled_module().cycle,
+            package_subset=True,
+        )
+        (call,) = fake_client["client"].calls
+        assert "one subset of a larger specification package" in (
+            call["messages"][0]["content"]
+        )
+
+    def test_default_non_chunked_path_has_no_note(
+        self, fake_client, stub_compliance_tokens
+    ):
+        fake_client["route"] = _route_by_marker(
+            {"Comply": [compliance_tool_use_response()]}
+        )
+        run_chunked_compliance_check(
+            [_spec("Comply with the 2024 IBC as amended.")],
+            _profile(),
+            [],
+            cycle=_enabled_module().cycle,
+        )
+        (call,) = fake_client["client"].calls
+        assert "one subset of a larger specification package" not in (
+            call["messages"][0]["content"]
+        )
+
+    def test_sizing_counts_the_subset_note_near_the_limit(
+        self, fake_client, monkeypatch
+    ):
+        """Codex review (PR #320): the size check must measure the SAME
+        message the non-chunked path sends. A package_subset corpus whose
+        noteless prompt is just under the cap must take the CHUNKED path
+        (the with-note prompt is over), never the non-chunked branch that
+        then hits run_compliance_check's own over-limit guard and skips."""
+        monkeypatch.setattr(cc, "count_tokens", lambda text: len(text.split()))
+        # Two specs per division: singleton-division chunks pool into
+        # ``general`` (the ≥2-specs-per-chunk invariant), which would rebuild
+        # the full corpus in one chunk and defeat the fixture.
+        pad = "word " * 300
+        specs = [
+            _spec(pad + " DIV21SPEC alpha", "21 13 13 Wet.docx"),
+            _spec(pad + " DIV21SPEC beta", "21 13 16 Dry.docx"),
+            _spec(pad + " DIV22SPEC alpha", "22 11 13 Water.docx"),
+            _spec(pad + " DIV22SPEC beta", "22 11 16 Piping.docx"),
+        ]
+        cycle = _enabled_module().cycle
+        # Cap = exactly the noteless full-corpus size, so adding the ~20-word
+        # subset note pushes the full corpus over while each single-spec
+        # chunk (roughly half the corpus) still fits comfortably.
+        noteless_full = cc._build_compliance_user_message(specs, _profile(), [])
+        system_words = len(cc._compliance_system_prompt(cycle).split())
+        monkeypatch.setattr(
+            cc,
+            "COMPLIANCE_RECOMMENDED_MAX",
+            system_words + len(noteless_full.split()),
+        )
+        fake_client["route"] = _route_by_marker(
+            {
+                "DIV21SPEC": [compliance_tool_use_response()],
+                "DIV22SPEC": [compliance_tool_use_response()],
+            }
+        )
+        result = run_chunked_compliance_check(
+            specs,
+            _profile(),
+            [],
+            cycle=cycle,
+            package_subset=True,
+        )
+        # Chunked (two per-division calls), completed — not the pre-fix
+        # skipped outcome from the inner over-limit guard.
+        assert result.cross_check_status == "completed"
+        assert len(fake_client["client"].calls) == 2

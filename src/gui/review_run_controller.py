@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import threading
+from dataclasses import dataclass
 from tkinter import messagebox, simpledialog
 
 from ..modules import require_module
@@ -372,41 +373,110 @@ def start_review(app) -> None:
     threading.Thread(target=app._submit_batch_thread, args=(run_epoch,), daemon=True).start()
 
 
+@dataclass(frozen=True)
+class TerminalState:
+    """Classified terminal outcome of a run, decoupled from any single
+    ``status`` string.
+
+    ``errors`` means something actually went wrong (a spec failed review, a
+    module's collection errored, or a routed module produced no result).
+    ``coverage_gap`` means every routed spec reviewed cleanly but one or more
+    selected files were skipped as unsupported — a state the user explicitly
+    confirmed before the run, so it must not present as an error.
+    """
+
+    kind: str  # "success" | "coverage_gap" | "errors"
+    skipped_files: tuple[str, ...] = ()
+    missing_module_ids: tuple[str, ...] = ()
+    module_errors: tuple[tuple[str, str], ...] = ()
+    review_error: str = ""
+
+
+def classify_terminal_state(result) -> TerminalState:
+    """Classify a finished run's terminal state from its error signals.
+
+    Reads every field defensively so both program results and single-module
+    results (and hand-built test doubles) classify correctly. Deliberately
+    never consults ``result.status`` — the program result's ``"partial"``
+    status conflates confirmed unsupported-skips with genuine failures.
+    """
+    rv = getattr(result, "review_result", None)
+    review_error = str(getattr(rv, "error", "") or "") if rv is not None else ""
+    failed_specs = list(getattr(result, "failed_review_specs", None) or [])
+    skipped = tuple(getattr(result, "skipped_files", None) or ())
+    missing = tuple(getattr(result, "missing_module_ids", None) or ())
+    module_errors = tuple(
+        sorted(dict(getattr(result, "module_errors", None) or {}).items())
+    )
+    if review_error or failed_specs or module_errors or missing:
+        kind = "errors"
+    elif skipped:
+        kind = "coverage_gap"
+    else:
+        kind = "success"
+    return TerminalState(
+        kind=kind,
+        skipped_files=skipped,
+        missing_module_ids=missing,
+        module_errors=module_errors,
+        review_error=review_error,
+    )
+
+
+def _log_export_outcome(app, export_status: str) -> None:
+    """Record the export outcome as a post-finish diagnostics event.
+
+    Diagnostics are finalized *before* the modal save dialog opens so the
+    run duration can't absorb user idle time; ``DiagnosticsReport.log`` still
+    appends after ``finish()``, so the export outcome lands as its own event.
+    """
+    diag = getattr(app, "_diagnostics_report", None)
+    if export_status == "canceled":
+        app.log.log_warning("Export canceled; results are still available in memory.")
+        if diag:
+            diag.log("export", "warning", "Report export canceled; results remain in memory")
+    elif export_status == "error":
+        app.log.log_warning("Export failed.")
+        if diag:
+            diag.log("export", "error", "Report export failed")
+    elif export_status == "success":
+        if diag:
+            diag.log("export", "success", "Report exported")
+
+
 def on_review_complete(app, result) -> None:
     app.progress_bar.set(1.0)
     app._last_result = result
-    # Tracks whether any spec failed review so the terminal UI state (the
-    # run button + the finalized diagnostics level) reflects a partial
-    # failure instead of presenting the same green "success" as a fully-
-    # clean run. ``rv.error`` is the spec-error summary set by
-    # ``collect_review_batch_results`` whenever any spec truncated /
-    # parse-errored / errored / returned nothing.
-    has_review_errors = getattr(result, "status", "") == "partial"
-    if result.review_result:
-        rv = result.review_result
-        has_review_errors = has_review_errors or bool(rv.error)
-        if has_review_errors:
+    state = classify_terminal_state(result)
+    rv = result.review_result
+    if rv:
+        if state.kind == "errors":
             app.log.log_warning(
                 "Review completed with partial coverage or errors; see the report for details."
             )
-            if rv.error:
-                app.log.log_warning(rv.error)
-            skipped = list(getattr(result, "skipped_files", None) or [])
-            if skipped:
+            if state.review_error:
+                app.log.log_warning(state.review_error)
+            if state.skipped_files:
                 app.log.log_warning(
-                    "Unsupported specifications skipped: " + ", ".join(skipped)
+                    "Unsupported specifications skipped: "
+                    + ", ".join(state.skipped_files)
                 )
-            missing = list(getattr(result, "missing_module_ids", None) or [])
-            if missing:
+            if state.missing_module_ids:
                 app.log.log_warning(
-                    "No result available for routed module(s): " + ", ".join(missing)
+                    "No result available for routed module(s): "
+                    + ", ".join(state.missing_module_ids)
                 )
-            module_errors = dict(getattr(result, "module_errors", None) or {})
-            for module_id, message in module_errors.items():
+            for module_id, message in state.module_errors:
                 app.log.log_warning(
                     f"{module_id} collection failed; pending batch state was retained: "
                     f"{message}"
                 )
+        elif state.kind == "coverage_gap":
+            app.log.log_warning(
+                f"Completed — partial coverage: {len(state.skipped_files)} "
+                "unsupported spec(s) skipped (confirmed before run): "
+                + ", ".join(state.skipped_files)
+            )
         else:
             app.log.log_success("Review complete!")
         app.log.log(
@@ -424,36 +494,36 @@ def on_review_complete(app, result) -> None:
             else rv.elapsed_seconds
         )
         app.log.log(f"Time: {total_elapsed:.1f}s", level="muted")
-        export_status = app._export_report_to_file(result)
-        if export_status == "canceled":
-            app.log.log_warning("Export canceled; results are still available in memory.")
-            app._finalize_diagnostics(
-                "finalization",
-                "warning" if has_review_errors else "info",
-                "Run completed with review errors after export canceled"
-                if has_review_errors
-                else "Run completed after export canceled",
-            )
-        elif export_status == "error":
-            app.log.log_warning("Export failed.")
-            app._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
-        elif export_status == "success":
-            if has_review_errors:
-                app._finalize_diagnostics(
-                    "finalization",
-                    "warning",
-                    "Run completed with errors — one or more specs failed review",
-                )
-            else:
-                app._finalize_diagnostics("finalization", "success", "Run completed successfully")
-    if not result.review_result:
+    # Finalize diagnostics BEFORE the modal export dialog so the recorded
+    # duration reflects the run, not how long the user left the save dialog
+    # open (the tracing recorder already stops pre-export for this reason).
+    if state.kind == "errors":
+        app._finalize_diagnostics(
+            "finalization",
+            "warning",
+            "Run completed with errors — one or more specs failed review",
+        )
+    elif state.kind == "coverage_gap":
+        app._finalize_diagnostics(
+            "finalization",
+            "info",
+            f"Completed — partial coverage: {len(state.skipped_files)} "
+            "unsupported spec(s) skipped (confirmed before run)",
+        )
+    else:
         app._finalize_diagnostics("finalization", "success", "Run completed successfully")
-    # Partial failure gets a distinct amber terminal state; a clean run
-    # keeps the celebratory green check-mark.
-    if has_review_errors:
+    if state.kind == "errors":
         app.run_button.set_complete_with_errors()
+    elif state.kind == "coverage_gap":
+        app.run_button.set_complete_with_coverage_gaps()
     else:
         app.run_button.set_complete()
+    # Paint the full bar + terminal button before the modal save dialog
+    # blocks the event loop.
+    app.update_idletasks()
+    if rv:
+        export_status = app._export_report_to_file(result)
+        _log_export_outcome(app, export_status)
     app.after(2500, app._reset_ui)
 
 
@@ -475,7 +545,9 @@ def reset_ui(app) -> None:
     app.run_button.configure(
         text=idle_text_fn() if callable(idle_text_fn) else "Submit Batch"
     )
-    app.progress_bar.pack_forget()
+    # The completed bar stays visible at 100% until the next run re-packs
+    # and zeroes it in start_review; hiding it 2.5s after export meant the
+    # user never saw a settled full bar. on_review_error still hides it.
     if hasattr(app, "module_selector"):
         app.module_selector.configure(state="normal")
     app.is_processing = False

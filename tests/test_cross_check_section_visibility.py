@@ -166,3 +166,55 @@ class TestCrossCheckHeaderVisibility:
         header = doc.paragraphs[idx]
         assert _outline_level(header) == 0
         assert header.style.name == "Title"
+
+
+class TestSectionNumberingAndIds:
+    """WS6 / E11: per-section numbering prefixes + finding-id rendering."""
+
+    def _doc(self, tmp_path: Path) -> Document:
+        review_finding = _finding(
+            file="23 25 00 - HVAC Water Treatment.docx",
+            issue="Stale ASHRAE 188 edition cited.",
+        )
+        review_finding.finding_id = "rf-0123456789ab"
+        cross_finding = _finding(
+            file="23 52 16 - Condensing Boilers.docx",
+            issue="Boiler protocol conflicts with DDC section.",
+        )
+        cross_finding.finding_id = "cf-0123456789ab"
+        review = ReviewResult(findings=[review_finding])
+        cross = ReviewResult(
+            findings=[cross_finding], cross_check_status="completed"
+        )
+        out = tmp_path / "numbering.docx"
+        export_report(
+            _StubPipelineResult(review_result=review, cross_check_result=cross), out
+        )
+        return Document(str(out))
+
+    def test_cross_check_findings_use_x_prefix(self, tmp_path: Path):
+        doc = self._doc(tmp_path)
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "X-1. [MEDIUM]" in text
+        # The review finding keeps the running-integer numbering.
+        assert "1. [MEDIUM]" in text
+
+    def test_finding_ids_render_on_status_line(self, tmp_path: Path):
+        doc = self._doc(tmp_path)
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "id: rf-0123456789ab" in text
+        assert "id: cf-0123456789ab" in text
+
+    def test_id_less_findings_render_no_id_stub(self, tmp_path: Path):
+        review = ReviewResult(
+            findings=[
+                _finding(
+                    file="23 25 00 - HVAC Water Treatment.docx",
+                    issue="Stale ASHRAE 188 edition cited.",
+                )
+            ]
+        )
+        out = tmp_path / "no-ids.docx"
+        export_report(_StubPipelineResult(review_result=review), out)
+        text = "\n".join(p.text for p in Document(str(out)).paragraphs)
+        assert "id:" not in text

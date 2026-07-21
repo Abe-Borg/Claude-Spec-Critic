@@ -49,9 +49,16 @@ from ..orchestration.program_pipeline import (
     start_program_review,
 )
 from ..orchestration.diagnostics import DiagnosticsReport
+from ..orchestration.diag_recording import (
+    record_compliance,
+    record_cross_check,
+    record_review_collect,
+    record_verification_findings,
+)
 from ..orchestration.pipeline import (
     BatchSubmission,
     collect_review_batch_results,
+    collect_stage_band,
     finalize_batch_result,
     location_inputs_for_submission,
     run_compliance_for_batch,
@@ -440,8 +447,11 @@ def poll_batch(app) -> None:
 
 def update_poll_progress(app, status: BatchStatus) -> None:
     diag = app._diagnostics_report
-    batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.55
-    app.progress_bar.set(min(batch_pct, 0.95))
+    # Polling owns the 40→55 slice of the bar; the collect stages own
+    # 55→100 (COLLECT_PROGRESS_SPAN), so the bar stays monotone across the
+    # poll→collect handoff. The caption/log keep the real batch percentages.
+    batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.15
+    app.progress_bar.set(min(batch_pct, 0.55))
     app.log.log(
         f"  Batch: {status.succeeded} done, {status.processing} processing, "
         f"{status.errored} errors • {status.progress_pct:.0f}%",
@@ -579,6 +589,37 @@ def poll_and_collect_thread(app, run_epoch: int) -> None:
     app._dispatch_if_current(run_epoch, app._collect_batch_results)
 
 
+# Run-button captions for the collect stages, keyed by the ``stage=`` kwarg
+# every collect progress emission now carries. Used by the program collect
+# branch (whose stage transitions happen inside the Tk-free pipeline); the
+# single-module branch sets its captions inline at each stage boundary.
+_STAGE_CAPTIONS: dict[str, str] = {
+    "review_collect": "Collecting results...",
+    "verify_round1": "Verifying findings...",
+    "cross_check": "Cross-check (live API)...",
+    "compliance": "Compliance check (live API)...",
+    "verify_round2": "Verifying cross-check...",
+    "drawing_impact": "Analyzing drawing impact (live API)...",
+}
+
+
+def _make_program_collect_progress(app, run_epoch: int):
+    """Wrap the diag progress callback with stage→run-button captioning."""
+    base_progress = app._make_diag_progress("batch_collect", run_epoch)
+    last_caption: list[str] = [""]
+
+    def _progress(pct, msg, *, stage: str | None = None, **kwargs):
+        base_progress(pct, msg, **kwargs)
+        caption = _STAGE_CAPTIONS.get(stage or "")
+        if caption and caption != last_caption[0]:
+            last_caption[0] = caption
+            app._dispatch_if_current(
+                run_epoch, lambda c=caption: app.run_button.configure(text=c)
+            )
+
+    return _progress
+
+
 def collect_batch_results(app) -> None:
     run_epoch = app._next_run_epoch()
     diag = app._diagnostics_report
@@ -598,7 +639,8 @@ def collect_batch_results(app) -> None:
                 final_result = collect_program_results(
                     app._batch_submission,
                     log=app._make_diag_log("batch_collect", run_epoch),
-                    progress=app._make_diag_progress("batch_collect", run_epoch),
+                    progress=_make_program_collect_progress(app, run_epoch),
+                    diagnostics=diag,
                 )
                 if (
                     final_result.review_transport == "batch"
@@ -627,44 +669,12 @@ def collect_batch_results(app) -> None:
                 log=app._make_diag_log("batch_collect", run_epoch),
             )
             rv = review_state.review_result
-            if diag:
-                if transport == "realtime":
-                    # The real-time runner already recorded one
-                    # record_api_call(mode="realtime") row PER SPEC as the
-                    # streams completed — recording the aggregate here too
-                    # would double-count tokens in the per-phase rollup.
-                    diag.log("batch_collect", "success", "Review results collected (real-time)", {
-                        "total_findings": rv.total_count,
-                    })
-                else:
-                    # Route through ``record_api_call`` so the per-
-                    # phase rollup gets a consistent ``call_mode="batch"`` tag
-                    # for the review phase.
-                    diag.record_api_call(
-                        phase="batch_collect",
-                        model=rv.model,
-                        level="success",
-                        message="Review results collected",
-                        input_tokens=rv.input_tokens,
-                        output_tokens=rv.output_tokens,
-                        cache_creation_input_tokens=rv.cache_creation_input_tokens,
-                        cache_read_input_tokens=rv.cache_read_input_tokens,
-                        stop_reason=rv.stop_reason,
-                        mode="batch",
-                        retry_status="initial",
-                        structured_payload=rv.structured_payload,
-                        extra={
-                            "elapsed_seconds": round(rv.elapsed_seconds, 2),
-                            "parse_status": rv.parse_status,
-                            "severity_counts": {
-                                "CRITICAL": rv.critical_count, "HIGH": rv.high_count,
-                                "MEDIUM": rv.medium_count, "GRIPES": rv.gripe_count,
-                            },
-                            "total_findings": rv.total_count,
-                        },
-                    )
-                if rv.error:
-                    diag.log("batch_collect", "error", f"Review errors: {rv.error}")
+            # Recording rows live in the shared Tk-free recorders
+            # (``orchestration.diag_recording``) so the program collect path
+            # records the SAME telemetry over each child result. The
+            # real-time double-count guard (per-spec rows already recorded by
+            # the runner) lives inside the recorder.
+            record_review_collect(diag, rv, transport=transport)
 
             verifiable_findings = list(rv.findings)
             cache = _make_verification_cache(log=app._make_diag_log("verification", run_epoch))
@@ -704,64 +714,12 @@ def collect_batch_results(app) -> None:
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
+                    band=collect_stage_band("verify_round1"),
+                    stage="verify_round1",
                 )
-                if diag:
-                    from ..orchestration.diagnostics import bound_structured_payload
-                    verdicts = {}
-                    for f in verifiable_findings:
-                        if f.verification:
-                            v = f.verification.verdict
-                            verdicts[v] = verdicts.get(v, 0) + 1
-                            event_data = {
-                                "verdict": f.verification.verdict,
-                                "finding_severity": f.severity,
-                                "confidence": f.confidence,
-                                "explanation": f.verification.explanation or "",
-                                # Surface the routing decision
-                                # so the diagnostics summary can report
-                                # how many findings each mode handled.
-                                "verification_mode": f.verification.verification_mode,
-                                "verification_profile": f.verification.verification_profile,
-                                "grounded": f.verification.grounded,
-                                "cache_status": f.verification.cache_status,
-                                "escalated": f.verification.escalated,
-                                # Escalation telemetry —
-                                # whether a second pass ran and whether
-                                # it changed the verdict, so the summary
-                                # can report "did escalation pay off?".
-                                "escalation_attempted": f.verification.escalation_attempted,
-                                "initial_model": f.verification.initial_model,
-                                "initial_verdict": f.verification.initial_verdict,
-                                "escalation_changed_verdict": f.verification.escalation_changed_verdict,
-                                "escalation_reason": f.verification.escalation_reason,
-                                # Tag remote verifications with the
-                                # transport that actually ran so the
-                                # per-phase rollup's call_mode counters
-                                # reflect the real path.
-                                "api_call": f.verification.cache_status not in ("hit", "local_skip"),
-                                "call_mode": transport,
-                                "model": f.verification.model_used,
-                                "web_search_requests": f.verification.web_search_requests,
-                                # Token usage so the per-phase diagnostics
-                                # rollup reports real verification spend
-                                # (previously absent, so verification showed
-                                # in=0/out=0). Cache-hit / local-skip results
-                                # carry 0 here (no API call ran), which is the
-                                # correct contribution to this-run spend.
-                                "input_tokens": f.verification.input_tokens,
-                                "output_tokens": f.verification.output_tokens,
-                                # Surface retry telemetry so the
-                                # per-phase diagnostics rollup can answer
-                                # "which findings burned retries / hit
-                                # the continuation cap?".
-                                "retry_telemetry": f.verification.retry_telemetry,
-                            }
-                            bounded_payload = bound_structured_payload(f.verification.structured_payload)
-                            if bounded_payload is not None:
-                                event_data["structured_payload"] = bounded_payload
-                            diag.log("verification", "info",
-                                f"Verified: {f.fileName} — {f.verification.verdict}", event_data)
-                    diag.log("verification", "success", "Verification complete", {"verdicts": verdicts})
+                record_verification_findings(
+                    diag, verifiable_findings, transport=transport
+                )
 
             if diag:
                 diag.log("cross_check", "step", "Running cross-spec coordination check")
@@ -778,6 +736,8 @@ def collect_batch_results(app) -> None:
                 # profile-less runs are identical either way.
                 project_context=None,
                 log=app._make_diag_log("cross_check", run_epoch),
+                progress=app._make_diag_progress("cross_check", run_epoch),
+                band=collect_stage_band("cross_check"),
             )
             if review_state.cross_check_skipped_due_to_missing_specs:
                 app._dispatch_if_current(run_epoch, lambda: app.log.log_warning(
@@ -785,25 +745,7 @@ def collect_batch_results(app) -> None:
                 ))
                 if diag:
                     diag.log("cross_check", "warning", "Cross-check skipped: missing extracted specs")
-            if diag and review_state.cross_check_result:
-                cc = review_state.cross_check_result
-                # The cross-check pass always runs as a live
-                # (synchronous) call, so the call_mode reflects that
-                # rather than the batch review phase.
-                diag.record_api_call(
-                    phase="cross_check",
-                    model=cc.model,
-                    message=f"Cross-check: {cc.cross_check_status}",
-                    input_tokens=cc.input_tokens,
-                    output_tokens=cc.output_tokens,
-                    cache_creation_input_tokens=cc.cache_creation_input_tokens,
-                    cache_read_input_tokens=cc.cache_read_input_tokens,
-                    stop_reason=cc.stop_reason,
-                    mode="realtime",
-                    retry_status="initial",
-                    structured_payload=cc.structured_payload,
-                    extra={"finding_count": len(cc.findings)},
-                )
+            record_cross_check(diag, review_state.cross_check_result)
 
             # WS-4 compliance pass: after cross-check, before verification
             # round 2 (mirrored in ``run_batch_collection_headless`` — keep
@@ -816,26 +758,10 @@ def collect_batch_results(app) -> None:
             review_state = run_compliance_for_batch(
                 review_state,
                 log=app._make_diag_log("compliance", run_epoch),
+                progress=app._make_diag_progress("compliance", run_epoch),
+                band=collect_stage_band("compliance"),
             )
-            if diag and review_state.compliance_result is not None:
-                comp = review_state.compliance_result
-                diag.record_api_call(
-                    phase="compliance",
-                    model=comp.model,
-                    message=f"Compliance: {comp.cross_check_status}",
-                    input_tokens=comp.input_tokens,
-                    output_tokens=comp.output_tokens,
-                    cache_creation_input_tokens=comp.cache_creation_input_tokens,
-                    cache_read_input_tokens=comp.cache_read_input_tokens,
-                    stop_reason=comp.stop_reason,
-                    mode="realtime",
-                    retry_status="initial",
-                    structured_payload=comp.structured_payload,
-                    extra={
-                        "finding_count": len(comp.findings),
-                        "coverage_count": len(getattr(comp, "coverage", []) or []),
-                    },
-                )
+            record_compliance(diag, review_state.compliance_result)
 
             cross_check_findings = list(review_state.cross_check_result.findings) if review_state.cross_check_result and review_state.cross_check_result.findings else []
             compliance_findings = list(review_state.compliance_result.findings) if review_state.compliance_result and review_state.compliance_result.findings else []
@@ -860,6 +786,8 @@ def collect_batch_results(app) -> None:
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
+                    band=collect_stage_band("verify_round2"),
+                    stage="verify_round2",
                 )
                 if diag:
                     diag.log("cross_check_verification", "success", "Cross-check verification complete")

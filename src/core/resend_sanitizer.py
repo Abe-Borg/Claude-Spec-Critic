@@ -96,7 +96,7 @@ def _pdf_page_count(b64_data: Any) -> int | None:
         return None
 
 
-def _to_plain_block(block: Any) -> Any:
+def to_plain_block(block: Any) -> Any:
     """Best-effort conversion of a content block to a mutable plain dict.
 
     Dicts are deep-copied (the caller mutates the copy, never the
@@ -104,6 +104,9 @@ def _to_plain_block(block: Any) -> Any:
     pristine data). SDK pydantic models dump to JSON-mode dicts; dataclass
     fixtures convert via ``asdict``. An unconvertible block is returned
     as-is and its PDFs simply stay un-elided (defensive: no crash).
+
+    Public: also consumed by ``core.continuation_cache`` for the
+    copy-on-write message-level cache breakpoint.
     """
     if isinstance(block, dict):
         return copy.deepcopy(block)
@@ -124,6 +127,10 @@ def _to_plain_block(block: Any) -> Any:
         except Exception:  # noqa: BLE001
             return block
     return block
+
+
+# Backwards-compatible private alias (pre-promotion name).
+_to_plain_block = to_plain_block
 
 
 def _elide_source(source: dict, *, pages: int | None) -> None:
@@ -192,7 +199,7 @@ def sanitize_messages_for_resend(messages: list[dict]) -> list[dict]:
     sanitized = list(messages)
     for msg_idx, source_map in elide_by_msg.items():
         original = messages[msg_idx]
-        new_content = [_to_plain_block(b) for b in (_get(original, "content") or [])]
+        new_content = [to_plain_block(b) for b in (_get(original, "content") or [])]
         for source_idx, source in enumerate(_find_pdf_sources(new_content)):
             if source_idx in source_map and isinstance(source, dict):
                 _elide_source(source, pages=source_map[source_idx])

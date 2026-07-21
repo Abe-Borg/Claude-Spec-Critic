@@ -42,6 +42,7 @@ _IECC_CH6 = (
 
 DATACENTER_ELECTRICAL_IBC_2024 = CodeCycle(
     label="dc-electrical-ibc-2024",
+    display_label="IBC 2024 / NEC 2023 model-code baseline (fallback)",
     base_codes=(
         BaseCode(
             "ibc",

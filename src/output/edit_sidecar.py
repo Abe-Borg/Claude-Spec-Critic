@@ -263,6 +263,21 @@ def build_requirements_profile_export(pipeline_result) -> dict | None:
     if not isinstance(profile, dict) or not profile:
         return None
     compliance = getattr(pipeline_result, "compliance_result", None)
+    # Verification reconciliation (E5): findings whose verdict corrected /
+    # disputed / contested a researched claim, so a downstream consumer of
+    # the profile sees which items verification superseded. Additive key.
+    from .verification_reconciliation import (
+        collect_verification_corrections,
+        serialize_corrections,
+    )
+
+    all_findings = []
+    for phase_result in (
+        getattr(pipeline_result, "review_result", None),
+        getattr(pipeline_result, "cross_check_result", None),
+        compliance,
+    ):
+        all_findings.extend(getattr(phase_result, "findings", None) or [])
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "project": getattr(pipeline_result, "project_profile", None),
@@ -276,6 +291,9 @@ def build_requirements_profile_export(pipeline_result) -> dict | None:
             getattr(compliance, "cross_check_status", None)
             if compliance is not None
             else None
+        ),
+        "verification_corrections": serialize_corrections(
+            collect_verification_corrections(all_findings)
         ),
     }
 

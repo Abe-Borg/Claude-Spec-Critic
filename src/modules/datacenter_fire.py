@@ -74,6 +74,7 @@ _DC_RESEARCH = "web-researched 2026-07"
 
 DATACENTER_IBC_2024 = CodeCycle(
     label="dc-ibc-2024",
+    display_label="IBC/IFC 2024 model-code baseline (fallback)",
     base_codes=(
         # Primary code first — the stale-cycle detector compares found years
         # against this entry's year. IBC/IFC 2024 are the current published

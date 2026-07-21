@@ -78,6 +78,12 @@ _LEADING_SEPARATED_CSI_RE = re.compile(
     rf"^\s*(\d{{2}}){_CSI_SEPARATOR}(\d{{2}})"
     rf"{_CSI_SEPARATOR}(\d{{2}})(?!\d)"
 )
+# Labeled compact form: ``SECTION 072726``. The explicit SECTION label makes
+# the six digits credible CSI metadata even without separators (observed in
+# real spec titles); bare compact numerics in titles/filenames stay rejected.
+_LABELED_COMPACT_CSI_RE = re.compile(
+    r"\bSECTION\s+(\d{2})(\d{2})(\d{2})(?!\d)", re.I
+)
 _DEDICATED_COMPACT_CSI_RE = re.compile(
     r"^\s*(?:(\d{2})|(\d{2})(\d{2})|(\d{2})(\d{2})(\d{2}))\s*$"
 )
@@ -354,6 +360,8 @@ def _extract_csi_section(
 
     text = value or ""
     match = _EXPLICIT_CSI_RE.search(text)
+    if not match:
+        match = _LABELED_COMPACT_CSI_RE.search(text)
     if not match:
         match = _LEADING_SEPARATED_CSI_RE.match(text)
     if not match and dedicated_section_number:

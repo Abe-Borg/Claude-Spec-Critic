@@ -135,6 +135,16 @@ def select_biggest_spec(file_data, extracted_specs):
 
 
 def analyze_tokens(app, file_paths) -> None:
+    # C6: never run file analysis while a review is in flight — the chain
+    # ends in a live count_tokens API call and a run-button state write,
+    # and both are wrong mid-run (misleading "Exact token count" log lines;
+    # re-enabling the disabled run button). Same guard discipline as
+    # attach_drawing_files.
+    if getattr(app, "is_processing", False):
+        app.log.log_warning(
+            "Review in progress — file analysis is disabled until it finishes"
+        )
+        return
     if not file_paths:
         app.log.log_warning("No supported files found")
         app.token_gauge.reset()
@@ -160,6 +170,9 @@ def analyze_tokens(app, file_paths) -> None:
     # results.
     app._analysis_epoch += 1
     captured_epoch = app._analysis_epoch
+    # C7: a fresh analysis also invalidates any in-flight exact-count
+    # refresh from an earlier state (see refresh_exact_token_count).
+    app._token_refresh_epoch = getattr(app, "_token_refresh_epoch", 0) + 1
 
     def _is_current() -> bool:
         return app._analysis_epoch == captured_epoch
@@ -254,6 +267,20 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
     from ..core.tokenizer import count_tokens_via_api
     from ..review.prompts import get_single_spec_user_message, get_system_prompt
 
+    # C7: capture the refresh epoch at call time. A later selection change /
+    # re-analysis / clear bumps it, and this refresh's dispatches then drop —
+    # a stale exact count (flagged is_exact=True) must never overwrite a
+    # fresher gauge value. Composes with the caller's ``dispatch`` guard
+    # (the ``_analysis_epoch`` check on the analyze path).
+    captured_refresh_epoch = getattr(app, "_token_refresh_epoch", 0)
+
+    def _dispatch_fresh(fn):
+        dispatch(
+            lambda: fn()
+            if getattr(app, "_token_refresh_epoch", 0) == captured_refresh_epoch
+            else None
+        )
+
     selected_model = REVIEW_MODEL_DEFAULT
     model_getter = getattr(app, "_get_selected_model", None)
     if callable(model_getter):
@@ -290,8 +317,8 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
             if exact is None:
                 return
             fc = len(file_data)
-            dispatch(lambda lc=int(exact), n=fc: app.token_gauge.update_gauge(lc, n, is_exact=True))
-            dispatch(lambda lc=int(exact): app.log.log(
+            _dispatch_fresh(lambda lc=int(exact), n=fc: app.token_gauge.update_gauge(lc, n, is_exact=True))
+            _dispatch_fresh(lambda lc=int(exact): app.log.log(
                 f"Exact token count (API): {lc:,} tokens for largest spec",
                 level="muted",
             ))
@@ -323,6 +350,13 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
 
 
 def on_file_selection_change(app) -> None:
+    # C6: one gate covers every mid-run UI poke that funnels through the
+    # app delegator — checkbox toggles, project-context changes, the
+    # focus-out chain. Without it, a toggle during a run fired a live
+    # count_tokens call (misleading "Exact token count (API)" log lines
+    # mid-run) and re-enabled the deliberately-disabled run button.
+    if getattr(app, "is_processing", False):
+        return
     if not app._loaded_file_data:
         return
     sel = set(app.file_list_panel.get_selected_files())
@@ -338,6 +372,9 @@ def on_file_selection_change(app) -> None:
     )
     app.file_list_panel.set_over_limit(metrics.per_file_limit_exceeded)
     if metrics.file_count > 0 and getattr(app, "_extracted_specs", None):
+        # C7: this selection state supersedes any earlier in-flight exact
+        # refresh — bump so a stale count can't land after this one.
+        app._token_refresh_epoch = getattr(app, "_token_refresh_epoch", 0) + 1
         refresh_exact_token_count(
             app, selected_data, app._extracted_specs,
             app._get_project_context(),

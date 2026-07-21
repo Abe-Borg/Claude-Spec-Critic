@@ -129,10 +129,16 @@ class TestDatacenterReportSurfaces:
         text = "\n".join(p.text for p in doc.paragraphs)
         assert "relevant to hyperscale data-center fire protection projects." in text
         # No jurisdiction label -> generic cycle sentence (no California).
-        assert "This review used dc-ibc-2024 code cycle references." in text
+        # E10: prose renders the cycle's human-readable display_label, not
+        # the machine key.
+        assert (
+            "This review used IBC/IFC 2024 model-code baseline (fallback) "
+            "code cycle references." in text
+        )
+        assert "dc-ibc-2024" not in text
         # The pinned-editions paragraph renders the DC cycle's own standards,
         # never California's.
-        assert "per the dc-ibc-2024 cycle:" in text
+        assert "per the IBC/IFC 2024 model-code baseline (fallback) cycle:" in text
         assert "NFPA 13 2022" in text
         assert "NFPA 855 2023" in text
         assert "California" not in text
