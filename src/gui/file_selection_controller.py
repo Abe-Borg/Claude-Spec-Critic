@@ -219,6 +219,9 @@ def clear_selection(app) -> None:
     pointless ``count_tokens`` API call.
     """
     app._analysis_epoch = getattr(app, "_analysis_epoch", 0) + 1
+    # C7: also invalidate any in-flight exact-count refresh so a stale
+    # exact value can't land on the just-cleared gauge.
+    app._token_refresh_epoch = getattr(app, "_token_refresh_epoch", 0) + 1
     timer_id = getattr(app, "_exact_token_refresh_timer_id", None)
     if timer_id is not None:
         try:

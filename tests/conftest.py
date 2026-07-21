@@ -35,6 +35,10 @@ _GUI_DEPENDENT_TESTS = {
     "test_core_regressions.py",
     "test_gui_refactor_modules.py",
     "test_program_collect_captions.py",
+    # Imports gui.batch_controller (→ tkinter) at module scope; without this
+    # entry the file was a collection ERROR (not a skip) on tkinter-less
+    # hosts.
+    "test_program_pipeline.py",
     "test_review_complete_terminal_state.py",
     "test_trace_recorder_teardown.py",
 }
