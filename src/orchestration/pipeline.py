@@ -69,6 +69,42 @@ def _noop_log(_msg: str, **_kwargs: object) -> None: return
 def _noop_progress(_: float, __: str, **_kwargs: object) -> None: return
 
 
+# ---------------------------------------------------------------------------
+# Collect-stage progress bands
+# ---------------------------------------------------------------------------
+# The collect sequence owns the 55→100 slice of the run's progress bar. Each
+# stage gets a fixed fraction of whatever span the driver hands it, so a
+# program run can give each child the full (0, 100) span (its own mapper
+# re-scales) while the single-module drivers use the default span directly.
+# Every collect emission also carries a ``stage=`` kwarg so a GUI driver can
+# map stages to run-button captions without parsing message text.
+COLLECT_PROGRESS_SPAN: tuple[float, float] = (55.0, 100.0)
+
+_COLLECT_STAGE_FRACTIONS: dict[str, tuple[float, float]] = {
+    "review_collect": (0.0, 0.10),
+    "verify_round1": (0.10, 0.50),
+    "cross_check": (0.50, 0.64),
+    "compliance": (0.64, 0.78),
+    "verify_round2": (0.78, 0.95),
+    "drawing_impact": (0.95, 0.99),
+    "finalize": (0.99, 1.0),
+}
+
+
+def collect_stage_band(
+    stage: str, span: tuple[float, float] = COLLECT_PROGRESS_SPAN
+) -> tuple[float, float]:
+    """Map a collect stage's fixed fraction into ``span``.
+
+    Unknown stages get the whole span so a future stage degrades to
+    coarse-but-monotone progress rather than a crash.
+    """
+    lo, hi = span
+    f0, f1 = _COLLECT_STAGE_FRACTIONS.get(stage, (0.0, 1.0))
+    width = hi - lo
+    return (lo + f0 * width, lo + f1 * width)
+
+
 def _make_verification_cache(*, log: LogFn = _noop_log) -> VerificationCache:
     """Construct a verification cache, prepopulated from disk when enabled.
 
@@ -657,7 +693,7 @@ def _run_exact_token_preflight(
             )
 
 
-def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT, preflight: bool = True, profile_country: str | None = None) -> _PreparedSpecs:
+def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, project_context: str = "", log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, cycle: CodeCycle = DEFAULT_CYCLE, model: str = REVIEW_MODEL_DEFAULT, preflight: bool = True, profile_country: str | None = None, progress_band: tuple[float, float] = (0.0, 25.0)) -> _PreparedSpecs:
     # ``preflight=False`` skips the token-size gates (exact + local). Used by
     # the resume path: the batch already passed preflight at submit time, so a
     # large spec must not raise here and block recovery of an in-flight batch.
@@ -678,7 +714,7 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     # paths can hand each spec only its own alerts when building the
     # ``<pre_detected>`` block.
     pre_detected_by_filename: dict[str, list[dict]] = {}
-    progress(0.0, "Extracting text from specifications...")
+    progress(progress_band[0], "Extracting text from specifications...")
     # Parallel extraction. Order is preserved by extract_multiple_specs,
     # so deterministic file ordering and per-spec progress reporting
     # remain stable. Per-file errors still propagate to the caller — the
@@ -690,7 +726,11 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
     for i, (p, spec) in enumerate(zip(spec_files, extracted), start=1):
         if spec.word_count == 0 or not spec.content.strip():
             log(f"Skipping {p.name}: no extractable text content", level="warning")
-            progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
+            progress(
+                progress_band[0]
+                + (i / len(spec_files)) * (progress_band[1] - progress_band[0]),
+                f"Loaded {i}/{len(spec_files)}",
+            )
             continue
         specs.append(spec)
         pre = preprocess_spec(
@@ -718,7 +758,11 @@ def _prepare_specs(*, input_dir: Path, files: Optional[list[Path]] = None, proje
             *pre.duplicate_paragraph_alerts,
             *pre.polity_alerts,
         ]
-        progress((i / len(spec_files)) * 25.0, f"Loaded {i}/{len(spec_files)}")
+        progress(
+            progress_band[0]
+            + (i / len(spec_files)) * (progress_band[1] - progress_band[0]),
+            f"Loaded {i}/{len(spec_files)}",
+        )
     if not specs:
         raise FileNotFoundError("All files failed extraction. No specs to review.")
 
@@ -983,12 +1027,15 @@ def _run_research_phase(
             f"Corpus-signal scrape skipped ({exc}); research runs profile-only.",
             level="warning",
         )
+    # The fan-out reports real 0-100 dimension-completion fractions; wrap
+    # them into the research slice (0→15) of the prepare band so the bar
+    # moves during the (multi-minute) research phase instead of sitting at 0.
     research_profile = run_requirements_research(
         module,
         profile,
         corpus_signals=corpus_signals,
         log=log,
-        progress=progress,
+        progress=lambda p, m, **kw: progress((p / 100.0) * 15.0, m, **kw),
         diag=diagnostics,
     )
     effective_context, _dropped = splice_profile_into_context(
@@ -1053,7 +1100,8 @@ def prepare_batch_review(
     # ``DiagnosticsReport`` for per-dimension API-call telemetry.
     effective_context = project_context
     requirements_profile_dict: dict | None = None
-    if _research_phase_applies(module, project_profile, log=log):
+    research_ran = _research_phase_applies(module, project_profile, log=log)
+    if research_ran:
         effective_context, requirements_profile_dict = _run_research_phase(
             module=module,
             profile=project_profile,
@@ -1076,7 +1124,10 @@ def prepare_batch_review(
         )
         else None
     )
-    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=effective_context, log=log, progress=progress, cycle=cycle, model=model, profile_country=profile_country)
+    # When research ran it owns the 0→15 slice of the prepare band, so spec
+    # preparation continues at 15→25 instead of rewinding to 0. Profile-less
+    # runs keep the full (0, 25) band — byte-identical emissions.
+    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=effective_context, log=log, progress=progress, cycle=cycle, model=model, profile_country=profile_country, progress_band=(15.0, 25.0) if research_ran else (0.0, 25.0))
     _trace.capture_note(
         trace_pipeline,
         "specs prepared",
@@ -1104,8 +1155,15 @@ def submit_prepared_batch_review(
     *,
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
+    progress_band: tuple[float, float] = (25.0, 55.0),
 ) -> BatchSubmission:
-    """Submit an already-researched/preflighted module partition."""
+    """Submit an already-researched/preflighted module partition.
+
+    ``progress_band`` scales the realtime runner's 0-100 fan-out completion.
+    The default is the single-module review band (25→55); a program driver
+    passes ``(0.0, 100.0)`` so its own mapper receives the raw fractions it
+    assumes instead of double-banding them.
+    """
     module = prepared_run.module
     cycle = module.cycle
     prepared = prepared_run.prepared
@@ -1130,9 +1188,13 @@ def submit_prepared_batch_review(
             pre_detected_alerts=prepared.pre_detected_by_filename,
             log=log,
             # The runner reports 0-100 fan-out completion; map it into the
-            # pipeline's review band (25→55), below the verification band
-            # (60→95) so the run's progress stays monotone.
-            progress=lambda p, m: progress(25.0 + (p / 100.0) * 30.0, m),
+            # caller's review band (single-module default 25→55) so the
+            # run's progress stays monotone.
+            progress=lambda p, m: progress(
+                progress_band[0]
+                + (p / 100.0) * (progress_band[1] - progress_band[0]),
+                m,
+            ),
             diagnostics=diagnostics,
             _trace_parent=trace_pipeline,
         )
@@ -1442,9 +1504,14 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     )
 
 
-def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log) -> CollectedBatchState:
+def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress, band: tuple[float, float] | None = None) -> CollectedBatchState:
     if not state.submission.cross_check_enabled:
         return state
+    # Cross-check is a long synchronous call; without its own progress
+    # emissions the run bar sits frozen for its whole duration.
+    if band is None:
+        band = collect_stage_band("cross_check")
+    progress(band[0], "Running cross-spec coordination check...", stage="cross_check")
     if specs is None:
         specs = state.submission.prepared_specs
     if project_context is None:
@@ -1454,6 +1521,7 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
         skipped = ReviewResult(findings=[], cross_check_status="skipped", thinking="Cross-check skipped: original extracted spec content is not available.")
         state.cross_check_result = skipped
         _log_cross_check_status(log, skipped)
+        progress(band[1], "Cross-spec coordination check skipped.", stage="cross_check")
         return state
     # Exclude specs whose individual review failed/truncated so cross-check
     # does not make coordination claims based on a spec that was never
@@ -1474,6 +1542,7 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
         skipped = ReviewResult(findings=[], cross_check_status="skipped", thinking="Cross-check skipped: every spec failed review.")
         state.cross_check_result = skipped
         _log_cross_check_status(log, skipped)
+        progress(band[1], "Cross-spec coordination check skipped.", stage="cross_check")
         return state
     dedup_findings = [
         f for f in state.review_result.findings
@@ -1510,6 +1579,7 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
     assign_cross_check_finding_ids(cross.findings)
     state.cross_check_result = cross
     _log_cross_check_status(log, cross)
+    progress(band[1], "Cross-spec coordination check complete.", stage="cross_check")
     return state
 
 
@@ -1533,6 +1603,8 @@ def run_compliance_for_batch(
     specs: list[ExtractedSpec] | None = None,
     project_context: str | None = None,
     log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+    band: tuple[float, float] | None = None,
 ) -> CollectedBatchState:
     """Run the WS-4 local-code compliance pass over a collected batch.
 
@@ -1555,6 +1627,12 @@ def run_compliance_for_batch(
     if not getattr(module, "project_profile_enabled", False):
         return state
 
+    # Emissions live past the flag-off gate so a profile-less run stays a
+    # byte-identical no-op; a flag-on run gets progress across the whole
+    # (long, synchronous) pass instead of a frozen bar.
+    if band is None:
+        band = collect_stage_band("compliance")
+    progress(band[0], "Running local-code compliance check...", stage="compliance")
     profile = RequirementsProfile.from_dict(
         getattr(state.submission, "requirements_profile", None)
     )
@@ -1569,6 +1647,7 @@ def run_compliance_for_batch(
         )
         state.compliance_result = skipped
         _log_compliance_status(log, skipped)
+        progress(band[1], "Local-code compliance check skipped.", stage="compliance")
         return state
 
     if specs is None:
@@ -1586,6 +1665,7 @@ def run_compliance_for_batch(
         )
         state.compliance_result = skipped
         _log_compliance_status(log, skipped)
+        progress(band[1], "Local-code compliance check skipped.", stage="compliance")
         return state
 
     # Exclude specs whose individual review failed — same rule as
@@ -1602,6 +1682,7 @@ def run_compliance_for_batch(
         )
         state.compliance_result = skipped
         _log_compliance_status(log, skipped)
+        progress(band[1], "Local-code compliance check skipped.", stage="compliance")
         return state
 
     # Already-identified context: review + cross-check findings, DISPUTED
@@ -1647,6 +1728,7 @@ def run_compliance_for_batch(
     assign_compliance_finding_ids(compliance.findings)
     state.compliance_result = compliance
     _log_compliance_status(log, compliance)
+    progress(band[1], "Local-code compliance check complete.", stage="compliance")
     return state
 
 
@@ -1736,12 +1818,15 @@ def start_batch_verification(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    band: tuple[float, float] = (60.0, 95.0),
+    stage: str = "verify_round1",
 ) -> BatchJob | None:
     """Submit a verification batch, applying the local pre-pass first.
 
     Returns ``None`` if every finding resolved locally (local-skip or cache
     hit) — callers should treat that as "verification complete" without
-    polling. Returns the BatchJob otherwise.
+    polling. Returns the BatchJob otherwise. ``band`` / ``stage`` scale the
+    progress emissions; the defaults preserve the legacy round-1 values.
     """
     cycle = module.cycle
     remaining = prepare_findings_for_verification(
@@ -1752,9 +1837,9 @@ def start_batch_verification(
         log=log,
     )
     if not remaining:
-        progress(60.0, "Verification: all findings resolved locally / cached.")
+        progress(band[0], "Verification: all findings resolved locally / cached.", stage=stage)
         return None
-    progress(60.0, f"Submitting {len(remaining)} verification requests...")
+    progress(band[0], f"Submitting {len(remaining)} verification requests...", stage=stage)
     job = start_verification_batch(remaining, cycle=cycle, user_location=user_location)
     job.submitted_findings = remaining
     log(f"Verification batch submitted: {job.batch_id}", level="step")
@@ -1772,6 +1857,8 @@ def collect_batch_verification_results(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    band: tuple[float, float] = (60.0, 95.0),
+    stage: str = "verify_round1",
 ) -> list[Finding]:
     submitted = job.submitted_findings if job.submitted_findings is not None else findings
     return collect_verification_batch_results(
@@ -1779,7 +1866,9 @@ def collect_batch_verification_results(
         submitted,
         cycle=module.cycle,
         log=log,
-        progress=lambda p, m: progress(60.0 + (p / 100.0) * 35.0, m),
+        progress=lambda p, m, **kw: progress(
+            band[0] + (p / 100.0) * (band[1] - band[0]), m, stage=stage, **kw
+        ),
         poll_interval=poll_interval,
         cache=cache,
         user_location=user_location,
@@ -1797,6 +1886,8 @@ def verify_findings_for_run(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    band: tuple[float, float] = (60.0, 95.0),
+    stage: str = "verify_round1",
 ) -> None:
     """Verify ``findings`` in place, on the run's transport.
 
@@ -1838,10 +1929,10 @@ def verify_findings_for_run(
             log=log,
         )
         if not remaining:
-            progress(60.0, "Verification: all findings resolved locally / cached.")
+            progress(band[0], "Verification: all findings resolved locally / cached.", stage=stage)
             return
         total = len(remaining)
-        progress(60.0, f"Verifying {total} finding(s) (real-time)...")
+        progress(band[0], f"Verifying {total} finding(s) (real-time)...", stage=stage)
         log(f"Verification: real-time streaming for {total} finding(s)...", level="step")
         # Same pool shape as the batch path's real-time fallback: each call
         # is a streaming web-search-grounded verification that blocks on the
@@ -1872,8 +1963,9 @@ def verify_findings_for_run(
                     )
                 done += 1
                 progress(
-                    60.0 + (done / total) * 35.0,
+                    band[0] + (done / total) * (band[1] - band[0]),
                     f"Verified {done}/{total} findings",
+                    stage=stage,
                 )
         return
     job = start_batch_verification(
@@ -1884,6 +1976,8 @@ def verify_findings_for_run(
         cache=cache,
         user_location=user_location,
         jurisdiction_fingerprint=jurisdiction_fingerprint,
+        band=band,
+        stage=stage,
     )
     if job is not None:
         collect_batch_verification_results(
@@ -1895,6 +1989,8 @@ def verify_findings_for_run(
             cache=cache,
             user_location=user_location,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
+            band=band,
+            stage=stage,
         )
 
 
@@ -2112,6 +2208,7 @@ def run_batch_collection_headless(
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
     include_drawing_impact: bool = True,
+    progress_band: tuple[float, float] = COLLECT_PROGRESS_SPAN,
 ) -> PipelineResult:
     """Collect → verify → cross-check → finalize a submitted batch, headlessly.
 
@@ -2136,17 +2233,22 @@ def run_batch_collection_headless(
     # profile-less run keeps request bytes and cache keys unchanged.
     user_location, jurisdiction_fp = location_inputs_for_submission(submission)
 
+    review_band = collect_stage_band("review_collect", progress_band)
+    progress(review_band[0], "Collecting review results...", stage="review_collect")
     review_state = collect_review_batch_results(submission, log=log)
+    progress(review_band[1], "Review results collected.", stage="review_collect")
     transport = getattr(submission, "review_transport", "batch") or "batch"
 
     verifiable = list(review_state.review_result.findings) if review_state.review_result else []
-    verify_findings_for_run(verifiable, module=module, transport=transport, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
+    verify_findings_for_run(verifiable, module=module, transport=transport, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp, band=collect_stage_band("verify_round1", progress_band), stage="verify_round1")
 
     review_state = run_cross_check_for_batch(
         review_state,
         specs=submission.prepared_specs,
         project_context=submission.project_context,
         log=log,
+        progress=progress,
+        band=collect_stage_band("cross_check", progress_band),
     )
     # WS-4 compliance pass: after cross-check, before verification round 2.
     # No-op (state unchanged) for flag-off modules; explicit ``skipped``
@@ -2156,6 +2258,8 @@ def run_batch_collection_headless(
         specs=submission.prepared_specs,
         project_context=submission.project_context,
         log=log,
+        progress=progress,
+        band=collect_stage_band("compliance", progress_band),
     )
     cross_findings = (
         list(review_state.cross_check_result.findings)
@@ -2171,19 +2275,25 @@ def run_batch_collection_headless(
     # batch — both are plain findings lists and the verification functions
     # take arbitrary findings (WS-4 step 5).
     round2_findings = cross_findings + compliance_findings
-    verify_findings_for_run(round2_findings, module=module, transport=transport, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
+    verify_findings_for_run(round2_findings, module=module, transport=transport, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp, band=collect_stage_band("verify_round2", progress_band), stage="verify_round2")
 
     # WS-5 drawing-impact synthesis: last, so it can link findings that only
     # just picked up their verdicts. No-op (state unchanged) when no drawing
     # digest is in Project Context.
     if include_drawing_impact:
+        impact_band = collect_stage_band("drawing_impact", progress_band)
+        progress(impact_band[0], "Analyzing drawing impact...", stage="drawing_impact")
         review_state = run_drawing_impact_for_batch(
             review_state,
             project_context=submission.project_context,
             log=log,
         )
+        progress(impact_band[1], "Drawing-impact analysis complete.", stage="drawing_impact")
 
     if owns_cache:
         _persist_verification_cache(cache, log=log)
-    return finalize_batch_result(review_state)
+    progress(collect_stage_band("finalize", progress_band)[0], "Finalizing results...", stage="finalize")
+    result = finalize_batch_result(review_state)
+    progress(progress_band[1], "Collection complete.", stage="finalize")
+    return result
 

@@ -52,6 +52,7 @@ from ..orchestration.diagnostics import DiagnosticsReport
 from ..orchestration.pipeline import (
     BatchSubmission,
     collect_review_batch_results,
+    collect_stage_band,
     finalize_batch_result,
     location_inputs_for_submission,
     run_compliance_for_batch,
@@ -440,8 +441,11 @@ def poll_batch(app) -> None:
 
 def update_poll_progress(app, status: BatchStatus) -> None:
     diag = app._diagnostics_report
-    batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.55
-    app.progress_bar.set(min(batch_pct, 0.95))
+    # Polling owns the 40→55 slice of the bar; the collect stages own
+    # 55→100 (COLLECT_PROGRESS_SPAN), so the bar stays monotone across the
+    # poll→collect handoff. The caption/log keep the real batch percentages.
+    batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.15
+    app.progress_bar.set(min(batch_pct, 0.55))
     app.log.log(
         f"  Batch: {status.succeeded} done, {status.processing} processing, "
         f"{status.errored} errors • {status.progress_pct:.0f}%",
@@ -579,6 +583,37 @@ def poll_and_collect_thread(app, run_epoch: int) -> None:
     app._dispatch_if_current(run_epoch, app._collect_batch_results)
 
 
+# Run-button captions for the collect stages, keyed by the ``stage=`` kwarg
+# every collect progress emission now carries. Used by the program collect
+# branch (whose stage transitions happen inside the Tk-free pipeline); the
+# single-module branch sets its captions inline at each stage boundary.
+_STAGE_CAPTIONS: dict[str, str] = {
+    "review_collect": "Collecting results...",
+    "verify_round1": "Verifying findings...",
+    "cross_check": "Cross-check (live API)...",
+    "compliance": "Compliance check (live API)...",
+    "verify_round2": "Verifying cross-check...",
+    "drawing_impact": "Analyzing drawing impact (live API)...",
+}
+
+
+def _make_program_collect_progress(app, run_epoch: int):
+    """Wrap the diag progress callback with stage→run-button captioning."""
+    base_progress = app._make_diag_progress("batch_collect", run_epoch)
+    last_caption: list[str] = [""]
+
+    def _progress(pct, msg, *, stage: str | None = None, **kwargs):
+        base_progress(pct, msg, **kwargs)
+        caption = _STAGE_CAPTIONS.get(stage or "")
+        if caption and caption != last_caption[0]:
+            last_caption[0] = caption
+            app._dispatch_if_current(
+                run_epoch, lambda c=caption: app.run_button.configure(text=c)
+            )
+
+    return _progress
+
+
 def collect_batch_results(app) -> None:
     run_epoch = app._next_run_epoch()
     diag = app._diagnostics_report
@@ -598,7 +633,7 @@ def collect_batch_results(app) -> None:
                 final_result = collect_program_results(
                     app._batch_submission,
                     log=app._make_diag_log("batch_collect", run_epoch),
-                    progress=app._make_diag_progress("batch_collect", run_epoch),
+                    progress=_make_program_collect_progress(app, run_epoch),
                 )
                 if (
                     final_result.review_transport == "batch"
@@ -704,6 +739,8 @@ def collect_batch_results(app) -> None:
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
+                    band=collect_stage_band("verify_round1"),
+                    stage="verify_round1",
                 )
                 if diag:
                     from ..orchestration.diagnostics import bound_structured_payload
@@ -778,6 +815,8 @@ def collect_batch_results(app) -> None:
                 # profile-less runs are identical either way.
                 project_context=None,
                 log=app._make_diag_log("cross_check", run_epoch),
+                progress=app._make_diag_progress("cross_check", run_epoch),
+                band=collect_stage_band("cross_check"),
             )
             if review_state.cross_check_skipped_due_to_missing_specs:
                 app._dispatch_if_current(run_epoch, lambda: app.log.log_warning(
@@ -816,6 +855,8 @@ def collect_batch_results(app) -> None:
             review_state = run_compliance_for_batch(
                 review_state,
                 log=app._make_diag_log("compliance", run_epoch),
+                progress=app._make_diag_progress("compliance", run_epoch),
+                band=collect_stage_band("compliance"),
             )
             if diag and review_state.compliance_result is not None:
                 comp = review_state.compliance_result
@@ -860,6 +901,8 @@ def collect_batch_results(app) -> None:
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
+                    band=collect_stage_band("verify_round2"),
+                    stage="verify_round2",
                 )
                 if diag:
                     diag.log("cross_check_verification", "success", "Cross-check verification complete")

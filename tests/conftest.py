@@ -34,6 +34,7 @@ def _tkinter_available() -> bool:
 _GUI_DEPENDENT_TESTS = {
     "test_core_regressions.py",
     "test_gui_refactor_modules.py",
+    "test_program_collect_captions.py",
     "test_review_complete_terminal_state.py",
     "test_trace_recorder_teardown.py",
 }

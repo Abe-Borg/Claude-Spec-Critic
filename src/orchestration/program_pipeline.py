@@ -545,6 +545,11 @@ def submit_prepared_program_review(
                 child,
                 log=log,
                 progress=child_progress,
+                # The child must emit raw 0-100 fractions — the mapper above
+                # re-bands them into 25→55 itself. Without this the child
+                # would pre-band into 25→55 and the mapper would band AGAIN
+                # (the 41.5 double-banding artifact).
+                progress_band=(0.0, 100.0),
             )
         except Exception as exc:
             partial = ProgramSubmission(
@@ -647,6 +652,12 @@ def collect_program_results(
                     # Drawings are shared program context. Running this inside every
                     # child would multiply spend and produce competing narratives.
                     include_drawing_impact=False,
+                    # The child emits raw 0-100 collect progress — the mapper
+                    # above re-bands into 55→95 itself. Handing it the default
+                    # 55→100 span would double-band, and the high-water clamp
+                    # would then freeze the bar for every later stage (the
+                    # stuck-at-93% artifact).
+                    progress_band=(0.0, 100.0),
                 )
             except Exception as exc:
                 module_errors[module_id] = str(exc)

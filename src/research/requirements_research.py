@@ -928,8 +928,11 @@ def run_requirements_research(
                 )
             _record_dimension_diag(diag, dimension, outcome, model)
             done = len(outcomes)
+            # Real 0-100 completion fraction — the caller scales it into its
+            # own band. Emitting a flat 0.0 here left the run bar frozen for
+            # the entire multi-minute research phase.
             progress(
-                0.0,
+                (done / len(dimensions)) * 100.0,
                 f"Researching location requirements ({done}/{len(dimensions)} dimensions)...",
             )
 

@@ -1314,3 +1314,38 @@ class TestRequirementsProfilePersistence:
         )
         result = finalize_batch_result(state)
         assert result.requirements_profile == profile_dict
+
+
+# ---------------------------------------------------------------------------
+# Fan-out progress emissions (WS2 / B5)
+# ---------------------------------------------------------------------------
+
+
+class TestResearchProgress:
+    def test_fanout_emits_real_completion_fractions(self):
+        """Each completed dimension advances progress by its real fraction —
+        the legacy behavior emitted a flat 0.0 for the whole fan-out, which
+        froze the run bar for the entire multi-minute research phase."""
+        module = _enabled_module(
+            research_dimensions=(_dimension("alpha"), _dimension("beta"))
+        )
+        client = FakeResearchClient(
+            _route_by_marker(
+                {
+                    "ALPHA": [research_tool_use_response()],
+                    "BETA": [research_tool_use_response()],
+                }
+            )
+        )
+        emissions: list[float] = []
+
+        def progress(pct, _msg, **_kwargs):
+            emissions.append(round(float(pct), 1))
+
+        run_requirements_research(
+            module, _complete_profile(), client=client, progress=progress
+        )
+        # One 0.0 start emission, then one real fraction per completed
+        # dimension (completion order is thread-dependent, values aren't).
+        assert emissions[0] == 0.0
+        assert sorted(emissions[1:]) == [50.0, 100.0]
