@@ -50,6 +50,7 @@ from ..core.api_config import (
     tools_with_cache,
 )
 from ..core.project_profile import ProjectProfile
+from ..core.continuation_cache import mark_continuation_cache_breakpoint
 from ..core.resend_sanitizer import sanitize_messages_for_resend
 from ..gui.context_attachment import (
     context_within_token_cap,
@@ -740,6 +741,11 @@ def _run_dimension(
                         {"role": "assistant", "content": response.content}
                     )
                     messages = sanitize_messages_for_resend(messages)
+                    # Mark AFTER sanitizing (sanitize may rebuild the message
+                    # just appended): one message-level cache breakpoint so
+                    # the growing conversation prefix reads from cache on the
+                    # next resume instead of re-billing as uncached input.
+                    messages = mark_continuation_cache_breakpoint(messages)
                     _trace.capture_continuation_resume(
                         trace_span, continuation_index=continuation_count
                     )

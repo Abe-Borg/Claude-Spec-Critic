@@ -823,7 +823,7 @@ def cache_policy_for(phase: str | None) -> CachePolicy:
     return _PHASE_CACHE_POLICY.get(phase, _DEFAULT_PHASE_CACHE_POLICY)
 
 
-def _cache_control_block() -> dict:
+def cache_control_block() -> dict:
     """Return the standard 1-hour ephemeral cache_control block.
 
     Spec Critic batch + verification waves run for 30 minutes to several
@@ -831,8 +831,15 @@ def _cache_control_block() -> dict:
     1-hour TTL costs 2x the cache write but typically pays back inside
     the second wave of a batch verification cycle, where the same system
     prompt is sent hundreds of times.
+
+    Public: also consumed by ``core.continuation_cache`` for the
+    message-level breakpoint on pause_turn continuation resumes.
     """
     return {"type": "ephemeral", "ttl": "1h"}
+
+
+# Backwards-compatible private alias (pre-promotion name).
+_cache_control_block = cache_control_block
 
 
 def system_prompt_with_cache(prompt: str, *, phase: str | None = None):
@@ -849,7 +856,7 @@ def system_prompt_with_cache(prompt: str, *, phase: str | None = None):
         {
             "type": "text",
             "text": prompt,
-            "cache_control": _cache_control_block(),
+            "cache_control": cache_control_block(),
         }
     ]
 
@@ -873,7 +880,7 @@ def tools_with_cache(tools: list[dict], *, phase: str | None = None) -> list[dic
     if not policy.cache_tools:
         return tools
     last = dict(tools[-1])
-    last["cache_control"] = _cache_control_block()
+    last["cache_control"] = cache_control_block()
     return [*tools[:-1], last]
 
 
