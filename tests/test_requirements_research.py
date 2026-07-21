@@ -468,6 +468,58 @@ class TestResearchFanout:
         assert all(i.startswith("r-") and len(i) == 14 for i in ids)
         assert len(set(ids)) == len(ids)
 
+    def test_progress_advances_as_dimensions_complete(self):
+        module = _enabled_module(
+            research_dimensions=(_dimension("alpha"), _dimension("beta"))
+        )
+        client = FakeResearchClient(
+            _route_by_marker(
+                {
+                    "ALPHA": [research_tool_use_response()],
+                    "BETA": [research_tool_use_response()],
+                }
+            )
+        )
+        values: list[float] = []
+
+        run_requirements_research(
+            module,
+            _complete_profile(),
+            client=client,
+            progress=lambda value, _message: values.append(value),
+        )
+
+        assert values[0] == 0.0
+        assert values == sorted(values)
+        assert values[-1] == 100.0
+        assert any(0.0 < value < 100.0 for value in values)
+
+    def test_progress_advances_as_dimensions_complete(self):
+        module = _enabled_module(
+            research_dimensions=(_dimension("alpha"), _dimension("beta"))
+        )
+        client = FakeResearchClient(
+            _route_by_marker(
+                {
+                    "ALPHA": [research_tool_use_response()],
+                    "BETA": [research_tool_use_response()],
+                }
+            )
+        )
+        values: list[float] = []
+
+        run_requirements_research(
+            module,
+            _complete_profile(),
+            client=client,
+            progress=lambda value, _message: values.append(value),
+        )
+
+        assert values[0] == 0.0
+        assert values == sorted(values)
+        assert values[-1] == 100.0
+        assert any(0.0 < value < 100.0 for value in values)
+
     def test_partial_failure_continues_flagged(self):
         module = _enabled_module(
             research_dimensions=(_dimension("alpha"), _dimension("beta"))

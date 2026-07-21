@@ -156,6 +156,7 @@ def _classify_batch(
     *,
     model: str,
     log: "LogFn" = lambda *_a, **_k: None,
+    api_call_semaphore=None,
 ) -> dict[int, str]:
     """Run a single Haiku classification call over a chunk of findings.
 
@@ -186,7 +187,14 @@ def _classify_batch(
     try:
         # Non-streaming is fine — no server-side tools to require streaming,
         # and the response is small.
-        response = client.messages.create(**request_kwargs)
+        if api_call_semaphore is None:
+            response = client.messages.create(**request_kwargs)
+        else:
+            # Acquire only for the paid remote call. Eligibility filtering,
+            # prompt construction, parsing, and fail-safe classification stay
+            # local and must not consume a program-wide API permit.
+            with api_call_semaphore:
+                response = client.messages.create(**request_kwargs)
     except (RateLimitError, APIConnectionError, InternalServerError, APIStatusError, APIError) as e:
         log(
             f"Haiku triage: API error on chunk of {batch_size} finding(s); "
@@ -238,6 +246,7 @@ def classify_findings_with_haiku(
     log: LogFn = lambda *_a, **_k: None,
     model: str | None = None,
     batch_size: int = _TRIAGE_BATCH_SIZE,
+    api_call_semaphore=None,
 ) -> dict[int, str]:
     """Classify ``findings`` with Haiku for verification-skip decisions.
 
@@ -269,7 +278,12 @@ def classify_findings_with_haiku(
         for chunk_start in range(0, len(eligible), batch_size):
             chunk = eligible[chunk_start:chunk_start + batch_size]
             chunk_indices = {idx for idx, _ in chunk}
-            chunk_results = _classify_batch(chunk, model=selected_model, log=log)
+            chunk_results = _classify_batch(
+                chunk,
+                model=selected_model,
+                log=log,
+                api_call_semaphore=api_call_semaphore,
+            )
             # Only accept results for indices we actually sent — defends against
             # a hallucinated index in the tool payload.
             for idx, cls in chunk_results.items():

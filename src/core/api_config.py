@@ -254,7 +254,7 @@ def review_max_tokens(*, model: str = REVIEW_MODEL_DEFAULT, allow_extended_outpu
 # (429s are retryable, but a storm burns the retry budget and surfaces as
 # failed-review specs). Higher-tier orgs raise the env knob.
 ENV_REALTIME_REVIEW_WORKERS = "SPEC_CRITIC_REALTIME_REVIEW_WORKERS"
-REALTIME_REVIEW_MAX_WORKERS_DEFAULT = 2
+REALTIME_REVIEW_MAX_WORKERS_DEFAULT = 4
 _REALTIME_REVIEW_WORKERS_CEILING = 8
 
 
@@ -274,6 +274,81 @@ def realtime_review_max_workers() -> int:
     except ValueError:
         return REALTIME_REVIEW_MAX_WORKERS_DEFAULT
     return max(1, min(_REALTIME_REVIEW_WORKERS_CEILING, value))
+
+
+def _bounded_worker_env(name: str, *, default: int, ceiling: int) -> int:
+    """Read a positive, bounded worker count without import-time caching."""
+
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return max(1, min(ceiling, value))
+
+
+# Program-level concurrency.  These caps are deliberately separate from the
+# per-request model settings above: routed programs may contain several child
+# modules, each of which already has internal fan-out.  The outer scheduler
+# must therefore be bounded independently so adding a module never multiplies
+# API pressure without limit.
+ENV_RESEARCH_WORKERS = "SPEC_CRITIC_RESEARCH_WORKERS"
+RESEARCH_MAX_WORKERS_DEFAULT = 4
+_RESEARCH_WORKERS_CEILING = 12
+
+ENV_PROGRAM_PREPARE_WORKERS = "SPEC_CRITIC_PROGRAM_PREPARE_WORKERS"
+PROGRAM_PREPARE_MAX_WORKERS_DEFAULT = 4
+_PROGRAM_PREPARE_WORKERS_CEILING = 8
+
+ENV_PROGRAM_COLLECTION_WORKERS = "SPEC_CRITIC_PROGRAM_COLLECTION_WORKERS"
+PROGRAM_COLLECTION_MAX_WORKERS_DEFAULT = 2
+_PROGRAM_COLLECTION_WORKERS_CEILING = 4
+
+ENV_REALTIME_COLLECTION_CALLS = "SPEC_CRITIC_REALTIME_COLLECTION_CALLS"
+REALTIME_COLLECTION_MAX_CALLS_DEFAULT = 5
+_REALTIME_COLLECTION_CALLS_CEILING = 10
+
+
+def research_max_workers() -> int:
+    """Global requirements-research call budget for a routed program."""
+
+    return _bounded_worker_env(
+        ENV_RESEARCH_WORKERS,
+        default=RESEARCH_MAX_WORKERS_DEFAULT,
+        ceiling=_RESEARCH_WORKERS_CEILING,
+    )
+
+
+def program_prepare_max_workers() -> int:
+    """Maximum module preparations allowed to overlap in one program run."""
+
+    return _bounded_worker_env(
+        ENV_PROGRAM_PREPARE_WORKERS,
+        default=PROGRAM_PREPARE_MAX_WORKERS_DEFAULT,
+        ceiling=_PROGRAM_PREPARE_WORKERS_CEILING,
+    )
+
+
+def program_collection_max_workers() -> int:
+    """Maximum whole-module collection pipelines allowed to overlap."""
+
+    return _bounded_worker_env(
+        ENV_PROGRAM_COLLECTION_WORKERS,
+        default=PROGRAM_COLLECTION_MAX_WORKERS_DEFAULT,
+        ceiling=_PROGRAM_COLLECTION_WORKERS_CEILING,
+    )
+
+
+def realtime_collection_max_calls() -> int:
+    """Global synchronous API-call budget during concurrent collection."""
+
+    return _bounded_worker_env(
+        ENV_REALTIME_COLLECTION_CALLS,
+        default=REALTIME_COLLECTION_MAX_CALLS_DEFAULT,
+        ceiling=_REALTIME_COLLECTION_CALLS_CEILING,
+    )
 
 
 def cross_check_max_tokens(*, model: str = CROSS_CHECK_MODEL_DEFAULT) -> int:

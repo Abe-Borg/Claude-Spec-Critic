@@ -61,6 +61,8 @@ A submitted review batch keeps running on Anthropic's servers even if the app cl
 
 **Real-time review transport (opt-in).** The GUI's Options block has a "Real-time review (streaming)" toggle that runs the per-spec reviews and verification synchronously instead of via the Batches API — results arrive immediately (as little as ~10 minutes vs. batch's typical under-2-hours) at standard, non-discounted API pricing, since real-time forfeits the 50% batch savings and verification runs live too. Switching into real-time pops a one-time cost-warning dialog (dismissable). Real-time runs have no resume story — nothing is persisted for an in-progress synchronous run — so the startup resume prompt and **Recover batch…** stay batch-only. Batch remains the default transport.
 
+For routed multi-module programs, preparation/research, realtime per-spec reviews, and each module's verification/cross-check/compliance tail now overlap under bounded global worker budgets. The scheduler preserves module-specific prompts and dependency order, completes every preflight before review spend, single-flights shared file extraction and equivalent grounded verification work, and deterministically merges results after all workers finish. Conservative defaults protect ordinary API tiers; higher-tier operators can tune `SPEC_CRITIC_REALTIME_REVIEW_WORKERS`, `SPEC_CRITIC_RESEARCH_WORKERS`, `SPEC_CRITIC_PROGRAM_PREPARE_WORKERS`, `SPEC_CRITIC_PROGRAM_COLLECTION_WORKERS`, and `SPEC_CRITIC_REALTIME_COLLECTION_CALLS`.
+
 ## Model Stack
 
 Defaults (each overridable via its `SPEC_CRITIC_*_MODEL` env var **except cross-check and compliance**, which are bound directly to `CROSS_CHECK_MODEL_DEFAULT` / `COMPLIANCE_MODEL_DEFAULT`; see `api_config.py`):

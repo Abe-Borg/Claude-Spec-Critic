@@ -1,12 +1,15 @@
 """Composite hyperscale program orchestration and output contracts."""
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from docx import Document
 
-from src.batch.batch import BatchJob
+from src.batch.batch import BatchJob, BatchStatus
 from src.gui import batch_controller as gui_batch
 from src.modules import require_module
 from src.orchestration import program_pipeline as pp
@@ -27,6 +30,7 @@ from src.programs import (
     resolve_saved_program,
 )
 from src.review.reviewer import Finding, ReviewResult
+from src.tracing import current_span
 
 
 def _assignment(name: str, module_ids: tuple[str, ...]) -> SpecAssignment:
@@ -106,9 +110,24 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
         ),
     )
     events: list[str] = []
+    research_semaphores: list[object] = []
+    trace_parent_settings: list[tuple[object | None, bool]] = []
+    event_lock = threading.Lock()
+    prepare_barrier = threading.Barrier(4)
 
     def fake_prepare(*, files, module, **_kwargs):
-        events.append(f"prepare:{module.module_id}")
+        with event_lock:
+            events.append(f"prepare:{module.module_id}")
+            research_semaphores.append(_kwargs["research_call_semaphore"])
+            trace_parent_settings.append(
+                (
+                    _kwargs["_trace_parent"],
+                    _kwargs["_trace_inherit_current_parent"],
+                )
+            )
+        # A serial prepare loop cannot pass this barrier.  It proves research /
+        # preflight work from distinct modules is genuinely allowed to overlap.
+        prepare_barrier.wait(timeout=2)
         return SimpleNamespace(
             module=module,
             prepared=SimpleNamespace(
@@ -117,7 +136,8 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
         )
 
     def fake_submit(prepared, **_kwargs):
-        events.append(f"submit:{prepared.module.module_id}")
+        with event_lock:
+            events.append(f"submit:{prepared.module.module_id}")
         return _submission(
             prepared.module.module_id,
             prepared.prepared.specs[0].filename,
@@ -125,6 +145,7 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
 
     monkeypatch.setattr(pp, "prepare_batch_review", fake_prepare)
     monkeypatch.setattr(pp, "submit_prepared_batch_review", fake_submit)
+    monkeypatch.setattr(pp, "program_prepare_max_workers", lambda: 4)
 
     submission = pp.start_program_review(
         program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
@@ -133,11 +154,17 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
         model="test-model",
     )
 
-    assert events == [
+    expected_prepares = {
         "prepare:datacenter_fire",
         "prepare:datacenter_architecture",
         "prepare:datacenter_electrical",
         "prepare:datacenter_electronic_safety_security",
+    }
+    first_submit = next(i for i, event in enumerate(events) if event.startswith("submit:"))
+    assert set(events[:first_submit]) == expected_prepares
+    assert len({id(semaphore) for semaphore in research_semaphores}) == 1
+    assert trace_parent_settings == [(None, False)] * 4
+    assert events[first_submit:] == [
         "submit:datacenter_fire",
         "submit:datacenter_architecture",
         "submit:datacenter_electrical",
@@ -149,6 +176,295 @@ def test_program_prepares_every_partition_before_any_submission(monkeypatch):
         "datacenter_electrical",
         "datacenter_electronic_safety_security",
     )
+
+
+def test_parallel_preparation_failure_closes_successful_abandoned_sibling_trace(
+    monkeypatch,
+):
+    assignments = (
+        _assignment("21 13 13 Fire Sprinklers.docx", ("datacenter_fire",)),
+        _assignment("07 27 26 Air Barriers.docx", ("datacenter_architecture",)),
+    )
+    closed: list[tuple[str, bool, dict]] = []
+
+    def fake_prepare(*, module, **_kwargs):
+        if module.module_id == "datacenter_architecture":
+            raise RuntimeError("architecture preflight failed")
+        return SimpleNamespace(
+            module=module,
+            trace_pipeline=SimpleNamespace(span_id="trace-fire-prepared"),
+        )
+
+    monkeypatch.setattr(pp, "prepare_batch_review", fake_prepare)
+    monkeypatch.setattr(
+        pp._trace,
+        "capture_pipeline_end_by_id",
+        lambda span_id, *, success, summary=None: closed.append(
+            (span_id, success, dict(summary or {}))
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="architecture preflight failed"):
+        pp.prepare_program_review(
+            program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+            assignments=assignments,
+            input_dir=Path("C:/specs"),
+            model="test-model",
+        )
+
+    assert closed == [
+        (
+            "trace-fire-prepared",
+            False,
+            {
+                "module_id": "datacenter_fire",
+                "phase": "preparation_aborted",
+                "error": (
+                    "Sibling preparation failed: datacenter_architecture: "
+                    "architecture preflight failed"
+                ),
+            },
+        )
+    ]
+
+
+def test_global_realtime_submission_failure_closes_every_prepared_trace(monkeypatch):
+    name = "00 00 00 Shared.docx"
+    module_ids = ("datacenter_fire", "datacenter_architecture")
+    assignments = (_assignment(name, module_ids),)
+    partitions = {}
+    for module_id in module_ids:
+        module = require_module(module_id)
+        partitions[module_id] = SimpleNamespace(
+            module=module,
+            prepared=SimpleNamespace(
+                specs=[
+                    SimpleNamespace(
+                        filename=name,
+                        content=f"Prepared content for {module_id}",
+                        paragraph_map=[],
+                    )
+                ],
+                pre_detected_by_filename={},
+            ),
+            effective_context="",
+            model="test-model",
+            review_transport="realtime",
+            trace_pipeline=SimpleNamespace(span_id=f"trace-{module_id}"),
+            diagnostics=None,
+        )
+    prepared = pp.PreparedProgramReview(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=assignments,
+        partitions=partitions,
+        review_transport="realtime",
+    )
+    closed: list[tuple[str, bool, dict]] = []
+    monkeypatch.setattr(
+        pp,
+        "run_realtime_review_jobs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("global review preflight failed")
+        ),
+    )
+    monkeypatch.setattr(
+        pp._trace,
+        "capture_pipeline_end_by_id",
+        lambda span_id, *, success, summary=None: closed.append(
+            (span_id, success, dict(summary or {}))
+        ),
+    )
+
+    with pytest.raises(pp.ProgramSubmissionError, match="global review preflight failed"):
+        pp.submit_prepared_program_review(prepared)
+
+    assert closed == [
+        (
+            f"trace-{module_id}",
+            False,
+            {
+                "module_id": module_id,
+                "phase": "submission",
+                "error": "global review preflight failed",
+            },
+        )
+        for module_id in module_ids
+    ]
+
+
+def test_batch_submission_failure_closes_failed_and_unsubmitted_traces(monkeypatch):
+    module_files = {
+        "datacenter_fire": "21 13 13 Fire Sprinklers.docx",
+        "datacenter_architecture": "07 27 26 Air Barriers.docx",
+        "datacenter_electrical": "26 24 13 Switchboards.docx",
+    }
+    assignments = tuple(
+        _assignment(filename, (module_id,))
+        for module_id, filename in module_files.items()
+    )
+    partitions = {
+        module_id: SimpleNamespace(
+            module=require_module(module_id),
+            prepared=SimpleNamespace(
+                specs=[SimpleNamespace(filename=filename)]
+            ),
+            trace_pipeline=SimpleNamespace(span_id=f"trace-{module_id}"),
+        )
+        for module_id, filename in module_files.items()
+    }
+    prepared = pp.PreparedProgramReview(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=assignments,
+        partitions=partitions,
+        review_transport="batch",
+    )
+    closed: list[tuple[str, bool, dict]] = []
+
+    def fake_submit(child, **_kwargs):
+        module_id = child.module.module_id
+        if module_id == "datacenter_architecture":
+            raise RuntimeError("architecture submission failed")
+        return _submission(module_id, child.prepared.specs[0].filename)
+
+    monkeypatch.setattr(pp, "submit_prepared_batch_review", fake_submit)
+    monkeypatch.setattr(
+        pp._trace,
+        "capture_pipeline_end_by_id",
+        lambda span_id, *, success, summary=None: closed.append(
+            (span_id, success, dict(summary or {}))
+        ),
+    )
+
+    with pytest.raises(pp.ProgramSubmissionError) as caught:
+        pp.submit_prepared_program_review(prepared)
+
+    assert tuple(caught.value.partial_submission.partitions) == (
+        "datacenter_fire",
+    )
+    assert closed == [
+        (
+            "trace-datacenter_architecture",
+            False,
+            {
+                "module_id": "datacenter_architecture",
+                "phase": "submission",
+                "error": "architecture submission failed",
+            },
+        ),
+        (
+            "trace-datacenter_electrical",
+            False,
+            {
+                "module_id": "datacenter_electrical",
+                "phase": "submission_aborted",
+                "error": "architecture submission failed",
+            },
+        ),
+    ]
+
+
+def test_program_realtime_review_uses_one_global_pool_and_local_child_ids(monkeypatch):
+    name = "00 00 00 Shared.docx"
+    assignments = (
+        _assignment(
+            name,
+            tuple(HYPERSCALE_DATACENTER_PROGRAM.implemented_module_ids),
+        ),
+    )
+    diag = object()
+    partitions = {}
+    for module_id in HYPERSCALE_DATACENTER_PROGRAM.implemented_module_ids:
+        module = require_module(module_id)
+        spec = SimpleNamespace(
+            filename=name,
+            content=f"Prepared content for {module_id}",
+            paragraph_map=[],
+        )
+        partitions[module_id] = SimpleNamespace(
+            module=module,
+            prepared=SimpleNamespace(
+                specs=[spec],
+                pre_detected_by_filename={},
+            ),
+            effective_context=f"Context for {module_id}",
+            model="test-model",
+            review_transport="realtime",
+            trace_pipeline=None,
+            diagnostics=diag,
+        )
+    prepared = pp.PreparedProgramReview(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=assignments,
+        partitions=partitions,
+        review_transport="realtime",
+    )
+
+    global_runs: list[list[object]] = []
+    built_children: dict[str, dict] = {}
+    callbacks: list[tuple[str, ...]] = []
+    progress_values: list[float] = []
+
+    def fake_global_run(jobs, *, progress, diagnostics, **_kwargs):
+        assert diagnostics is diag
+        global_runs.append(list(jobs))
+        progress(50.0, "half complete")
+        progress(100.0, "complete")
+        return {
+            job.job_key: ReviewResult(findings=[], model=job.request_spec.model)
+            for job in jobs
+        }
+
+    def fake_child_submission(
+        child, *, realtime_results, request_map, started_at
+    ):
+        module_id = child.module.module_id
+        built_children[module_id] = {
+            "results": dict(realtime_results),
+            "request_map": dict(request_map),
+            "started_at": started_at,
+        }
+        submission = _submission(module_id, name)
+        submission.review_transport = "realtime"
+        submission.realtime_results = dict(realtime_results)
+        submission.job.request_map = dict(request_map)
+        submission.review_request_ids = list(request_map)
+        submission.job.created_at = started_at
+        return submission
+
+    monkeypatch.setattr(pp, "run_realtime_review_jobs", fake_global_run)
+    monkeypatch.setattr(pp, "build_realtime_batch_submission", fake_child_submission)
+
+    submission = pp.submit_prepared_program_review(
+        prepared,
+        progress=lambda value, _message, **_kwargs: progress_values.append(value),
+        on_partition_submitted=lambda current: callbacks.append(
+            tuple(current.partitions)
+        ),
+    )
+
+    assert len(global_runs) == 1
+    jobs = global_runs[0]
+    assert len(jobs) == 4
+    # The same routed spec legitimately has the same child custom_id in each
+    # module; only the opaque program job key is global.
+    assert {job.custom_id for job in jobs} == {"review__00_00_00_Shared__0"}
+    assert len({job.job_key for job in jobs}) == 4
+    assert {job.job_key[0] for job in jobs} == set(
+        HYPERSCALE_DATACENTER_PROGRAM.implemented_module_ids
+    )
+    assert tuple(submission.partitions) == tuple(
+        HYPERSCALE_DATACENTER_PROGRAM.implemented_module_ids
+    )
+    assert callbacks == [
+        tuple(HYPERSCALE_DATACENTER_PROGRAM.implemented_module_ids[:index])
+        for index in range(1, 5)
+    ]
+    assert all(
+        set(payload["results"]) == set(payload["request_map"])
+        for payload in built_children.values()
+    )
+    assert progress_values == sorted(progress_values)
+    assert progress_values[-1] == 55.0
 
 
 def test_program_result_marks_skips_and_missing_partitions_partial():
@@ -280,6 +596,43 @@ def test_partial_batch_submission_log_reports_actual_and_expected_counts():
     assert any("1 of 2 module request(s)" in item for item in warnings)
 
 
+def test_batch_poll_progress_stops_at_collection_boundary():
+    values: list[float] = []
+    app = SimpleNamespace(
+        _diagnostics_report=None,
+        progress_bar=SimpleNamespace(set=values.append),
+        log=SimpleNamespace(log=lambda *_args, **_kwargs: None),
+    )
+    status = BatchStatus(
+        status="ended",
+        processing=0,
+        succeeded=10,
+        errored=0,
+        canceled=0,
+        expired=0,
+        total=10,
+    )
+
+    gui_batch.update_poll_progress(app, status)
+
+    assert values == [0.55]
+
+
+def test_verification_progress_is_mapped_into_its_collection_stage():
+    values: list[float] = []
+    mapped = gui_batch._verification_stage_progress(
+        lambda value, _message, **_kwargs: values.append(value),
+        stage_start=55.0,
+        stage_end=72.0,
+    )
+
+    mapped(60.0, "start")
+    mapped(77.5, "middle")
+    mapped(95.0, "end")
+
+    assert values == [55.0, 63.5, 72.0]
+
+
 def test_bare_batch_recovery_resolves_hyperscale_module_short_name():
     program = HYPERSCALE_DATACENTER_PROGRAM
     assert gui_batch._resolve_recovery_module(program, "1").module_id == (
@@ -334,10 +687,25 @@ def test_program_collection_runs_one_qualified_drawing_pass(monkeypatch):
         },
     )
     child_calls: list[tuple[str, bool]] = []
+    active = 0
+    max_active = 0
+    active_lock = threading.Lock()
+    overlap = threading.Barrier(2)
     sentinel = object()
 
     def fake_collect(child, *, include_drawing_impact, **_kwargs):
+        nonlocal active, max_active
+        with active_lock:
+            active += 1
+            max_active = max(max_active, active)
         child_calls.append((child.module_id, include_drawing_impact))
+        overlap.wait(timeout=2)
+        # Reverse each pair's completion order so insertion-by-as_completed
+        # would visibly perturb the declared program order.
+        if child.module_id in {"datacenter_fire", "datacenter_electrical"}:
+            time.sleep(0.02)
+        with active_lock:
+            active -= 1
         return _result(child.module_id, name)
 
     def fake_drawing(*, findings, module, **_kwargs):
@@ -354,15 +722,23 @@ def test_program_collection_runs_one_qualified_drawing_pass(monkeypatch):
     monkeypatch.setattr(pp, "_make_verification_cache", lambda **_kwargs: object())
     monkeypatch.setattr(pp, "_persist_verification_cache", lambda *_a, **_k: None)
     monkeypatch.setattr("src.drawing_impact.run_drawing_impact", fake_drawing)
+    monkeypatch.setattr(pp, "program_collection_max_workers", lambda: 2)
 
     result = pp.collect_program_results(submission)
 
-    assert child_calls == [
+    assert set(child_calls) == {
         ("datacenter_fire", False),
         ("datacenter_architecture", False),
         ("datacenter_electrical", False),
         ("datacenter_electronic_safety_security", False),
-    ]
+    }
+    assert max_active == 2
+    assert tuple(result.module_results) == (
+        "datacenter_fire",
+        "datacenter_architecture",
+        "datacenter_electrical",
+        "datacenter_electronic_safety_security",
+    )
     assert result.drawing_impact_result is sentinel
 
 
@@ -383,11 +759,22 @@ def test_later_collection_failure_retains_completed_module_result(monkeypatch):
             ),
         },
     )
+    submission.partitions["datacenter_architecture"].trace_span_id = (
+        "trace-architecture-failed"
+    )
     persisted: list[object] = []
+    finished: list[str] = []
+    progress_values: list[float] = []
+    trace_ends: list[tuple[str, bool, dict]] = []
+    overlap = threading.Barrier(2)
 
     def fake_collect(child, **_kwargs):
+        overlap.wait(timeout=2)
         if child.module_id == "datacenter_architecture":
+            finished.append(child.module_id)
             raise RuntimeError("architecture result endpoint timed out")
+        time.sleep(0.02)
+        finished.append(child.module_id)
         return _result(child.module_id, fire_name, with_finding=False)
 
     monkeypatch.setattr(pp, "run_batch_collection_headless", fake_collect)
@@ -397,9 +784,21 @@ def test_later_collection_failure_retains_completed_module_result(monkeypatch):
         "_persist_verification_cache",
         lambda cache, **_kwargs: persisted.append(cache),
     )
+    monkeypatch.setattr(pp, "program_collection_max_workers", lambda: 2)
+    monkeypatch.setattr(
+        pp._trace,
+        "capture_pipeline_end_by_id",
+        lambda span_id, *, success, summary=None: trace_ends.append(
+            (span_id, success, dict(summary or {}))
+        ),
+    )
 
-    result = pp.collect_program_results(submission)
+    result = pp.collect_program_results(
+        submission,
+        progress=lambda value, _message, **_kwargs: progress_values.append(value),
+    )
 
+    assert set(finished) == {"datacenter_fire", "datacenter_architecture"}
     assert tuple(result.module_results) == ("datacenter_fire",)
     assert result.module_errors == {
         "datacenter_architecture": "architecture result endpoint timed out"
@@ -407,6 +806,64 @@ def test_later_collection_failure_retains_completed_module_result(monkeypatch):
     assert result.missing_module_ids == ["datacenter_architecture"]
     assert result.status == "partial"
     assert len(persisted) == 1
+    assert progress_values == sorted(progress_values)
+    assert progress_values[-1] == 95.0
+    assert trace_ends == [
+        (
+            "trace-architecture-failed",
+            False,
+            {
+                "module_id": "datacenter_architecture",
+                "phase": "collection",
+                "error": "architecture result endpoint timed out",
+            },
+        )
+    ]
+
+
+def test_concurrent_collection_activates_each_module_trace_parent(monkeypatch):
+    fire_name = "21 13 13 Fire Sprinklers.docx"
+    architecture_name = "07 27 26 Air Barriers.docx"
+    submission = pp.ProgramSubmission(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(
+            _assignment(fire_name, ("datacenter_fire",)),
+            _assignment(architecture_name, ("datacenter_architecture",)),
+        ),
+        partitions={
+            "datacenter_fire": _submission("datacenter_fire", fire_name),
+            "datacenter_architecture": _submission(
+                "datacenter_architecture", architecture_name
+            ),
+        },
+    )
+    submission.partitions["datacenter_fire"].trace_span_id = "trace-fire"
+    submission.partitions["datacenter_architecture"].trace_span_id = "trace-arch"
+    seen: dict[str, str | None] = {}
+    overlap = threading.Barrier(2)
+
+    def fake_collect(child, **_kwargs):
+        active = current_span()
+        seen[child.module_id] = active.span_id if active is not None else None
+        overlap.wait(timeout=2)
+        return _result(
+            child.module_id,
+            child.files_reviewed[0],
+            with_finding=False,
+        )
+
+    monkeypatch.setattr(pp, "run_batch_collection_headless", fake_collect)
+    monkeypatch.setattr(pp, "_make_verification_cache", lambda **_kwargs: object())
+    monkeypatch.setattr(pp, "_persist_verification_cache", lambda *_a, **_k: None)
+    monkeypatch.setattr(pp, "program_collection_max_workers", lambda: 2)
+
+    pp.collect_program_results(submission)
+
+    assert seen == {
+        "datacenter_fire": "trace-fire",
+        "datacenter_architecture": "trace-arch",
+    }
+    assert current_span() is None
 
 
 def test_pending_program_manifest_round_trip_and_strict_membership(tmp_path):

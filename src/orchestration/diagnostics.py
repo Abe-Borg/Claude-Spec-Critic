@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import wraps
 from typing import Any, Optional
 
 
@@ -52,6 +54,24 @@ _SECRET_VALUE_PATTERNS = (
     re.compile(r"AKIA[0-9A-Z]{16}"),
 )
 _REDACTED = "<redacted>"
+
+
+def _synchronized(method):
+    """Serialize access to a report's mutable in-memory state.
+
+    Diagnostics methods call one another (``to_text`` -> ``summary`` and
+    ``log`` -> the byte-cap helpers), so this deliberately relies on an
+    ``RLock`` rather than a plain lock.  Keeping the guard at method
+    boundaries also preserves the existing serial code paths and output
+    shape while making each summary/export a coherent snapshot.
+    """
+
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return guarded
 
 
 def _truncate_string(value: str, *, max_bytes: int = _MAX_STRING_FIELD_BYTES) -> str:
@@ -259,6 +279,18 @@ class DiagnosticsReport:
     secrets_redacted: int = 0
     bytes_dropped: int = 0
 
+    # Program-level collection can now have several module workers writing
+    # to one diagnostics report.  Exclude the synchronization primitive from
+    # construction/repr/equality so the dataclass's public shape and serial
+    # behaviour remain unchanged.
+    _lock: Any = field(
+        default_factory=threading.RLock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    @_synchronized
     def _accept_event_data(self, data: Optional[dict]) -> tuple[Optional[dict], int]:
         """Apply per-event byte caps + secret scrubbing.
 
@@ -284,6 +316,7 @@ class DiagnosticsReport:
         size = _event_data_byte_size(bounded)
         return bounded, size
 
+    @_synchronized
     def _enforce_total_byte_cap(self) -> None:
         """Drop oldest events until cumulative byte usage fits the cap.
 
@@ -301,6 +334,7 @@ class DiagnosticsReport:
             self.events_dropped += 1
             self.bytes_dropped += evicted_size
 
+    @_synchronized
     def log(self, phase: str, level: str, message: str, data: Optional[dict] = None) -> None:
         # Cap the event list to bound memory on long-running batch polls.
         # When the cap is exceeded, drop the oldest event and remember that
@@ -323,6 +357,7 @@ class DiagnosticsReport:
         self.total_data_bytes += byte_size
         self._enforce_total_byte_cap()
 
+    @_synchronized
     def record_failed_spec(self, filename: str) -> None:
         if filename and filename not in self.failed_specs:
             self.failed_specs.append(filename)
@@ -387,6 +422,7 @@ class DiagnosticsReport:
                 data.setdefault(k, v)
         self.log(phase, level, message or f"API call ({phase})", data)
 
+    @_synchronized
     def finish(self) -> None:
         if self.ended_at is None:
             self.ended_at = time.time()
@@ -395,6 +431,7 @@ class DiagnosticsReport:
     # Summaries
     # ------------------------------------------------------------------
 
+    @_synchronized
     def summary(self) -> dict:
         total_time = (self.ended_at or time.time()) - self.started_at
         error_events = [e for e in self.events if e.level == "error"]
@@ -809,6 +846,7 @@ class DiagnosticsReport:
     # Serialization
     # ------------------------------------------------------------------
 
+    @_synchronized
     def _event_to_dict(self, e: DiagnosticEvent) -> dict:
         d: dict = {
             "timestamp": e.timestamp,
@@ -821,6 +859,7 @@ class DiagnosticsReport:
             d["data"] = e.data
         return d
 
+    @_synchronized
     def to_text(self) -> str:
         lines: list[str] = []
         lines.append("=" * 72)

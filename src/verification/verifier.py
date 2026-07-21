@@ -77,7 +77,7 @@ from .verification_routing import (
     merge_extra_headers,
     select_routing,
 )
-from ..tracing import capture_hooks as _trace
+from ..tracing import capture_hooks as _trace, current_span
 
 
 def _routing_decision_to_dict(decision: VerificationRoutingDecision | None) -> dict:
@@ -1988,6 +1988,7 @@ def prepare_findings_for_verification(
     cache: VerificationCache | None = None,
     jurisdiction_fingerprint: str | None = None,
     log: Callable[..., None] = lambda *_a, **_k: None,
+    api_call_semaphore=None,
 ) -> list[Finding]:
     """Apply the verification pre-pass: local skip + cache lookup + Haiku triage.
 
@@ -2028,7 +2029,11 @@ def prepare_findings_for_verification(
     from .triage import classify_findings_with_haiku, filter_local_skips
 
     if remaining:
-        classifications = classify_findings_with_haiku(remaining, log=log)
+        classifications = classify_findings_with_haiku(
+            remaining,
+            log=log,
+            api_call_semaphore=api_call_semaphore,
+        )
         if classifications:
             still_remaining: list[Finding] = []
             skip_indices = set(filter_local_skips(remaining, classifications))
@@ -2715,6 +2720,7 @@ def collect_verification_batch_results(
     realtime_fallback_threshold: int | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    api_call_semaphore=None,
 ) -> list[Finding]:
     if not findings:
         return findings
@@ -2984,16 +2990,24 @@ def collect_verification_batch_results(
                 # findings left over.
                 max_workers = min(5, len(unresolved))
                 fallback_findings = [findings[outcome.finding_idx] for outcome in unresolved]
+                fallback_trace_parent = current_span()
+
+                def verify_fallback(finding: Finding) -> VerificationResult:
+                    kwargs = dict(
+                        cycle=cycle,
+                        cache=cache,
+                        user_location=user_location,
+                        jurisdiction_fingerprint=jurisdiction_fingerprint,
+                        _trace_parent=fallback_trace_parent,
+                    )
+                    if api_call_semaphore is None:
+                        return verify_finding(finding, **kwargs)
+                    with api_call_semaphore:
+                        return verify_finding(finding, **kwargs)
+
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     fb_futures = {
-                        pool.submit(
-                            verify_finding,
-                            f,
-                            cycle=cycle,
-                            cache=cache,
-                            user_location=user_location,
-                            jurisdiction_fingerprint=jurisdiction_fingerprint,
-                        ): f
+                        pool.submit(verify_fallback, f): f
                         for f in fallback_findings
                     }
                     for future in as_completed(fb_futures):
@@ -3225,8 +3239,7 @@ def collect_verification_batch_results(
     # verification node for batch findings (parity with the real-time
     # path). Parent is the current span when available (pipeline span on
     # the same thread); otherwise the span correlates by finding_id.
-    from ..tracing import current_span as _current_span
-    _trace_parent = _current_span()
+    _trace_parent = current_span()
     for finding_idx, finding in enumerate(findings):
         if finding.verification is None:
             finding.verification = VerificationResult(verdict="UNVERIFIED", explanation="No verification result after all batch waves.")

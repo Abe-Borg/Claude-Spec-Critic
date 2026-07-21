@@ -440,8 +440,12 @@ def poll_batch(app) -> None:
 
 def update_poll_progress(app, status: BatchStatus) -> None:
     diag = app._diagnostics_report
-    batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.55
-    app.progress_bar.set(min(batch_pct, 0.95))
+    # Remote review polling owns 40..55%.  Verification, cross-check,
+    # compliance, and finalization own the remaining 55..100% after the batch
+    # ends.  Mapping polling all the way to 95% made the bar move backwards as
+    # soon as collection began (especially visible for routed programs).
+    batch_pct = 0.40 + (status.progress_pct / 100.0) * 0.15
+    app.progress_bar.set(min(batch_pct, 0.55))
     app.log.log(
         f"  Batch: {status.succeeded} done, {status.processing} processing, "
         f"{status.errored} errors • {status.progress_pct:.0f}%",
@@ -457,6 +461,26 @@ def update_poll_progress(app, status: BatchStatus) -> None:
             "total": status.total,
             "progress_pct": round(status.progress_pct, 1),
         })
+
+
+def _verification_stage_progress(
+    callback,
+    *,
+    stage_start: float,
+    stage_end: float,
+):
+    """Map the verifier's historical 60..95 range into one UI stage."""
+
+    def report(value: float, message: str, **kwargs) -> None:
+        bounded = max(60.0, min(float(value), 95.0))
+        fraction = (bounded - 60.0) / 35.0
+        callback(
+            stage_start + (stage_end - stage_start) * fraction,
+            message,
+            **kwargs,
+        )
+
+    return report
 
 
 def _poll_program_partitions(app, submission: ProgramSubmission, run_epoch: int):
@@ -611,6 +635,17 @@ def collect_batch_results(app) -> None:
                 return
             module = get_module(getattr(app._batch_submission, "module_id", None))
             transport = getattr(app._batch_submission, "review_transport", "batch") or "batch"
+            collection_progress = app._make_diag_progress("batch_collect", run_epoch)
+            round1_progress = _verification_stage_progress(
+                app._make_diag_progress("verification", run_epoch),
+                stage_start=55.0,
+                stage_end=72.0,
+            )
+            round2_progress = _verification_stage_progress(
+                app._make_diag_progress("cross_check_verification", run_epoch),
+                stage_start=88.0,
+                stage_end=96.0,
+            )
 
             # NOTE: this collect → verify → cross-check → verify → finalize
             # sequence is mirrored, UI-free, by
@@ -626,6 +661,7 @@ def collect_batch_results(app) -> None:
                 app._batch_submission,
                 log=app._make_diag_log("batch_collect", run_epoch),
             )
+            collection_progress(55.0, "Review results collected")
             rv = review_state.review_result
             if diag:
                 if transport == "realtime":
@@ -700,7 +736,7 @@ def collect_batch_results(app) -> None:
                     module=module,
                     transport=transport,
                     log=app._make_diag_log("verification", run_epoch),
-                    progress=app._make_diag_progress("verification", run_epoch),
+                    progress=round1_progress,
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
@@ -763,6 +799,7 @@ def collect_batch_results(app) -> None:
                                 f"Verified: {f.fileName} — {f.verification.verdict}", event_data)
                     diag.log("verification", "success", "Verification complete", {"verdicts": verdicts})
 
+            collection_progress(72.0, "Initial findings verified")
             if diag:
                 diag.log("cross_check", "step", "Running cross-spec coordination check")
             app._dispatch_if_current(run_epoch, lambda: app.run_button.configure(text="Cross-check (live API)..."))
@@ -779,6 +816,7 @@ def collect_batch_results(app) -> None:
                 project_context=None,
                 log=app._make_diag_log("cross_check", run_epoch),
             )
+            collection_progress(82.0, "Cross-spec coordination check complete")
             if review_state.cross_check_skipped_due_to_missing_specs:
                 app._dispatch_if_current(run_epoch, lambda: app.log.log_warning(
                     "Cross-check skipped due to missing extracted specs."
@@ -817,6 +855,7 @@ def collect_batch_results(app) -> None:
                 review_state,
                 log=app._make_diag_log("compliance", run_epoch),
             )
+            collection_progress(88.0, "Project requirements compliance check complete")
             if diag and review_state.compliance_result is not None:
                 comp = review_state.compliance_result
                 diag.record_api_call(
@@ -856,7 +895,7 @@ def collect_batch_results(app) -> None:
                     module=module,
                     transport=transport,
                     log=app._make_diag_log("cross_check_verification", run_epoch),
-                    progress=app._make_diag_progress("cross_check_verification", run_epoch),
+                    progress=round2_progress,
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
@@ -864,6 +903,7 @@ def collect_batch_results(app) -> None:
                 if diag:
                     diag.log("cross_check_verification", "success", "Cross-check verification complete")
 
+            collection_progress(96.0, "Cross-check and compliance findings verified")
             # WS-5 drawing-impact synthesis: the LAST pass, so it can link
             # findings that only just picked up verdicts in round-2
             # verification. Self-gates on a drawing digest being present in
@@ -899,6 +939,7 @@ def collect_batch_results(app) -> None:
                     },
                 )
 
+            collection_progress(98.0, "Finalizing review results")
             _persist_verification_cache(cache, log=app._make_diag_log("finalization", run_epoch))
             if diag:
                 diag.log("finalization", "step", "Finalizing batch results")

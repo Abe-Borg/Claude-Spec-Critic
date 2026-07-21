@@ -45,6 +45,7 @@ from ..core.api_config import (
     build_web_fetch_tool,
     build_web_search_tool,
     extract_cache_usage,
+    research_max_workers,
     research_max_tokens,
     system_prompt_with_cache,
     tools_with_cache,
@@ -98,11 +99,6 @@ def _noop_progress(_pct: float, _msg: str, **_kwargs: object) -> None:
 class ResearchFanoutError(RuntimeError):
     """Every research dimension failed — abort before review submission."""
 
-
-# Fan-out width. Precedent: parallel extraction uses a small worker pool;
-# research calls are long-lived streaming requests, so four in flight is
-# plenty and stays inside per-account concurrency limits.
-_RESEARCH_MAX_WORKERS = 4
 
 # Cap on pause_turn continuations per dimension call. Research dimensions
 # carry web_search budgets of 8–24 (module data), far above verification's
@@ -834,6 +830,7 @@ def run_requirements_research(
     progress: ProgressFn = _noop_progress,
     diag=None,
     client: Any = None,
+    call_semaphore=None,
 ) -> RequirementsProfile:
     """Run every module research dimension in parallel; merge the results.
 
@@ -842,7 +839,10 @@ def run_requirements_research(
     tests); an empty/absent scrape runs research profile-only. ``diag`` is
     an optional ``DiagnosticsReport``-shaped object (duck-typed —
     ``record_api_call`` is called defensively) so the pipeline never imports
-    the GUI's diagnostics type.
+    the GUI's diagnostics type. ``call_semaphore`` is an optional program-wide
+    permit pool.  A routed program supplies one shared instance so several
+    module fan-outs can overlap without multiplying the account-wide number
+    of active research calls.
 
     Failure policy (D-3): per-dimension failures are recorded in
     ``dimension_statuses`` and logged; if EVERY dimension fails this raises
@@ -882,20 +882,25 @@ def run_requirements_research(
 
     outcomes: dict[str, _DimensionOutcome] = {}
     completed_count = 0
+    def run_dimension(dimension: ResearchDimension) -> _DimensionOutcome:
+        kwargs = dict(
+            module=module,
+            profile=profile,
+            dimension=dimension,
+            corpus_signals_block=corpus_signals_block,
+            model=model,
+            trace_parent=trace_span,
+        )
+        if call_semaphore is None:
+            return _run_dimension(client, **kwargs)
+        with call_semaphore:
+            return _run_dimension(client, **kwargs)
+
     with ThreadPoolExecutor(
-        max_workers=min(_RESEARCH_MAX_WORKERS, len(dimensions))
+        max_workers=min(research_max_workers(), len(dimensions))
     ) as pool:
         futures = {
-            pool.submit(
-                _run_dimension,
-                client,
-                module=module,
-                profile=profile,
-                dimension=dimension,
-                corpus_signals_block=corpus_signals_block,
-                model=model,
-                trace_parent=trace_span,
-            ): dimension
+            pool.submit(run_dimension, dimension): dimension
             for dimension in dimensions
         }
         for future in as_completed(futures):
@@ -929,7 +934,7 @@ def run_requirements_research(
             _record_dimension_diag(diag, dimension, outcome, model)
             done = len(outcomes)
             progress(
-                0.0,
+                (done / len(dimensions)) * 100.0,
                 f"Researching location requirements ({done}/{len(dimensions)} dimensions)...",
             )
 

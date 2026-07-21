@@ -30,6 +30,7 @@ from src.tracing import (
     LEVEL_DEFAULT,
     LEVEL_OFF,
     TraceRecorder,
+    activate_span,
     bind_to_current_context,
     current_capture_level,
     current_span,
@@ -53,6 +54,7 @@ from src.tracing.spans import (
     KIND_API_CALL,
     KIND_PIPELINE,
     KIND_REVIEW,
+    SpanHandle,
 )
 
 
@@ -281,6 +283,255 @@ def test_bind_to_current_context_propagates(recorder: TraceRecorder) -> None:
     assert all(s == pipe.span_id for s in seen), (
         f"Workers should inherit parent span {pipe.span_id}, saw {seen}"
     )
+
+
+def test_activate_span_parents_executor_worker_spans(
+    trace_dir: Path, clean_env: None
+) -> None:
+    """An explicitly activated caller span parents spans opened in workers."""
+    rec = TraceRecorder(
+        run_id="activate1", trace_dir=trace_dir, capture_level=LEVEL_DEFAULT
+    )
+    rec.start(mode="realtime")
+
+    with rec.span(KIND_PIPELINE, "pipeline") as parent:
+        def worker(index: int) -> str:
+            with activate_span(parent):
+                with rec.span(KIND_REVIEW, f"review-{index}") as child:
+                    return child.span_id
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            child_ids = list(pool.map(worker, range(4)))
+
+    rec.stop()
+    spans = [json.loads(line) for line in (trace_dir / FILE_SPANS).read_text().splitlines()]
+    children = {span["span_id"]: span for span in spans if span["span_id"] in child_ids}
+
+    assert set(children) == set(child_ids)
+    assert all(span["parent_span_id"] == parent.span_id for span in children.values())
+
+
+def test_activate_span_nested_and_restores_executor_context(
+    recorder: TraceRecorder,
+) -> None:
+    """Nested activation restores both the worker and caller's prior context."""
+    with recorder.span(KIND_PIPELINE, "pipeline") as caller_parent:
+        alternate = recorder.open_span(KIND_REVIEW, "alternate", parent=caller_parent)
+        recorder.close_span(alternate)
+
+        def worker() -> tuple[object, ...]:
+            before = current_span()
+            with activate_span(caller_parent):
+                first = current_span()
+                try:
+                    with activate_span(alternate):
+                        nested = current_span()
+                        raise RuntimeError("exercise exceptional restoration")
+                except RuntimeError:
+                    pass
+                after_nested = current_span()
+            after = current_span()
+            return before, first, nested, after_nested, after
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            before, first, nested, after_nested, after = pool.submit(worker).result()
+            reused_worker_context = pool.submit(current_span).result()
+
+        assert before is None
+        assert first is caller_parent
+        assert nested is alternate
+        assert after_nested is caller_parent
+        assert after is None
+        assert reused_worker_context is None
+        assert current_span() is caller_parent
+
+
+def test_explicit_root_pipeline_ignores_reused_worker_stack(
+    recorder: TraceRecorder,
+) -> None:
+    """Sibling modules stay roots when one prepare worker is reused.
+
+    Pipeline spans intentionally remain open across submit/collect, so the
+    first module is still on the executor thread's local stack when the next
+    job starts. Explicit-root mode must ignore that stale sibling while still
+    letting nested research inherit the newly opened module pipeline.
+    """
+
+    def prepare_module(module_id: str):
+        pipeline = capture_hooks.capture_pipeline_start(
+            mode="realtime",
+            model="test-model",
+            cycle_label="test-cycle",
+            module_id=module_id,
+            files=[f"{module_id}.docx"],
+            parent=None,
+            inherit_current_parent=False,
+        )
+        assert pipeline is not None
+        research = capture_hooks.capture_research_start(
+            dimension_count=1,
+            project=module_id,
+        )
+        assert research is not None
+        capture_hooks.capture_research_end(
+            research,
+            item_count=1,
+            completed_dimensions=1,
+            failed_dimensions=0,
+        )
+        return pipeline, research
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first_pipeline, first_research = pool.submit(
+            prepare_module, "module-a"
+        ).result()
+        second_pipeline, second_research = pool.submit(
+            prepare_module, "module-b"
+        ).result()
+
+    assert first_pipeline.parent_span_id is None
+    assert second_pipeline.parent_span_id is None
+    assert first_research.parent_span_id == first_pipeline.span_id
+    assert second_research.parent_span_id == second_pipeline.span_id
+
+    capture_hooks.capture_pipeline_end_by_id(first_pipeline.span_id, success=True)
+    capture_hooks.capture_pipeline_end_by_id(second_pipeline.span_id, success=True)
+
+
+@pytest.mark.parametrize(
+    ("failure_phase", "expected_phase"),
+    (("research", "research"), ("preflight", "preflight")),
+)
+def test_prepare_batch_review_closes_trace_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_phase: str,
+    expected_phase: str,
+) -> None:
+    """A failed prepare has no submission to close its pipeline later."""
+
+    from types import SimpleNamespace
+
+    from src.orchestration import pipeline
+
+    handle = SpanHandle(
+        span_id=f"failed-{failure_phase}",
+        kind=KIND_PIPELINE,
+        started_at=1.0,
+    )
+    closed: list[tuple[str, bool, dict]] = []
+    monkeypatch.setattr(
+        pipeline._trace,
+        "capture_pipeline_start",
+        lambda **_kwargs: handle,
+    )
+    monkeypatch.setattr(
+        pipeline._trace,
+        "capture_pipeline_end_by_id",
+        lambda span_id, *, success, summary=None: closed.append(
+            (span_id, success, dict(summary or {}))
+        ),
+    )
+
+    if failure_phase == "research":
+        monkeypatch.setattr(
+            pipeline,
+            "_research_phase_applies",
+            lambda *_args, **_kwargs: True,
+        )
+
+        def fail_research(**_kwargs):
+            raise RuntimeError("research exploded")
+
+        monkeypatch.setattr(pipeline, "_run_research_phase", fail_research)
+        profile = SimpleNamespace(to_dict=lambda: {})
+        message = "research exploded"
+    else:
+        monkeypatch.setattr(
+            pipeline,
+            "_research_phase_applies",
+            lambda *_args, **_kwargs: False,
+        )
+
+        def fail_preflight(**_kwargs):
+            raise ValueError("preflight rejected spec")
+
+        monkeypatch.setattr(pipeline, "_prepare_specs", fail_preflight)
+        profile = None
+        message = "preflight rejected spec"
+
+    with pytest.raises((RuntimeError, ValueError), match=message):
+        pipeline.prepare_batch_review(
+            input_dir=tmp_path,
+            files=[tmp_path / "spec.docx"],
+            project_profile=profile,
+        )
+
+    assert closed == [
+        (
+            handle.span_id,
+            False,
+            {
+                "module_id": pipeline.DEFAULT_MODULE.module_id,
+                "phase": expected_phase,
+                "error": message,
+            },
+        )
+    ]
+
+
+def test_start_batch_review_closes_prepared_trace_when_submission_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed submit has no BatchSubmission that could close collection."""
+
+    from types import SimpleNamespace
+
+    from src.orchestration import pipeline
+
+    handle = SpanHandle(
+        span_id="failed-submission",
+        kind=KIND_PIPELINE,
+        started_at=1.0,
+    )
+    prepared = SimpleNamespace(
+        trace_pipeline=handle,
+        module=pipeline.DEFAULT_MODULE,
+    )
+    closed: list[tuple[str, bool, dict]] = []
+    monkeypatch.setattr(
+        pipeline,
+        "prepare_batch_review",
+        lambda **_kwargs: prepared,
+    )
+
+    def fail_submit(*_args, **_kwargs):
+        raise RuntimeError("review submission failed")
+
+    monkeypatch.setattr(pipeline, "submit_prepared_batch_review", fail_submit)
+    monkeypatch.setattr(
+        pipeline._trace,
+        "capture_pipeline_end_by_id",
+        lambda span_id, *, success, summary=None: closed.append(
+            (span_id, success, dict(summary or {}))
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="review submission failed"):
+        pipeline.start_batch_review(input_dir=tmp_path)
+
+    assert closed == [
+        (
+            handle.span_id,
+            False,
+            {
+                "module_id": pipeline.DEFAULT_MODULE.module_id,
+                "phase": "submission",
+                "error": "review submission failed",
+            },
+        )
+    ]
 
 
 # ---- Silo guarantees ---------------------------------------------------

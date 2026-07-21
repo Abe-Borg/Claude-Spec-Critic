@@ -28,6 +28,7 @@ import copy
 import hashlib
 import threading
 from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -95,6 +96,13 @@ class _ExtractionCache:
     def __init__(self, max_entries: int = _DEFAULT_MAX_ENTRIES) -> None:
         self._max_entries = int(max_entries)
         self._entries: "OrderedDict[tuple, ExtractedSpec]" = OrderedDict()
+        # A cold path may be requested concurrently by several routed-module
+        # preparation workers.  The cache lock protected the mapping itself,
+        # but the former get-then-extract sequence allowed every caller to
+        # observe the same miss and parse the DOCX independently.  One Future
+        # per cache key makes that work single-flight without holding the lock
+        # during extraction.
+        self._inflight: dict[tuple, Future[ExtractedSpec]] = {}
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
@@ -131,6 +139,78 @@ class _ExtractionCache:
             self._entries.move_to_end(key)
             while len(self._entries) > self._max_entries:
                 self._entries.popitem(last=False)
+
+    def _lookup_or_reserve(
+        self, path: Path
+    ) -> tuple[str, Optional[ExtractedSpec], tuple | None, Future[ExtractedSpec] | None]:
+        """Return a cache hit or reserve/join one extraction for ``path``.
+
+        The status is one of ``hit``, ``leader``, ``waiter``, or
+        ``uncached``.  ``uncached`` preserves the historical missing-file
+        behavior: the downstream extractor owns the error/result because no
+        stable file-identity key exists to coordinate on.
+        """
+
+        try:
+            key = self._key(path)
+        except FileNotFoundError:
+            return "uncached", None, None, None
+        with self._lock:
+            spec = self._entries.get(key)
+            if spec is not None:
+                self._entries.move_to_end(key)
+                self._hits += 1
+                return "hit", copy.deepcopy(spec), key, None
+
+            # Preserve the old stats contract: every caller that arrives
+            # before the value is cached observes a miss, including waiters.
+            self._misses += 1
+            future = self._inflight.get(key)
+            if future is not None:
+                return "waiter", None, key, future
+            future = Future()
+            self._inflight[key] = future
+            return "leader", None, key, future
+
+    def _complete_reservation(
+        self,
+        path: Path,
+        key: tuple,
+        future: Future[ExtractedSpec],
+        spec: ExtractedSpec,
+    ) -> None:
+        """Publish a leader result to the cache and every waiting caller."""
+
+        try:
+            # ``put`` preserves the existing post-extraction identity check:
+            # if the file changed while it was parsed, the cached value is
+            # stored under the new identity rather than the stale claim key.
+            self.put(path, spec)
+            waiter_copy = copy.deepcopy(spec)
+        except BaseException as exc:
+            self._fail_reservation(key, future, exc)
+            raise
+        with self._lock:
+            if self._inflight.get(key) is future:
+                del self._inflight[key]
+            if not future.done():
+                # Waiters deepcopy this snapshot once more, so no two callers
+                # ever share a mutable ExtractedSpec or nested warning/map list.
+                future.set_result(waiter_copy)
+
+    def _fail_reservation(
+        self,
+        key: tuple,
+        future: Future[ExtractedSpec],
+        exc: BaseException,
+    ) -> None:
+        """Release every waiter with the leader's extraction exception."""
+
+        with self._lock:
+            if self._inflight.get(key) is future:
+                del self._inflight[key]
+            if not future.done():
+                future.set_exception(exc)
 
     def clear(self) -> None:
         with self._lock:
@@ -174,20 +254,91 @@ def extract_multiple_specs_cached(
         return extract_multiple_specs(paths, max_workers=max_workers)
 
     out: list[Optional[ExtractedSpec]] = [None] * len(paths)
-    misses: list[tuple[int, Path]] = []
+    leaders: list[
+        tuple[int, Path, tuple | None, Future[ExtractedSpec] | None]
+    ] = []
+    waiters: list[tuple[int, Future[ExtractedSpec]]] = []
     for i, p in enumerate(paths):
-        cached = _extraction_cache.get(p)
-        if cached is not None:
+        status, cached, key, future = _extraction_cache._lookup_or_reserve(p)
+        if status == "hit":
             out[i] = cached
+        elif status == "waiter":
+            assert future is not None
+            waiters.append((i, future))
         else:
-            misses.append((i, p))
-    if misses:
+            # ``uncached`` has no stable key/future; it still travels through
+            # the existing bulk extractor and preserves its error behavior.
+            leaders.append((i, p, key, future))
+    if leaders:
         from .extractor import extract_multiple_specs
-        miss_paths = [p for _, p in misses]
-        extracted = extract_multiple_specs(miss_paths, max_workers=max_workers)
-        for (idx, path), spec in zip(misses, extracted):
-            _extraction_cache.put(path, spec)
-            out[idx] = spec
+
+        # Resolve owned reservations independently.  A bulk ``pool.map``
+        # raises for the whole list when one DOCX is corrupt; forwarding that
+        # one exception to every per-key Future would incorrectly make a
+        # concurrent waiter for a healthy shared file fail too.  The small
+        # outer pool retains parallel extraction while capturing one outcome
+        # per identity.  Each one-item extractor call is sequential internally
+        # (no nested worker fan-out).
+        configured_workers = max_workers if max_workers is not None else min(8, len(leaders))
+        workers = max(1, min(int(configured_workers), len(leaders)))
+
+        def extract_one(path: Path) -> ExtractedSpec:
+            result = extract_multiple_specs([path], max_workers=1)
+            if len(result) != 1:
+                raise RuntimeError(
+                    "Specification extraction returned an unexpected result count "
+                    f"({len(result)} for 1 input file)."
+                )
+            return result[0]
+
+        outcomes: dict[int, ExtractedSpec | BaseException] = {}
+        if workers == 1:
+            for position, (_idx, path, _key, _future) in enumerate(leaders):
+                try:
+                    outcomes[position] = extract_one(path)
+                except BaseException as exc:
+                    outcomes[position] = exc
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(extract_one, path): position
+                    for position, (_idx, path, _key, _future) in enumerate(leaders)
+                }
+                for completed in as_completed(futures):
+                    position = futures[completed]
+                    try:
+                        outcomes[position] = completed.result()
+                    except BaseException as exc:
+                        outcomes[position] = exc
+
+        first_error: BaseException | None = None
+        for position, (idx, path, key, future) in enumerate(leaders):
+            outcome = outcomes[position]
+            if isinstance(outcome, BaseException):
+                if key is not None and future is not None:
+                    _extraction_cache._fail_reservation(key, future, outcome)
+                if first_error is None:
+                    first_error = outcome
+                continue
+            try:
+                if key is not None and future is not None:
+                    _extraction_cache._complete_reservation(path, key, future, outcome)
+                else:
+                    _extraction_cache.put(path, outcome)
+                out[idx] = outcome
+            except BaseException as exc:
+                if key is not None and future is not None:
+                    _extraction_cache._fail_reservation(key, future, exc)
+                if first_error is None:
+                    first_error = exc
+
+        if first_error is not None:
+            raise first_error
+
+    for idx, future in waiters:
+        # Future.result propagates the leader's exception unchanged.  Copying
+        # its immutable snapshot preserves the cache's caller-isolation rule.
+        out[idx] = copy.deepcopy(future.result())
     # Every slot is now populated.
     return [s for s in out if s is not None]
 

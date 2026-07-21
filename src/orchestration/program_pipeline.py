@@ -7,11 +7,19 @@ before remote submission, and retains module provenance through collection.
 from __future__ import annotations
 
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Iterable
 
+from ..core.api_config import (
+    program_collection_max_workers,
+    program_prepare_max_workers,
+    realtime_collection_max_calls,
+    research_max_workers,
+)
 from ..core.project_profile import ProjectProfile
 from ..modules import require_module
 from ..programs import (
@@ -20,13 +28,21 @@ from ..programs import (
     partition_assignments,
     require_program,
 )
+from ..review.realtime_review import (
+    build_realtime_review_jobs,
+    run_realtime_review_jobs,
+)
 from ..review.reviewer import ReviewResult
+from ..tracing import activate_span, current_span
+from ..tracing import capture_hooks as _trace
+from ..tracing.spans import KIND_PIPELINE, SpanHandle
 from .pipeline import (
     BatchSubmission,
     PipelineResult,
     PreparedBatchReview,
     _make_verification_cache,
     _persist_verification_cache,
+    build_realtime_batch_submission,
     prepare_batch_review,
     run_batch_collection_headless,
     submit_prepared_batch_review,
@@ -42,6 +58,89 @@ def _noop_log(_message: str, **_kwargs: object) -> None:
 
 def _noop_progress(_progress: float, _message: str, **_kwargs: object) -> None:
     return
+
+
+def _close_abandoned_prepared_trace(
+    child: PreparedBatchReview,
+    *,
+    phase: str,
+    error: str,
+) -> None:
+    """Close a prepared child that can no longer reach collection.
+
+    A prepared pipeline span normally stays open across remote submission and
+    closes only after final collection.  Program-level barriers create a few
+    honest abandonment paths, though: a sibling can fail preparation before
+    any spend, or submission can stop before later prepared children are sent.
+    Those children have no ``BatchSubmission`` that could close their span
+    later, so the program coordinator must do it here.
+    """
+
+    trace_pipeline = getattr(child, "trace_pipeline", None)
+    module = getattr(child, "module", None)
+    module_id = getattr(module, "module_id", "")
+    _trace.capture_pipeline_end_by_id(
+        getattr(trace_pipeline, "span_id", ""),
+        success=False,
+        summary={
+            "module_id": module_id,
+            "phase": phase,
+            "error": error,
+        },
+    )
+
+
+class _WeightedProgress:
+    """Thread-safe weighted progress with monotone, serialized delivery."""
+
+    def __init__(
+        self,
+        *,
+        weights: dict[str, int],
+        labels: dict[str, str],
+        base: float,
+        span: float,
+        local_ceiling: float,
+        callback: ProgressFn,
+    ) -> None:
+        self._weights = {key: max(0, int(value)) for key, value in weights.items()}
+        self._labels = dict(labels)
+        self._base = float(base)
+        self._span = float(span)
+        self._local_ceiling = max(float(local_ceiling), 1.0)
+        self._callback = callback
+        self._high_water = {key: 0.0 for key in self._weights}
+        self._total = max(1, sum(self._weights.values()))
+        self._last_emitted = self._base
+        # The callback is deliberately invoked while this lock is held.  That
+        # serializes delivery as well as calculation; compute-under-lock and
+        # call-outside can still deliver an older value after a newer one.
+        self._lock = threading.RLock()
+
+    def update(
+        self,
+        module_id: str,
+        value: float,
+        message: str,
+        **kwargs: object,
+    ) -> None:
+        fraction = max(0.0, min(float(value), self._local_ceiling)) / self._local_ceiling
+        with self._lock:
+            self._high_water[module_id] = max(
+                self._high_water.get(module_id, 0.0), fraction
+            )
+            weighted = sum(
+                self._weights[key] * self._high_water.get(key, 0.0)
+                for key in self._weights
+            )
+            target = self._base + self._span * (weighted / self._total)
+            target = max(self._last_emitted, target)
+            self._last_emitted = target
+            label = self._labels.get(module_id, module_id)
+            self._callback(target, f"{label}: {message}", **kwargs)
+
+    def complete(self, module_id: str, message: str, **kwargs: object) -> None:
+        self.update(module_id, self._local_ceiling, message, **kwargs)
 
 
 def _validate_program_membership(
@@ -467,23 +566,43 @@ def prepare_program_review(
     if not file_partitions:
         raise ValueError("No specifications are routed to an implemented review module")
 
-    total_requests = sum(len(paths) for paths in file_partitions.values())
-    prepared_partitions: dict[str, PreparedBatchReview] = {}
-    completed_requests = 0
-    for module_id in program.implemented_module_ids:
-        paths = file_partitions.get(module_id)
-        if not paths:
-            continue
-        module = require_module(module_id)
-        weight = len(paths)
+    active = [
+        (module_id, file_partitions[module_id], require_module(module_id))
+        for module_id in program.implemented_module_ids
+        if file_partitions.get(module_id)
+    ]
+    weights = {module_id: len(paths) for module_id, paths, _module in active}
+    progress_state = _WeightedProgress(
+        weights=weights,
+        labels={module_id: module.display_name for module_id, _paths, module in active},
+        base=0.0,
+        span=25.0,
+        local_ceiling=25.0,
+        callback=progress,
+    )
+    research_call_semaphore = threading.BoundedSemaphore(research_max_workers())
 
+    def prepare_one(
+        module_id: str,
+        paths: list[Path],
+        module,
+        *,
+        trace_parent=None,
+        explicit_trace_parent: bool = False,
+    ) -> PreparedBatchReview:
         def child_progress(value: float, message: str, **kwargs: object) -> None:
-            local_fraction = max(0.0, min(float(value), 25.0)) / 25.0
-            aggregate = (completed_requests + weight * local_fraction) / total_requests
-            progress(aggregate * 25.0, f"{module.display_name}: {message}", **kwargs)
+            progress_state.update(module_id, value, message, **kwargs)
 
         log(f"Preparing routed module: {module.display_name}", level="step")
-        prepared_partitions[module_id] = prepare_batch_review(
+        trace_kwargs = (
+            {
+                "_trace_parent": trace_parent,
+                "_trace_inherit_current_parent": False,
+            }
+            if explicit_trace_parent
+            else {}
+        )
+        return prepare_batch_review(
             input_dir=input_dir,
             files=paths,
             project_context=project_context,
@@ -495,8 +614,87 @@ def prepare_program_review(
             project_profile=project_profile,
             diagnostics=diagnostics,
             review_transport=review_transport,
+            research_call_semaphore=research_call_semaphore,
+            # Do not activate the caller span around the whole preparation.
+            # ``capture_pipeline_start`` opens the child pipeline explicitly;
+            # it then sits on this worker's local stack and correctly parents
+            # research/extraction spans beneath that child. Explicit-root mode
+            # also masks a prior module pipeline left on a reused worker.
+            **trace_kwargs,
         )
-        completed_requests += weight
+
+    prepared_by_module: dict[str, PreparedBatchReview] = {}
+    preparation_errors: dict[str, Exception] = {}
+    # Preserve the single-module execution path exactly: aside from avoiding
+    # executor overhead, capture hooks that use a thread-local span stack keep
+    # their historical parentage and log/progress timing.
+    if len(active) == 1:
+        module_id, paths, module = active[0]
+        prepared_by_module[module_id] = prepare_one(module_id, paths, module)
+        progress_state.complete(module_id, "preparation complete")
+    else:
+        trace_parent = current_span()
+        with ThreadPoolExecutor(
+            max_workers=min(program_prepare_max_workers(), len(active)),
+            thread_name_prefix="spec-program-prepare",
+        ) as pool:
+            futures = {
+                pool.submit(
+                    prepare_one,
+                    module_id,
+                    paths,
+                    module,
+                    trace_parent=trace_parent,
+                    explicit_trace_parent=True,
+                ): module_id
+                for module_id, paths, module in active
+            }
+            for future in as_completed(futures):
+                module_id = futures[future]
+                try:
+                    prepared_by_module[module_id] = future.result()
+                except Exception as exc:  # one module must not cancel siblings
+                    preparation_errors[module_id] = exc
+                    progress_state.complete(module_id, "preparation failed")
+                else:
+                    progress_state.complete(module_id, "preparation complete")
+
+    if preparation_errors:
+        ordered_errors = [
+            (module_id, preparation_errors[module_id])
+            for module_id, _paths, _module in active
+            if module_id in preparation_errors
+        ]
+        failure_summary = "; ".join(
+            f"{module_id}: {exc}" for module_id, exc in ordered_errors
+        )
+        # Failed children close their own spans inside ``prepare_batch_review``.
+        # Successful siblings are nevertheless abandoned by the all-preflight
+        # barrier and will never produce a submission/collection object, so
+        # close those spans explicitly rather than leaving them open forever.
+        for module_id, _paths, _module in active:
+            child = prepared_by_module.get(module_id)
+            if child is not None:
+                _close_abandoned_prepared_trace(
+                    child,
+                    phase="preparation_aborted",
+                    error=f"Sibling preparation failed: {failure_summary}",
+                )
+        log(
+            "Program preparation failed before review submission: "
+            + failure_summary,
+            level="error",
+        )
+        # Match the former serial path's exception contract: callers that
+        # distinguish ResearchFanoutError/FileNotFoundError still see the
+        # original type, while every already-started sibling has been joined.
+        raise ordered_errors[0][1]
+
+    prepared_partitions = {
+        module_id: prepared_by_module[module_id]
+        for module_id in program.implemented_module_ids
+        if module_id in prepared_by_module
+    }
 
     return PreparedProgramReview(
         program_id=program.program_id,
@@ -517,6 +715,121 @@ def submit_prepared_program_review(
     """Submit prepared partitions in program order, retaining partial state."""
 
     program = require_program(prepared.program_id)
+    active_module_ids = [
+        module_id
+        for module_id in program.implemented_module_ids
+        if module_id in prepared.partitions
+    ]
+
+    # A routed real-time program must use one account-wide pool.  Calling the
+    # historical child submitter in the loop below would block until each
+    # module's private pool completed, recreating the module barrier this
+    # orchestrator exists to remove.  Keep the one-module path on the legacy
+    # wrapper for byte/log/trace compatibility.
+    if prepared.review_transport == "realtime" and len(active_module_ids) > 1:
+        started_at = time.time()
+        jobs = []
+        request_maps: dict[str, dict[str, dict]] = {}
+        jobs_by_module: dict[str, list] = {}
+        diagnostics = None
+        try:
+            for module_id in active_module_ids:
+                child = prepared.partitions[module_id]
+                if child.review_transport != "realtime":
+                    raise ValueError(
+                        f"Prepared program transport is realtime but {module_id!r} "
+                        f"uses {child.review_transport!r}"
+                    )
+                if diagnostics is None:
+                    diagnostics = child.diagnostics
+                child_jobs, request_map = build_realtime_review_jobs(
+                    child.prepared.specs,
+                    project_context=child.effective_context,
+                    model=child.model,
+                    cycle=child.module.cycle,
+                    pre_detected_alerts=child.prepared.pre_detected_by_filename,
+                    job_key_factory=(
+                        lambda custom_id, _index, mid=module_id: (mid, custom_id)
+                    ),
+                    trace_parent=child.trace_pipeline,
+                    display_name_factory=(
+                        lambda filename, _index, name=child.module.display_name: (
+                            f"{name}: {filename}"
+                        )
+                    ),
+                )
+                jobs.extend(child_jobs)
+                jobs_by_module[module_id] = child_jobs
+                request_maps[module_id] = request_map
+
+            results_by_job = run_realtime_review_jobs(
+                jobs,
+                log=log,
+                progress=lambda value, message: progress(
+                    25.0 + (max(0.0, min(float(value), 100.0)) / 100.0) * 30.0,
+                    message,
+                ),
+                diagnostics=diagnostics,
+            )
+        except BaseException as exc:
+            for module_id in active_module_ids:
+                _close_abandoned_prepared_trace(
+                    prepared.partitions[module_id],
+                    phase="submission",
+                    error=str(exc),
+                )
+            # Preserve interpreter cancellation semantics while still closing
+            # trace state. Ordinary failures retain the public partial-state
+            # exception contract below.
+            if not isinstance(exc, Exception):
+                raise
+            partial = ProgramSubmission(
+                program_id=prepared.program_id,
+                assignments=prepared.assignments,
+                partitions={},
+                project_profile=prepared.project_profile,
+                review_transport=prepared.review_transport,
+                submitted_at=prepared.prepared_at,
+            )
+            raise ProgramSubmissionError(
+                "Could not complete the program-wide real-time review before "
+                f"building child submissions: {exc}",
+                partial_submission=partial,
+            ) from exc
+
+        submitted: dict[str, BatchSubmission] = {}
+        for module_id in active_module_ids:
+            child = prepared.partitions[module_id]
+            child_results = {
+                job.custom_id: results_by_job[job.job_key]
+                for job in jobs_by_module[module_id]
+            }
+            submitted[module_id] = build_realtime_batch_submission(
+                child,
+                realtime_results=child_results,
+                request_map=request_maps[module_id],
+                started_at=started_at,
+            )
+            current = ProgramSubmission(
+                program_id=prepared.program_id,
+                assignments=prepared.assignments,
+                partitions=dict(submitted),
+                project_profile=prepared.project_profile,
+                review_transport=prepared.review_transport,
+                submitted_at=prepared.prepared_at,
+            )
+            if on_partition_submitted is not None:
+                on_partition_submitted(current)
+        progress(55.0, "All routed modules: real-time review complete")
+        return ProgramSubmission(
+            program_id=prepared.program_id,
+            assignments=prepared.assignments,
+            partitions=submitted,
+            project_profile=prepared.project_profile,
+            review_transport=prepared.review_transport,
+            submitted_at=prepared.prepared_at,
+        )
+
     submitted: dict[str, BatchSubmission] = {}
     total = sum(len(part.prepared.specs) for part in prepared.partitions.values())
     completed = 0
@@ -546,7 +859,20 @@ def submit_prepared_program_review(
                 log=log,
                 progress=child_progress,
             )
-        except Exception as exc:
+        except BaseException as exc:
+            failed_index = active_module_ids.index(module_id)
+            for abandoned_id in active_module_ids[failed_index:]:
+                _close_abandoned_prepared_trace(
+                    prepared.partitions[abandoned_id],
+                    phase=(
+                        "submission"
+                        if abandoned_id == module_id
+                        else "submission_aborted"
+                    ),
+                    error=str(exc),
+                )
+            if not isinstance(exc, Exception):
+                raise
             partial = ProgramSubmission(
                 program_id=prepared.program_id,
                 assignments=prepared.assignments,
@@ -612,60 +938,161 @@ def collect_program_results(
     cache = _make_verification_cache(log=log)
     results: dict[str, PipelineResult] = {}
     module_errors: dict[str, str] = {}
-    total = max(1, sum(len(s.review_request_ids) for s in submission.partitions.values()))
-    completed = 0
+    active = [
+        (module_id, submission.partitions[module_id], require_module(module_id))
+        for module_id in program.implemented_module_ids
+        if module_id in submission.partitions
+    ]
+    progress_state = _WeightedProgress(
+        weights={
+            module_id: len(child.review_request_ids)
+            for module_id, child, _module in active
+        },
+        labels={module_id: module.display_name for module_id, _child, module in active},
+        base=55.0,
+        span=40.0,
+        local_ceiling=100.0,
+        callback=progress,
+    )
     drawing_impact_result = None
-    try:
-        for module_id in program.implemented_module_ids:
-            child = submission.partitions.get(module_id)
-            if child is None:
-                continue
-            module = require_module(module_id)
-            count = len(child.review_request_ids)
-            child_high_water = 0.0
+    api_call_semaphore = threading.BoundedSemaphore(
+        realtime_collection_max_calls()
+    )
 
-            def child_progress(value: float, message: str, **kwargs: object) -> None:
-                nonlocal child_high_water
-                child_high_water = max(
-                    child_high_water,
-                    max(0.0, min(float(value), 100.0)) / 100.0,
-                )
-                aggregate = (completed + count * child_high_water) / total
-                progress(
-                    55.0 + aggregate * 40.0,
-                    f"{module.display_name}: {message}",
-                    **kwargs,
-                )
+    def collect_one(
+        module_id: str,
+        child: BatchSubmission,
+        module,
+        *,
+        trace_parent: SpanHandle | None = None,
+        concurrent: bool,
+    ) -> PipelineResult:
+        def child_progress(value: float, message: str, **kwargs: object) -> None:
+            progress_state.update(module_id, value, message, **kwargs)
 
+        def run() -> PipelineResult:
             log(f"Collecting routed module: {module.display_name}", level="step")
+            return run_batch_collection_headless(
+                child,
+                cache=cache,
+                log=log,
+                progress=child_progress,
+                # Drawings are shared program context. Running this inside every
+                # child would multiply spend and produce competing narratives.
+                include_drawing_impact=False,
+                # Only the multi-module path needs a shared permit pool.  The
+                # direct child path stays byte/trace compatible with the
+                # historical single-module collection behavior.
+                api_call_semaphore=(api_call_semaphore if concurrent else None),
+            )
+
+        if trace_parent is None:
+            return run()
+        with activate_span(trace_parent):
+            return run()
+
+    try:
+        result_outcomes: dict[str, PipelineResult] = {}
+        error_outcomes: dict[str, str] = {}
+        if len(active) == 1:
+            module_id, child, module = active[0]
             try:
-                result = run_batch_collection_headless(
+                result_outcomes[module_id] = collect_one(
+                    module_id,
                     child,
-                    cache=cache,
-                    log=log,
-                    progress=child_progress,
-                    # Drawings are shared program context. Running this inside every
-                    # child would multiply spend and produce competing narratives.
-                    include_drawing_impact=False,
+                    module,
+                    concurrent=False,
                 )
             except Exception as exc:
-                module_errors[module_id] = str(exc)
+                error_outcomes[module_id] = str(exc)
+                _trace.capture_pipeline_end_by_id(
+                    child.trace_span_id,
+                    success=False,
+                    summary={
+                        "module_id": module_id,
+                        "phase": "collection",
+                        "error": str(exc),
+                    },
+                )
                 log(
                     f"Could not collect {module.display_name}; retaining completed "
                     f"module results and marking coverage partial: {exc}",
                     level="warning",
                 )
-            else:
-                results[module_id] = result
-            completed += count
-            progress(
-                55.0 + (completed / total) * 40.0,
-                (
-                    f"{module.display_name}: collection complete"
-                    if module_id in results
-                    else f"{module.display_name}: collection failed"
-                ),
+            progress_state.complete(
+                module_id,
+                "collection complete"
+                if module_id in result_outcomes
+                else "collection failed",
             )
+        else:
+            with ThreadPoolExecutor(
+                max_workers=min(program_collection_max_workers(), len(active)),
+                thread_name_prefix="spec-program-collect",
+            ) as pool:
+                futures = {}
+                for module_id, child, module in active:
+                    trace_parent = (
+                        SpanHandle(
+                            span_id=child.trace_span_id,
+                            kind=KIND_PIPELINE,
+                            started_at=0.0,
+                        )
+                        if child.trace_span_id
+                        else None
+                    )
+                    future = pool.submit(
+                        collect_one,
+                        module_id,
+                        child,
+                        module,
+                        trace_parent=trace_parent,
+                        concurrent=True,
+                    )
+                    futures[future] = (module_id, module)
+
+                for future in as_completed(futures):
+                    module_id, module = futures[future]
+                    try:
+                        result_outcomes[module_id] = future.result()
+                    except Exception as exc:  # one module never cancels siblings
+                        error_outcomes[module_id] = str(exc)
+                        failed_child = submission.partitions[module_id]
+                        _trace.capture_pipeline_end_by_id(
+                            failed_child.trace_span_id,
+                            success=False,
+                            summary={
+                                "module_id": module_id,
+                                "phase": "collection",
+                                "error": str(exc),
+                            },
+                        )
+                        log(
+                            f"Could not collect {module.display_name}; retaining "
+                            "completed module results and marking coverage partial: "
+                            f"{exc}",
+                            level="warning",
+                        )
+                    progress_state.complete(
+                        module_id,
+                        "collection complete"
+                        if module_id in result_outcomes
+                        else "collection failed",
+                    )
+
+        # Future completion order is nondeterministic, but it is observable in
+        # merged findings/thinking/report order. Rebuild both maps strictly in
+        # declared program order before any aggregate or drawing synthesis.
+        results = {
+            module_id: result_outcomes[module_id]
+            for module_id in program.implemented_module_ids
+            if module_id in result_outcomes
+        }
+        module_errors = {
+            module_id: error_outcomes[module_id]
+            for module_id in program.implemented_module_ids
+            if module_id in error_outcomes
+        }
 
         if module_errors and not results:
             details = "; ".join(

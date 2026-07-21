@@ -6,6 +6,7 @@ import hashlib
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
@@ -47,12 +48,18 @@ from ..verification.verifier import (
     prepare_findings_for_verification,
     verify_finding,
 )
-from ..verification.verification_cache import VerificationCache, cache_persist_enabled
+from ..verification.verification_cache import (
+    VerificationCache,
+    VerificationFlightClaim,
+    cache_persist_enabled,
+    make_cache_key,
+)
 from ..cross_check.cross_checker import run_chunked_cross_check
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..core.project_profile import ProjectProfile
 from ..modules import DEFAULT_MODULE, ReviewModule, get_module
 from ..tracing import capture_hooks as _trace
+from ..tracing import current_span
 
 # Log/progress callbacks accept explicit ``level`` and ``phase`` keywords
 # so pipeline code can categorize messages (info / success / warning /
@@ -938,6 +945,7 @@ def _run_research_phase(
     log: LogFn,
     progress: ProgressFn,
     diagnostics=None,
+    research_call_semaphore=None,
 ) -> tuple[str, dict]:
     """Corpus scrape → research fan-out → context splice (WS-3, D-3).
 
@@ -990,6 +998,7 @@ def _run_research_phase(
         log=log,
         progress=progress,
         diag=diagnostics,
+        call_semaphore=research_call_semaphore,
     )
     effective_context, _dropped = splice_profile_into_context(
         user_context, research_profile, log=log
@@ -1031,6 +1040,9 @@ def prepare_batch_review(
     project_profile: ProjectProfile | None = None,
     diagnostics=None,
     review_transport: str = "batch",
+    research_call_semaphore=None,
+    _trace_parent=None,
+    _trace_inherit_current_parent: bool = True,
 ) -> PreparedBatchReview:
     """Research and preflight one module partition without submitting it."""
     cycle = module.cycle
@@ -1042,7 +1054,20 @@ def prepare_batch_review(
         module_id=module.module_id,
         files=[str(f) for f in (files or [])],
         project_profile=profile_dict,
+        parent=_trace_parent,
+        inherit_current_parent=_trace_inherit_current_parent,
     )
+
+    def close_failed_preparation_trace(phase: str, exc: BaseException) -> None:
+        _trace.capture_pipeline_end_by_id(
+            trace_pipeline.span_id if trace_pipeline is not None else "",
+            success=False,
+            summary={
+                "module_id": module.module_id,
+                "phase": phase,
+                "error": str(exc),
+            },
+        )
     # WS-3 requirements-research phase: runs BEFORE spec preparation so its
     # rendered profile is inside ``project_context`` when preflight counts
     # tokens and the batch submits. Living here (the one engine submission
@@ -1053,17 +1078,31 @@ def prepare_batch_review(
     # ``DiagnosticsReport`` for per-dimension API-call telemetry.
     effective_context = project_context
     requirements_profile_dict: dict | None = None
-    if _research_phase_applies(module, project_profile, log=log):
-        effective_context, requirements_profile_dict = _run_research_phase(
-            module=module,
-            profile=project_profile,
-            input_dir=input_dir,
-            files=files,
-            user_context=project_context,
-            log=log,
-            progress=progress,
-            diagnostics=diagnostics,
-        )
+    research_applies = _research_phase_applies(module, project_profile, log=log)
+    if research_applies:
+        def research_progress(value: float, message: str, **kwargs: object) -> None:
+            # Requirements research owns the first 15 points of preparation;
+            # extraction/preflight owns the remaining 10.  Keeping the two
+            # sub-phases disjoint prevents the bar from reaching 25 during
+            # research and then dropping back to zero when extraction starts.
+            bounded = max(0.0, min(float(value), 100.0))
+            progress((bounded / 100.0) * 15.0, message, **kwargs)
+
+        try:
+            effective_context, requirements_profile_dict = _run_research_phase(
+                module=module,
+                profile=project_profile,
+                input_dir=input_dir,
+                files=files,
+                user_context=project_context,
+                log=log,
+                progress=research_progress,
+                diagnostics=diagnostics,
+                research_call_semaphore=research_call_semaphore,
+            )
+        except BaseException as exc:
+            close_failed_preparation_trace("research", exc)
+            raise
     # Wrong-polity detector activation (WS-4, D-15): only a profile-bearing
     # run on an opted-in module supplies a country; ``None`` keeps every
     # profile-less run's preprocessing byte-identical.
@@ -1076,7 +1115,26 @@ def prepare_batch_review(
         )
         else None
     )
-    prepared = _prepare_specs(input_dir=input_dir, files=files, project_context=effective_context, log=log, progress=progress, cycle=cycle, model=model, profile_country=profile_country)
+    if research_applies:
+        def preparation_progress(value: float, message: str, **kwargs: object) -> None:
+            bounded = max(0.0, min(float(value), 25.0))
+            progress(15.0 + (bounded / 25.0) * 10.0, message, **kwargs)
+    else:
+        preparation_progress = progress
+    try:
+        prepared = _prepare_specs(
+            input_dir=input_dir,
+            files=files,
+            project_context=effective_context,
+            log=log,
+            progress=preparation_progress,
+            cycle=cycle,
+            model=model,
+            profile_country=profile_country,
+        )
+    except BaseException as exc:
+        close_failed_preparation_trace("preflight", exc)
+        raise
     _trace.capture_note(
         trace_pipeline,
         "specs prepared",
@@ -1099,6 +1157,88 @@ def prepare_batch_review(
     )
 
 
+def _batch_submission_from_prepared(
+    prepared_run: PreparedBatchReview,
+    *,
+    job: BatchJob,
+    realtime_results: dict[str, ReviewResult] | None = None,
+) -> BatchSubmission:
+    """Materialize the shared child-submission fields in one place.
+
+    Both the traditional single-module wrapper and the program-level global
+    real-time scheduler use this constructor.  Keeping the field copy here
+    prevents a new orchestration path from silently dropping alert lists,
+    requirements research, profile identity, tracing, or request ordering.
+    """
+    prepared = prepared_run.prepared
+    trace_pipeline = prepared_run.trace_pipeline
+    ordered_ids = [
+        custom_id
+        for custom_id, _metadata in sorted(
+            job.request_map.items(), key=lambda item: item[1]["index"]
+        )
+    ]
+    return BatchSubmission(
+        job=job,
+        files_reviewed=[spec.filename for spec in prepared.specs],
+        review_request_ids=ordered_ids,
+        leed_alerts=prepared.leed_alerts,
+        placeholder_alerts=prepared.placeholder_alerts,
+        model=prepared_run.model,
+        # The EFFECTIVE context (research profile spliced in) — this is what
+        # review/cross-check/verification see and what resume persists.
+        project_context=prepared_run.effective_context,
+        prepared_specs=prepared.specs,
+        cycle_label=prepared_run.module.cycle.label,
+        module_id=prepared_run.module.module_id,
+        project_profile=prepared_run.project_profile,
+        requirements_profile=prepared_run.requirements_profile,
+        cross_check_enabled=prepared_run.cross_check_enabled,
+        code_cycle_alerts=prepared.code_cycle_alerts,
+        structural_alerts=prepared.structural_alerts,
+        naming_alerts=prepared.naming_alerts,
+        template_marker_alerts=prepared.template_marker_alerts,
+        invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
+        duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
+        polity_alerts=prepared.polity_alerts,
+        trace_span_id=(trace_pipeline.span_id if trace_pipeline is not None else ""),
+        review_transport=prepared_run.review_transport,
+        realtime_results=realtime_results,
+    )
+
+
+def build_realtime_batch_submission(
+    prepared_run: PreparedBatchReview,
+    *,
+    realtime_results: dict[str, ReviewResult],
+    request_map: dict[str, dict],
+    started_at: float,
+) -> BatchSubmission:
+    """Build one completed child submission after a shared realtime fan-out.
+
+    ``program_pipeline`` can execute all module jobs through one global pool,
+    regroup by opaque program job key, then call this helper per module.  The
+    resulting child is identical in shape to the historical per-module
+    ``submit_prepared_batch_review`` result.
+    """
+    if prepared_run.review_transport != "realtime":
+        raise ValueError(
+            "build_realtime_batch_submission requires review_transport='realtime'"
+        )
+    job = BatchJob(
+        batch_id=REALTIME_JOB_SENTINEL,
+        job_type="review",
+        request_map=dict(request_map),
+        created_at=started_at,
+        status="completed",
+    )
+    return _batch_submission_from_prepared(
+        prepared_run,
+        job=job,
+        realtime_results=dict(realtime_results),
+    )
+
+
 def submit_prepared_batch_review(
     prepared_run: PreparedBatchReview,
     *,
@@ -1114,7 +1254,6 @@ def submit_prepared_batch_review(
     diagnostics = prepared_run.diagnostics
     trace_pipeline = prepared_run.trace_pipeline
     review_transport = prepared_run.review_transport
-    realtime_results: dict[str, ReviewResult] | None = None
     if review_transport == "realtime":
         # Real-time transport: the reviews run to completion HERE (streaming
         # fan-out), and the submission carries the finished results plus a
@@ -1136,12 +1275,11 @@ def submit_prepared_batch_review(
             diagnostics=diagnostics,
             _trace_parent=trace_pipeline,
         )
-        job = BatchJob(
-            batch_id=REALTIME_JOB_SENTINEL,
-            job_type="review",
+        return build_realtime_batch_submission(
+            prepared_run,
+            realtime_results=realtime_results,
             request_map=request_map,
-            created_at=realtime_started,
-            status="completed",
+            started_at=realtime_started,
         )
     else:
         job = submit_review_batch(
@@ -1158,35 +1296,7 @@ def submit_prepared_batch_review(
     # ``submit_review_batch`` (with the extended-output-beta flag) and the
     # "realtime review completed" note inside ``run_realtime_review``; no
     # second note here so the trace shows each submission once.
-    ordered_ids = [cid for cid, _ in sorted(job.request_map.items(), key=lambda item: item[1]["index"])]
-    return BatchSubmission(
-        job=job,
-        files_reviewed=[s.filename for s in prepared.specs],
-        review_request_ids=ordered_ids,
-        leed_alerts=prepared.leed_alerts,
-        placeholder_alerts=prepared.placeholder_alerts,
-        model=model,
-        # The EFFECTIVE context (research profile spliced in) — this is what
-        # the batch was submitted with, what cross-check/verification must
-        # see, and what resume recovers the profile text from.
-        project_context=effective_context,
-        prepared_specs=prepared.specs,
-        cycle_label=cycle.label,
-        module_id=module.module_id,
-        project_profile=prepared_run.project_profile,
-        requirements_profile=prepared_run.requirements_profile,
-        cross_check_enabled=prepared_run.cross_check_enabled,
-        code_cycle_alerts=prepared.code_cycle_alerts,
-        structural_alerts=prepared.structural_alerts,
-        naming_alerts=prepared.naming_alerts,
-        template_marker_alerts=prepared.template_marker_alerts,
-        invalid_code_cycle_alerts=prepared.invalid_code_cycle_alerts,
-        duplicate_paragraph_alerts=prepared.duplicate_paragraph_alerts,
-        polity_alerts=prepared.polity_alerts,
-        trace_span_id=(trace_pipeline.span_id if trace_pipeline is not None else ""),
-        review_transport=review_transport,
-        realtime_results=realtime_results,
-    )
+    return _batch_submission_from_prepared(prepared_run, job=job)
 
 
 def start_batch_review(
@@ -1217,11 +1327,26 @@ def start_batch_review(
         diagnostics=diagnostics,
         review_transport=review_transport,
     )
-    return submit_prepared_batch_review(
-        prepared_run,
-        log=log,
-        progress=progress,
-    )
+    try:
+        return submit_prepared_batch_review(
+            prepared_run,
+            log=log,
+            progress=progress,
+        )
+    except BaseException as exc:
+        # No BatchSubmission exists to carry this long-lived span into
+        # collection, so a failed/aborted submit must close it here.
+        trace_pipeline = prepared_run.trace_pipeline
+        _trace.capture_pipeline_end_by_id(
+            trace_pipeline.span_id if trace_pipeline is not None else "",
+            success=False,
+            summary={
+                "module_id": prepared_run.module.module_id,
+                "phase": "submission",
+                "error": str(exc),
+            },
+        )
+        raise
 
 
 def _is_retryable_batch_review_result(rr: ReviewResult | None) -> bool:
@@ -1736,6 +1861,7 @@ def start_batch_verification(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    api_call_semaphore=None,
 ) -> BatchJob | None:
     """Submit a verification batch, applying the local pre-pass first.
 
@@ -1750,6 +1876,7 @@ def start_batch_verification(
         cache=cache,
         jurisdiction_fingerprint=jurisdiction_fingerprint,
         log=log,
+        api_call_semaphore=api_call_semaphore,
     )
     if not remaining:
         progress(60.0, "Verification: all findings resolved locally / cached.")
@@ -1772,6 +1899,7 @@ def collect_batch_verification_results(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    api_call_semaphore=None,
 ) -> list[Finding]:
     submitted = job.submitted_findings if job.submitted_findings is not None else findings
     return collect_verification_batch_results(
@@ -1784,10 +1912,11 @@ def collect_batch_verification_results(
         cache=cache,
         user_location=user_location,
         jurisdiction_fingerprint=jurisdiction_fingerprint,
+        api_call_semaphore=api_call_semaphore,
     )
 
 
-def verify_findings_for_run(
+def _execute_verification_attempts(
     findings: list[Finding],
     *,
     module: ReviewModule = DEFAULT_MODULE,
@@ -1797,8 +1926,9 @@ def verify_findings_for_run(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    api_call_semaphore=None,
 ) -> None:
-    """Verify ``findings`` in place, on the run's transport.
+    """Run the legacy transport attempt for each supplied finding.
 
     The single verification entry point both drivers (the GUI collect
     sequence and :func:`run_batch_collection_headless`) call for round 1
@@ -1830,12 +1960,18 @@ def verify_findings_for_run(
         return
     if transport == "realtime":
         cycle = module.cycle
+        # Executor workers do not inherit ContextVars. Snapshot the active
+        # module pipeline before creating the nested verifier pool and pass it
+        # explicitly so initial/escalation spans remain under the right routed
+        # child instead of becoming trace roots.
+        trace_parent = current_span()
         remaining = prepare_findings_for_verification(
             findings,
             cycle=cycle,
             cache=cache,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
             log=log,
+            api_call_semaphore=api_call_semaphore,
         )
         if not remaining:
             progress(60.0, "Verification: all findings resolved locally / cached.")
@@ -1848,16 +1984,22 @@ def verify_findings_for_run(
         # network, so a small pool wins; verify_finding owns cache puts and
         # escalation internally.
         done = 0
+        def verify_one(finding: Finding):
+            kwargs = dict(
+                cycle=cycle,
+                cache=cache,
+                user_location=user_location,
+                jurisdiction_fingerprint=jurisdiction_fingerprint,
+                _trace_parent=trace_parent,
+            )
+            if api_call_semaphore is None:
+                return verify_finding(finding, **kwargs)
+            with api_call_semaphore:
+                return verify_finding(finding, **kwargs)
+
         with ThreadPoolExecutor(max_workers=min(5, total)) as pool:
             futures = {
-                pool.submit(
-                    verify_finding,
-                    f,
-                    cycle=cycle,
-                    cache=cache,
-                    user_location=user_location,
-                    jurisdiction_fingerprint=jurisdiction_fingerprint,
-                ): f
+                pool.submit(verify_one, f): f
                 for f in remaining
             }
             for future in as_completed(futures):
@@ -1884,6 +2026,7 @@ def verify_findings_for_run(
         cache=cache,
         user_location=user_location,
         jurisdiction_fingerprint=jurisdiction_fingerprint,
+        api_call_semaphore=api_call_semaphore,
     )
     if job is not None:
         collect_batch_verification_results(
@@ -1895,7 +2038,233 @@ def verify_findings_for_run(
             cache=cache,
             user_location=user_location,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
+            api_call_semaphore=api_call_semaphore,
         )
+
+
+@dataclass
+class _VerificationFlightGroup:
+    """Equivalent local findings sharing one normalized cache key."""
+
+    key: str
+    findings: list[Finding]
+    claim: VerificationFlightClaim | None = None
+
+
+def _stamp_grounded_cache_hits(
+    findings: list[Finding],
+    *,
+    cache: VerificationCache,
+    cycle: CodeCycle,
+    jurisdiction_fingerprint: str | None,
+) -> bool:
+    """Stamp ``findings`` from one grounded entry, or leave all untouched."""
+
+    cached_results: list[VerificationResult] = []
+    for finding in findings:
+        cached = cache.get(
+            finding,
+            cycle=cycle,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+        )
+        if cached is None:
+            # Entries are never evicted during a run. Since every finding in
+            # the group has the same key, a miss means none of the group can be
+            # safely replayed.
+            return False
+        cached_results.append(cached)
+    for finding, cached in zip(findings, cached_results):
+        finding.verification = cached
+    return True
+
+
+def _verify_findings_singleflight(
+    findings: list[Finding],
+    *,
+    module: ReviewModule,
+    transport: str,
+    log: LogFn,
+    progress: ProgressFn,
+    cache: VerificationCache,
+    user_location: dict | None,
+    jurisdiction_fingerprint: str | None,
+    api_call_semaphore,
+) -> None:
+    """Verify each cache key once while allowing safe follower takeover."""
+
+    cycle = module.cycle
+    grouped: dict[str, list[Finding]] = {}
+    for finding in findings:
+        key = make_cache_key(
+            finding,
+            cycle=cycle,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+        )
+        grouped.setdefault(key, []).append(finding)
+
+    pending = [
+        _VerificationFlightGroup(key=key, findings=group_findings)
+        for key, group_findings in grouped.items()
+    ]
+    reused = 0
+
+    while pending:
+        # ``claim_many`` sorts and registers the whole key set under one lock.
+        # No API permit, per-key lock, or coordinator lock is held after this
+        # call, which rules out AB/BA deadlocks across overlapping modules.
+        claims = cache.singleflight.claim_many(group.key for group in pending)
+        leaders: list[_VerificationFlightGroup] = []
+        followers: list[_VerificationFlightGroup] = []
+
+        try:
+            for group in pending:
+                claim = claims[group.key]
+                group.claim = claim
+                if not claim.leader:
+                    followers.append(group)
+                    continue
+
+                # Close the cache-fill race between an earlier lookup and this
+                # generation claim. If another caller grounded the question
+                # just before we became leader, skip the paid request.
+                if _stamp_grounded_cache_hits(
+                    group.findings,
+                    cache=cache,
+                    cycle=cycle,
+                    jurisdiction_fingerprint=jurisdiction_fingerprint,
+                ):
+                    reused += len(group.findings)
+                    continue
+                leaders.append(group)
+
+            if leaders:
+                representatives = [group.findings[0] for group in leaders]
+                _execute_verification_attempts(
+                    representatives,
+                    module=module,
+                    transport=transport,
+                    log=log,
+                    progress=progress,
+                    cache=cache,
+                    user_location=user_location,
+                    jurisdiction_fingerprint=jurisdiction_fingerprint,
+                    api_call_semaphore=api_call_semaphore,
+                )
+        finally:
+            # Always wake peers, including when cache lookup, batch submission,
+            # collection, logging, progress, or interpreter control-flow raises.
+            # Waiters consult the cache and one takes over every key whose leader
+            # failed to produce a cacheable verdict.
+            # Iterate the complete atomic claim map, not only groups visited by
+            # the loop above: if key 1's cache lookup raises, leader claims for
+            # keys 2..N still have to be released.
+            for claim in claims.values():
+                if claim.leader:
+                    cache.singleflight.complete(claim)
+
+        next_pending: list[_VerificationFlightGroup] = []
+
+        # A local group leader already owns its actual (cache-miss, local-skip,
+        # or operational-failure) result. Equivalent siblings may reuse only a
+        # grounded entry; otherwise they become candidates for a new generation
+        # rather than inheriting an ungrounded verdict.
+        for group in leaders:
+            local_followers = group.findings[1:]
+            if not local_followers:
+                continue
+            if _stamp_grounded_cache_hits(
+                local_followers,
+                cache=cache,
+                cycle=cycle,
+                jurisdiction_fingerprint=jurisdiction_fingerprint,
+            ):
+                reused += len(local_followers)
+            else:
+                next_pending.append(
+                    _VerificationFlightGroup(
+                        key=group.key,
+                        findings=local_followers,
+                    )
+                )
+
+        for group in followers:
+            cache.singleflight.wait(group.claim)
+            if _stamp_grounded_cache_hits(
+                group.findings,
+                cache=cache,
+                cycle=cycle,
+                jurisdiction_fingerprint=jurisdiction_fingerprint,
+            ):
+                reused += len(group.findings)
+            else:
+                # The prior leader yielded a local/ungrounded/failed result.
+                # Re-entering the atomic group claim elects exactly one waiter
+                # as the next leader; the others follow that generation.
+                next_pending.append(
+                    _VerificationFlightGroup(
+                        key=group.key,
+                        findings=group.findings,
+                    )
+                )
+
+        pending = next_pending
+
+    if reused:
+        log(
+            f"Verification single-flight: reused {reused} grounded verdict(s) "
+            "from concurrent/equivalent findings.",
+            level="info",
+        )
+
+
+def verify_findings_for_run(
+    findings: list[Finding],
+    *,
+    module: ReviewModule = DEFAULT_MODULE,
+    transport: str = "batch",
+    log: LogFn = _noop_log,
+    progress: ProgressFn = _noop_progress,
+    cache: VerificationCache | None = None,
+    user_location: dict | None = None,
+    jurisdiction_fingerprint: str | None = None,
+    api_call_semaphore=None,
+) -> None:
+    """Verify ``findings`` in place, sharing grounded work per cache key.
+
+    Both the GUI and headless drivers call this entry point in verification
+    rounds one and two. With a shared :class:`VerificationCache`, equivalent
+    claims on either transport use one remote leader. Followers wait without
+    holding API permits and reuse only grounded cache entries. If a leader
+    yields a local, ungrounded, or failed result, exactly one follower takes
+    over a fresh generation. Calls without a cache retain the legacy path.
+    """
+
+    if not findings:
+        return
+    if cache is None:
+        _execute_verification_attempts(
+            findings,
+            module=module,
+            transport=transport,
+            log=log,
+            progress=progress,
+            cache=None,
+            user_location=user_location,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            api_call_semaphore=api_call_semaphore,
+        )
+        return
+    _verify_findings_singleflight(
+        findings,
+        module=module,
+        transport=transport,
+        log=log,
+        progress=progress,
+        cache=cache,
+        user_location=user_location,
+        jurisdiction_fingerprint=jurisdiction_fingerprint,
+        api_call_semaphore=api_call_semaphore,
+    )
 
 
 def finalize_batch_result(state: CollectedBatchState) -> PipelineResult:
@@ -2112,6 +2481,7 @@ def run_batch_collection_headless(
     log: LogFn = _noop_log,
     progress: ProgressFn = _noop_progress,
     include_drawing_impact: bool = True,
+    api_call_semaphore=None,
 ) -> PipelineResult:
     """Collect → verify → cross-check → finalize a submitted batch, headlessly.
 
@@ -2139,24 +2509,69 @@ def run_batch_collection_headless(
     review_state = collect_review_batch_results(submission, log=log)
     transport = getattr(submission, "review_transport", "batch") or "batch"
 
-    verifiable = list(review_state.review_result.findings) if review_state.review_result else []
-    verify_findings_for_run(verifiable, module=module, transport=transport, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
+    def verification_progress(stage_start: float, stage_end: float) -> ProgressFn:
+        """Map the verifier's historical 60..95 band into one local stage."""
 
-    review_state = run_cross_check_for_batch(
-        review_state,
-        specs=submission.prepared_specs,
-        project_context=submission.project_context,
+        def report(value: float, message: str, **kwargs: object) -> None:
+            bounded = max(60.0, min(float(value), 95.0))
+            fraction = (bounded - 60.0) / 35.0
+            progress(
+                stage_start + (stage_end - stage_start) * fraction,
+                message,
+                **kwargs,
+            )
+
+        return report
+
+    # This function is also the child engine for routed programs.  Report its
+    # collection DAG locally from 0..100 so the outer scheduler can weight it
+    # into the program's 55..95 band.  Reusing the verifier's 60..95 values for
+    # both rounds used to make progress jump in round 1 and then appear frozen
+    # through cross-check, compliance, and round 2.
+    progress(0.0, "Review results collected")
+
+    verifiable = list(review_state.review_result.findings) if review_state.review_result else []
+    verify_findings_for_run(
+        verifiable,
+        module=module,
+        transport=transport,
         log=log,
+        progress=verification_progress(0.0, 40.0),
+        cache=cache,
+        user_location=user_location,
+        jurisdiction_fingerprint=jurisdiction_fp,
+        # The real-time branch fans out individual synchronous verifier calls.
+        # A routed program supplies one shared budget so N module collectors
+        # do not each create an independent five-call pool.
+        # A batch verification wave may hand a small unresolved tail to the
+        # synchronous real-time verifier. Pass the program-wide permit pool
+        # for both transports so concurrent module collectors cannot multiply
+        # those fallback streams beyond the configured account budget.
+        api_call_semaphore=api_call_semaphore,
     )
+    progress(40.0, "Initial findings verified")
+
+    progress(40.0, "Cross-checking coordination across specifications")
+    with api_call_semaphore if api_call_semaphore is not None else nullcontext():
+        review_state = run_cross_check_for_batch(
+            review_state,
+            specs=submission.prepared_specs,
+            project_context=submission.project_context,
+            log=log,
+        )
+    progress(60.0, "Cross-check complete")
     # WS-4 compliance pass: after cross-check, before verification round 2.
     # No-op (state unchanged) for flag-off modules; explicit ``skipped``
     # when the module opted in but the profile is unavailable (recovery).
-    review_state = run_compliance_for_batch(
-        review_state,
-        specs=submission.prepared_specs,
-        project_context=submission.project_context,
-        log=log,
-    )
+    progress(60.0, "Checking project requirements compliance")
+    with api_call_semaphore if api_call_semaphore is not None else nullcontext():
+        review_state = run_compliance_for_batch(
+            review_state,
+            specs=submission.prepared_specs,
+            project_context=submission.project_context,
+            log=log,
+        )
+    progress(75.0, "Compliance check complete")
     cross_findings = (
         list(review_state.cross_check_result.findings)
         if (review_state.cross_check_result and review_state.cross_check_result.findings)
@@ -2171,17 +2586,31 @@ def run_batch_collection_headless(
     # batch — both are plain findings lists and the verification functions
     # take arbitrary findings (WS-4 step 5).
     round2_findings = cross_findings + compliance_findings
-    verify_findings_for_run(round2_findings, module=module, transport=transport, log=log, progress=progress, cache=cache, user_location=user_location, jurisdiction_fingerprint=jurisdiction_fp)
+    verify_findings_for_run(
+        round2_findings,
+        module=module,
+        transport=transport,
+        log=log,
+        progress=verification_progress(75.0, 95.0),
+        cache=cache,
+        user_location=user_location,
+        jurisdiction_fingerprint=jurisdiction_fp,
+        api_call_semaphore=api_call_semaphore,
+    )
+    progress(95.0, "Cross-check and compliance findings verified")
 
     # WS-5 drawing-impact synthesis: last, so it can link findings that only
     # just picked up their verdicts. No-op (state unchanged) when no drawing
     # digest is in Project Context.
     if include_drawing_impact:
-        review_state = run_drawing_impact_for_batch(
-            review_state,
-            project_context=submission.project_context,
-            log=log,
-        )
+        with api_call_semaphore if api_call_semaphore is not None else nullcontext():
+            review_state = run_drawing_impact_for_batch(
+                review_state,
+                project_context=submission.project_context,
+                log=log,
+            )
+
+    progress(100.0, "Module collection complete")
 
     if owns_cache:
         _persist_verification_cache(cache, log=log)

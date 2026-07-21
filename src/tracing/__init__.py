@@ -12,6 +12,10 @@ Public surface:
         The active span on this task (per-task via contextvars). Used by
         capture hooks that don't have an explicit handle to attach to.
 
+    activate_span(handle)
+        Temporarily activate an existing SpanHandle in an executor worker;
+        nested scopes restore the worker's prior trace context.
+
     TraceRecorder(run_id, trace_dir, capture_level)
         The recorder itself. Spin up with .start(); tear down with .stop().
 
@@ -39,6 +43,7 @@ from .config import (
 )
 from .recorder import (
     TraceRecorder,
+    activate_span,
     bind_to_current_context,
     current_span,
     get_recorder,
@@ -60,6 +65,7 @@ __all__ = [
     "trace_dir_for_run",
     "trace_enabled",
     "TraceRecorder",
+    "activate_span",
     "bind_to_current_context",
     "current_span",
     "get_recorder",

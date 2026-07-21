@@ -36,7 +36,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:
     from .verifier import VerificationResult
@@ -253,6 +253,112 @@ class _CacheEntry:
 
 
 @dataclass
+class _VerificationFlightState:
+    """One in-progress generation for a normalized verification question."""
+
+    generation: int
+    done: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(frozen=True)
+class VerificationFlightClaim:
+    """Opaque ownership token returned by :class:`VerificationSingleFlight`.
+
+    A leader must call :meth:`VerificationSingleFlight.complete` exactly once
+    after it has either populated the cache or abandoned the attempt.  Followers
+    wait on the token and then consult the cache; a cache miss means the result
+    was deliberately non-cacheable (or the leader failed), so one follower may
+    claim the next generation and take over.
+    """
+
+    key: str
+    generation: int
+    leader: bool
+    _state: _VerificationFlightState = field(repr=False, compare=False)
+
+
+class VerificationSingleFlight:
+    """Coordinate one remote verification at a time per cache key.
+
+    Claims for a group of keys are registered under one short-lived global
+    lock, in sorted key order.  Callers never hold that lock while performing
+    API work or waiting, so two modules that present the same keys in opposite
+    orders cannot deadlock.  A completed generation is removed before its
+    waiters wake.  If no grounded cache entry was produced, the next atomic
+    claimant becomes leader for a fresh generation while every other waiter
+    follows it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: dict[str, _VerificationFlightState] = {}
+        self._next_generation = 1
+
+    def claim_many(
+        self, keys: Iterable[str]
+    ) -> dict[str, VerificationFlightClaim]:
+        """Atomically claim distinct ``keys`` and return one token per key."""
+
+        ordered = sorted(set(keys))
+        claims: dict[str, VerificationFlightClaim] = {}
+        with self._lock:
+            created: list[tuple[str, _VerificationFlightState]] = []
+            try:
+                for key in ordered:
+                    state = self._active.get(key)
+                    leader = state is None
+                    if state is None:
+                        state = _VerificationFlightState(self._next_generation)
+                        self._next_generation += 1
+                        self._active[key] = state
+                        created.append((key, state))
+                    claims[key] = VerificationFlightClaim(
+                        key=key,
+                        generation=state.generation,
+                        leader=leader,
+                        _state=state,
+                    )
+            except BaseException:
+                # Keep group acquisition atomic even under allocation/control-
+                # flow failure: remove only generations created by this call and
+                # wake any follower that managed to observe one defensively.
+                for key, state in created:
+                    if self._active.get(key) is state:
+                        self._active.pop(key, None)
+                    state.done.set()
+                raise
+        return claims
+
+    @staticmethod
+    def wait(claim: VerificationFlightClaim) -> None:
+        """Wait for the generation represented by a follower ``claim``."""
+
+        if claim.leader:
+            raise ValueError("A single-flight leader cannot wait on itself")
+        claim._state.done.wait()
+
+    def complete(self, claim: VerificationFlightClaim) -> None:
+        """Release a leader generation and wake all of its followers.
+
+        Completion is idempotent and generation-safe: a stale leader can wake
+        its own followers, but can never remove a newer takeover generation.
+        """
+
+        if not claim.leader:
+            raise ValueError("Only a single-flight leader can complete a flight")
+        with self._lock:
+            if self._active.get(claim.key) is claim._state:
+                self._active.pop(claim.key, None)
+            claim._state.done.set()
+
+    def active_count(self) -> int:
+        """Return the number of in-progress keys (diagnostics/tests)."""
+
+        with self._lock:
+            return len(self._active)
+
+
+@dataclass
 class VerificationCache:
     """Thread-safe cache shared across a pipeline run.
 
@@ -266,6 +372,18 @@ class VerificationCache:
     misses: int = 0
     loaded_from_disk: int = 0
     expired_on_load: int = 0
+    _singleflight: VerificationSingleFlight = field(
+        default_factory=VerificationSingleFlight,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    @property
+    def singleflight(self) -> VerificationSingleFlight:
+        """Run-local coordinator shared by every caller using this cache."""
+
+        return self._singleflight
 
     def get(
         self,

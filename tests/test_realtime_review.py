@@ -33,6 +33,7 @@ import json
 import threading
 import time
 import time as _time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -61,6 +62,8 @@ from src.review.review_request_builder import (
     build_review_request,
 )
 from src.review.reviewer import Finding, ReviewResult
+from src.tracing import activate_span
+from src.tracing.spans import KIND_PIPELINE, SpanHandle
 from src.verification.retry_policy import DEFAULT_REALTIME_RETRY_POLICY
 from src.verification.verifier import VerificationResult
 from tests.fixtures.fake_anthropic import (
@@ -464,7 +467,7 @@ class TestConcurrency:
     def test_env_workers_parsing(self, monkeypatch):
         env = "SPEC_CRITIC_REALTIME_REVIEW_WORKERS"
         monkeypatch.delenv(env, raising=False)
-        assert realtime_review_max_workers() == 2  # default
+        assert realtime_review_max_workers() == 4  # default
         monkeypatch.setenv(env, "6")
         assert realtime_review_max_workers() == 6
         monkeypatch.setenv(env, "0")
@@ -472,9 +475,102 @@ class TestConcurrency:
         monkeypatch.setenv(env, "99")
         assert realtime_review_max_workers() == 8  # clamp ceiling
         monkeypatch.setenv(env, "not-a-number")
-        assert realtime_review_max_workers() == 2  # malformed → default
+        assert realtime_review_max_workers() == 4  # malformed → default
         monkeypatch.setenv(env, "   ")
-        assert realtime_review_max_workers() == 2  # blank → default
+        assert realtime_review_max_workers() == 4  # blank → default
+
+    def test_heterogeneous_jobs_share_pool_with_child_id_collisions(self, monkeypatch):
+        """Program identity is the opaque key, not the child custom id."""
+        active = {"now": 0, "max": 0}
+        lock = threading.Lock()
+
+        def route(_kwargs):
+            with lock:
+                active["now"] += 1
+                active["max"] = max(active["max"], active["now"])
+            _time.sleep(0.03)
+            with lock:
+                active["now"] -= 1
+            return review_tool_use_response()
+
+        client = FakeRealtimeClient(route)
+        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        parent_a = object()
+        parent_b = object()
+        jobs_a, map_a = rt.build_realtime_review_jobs(
+            [_spec("shared.docx")],
+            job_key_factory=lambda custom_id, _idx: ("module-a", custom_id),
+            trace_parent=parent_a,
+            display_name_factory=lambda filename, _idx: f"Module A: {filename}",
+        )
+        jobs_b, map_b = rt.build_realtime_review_jobs(
+            [_spec("shared.docx")],
+            job_key_factory=lambda custom_id, _idx: ("module-b", custom_id),
+            trace_parent=parent_b,
+            display_name_factory=lambda filename, _idx: f"Module B: {filename}",
+        )
+
+        assert set(map_a) == set(map_b) == {"review__shared__0"}
+        assert jobs_a[0].custom_id == jobs_b[0].custom_id
+        assert jobs_a[0].job_key != jobs_b[0].job_key
+        assert jobs_a[0].trace_parent is parent_a
+        assert jobs_b[0].trace_parent is parent_b
+
+        by_job = rt.run_realtime_review_jobs(jobs_a + jobs_b, max_workers=2)
+
+        assert set(by_job) == {
+            ("module-a", "review__shared__0"),
+            ("module-b", "review__shared__0"),
+        }
+        assert all(result.parse_status == "ok" for result in by_job.values())
+        assert active["max"] == 2
+
+    def test_all_jobs_build_before_client_construction(self, monkeypatch):
+        jobs_a, _ = rt.build_realtime_review_jobs(
+            [_spec("a.docx")],
+            job_key_factory=lambda custom_id, _idx: ("a", custom_id),
+        )
+        jobs_b, _ = rt.build_realtime_review_jobs(
+            [_spec("b.docx")],
+            job_key_factory=lambda custom_id, _idx: ("b", custom_id),
+        )
+        original_build = rt.build_review_request
+
+        def fail_late(request_spec):
+            if request_spec.filename == "b.docx":
+                raise ValueError("late partition cannot build")
+            return original_build(request_spec)
+
+        monkeypatch.setattr(rt, "build_review_request", fail_late)
+
+        def no_client():
+            raise AssertionError("client must not exist before every job builds")
+
+        monkeypatch.setattr(rt, "_get_client", no_client)
+
+        with pytest.raises(ValueError, match="late partition cannot build"):
+            rt.run_realtime_review_jobs(jobs_a + jobs_b)
+
+    def test_coordinator_owns_diagnostics_mutation(self, monkeypatch):
+        client = FakeRealtimeClient(lambda _kwargs: review_tool_use_response())
+        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        jobs, _ = rt.build_realtime_review_jobs(
+            [_spec("a.docx"), _spec("b.docx")]
+        )
+        coordinator_thread = threading.get_ident()
+        mutation_threads: list[int] = []
+
+        class ThreadRecordingDiagnostics:
+            def record_api_call(self, **_kwargs):
+                mutation_threads.append(threading.get_ident())
+
+        rt.run_realtime_review_jobs(
+            jobs,
+            max_workers=2,
+            diagnostics=ThreadRecordingDiagnostics(),
+        )
+
+        assert mutation_threads == [coordinator_thread, coordinator_thread]
 
 
 # ===========================================================================
@@ -497,6 +593,26 @@ class TestOversizedInputGate:
         message = str(excinfo.value)
         assert "huge.docx" in message
         assert "batch mode" in message
+
+    def test_repair_shape_is_gated_before_initial_spend(self, monkeypatch):
+        monkeypatch.setattr(rt, "LARGE_REVIEW_INPUT_THRESHOLD", 10)
+        monkeypatch.setattr(
+            rt,
+            "estimate_local_request_tokens",
+            lambda request_spec: (
+                11 if request_spec.retry_instruction else 9
+            ),
+        )
+
+        def _no_client():
+            raise AssertionError(
+                "client must never be constructed when only the repair is oversized"
+            )
+
+        monkeypatch.setattr(rt, "_get_client", _no_client)
+
+        with pytest.raises(ValueError, match="batch mode"):
+            run_realtime_review([_spec("repair-only-huge.docx")])
 
     def test_gate_skipped_when_model_has_no_extended_output(self, monkeypatch):
         # Mirror of _resolve_extended_output: a model the 300k beta does not
@@ -602,6 +718,32 @@ class TestModePlumbing:
 
 
 class TestVerifyFindingsForRun:
+    def test_realtime_workers_receive_active_module_trace_parent(self, monkeypatch):
+        findings = [_finding("trace parent a"), _finding("trace parent b")]
+        parent = SpanHandle(
+            span_id="module-pipeline",
+            kind=KIND_PIPELINE,
+            started_at=1.0,
+        )
+        seen_parents: list[object] = []
+
+        monkeypatch.setattr(
+            pl,
+            "prepare_findings_for_verification",
+            lambda got, **_kwargs: list(got),
+        )
+
+        def fake_verify(_finding, **kwargs):
+            seen_parents.append(kwargs.get("_trace_parent"))
+            return VerificationResult(verdict="CONFIRMED", explanation="grounded")
+
+        monkeypatch.setattr(pl, "verify_finding", fake_verify)
+
+        with activate_span(parent):
+            verify_findings_for_run(findings, transport="realtime")
+
+        assert seen_parents == [parent, parent]
+
     def test_realtime_arm_pool_and_exactly_once(self, monkeypatch):
         f_local = _finding("resolved locally")
         f_ok = _finding("verifies cleanly")
@@ -647,6 +789,53 @@ class TestVerifyFindingsForRun:
 
         monkeypatch.setattr(pl, "verify_finding", _no_pool)
         verify_findings_for_run([f_local], transport="realtime")
+
+    def test_shared_semaphore_caps_nested_module_verification(self, monkeypatch):
+        batches = [
+            [_finding(f"module-{module}-finding-{index}") for index in range(3)]
+            for module in range(2)
+        ]
+        monkeypatch.setattr(
+            pl,
+            "prepare_findings_for_verification",
+            lambda findings, **_kwargs: list(findings),
+        )
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+
+        def fake_verify(_finding, **_kwargs):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            return VerificationResult(verdict="CONFIRMED", explanation="grounded")
+
+        monkeypatch.setattr(pl, "verify_finding", fake_verify)
+        permits = threading.BoundedSemaphore(2)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    verify_findings_for_run,
+                    findings,
+                    transport="realtime",
+                    api_call_semaphore=permits,
+                )
+                for findings in batches
+            ]
+            for future in futures:
+                future.result()
+
+        assert max_active == 2
+        assert all(
+            finding.verification.verdict == "CONFIRMED"
+            for findings in batches
+            for finding in findings
+        )
 
     def test_batch_arm_delegates_to_existing_pair(self, monkeypatch):
         f = _finding("batch verified")
@@ -718,11 +907,20 @@ class TestHeadlessRealtimeDriver:
             lambda f, **kw: VerificationResult(verdict="CONFIRMED", explanation="grounded"),
         )
 
-        result = pl.run_batch_collection_headless(submission)
+        progress_values: list[float] = []
+        result = pl.run_batch_collection_headless(
+            submission,
+            progress=lambda value, _message, **_kwargs: progress_values.append(value),
+        )
 
         assert result.failed_review_specs == []
         assert len(result.review_result.findings) == 1
         assert result.review_result.findings[0].verification.verdict == "CONFIRMED"
+        assert progress_values == sorted(progress_values)
+        assert progress_values[0] == 0.0
+        assert progress_values[-1] == 100.0
+        for stage_boundary in (40.0, 60.0, 75.0, 95.0):
+            assert stage_boundary in progress_values
 
     def test_end_to_end_with_failed_spec(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SPEC_CRITIC_CACHE_PATH", str(tmp_path / "cache.json"))

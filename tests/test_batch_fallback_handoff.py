@@ -38,6 +38,8 @@ from types import SimpleNamespace
 
 from src.core.code_cycles import DEFAULT_CYCLE
 from src.review.reviewer import Finding
+from src.tracing import activate_span
+from src.tracing.spans import KIND_PIPELINE, SpanHandle
 from src.verification.verifier import (
     DEFAULT_VERIFICATION_POLL_POLICY,
     VerificationResult,
@@ -164,7 +166,11 @@ def _install_wave_mocks(
     """
     import src.verification.verifier as V
 
-    recorded = {"submit_calls": [], "fallback_findings": []}
+    recorded = {
+        "submit_calls": [],
+        "fallback_findings": [],
+        "fallback_trace_parents": [],
+    }
     lock = threading.Lock()
     submit_counter = {"n": 0}
 
@@ -190,6 +196,9 @@ def _install_wave_mocks(
         # though the wave loop catches worker exceptions.
         with lock:
             recorded["fallback_findings"].append(finding)
+            recorded["fallback_trace_parents"].append(
+                _kwargs.get("_trace_parent")
+            )
         if fallback_factory is None:
             raise AssertionError("real-time fallback was invoked unexpectedly")
         return fallback_factory(finding)
@@ -201,7 +210,13 @@ def _install_wave_mocks(
     return recorded
 
 
-def _collect(findings, *, max_waves=2, fallback_threshold=5):
+def _collect(
+    findings,
+    *,
+    max_waves=2,
+    fallback_threshold=5,
+    api_call_semaphore=None,
+):
     return collect_verification_batch_results(
         _init_job(findings),
         findings,
@@ -212,6 +227,7 @@ def _collect(findings, *, max_waves=2, fallback_threshold=5):
         max_waves=max_waves,
         cache=None,
         realtime_fallback_threshold=fallback_threshold,
+        api_call_semaphore=api_call_semaphore,
     )
 
 
@@ -259,6 +275,79 @@ def test_tail_flips_to_realtime_exactly_once(monkeypatch):
     # follow-up wave (wave 1 → wave 2) was submitted. The submit path and the
     # fallback path are mutually exclusive on the final wave.
     assert len(recorded["submit_calls"]) == 1
+
+
+def test_realtime_tail_uses_shared_program_api_permit(monkeypatch):
+    """Every synchronous fallback lifecycle runs under the shared permit."""
+
+    class TrackingSemaphore:
+        def __init__(self) -> None:
+            self._semaphore = threading.BoundedSemaphore(1)
+            self._local = threading.local()
+            self._lock = threading.Lock()
+            self.entries = 0
+
+        def __enter__(self):
+            self._semaphore.acquire()
+            self._local.held = True
+            with self._lock:
+                self.entries += 1
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            self._local.held = False
+            self._semaphore.release()
+
+        def held_by_current_thread(self) -> bool:
+            return bool(getattr(self._local, "held", False))
+
+    permits = TrackingSemaphore()
+
+    def guarded_fallback(finding):
+        assert permits.held_by_current_thread()
+        return _sentinel_result(finding)
+
+    findings = [_finding(0), _finding(1), _finding(2)]
+    recorded = _install_wave_mocks(
+        monkeypatch,
+        results_by_id=_results_one_success_rest_missing,
+        fallback_factory=guarded_fallback,
+    )
+
+    _collect(
+        findings,
+        max_waves=2,
+        fallback_threshold=5,
+        api_call_semaphore=permits,
+    )
+
+    assert permits.entries == 2
+    assert len(recorded["fallback_findings"]) == 2
+    assert all(
+        finding.verification.explanation == _SENTINEL
+        for finding in findings[1:]
+    )
+
+
+def test_realtime_tail_receives_active_module_trace_parent(monkeypatch):
+    """Fallback executor workers keep the routed child pipeline parent."""
+
+    parent = SpanHandle(
+        span_id="batch-module-pipeline",
+        kind=KIND_PIPELINE,
+        started_at=1.0,
+    )
+    findings = [_finding(0), _finding(1), _finding(2)]
+    recorded = _install_wave_mocks(
+        monkeypatch,
+        results_by_id=_results_one_success_rest_missing,
+        fallback_factory=_sentinel_result,
+    )
+
+    with activate_span(parent):
+        _collect(findings, max_waves=2, fallback_threshold=5)
+
+    assert recorded["fallback_trace_parents"] == [parent, parent]
 
 
 def test_fallback_disabled_marks_tail_unverified_exactly_once(monkeypatch):

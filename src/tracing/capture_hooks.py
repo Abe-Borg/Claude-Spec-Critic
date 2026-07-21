@@ -110,8 +110,16 @@ def capture_pipeline_start(
     module_id: str = "",
     name: str = "",
     project_profile: dict | None = None,
+    parent: SpanHandle | None = None,
+    inherit_current_parent: bool = True,
 ) -> SpanHandle | None:
-    """Open the root pipeline span. Call once at run entry."""
+    """Open a pipeline span. Call once at run entry.
+
+    The default preserves the historical implicit-current parenting used by
+    single-module runs. Program orchestration passes an explicit parent plus
+    ``inherit_current_parent=False`` so a reused executor worker cannot make
+    one sibling module a child of another sibling's still-open pipeline span.
+    """
     recorder = _get()
     if recorder is None:
         return None
@@ -130,6 +138,8 @@ def capture_pipeline_start(
     return recorder.open_span(
         KIND_PIPELINE,
         span_name,
+        parent=parent,
+        inherit_current_parent=inherit_current_parent,
         inputs=inputs,
         metadata={"run_id": recorder.run_id},
     )

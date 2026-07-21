@@ -11,9 +11,9 @@ Threading model:
     - An ``open_spans`` dict tracks active spans; a lock guards it because
       ``open_span`` / ``close_span`` are called concurrently from worker
       threads (batch verification uses a ThreadPoolExecutor).
-    - ``contextvars.ContextVar`` carries the active SpanHandle so worker
-      tasks submitted via ``concurrent.futures`` inherit the parent's
-      span without explicit plumbing.
+    - ``contextvars.ContextVar`` carries the active SpanHandle across async
+      boundaries. ``concurrent.futures`` workers require explicit propagation
+      via ``activate_span`` or ``bind_to_current_context``.
 
 Defensive behavior:
     - ``stop()`` is idempotent; called twice is a no-op.
@@ -93,6 +93,32 @@ def current_span() -> SpanHandle | None:
         return ctx_value
     stack = _stack()
     return stack[-1] if stack else None
+
+
+@contextmanager
+def activate_span(handle: SpanHandle) -> Iterator[SpanHandle]:
+    """Temporarily make an existing span the current parent.
+
+    This is the explicit propagation seam for executor workers::
+
+        parent = current_span()
+        pool.submit(worker, parent)
+
+        def worker(parent):
+            with activate_span(parent):
+                ...
+
+    Activation changes only this execution context's ``ContextVar``. It does
+    not reopen or close ``handle``, and it does not mutate the thread-local
+    stack maintained by :meth:`TraceRecorder.open_span`. Nested activations
+    are supported; leaving the scope restores the exact prior context even
+    when the body raises.
+    """
+    token = _CURRENT_SPAN.set(handle)
+    try:
+        yield handle
+    finally:
+        _CURRENT_SPAN.reset(token)
 
 
 def bind_to_current_context(fn):
@@ -290,10 +316,21 @@ class TraceRecorder:
         name: str,
         *,
         parent: SpanHandle | None = None,
+        inherit_current_parent: bool = True,
         inputs: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> SpanHandle:
-        if parent is None:
+        """Open a span and make it current on this worker's local stack.
+
+        ``parent=None`` historically means "inherit :func:`current_span`".
+        Most capture hooks rely on that shorthand, so it remains the default.
+        Routed-program preparation is the exception: an executor worker may
+        still have an intentionally long-lived module pipeline on its local
+        stack when the pool reuses that worker for another module.  Passing
+        ``inherit_current_parent=False`` opens an explicit root in that case
+        instead of falsely nesting the new module beneath its predecessor.
+        """
+        if parent is None and inherit_current_parent:
             parent = current_span()
         span = make_span(
             kind=kind,
