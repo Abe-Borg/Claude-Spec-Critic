@@ -185,7 +185,14 @@ class ResearchItem:
 
 @dataclass
 class DimensionStatus:
-    """Per-dimension completion telemetry (failure honesty, invariant 8)."""
+    """Per-dimension completion telemetry (failure honesty, invariant 8).
+
+    ``dropped_item_count`` counts payload items discarded at parse time
+    (non-dict entries, items without a requirement) so an ``items: []``
+    response and an all-items-filtered response stay distinguishable in
+    diagnostics. Additive with a default — persisted rows without the key
+    load as 0.
+    """
 
     dimension_id: str
     status: str  # "completed" | "failed"
@@ -194,6 +201,7 @@ class DimensionStatus:
     web_search_requests: int = 0
     web_fetch_requests: int = 0
     error: str = ""
+    dropped_item_count: int = 0
 
 
 @dataclass
@@ -219,6 +227,21 @@ class RequirementsProfile:
     @property
     def failed_dimensions(self) -> int:
         return sum(1 for s in self.dimension_statuses if s.status != "completed")
+
+    @property
+    def empty_completed_dimensions(self) -> list[DimensionStatus]:
+        """Dimensions that completed without finding a single requirement.
+
+        A 0-item completion is NOT a clean bill of health — the area is
+        unresearched, not confirmed-clean — so every consumer (log,
+        diagnostics, report, rendered context block) surfaces these
+        distinctly from ordinary completions.
+        """
+        return [
+            s
+            for s in self.dimension_statuses
+            if s.status == "completed" and s.item_count == 0
+        ]
 
     def grounded_items(self) -> list[ResearchItem]:
         return [i for i in self.items if i.grounded]
@@ -246,6 +269,15 @@ class RequirementsProfile:
             "Items marked [PROCESS] are project-team process/schedule advisories, "
             "not specification content."
         )
+        # Honesty line for 0-item completions — conditional so a profile with
+        # no empty dimensions renders byte-identically to before.
+        empty = self.empty_completed_dimensions
+        if empty:
+            header += (
+                f"\nNOTE: {len(empty)} research dimension(s) completed without "
+                f"finding any requirements ({', '.join(s.dimension_id for s in empty)}); "
+                "treat those areas as unresearched, not confirmed-clean."
+            )
 
         dimension_order = {
             s.dimension_id: i for i, s in enumerate(self.dimension_statuses)
@@ -328,6 +360,7 @@ class RequirementsProfile:
                     web_search_requests=int(raw.get("web_search_requests", 0) or 0),
                     web_fetch_requests=int(raw.get("web_fetch_requests", 0) or 0),
                     error=str(raw.get("error", "") or ""),
+                    dropped_item_count=int(raw.get("dropped_item_count", 0) or 0),
                 )
             )
         if not items and not statuses:
@@ -517,19 +550,27 @@ def _parse_research_payload(all_responses: list[Any]) -> tuple[dict | None, str]
     return None, "no_payload"
 
 
-def _items_from_payload(payload: dict, dimension_id: str) -> list[ResearchItem]:
+def _items_from_payload(
+    payload: dict, dimension_id: str
+) -> tuple[list[ResearchItem], int]:
     """Normalize + clamp the payload's items (parse-time contract).
 
     Unknown ``actionability`` coerces to ``spec_requirement`` — the safe
     default; it can only over-check, never silently skip (§6.3 [FT]).
     Confidence clamps to [0, 1]. Items without a requirement are dropped.
+    Returns ``(kept_items, dropped_count)`` so parse-time drops are counted
+    rather than silent — ``items: []`` and all-items-filtered must stay
+    distinguishable in diagnostics.
     """
     items: list[ResearchItem] = []
+    dropped = 0
     for raw in payload.get("items") or []:
         if not isinstance(raw, dict):
+            dropped += 1
             continue
         requirement = str(raw.get("requirement") or "").strip()
         if not requirement:
+            dropped += 1
             continue
         category = str(raw.get("category") or "").strip()
         actionability = str(raw.get("actionability") or "").strip()
@@ -555,7 +596,7 @@ def _items_from_payload(payload: dict, dimension_id: str) -> list[ResearchItem]:
                 notes=str(raw.get("notes") or "").strip(),
             )
         )
-    return items
+    return items, dropped
 
 
 def _run_dimension(
@@ -721,7 +762,9 @@ def _run_dimension(
                     "no tagged JSON).",
                     responses=[*billed_responses, *all_responses],
                 )
-            items = _items_from_payload(payload, dimension.dimension_id)
+            items, dropped_item_count = _items_from_payload(
+                payload, dimension.dimension_id
+            )
 
             # Grounding: pool searched + fetched URLs across every response
             # in the dimension, then validate each item's citations against
@@ -756,6 +799,7 @@ def _run_dimension(
                     web_fetch_requests=sum(
                         _web_fetch_count(r) for r in all_responses
                     ),
+                    dropped_item_count=dropped_item_count,
                 ),
                 items=items,
                 parse_source=parse_source,
@@ -914,12 +958,23 @@ def run_requirements_research(
             status = outcome.status
             if status.status == "completed":
                 completed_count += 1
-                log(
-                    f"Research dimension '{dimension.dimension_id}' completed: "
-                    f"{status.item_count} item(s), {status.grounded_count} grounded, "
-                    f"{status.web_search_requests} search(es).",
-                    level="info",
-                )
+                if status.item_count == 0:
+                    # A 0-item completion is not a clean bill of health — the
+                    # dimension spent its budget and found nothing, so the
+                    # area is unresearched, not confirmed-clean.
+                    log(
+                        f"Research dimension '{dimension.dimension_id}' completed "
+                        "with 0 items — no requirements found; treat this area "
+                        "as unresearched, not clean.",
+                        level="warning",
+                    )
+                else:
+                    log(
+                        f"Research dimension '{dimension.dimension_id}' completed: "
+                        f"{status.item_count} item(s), {status.grounded_count} grounded, "
+                        f"{status.web_search_requests} search(es).",
+                        level="info",
+                    )
             else:
                 log(
                     f"Research dimension '{dimension.dimension_id}' FAILED: "
@@ -993,30 +1048,37 @@ def _record_dimension_diag(
     """Best-effort per-dimension diagnostics rollup (never raises)."""
     if diag is None:
         return
+    status = outcome.status
+    # A completed-with-0-items dimension records at warning: no requirements
+    # were found, so the area is unresearched — not an unqualified success.
+    clean_completion = status.status == "completed" and status.item_count > 0
     try:
         diag.record_api_call(
             phase="location_research",
             model=model,
             message=(
                 f"Research dimension '{dimension.dimension_id}' "
-                f"{outcome.status.status}"
+                f"{status.status}"
+                + (" with 0 items" if status.status == "completed" and status.item_count == 0 else "")
             ),
-            level="info" if outcome.status.status == "completed" else "warning",
+            level="info" if clean_completion else "warning",
             input_tokens=outcome.input_tokens,
             output_tokens=outcome.output_tokens,
             cache_creation_input_tokens=outcome.cache_creation_input_tokens,
             cache_read_input_tokens=outcome.cache_read_input_tokens,
-            web_search_requests=outcome.status.web_search_requests,
+            web_search_requests=status.web_search_requests,
+            max_output_tokens=research_max_tokens(model=model),
             stop_reason=outcome.stop_reason,
             mode="realtime",
             extra={
                 "dimension_id": dimension.dimension_id,
-                "dimension_status": outcome.status.status,
-                "item_count": outcome.status.item_count,
-                "grounded_count": outcome.status.grounded_count,
-                "web_fetch_requests": outcome.status.web_fetch_requests,
+                "dimension_status": status.status,
+                "item_count": status.item_count,
+                "grounded_count": status.grounded_count,
+                "dropped_item_count": status.dropped_item_count,
+                "web_fetch_requests": status.web_fetch_requests,
                 "parse_source": outcome.parse_source,
-                "error": outcome.status.error,
+                "error": status.error,
             },
         )
     except Exception:  # noqa: BLE001 — diagnostics must never sink research

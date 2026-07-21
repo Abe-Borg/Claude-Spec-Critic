@@ -569,6 +569,9 @@ def _summarize_run_diagnostics(
             "dimensions_total": len(profile.dimension_statuses),
             "dimensions_completed": profile.completed_dimensions,
             "dimensions_failed": profile.failed_dimensions,
+            # Completed-with-0-items dimensions: unresearched areas, not
+            # clean ones — the banner highlights them like failures.
+            "dimensions_empty": len(profile.empty_completed_dimensions),
             "item_count": len(profile.items),
             "ungrounded_count": sum(1 for i in profile.items if not i.grounded),
         }
@@ -805,13 +808,18 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
         completed = int(research.get("dimensions_completed", 0) or 0)
         total = int(research.get("dimensions_total", 0) or 0)
         failed = int(research.get("dimensions_failed", 0) or 0)
+        empty = int(research.get("dimensions_empty", 0) or 0)
         items = int(research.get("item_count", 0) or 0)
         ungrounded = int(research.get("ungrounded_count", 0) or 0)
         research_value = (
             f"{completed} of {total} dimensions completed; "
             f"{items} item{'s' if items != 1 else ''} ({ungrounded} ungrounded)"
         )
-        rows.append(("Location/client research", research_value, failed > 0))
+        if empty:
+            research_value += f"; {empty} empty"
+        rows.append(
+            ("Location/client research", research_value, failed > 0 or empty > 0)
+        )
 
     compliance = summary.get("compliance")
     if compliance is not None:
@@ -1129,7 +1137,8 @@ def _write_requirements_section(
         if project is not None
         else ""
     )
-    intro_run = intro.add_run(
+    empty_dimensions = requirements_profile.empty_completed_dimensions
+    intro_text = (
         f"{identity}Requirements researched via location/client web research "
         f"({requirements_profile.completed_dimensions} of {total} dimensions "
         f"completed, {searches} web searches), researched "
@@ -1137,6 +1146,11 @@ def _write_requirements_section(
         "as-of that date. Items marked [UNVERIFIED] could not be grounded in "
         "retrieved sources and are never treated as controlling."
     )
+    if empty_dimensions:
+        intro_text += (
+            f" {len(empty_dimensions)} dimension(s) returned no items."
+        )
+    intro_run = intro.add_run(intro_text)
     intro_run.font.size = Pt(10)
     intro_run.font.italic = True
     intro_run.font.color.rgb = RGBColor(100, 100, 100)
@@ -1154,6 +1168,19 @@ def _write_requirements_section(
         warn_run.font.size = Pt(10)
         warn_run.font.italic = True
         warn_run.font.color.rgb = RGBColor(192, 0, 0)
+    if empty_dimensions:
+        # A 0-item completion burned its search budget and produced nothing:
+        # coverage in that area is unverified, not confirmed-clean.
+        empty_warn = doc.add_paragraph()
+        empty_warn_run = empty_warn.add_run(
+            f"⚠ {len(empty_dimensions)} research dimension(s) completed "
+            "without finding any requirements "
+            f"({', '.join(s.dimension_id for s in empty_dimensions)}); "
+            "coverage in those areas is unverified, not confirmed-clean."
+        )
+        empty_warn_run.font.size = Pt(10)
+        empty_warn_run.font.italic = True
+        empty_warn_run.font.color.rgb = RGBColor(192, 0, 0)
 
     # --- Requirement items, grouped by the same sections as the rendered
     # context block so the report and the model saw the same organization.

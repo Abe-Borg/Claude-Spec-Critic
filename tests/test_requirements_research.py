@@ -891,6 +891,107 @@ class TestResearchFanout:
         assert call["phase"] == "location_research"
         assert call["extra"]["dimension_id"] == "alpha"
         assert call["extra"]["dimension_status"] == "completed"
+        assert call["level"] == "info"
+        # B3: the row records the real request cap, not 0.
+        from src.core.api_config import research_max_tokens
+
+        assert call["max_output_tokens"] == research_max_tokens(
+            model=call["model"]
+        )
+        assert call["max_output_tokens"] > 0
+        # B2: parse-time drops are counted (0 on a clean payload).
+        assert call["extra"]["dropped_item_count"] == 0
+
+    def test_zero_item_completion_surfaces_as_warning(self):
+        """B1: a completed dimension with 0 items is an unresearched area,
+        not an unqualified success — warning log, warning diag row, and an
+        honesty line in the rendered profile block."""
+
+        class _FakeDiag:
+            def __init__(self):
+                self.calls = []
+
+            def record_api_call(self, **kwargs):
+                self.calls.append(kwargs)
+
+        diag = _FakeDiag()
+        log = _LogCollector()
+        client = FakeResearchClient(
+            _route_by_marker(
+                {"ALPHA": [research_tool_use_response(payload={"items": []})]}
+            )
+        )
+        profile = run_requirements_research(
+            _enabled_module(), _complete_profile(), client=client, diag=diag, log=log
+        )
+        by_id = {s.dimension_id: s for s in profile.dimension_statuses}
+        assert by_id["alpha"].status == "completed"
+        assert by_id["alpha"].item_count == 0
+        assert [s.dimension_id for s in profile.empty_completed_dimensions] == ["alpha"]
+        # Coordinator log at warning, naming the honesty framing.
+        warnings = log.messages("warning")
+        assert any(
+            "completed with 0 items" in m and "unresearched" in m for m in warnings
+        )
+        # Diag row at warning level.
+        assert diag.calls[0]["level"] == "warning"
+        assert diag.calls[0]["extra"]["item_count"] == 0
+        # Rendered block tells the review model too.
+        rendered = profile.render_text()
+        assert "completed without finding any requirements (alpha)" in rendered
+        assert "unresearched, not confirmed-clean" in rendered
+
+    def test_parse_time_item_drops_are_counted(self):
+        payload = {
+            "items": [
+                "not-a-dict",
+                {"requirement": "   ", "category": "governing_code"},
+                {
+                    "requirement": "Real requirement.",
+                    "category": "governing_code",
+                    "topic": "Code",
+                },
+            ]
+        }
+        client = FakeResearchClient(
+            _route_by_marker({"ALPHA": [research_tool_use_response(payload=payload)]})
+        )
+        profile = run_requirements_research(
+            _enabled_module(), _complete_profile(), client=client
+        )
+        by_id = {s.dimension_id: s for s in profile.dimension_statuses}
+        assert by_id["alpha"].item_count == 1
+        assert by_id["alpha"].dropped_item_count == 2
+
+    def test_dropped_item_count_round_trips(self):
+        status = DimensionStatus(
+            dimension_id="alpha",
+            status="completed",
+            item_count=1,
+            dropped_item_count=2,
+        )
+        profile = RequirementsProfile(
+            items=[], dimension_statuses=[status], research_date="2026-07-21"
+        )
+        restored = RequirementsProfile.from_dict(profile.to_dict())
+        assert restored is not None
+        assert restored.dimension_statuses[0].dropped_item_count == 2
+        # Legacy rows without the key load with the 0 default.
+        legacy = profile.to_dict()
+        del legacy["dimension_statuses"][0]["dropped_item_count"]
+        restored_legacy = RequirementsProfile.from_dict(legacy)
+        assert restored_legacy is not None
+        assert restored_legacy.dimension_statuses[0].dropped_item_count == 0
+
+    def test_profile_without_empty_dimensions_renders_no_note(self):
+        client = FakeResearchClient(
+            _route_by_marker({"ALPHA": [research_tool_use_response()]})
+        )
+        profile = run_requirements_research(
+            _enabled_module(), _complete_profile(), client=client
+        )
+        assert profile.empty_completed_dimensions == []
+        assert "unresearched, not confirmed-clean" not in profile.render_text()
 
 
 # ---------------------------------------------------------------------------

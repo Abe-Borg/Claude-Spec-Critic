@@ -834,3 +834,68 @@ class TestReportSurfaces:
         assert "Local-code compliance" in text
         assert "skipped" in text
         assert "NOT evaluated against the researched" in text
+
+
+class TestEmptyDimensionReportSurface:
+    """WS3 / B1: a 0-item completed research dimension renders a red honesty
+    paragraph in the Jurisdiction & Client Requirements section."""
+
+    def _profile_with_empty_dimension(self) -> RequirementsProfile:
+        return RequirementsProfile(
+            items=[_item("r-aaaaaaaaaaaa", "The 2024 IBC as amended governs.")],
+            dimension_statuses=[
+                DimensionStatus(
+                    dimension_id="governing_codes", status="completed", item_count=1
+                ),
+                DimensionStatus(
+                    dimension_id="accessibility", status="completed", item_count=0
+                ),
+            ],
+            research_date="2026-07-14",
+            project={"city": "Markham", "state_or_province": "ON", "country": "CA",
+                     "client_name": "ExampleCo"},
+        )
+
+    def test_empty_dimension_renders_red_paragraph(self, tmp_path):
+        from src.output.report_exporter import export_report
+
+        out = tmp_path / "report.docx"
+        export_report(
+            _pipeline_result(
+                _enabled_module(),
+                requirements_profile=self._profile_with_empty_dimension().to_dict(),
+            ),
+            out,
+        )
+        text = _doc_text(out)
+        assert (
+            "1 research dimension(s) completed without finding any requirements "
+            "(accessibility)" in text
+        )
+        assert "unverified, not confirmed-clean" in text
+        assert "1 dimension(s) returned no items." in text
+
+    def test_no_empty_dimensions_renders_no_note(self, tmp_path):
+        from src.output.report_exporter import export_report
+
+        profile = RequirementsProfile(
+            items=[_item("r-aaaaaaaaaaaa", "The 2024 IBC as amended governs.")],
+            dimension_statuses=[
+                DimensionStatus(
+                    dimension_id="governing_codes", status="completed", item_count=1
+                ),
+            ],
+            research_date="2026-07-14",
+            project={"city": "Markham", "state_or_province": "ON", "country": "CA",
+                     "client_name": "ExampleCo"},
+        )
+        out = tmp_path / "report.docx"
+        export_report(
+            _pipeline_result(
+                _enabled_module(), requirements_profile=profile.to_dict()
+            ),
+            out,
+        )
+        text = _doc_text(out)
+        assert "completed without finding any requirements" not in text
+        assert "returned no items" not in text
