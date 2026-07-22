@@ -319,7 +319,7 @@ class EnhancedLog(ctk.CTkFrame):
     _COLLAPSED_HEIGHT = 48
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color=COLORS["bg_card"], corner_radius=8, **kwargs)
-        self._log_queue: deque = deque(); self._processing_queue = False; self._expanded = True
+        self._log_queue: deque = deque(); self._processing_queue = False; self._queue_after_id = None; self._expanded = True
         self.header = ctk.CTkFrame(self, fg_color="transparent", height=36, cursor="hand2")
         self.header.pack(fill="x", padx=16, pady=(12, 0)); self.header.pack_propagate(False)
         self.header.bind("<Button-1>", self._toggle)
@@ -341,9 +341,18 @@ class EnhancedLog(ctk.CTkFrame):
         self._log_queue.append((msg, level, ts, delay))
         if not self._processing_queue: self._process_queue()
     def _process_queue(self):
+        # This callback has fired, so the previously-scheduled pacing timer (if
+        # any) is consumed. Track its id so ``clear`` can cancel a live one.
+        self._queue_after_id = None
         if not self._log_queue: self._processing_queue = False; return
-        self._processing_queue = True; msg, level, ts, delay = self._log_queue.popleft(); self._append_line(msg, level, ts)
-        self.after(delay, self._process_queue)
+        self._processing_queue = True; msg, level, ts, delay = self._log_queue.popleft()
+        try:
+            self._append_line(msg, level, ts)
+        finally:
+            # Reschedule in ``finally`` so a single failed line can never wedge
+            # the pump (leaving ``_processing_queue`` True with no live timer,
+            # which would silently freeze the log for the rest of the run).
+            self._queue_after_id = self.after(delay, self._process_queue)
     def _append_line(self, msg: str, level: str, ts: bool):
         txt = f"[{datetime.now().strftime('%H:%M:%S')}]  {msg}" if ts else f"         {msg}"
         self._textbox.configure(state="normal"); inner = self._textbox._textbox
@@ -354,7 +363,20 @@ class EnhancedLog(ctk.CTkFrame):
         if paced: self._queue_log(msg, level, timestamp, ANIM["log_status_delay"])
         else: self._append_line(msg, level, timestamp)
     def clear(self):
-        self._log_queue.clear(); self._textbox.configure(state="normal"); self._textbox._textbox.delete("1.0", "end"); self._textbox.configure(state="disabled")
+        # Fully reset the pacing pump. Cancelling the in-flight timer and
+        # clearing ``_processing_queue`` guarantees the next log line restarts
+        # the drain — otherwise a Clear during (or after) active processing
+        # leaves the guard stuck True and the log stays blank while the run
+        # keeps working. The next ``_queue_log`` starts a fresh, single drain.
+        if self._queue_after_id is not None:
+            try: self.after_cancel(self._queue_after_id)
+            except Exception: pass
+            self._queue_after_id = None
+        self._log_queue.clear(); self._processing_queue = False
+        self._textbox.configure(state="normal"); self._textbox._textbox.delete("1.0", "end"); self._textbox.configure(state="disabled")
+        # Immediate feedback so the panel is never eerily blank while a run is
+        # still processing; subsequent activity streams in beneath this line.
+        self._append_line("Activity log cleared.", "muted", True)
     def log_step(self, msg): self._queue_log(f"\u25b8 {msg}", "step", True, ANIM["log_status_delay"])
     def log_success(self, msg): self._queue_log(f"\u2713 {msg}", "success", True, ANIM["log_status_delay"])
     def log_warning(self, msg): self._queue_log(f"\u26a0 {msg}", "warning", True, ANIM["log_status_delay"])
