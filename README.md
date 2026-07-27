@@ -1,6 +1,6 @@
 # Spec Critic
 
-**v3.2.0** — AI-assisted construction-specification review, organized around selectable **review programs** backed by independently versioned discipline modules. The default program is California K-12 DSA mechanical/plumbing.
+**v3.3.0** — AI-assisted construction-specification review, organized around selectable **review programs** backed by independently versioned discipline modules. The default program is California K-12 DSA mechanical/plumbing.
 
 Spec Critic reviews CSI-format `.docx` specifications against the applicable module's code basis and pinned standards editions, using Claude. With the default **California K-12 DSA M&P** program that means California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) and the NFPA / ASHRAE / IAPMO / UL editions adopted for the current cycle. The single **Hyperscale Data Centers — USA and Canada** GUI choice instead routes each specification to its Fire Suppression, Architecture, Electrical, or Electronic Safety & Security module, a justified combination, or an explicit unsupported coverage gap. The Electronic Safety & Security module's first phase is limited to Fire Detection & Alarm. It produces structured findings with severity classifications, confidence scores, web-search-backed verification verdicts, optional cross-spec coordination analysis, and structured edit instructions — rendered in a Word report and written to a machine-readable JSON sidecar for a separate, downstream applier to ingest. Spec Critic emits edit instructions but does not apply them.
 
@@ -248,6 +248,9 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 - API keys and bearer tokens are redacted before serialization (shared regex with `diagnostics.py`).
 
 ## Changelog (recent)
+
+### v3.3.0
+- **Routed-pipeline parallelization.** Multi-module program runs no longer execute modules behind sequential barriers: module preparation, the requirements-research fan-out, real-time per-spec reviews, and each module's verification/cross-check/compliance collection tail now overlap under bounded global worker budgets, while still preserving per-module prompt/dependency order and joining all preparation before any review spend. New env vars: `SPEC_CRITIC_RESEARCH_WORKERS`, `SPEC_CRITIC_PROGRAM_PREPARE_WORKERS`, `SPEC_CRITIC_PROGRAM_COLLECTION_WORKERS`, `SPEC_CRITIC_REALTIME_COLLECTION_CALLS`. The persisted GUI real-time worker-count default moved from 2 to 4.
 
 ### v3.2.0
 - **Hyperscale Electronic Safety & Security module, phase one.** The existing Hyperscale Data Centers choice now routes fire detection and alarm specifications in legacy Division 28 31 or current Division 28 46 to an independently versioned Electronic Safety & Security reviewer. This phase covers fire alarm only; Division 27 and other Division 28 scopes such as access control, video surveillance, and intrusion detection remain explicit coverage gaps. Its US model-code fallback pins NFPA 72-2022 and NFPA 70-2023, while Canadian code and CAN/ULC editions are researched dynamically from the entered project location and local adoption.
