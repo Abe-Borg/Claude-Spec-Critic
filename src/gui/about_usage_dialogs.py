@@ -1,4 +1,4 @@
-"""Informational dialogs ("How It Works" / "How to Use" / "Why Trust It?" / "About").
+"""Informational dialogs (workflow / usage / trust / security / about).
 
 These windows are pure UI: long blocks of mostly-static text rendered in a
 modal CTkToplevel. Model names and the code basis are rendered from config
@@ -42,6 +42,9 @@ _COPYRIGHT_NOTICE = "Copyright © 2025–2026 Abraham Borg."
 _LICENSE_NAME = "PolyForm Noncommercial License 1.0.0"
 _LICENSE_URL = "https://polyformproject.org/licenses/noncommercial/1.0.0"
 _LINKEDIN_URL = "https://www.linkedin.com/in/abrahamborg/"
+_ANTHROPIC_API_PRIVACY_URL = "https://privacy.anthropic.com/en/collections/10631468-api"
+_ANTHROPIC_TRUST_CENTER_URL = "https://trust.anthropic.com/"
+_SOURCE_REPOSITORY_URL = "https://github.com/Abe-Borg/Claude-Spec-Critic"
 
 
 def _model_label(model_id: str) -> str:
@@ -94,6 +97,16 @@ def _link_label(scroll, url: str) -> None:
     )
     link.pack(anchor="w", padx=8, pady=(0, 4))
     link.bind("<Button-1>", lambda _event: webbrowser.open(url))
+
+
+def _action_link(parent, text: str, command) -> None:
+    """Render a centered, keyboard-focusable link-style action."""
+    ctk.CTkButton(
+        parent, text=text, width=180, height=28,
+        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE, underline=True),
+        fg_color="transparent", hover_color=COLORS["bg_input"],
+        text_color=COLORS["accent"], command=command,
+    ).pack(pady=(0, 6))
 
 
 def _grab_dialog(win) -> None:
@@ -673,11 +686,234 @@ def show_trust_dialog(parent) -> None:
 
     _render_sections(scroll, sections)
 
+    _action_link(
+        outer,
+        "I'm not convinced — show me the details",
+        lambda: show_security_details_dialog(dialog),
+    )
+
     ctk.CTkButton(
         outer, text="Close", width=100, height=32,
         font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
         fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
         command=dialog.destroy,
+    ).pack(pady=(0, 16))
+
+
+def show_security_details_dialog(parent) -> None:
+    """Deep technical/accountability explanation for a discerning AEC user.
+
+    This is intentionally longer than the top-level trust dialog. It separates
+    source provenance, runtime behavior, data handling, and the limitations of
+    each user-facing capability instead of asking users to accept a single
+    generic claim that the application is "secure" or "AI verified".
+    """
+    dialog = _build_modal(parent, "Trust & Security — The Detailed View", "760x780")
+    dialog.minsize(620, 600)
+
+    def close() -> None:
+        dialog.grab_release()
+        dialog.destroy()
+        if parent.winfo_exists():
+            parent.after(10, lambda: _grab_dialog(parent))
+
+    dialog.protocol("WM_DELETE_WINDOW", close)
+    outer = ctk.CTkFrame(dialog, fg_color=COLORS["bg_card"], corner_radius=8)
+    outer.pack(fill="both", expand=True, padx=16, pady=16)
+
+    ctk.CTkLabel(
+        outer, text="Still not convinced? Good.",
+        font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+        text_color=COLORS["text_primary"],
+    ).pack(anchor="w", padx=20, pady=(20, 4))
+    ctk.CTkLabel(
+        outer,
+        text=("A detailed account of the evidence, agents, data flows, and "
+              "failure modes behind each capability"),
+        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+        text_color=COLORS["text_muted"],
+    ).pack(anchor="w", padx=20, pady=(0, 12))
+
+    scroll = ctk.CTkScrollableFrame(outer, fg_color="transparent")
+    scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+    review_label = _model_label(REVIEW_MODEL_DEFAULT)
+    verifier_label = _model_label(VERIFICATION_MODEL_DEFAULT)
+    escalation_label = _model_label(VERIFICATION_ESCALATION_MODEL)
+    cross_check_label = _model_label(CROSS_CHECK_MODEL_DEFAULT)
+    sections = [
+        ("Start with the right mental model", (
+            "Spec Critic is a controlled workflow around language models, not a "
+            "code database, sealed expert system, certification service, or autonomous "
+            "engineer. It combines your project documents, versioned review instructions, "
+            "deterministic checks, model analysis, live research, and mechanical evidence "
+            "gates. A finding is a lead with an audit trail. The engineer of record remains "
+            "responsible for deciding whether it applies and what to change."
+        )),
+        ("Where the review knowledge comes from", (
+            "There are four distinct sources, and they should not be confused. (1) Your "
+            "selected .docx specifications and optional project context are the project "
+            "record supplied to the run. (2) Each review module contains human-authored, "
+            "version-controlled instructions: its discipline scope, pinned code cycle and "
+            "referenced-standard editions, issue vocabulary, routing rules, and accepted "
+            "examples. Provenance notes in the source repository document the standards "
+            "used to build those pins. (3) Claude contributes general language and AEC "
+            "reasoning learned during model training; that memory is useful for discovery "
+            "but is not treated as current authority. (4) Where a claim needs outside "
+            "support, Anthropic's server-side web search/fetch tools retrieve public pages "
+            "at runtime. Search results can be incomplete, outdated, secondary, paywalled, "
+            "or absent—so the report exposes the sources rather than hiding that uncertainty."
+        )),
+        ("What leaves your computer", (
+            "Document extraction, token estimation, routing signals, and deterministic "
+            "pre-screening happen locally. To perform AI work, the application sends the "
+            "relevant extracted specification text, project context (including text from "
+            "attachments), selected project/location fields, module instructions, and prior "
+            "phase results to Anthropic's API. Drawing analysis additionally sends the "
+            "attached PDF content to the model. Cross-spec coordination sends the text of "
+            "the specs in its current module/chunk together. Do not enter material that your "
+            "organization is not permitted to process through Anthropic. Spec Critic does "
+            "not claim that data stays solely on your workstation."
+        )),
+        ("What remains local—and what is saved", (
+            "Your source documents are never modified. Reports, edit-instruction JSON, "
+            "cached verification verdicts, pending-batch recovery state, diagnostics, UI "
+            "preferences, and agent traces are stored locally. Pending-batch state stores "
+            "paths, request mapping, and project context but not copied spec bodies; recovery "
+            "re-extracts the originals. Tracing is on by default. Normal traces preserve the "
+            "agent workflow and selected outputs; Deep mode can also preserve full prompts, "
+            "raw responses, and search snippets—potentially including confidential project "
+            "text. API keys and bearer-token patterns are redacted from traces, but redaction "
+            "is not a substitute for protecting the trace folder. Anyone who can read your "
+            "user profile may be able to read these artifacts. Use the trace controls and "
+            "your organization's retention/encryption practices accordingly."
+        )),
+        ("API key and network boundary", (
+            "The Anthropic API key is read from the field, the ANTHROPIC_API_KEY environment "
+            "variable, or an optional plain-text spec_critic_api_key.txt file beside the "
+            "application. That convenience file is not an encrypted credential vault. Use a "
+            "restricted account/key, protect the workstation, and rotate a key you believe "
+            "was exposed. Model, batch, search, and fetch requests cross the network to "
+            "Anthropic over the SDK's HTTPS connection. Anthropic—not this application—sets "
+            "the service-side storage, retention, access, and training terms; confirm the "
+            "current API terms and your enterprise agreement before using sensitive work."
+        )),
+        ("At runtime: extraction and routing", (
+            "The extractor reads body paragraphs, tables, headers/footers, text boxes, and "
+            "footnotes/endnotes from .docx files. It cannot promise fidelity for every Word "
+            "feature, embedded object, image, tracked-change interpretation, or damaged file. "
+            "The multi-discipline program then routes each spec from CSI numbers, titles, and "
+            "content signals. Ambiguous routing may fan a spec to justified modules; known "
+            "unsupported Division 27 and non-fire-alarm Division 28 work is reported as a "
+            "coverage gap rather than silently reviewed by the wrong discipline. Review the "
+            "routing summary: an unreviewed or misrouted file is a completeness risk."
+        )),
+        ("At runtime: local pre-screen", (
+            "Regular expressions and structural comparisons flag placeholders, template "
+            "markers, duplicate text/headings, empty content, filename/CSI mismatches, and "
+            "known cycle patterns. These checks are reproducible and do not use a model, but "
+            "they are narrow: unusual wording may evade them and a pattern match can still "
+            "need professional interpretation. 'Locally classified' means mechanically "
+            "classified—not automatically important, applicable, or ready to edit."
+        )),
+        ("At runtime: location and client research", (
+            "For enabled modules, separate research agents search governing codes, AHJ rules, "
+            "client standards, and site/environment topics using the city, state/province, "
+            "country, client, and vocabulary observed in the specs. Only items whose cited "
+            "URLs match pages actually returned by search/fetch enter the grounded profile. "
+            "The profile records its research date and partial dimension failures. If every "
+            "research dimension fails, the run stops before paid review submission; a partial "
+            "profile remains explicitly partial. This is research triage, not a determination "
+            "of adopted law or a substitute for contacting the AHJ/client."
+        )),
+        (f"At runtime: per-spec review ({review_label})", (
+            "One review agent receives one spec, the applicable module instructions and code "
+            "basis, and effective project context. It proposes structured findings with "
+            "severity, confidence, evidence location, reasoning, and—only where appropriate—"
+            "an exact edit proposal. The model is told that document/context content is data, "
+            "not instructions, which reduces prompt-injection risk from hostile or accidental "
+            "text inside a file. No instruction can make a probabilistic model infallible. "
+            "Structured output is schema-validated; malformed or non-actionable edits are "
+            "demoted, but plausible omissions and reasoning errors can remain."
+        )),
+        (f"At runtime: verification ({verifier_label} → {escalation_label})", (
+            "A separate verifier classifies which claims need the web, searches within a "
+            "severity-based budget, and returns Confirmed, Corrected, Disputed, or Unverified. "
+            "Critical/High unresolved claims may be retried with the escalation model. A "
+            "Confirmed/Corrected result is mechanically downgraded unless at least one URL the "
+            "model cited exactly corresponds to a URL the tool retrieved. This proves source "
+            "provenance—not that the source is primary, current, applicable, or interpreted "
+            "correctly. Open the evidence links and check adopted amendments and effective dates."
+        )),
+        (f"At runtime: cross-spec coordination ({cross_check_label})", (
+            "When selected, a separate agent compares specs for contradictions, scope gaps, "
+            "cross-references, and inconsistent equipment data after the first verification "
+            "pass; its new findings are verified too. Large inputs are divided by CSI division "
+            "inside each routed module. That makes the run tractable but cannot detect a "
+            "conflict between two divisions placed in different chunks. Coordination is also "
+            "child-module scoped: it does not directly compare, for example, a Division 21 "
+            "suppression spec with a Division 28 alarm spec. The diagnostics banner identifies "
+            "failed/skipped chunks; 'completed' does not mean every possible relationship was read."
+        )),
+        ("At runtime: compliance and drawing-impact passes", (
+            "Location-aware modules compare the package with the grounded requirements profile "
+            "and label each requirement represented, contradicted, unclear, or missing; resulting "
+            "findings undergo verification. If drawings were analyzed, a later synthesis explains "
+            "how that drawing digest informed the now-reviewed findings. The drawing digest is an "
+            "AI interpretation of rendered PDF content, not a CAD/BIM model check, quantity takeoff, "
+            "or guarantee that every note, symbol, revision, or sheet relationship was perceived."
+        )),
+        ("At runtime: deduplication, report, and edits", (
+            "Identical issues can be consolidated while per-file occurrences are retained. The "
+            "report shows operational diagnostics before findings, separates verification status "
+            "from model confidence, and includes accepted/rejected evidence. 'Edit suggested' "
+            "only means the proposal has the required structured fields and its quoted anchor was "
+            "validated; it does not mean the change is approved. Spec Critic emits a report and "
+            "JSON instructions but contains no write-back machinery. Human review and document "
+            "control remain the final gate."
+        )),
+        ("Threats this design reduces—and those it does not eliminate", (
+            "The workflow reduces unsupported citations, stale-cycle reuse, invisible partial "
+            "failure, malformed edit instructions, accidental source-file changes, and some "
+            "document-borne prompt injection. It does not eliminate model hallucination, biased "
+            "or incomplete training/search material, malicious or compromised public pages, wrong "
+            "project inputs, missed Word/PDF content, workstation malware, unauthorized local-file "
+            "access, API-account compromise, service outages, or the need for professional judgment. "
+            "There is no security certification or warranty implied by a Verified badge."
+        )),
+        ("A practical review protocol", (
+            "Before relying on a run: confirm the selected program, routing, location, client, and "
+            "code cycle; investigate every red diagnostics row; treat coverage gaps as unreviewed "
+            "scope; open sources for consequential findings; prefer primary AHJ/code/standards "
+            "material; verify section text and amendments; review every proposed edit in context; "
+            "retain the report/trace under your project controls; and obtain the engineer of record's "
+            "decision. The safest use is as a tireless second reader—not as an approval stamp."
+        )),
+        ("Inspect, don't merely trust", (
+            "The application source, module instructions, provenance notes, tests, and audit "
+            "documents are available in the project repository. Anthropic's API privacy pages and "
+            "Trust Center describe the separate hosted-service boundary. Those external policies "
+            "can change; the linked pages, not this summary, are authoritative."
+        )),
+    ]
+    _render_sections(scroll, sections)
+    for label, url in (
+        ("View Spec Critic source and audits", _SOURCE_REPOSITORY_URL),
+        ("Anthropic API privacy information", _ANTHROPIC_API_PRIVACY_URL),
+        ("Anthropic Trust Center", _ANTHROPIC_TRUST_CENTER_URL),
+    ):
+        ctk.CTkLabel(
+            scroll, text=label,
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+            text_color=COLORS["text_primary"],
+        ).pack(anchor="w", padx=8, pady=(8, 1))
+        _link_label(scroll, url)
+
+    ctk.CTkButton(
+        outer, text="Back to Why Trust It", width=160, height=32,
+        font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE),
+        fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+        command=close,
     ).pack(pady=(0, 16))
 
 
