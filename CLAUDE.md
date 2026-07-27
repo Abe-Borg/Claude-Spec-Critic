@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v3.0.0
+# CLAUDE.md — Spec Critic v3.3.0
 
 Engineering reference for the Spec Critic codebase. Focuses on non-obvious invariants and orientation — read the source for full type signatures.
 
@@ -29,7 +29,7 @@ A submitted review batch is persisted to disk (`orchestration/batch_resume.py`, 
 
 ```
 src/
-├── __init__.py             # Package version (3.0.0)
+├── __init__.py             # Package version (3.3.0)
 
 # Core config
 ├── core/
@@ -52,6 +52,13 @@ src/
 │   ├── datacenter_electronic_safety_security.py # Phase-one fire detection/alarm
 │   └── registry.py             # AVAILABLE_MODULES / DEFAULT_MODULE / get_module
 
+# User-facing programs (group modules behind one GUI choice) + per-spec routing
+├── programs/
+│   ├── models.py                # ProgramDefinition / RoutingEvidence / SpecRoutingDecision domain models
+│   ├── catalog.py                # AVAILABLE_PROGRAMS / DEFAULT_PROGRAM (california_k12, hyperscale datacenter)
+│   ├── routing.py                # Deterministic per-discipline classifier (CSI + title + content signals)
+│   └── assignments.py            # Serializable per-spec assignments for routed program runs
+
 # UI
 ├── gui/
 │   ├── gui.py                  # CustomTkinter app shell
@@ -73,6 +80,11 @@ src/
 │   ├── batch_resume.py         # Persisted pending-batch state for resume / recovery
 │   └── diagnostics.py          # In-memory diagnostics report
 
+# Requirements research (location-aware modules; WS-3)
+├── research/
+│   ├── corpus_signals.py        # Deterministic no-API corpus-signal scrape seeding the research fan-out
+│   └── requirements_research.py # Per-module ResearchDimension fan-out → grounded RequirementsProfile
+
 # Review
 ├── review/
 │   ├── reviewer.py             # Anthropic client factory + Finding model + tool-use/JSON parsing
@@ -85,6 +97,10 @@ src/
 # Cross-spec coordination
 ├── cross_check/
 │   └── cross_checker.py        # Cross-spec coordination (chunked by CSI division)
+
+# Local-code compliance pass (location-aware modules; WS-4)
+├── compliance/
+│   └── compliance_checker.py   # Synchronous pass checking specs against the grounded RequirementsProfile
 
 # Drawing-impact synthesis
 ├── drawing_impact/
