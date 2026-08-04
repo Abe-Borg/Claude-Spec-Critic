@@ -3,8 +3,8 @@
 Prepared: 2026-08-04, from a fresh clone of `Abe-Borg/Claude-Spec-Critic` in a remote (headless Linux) session.
 Companion note to the chat-delivered handoff "Surgical HTML Report + AI Chat Integration Handoff" (that document is not checked into the repository).
 
-**Status: PENDING USER APPROVAL.** No implementation code has been written. Per the handoff, the baseline gate
-requires the user to confirm, explicitly: **"This is the current app we are preserving."**
+**Status: BASELINE APPROVED** (2026-08-04). The user confirmed: *"the latest master branch is the latest
+app"* — the explicit confirmation the handoff's baseline gate requires. See the Approval record below.
 
 ---
 
@@ -100,8 +100,12 @@ differences that matter for the integration seam:
 
 ## Approval record
 
-- Baseline candidate: `origin/master` @ `37c3cbe88f74190e59467fd7440b69805a688572` (v3.3.0 + PRs #323/#324).
-- User approval ("This is the current app we are preserving."): **PENDING**
+- Approved baseline: `origin/master` @ `37c3cbe88f74190e59467fd7440b69805a688572` (v3.3.0 + PRs #323/#324).
+- User approval: **GIVEN 2026-08-04** — *"the latest master branch is the latest app"* (after reviewing the
+  launch screenshot, test results, and branch sweep in this document).
+- PR #320 (run-audit fixes): closed by the user on 2026-08-04 — no longer part of any baseline question.
+- Feature branch: `claude/html-report-baseline-review-1unr56`, cut from the approved commit; its only
+  pre-feature delta is this evidence document.
 
 ---
 
