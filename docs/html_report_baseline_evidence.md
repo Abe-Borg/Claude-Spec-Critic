@@ -109,7 +109,43 @@ differences that matter for the integration seam:
 
 ---
 
-## Provisional Phase 2 scope (contingent on baseline approval — no edits made)
+## Phase 3–4 record — output contract frozen, standalone exporter built
+
+Executed after the baseline approval, per the approved scope (exporter + tests only; GUI untouched).
+
+**Contract freeze (Phase 3).** A function-by-function inventory of `report_exporter.py` (every section's
+exact strings, gates, attribute reads with getattr defaults, value formats, ordering, colors) and
+`report_status.py` (closed sets, classification order) was extracted and used as the parity contract.
+Where a value is *computed*, the HTML exporter imports the same pure helpers the Word exporter uses
+(`_summarize_run_diagnostics`, `_summarize_verification_outcomes`, `classify_status`,
+`classify_edit_action`, `_render_pinned_editions_note`, cache-age/confidence tiers, color constants) so
+the two reports cannot drift on semantics.
+
+**Implementation (Phase 4).** `src/output/html_report_exporter.py` — `render_html_report(result)` /
+`write_html_report(result, path)`, handling both single-module and routed-program results (same dispatch
+as the DOCX exporter). One self-contained UTF-8 file: inline CSS/JS, zero external assets, sticky
+toolbar (search + severity/file/status/edit-action filters with live counts), TOC, collapsible finding
+cards with collapsed evidence panels, expand/collapse-all, honest copy-full-report, print support,
+embedded machine-readable JSON payload + complete plain-text digest. Security: all report text escaped;
+the JSON payload \u-escapes `&`,`<`,`>`; CSP script hash computed over the exact bytes written (binary
+write); https-only source links; no API key, no absolute local paths. Documented deviations from the
+Word report (all in the module docstring): alerts never truncated, cache hint names the setting rather
+than an absolute path, platform-appropriate collapse tip, clickable source links.
+
+**Validation.** 54 hermetic tests (`tests/test_html_report_exporter.py`): sentinel-based content parity
+over fully-populated fixtures (every trust status, edit shape, alert list, banner row and hint,
+requirements/compliance/drawing-impact sections, program routing), security (escaping, CSP-hash-vs-bytes
+on disk, https-only links, no key/paths), no-mutation, determinism, empty/partial/hostile/Unicode/large
+states. Full suite after the change: **1656 passed, 0 failed** (baseline 1602 untouched). Browser
+validation in headless Chromium: 24/24 checks — zero console errors on five demo reports, search/filter/
+count/collapse/copy verified end-to-end (clipboard content checked), XSS probe on hostile fixtures fired
+nothing, no horizontal scroll at 420 px, print auto-expands cards; screenshots shared in-session.
+
+**Pending gate (Phase 4 exit):** user approval of the rendered report's content parity **before any
+chat work (Phase 5) begins**; Phase 6 (the single additive "Save HTML Report…" GUI hook off
+`app._last_result`) follows after that.
+
+## Approved Phase 2 scope (baseline approved 2026-08-04)
 
 Proposed file allowlist:
 
