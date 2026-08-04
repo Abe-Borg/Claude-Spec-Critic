@@ -4,7 +4,7 @@ Technical reference for AI-assisted development. This file describes the codebas
 
 ## Application Overview
 
-Spec Critic is a Python desktop application that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude AI models. It extracts text from `.docx` and `.pdf` specification files, sends each spec to Claude for independent review, deduplicates findings across specs, optionally runs a cross-spec coordination check, verifies findings via web search, and presents results either in-app or as an exported Word document.
+Spec Critic is a Python desktop application that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude AI models. It extracts text from `.docx` and `.pdf` specification files, sends each spec to Claude for independent review, deduplicates findings across specs, optionally runs a cross-spec coordination check, verifies findings via web search, and presents results in-app or as self-contained HTML and Word reports.
 
 ## Module Map
 
@@ -14,6 +14,7 @@ src/
 ├── gui.py               # CustomTkinter GUI — all user interaction
 ├── widgets.py           # Reusable UI components (TokenGauge, FileListPanel, etc.)
 ├── pipeline.py          # Core orchestration — SINGLE SOURCE OF TRUTH for workflow
+├── html_report_exporter.py # Self-contained HTML report + browser-based Ask AI
 ├── report_exporter.py   # Word document (.docx) report generation
 ├── cross_checker.py     # Cross-spec coordination check (Sonnet 4.6)
 ├── batch.py             # Anthropic Message Batches API wrapper
@@ -67,7 +68,8 @@ User selects .docx/.pdf files
     PipelineResult                                                │
          │                                                        │
          ├──── View in App ──── widgets.py (ReportWindow)         │
-         └──── Export Report ── report_exporter.py (.docx)        │
+         ├──── Export HTML ──── html_report_exporter.py (.html)   │
+         └──── Export DOCX ──── report_exporter.py (.docx)        │
 ```
 
 ## Key Data Structures
@@ -225,6 +227,16 @@ Verifies ALL findings (including GRIPES as of v2.0.0). Mutates `finding.verifica
 - Accepts same `PipelineResult` as in-app rendering
 - Word-native formatting: heading styles, Table Grid, List Bullet, color-coded severity
 - Findings sorted by severity then confidence
+
+### html_report_exporter.py — HTML Report + Ask AI
+
+- `build_html_report(result, ...) -> str` — Pure renderer with inline CSS/JavaScript
+- `export_html_report(result, output_path, ...) -> Path` — Writes the portable UTF-8 report
+- Accepts the same `PipelineResult` as the DOCX exporter; no pipeline dependency
+- Preserves all report content and adds search, filters, collapsible findings, print styles, complete alerts, and verification URLs
+- Embeds inert structured report JSON and a lossless plain-text representation
+- Ask AI calls Anthropic directly from the browser, grounded in the report; it does not receive original specification text
+- API keys are excluded by default and kept in tab-only `sessionStorage`; embedding is explicit and visibly warned
 
 ### reviewer.py — API Client
 

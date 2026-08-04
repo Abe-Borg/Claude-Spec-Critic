@@ -1,6 +1,6 @@
 # Spec Critic v2.1.0
 
-A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` or `.pdf` spec files, run the review, and see color-coded findings rendered in the app or exported to a Word document.
+A desktop tool that reviews mechanical and plumbing construction specifications for California K-12 DSA projects using Claude. Load `.docx` or `.pdf` spec files, run the review, and see color-coded findings in the app or in self-contained HTML and Word reports.
 
 ## What It Does
 
@@ -13,7 +13,8 @@ A desktop tool that reviews mechanical and plumbing construction specifications 
 7. Verifies all findings (CRITICAL/HIGH/MEDIUM/GRIPES) via web search (Sonnet 4.6)
 8. Outputs results based on user selection:
    - **View in App**: Renders a full report in-app with a pop-out window
-   - **Export Report**: Saves a formatted Word document (.docx) with all findings
+   - **Export HTML**: Saves an organized, searchable report with built-in Ask AI
+   - **Export DOCX**: Preserves the formatted Word report
 
 ## Running the Application
 
@@ -59,13 +60,14 @@ For day-to-day use, drop a `spec_critic_api_key.txt` file in the project root or
 4. (Optional) Enter project context in the **Project Context** field
 5. Select the **Review Model**: Opus 4.6 (thorough) or Sonnet 4.6 (fast/cheap)
 6. (Optional) Check **Cross-spec coordination check** to enable inter-spec analysis
-7. Select the **Output** mode: View in App or Export Report
+7. Select the **Output** mode: View in App, Export HTML, or Export DOCX
 8. The token gauge fills to show capacity usage — the run is blocked only if any single file exceeds the 150k per-call limit
 9. Expand the **FILES** panel to check/uncheck individual specs if needed
 10. Click **Run Review** (or **Submit Batch** in batch mode)
 11. When complete:
     - **View in App**: The report renders in-app and a pop-out window opens automatically
-    - **Export Report**: A save dialog appears — choose where to save the `.docx` report
+    - **Export HTML**: Save the `.html` report; it opens in your browser automatically
+    - **Export DOCX**: Choose where to save the Word report
 
 ### Supported File Formats
 
@@ -81,7 +83,10 @@ You can mix `.docx` and `.pdf` files in a single review — the extractor handle
 Choose how you want to receive the review results:
 
 - **View in App** (default): Results render in the app as interactive collapsible cards with a pop-out report window. Best for small reviews (1-5 specs).
-- **Export Report**: Results are saved to a Word document (.docx) without rendering in the app. Best for large reviews where in-app rendering would be slow. The exported report contains everything the in-app report shows.
+- **Export HTML**: Creates one self-contained, searchable `.html` file with filters, collapsible findings, complete report content, print styles, and a report-aware Ask AI assistant. The API key stays out of the file by default; the reader enters a key when first using chat.
+- **Export DOCX**: Saves the existing Word document without rendering in the app. This remains available for Word-native review workflows.
+
+The optional **Embed API key in HTML** control removes the runtime key-entry step but writes the credential into the report in clear text. Embedded-key reports still require internet access and must not be shared.
 
 ### Review Model Selection
 
@@ -183,9 +188,15 @@ After review (in "View in App" mode), the report renders in a pop-out window wit
 - **Cross-Spec Coordination**: Dedicated section for coordination findings (cyan accent)
 - **Reviewer's Notes**: Claude's personality-driven analysis summary
 
+### Exported HTML Report
+
+The HTML export keeps every DOCX report section and adds a sticky table of contents, full-text search, severity/file/action/verdict filters, collapsible finding cards, complete alerts, verification source links, and a lossless plain-text copy. All CSS and JavaScript are embedded in one portable file.
+
+Its **Ask AI** panel is grounded in the complete report and structured findings. It streams answers, can search or fetch the web for outside references, and can query, filter, navigate, highlight, and summarize the visible report. Like the Drawing Analyzer assistant, it sees the generated report—not the original specification files.
+
 ### Exported Report (.docx)
 
-When using "Export Report" mode, the Word document contains the same information with clean Word-native formatting:
+When using "Export DOCX" mode, the Word document contains the same information with clean Word-native formatting:
 - **Title**: Centered heading with generation metadata
 - **Files Reviewed**: Bullet list of all spec filenames
 - **Summary table**: Table Grid style with color-coded severity cell shading
@@ -198,7 +209,8 @@ When using "Export Report" mode, the Word document contains the same information
 
 ### Export Options
 
-- **Export Report**: Full Word document via the Output mode selector (before review)
+- **Export HTML**: Self-contained interactive report with report-aware Ask AI
+- **Export DOCX**: Full Word document via the Output mode selector
 - **Export JSON**: Saves findings, cross-check findings, alerts, and metadata to `.json` (after review)
 - **Copy Summary**: Copies the analysis summary to clipboard (after review)
 
@@ -211,6 +223,7 @@ spec-review/
 │   ├── gui.py             # Main application window
 │   ├── widgets.py         # Custom UI widgets
 │   ├── pipeline.py        # Core orchestration (single source of truth)
+│   ├── html_report_exporter.py # Self-contained HTML report + Ask AI
 │   ├── report_exporter.py # Word document report generation
 │   ├── cross_checker.py   # Cross-spec coordination check (Sonnet 4.6)
 │   ├── batch.py           # Anthropic Message Batches API (review + verification)
@@ -232,7 +245,7 @@ spec-review/
 - **Single pipeline**: All workflow logic lives in `pipeline.py`.
 - **Format-agnostic extraction**: `extractor.py` handles both `.docx` and `.pdf` via a dispatcher — downstream modules only see `ExtractedSpec`.
 - **User-selectable review model**: Opus 4.6 or Sonnet 4.6 for the first-stage review.
-- **User-selectable output mode**: View in App or Export Report (.docx).
+- **User-selectable output mode**: View in App, Export HTML, or Export DOCX.
 - **Sonnet for support tasks**: Verification and cross-check always use Sonnet 4.6.
 - **Verification batching**: In batch mode, verification is also batched for 50% savings.
 - **Persistent batch state**: Review-stage batch submissions are persisted in `batch_state.json` for resume after app restart. Verification-stage resume is not fully persisted.
@@ -241,7 +254,7 @@ spec-review/
 - **Advisory only**: This tool assists human reviewers. Not an AHJ substitute.
 - **Cross-check is optional**: Controlled by checkbox, default off. Works in both real-time and batch mode.
 - **Cross-check is separate**: Dedicated report section, not mixed with per-spec findings.
-- **Export report is separate**: `report_exporter.py` accepts `PipelineResult` — pipeline is output-agnostic.
+- **Exporters are separate**: HTML and DOCX exporters both accept `PipelineResult` — the pipeline remains output-agnostic.
 - **Word-native formatting**: Export uses real heading styles, Table Grid, List Bullet, and Arial 11pt.
 - **Per-file token gating**: Run is blocked only if any single file exceeds the per-call limit, not by total across files.
 - **Robust JSON parsing**: Sentinel tags with heuristic fallback for reliable extraction.

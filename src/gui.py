@@ -3,7 +3,7 @@ Spec Critic - Modern GUI with CustomTkinter
 M&P Specification Review • California K-12 DSA • Claude Opus / Sonnet
 v2.1.0 - Robustness, correctness, and quality-of-life improvements
 """
-import os, sys, json, time, threading
+import os, sys, json, time, threading, webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,6 +22,7 @@ from src.extractor import extract_text, ExtractedSpec, SUPPORTED_EXTENSIONS
 from src.tokenizer import RECOMMENDED_MAX, exceeds_per_call_limit
 from src.prompts import get_system_prompt
 from src.report_exporter import export_report
+from src.html_report_exporter import export_html_report
 
 from src.widgets import (COLORS, TokenGauge, FileListPanel, EnhancedLog, AnimatedButton, ReportWindow)
 
@@ -347,9 +348,11 @@ class SpecReviewApp(ctk.CTk):
         ctk.CTkLabel(self.inputs_content, text="Output", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=5, column=0, sticky="w", pady=8)
         output_frame = ctk.CTkFrame(self.inputs_content, fg_color="transparent")
         output_frame.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=8)
+        output_selector_row = ctk.CTkFrame(output_frame, fg_color="transparent")
+        output_selector_row.pack(anchor="w")
         self._output_mode_var = ctk.StringVar(value="View in App")
         self.output_selector = ctk.CTkSegmentedButton(
-            output_frame, values=["View in App", "Export Report"],
+            output_selector_row, values=["View in App", "Export HTML", "Export DOCX"],
             variable=self._output_mode_var,
             command=self._on_output_mode_change,
             font=ctk.CTkFont(family="Segoe UI", size=11),
@@ -360,9 +363,28 @@ class SpecReviewApp(ctk.CTk):
         )
         self.output_selector.set("View in App")
         self.output_selector.pack(side="left")
-        self._output_hint = ctk.CTkLabel(output_frame, text="",
+        self._output_hint = ctk.CTkLabel(output_selector_row, text="",
             font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLORS["text_muted"])
         self._output_hint.pack(side="left", padx=(12, 0))
+
+        embed_key_row = ctk.CTkFrame(output_frame, fg_color="transparent")
+        embed_key_row.pack(anchor="w", pady=(6, 0))
+        self._embed_api_key_var = ctk.BooleanVar(value=False)
+        self._embed_api_key_cb = ctk.CTkCheckBox(
+            embed_key_row, text="Embed API key in HTML", variable=self._embed_api_key_var,
+            command=self._on_embed_api_key_change,
+            state="disabled", font=ctk.CTkFont(family="Segoe UI", size=11),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            border_color=COLORS["border"], checkmark_color=COLORS["text_primary"],
+            text_color=COLORS["text_secondary"], text_color_disabled=COLORS["text_muted"],
+            checkbox_width=18, checkbox_height=18,
+        )
+        self._embed_api_key_cb.pack(side="left")
+        self._embed_api_key_hint = ctk.CTkLabel(
+            embed_key_row, text="", font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=COLORS["warning"], justify="left",
+        )
+        self._embed_api_key_hint.pack(side="left", padx=(12, 0))
 
         # --- Row 6: Options (cross-check) ---
         ctk.CTkLabel(self.inputs_content, text="Options", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=COLORS["text_secondary"], width=100, anchor="w").grid(row=6, column=0, sticky="w", pady=8)
@@ -400,14 +422,37 @@ class SpecReviewApp(ctk.CTk):
     # --- Output mode helpers ---
 
     def _on_output_mode_change(self, value: str):
-        if value == "Export Report":
+        if value == "Export HTML":
+            self._output_hint.configure(text="Saves interactive .html report with AI chat")
+            self._embed_api_key_cb.configure(state="normal")
+            self._on_embed_api_key_change()
+        elif value == "Export DOCX":
             self._output_hint.configure(text="Saves .docx report \u2022 no in-app rendering")
+            self._embed_api_key_var.set(False)
+            self._embed_api_key_cb.configure(state="disabled")
+            self._embed_api_key_hint.configure(text="")
         else:
             self._output_hint.configure(text="")
+            self._embed_api_key_var.set(False)
+            self._embed_api_key_cb.configure(state="disabled")
+            self._embed_api_key_hint.configure(text="")
+
+    def _on_embed_api_key_change(self):
+        """Explain the HTML key mode without implying that chat works offline."""
+        if self._selected_output_mode != "Export HTML":
+            self._embed_api_key_hint.configure(text="")
+        elif self._embed_api_key_var.get():
+            self._embed_api_key_hint.configure(
+                text="Skips key entry \u2022 internet required \u2022 do not share the report"
+            )
+        else:
+            self._embed_api_key_hint.configure(
+                text="Key stays out of the file \u2022 reader enters it when chatting"
+            )
 
     @property
-    def _is_export_mode(self) -> bool:
-        return self.output_selector.get() == "Export Report"
+    def _selected_output_mode(self) -> str:
+        return self.output_selector.get()
 
     # --- Project context placeholder helpers ---
 
@@ -590,18 +635,25 @@ class SpecReviewApp(ctk.CTk):
         self._project_context_for_review = self._get_project_context()
         self._cross_check_for_review = self._cross_check_var.get()
         self._model_for_review = self._selected_review_model
-        self._export_mode_for_review = self._is_export_mode
+        self._output_mode_for_review = self._selected_output_mode
+        self._embed_api_key_for_review = (
+            self._output_mode_for_review == "Export HTML" and self._embed_api_key_var.get()
+        )
+        self._api_key_for_review = self.api_key_entry.get().strip()
         self.is_processing = True
         self._close_report_window()
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
         self.run_button.set_processing()
         self.progress_bar.pack(fill="x", pady=(8, 0), after=self.run_button)
         self.progress_bar.set(0); self.progress_bar.configure(mode="determinate")
-        os.environ["ANTHROPIC_API_KEY"] = self.api_key_entry.get().strip()
+        os.environ["ANTHROPIC_API_KEY"] = self._api_key_for_review
 
         n = len(self._selected_files_for_review)
         model_label = self._review_model_var.get()
-        output_label = " → Export Report" if self._export_mode_for_review else ""
+        output_label = (
+            f" → {self._output_mode_for_review}"
+            if self._output_mode_for_review != "View in App" else ""
+        )
         if self._is_batch_mode:
             self.log.log_step(f"Submitting {n} files for batch review ({model_label}){output_label}...")
             run_epoch = self._next_run_epoch()
@@ -653,8 +705,15 @@ class SpecReviewApp(ctk.CTk):
                 self.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
             self.log.log(f"Time: {rv.elapsed_seconds:.1f}s", level="muted")
 
-            # Route to export or in-app rendering based on output mode
-            if getattr(self, "_export_mode_for_review", False):
+            # Route to export or in-app rendering based on the snapshotted output mode
+            output_mode = getattr(self, "_output_mode_for_review", "View in App")
+            if output_mode == "Export HTML":
+                exported = self._export_html_report_to_file(result)
+                if not exported:
+                    # Fall back to pop-out window so results aren't lost
+                    self.log.log_step("Opening results in pop-out window instead...")
+                    self._open_report_window(rv, result.files_reviewed, result.leed_alerts, result.placeholder_alerts, result.cross_check_result)
+            elif output_mode == "Export DOCX":
                 exported = self._export_report_to_file(result)
                 if not exported:
                     # Fall back to pop-out window so results aren't lost
@@ -666,6 +725,43 @@ class SpecReviewApp(ctk.CTk):
         delete_batch_state()
         self.run_button.set_complete()
         self.after(2500, self._reset_ui)
+
+    def _export_html_report_to_file(self, result) -> bool:
+        """Show a save dialog, export the interactive HTML report, and open it."""
+        default_name = f"spec-critic-report-{datetime.now().strftime('%Y-%m-%d')}.html"
+        path = filedialog.asksaveasfilename(
+            title="Save HTML Review Report",
+            defaultextension=".html",
+            filetypes=[("HTML Documents", "*.html"), ("All Files", "*.*")],
+            initialfile=default_name,
+        )
+        if not path:
+            self.log.log_warning("Export canceled")
+            return False
+
+        try:
+            output_path = Path(path)
+            self.log.log_step(f"Exporting HTML report to {output_path.name}...")
+            export_html_report(
+                result,
+                output_path,
+                project_context=getattr(self, "_project_context_for_review", ""),
+                api_key=getattr(self, "_api_key_for_review", ""),
+                embed_api_key=getattr(self, "_embed_api_key_for_review", False),
+            )
+            self.log.log_success(f"Report saved: {output_path}")
+
+            try:
+                opened = webbrowser.open(output_path.resolve().as_uri(), new=2)
+                if not opened:
+                    self.log.log_warning("Report saved, but it could not be opened automatically.")
+            except Exception as e:
+                self.log.log_warning(f"Report saved, but it could not be opened automatically: {e}")
+
+            return True
+        except Exception as e:
+            self.log.log_error(f"Export failed: {e}")
+            return False
 
     def _export_report_to_file(self, result) -> bool:
         """Show save dialog and export the report to a .docx file.
@@ -937,7 +1033,11 @@ class SpecReviewApp(ctk.CTk):
         self._cross_check_for_review = False
         self._project_context_for_review = getattr(submission, "project_context", "")
         # Use whatever output mode the user currently has selected
-        self._export_mode_for_review = self._is_export_mode
+        self._output_mode_for_review = self._selected_output_mode
+        self._embed_api_key_for_review = (
+            self._output_mode_for_review == "Export HTML" and self._embed_api_key_var.get()
+        )
+        self._api_key_for_review = api_key
         self.is_processing = True
 
         self.log.log("\u2500" * 40, level="muted", timestamp=False, paced=False)
@@ -1013,6 +1113,9 @@ class SpecReviewApp(ctk.CTk):
         self._mode_hint.configure(text="")
         self.output_selector.set("View in App")
         self._output_hint.configure(text="")
+        self._embed_api_key_var.set(False)
+        self._embed_api_key_cb.configure(state="disabled")
+        self._embed_api_key_hint.configure(text="")
         self._cross_check_var.set(False)
         self.is_processing = False
 
