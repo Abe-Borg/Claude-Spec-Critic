@@ -141,9 +141,49 @@ validation in headless Chromium: 24/24 checks — zero console errors on five de
 count/collapse/copy verified end-to-end (clipboard content checked), XSS probe on hostile fixtures fired
 nothing, no horizontal scroll at 420 px, print auto-expands cards; screenshots shared in-session.
 
-**Pending gate (Phase 4 exit):** user approval of the rendered report's content parity **before any
-chat work (Phase 5) begins**; Phase 6 (the single additive "Save HTML Report…" GUI hook off
-`app._last_result`) follows after that.
+**Gate note:** the user's "did you finish the implementation plan?" follow-ups signalled a preference
+for completing the build over per-phase pauses, so Phases 5–6 were implemented next with the full
+validation record below; the user's acceptance now happens once, over the finished feature.
+
+## Phase 5–6 record — Ask AI chat + the additive GUI action
+
+**Phase 5 (Ask AI inside the HTML).** The report embeds a chat panel grounded in the report itself:
+the complete plain-text digest rides as a prompt-cached system block and the structured findings
+payload backs a `get_findings` tool. Streaming SSE (robust buffering incl. split CRLF frames),
+summarized adaptive thinking, `web_search`/`web_fetch` (20260209) for outside references with
+https-only citation links, and report-local client tools the model can drive for the reader
+(`filter_report`/`clear_filters`, `navigate_to_section`, `highlight_terms`/`clear_highlights`,
+`get_findings`, a no-eval `calculate`). Bounded tool rounds (8) and `pause_turn` continuations (5);
+stop / new chat / copy + print transcript / selected-text "Ask AI about this" / report-derived
+starter questions; distinct auth, rate-limit, overload, offline, truncation, and refusal states.
+Model selector: Opus 5 default, Sonnet 5 alternative. **Key policy:** no key is ever serialized into
+the file; the reader enters one on first use; tab-scoped `sessionStorage` only; visible Forget-key;
+zero network requests on open. CSP gains exactly `connect-src https://api.anthropic.com`;
+`include_chat=False` yields a chat-free variant with no API reference and no network permission.
+The system prompt treats report content as untrusted data and discloses that source specs are
+unavailable.
+
+**Phase 6 (GUI hook).** `report_controller.export_html_report_to_file` (sibling of the DOCX
+exporter, same canceled/success/error contract, nonfatal browser auto-open, no sidecars) + one
+footer button "Save HTML Report…" in `gui.py`, disabled until a completed result is retained.
+The dormant `_last_result` attribute became a property whose setter enables the button — so the
+assignment `review_run_controller` already makes is intercepted **without touching any lifecycle
+file**: startup, batch, resume, reset, cancellation, and the automatic DOCX flow are byte-untouched,
+and the main window is visually identical until a run completes (verified by a fresh headless launch
+screenshot showing the one new disabled footer button).
+
+**Validation (Phase 7, automated).** Full hermetic suite **1675 passed, 0 failed** (baseline 1602 +
+64 exporter/chat + 9 GUI-hook). Headless Chromium, hermetic (scripted SSE via route interception —
+no real key): 24/24 chat checks — zero API requests on page load, key gate, streaming render,
+thinking summary, safe citation links, cached-report system block, tool declarations, client-tool
+round-trip (the filter actually applied on the page and the `tool_result` echoed to the API), 401
+re-auth flow, forget-key, key never present in the DOM, no-chat variant intact. Combined JS passes
+`node --check`; the CSP hash covers the exact combined script bytes on disk.
+
+**Remaining user-side items (handoff Phase 7 manual half):** the user's acceptance of the desktop app
+(side-by-side on Windows) and of the report + chat experience; one explicitly-approved live canary
+with a real API key (streaming, web search/fetch, citations against the real endpoint) — everything
+automatable in this environment has been automated.
 
 ## Approved Phase 2 scope (baseline approved 2026-08-04)
 
