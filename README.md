@@ -53,6 +53,36 @@ v3.0.0. A finding's verification status (`VERIFIED_SUPPORTED` /
 along in the report and the JSON sidecar so a downstream applier can do its
 own gating.
 
+## HTML Report & Ask AI (Post-Run)
+
+After a run completes, **Save HTML Report…** (in the footer next to "Check for
+Updates"; enabled once a completed result is in memory) exports the review as a
+single self-contained `.html` file carrying the full content of the Word report
+— Run Diagnostics with its recovery hints, files reviewed, methodology and
+pinned editions, summary and trust-model tables, every deterministic alert
+(never truncated, unlike the Word report's 5-per-file cap), and every finding
+with its verification evidence — plus browser niceties: full-text search,
+severity/file/status/edit-action filters with live counts, collapsible finding
+cards, a copy-full-report action, and print / Save-as-PDF styling. The file is
+portable: no external assets, opens offline by double-clicking, and is safe to
+share — it never contains your API key or local file paths. The automatic Word
+report + JSON sidecars at run completion are unchanged; HTML is an additional
+post-run action, and a canceled or failed save never disturbs the completed
+results.
+
+**Ask AI.** The exported report embeds a chat assistant grounded in the report
+itself. On first use it asks for an Anthropic API key — the key lives only in
+that browser tab's session storage (a visible "Forget key" clears it), opening
+the file makes zero network requests, and chat usage bills to your key at
+standard API prices. The assistant streams answers with summarized reasoning,
+can search and fetch the public web for code/standards references (with cited
+links), and can act on the page for you: filter the visible findings, jump to
+sections, highlight terms, query the structured findings data, and run
+arithmetic. It sees the report only — not the original specification documents
+— and says so when a question would need source text. The exporter API can also
+emit a chat-free variant (`include_chat=False`) with no API reference and no
+network permission at all.
+
 ## Processing Mode
 
 All reviews submit via the Message Batches API — queued at 50% cost savings, typical turnaround ~45 min – 2 hrs (24 hrs max). The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header) and triggers only for inputs ≥200k tokens.
