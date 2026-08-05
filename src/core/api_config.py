@@ -479,6 +479,26 @@ class ModelCapabilities:
     # model without this flag clamps down to ``high`` instead of erroring.
     # Default ``False`` so unknown models take the safe clamp.
     supports_xhigh_effort: bool = False
+    # Whether the model can be sent the ``web_fetch`` server tool. This is NOT
+    # uniform across current models: Anthropic's Opus 5 migration guide states
+    # that Claude Opus 5 supports the same feature set as Opus 4.8 "with two
+    # exceptions: web fetch is not available on Claude Opus 5, and Priority
+    # Tier is not supported" — and the web-fetch tool page's supported-model
+    # list names Fable 5 / Opus 4.8 / Mythos 5 / Opus 4.7 / Opus 4.6 /
+    # Sonnet 5 / Sonnet 4.6 while conspicuously omitting Opus 5.
+    #
+    # Consulted by ``verification_routing.build_verification_tools_from_decision``,
+    # which would otherwise attach ``web_fetch_20260209`` to every
+    # STANDARD_REASONING / DEEP_REASONING verification — including the Opus
+    # escalation tier, the app's highest-stakes path. Default ``False`` so an
+    # unknown override omits the tool (a smaller request) rather than risking
+    # a rejection, matching every other optional capability here.
+    #
+    # (The Priority Tier exception needs no flag: the app only ever sends
+    # ``service_tier: "auto"``, documented as "uses the Priority Tier capacity
+    # if available, falling back to your other capacity if not" — a
+    # non-eligible model degrades to standard rather than erroring.)
+    supports_web_fetch: bool = False
 
 
 _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
@@ -497,6 +517,10 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         # omits the key instead; (2) omitting ``thinking`` now means adaptive
         # thinking is ON, but no Opus-routed phase opts out of thinking (only
         # Haiku triage and the Sonnet STRICT_STRUCTURED verification mode do).
+        #
+        # ``supports_web_fetch=False`` is the one place Opus 5 is genuinely
+        # LESS capable than Opus 4.8 — see the flag's docstring. It is the
+        # documented exception, not a conservative placeholder.
         supports_adaptive_thinking=True,
         max_output_tokens=MAX_OUTPUT_TOKENS_OPUS,
         supports_extended_output_beta=True,
@@ -504,6 +528,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_effort=True,
         supports_strict_tools=True,
         supports_xhigh_effort=True,
+        supports_web_fetch=False,
     ),
     MODEL_OPUS_48: ModelCapabilities(
         # Claude Opus 4.8 capability profile per Anthropic's "What's new in
@@ -520,6 +545,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_effort=True,
         supports_strict_tools=True,
         supports_xhigh_effort=True,
+        supports_web_fetch=True,
     ),
     MODEL_SONNET_5: ModelCapabilities(
         # Claude Sonnet 5 capability profile per Anthropic's models overview
@@ -543,6 +569,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_effort=True,
         supports_strict_tools=True,
         supports_xhigh_effort=True,
+        supports_web_fetch=True,
     ),
     MODEL_SONNET_46: ModelCapabilities(
         supports_adaptive_thinking=True,
@@ -559,6 +586,7 @@ _MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         # effort level 'xhigh'") — the clamp to ``high`` stays load-bearing
         # for any env override that pins this previous-generation id.
         supports_xhigh_effort=False,
+        supports_web_fetch=True,
     ),
     MODEL_HAIKU_45: ModelCapabilities(
         # Anthropic models overview lists Haiku 4.5 without adaptive
@@ -663,6 +691,18 @@ def model_supports_extended_output_beta(model: str) -> bool:
     which the family-style check incorrectly excluded.
     """
     return model_capabilities(model).supports_extended_output_beta
+
+
+def model_supports_web_fetch(model: str) -> bool:
+    """Whether ``model`` may be sent the ``web_fetch`` server tool.
+
+    Not uniform across current models — Claude Opus 5 is the documented
+    exception (see ``ModelCapabilities.supports_web_fetch``). The
+    verification tool builder must consult this before attaching
+    ``web_fetch_20260209``, or the escalation tier — which routes to Opus —
+    sends a tool the model does not accept on the app's highest-stakes path.
+    """
+    return model_capabilities(model).supports_web_fetch
 
 
 # Phase identifiers (declared above so the phase→budget registry can use

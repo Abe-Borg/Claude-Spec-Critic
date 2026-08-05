@@ -86,6 +86,7 @@ from ..core.api_config import (
     apply_thinking_config,
     batch_service_tier,
     model_supports_adaptive_thinking,
+    model_supports_web_fetch,
     system_prompt_with_cache,
     tools_with_cache,
     verification_max_tokens,
@@ -573,15 +574,22 @@ def build_verification_tools_from_decision(
     out: list[dict] = list(web_tool_list)
     # Attach web_fetch only for modes that benefit from a
     # deeper read. The mode set is small and closed; future modes that
-    # want fetch should be added here. Web fetch is generally available and
-    # needs no beta header, so the tool is attached unconditionally for
-    # these modes.
+    # want fetch should be added here. Web fetch needs no beta header, but
+    # it is NOT available on every model: Claude Opus 5 is a documented
+    # exception (Anthropic's Opus 5 migration guide — "web fetch is not
+    # available on Claude Opus 5"), and Opus is exactly what the escalation
+    # tier routes to. So mode-eligibility alone is not enough; the model's
+    # capability flag is the second gate, and an unlisted model omits the
+    # tool rather than risking a rejection — the same policy every other
+    # optional capability follows.
     from .verification_modes import VerificationMode
     fetch_eligible_modes = {
         VerificationMode.STANDARD_REASONING,
         VerificationMode.DEEP_REASONING,
     }
-    if decision.mode in fetch_eligible_modes:
+    if decision.mode in fetch_eligible_modes and model_supports_web_fetch(
+        decision.model
+    ):
         out.append(build_web_fetch_tool())
     if decision.include_verdict_tool:
         # If the profile builder produced a verdict tool, keep it; otherwise

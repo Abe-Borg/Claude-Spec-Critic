@@ -133,14 +133,26 @@ class ModelCapabilities:
 
 The whitelist covers exactly five models, plus a default for everything else:
 
-| Model id | thinking | effort | xhigh | 300k extended | context | output ceiling |
-|---|---|---|---|---|---|---|
-| `claude-opus-5` | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
-| `claude-opus-4-8` | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
-| `claude-sonnet-5` | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
-| `claude-sonnet-4-6` | ✓ | ✓ | ✗ | ✓ | 1,000,000 | 64,000 |
-| `claude-haiku-4-5` | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
-| **anything else** | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
+| Model id | thinking | effort | xhigh | 300k extended | web_fetch | context | output ceiling |
+|---|---|---|---|---|---|---|---|
+| `claude-opus-5` | ✓ | ✓ | ✓ | ✓ | **✗** | 1,000,000 | 128,000 |
+| `claude-opus-4-8` | ✓ | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
+| `claude-sonnet-5` | ✓ | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
+| `claude-sonnet-4-6` | ✓ | ✓ | ✗ | ✓ | ✓ | 1,000,000 | 64,000 |
+| `claude-haiku-4-5` | ✗ | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
+| **anything else** | ✗ | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
+
+The `web_fetch` column is the one place a *newer* model is less capable than
+the one it replaces. Anthropic's Opus 5 migration guide states that Opus 5
+matches Opus 4.8's feature set "with two exceptions: web fetch is not
+available on Claude Opus 5, and Priority Tier is not supported on Claude
+Opus 5" — and the web-fetch tool page's supported-model list confirms it by
+omission. This is why the capability registry, rather than a family check, has
+to be the gate: `deep_reasoning` verification routes to the Opus escalation
+tier, so an ungated attach would send an unsupported tool on the app's
+highest-stakes path. The Priority Tier half needs no flag — the app only ever
+sends `service_tier: "auto"`, which falls back to standard capacity when
+Priority is unavailable rather than erroring.
 
 That last row is the load-bearing one. An unknown id falls through
 `_MODEL_CAPABILITIES.get(model, _DEFAULT_CAPABILITIES)` to a record with **every
