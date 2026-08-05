@@ -1,4 +1,4 @@
-# CLAUDE.md — Spec Critic v3.0.0
+# CLAUDE.md — Spec Critic v3.3.0
 
 Engineering reference for the Spec Critic codebase. Focuses on non-obvious invariants and orientation — read the source for full type signatures.
 
@@ -52,6 +52,13 @@ src/
 │   ├── datacenter_electronic_safety_security.py # Phase-one fire detection/alarm
 │   └── registry.py             # AVAILABLE_MODULES / DEFAULT_MODULE / get_module
 
+# User-facing programs (group modules behind one GUI choice) + per-spec routing
+├── programs/
+│   ├── models.py                # ProgramDefinition / per-spec assignment domain models
+│   ├── catalog.py                # AVAILABLE_PROGRAMS (built-in programs; membership is independent of module registry)
+│   ├── routing.py                # Deterministic per-discipline routing/classifier for multi-module programs
+│   └── assignments.py           # Serializable per-spec assignments for routed program runs
+
 # UI
 ├── gui/
 │   ├── gui.py                  # CustomTkinter app shell
@@ -69,7 +76,8 @@ src/
 
 # Orchestration / state
 ├── orchestration/
-│   ├── pipeline.py             # Core orchestration + FindingGroup/FindingOccurrence
+│   ├── pipeline.py             # Core single-module orchestration + FindingGroup/FindingOccurrence
+│   ├── program_pipeline.py     # Composite orchestration for routed multi-module programs (partitions files, prepares/collects children concurrently, keeps module provenance)
 │   ├── batch_resume.py         # Persisted pending-batch state for resume / recovery
 │   └── diagnostics.py          # In-memory diagnostics report
 
