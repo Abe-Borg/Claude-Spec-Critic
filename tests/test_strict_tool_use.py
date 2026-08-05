@@ -24,7 +24,13 @@ from __future__ import annotations
 
 import pytest
 
-from src.core.api_config import MODEL_HAIKU_45, MODEL_OPUS_48, MODEL_SONNET_46
+from src.core.api_config import (
+    MODEL_HAIKU_45,
+    MODEL_OPUS_5,
+    MODEL_OPUS_48,
+    MODEL_SONNET_46,
+    MODEL_SONNET_5,
+)
 from src.review import structured_schemas as ss
 from src.review.structured_schemas import (
     ENV_STRICT_TOOL_USE,
@@ -41,7 +47,15 @@ _ALL_TOOL_BUILDERS = (
     triage_classifications_tool,
 )
 
-_WHITELISTED_MODELS = (MODEL_OPUS_48, MODEL_SONNET_46, MODEL_HAIKU_45)
+# Every model whose capability row carries ``supports_strict_tools``. Sonnet 5
+# was previously missing here despite backing six phases by default.
+_WHITELISTED_MODELS = (
+    MODEL_OPUS_5,
+    MODEL_OPUS_48,
+    MODEL_SONNET_5,
+    MODEL_SONNET_46,
+    MODEL_HAIKU_45,
+)
 
 # Valid-looking model id deliberately absent from _MODEL_CAPABILITIES.
 _UNKNOWN_MODEL = "claude-sonnet-4-5"

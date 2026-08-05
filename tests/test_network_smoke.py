@@ -24,8 +24,10 @@ import pytest
 
 from src.core.api_config import (
     MODEL_HAIKU_45,
+    MODEL_OPUS_5,
     MODEL_OPUS_48,
     MODEL_SONNET_46,
+    MODEL_SONNET_5,
     PHASE_VERIFICATION,
     REVIEW_MODEL_DEFAULT,
 )
@@ -186,7 +188,10 @@ def test_batch_submit_smoke():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("model_id", [MODEL_OPUS_48, MODEL_SONNET_46, MODEL_HAIKU_45])
+@pytest.mark.parametrize(
+    "model_id",
+    [MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5, MODEL_SONNET_46, MODEL_HAIKU_45],
+)
 def test_model_ids_exist_smoke(model_id):
     """Every configured model id resolves via the Models API.
 

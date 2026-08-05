@@ -102,7 +102,12 @@ def exceeds_per_call_limit(spec_tokens: int, overhead_tokens: int) -> bool:
 _DEFAULT_LOCAL_SAFETY_FACTOR = 1.20  # unknown models — widest margin
 _LOCAL_SAFETY_FACTORS: dict[str, float] = {
     # Opus / Sonnet 4.6 share Claude's main tokenizer; the cl100k_base
-    # undercount is small but non-zero.
+    # undercount is small but non-zero. Opus 5 stays at the Opus 4.8 factor:
+    # both are on the Opus 4.7-family tokenizer (the models overview quotes an
+    # identical "~555k words / ~2.5M unicode characters" 1M window for the two,
+    # and the Opus 4.8 → Opus 5 migration guide carries no tokenizer
+    # re-baseline step) — do NOT copy Sonnet 5's 1.45 here.
+    "claude-opus-5": 1.10,
     "claude-opus-4-8": 1.10,
     "claude-sonnet-4-6": 1.10,
     # Sonnet 5 uses a NEW tokenizer that produces ~30% more tokens than the

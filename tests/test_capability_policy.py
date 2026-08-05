@@ -19,6 +19,7 @@ import pytest
 from src.core import api_config
 from src.core.api_config import (
     MODEL_HAIKU_45,
+    MODEL_OPUS_5,
     MODEL_OPUS_48,
     MODEL_SONNET_46,
     MODEL_SONNET_5,
@@ -93,6 +94,90 @@ class TestApplyThinkingConfig:
         result = apply_thinking_config(kwargs, model=MODEL_HAIKU_45, phase=PHASE_TRIAGE)
         assert "thinking" not in result
         assert result.get("thinking") is None
+
+
+# ---------------------------------------------------------------------------
+# Opus 5 whitelisting — the current review / escalation tier
+# ---------------------------------------------------------------------------
+
+
+class TestOpus5Whitelisted:
+    """Opus 5 backs review and verification escalation, so it must resolve to
+    full capabilities. Falling through to the conservative unknown-model
+    defaults would strip adaptive thinking, effort, strict tools and the 300k
+    batch beta from every review, and clamp output to 64k — a silently
+    crippled run behind a single WARNING line. Flags are pinned to Anthropic's
+    models overview and the Opus 4.8 → Opus 5 migration guide."""
+
+    def test_registered_with_full_capabilities(self) -> None:
+        caps = model_capabilities(MODEL_OPUS_5)
+        assert caps.supports_adaptive_thinking is True
+        assert caps.supports_effort is True
+        assert caps.supports_xhigh_effort is True
+        assert caps.supports_strict_tools is True
+        assert caps.context_window == 1_000_000
+        assert caps.max_output_tokens == 128_000
+
+    def test_extended_output_beta_supported(self) -> None:
+        # The models overview names Opus 5 explicitly in the
+        # output-300k-2026-03-24 supported set, so this is confirmed rather
+        # than the conservative placeholder Sonnet 5 originally carried.
+        assert model_capabilities(MODEL_OPUS_5).supports_extended_output_beta is True
+
+    def test_in_opus_models_set(self) -> None:
+        """Membership drives the high-effort verification-escalation tier,
+        which is keyed off ``OPUS_MODELS`` rather than the capability record —
+        so a new Opus id must be added in both places or escalation silently
+        drops from ``high`` to ``medium`` effort."""
+        assert MODEL_OPUS_5 in OPUS_MODELS
+
+    def test_in_hires_vision_set(self) -> None:
+        # Opus 5 is in the high-resolution vision tier (2576px long edge,
+        # ~4784-token image cap) alongside Opus 4.8; omitting it would
+        # silently downgrade drawing-digest image-token estimates.
+        assert MODEL_OPUS_5 in api_config.HIRES_VISION_MODELS
+
+    def test_gets_opus_output_ceiling_not_sonnet(self) -> None:
+        assert output_cap_for_model(MODEL_OPUS_5, requested=300_000) == 128_000
+
+    def test_capability_helpers_agree(self) -> None:
+        assert model_supports_adaptive_thinking(MODEL_OPUS_5) is True
+        assert model_supports_effort(MODEL_OPUS_5) is True
+        assert model_supports_extended_output_beta(MODEL_OPUS_5) is True
+
+    def test_thinking_enabled_for_review(self) -> None:
+        assert thinking_config_for(model=MODEL_OPUS_5, phase=PHASE_REVIEW) == {
+            "type": "adaptive"
+        }
+
+    def test_review_runs_xhigh_effort_natively(self) -> None:
+        # Opus 5 accepts the full effort ladder, so review's declared xhigh
+        # survives ``_clamp_effort_for_model`` untouched.
+        assert effort_config_for(model=MODEL_OPUS_5, phase=PHASE_REVIEW) == {
+            "effort": "xhigh"
+        }
+
+    def test_high_effort_on_verification_escalation(self) -> None:
+        assert effort_config_for(model=MODEL_OPUS_5, phase=PHASE_VERIFICATION) == {
+            "effort": "high"
+        }
+
+    def test_never_sends_disabled_thinking(self) -> None:
+        """Opus 5 rejects ``thinking={"type": "disabled"}`` at effort
+        ``xhigh``/``max`` with a 400. The policy never emits ``disabled`` — it
+        omits the key entirely — so the two can never be paired. Pinned
+        because the review phase runs at ``xhigh``."""
+        kwargs: dict = {"model": MODEL_OPUS_5, "max_tokens": 1000}
+        result = apply_thinking_config(kwargs, model=MODEL_OPUS_5, phase=PHASE_REVIEW)
+        assert result["thinking"] == {"type": "adaptive"}
+        # And for a phase that opts out, the key is absent rather than
+        # "disabled" — on Opus 5 that means thinking stays on, which is
+        # documented behavior, not an API error.
+        opted_out: dict = {"model": MODEL_OPUS_5, "max_tokens": 1000}
+        result = apply_thinking_config(
+            opted_out, model=MODEL_OPUS_5, phase=PHASE_TRIAGE
+        )
+        assert "thinking" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +263,9 @@ class TestUnknownModelWarnsLoudly:
     def test_known_models_never_warn(self, caplog) -> None:
         with caplog.at_level(logging.WARNING):
             for model in (
+                MODEL_OPUS_5,
                 MODEL_OPUS_48,
+                MODEL_SONNET_5,
                 MODEL_SONNET_46,
                 MODEL_HAIKU_45,
             ):
@@ -196,12 +283,12 @@ class TestEffortPolicy:
     (Anthropic's recommended starting point for coding/agentic work);
     verification stays medium (Sonnet) / high (Opus escalation) so the
     verdict envelope doesn't balloon. ``xhigh`` is gated per model via
-    ``supports_xhigh_effort`` (Opus 4.8 and Sonnet 5 accept it; Sonnet 4.6
-    clamps to ``high`` — see ``TestXhighClampGating``)."""
+    ``supports_xhigh_effort`` (Opus 5, Opus 4.8 and Sonnet 5 accept it;
+    Sonnet 4.6 clamps to ``high`` — see ``TestXhighClampGating``)."""
 
     def test_review_uses_xhigh(self) -> None:
-        # Review defaults to Opus 4.8, which accepts xhigh.
-        assert effort_config_for(model=MODEL_OPUS_48, phase=api_config.PHASE_REVIEW) == {
+        # Review defaults to Opus 5, which accepts xhigh.
+        assert effort_config_for(model=MODEL_OPUS_5, phase=api_config.PHASE_REVIEW) == {
             "effort": "xhigh"
         }
 
@@ -265,8 +352,9 @@ class TestXhighClampGating:
         ) == {"effort": "high"}
 
     def test_xhigh_capable_models_keep_xhigh_on_deep_phases(self) -> None:
-        # Opus 4.8 and Sonnet 5 both accept xhigh — the clamp must not strip it.
-        for model in (MODEL_OPUS_48, MODEL_SONNET_5):
+        # Opus 5, Opus 4.8 and Sonnet 5 all accept xhigh — the clamp must
+        # not strip it.
+        for model in (MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5):
             for phase in (
                 api_config.PHASE_REVIEW,
                 api_config.PHASE_CROSS_CHECK,
@@ -284,6 +372,7 @@ class TestXhighClampGating:
         # Only xhigh is clamped, and only on non-flag models; other levels
         # pass through everywhere.
         assert api_config._clamp_effort_for_model("xhigh", MODEL_SONNET_46) == "high"
+        assert api_config._clamp_effort_for_model("xhigh", MODEL_OPUS_5) == "xhigh"
         assert api_config._clamp_effort_for_model("xhigh", MODEL_OPUS_48) == "xhigh"
         assert api_config._clamp_effort_for_model("xhigh", MODEL_SONNET_5) == "xhigh"
         assert api_config._clamp_effort_for_model("high", MODEL_SONNET_46) == "high"
@@ -325,10 +414,14 @@ class TestSonnet5Whitelisted:
         assert output_cap_for_model(MODEL_HAIKU_45, requested=300_000) == 64_000
         assert output_cap_for_model("claude-mystery-9", requested=300_000) == 64_000
 
-    def test_extended_output_beta_off_pending_confirmation(self) -> None:
-        # Conservative start (same as Sonnet 4.6 pre-rollout): degrade to the
-        # 128k baseline cap rather than risk a 400 on an unconfirmed beta.
-        assert model_supports_extended_output_beta(MODEL_SONNET_5) is False
+    def test_extended_output_beta_confirmed_supported(self) -> None:
+        # Previously left False as a conservative placeholder "pending
+        # confirmation against the beta's supported-model list". Anthropic's
+        # models overview now confirms it: "on the Message Batches API, Claude
+        # Opus 5, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 5, and Sonnet 4.6
+        # support up to 300k output tokens by using the
+        # output-300k-2026-03-24 beta header."
+        assert model_supports_extended_output_beta(MODEL_SONNET_5) is True
 
 
 # ---------------------------------------------------------------------------
@@ -337,16 +430,16 @@ class TestSonnet5Whitelisted:
 
 
 class TestDefaultModels:
-    """Review / escalation default to Opus 4.8; the Sonnet-tier phases
+    """Review / escalation default to Opus 5; the Sonnet-tier phases
     (verification initial, cross-check, compliance, research) default to
     Sonnet 5. Pinned so a future model bump is a deliberate, reviewed edit."""
 
-    def test_review_default_is_opus_48(self) -> None:
+    def test_review_default_is_opus_5(self) -> None:
         # Holds when SPEC_CRITIC_REVIEW_MODEL is unset (the test harness env).
-        assert api_config.REVIEW_MODEL_DEFAULT == MODEL_OPUS_48
+        assert api_config.REVIEW_MODEL_DEFAULT == MODEL_OPUS_5
 
-    def test_escalation_default_is_opus_48(self) -> None:
-        assert api_config.VERIFICATION_ESCALATION_MODEL == MODEL_OPUS_48
+    def test_escalation_default_is_opus_5(self) -> None:
+        assert api_config.VERIFICATION_ESCALATION_MODEL == MODEL_OPUS_5
 
     def test_initial_verifier_is_sonnet_5(self) -> None:
         # Escalation only fires when initial != escalation model; keep them

@@ -31,9 +31,9 @@ future program-level coordination pass.
 1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers. Cached by file hash. Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …).
 2. **Program Routing** — Under a multi-module program, each extracted spec is assigned to zero, one, or several implemented modules from CSI number/title/content evidence. Ambiguous routes are resolved before review submission.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
-4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 4.8 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
+4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
 5. **Deduplication** — Identical findings consolidated within each module result; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text.
-6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 4.8. Persistent on-disk cache.
+6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5. Persistent on-disk cache.
 7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). Large projects are chunked by that module's CSI division families. Its own coordination findings are then put through a second verification pass.
 8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
 
@@ -99,14 +99,16 @@ For routed multi-module programs, preparation/research, realtime per-spec review
 
 Defaults (each overridable via its `SPEC_CRITIC_*_MODEL` env var **except cross-check and compliance**, which are bound directly to `CROSS_CHECK_MODEL_DEFAULT` / `COMPLIANCE_MODEL_DEFAULT`; see `api_config.py`):
 
-- Review: Claude Opus 4.8
+- Review: Claude Opus 5
 - Cross-check: Claude Sonnet 5
 - Verification (initial): Claude Sonnet 5
-- Verification (escalation / deep-reasoning): Claude Opus 4.8
+- Verification (escalation / deep-reasoning): Claude Opus 5
 - Requirements research / compliance / drawing digest / drawing impact: Claude Sonnet 5
 - Triage: Claude Haiku 4.5
 
 Unknown model ids degrade to safe defaults via `api_config.model_capabilities(...)` — a misconfigured `SPEC_CRITIC_*_MODEL` env var produces a smaller request rather than an API rejection.
+
+Review and verification-escalation moved from Opus 4.8 to **Claude Opus 5** — identical $5/$25 per-MTok pricing, the same 1M context / 128k output ceiling and `output-300k-2026-03-24` batch beta, and a May 2026 knowledge cutoff (vs. Opus 4.8's January 2026), which matters for a tool that flags stale code cycles and standards editions. Opus 4.8 and Sonnet 4.6 stay registered so a pinned `SPEC_CRITIC_*_MODEL` override still builds a correct request shape.
 
 ## Construction Drawing Attachments
 
