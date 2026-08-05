@@ -132,7 +132,7 @@ from src.gui.file_selection_controller import (
     parse_dropped_paths,
     set_file_data,
 )
-from src.gui.report_controller import export_report_to_file
+from src.gui.report_controller import export_html_report_to_file, export_report_to_file
 from src.gui.realtime_cost_gate import (
     REALTIME_WORKER_TRADEOFF_TEXT,
     should_warn_before_live_run,
@@ -258,6 +258,20 @@ class SpecReviewApp(_CTkDnDRoot):
         # Updates" strip reserves the bottom edge before the log below claims
         # the remaining space with expand=True.
         self._build_footer(c)
+        # Additive post-run HTML export, sharing the footer strip. Disabled
+        # until a completed result lands on ``_last_result`` (the property
+        # setter below flips it), so the main window is otherwise unchanged.
+        self.save_html_btn = ctk.CTkButton(
+            self.check_update_btn.master, text="Save HTML Report…",
+            width=150, height=28,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"],
+            state="disabled",
+            command=self._on_save_html_report_clicked,
+        )
+        self.save_html_btn.pack(side="right", padx=(0, 8))
 
         # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
@@ -1035,6 +1049,37 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _export_report_to_file(self, result) -> str:
         return export_report_to_file(self, result)
+
+    # ``_last_result`` is assigned by review_run_controller.on_review_complete
+    # when a run finishes. Intercepting the assignment here (instead of adding
+    # a call into that controller) keeps every review-lifecycle file untouched
+    # while still enabling the post-run "Save HTML Report…" button the moment
+    # a completed result is retained.
+    @property
+    def _last_result(self):
+        return self._last_result_value
+
+    @_last_result.setter
+    def _last_result(self, value):
+        self._last_result_value = value
+        btn = getattr(self, "save_html_btn", None)
+        if btn is not None:
+            try:
+                btn.configure(state="normal" if value is not None else "disabled")
+            except Exception:  # pragma: no cover - defensive UI update
+                pass
+
+    def _on_save_html_report_clicked(self):
+        if self.is_processing:
+            self.log.log_warning(
+                "A review is running — save the HTML report after it completes."
+            )
+            return
+        result = self._last_result
+        if result is None:
+            self.log.log_warning("No completed review in this session yet.")
+            return
+        export_html_report_to_file(self, result)
 
     def _on_review_error(self, err):
         on_review_error(self, err)
