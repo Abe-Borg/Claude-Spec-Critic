@@ -327,11 +327,20 @@ class TestToolListByMode:
             f"STANDARD_REASONING tools should include web_fetch, got {tools}"
         )
 
-    def test_deep_reasoning_includes_web_fetch(self):
+    def test_deep_reasoning_includes_web_fetch_on_fetch_capable_model(self):
+        """Mode-eligibility alone is not the whole gate — the model must also
+        support web_fetch. Pin the mode half here against a fetch-capable
+        escalation model; ``TestWebFetchModelGate`` covers the model half."""
+        import dataclasses
+
+        from src.core.api_config import MODEL_OPUS_48
+
         decision = self._decision_for_mode(VerificationMode.DEEP_REASONING)
         assert decision.mode is VerificationMode.DEEP_REASONING
+        decision = dataclasses.replace(decision, model=MODEL_OPUS_48)
         tools = build_verification_tools_from_decision(decision)
         assert _tools_include_web_fetch(tools)
+
 
     def test_strict_structured_omits_web_fetch(self):
         decision = self._decision_for_mode(VerificationMode.STRICT_STRUCTURED)
@@ -364,6 +373,94 @@ class TestToolListByMode:
         tools = build_verification_tools_from_decision(decision)
         # When the verdict tool is included (default env), it should be
         # the last entry.
+        if any(t.get("name") == "submit_verification_verdict" for t in tools):
+            assert tools[-1]["name"] == "submit_verification_verdict"
+
+
+class TestWebFetchModelGate:
+    """web_fetch is NOT available on every model, so mode-eligibility alone
+    must not attach it.
+
+    Anthropic's Opus 5 migration guide: Claude Opus 5 supports the same
+    feature set as Opus 4.8 "with two exceptions: web fetch is not available
+    on Claude Opus 5, and Priority Tier is not supported on Claude Opus 5."
+    The web-fetch tool page's supported-model list independently confirms it,
+    naming Fable 5 / Opus 4.8 / Mythos 5 / Opus 4.7 / Opus 4.6 / Sonnet 5 /
+    Sonnet 4.6 and omitting Opus 5.
+
+    This matters because DEEP_REASONING routes to the escalation tier, which
+    defaults to Opus — so an ungated attach would put an unsupported tool on
+    the app's highest-stakes verification path (escalated CRITICAL/HIGH
+    findings, and CRITICAL jurisdictional findings that route straight to
+    DEEP_REASONING)."""
+
+    def _deep_decision(self, model: str) -> Any:
+        import dataclasses
+
+        finding = _finding(
+            severity="CRITICAL",
+            code_ref="CBC §1004",
+            issue="DSA submittal requirement for California K-12",
+        )
+        decision = select_routing(finding, escalated=True, local_skip=False)
+        return dataclasses.replace(decision, model=model)
+
+    def test_opus_5_omits_web_fetch(self):
+        from src.core.api_config import MODEL_OPUS_5
+
+        tools = build_verification_tools_from_decision(
+            self._deep_decision(MODEL_OPUS_5)
+        )
+        assert not _tools_include_web_fetch(tools), (
+            f"Opus 5 does not support web_fetch; tools were {tools}"
+        )
+
+    def test_fetch_capable_models_keep_web_fetch(self):
+        from src.core.api_config import (
+            MODEL_OPUS_48,
+            MODEL_SONNET_46,
+            MODEL_SONNET_5,
+        )
+
+        for model in (MODEL_OPUS_48, MODEL_SONNET_5, MODEL_SONNET_46):
+            tools = build_verification_tools_from_decision(
+                self._deep_decision(model)
+            )
+            assert _tools_include_web_fetch(tools), (
+                f"{model} supports web_fetch but it was dropped: {tools}"
+            )
+
+    def test_unknown_model_omits_web_fetch(self):
+        """Degrade-to-safe: an unlisted override omits the tool (a smaller
+        request) rather than risking a rejection — the same policy every
+        other optional capability follows."""
+        tools = build_verification_tools_from_decision(
+            self._deep_decision("claude-imaginary-7-7")
+        )
+        assert not _tools_include_web_fetch(tools)
+
+    def test_web_search_survives_the_fetch_gate(self):
+        """Dropping web_fetch must not drop web_search — it is the primary
+        grounding mechanism, and the grounding invariant still needs an
+        accepted citation from the searched set."""
+        from src.core.api_config import MODEL_OPUS_5
+
+        tools = build_verification_tools_from_decision(
+            self._deep_decision(MODEL_OPUS_5)
+        )
+        assert any(
+            t.get("type", "").startswith("web_search") or t.get("name") == "web_search"
+            for t in tools
+        ), f"web_search missing from Opus 5 deep verification: {tools}"
+
+    def test_verdict_tool_stays_last_without_fetch(self):
+        """``tools_with_cache`` attaches its breakpoint to the trailing tool,
+        so removing web_fetch must not disturb the verdict tool's position."""
+        from src.core.api_config import MODEL_OPUS_5
+
+        tools = build_verification_tools_from_decision(
+            self._deep_decision(MODEL_OPUS_5)
+        )
         if any(t.get("name") == "submit_verification_verdict" for t in tools):
             assert tools[-1]["name"] == "submit_verification_verdict"
 

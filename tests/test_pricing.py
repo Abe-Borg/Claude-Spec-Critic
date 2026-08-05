@@ -11,10 +11,12 @@ from src.core.pricing import (
     price_for,
 )
 
+OPUS_5 = "claude-opus-5"
 OPUS = "claude-opus-4-8"
 
 
 def test_price_for_exact_and_unknown():
+    assert price_for(OPUS_5) == MODEL_PRICING[OPUS_5]
     assert price_for(OPUS) == MODEL_PRICING[OPUS]
     assert price_for("claude-sonnet-4-6").input_per_mtok == 3.0
     assert price_for("claude-haiku-4-5").output_per_mtok == 5.0
@@ -35,7 +37,26 @@ def test_price_for_requires_delimiter_not_bare_prefix():
     assert price_for("claude-opus-4-8x") is None
 
 
+def test_opus_5_matches_opus_48_rates():
+    # The Opus 4.8 -> Opus 5 upgrade is cost-neutral per token ($5/$25); the
+    # About/Usage cost estimates must not shift on the model bump alone.
+    assert price_for(OPUS_5).input_per_mtok == 5.0
+    assert price_for(OPUS_5).output_per_mtok == 25.0
+    assert price_for(OPUS_5).input_per_mtok == price_for(OPUS).input_per_mtok
+    assert price_for(OPUS_5).output_per_mtok == price_for(OPUS).output_per_mtok
+
+
+def test_review_default_model_is_priced():
+    # The About / Usage dialogs resolve their label through price_for(), so an
+    # unpriced review default would render the raw model id to the operator.
+    from src.core.api_config import REVIEW_MODEL_DEFAULT
+
+    assert price_for(REVIEW_MODEL_DEFAULT) is not None
+    assert friendly_model_name(REVIEW_MODEL_DEFAULT) != REVIEW_MODEL_DEFAULT
+
+
 def test_friendly_model_name():
+    assert friendly_model_name(OPUS_5) == "Opus 5"
     assert friendly_model_name(OPUS) == "Opus 4.8"
     assert friendly_model_name("claude-sonnet-4-6") == "Sonnet 4.6"
     assert friendly_model_name("mystery") == "mystery"  # falls back to the id

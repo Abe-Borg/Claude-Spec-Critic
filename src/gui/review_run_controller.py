@@ -29,6 +29,7 @@ from ..programs import (
 from ..orchestration.diagnostics import DiagnosticsReport
 from ..review.reviewer import REVIEW_MODEL_DEFAULT
 from ..core.api_config import REALTIME_REVIEW_WORKER_CHOICES
+from ..core.pricing import friendly_model_name
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from ..core.ui_state import load_realtime_review_workers, save_project_profile
 from .project_profile_inputs import completeness_error
@@ -382,13 +383,18 @@ def start_review(app) -> None:
     )
     app.diagnostics_button.configure(state="disabled")
 
+    # Derived from the configured review model, so the log line tracks a
+    # SPEC_CRITIC_REVIEW_MODEL override instead of asserting a stale literal.
+    review_model_label = friendly_model_name(REVIEW_MODEL_DEFAULT)
     if transport == "realtime":
         app.log.log_step(
-            f"Starting real-time review of {num_specs} files (Opus 4.8) with up to "
+            f"Starting real-time review of {num_specs} files ({review_model_label}) with up to "
             f"{app._realtime_review_workers_for_review} concurrent spec reviews..."
         )
     else:
-        app.log.log_step(f"Submitting {num_specs} files for batch review (Opus 4.8)...")
+        app.log.log_step(
+            f"Submitting {num_specs} files for batch review ({review_model_label})..."
+        )
     run_epoch = app._next_run_epoch()
     threading.Thread(target=app._submit_batch_thread, args=(run_epoch,), daemon=True).start()
 

@@ -46,9 +46,10 @@ from src.orchestration.pipeline import BatchSubmission
 from src.core.api_config import (
     CROSS_CHECK_MODEL_DEFAULT,
     REALTIME_REVIEW_WORKER_CHOICES,
+    REVIEW_MODEL_DEFAULT,
 )
 from src.core.code_cycles import DEFAULT_CYCLE
-from src.core.pricing import price_for
+from src.core.pricing import friendly_model_name, price_for
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 from src.core.project_profile import ProjectProfile
 from src.core.ui_state import (
@@ -779,8 +780,10 @@ class SpecReviewApp(_CTkDnDRoot):
         self._font_scale_label = value
 
     def _module_subtitle(self) -> str:
+        # Label derives from the configured review model so it tracks a
+        # SPEC_CRITIC_REVIEW_MODEL override and never goes stale on a bump.
         program = get_program(self._selected_program_id)
-        return f"{program.display_name}  •  Opus 4.8"
+        return f"{program.display_name}  •  {friendly_model_name(REVIEW_MODEL_DEFAULT)}"
 
     def _on_module_selected(self, display_name: str) -> None:
         """Switch the review program for the next run and persist the choice.

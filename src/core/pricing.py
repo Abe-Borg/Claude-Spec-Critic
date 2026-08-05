@@ -31,6 +31,9 @@ class ModelPrice:
 # Keyed by the bare model id. A dated/fast/-suffixed variant resolves via the
 # startswith fallback in ``price_for`` (e.g. "claude-haiku-4-5-20251001").
 MODEL_PRICING: dict[str, ModelPrice] = {
+    # Opus 5 is priced identically to Opus 4.8 ($5/$25) — the upgrade is
+    # cost-neutral per token.
+    "claude-opus-5": ModelPrice(5.00, 25.00, "Opus 5"),
     "claude-opus-4-8": ModelPrice(5.00, 25.00, "Opus 4.8"),
     "claude-opus-4-7": ModelPrice(5.00, 25.00, "Opus 4.7"),
     "claude-opus-4-6": ModelPrice(5.00, 25.00, "Opus 4.6"),

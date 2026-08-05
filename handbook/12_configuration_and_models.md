@@ -49,23 +49,41 @@ economics — a per-spec review reasons over a hundred thousand tokens of dense
 code-referenced prose and wants the strongest model available; a triage
 classification sorts short findings into two buckets and wants the cheapest. So
 the defaults are tiered, and every model id lives as a named constant at the top
-of `api_config.py` (`MODEL_OPUS_48 = "claude-opus-4-8"`, and likewise for
-`claude-sonnet-5`, `claude-sonnet-4-6`, and `claude-haiku-4-5`).
+of `api_config.py` (`MODEL_OPUS_5 = "claude-opus-5"`, and likewise for
+`claude-opus-4-8`, `claude-sonnet-5`, `claude-sonnet-4-6`, and
+`claude-haiku-4-5`).
 
 | Phase | Default model | Env override |
 |---|---|---|
-| Review (per-spec) | Opus 4.8 | `SPEC_CRITIC_REVIEW_MODEL` |
+| Review (per-spec) | Opus 5 | `SPEC_CRITIC_REVIEW_MODEL` |
 | Cross-spec coordination | Sonnet 5 | *(none — see note)* |
 | Verification, initial pass | Sonnet 5 | `SPEC_CRITIC_VERIFICATION_MODEL` |
-| Verification, escalation / deep-reasoning | Opus 4.8 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` |
+| Verification, escalation / deep-reasoning | Opus 5 | `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` |
 | Requirements research (profile modules) | Sonnet 5 | `SPEC_CRITIC_RESEARCH_MODEL` |
 | Compliance pass (profile modules) | Sonnet 5 | *(none — cross-check parity)* |
 | Triage | Haiku 4.5 | `SPEC_CRITIC_TRIAGE_MODEL` |
 
-Sonnet 4.6 remains a registered constant (`MODEL_SONNET_46`) even though no
-phase defaults to it anymore — an operator env override that pins the
-previous-generation id must keep its correct request shape, most notably the
-`xhigh` → `high` effort clamp that 4.6 needs and Sonnet 5 does not.
+Opus 4.8 (`MODEL_OPUS_48`) and Sonnet 4.6 (`MODEL_SONNET_46`) remain registered
+constants even though no phase defaults to either anymore — an operator env
+override that pins a previous-generation id must keep its correct request
+shape, most notably the `xhigh` → `high` effort clamp that 4.6 needs and
+Sonnet 5 does not.
+
+Opus 5 arrived with two breaking changes relative to Opus 4.8, and both are
+inert here — worth recording, because the second is a *semantic* shift that a
+future phase could trip over. First, an explicit
+`thinking={"type": "disabled"}` is rejected with a 400 at effort `xhigh` or
+`max`; this codebase never emits `disabled` at all — `thinking_config_for`
+returns `None` and the key is omitted, because the API also rejects
+`thinking=null`. Second, and more subtly: on Opus 5 an *omitted* `thinking`
+key now means adaptive thinking is **on**, where on Opus 4.8 it meant no
+thinking. The `_PHASES_NO_THINKING` opt-out is therefore a no-op for any
+Opus-5-routed phase. Nothing is affected today, because the only phases that
+opt out are triage (Haiku) and the verification `STRICT_STRUCTURED` mode
+(Sonnet). But a hypothetical `SPEC_CRITIC_TRIAGE_MODEL=claude-opus-5` would
+silently start thinking rather than staying shallow — it still would not
+error, since triage sends no `effort` at all, so the symptom would be cost,
+not a 400.
 
 The pattern that produces an override is a single line —
 `os.environ.get("SPEC_CRITIC_REVIEW_MODEL", MODEL_OPUS_48)` — read once at import
@@ -113,15 +131,28 @@ class ModelCapabilities:
     supports_xhigh_effort: bool = False   # xhigh effort level gate
 ```
 
-The whitelist covers exactly four models, plus a default for everything else:
+The whitelist covers exactly five models, plus a default for everything else:
 
-| Model id | thinking | effort | xhigh | 300k extended | context | output ceiling |
-|---|---|---|---|---|---|---|
-| `claude-opus-4-8` | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
-| `claude-sonnet-5` | ✓ | ✓ | ✓ | ✗ *(pending confirmation)* | 1,000,000 | 128,000 |
-| `claude-sonnet-4-6` | ✓ | ✓ | ✗ | ✓ | 1,000,000 | 64,000 |
-| `claude-haiku-4-5` | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
-| **anything else** | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
+| Model id | thinking | effort | xhigh | 300k extended | web_fetch | context | output ceiling |
+|---|---|---|---|---|---|---|---|
+| `claude-opus-5` | ✓ | ✓ | ✓ | ✓ | **✗** | 1,000,000 | 128,000 |
+| `claude-opus-4-8` | ✓ | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
+| `claude-sonnet-5` | ✓ | ✓ | ✓ | ✓ | ✓ | 1,000,000 | 128,000 |
+| `claude-sonnet-4-6` | ✓ | ✓ | ✗ | ✓ | ✓ | 1,000,000 | 64,000 |
+| `claude-haiku-4-5` | ✗ | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
+| **anything else** | ✗ | ✗ | ✗ | ✗ | ✗ | 200,000 | 64,000 |
+
+The `web_fetch` column is the one place a *newer* model is less capable than
+the one it replaces. Anthropic's Opus 5 migration guide states that Opus 5
+matches Opus 4.8's feature set "with two exceptions: web fetch is not
+available on Claude Opus 5, and Priority Tier is not supported on Claude
+Opus 5" — and the web-fetch tool page's supported-model list confirms it by
+omission. This is why the capability registry, rather than a family check, has
+to be the gate: `deep_reasoning` verification routes to the Opus escalation
+tier, so an ungated attach would send an unsupported tool on the app's
+highest-stakes path. The Priority Tier half needs no flag — the app only ever
+sends `service_tier: "auto"`, which falls back to standard capacity when
+Priority is unavailable rather than erroring.
 
 That last row is the load-bearing one. An unknown id falls through
 `_MODEL_CAPABILITIES.get(model, _DEFAULT_CAPABILITIES)` to a record with **every
@@ -146,8 +177,8 @@ firmly as it rejects an unsupported feature:
   escalation verification phase and for research, `medium` for Sonnet
   verification, and *nothing* for triage or any model whose `supports_effort`
   flag is off. The usable levels are `low`/`medium`/`high`/`xhigh`, and `xhigh`
-  is gated per model by `supports_xhigh_effort` (Opus 4.8 ✓, Sonnet 5 ✓,
-  Sonnet 4.6 ✗): `effort_config_for` clamps `xhigh`→`high` on any model whose
+  is gated per model by `supports_xhigh_effort` (Opus 5 ✓, Opus 4.8 ✓,
+  Sonnet 5 ✓, Sonnet 4.6 ✗): `effort_config_for` clamps `xhigh`→`high` on any model whose
   capability entry lacks the flag. On today's defaults nothing clamps —
   cross-check and compliance run their declared `xhigh` natively on Sonnet 5 —
   but the clamp stays load-bearing for a pinned Sonnet 4.6 override, which
@@ -269,6 +300,7 @@ local estimate is used as a *budget gate*, it is padded:
 
 | Model | Safety multiplier |
 |---|---|
+| `claude-opus-5` | 1.10× *(same Opus 4.7-family tokenizer as 4.8 — the models overview quotes an identical "~555k words / ~2.5M unicode characters" 1M window for both, and the 4.8 → 5 migration carries no tokenizer re-baseline step)* |
 | `claude-opus-4-8` | 1.10× |
 | `claude-sonnet-4-6` | 1.10× |
 | `claude-sonnet-5` | 1.45× *(new tokenizer: ~30% more tokens than the 4.6-family tokenizer, compounded onto the family's 1.10× cl100k pad)* |
@@ -440,9 +472,9 @@ documented, supported way to retune the program without editing code.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPEC_CRITIC_REVIEW_MODEL` | Opus 4.8 | Override the review model |
+| `SPEC_CRITIC_REVIEW_MODEL` | Opus 5 | Override the review model |
 | `SPEC_CRITIC_VERIFICATION_MODEL` | Sonnet 5 | Override the verifier initial-pass model |
-| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 4.8 | Override the escalation model |
+| `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` | Opus 5 | Override the escalation model |
 | `SPEC_CRITIC_TRIAGE_MODEL` | Haiku 4.5 | Override the triage model |
 | `SPEC_CRITIC_ELEMENT_IDS` | on | Disable to revert to legacy plain-body spec rendering |
 | `SPEC_CRITIC_VERIFICATION_CACHE_PERSIST` | on | Disable to keep the verification cache in-memory only |

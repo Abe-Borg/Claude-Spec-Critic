@@ -346,7 +346,19 @@ escalate — into one of four values. The full policy table, reproduced from
 | `local_skip` | keyword classifier or Haiku triage said `local_skip` | (none — `"local"` sentinel) | n/a | 0 | no | no |
 | `strict_structured` | GRIPES, **or** non-GRIPES `internal_coordination` profile | Sonnet | off | severity-based | no | no |
 | `standard_reasoning` | default for substantive technical claims | Sonnet | on | severity-based | yes (3 fetches) | yes |
-| `deep_reasoning` | escalated, **or** initial pass for CRITICAL `california_ahj` | Opus | on | severity-based | yes (3 fetches) | no (terminal) |
+| `deep_reasoning` | escalated, **or** initial pass for CRITICAL `california_ahj` | Opus | on | severity-based | **model-gated** — no on Opus 5 | no (terminal) |
+
+The `web_fetch` column is gated twice: by mode (above) **and** by the
+model's `supports_web_fetch` capability flag. Web fetch is not available on
+Claude Opus 5 — a documented exception in Anthropic's Opus 5 migration
+guide — and `deep_reasoning` is exactly the mode that routes to the Opus
+escalation tier. So on the current defaults the deepest verification mode
+runs with `web_search` only. That is a real capability trade-off rather than
+an oversight: the escalation tier buys a stronger model and a newer
+knowledge cutoff, and gives up the full-page read. `web_search` is
+unaffected, so the grounding invariant — at least one accepted citation —
+still has a path. Pinning `SPEC_CRITIC_VERIFICATION_ESCALATION_MODEL` to a
+fetch-capable Opus restores the fetch.
 
 The selector, `select_verification_mode`, applies its rules in a strict **priority
 order**. Reproducing it exactly, because the order is the whole behavior:
