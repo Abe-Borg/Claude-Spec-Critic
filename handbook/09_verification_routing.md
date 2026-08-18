@@ -1,5 +1,16 @@
 # Verification I: How We Decide to Check (Routing, Modes, Profiles, Triage)
 
+> **Currency note (v3.4.0).** The routing logic below is unchanged, but two
+> things generalized. The profile formerly called `california_ahj` is now
+> **`jurisdictional`** (persisted rows carrying the old string are mapped by
+> `parse_verification_profile`), and its keyword vocabulary is supplied by the
+> assigned module rather than hardcoded — see
+> [**Ch 18 — Modules & Programs**](18_modules_and_programs.md). For modules with
+> a project profile, an optional `user_location` also threads to the
+> **`web_search` tool builder only** (never `web_fetch`, which has no such
+> parameter), and the verification cache key gains a jurisdiction segment — see
+> [**Ch 19 — Location-Aware Review**](19_location_aware_review.md).
+
 A reviewer hands Spec Critic a folder of mechanical and plumbing specs, the
 review pass comes back with two hundred findings, and now the program faces a
 question that has nothing to do with whether any individual finding is *right*:

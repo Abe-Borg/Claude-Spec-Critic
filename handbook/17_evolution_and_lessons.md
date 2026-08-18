@@ -1,5 +1,11 @@
 # Evolution & Lessons: The v3.0.0 Pivot and the Road Ahead
 
+> **Currency note (v3.4.0).** This chapter closes with the road ahead. Much of
+> that road has since been travelled: the domain content was extracted into
+> swappable modules, a second program shipped, and the location-aware,
+> drawing, real-time-transport, HTML-report, and Windows-distribution
+> subsystems were built. **Part VII (Ch 18–23)** is what happened next.
+
 Every chapter so far has answered *what* and *how*: what Spec Critic is, how each
 subsystem works, how a `.docx` becomes a grounded, trust-labelled report. This
 final chapter answers the question those leave open — ***why did it become this?***

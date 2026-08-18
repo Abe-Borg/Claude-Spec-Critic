@@ -1,5 +1,18 @@
 # Input: Extraction, Element IDs & the Deterministic Pre-Screen
 
+> **Currency note (v3.4.0).** Two input paths were added after this chapter was
+> captured. **Project Context file attachments** (`.docx` / `.pdf` / `.md` /
+> `.txt`) merge into the free-text context under a hard 100k-token cap that is
+> *refused, never truncated*. And **construction-drawing PDFs** are turned into a
+> plain-text digest by a one-time vision pass at attach time — the only non-text
+> content the app ever sends. See [**Ch 20 — Drawings**](20_drawings.md).
+>
+> The deterministic detectors described below also gained a module-supplied
+> vocabulary (the logic stayed here; the words moved) and, for location-aware
+> modules, a `wrong_polity_token` rule. See
+> [**Ch 18 — Modules & Programs**](18_modules_and_programs.md) and
+> [**Ch 19 — Location-Aware Review**](19_location_aware_review.md).
+
 Every finding the system will ever produce begins as a paragraph in a Word file
 that someone, somewhere, edited under deadline. Before Claude reads a single
 token, that file has to be turned into text the model can reason about — and a

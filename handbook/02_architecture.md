@@ -38,6 +38,14 @@ human (or a downstream applier) needs to decide whether to trust it. Follow the
 
 ## 1. The shape of the system: ten packages
 
+> **Currency note (added at v3.4.0).** This section describes the package layout
+> as of v3.0.0. `src/` now holds **fifteen** packages and **92** Python files (77
+> application modules). Five packages were added after this chapter was written —
+> `modules`, `programs`, `research`, `compliance`, and `drawing_impact` — and are
+> tabulated at the end of this section. The ten described below are unchanged in
+> responsibility; the per-package file counts are historical. See
+> [**Ch 18 — Modules & Programs**](18_modules_and_programs.md).
+
 `src/` is organized into **ten packages** — eight *functional* packages plus the
 `gui` and `tracing` siblings. The tree holds **59 Python modules** in total: 49
 application modules and 10 package `__init__.py` files (the `output` package
@@ -65,6 +73,25 @@ files, and the chapter that takes it apart in depth.
 | **`output`** (3) | Consume the finished state: classify each finding's trust status & edit label, render the Word report, write the JSON edit sidecar. | `report_status.py`, `report_exporter.py`, `edit_sidecar.py` | [**Ch 11 — The Trust Model & Report Output**](11_trust_model_and_output.md) |
 | **`gui`** (10) | The CustomTkinter desktop app: a shell, reusable widgets, dialogs, and seven thin controllers bridging widgets to the pipeline. | `gui.py`, `widgets.py`, `about_usage_dialogs.py`, + 7 `*_controller.py` | [**Ch 13 — The Desktop GUI**](13_gui.md) |
 | **`tracing`** (8) | A forensic observability silo: per-run JSONL trace (spans/events/prompts/findings), defensive capture hooks, redaction, a CLI, and a zero-build HTML replay viewer. | `recorder.py`, `session.py`, `spans.py`, `capture_hooks.py`, `redaction.py`, `config.py`, `cli.py`, `__main__.py` | [**Ch 14 — Observability**](14_observability.md) |
+
+### Packages added since this chapter was captured
+
+These five did not exist at v3.0.0. They are listed here so the tree above is not
+mistaken for the current one; each is explained in Part VII.
+
+| Package | Responsibility | Key files (app modules) | Deep dive |
+|---|---|---|---|
+| **`modules`** (7) | One frozen `ReviewModule` per reviewable domain — code basis, prompt content slots, detector vocabulary, routing keywords — plus the registry and its import-time validation gate. This is where the domain content went when it left the engine. | `base.py`, `registry.py`, `california_k12_mep.py`, `datacenter_fire.py`, `datacenter_architecture.py`, `datacenter_electrical.py`, `datacenter_electronic_safety_security.py` | [**Ch 18 — Modules & Programs**](18_modules_and_programs.md) |
+| **`programs`** (4) | The operator-facing layer: a `ProgramDefinition` groups modules behind one GUI choice, and a deterministic classifier routes each spec to the module(s) that should review it. | `models.py`, `catalog.py`, `routing.py`, `assignments.py` | [**Ch 18 — Modules & Programs**](18_modules_and_programs.md) |
+| **`research`** (2) | The pre-review requirements fan-out for location-aware modules: a free deterministic corpus scrape, then one grounded web-search call per research dimension. | `corpus_signals.py`, `requirements_research.py` | [**Ch 19 — Location-Aware Review**](19_location_aware_review.md) |
+| **`compliance`** (1) | The package-level pass that asks whether the specifications address what the researched jurisdiction and client actually require, and emits a coverage matrix. | `compliance_checker.py` | [**Ch 19 — Location-Aware Review**](19_location_aware_review.md) |
+| **`drawing_impact`** (1) | The post-review synthesis pass that reports how attached construction drawings informed the findings, with hallucinated finding links dropped at parse time. | `impact_synthesizer.py` | [**Ch 20 — Drawings**](20_drawings.md) |
+
+Four further subsystems live inside existing packages rather than new ones:
+`input/drawing_digest.py` (the attach-time vision pass, [**Ch 20**](20_drawings.md)),
+`review/realtime_review.py` and `orchestration/program_pipeline.py`
+([**Ch 21**](21_realtime_transport.md)), and `output/html_report_exporter.py`
+([**Ch 22**](22_html_report.md)).
 
 A few orienting notes on the packages that surprise people:
 

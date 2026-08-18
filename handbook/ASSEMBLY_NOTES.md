@@ -243,3 +243,51 @@ and the affected chapter footnotes were updated.
 - **Consistency edits:** 4 content fixes (Ch 2 ×2 spots, Ch 6 ×2 spots, Ch 11,
   Ch 17) + the repo-wide cross-reference linking. No scope trims required. No
   chapter substance rewritten; no chapter file deleted.
+
+---
+
+## Addendum — Part VII (added at v3.4.0)
+
+The notes above record the Wave D editor pass that assembled the original **18
+files** (front matter + Ch 1–17), captured at v3.0.0. That inventory is still an
+accurate record of *that* pass and has not been revised.
+
+A later pass added **Part VII — What Happened Next (v3.1.0 – v3.4.0)**: six
+chapters covering subsystems that did not exist at the original capture.
+
+| Ch | File | Subsystem |
+|---|---|---|
+| 18 | `18_modules_and_programs.md` | `src/modules/`, `src/programs/` — domain extraction and per-spec routing |
+| 19 | `19_location_aware_review.md` | `src/core/project_profile.py`, `src/research/`, `src/compliance/` |
+| 20 | `20_drawings.md` | `src/input/drawing_digest.py`, `src/drawing_impact/` |
+| 21 | `21_realtime_transport.md` | `src/review/realtime_review.py`, `src/orchestration/program_pipeline.py` |
+| 22 | `22_html_report.md` | `src/output/html_report_exporter.py` |
+| 23 | `23_shipping_it.md` | `src/core/updates.py`, `packaging/windows/` |
+
+**Form preserved.** The linked-set-plus-index form was kept: new chapters are new
+files, `README.md` remains the master table of contents, and cross-references are
+relative links. **No existing chapter was renumbered**, so every pre-existing
+cross-reference remains valid — the reason Part VII appends rather than
+interleaving topically.
+
+**Edits to existing files were additive and confined to:**
+
+- `README.md` — revised blurb, Part VII in the TOC, a new "How to read a two-era
+  handbook" section, and one added reading path.
+- `00_preface.md` — structure line and the canonical chapter table.
+- `02_architecture.md` — a currency note on the "ten packages" section plus a
+  table of the five packages added since.
+- `04`, `06`, `08`, `09`, `11`, `13`, `17` — a single blockquote currency note
+  under each chapter title, pointing at the Part VII chapter that supersedes or
+  extends it.
+- `09_verification_routing.md`, `00_preface.md`, `15_quality_engineering.md` — the
+  `california_ahj` → `jurisdictional` profile rename, and the correction of a
+  documented trace-reason string (`critical_california_ahj_initial_deep`) that
+  does not exist in the code; the real constant is
+  `critical_jurisdictional_initial_deep`.
+
+**Known remaining drift.** Chapters 1–17 still describe the California domain as
+though it were welded into the engine. Rather than rewrite seven chapters of
+prose, the substitution rule is stated once in `README.md` § "How to read a
+two-era handbook." Per-package file counts in `02_architecture.md` remain
+historical and are labelled as such.

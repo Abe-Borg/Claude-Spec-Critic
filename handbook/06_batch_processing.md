@@ -1,5 +1,12 @@
 # Batch Processing: The Message Batches Backbone
 
+> **Currency note (v3.4.0).** Batch is still the default transport, but it is
+> no longer the only one. An opt-in **real-time streaming transport** runs the
+> per-spec reviews synchronously — immediate results at standard API price, no
+> batch discount and no resume story — built on deliberately shared request and
+> parse seams so the two transports cannot drift apart. See
+> [**Ch 21 — The Real-Time Review Transport**](21_realtime_transport.md).
+
 A desktop application that makes you wait ninety minutes for an answer looks,
 at first glance, like a usability mistake. Spec Critic embraces it on purpose.
 Every per-spec review in this product — and every initial verification verdict
