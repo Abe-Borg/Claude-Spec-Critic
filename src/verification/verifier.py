@@ -732,10 +732,10 @@ def _get_verification_system_prompt(
         "- Reserve web_fetch for high-stakes claims where snippets are",
         "  insufficient. Each fetch is more expensive than a search and the",
         "  per-call budget is small (3 fetches by default).",
-        "- Fetch the most authoritative-looking source first (California",
-        "  regulatory pages > code-publisher full text > standards bodies >",
-        "  manufacturer datasheets). Don't fetch aggregators or forums —",
-        "  they are blocked at the tool level anyway.",
+        # Module data: the ordering names jurisdiction-specific authorities,
+        # so hardcoding it here put "California regulatory pages" into every
+        # non-California verifier prompt. Emitted verbatim like the tier list.
+        *module.verifier_fetch_priorities.splitlines(),
         "- When you fetch a page, populate ``source_quote`` from the fetched",
         "  content, not just the original search snippet. The fetched body",
         "  is the evidence you actually read.",

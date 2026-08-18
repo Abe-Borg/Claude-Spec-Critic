@@ -264,6 +264,15 @@ _VERIFIER_SOURCE_PRIORITIES = """\
    Uptime Institute, BICSI, insurer, and owner criteria only when the project
    invokes them; archive.org only to establish historical requirements."""
 
+# web_fetch counterpart of the tier list above. Module data, not engine
+# protocol: the ordering names this module's own authorities.
+_VERIFIER_FETCH_PRIORITIES = """\
+- Fetch the most authoritative-looking source first (project-location
+  authorities and serving utilities > code-publisher full text >
+  standards and listing bodies > manufacturer datasheets). Don't
+  fetch aggregators or forums — they are blocked at the tool level
+  anyway."""
+
 
 _DETECTOR_VOCABULARY = DetectorVocabulary(
     code_abbreviations=("IBC", "IFC", "IECC", "IEBC"),
@@ -677,6 +686,7 @@ DATACENTER_ELECTRICAL = ReviewModule(
         "States and Canada."
     ),
     verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
+    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
     review_user_code_basis_line=(
         "US model-code fallback: IBC {ibc}, IFC {ifc}, IECC {iecc}, IEBC {iebc}, "
         "ASCE {asce7} with Supplement 1. Fallback electrical references: "

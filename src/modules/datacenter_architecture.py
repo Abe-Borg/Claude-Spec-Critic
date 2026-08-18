@@ -260,6 +260,14 @@ _VERIFIER_SOURCE_PRIORITIES = """\
 6. Archived or historical material:
    archive.org, only to establish what an obsolete citation previously said."""
 
+# web_fetch counterpart of the tier list above. Module data, not engine
+# protocol: the ordering names this module's own authorities.
+_VERIFIER_FETCH_PRIORITIES = """\
+- Fetch the most authoritative-looking source first (project-location
+  authorities and adopting instruments > code-publisher full text >
+  standards bodies > manufacturer datasheets). Don't fetch
+  aggregators or forums — they are blocked at the tool level anyway."""
+
 
 _DETECTOR_VOCABULARY = DetectorVocabulary(
     code_abbreviations=("IBC", "IFC", "IECC", "IEBC"),
@@ -646,6 +654,7 @@ DATACENTER_ARCHITECTURE = ReviewModule(
         "United States and Canada."
     ),
     verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
+    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
     review_user_code_basis_line=(
         "Model-code fallback: IBC {ibc}, IFC {ifc}, IECC {iecc}, IEBC {iebc}, "
         "ASCE {asce7} with Supplement 1; project-profile adoptions "

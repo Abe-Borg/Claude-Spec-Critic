@@ -79,8 +79,8 @@ making cached verdicts ambiguous.
 `review_severity_definitions`, `review_confidence_high_example`,
 `review_categories_template`, `review_examples`, `cross_check_persona`,
 `cross_check_severity_definitions`, `verifier_persona`,
-`verifier_source_priorities`. These are the strings that used to live inside
-`prompts.py` and `verifier.py`.
+`verifier_source_priorities`, `verifier_fetch_priorities`. These are the
+strings that used to live inside `prompts.py` and `verifier.py`.
 
 **Code-basis line templates.** `review_user_code_basis_line`,
 `cross_check_code_basis_line`, `verifier_system_code_basis_lines`,
@@ -128,13 +128,13 @@ to have only written some domain prose. Keeping the protocol engine-owned means
 **a module author cannot break the parser.** They can make the review *worse* —
 a bad persona produces bad findings — but they cannot make it *unparseable*.
 
-### 2.1 One string that did not make it out
+### 2.1 The string that almost did not make it out
 
-The extraction is not complete, and the handbook's own convention is to flag
-drift rather than assert a clean result. Here is the drift.
+The extraction missed one, and the way it was missed is more instructive than
+the miss.
 
-`verifier._get_verification_system_prompt` builds its `web_fetch` usage block
-unconditionally, and that block hardcodes a source-priority ordering:
+`verifier._get_verification_system_prompt` builds a `web_fetch` usage block, and
+that block used to hardcode a source-priority ordering:
 
 ```
 - Fetch the most authoritative-looking source first (California
@@ -142,31 +142,48 @@ unconditionally, and that block hardcodes a source-priority ordering:
   manufacturer datasheets). ...
 ```
 
-So an Ontario data-center verification prompt *does* contain the word
-California, and does tell the model to prefer California regulatory pages when
-choosing what to read in full. Confirmed by building the prompt for
-`datacenter_fire`: the review and cross-check system prompts come back clean;
-the verifier system prompt does not.
+Every other California string in that prompt had been extracted. This one
+survived because it does not *look* like domain content. It reads as tool-usage
+guidance — how to spend a `web_fetch` budget — and it sits in a block whose
+other four bullets are genuinely engine protocol: what the tool does, what it
+costs, that it can only fetch a URL search already surfaced. The domain content
+was hiding inside a protocol paragraph, one clause deep.
 
-Two things keep this from being worse than it is. The guidance only orders
-*which already-surfaced URL to fetch first* — it does not steer `web_search`,
-which is the primary grounding mechanism, and it cannot manufacture a California
-source for an Ontario query that never returned one. And on the current defaults
-the deepest verification tier routes to Opus 5, which does not support web fetch
-at all (see [**Ch 12 — Configuration, Models & Token
-Economics**](12_configuration_and_models.md)), so the block is frequently inert.
+The consequence was not theoretical. An Ontario data-center verification prompt
+told the model to prefer California regulatory pages when choosing what to read
+in full.
 
-It is still a domain string in a protocol builder, which is exactly what §2 says
-should not happen. The reason it is unconditional is explained in a comment at
-the site: the prompt is cached and shared across modes for a cycle, so the
-builder cannot know whether *this* call will have `web_fetch` attached, and it
-leans on the tool list to gate availability.
+The fix is the same move §2 describes, applied one level deeper: the ordering is
+now the module slot `verifier_fetch_priorities`, supplied pre-wrapped and split
+into lines by the engine exactly as `verifier_source_priorities` already was.
+Each module states its own ordering — `datacenter_fire` leads with standards and
+code-publisher full text, the location-aware modules lead with project-location
+authorities — and the surrounding protocol bullets stay byte-identical across
+every module.
 
-The natural fix is that the ordering should render from the module's existing
-`verifier_source_priorities` slot rather than being hardcoded — the slot already
-exists and already carries exactly this kind of content. That change touches the
-highest-stakes prompt in the program and would move the data-center verifier
-golden, so it is called out here as known work rather than done quietly.
+Two details are worth keeping.
+
+**The California prompt did not move.** The CA module's slot value reproduces
+the previous hardcoded text byte-for-byte, so
+`tests/test_golden_domain_surfaces.py` stayed green without regeneration. Only
+the two `dc_verifier_system_prompt_*` goldens changed, and their diff is exactly
+the four lines above. That is the §0 rule holding under a *behavioral* fix
+rather than a pure extraction: the change that corrects the data-center prompt
+is provably a no-op for California.
+
+**The regression test is at the prompt level, not the golden level.** Goldens
+only cover the modules that have goldens — two of five. The pin added to
+`tests/test_module_registry.py` renders the verifier system prompt for *every*
+registered module, in both `include_verdict_tool` states, and asserts no
+non-California module names California; a companion test asserts the California
+module still does, because the rule is "no *foreign* jurisdiction," not "no
+jurisdiction," and a fix that scrubbed the word everywhere would be its own
+regression.
+
+The general lesson for a future module author: the audit that catches this class
+of bug is not "grep the module files," it is "render every prompt for every
+module and look for another domain's vocabulary." A hardcoded string is
+invisible from inside the module data — it only appears in the output.
 
 ## 3. Registration is a validation gate
 
