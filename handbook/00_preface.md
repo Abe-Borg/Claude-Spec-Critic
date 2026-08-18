@@ -90,7 +90,7 @@ merely recite its parts.
 
 ## How the book is organized
 
-The handbook is **front matter plus seventeen chapters, grouped into six Parts**.
+The handbook is **front matter plus twenty-three chapters, grouped into seven Parts**.
 Chapter numbers and titles below are canonical; cross-references throughout the
 book use these exact titles.
 
@@ -114,6 +114,12 @@ book use these exact titles.
 | | 15 | Quality Engineering: Testing & Calibration |
 | **VI — The Meta-Story** | 16 | Trust Under the Microscope: The Audits |
 | | 17 | Evolution & Lessons: The v3.0.0 Pivot and the Road Ahead |
+| **VII — What Happened Next (v3.1.0–v3.4.0)** | 18 | Modules & Programs: How the Domain Left the Engine |
+| | 19 | Location-Aware Review: Profile, Research & Compliance |
+| | 20 | Drawings: Vision at Attach Time & Impact Synthesis |
+| | 21 | The Real-Time Review Transport |
+| | 22 | The HTML Report & Ask AI |
+| | 23 | Shipping It: The Windows App & Self-Updater |
 
 Parts I–IV follow the data — problem and shape, ingestion and review,
 coordination and verification, output. Parts V and VI step back to the

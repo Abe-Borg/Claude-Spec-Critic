@@ -1,5 +1,23 @@
 # The Trust Model & Report Output: Status Labels, the Word Report & the Edit Sidecar
 
+> **Currency note (v3.4.0).** The Word report described here is unchanged and
+> remains the artifact generated automatically at run completion. A second,
+> optional rendering — **one self-contained HTML file with an embedded
+> report-grounded chat** — can be saved after a run; it imports this chapter's
+> own summarizers and classifiers so the two cannot disagree. See
+> [**Ch 22 — The HTML Report & Ask AI**](22_html_report.md).
+>
+> The edit sidecar's version now depends on the result type. A single-module
+> `PipelineResult` emits schema **v4** (compliance findings joined the sweep; the
+> top level gained `project` and `requirements_coverage`). A routed
+> `ProgramPipelineResult` emits schema **v5**, a program wrapper adding
+> `assignments`, `submission_coverage`, and `requirements_coverage_by_module` —
+> so a downstream integration must branch on `schema_version` rather than assume
+> the single-module contract. A run with a project profile also writes a
+> standalone `<report-stem>.profile.json`. See
+> [**Ch 18 — Modules & Programs**](18_modules_and_programs.md) and
+> [**Ch 19 — Location-Aware Review**](19_location_aware_review.md).
+
 Every subsystem in the chapters before this one exists to learn something about a
 finding. Extraction learns what the spec actually says. The deterministic
 pre-screen learns that a `TODO:` was left in section 2.3. The review pass learns

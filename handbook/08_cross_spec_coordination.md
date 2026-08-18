@@ -1,5 +1,15 @@
 # Cross-Spec Coordination
 
+> **Currency note (v3.4.0).** Two things changed around this pass. Its CSI chunk
+> groups are now **module-supplied data** rather than hardcoded divisions (the
+> chunking invariants stayed engine-owned) — see
+> [**Ch 18 — Modules & Programs**](18_modules_and_programs.md), which also
+> documents a second blind spot: coordination is scoped **within** a module, so
+> in a multi-module program a Division 21 suppression spec is not compared
+> against a Division 28 alarm spec. And a **compliance pass** modeled directly on
+> this one now runs immediately after it — see
+> [**Ch 19 — Location-Aware Review**](19_location_aware_review.md).
+
 The per-spec review in [**Ch 5 — The Review Engine**](05_review_engine.md) reads one document at a time
 and reads it well. It will catch a stale code cycle in the HVAC section, a
 placeholder the editor forgot to fill in the plumbing section, a fan schedule

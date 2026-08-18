@@ -1,15 +1,23 @@
 # The Spec Critic Engineer's Handbook
 
-*A blended engineering handbook and narrative for the Spec Critic codebase,
-captured at **version 3.0.0**.*
+*A blended engineering handbook and narrative for the Spec Critic codebase.
+**Chapters 0–17 were captured at version 3.0.0; Part VII (Ch 18–23) brings the
+book current to version 3.4.0.** See "How to read a two-era handbook" below.*
 
 Spec Critic is a Python desktop application (CustomTkinter) that reviews
-California K-12 **DSA mechanical & plumbing** `.docx` specifications. It extracts
-text, runs deterministic local pre-screens, sends per-spec reviews through
-Claude's Message Batches API, optionally runs cross-spec coordination, verifies
-findings against web search, and exports a Word report plus a machine-readable
-JSON sidecar of suggested edits. Crucially, **it emits edit instructions but
-never applies them** — the surgical write-back stack was removed in v3.0.0.
+CSI-format `.docx` specifications under a selectable **review program**. It
+extracts text, runs deterministic local pre-screens, sends per-spec reviews
+through Claude's Message Batches API (or an opt-in real-time transport),
+optionally runs cross-spec coordination, verifies findings against web search,
+and exports a Word report plus a machine-readable JSON sidecar of suggested
+edits. Crucially, **it emits edit instructions but never applies them** — the
+surgical write-back stack was removed in v3.0.0.
+
+The default program is **California K-12 DSA mechanical & plumbing**, which is
+the domain Chapters 1–17 describe throughout. Since v3.1.0 that domain content
+lives in a swappable **module** rather than in the engine, and a second program
+routes hyperscale data-center specifications to four further modules — see
+[**Ch 18 — Modules & Programs**](18_modules_and_programs.md).
 
 This handbook teaches the system deeply enough that a new engineer can navigate,
 modify, and trust the code; explains every subsystem and how the pieces fit;
@@ -28,9 +36,9 @@ program is still being perfected.
 
 ## Table of contents
 
-The handbook is **front matter plus seventeen chapters, grouped into six Parts**.
+The handbook is **front matter plus twenty-three chapters, grouped into seven Parts**.
 Parts I–IV follow the data; Parts V–VI step back to the cross-cutting systems and
-the meta-story.
+the meta-story; Part VII covers the subsystems added after the original capture.
 
 ### Front Matter
 
@@ -106,6 +114,32 @@ the meta-story.
   — why the program got more trustworthy by getting *smaller*, the beta-header
   incident, the design creed, and the road ahead.
 
+### Part VII — What Happened Next (v3.1.0 – v3.4.0)
+
+Part VII was written against **v3.4.0** and documents the subsystems that did not
+exist when Parts I–VI were captured. Where a Part VII chapter and an earlier
+chapter disagree, Part VII is newer — but the source code still wins over both.
+
+- [**Ch 18 — Modules & Programs: How the Domain Left the Engine**](18_modules_and_programs.md)
+  — the domain-content extraction, the module registry and its validation gate,
+  programs, deterministic per-spec routing, and the coordination blind spot
+  routing does not fix.
+- [**Ch 19 — Location-Aware Review: Profile, Research & Compliance**](19_location_aware_review.md)
+  — the one capability flag that turns on a project profile, a requirements-research
+  fan-out, a compliance pass, and location-aware verification.
+- [**Ch 20 — Drawings: Vision at Attach Time & Impact Synthesis**](20_drawings.md)
+  — the only non-text content the app sends, why the digest is taken once at
+  attach time, and the grounded pass that reports what the drawings were worth.
+- [**Ch 21 — The Real-Time Review Transport**](21_realtime_transport.md)
+  — the streaming alternative to the batch backbone, and the shared-seam contract
+  that keeps the two transports from drifting apart.
+- [**Ch 22 — The HTML Report & Ask AI**](22_html_report.md)
+  — a second, portable rendering of a finished result, its parity-by-construction
+  discipline, and the security posture of a file that leaves the machine.
+- [**Ch 23 — Shipping It: The Windows App & Self-Updater**](23_shipping_it.md)
+  — the packaging pipeline, the tag-vs-literals guard, and the updater's chain of
+  trust from manifest to verified installer.
+
 ---
 
 ## Suggested reading paths
@@ -119,6 +153,48 @@ you might be here (the full reading guide lives in
 | **A new engineer onboarding** | [Ch 1](01_problem_domain.md) → [Ch 2](02_architecture.md) → [Ch 3](03_end_to_end_flow.md), then dive into whichever subsystem you'll touch (Parts II–V). |
 | **A domain reviewer or non-coder** | [Ch 1](01_problem_domain.md) → [Ch 11](11_trust_model_and_output.md) → [Ch 16](16_trust_under_the_microscope.md). What the tool reviews, how to read its trust labels, and where its honest limits are. |
 | **Debugging a strange verdict** | [Ch 3](03_end_to_end_flow.md) → [Ch 9](09_verification_routing.md) → [Ch 10](10_verification_grounding.md) → [Ch 14](14_observability.md). The flow, the routing, the grounding, then how to replay the run from its trace. |
+| **Adding a new review domain** | [Ch 18](18_modules_and_programs.md) → [Ch 19](19_location_aware_review.md) → [Ch 12](12_configuration_and_models.md). The module contract and its validation gate, the location-aware capability flag, then the phase/model registration a new pass needs. |
+
+---
+
+## How to read a two-era handbook
+
+This book was written in two passes, and pretending otherwise would make it less
+useful rather than more.
+
+**Chapters 0–17** were captured at **v3.0.0**. They are the deep explanation of
+the engine: extraction, prompting, batching, orchestration, coordination,
+verification, the trust model, the GUI, observability, testing, and the audits.
+That material is still accurate — the engine did not change out from under it.
+
+**Part VII (Ch 18–23)** was written against **v3.4.0** and covers six subsystems
+that did not exist at the original capture. Two of them change how you should
+read the earlier chapters:
+
+- **The domain left the engine** ([Ch 18](18_modules_and_programs.md)). Chapters
+  1–17 describe California K-12 DSA content as though it were welded into the
+  prompts, detectors, and report headings. It was, then. It is now module data.
+  Read those passages with one substitution: where a chapter says the prompt names
+  California, read *"the prompt renders the assigned module's persona, which for
+  the default module names California."* Every mechanism described is unchanged;
+  its content source moved.
+- **Batch is no longer the only transport** ([Ch 21](21_realtime_transport.md)).
+  [Ch 6](06_batch_processing.md) describes the Message Batches backbone as the
+  path. It is still the default path, and an opt-in streaming transport now sits
+  beside it — built on deliberately shared seams so the two cannot diverge.
+
+Two smaller drifts worth knowing before you trust a detail:
+
+- The verification profile Chapters 9 and 15 call `jurisdictional` was named
+  `california_ahj` until the Phase 4 routing generalization. Persisted rows still
+  carry the old string, and `parse_verification_profile` maps it.
+- [Ch 2](02_architecture.md)'s package table predates `modules`, `programs`,
+  `research`, `compliance`, and `drawing_impact`. Its per-package counts are
+  historical.
+
+If you are onboarding today, read Parts I–III for the engine, then
+[Ch 18](18_modules_and_programs.md) before you touch any domain content — the
+module registry's validation gate will reject work that ignores it.
 
 ---
 
