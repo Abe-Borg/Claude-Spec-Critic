@@ -262,8 +262,8 @@ span the verdict space and the routing modes:
 | Fixture | Profile / severity | Captured → after grounding | Oracle | What it proves |
 |---|---|---|---|---|
 | `tp_confirmed_nfpa13` | code_standard / MEDIUM | CONFIRMED → CONFIRMED | VERIFIED_SUPPORTED | A correctly grounded confirmation survives. |
-| `tp_corrected_stale_cbc` | california_ahj / HIGH | CORRECTED → CORRECTED | VERIFIED_CONTRADICTED | A grounded stale-cycle correction holds. |
-| `tp_critical_corrected_dsa` | california_ahj / CRITICAL | CORRECTED → CORRECTED | VERIFIED_CONTRADICTED | The CRITICAL deep-reasoning (Opus) path grounds an AHJ correction. |
+| `tp_corrected_stale_cbc` | jurisdictional / HIGH | CORRECTED → CORRECTED | VERIFIED_CONTRADICTED | A grounded stale-cycle correction holds. |
+| `tp_critical_corrected_dsa` | jurisdictional / CRITICAL | CORRECTED → CORRECTED | VERIFIED_CONTRADICTED | The CRITICAL deep-reasoning (Opus) path grounds an AHJ correction. |
 | `tp_disputed_invented_section` | code_standard / HIGH | DISPUTED → DISPUTED | DISPUTED | A real-but-wrong citation produces a clean DISPUTED. |
 | `tp_local_skip_placeholder` | internal_coordination / GRIPES | UNVERIFIED (local_skip) → unchanged | LOCALLY_CLASSIFIED | A placeholder is locally skipped — web search adds no signal. |
 | `tp_unverified_obscure_product` | manufacturer / MEDIUM | UNVERIFIED → UNVERIFIED | INSUFFICIENT_EVIDENCE | An unfindable model number honestly stays unverified. |

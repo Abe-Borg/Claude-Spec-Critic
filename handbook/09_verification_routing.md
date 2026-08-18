@@ -63,7 +63,7 @@ flowchart TD
     T -- no --> P[Classify profile<br/>5-way]
     P --> M{Select mode}
     M -- escalated --> DR[DEEP_REASONING<br/>Opus]
-    M -- CRITICAL california_ahj --> DR
+    M -- CRITICAL jurisdictional --> DR
     M -- GRIPES --> SS[STRICT_STRUCTURED<br/>Sonnet, no thinking]
     M -- non-GRIPES internal_coord --> SS
     M -- default --> SR[STANDARD_REASONING<br/>Sonnet, thinking]
@@ -248,7 +248,7 @@ a five-way keyword classifier over the finding's `codeReference`, `issue`,
 
 | Profile | When |
 |---|---|
-| `california_ahj` | mentions California / DSA / HCAI / OSHPD / Title 24 / CALGreen / AHJ |
+| `jurisdictional` | mentions the assigned module's jurisdiction / AHJ terms (California module: California / DSA / HCAI / OSHPD / Title 24 / CALGreen / AHJ) |
 | `code_standard` | cites a code section or standards body (CBC/NFPA/ASHRAE/…) without California signals |
 | `manufacturer` | mentions a manufacturer / model number / datasheet / submittal / "or approved equal" |
 | `constructability` | default for substantive technical claims with no clear kind signal |
@@ -260,7 +260,7 @@ trips multiple keyword sets, and it runs:
 1. **`internal_coordination`** — checked *first*. A finding with these signals
    never needs external grounding regardless of any other text, so it short-circuits
    ahead of everything.
-2. **`california_ahj`** — before generic code-standard, because California
+2. **`jurisdictional`** — before generic code-standard, because California
    amendments *add* constraints to model codes; a "CBC + DSA" finding must be
    treated as a California claim, not a generic one.
 3. **`manufacturer`**.
@@ -346,7 +346,7 @@ escalate — into one of four values. The full policy table, reproduced from
 | `local_skip` | keyword classifier or Haiku triage said `local_skip` | (none — `"local"` sentinel) | n/a | 0 | no | no |
 | `strict_structured` | GRIPES, **or** non-GRIPES `internal_coordination` profile | Sonnet | off | severity-based | no | no |
 | `standard_reasoning` | default for substantive technical claims | Sonnet | on | severity-based | yes (3 fetches) | yes |
-| `deep_reasoning` | escalated, **or** initial pass for CRITICAL `california_ahj` | Opus | on | severity-based | **model-gated** — no on Opus 5 | no (terminal) |
+| `deep_reasoning` | escalated, **or** initial pass for CRITICAL `jurisdictional` | Opus | on | severity-based | **model-gated** — no on Opus 5 | no (terminal) |
 
 The `web_fetch` column is gated twice: by mode (above) **and** by the
 model's `supports_web_fetch` capability flag. Web fetch is not available on
@@ -371,7 +371,7 @@ order**. Reproducing it exactly, because the order is the whole behavior:
 3. **Escalated → `DEEP_REASONING`.** Once we're on the second pass after a failed
    attempt, we're committed to Opus regardless of what severity or profile would
    have picked initially.
-4. **CRITICAL + `california_ahj` → `DEEP_REASONING`** on the *initial* pass. (More
+4. **CRITICAL + `jurisdictional` → `DEEP_REASONING`** on the *initial* pass. (More
    on why below.)
 5. **GRIPES (any profile that isn't internal-coordination) → `STRICT_STRUCTURED`.**
    The editorial tail that slipped past local-skip — typically a GRIPES with a
@@ -472,7 +472,7 @@ The fix is the one-source-of-truth pattern that recurs throughout Spec Critic:
   same record the request was built with.
 
 The decision also carries a short `trace_reason` tag — `local_skip`,
-`cached_mode_replay`, `escalated_to_deep`, `critical_california_ahj_initial_deep`,
+`cached_mode_replay`, `escalated_to_deep`, `critical_jurisdictional_initial_deep`,
 `gripes_strict_structured`, `internal_coordination_strict`,
 `default_standard_reasoning` — so a diagnostics dump can bucket findings by *why*
 they were routed the way they were, without parsing free text. That observability
@@ -490,7 +490,7 @@ forward over a representative spread:
 | GRIPES, "label valves per ASME A13.1 color formatting" | `web_required` | internal_coord | `STRICT_STRUCTURED` → Sonnet (no thinking) | 3 | "formatting" no longer skips; GRIPES → strict |
 | MEDIUM, "NFPA 13 requires 130 ft² sprinkler coverage" | `web_required` | code_standard | `STANDARD_REASONING` → Sonnet (thinking) + fetch | 5 | default workhorse for MEDIUM-and-up technical claims |
 | HIGH, "Internal contradiction: 2.2.B specifies 5 ft, 4.1.A specifies 8 ft" | `web_required` (HIGH) | internal_coord | `STRICT_STRUCTURED` → Sonnet (no thinking) | 7 | HIGH can't local-skip *and* is triage-ineligible; internal_coord → strict (still a web call) |
-| CRITICAL, "Title 24 / DSA seismic anchorage detail missing" | `web_required` | california_ahj | `DEEP_REASONING` → Opus (thinking) + fetch | 8 | CRITICAL + California jumps straight to Opus; terminal |
+| CRITICAL, "Title 24 / DSA seismic anchorage detail missing" | `web_required` | jurisdictional | `DEEP_REASONING` → Opus (thinking) + fetch | 8 | CRITICAL + California jumps straight to Opus; terminal |
 | HIGH, "CMC 506 grease duct clearance understated" (UNVERIFIED on first pass) | `web_required` | code_standard | initial `STANDARD_REASONING`; then `DEEP_REASONING` → Opus | 7 | escalation: HIGH + UNVERIFIED forces deep re-run |
 
 Notice the fourth and fifth rows together: a HIGH internal contradiction and a
