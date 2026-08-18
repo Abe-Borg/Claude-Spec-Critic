@@ -15,9 +15,10 @@ v3.0.0 and v3.4.0 the domain content was extracted into **modules** — one froz
 data object per reviewable domain — and grouped for the operator into
 **programs**. The engine kept the protocol; the module supplies the content.
 The result is that Spec Critic can now review hyperscale data-center fire
-suppression in Ontario without a single California string reaching the prompt,
-and — the harder half — *without changing a byte* of what the California run
-produces.
+suppression in Ontario with the review and coordination prompts carrying no
+California content at all — and, the harder half, *without changing a byte* of
+what the California run produces. One string did not make it out, and §2.1
+documents it rather than rounding the claim up.
 
 That last constraint is the whole story. A refactor that generalizes a system
 by rewriting its only working configuration is not a generalization; it is a
@@ -126,6 +127,46 @@ contract, a module author could break every downstream consumer while appearing
 to have only written some domain prose. Keeping the protocol engine-owned means
 **a module author cannot break the parser.** They can make the review *worse* —
 a bad persona produces bad findings — but they cannot make it *unparseable*.
+
+### 2.1 One string that did not make it out
+
+The extraction is not complete, and the handbook's own convention is to flag
+drift rather than assert a clean result. Here is the drift.
+
+`verifier._get_verification_system_prompt` builds its `web_fetch` usage block
+unconditionally, and that block hardcodes a source-priority ordering:
+
+```
+- Fetch the most authoritative-looking source first (California
+  regulatory pages > code-publisher full text > standards bodies >
+  manufacturer datasheets). ...
+```
+
+So an Ontario data-center verification prompt *does* contain the word
+California, and does tell the model to prefer California regulatory pages when
+choosing what to read in full. Confirmed by building the prompt for
+`datacenter_fire`: the review and cross-check system prompts come back clean;
+the verifier system prompt does not.
+
+Two things keep this from being worse than it is. The guidance only orders
+*which already-surfaced URL to fetch first* — it does not steer `web_search`,
+which is the primary grounding mechanism, and it cannot manufacture a California
+source for an Ontario query that never returned one. And on the current defaults
+the deepest verification tier routes to Opus 5, which does not support web fetch
+at all (see [**Ch 12 — Configuration, Models & Token
+Economics**](12_configuration_and_models.md)), so the block is frequently inert.
+
+It is still a domain string in a protocol builder, which is exactly what §2 says
+should not happen. The reason it is unconditional is explained in a comment at
+the site: the prompt is cached and shared across modes for a cycle, so the
+builder cannot know whether *this* call will have `web_fetch` attached, and it
+leans on the tool list to gate availability.
+
+The natural fix is that the ordering should render from the module's existing
+`verifier_source_priorities` slot rather than being hardcoded — the slot already
+exists and already carries exactly this kind of content. That change touches the
+highest-stakes prompt in the program and would move the data-center verifier
+golden, so it is called out here as known work rather than done quietly.
 
 ## 3. Registration is a validation gate
 
