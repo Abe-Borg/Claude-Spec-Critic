@@ -332,6 +332,15 @@ _VERIFIER_SOURCE_PRIORITIES = """\
 6. Archived or historical standards:
    archive.org"""
 
+# web_fetch counterpart of the tier list above. Module data, not engine
+# protocol: the ordering names this module's own authorities.
+_VERIFIER_FETCH_PRIORITIES = """\
+- Fetch the most authoritative-looking source first (standards and
+  code-publisher full text > insurance and listing authorities >
+  project-location government code portals > manufacturer
+  datasheets). Don't fetch aggregators or forums — they are blocked
+  at the tool level anyway."""
+
 
 # The deterministic preprocessor's I-code vocabulary. The detector logic (regex
 # assembly, span dedup, negation suppression) is engine-owned in
@@ -849,6 +858,7 @@ DATACENTER_FIRE = ReviewModule(
         "IBC/IFC family of model codes."
     ),
     verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
+    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
     review_user_code_basis_line=(
         "Current code basis: IBC {ibc}, IFC {ifc}, ASCE {asce7}."
     ),

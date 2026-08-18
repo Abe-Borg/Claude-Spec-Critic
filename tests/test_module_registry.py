@@ -134,6 +134,7 @@ def _module(module_id: str = "test_module", label: str = "9999", **overrides) ->
         ),
         verifier_persona="You are a test verification assistant.",
         verifier_source_priorities="1. Test sources:\n   example.gov",
+        verifier_fetch_priorities="- Fetch test sources first.",
         review_user_code_basis_line="Current code cycle: Test Code {code}.",
         cross_check_code_basis_line="Current cycle: Test Code {code}.",
         verifier_system_code_basis_lines="Current code cycle: Test Code {code}.",
@@ -1146,3 +1147,71 @@ class TestDownstreamStamping:
         rec.stop()
         meta = json.loads((trace_dir / "run.json").read_text(encoding="utf-8"))
         assert meta["module_id"] == "california_k12_mep"
+
+
+class TestVerifierPromptJurisdictionNeutrality:
+    """The verifier system prompt must not name another module's jurisdiction.
+
+    Until v3.4.0 the ``web_fetch`` usage block hardcoded a source-priority
+    ordering naming "California regulatory pages", so every non-California
+    verifier prompt told the model to prefer California authorities — an
+    Ontario data-center verification included. The ordering is now the
+    ``verifier_fetch_priorities`` module slot. These tests pin the fix at the
+    level the bug actually lived at: the rendered prompt, for every registered
+    module, not just the two that happen to have goldens.
+    """
+
+    def test_no_module_leaks_california_into_another_domain(self):
+        from src.modules.registry import AVAILABLE_MODULES
+        from src.verification.verifier import _get_verification_system_prompt
+
+        for module_id, module in AVAILABLE_MODULES.items():
+            if module_id == "california_k12_mep":
+                continue
+            for include_tool in (True, False):
+                prompt = _get_verification_system_prompt(
+                    cycle=module.cycle, include_verdict_tool=include_tool
+                )
+                assert "California" not in prompt, (
+                    f"{module_id} verifier prompt (include_verdict_tool="
+                    f"{include_tool}) names California"
+                )
+
+    def test_california_module_still_names_california(self):
+        # The neutrality rule is "no *foreign* jurisdiction", not "no
+        # jurisdiction" — the CA module naming California is correct, and a
+        # fix that scrubbed it everywhere would be a regression.
+        from src.modules.registry import get_module
+        from src.verification.verifier import _get_verification_system_prompt
+
+        module = get_module("california_k12_mep")
+        prompt = _get_verification_system_prompt(cycle=module.cycle)
+        # The ordering is hand-wrapped, so the phrase spans two lines and is
+        # not a contiguous substring — assert on the rendered lines.
+        assert "- Fetch the most authoritative-looking source first (California" in prompt
+        assert "  regulatory pages > code-publisher full text > standards bodies >" in prompt
+
+    def test_fetch_priorities_render_verbatim_into_the_prompt(self):
+        from src.modules.registry import AVAILABLE_MODULES
+        from src.verification.verifier import _get_verification_system_prompt
+
+        for module_id, module in AVAILABLE_MODULES.items():
+            prompt = _get_verification_system_prompt(cycle=module.cycle)
+            for line in module.verifier_fetch_priorities.splitlines():
+                assert line in prompt, f"{module_id}: missing {line!r}"
+
+    def test_empty_fetch_priorities_rejected_at_registration(self):
+        # The slot is required-non-empty like every other prompt slot, so a
+        # new module cannot silently ship without an ordering.
+        import dataclasses
+
+        import pytest
+
+        from src.modules.base import validate_module_registry
+        from src.modules.registry import get_module
+
+        broken = dataclasses.replace(
+            get_module("datacenter_fire"), verifier_fetch_priorities=""
+        )
+        with pytest.raises(ValueError):
+            validate_module_registry([broken])

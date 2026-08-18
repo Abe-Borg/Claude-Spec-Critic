@@ -292,6 +292,18 @@ class ReviewModule:
             list for the verifier prompt (the ``Prefer authoritative
             sources`` header and the surrounding guidance are engine
             protocol; the tiers and domains are the domain content).
+        verifier_fetch_priorities: The ``web_fetch`` bullet naming which
+            already-retrieved source to read in full first. A condensed
+            restatement of ``verifier_source_priorities`` in prose, so it
+            names jurisdiction-specific authorities and is domain content
+            for the same reason the tier list is. Supplied pre-wrapped —
+            the engine splits it into lines verbatim, exactly as it does
+            for the tier list — because the surrounding web_fetch usage
+            guidance (what the tool does, the budget, the blocklist note)
+            is engine protocol and must stay byte-identical across
+            modules. Hardcoded to the California ordering until v3.4.0,
+            which leaked "California regulatory pages" into every
+            non-California verifier prompt.
         review_user_code_basis_line: The "Current code cycle: …" line of the
             review user message. Like every ``*_code_basis_line*`` slot, a
             template formatted against :func:`code_basis_format_kwargs` —
@@ -345,6 +357,7 @@ class ReviewModule:
     cross_check_severity_definitions: str
     verifier_persona: str
     verifier_source_priorities: str
+    verifier_fetch_priorities: str
     # --- Code-basis rendering + detector vocabulary (Phase 3) ----------
     review_user_code_basis_line: str
     cross_check_code_basis_line: str
@@ -408,6 +421,7 @@ _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
     "cross_check_severity_definitions",
     "verifier_persona",
     "verifier_source_priorities",
+    "verifier_fetch_priorities",
     "review_user_code_basis_line",
     "cross_check_code_basis_line",
     "verifier_system_code_basis_lines",

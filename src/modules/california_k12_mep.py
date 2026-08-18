@@ -150,6 +150,17 @@ _VERIFIER_SOURCE_PRIORITIES = """\
 8. Archived or historical standards:
    archive.org"""
 
+# The web_fetch counterpart of the tier list above: which retrieved source to
+# read in full first. Pre-wrapped because the engine emits these lines verbatim.
+# Byte-identical to the block that used to be hardcoded in
+# ``verifier._get_verification_system_prompt`` — the California prompt must not
+# move when the ordering becomes module data.
+_VERIFIER_FETCH_PRIORITIES = """\
+- Fetch the most authoritative-looking source first (California
+  regulatory pages > code-publisher full text > standards bodies >
+  manufacturer datasheets). Don't fetch aggregators or forums —
+  they are blocked at the tool level anyway."""
+
 
 # The deterministic preprocessor's California vocabulary. The detector
 # logic (regex assembly, span dedup, negation suppression) is engine-owned
@@ -321,6 +332,7 @@ CALIFORNIA_K12_MEP = ReviewModule(
         "California K-12 DSA projects."
     ),
     verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
+    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
     review_user_code_basis_line=(
         "Current code cycle: CBC {cbc}, CMC {cmc}, CPC {cpc}, "
         "Energy Code {energy}, CALGreen {calgreen}, ASCE {asce7}."

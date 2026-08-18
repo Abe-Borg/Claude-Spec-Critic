@@ -210,6 +210,15 @@ _VERIFIER_SOURCE_PRIORITIES = """\
    owner standards, FM Global data sheets, and insurer criteria only when the
    project invokes them; archive.org only for historical requirements."""
 
+# web_fetch counterpart of the tier list above. Module data, not engine
+# protocol: the ordering names this module's own authorities.
+_VERIFIER_FETCH_PRIORITIES = """\
+- Fetch the most authoritative-looking source first (project-location
+  authorities and adopted instruments > code-publisher full text >
+  standards and listing bodies > manufacturer datasheets). Don't
+  fetch aggregators or forums — they are blocked at the tool level
+  anyway."""
+
 
 _DETECTOR_VOCABULARY = DetectorVocabulary(
     code_abbreviations=("IBC", "IFC", "IEBC"),
@@ -570,6 +579,7 @@ DATACENTER_ELECTRONIC_SAFETY_SECURITY = ReviewModule(
         "United States and Canada."
     ),
     verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
+    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
     review_user_code_basis_line=(
         "US model-code fallback: IBC {ibc}, IFC {ifc}, IEBC {iebc}, ASCE {asce7}; "
         "fire-alarm references: {pinned_standards}. Project-profile adoptions govern."
