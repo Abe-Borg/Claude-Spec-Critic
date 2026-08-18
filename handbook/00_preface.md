@@ -261,7 +261,7 @@ and the process terms are interleaved. Each data object is *introduced* in [**Ch
 
 - **Mode / profile.** The two routing dimensions of verification. The *mode*
   (`local_skip`, `strict_structured`, `standard_reasoning`, `deep_reasoning`)
-  decides *how hard* to check; the *profile* (`california_ahj`, `code_standard`,
+  decides *how hard* to check; the *profile* (`jurisdictional`, `code_standard`,
   `manufacturer`, `constructability`, `internal_coordination`) decides *which
   sources* to prefer.
 
