@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 
 import pytest
 
@@ -17,7 +18,7 @@ from src.core.api_config import MODEL_SONNET_46
 from src.input.extractor import ExtractedSpec
 from src.modules import DEFAULT_MODULE, ResearchDimension
 from src.research import DimensionStatus, RequirementsProfile, ResearchItem
-from src.review.reviewer import Finding, ReviewResult
+from src.review.reviewer import Finding, ReviewResult, validate_edit_shape
 from src.review.structured_schemas import (
     COMPLIANCE_FINDINGS_SCHEMA,
     COMPLIANCE_TOOL_NAME,
@@ -216,6 +217,63 @@ class TestComplianceSchema:
 
         with pytest.raises(ValueError, match="compliance_persona"):
             validate_module_registry([_enabled_module(compliance_persona="")])
+
+
+# ---------------------------------------------------------------------------
+# System-prompt few-shot examples must obey the contracts they illustrate
+# ---------------------------------------------------------------------------
+
+
+class TestComplianceExamplesMatchContracts:
+    """The ``<examples>`` block is engine-owned protocol, so it is pinned to
+    the real parser contracts rather than to prompt bytes alone.
+
+    A byte-level golden freezes whatever the examples say, right or wrong;
+    these assertions fail if an example ever illustrates a shape the parser
+    would reject or a linkage the chunk filter could not follow.
+    """
+
+    def _examples(self) -> list[dict]:
+        blocks = re.findall(r"^\{.*?^\}", cc._COMPLIANCE_EXAMPLES, re.S | re.M)
+        return [json.loads(b) for b in blocks]
+
+    def test_examples_cover_the_add_and_report_only_split(self):
+        actions = [obj["actionType"] for obj in self._examples()]
+        # The judgment the block exists to pin: a grounded requirement earns
+        # an edit, an [UNVERIFIED] one earns only a confirmation ask.
+        assert actions == ["ADD", "REPORT_ONLY"]
+
+    def test_examples_survive_validate_edit_shape(self):
+        for obj in self._examples():
+            reason = validate_edit_shape(
+                obj["actionType"],
+                existing_text=obj.get("existingText"),
+                replacement_text=obj.get("replacementText"),
+                anchor_text=obj.get("anchorText"),
+                insert_position=obj.get("insertPosition"),
+            )
+            assert reason is None, (
+                f"{obj['actionType']} example would be demoted at parse time "
+                f"({reason}) — the prompt must not illustrate a shape the "
+                "parser rejects"
+            )
+
+    def test_example_issue_text_carries_a_linkable_requirement_id(self):
+        # ``_filter_chunk_findings`` keys on this id; an example without one
+        # would teach a finding that cannot be tied back to its requirement.
+        for obj in self._examples():
+            assert cc._REQUIREMENT_ID_RE.findall(obj["issue"])
+
+    def test_unverified_example_never_proposes_an_edit(self):
+        unverified = self._examples()[1]
+        assert unverified["actionType"] == "REPORT_ONLY"
+        for field in ("existingText", "replacementText", "anchorText", "insertPosition"):
+            assert unverified[field] is None
+
+    def test_examples_are_labeled_illustrative(self):
+        block = cc._COMPLIANCE_EXAMPLES
+        assert "do not copy their content" in block
+        assert "placeholders" in block
 
 
 # ---------------------------------------------------------------------------
