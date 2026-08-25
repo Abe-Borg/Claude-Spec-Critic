@@ -172,17 +172,26 @@ firmly as it rejects an unsupported feature:
   never carries `thinking` — and it would be stripped anyway because Haiku's flag
   is off. That belt-and-suspenders is deliberate: even if someone overrode triage
   to a thinking-capable model, the phase opt-out still holds.
-- **`effort_config_for(model, phase)`** attaches `output_config.effort` — `xhigh`
-  for the deep phases (review, cross-check, compliance), `high` for Opus on the
-  escalation verification phase and for research, `medium` for Sonnet
-  verification, and *nothing* for triage or any model whose `supports_effort`
-  flag is off. The usable levels are `low`/`medium`/`high`/`xhigh`, and `xhigh`
-  is gated per model by `supports_xhigh_effort` (Opus 5 ✓, Opus 4.8 ✓,
-  Sonnet 5 ✓, Sonnet 4.6 ✗): `effort_config_for` clamps `xhigh`→`high` on any model whose
-  capability entry lacks the flag. On today's defaults nothing clamps —
-  cross-check and compliance run their declared `xhigh` natively on Sonnet 5 —
-  but the clamp stays load-bearing for a pinned Sonnet 4.6 override, which
-  rejects `xhigh` at submit with a 400.
+- **`effort_config_for(model, phase)`** attaches `output_config.effort` — `high`
+  for the deep phases (review, cross-check, compliance), for Opus on the
+  escalation verification phase, and for research; `medium` for Sonnet
+  verification and the drawing digest; and *nothing* for triage or any model
+  whose `supports_effort` flag is off. The usable levels are
+  `low`/`medium`/`high`/`xhigh`, but **`high` is the ceiling this app
+  declares**: the three deep phases were lowered from `xhigh` to `high` as a
+  token-spend measure, `high` being the level Anthropic describes as the
+  balance point between quality and token efficiency.
+
+  `xhigh` remains gated per model by `supports_xhigh_effort` (Opus 5 ✓,
+  Opus 4.8 ✓, Sonnet 5 ✓, Sonnet 4.6 ✗), and `effort_config_for` still clamps
+  `xhigh`→`high` on any model whose capability entry lacks the flag. With
+  nothing declaring `xhigh`, that clamp is inert on every real call path
+  today — it is kept because the ceiling is a tuning decision that may be
+  revisited, and restoring `xhigh` on a phase must not be able to 400 at
+  submit under a pinned Sonnet 4.6 override. `TestXhighClampGating` exercises
+  the clamp helper directly and patches `_PHASE_DEFAULT_EFFORT` to prove the
+  end-to-end path, precisely so the guard cannot rot into a test that passes
+  for the wrong reason.
 
 The deeper consequence of the degrade-to-safe default deserves to be made
 concrete, because it is the chapter's central tension and it is *sharper than it

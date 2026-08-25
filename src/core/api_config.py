@@ -250,8 +250,8 @@ def review_max_tokens(*, model: str = REVIEW_MODEL_DEFAULT, allow_extended_outpu
 
 
 # Real-time review fan-out concurrency. Review streams are the app's heaviest
-# synchronous calls (xhigh effort, up to the 128k phase cap of output — 5-8x
-# the output budget of any other streaming phase), so the default pool is
+# synchronous calls (up to the 128k phase cap of output — 5-8x the output
+# budget of any other streaming phase), so the default pool is
 # aligned with the research fan-out (4) while remaining below the verification
 # real-time fallback (5): four concurrent streams keep a multi-spec run moving
 # without immediately jumping to the app's maximum pressure on lower API tiers
@@ -748,23 +748,27 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 # The Anthropic API accepts an ``output_config.effort`` parameter on
 # supported models. The value tunes how eagerly the model produces tokens
 # and how aggressively it pursues tool calls. The documented levels are
-# ``low`` / ``medium`` / ``high`` / ``xhigh`` (plus ``max``). The review and
-# cross-check phases use ``xhigh`` — Anthropic recommends it as the starting
-# point for coding/agentic work on Opus 5, and per-spec review is the
-# deepest-reasoning phase in the pipeline. We still don't use ``max`` (it
-# overshoots without a measured benefit for this workload), and verification
-# stays at medium/high so the verdict envelope doesn't balloon.
+# ``low`` / ``medium`` / ``high`` / ``xhigh`` (plus ``max``).
 #
-# ``xhigh`` is gated per model: Opus 5, Opus 4.8 and Sonnet 5 accept it; Sonnet
-# 4.6's supported set is ``{low, medium, high, max}`` — it rejects ``xhigh``
-# at submit with a 400 ("This model does not support effort level 'xhigh'").
-# So ``supports_effort`` being a coarse boolean is not enough: a phase that
-# defaults to ``xhigh`` but runs on a model without ``supports_xhigh_effort``
-# (e.g. cross-check under a pinned Sonnet 4.6, or a review override to an
-# older Sonnet) must clamp down to ``high`` or the request fails.
-# :func:`effort_config_for` does this clamp via
-# :func:`_clamp_effort_for_model`. On the current defaults nothing clamps:
-# cross-check / compliance run their declared ``xhigh`` natively on Sonnet 5.
+# ``high`` is the ceiling this app uses. The deep-reasoning phases (review,
+# cross-check, compliance) previously declared ``xhigh``; they were lowered
+# to ``high`` as a token-spend measure, ``high`` being the level Anthropic
+# describes as the balance point between quality and token efficiency.
+# ``max`` was never used (it overshoots without a measured benefit for this
+# workload) and verification stays at medium/high so the verdict envelope
+# doesn't balloon. Nothing above ``high`` is declared by any phase today.
+#
+# The ``xhigh`` gate below is retained deliberately, because the ceiling is a
+# tuning decision that may be revisited. ``xhigh`` is not universal: Opus 5,
+# Opus 4.8 and Sonnet 5 accept it; Sonnet 4.6's supported set is ``{low,
+# medium, high, max}`` and it rejects ``xhigh`` at submit with a 400 ("This
+# model does not support effort level 'xhigh'"). So ``supports_effort`` being
+# a coarse boolean is not enough: any phase that declares ``xhigh`` while
+# running on a model without ``supports_xhigh_effort`` (e.g. cross-check
+# under a pinned Sonnet 4.6) must clamp down to ``high`` or the request
+# fails. :func:`effort_config_for` does that clamp via
+# :func:`_clamp_effort_for_model`, so restoring ``xhigh`` on a phase is a
+# one-line change that stays safe on every registered model.
 #
 # Effort is a request-policy decision, not a prompt one. Centralizing it
 # here keeps every request site (review / batch review / cross-check /
@@ -778,9 +782,8 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 #   (Sonnet 5 at medium is comparable to Sonnet 4.6 at high, so the verdict
 #   envelope stays tight while the initial pass got smarter for free.)
 # - Opus verification (i.e. escalation): high.
-# - Deep review (PHASE_REVIEW, PHASE_CROSS_CHECK, PHASE_COMPLIANCE): xhigh —
-#   native on Opus 5, Opus 4.8 and Sonnet 5 alike.
-# - Older-Sonnet override (e.g. a pinned Sonnet 4.6): xhigh clamps to high.
+# - Deep review (PHASE_REVIEW, PHASE_CROSS_CHECK, PHASE_COMPLIANCE): high.
+# - Research / drawing impact: high. Drawing digest: medium.
 # - Triage (Haiku): omit (Haiku does not support effort).
 # - Unknown model: omit.
 
@@ -793,28 +796,25 @@ EFFORT_XHIGH = "xhigh"
 # effort, and the workload is a small classification pass that does not
 # benefit from elevated effort.
 _PHASE_DEFAULT_EFFORT: dict[str, str] = {
-    PHASE_REVIEW: EFFORT_XHIGH,
-    PHASE_CROSS_CHECK: EFFORT_XHIGH,
+    PHASE_REVIEW: EFFORT_HIGH,
+    PHASE_CROSS_CHECK: EFFORT_HIGH,
     PHASE_VERIFICATION: EFFORT_MEDIUM,
     PHASE_VERIFICATION_RETRY: EFFORT_MEDIUM,
     PHASE_VERIFICATION_CONTINUATION: EFFORT_MEDIUM,
-    # Research is retrieval-heavy but not the deepest-reasoning phase;
-    # ``high`` keeps the model persistent about chasing primary sources
-    # without the xhigh token eagerness the review phases warrant.
+    # Research is retrieval-heavy: ``high`` keeps the model persistent
+    # about chasing primary sources without the token eagerness of the
+    # levels above it.
     PHASE_RESEARCH: EFFORT_HIGH,
-    # Compliance is a deep-evaluation pass like cross-check; ``xhigh``
-    # matches. Sonnet 5 (the pass's fixed model) runs it natively;
-    # ``_clamp_effort_for_model`` still drops it to ``high`` should the
-    # pass ever run on a model without ``supports_xhigh_effort``.
-    PHASE_COMPLIANCE: EFFORT_XHIGH,
+    # Compliance is a deep-evaluation pass like cross-check, and tracks
+    # it at ``high``.
+    PHASE_COMPLIANCE: EFFORT_HIGH,
     # The drawing digest reads and transcribes documents it was handed —
     # no tools to chase, no deep reasoning; ``medium`` keeps the output
     # disciplined against the per-chunk length contract.
     PHASE_DRAWING_DIGEST: EFFORT_MEDIUM,
     # Drawing-impact synthesis reasons about how the digest relates to the
-    # findings — a genuine (if bounded) reasoning task, but lighter than the
-    # deep review phases; ``high`` keeps it grounded without the xhigh token
-    # eagerness. Clamps to ``high`` anyway on any non-xhigh model.
+    # findings — a genuine (if bounded) reasoning task; ``high`` keeps it
+    # grounded.
     PHASE_DRAWING_IMPACT: EFFORT_HIGH,
 }
 
@@ -844,10 +844,11 @@ def _clamp_effort_for_model(level: str, model: str) -> str:
     ``xhigh`` requires the capability whitelist's ``supports_xhigh_effort``
     flag (Opus 5, Opus 4.8, Sonnet 5); on any other model it falls back to
     ``high`` — the deepest level Sonnet 4.6 accepts (we don't use ``max``). Every
-    other level passes through unchanged. This is what keeps an ``xhigh``
-    phase (cross-check / compliance / review) from 400-ing at submit when an
-    env override pins a model without the flag; unknown ids clamp too, since
-    the conservative default capabilities leave the flag off.
+    other level passes through unchanged, so with every phase at ``high`` or
+    below this is a pass-through. It stays wired as the guard for any future
+    phase that declares ``xhigh`` again: that phase cannot 400 at submit when
+    an env override pins a model without the flag, and unknown ids clamp too
+    since the conservative default capabilities leave it off.
     """
     if (
         level in _XHIGH_GATED_EFFORT_LEVELS
@@ -869,8 +870,9 @@ def effort_config_for(*, model: str, phase: str) -> dict | None:
     Otherwise returns ``{"effort": <level>}`` where the level is ``high``
     for Opus on a verification phase (the escalation tier) or the phase
     default from :data:`_PHASE_DEFAULT_EFFORT`, clamped to what ``model``
-    supports (``xhigh`` → ``high`` on non-Opus models — see
-    :func:`_clamp_effort_for_model`).
+    supports (see :func:`_clamp_effort_for_model`). No phase declares a
+    level above ``high`` today, so the clamp is currently inert — it stays
+    wired so raising a phase's ceiling again cannot 400 at submit.
     """
     if not model_supports_effort(model):
         return None
