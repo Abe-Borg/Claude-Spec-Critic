@@ -1,5 +1,5 @@
 annotated-types==0.7.0
-anthropic==0.97.0
+anthropic==0.125.0
 anyio==4.13.0
 certifi==2026.4.22
 charset-normalizer==3.4.7

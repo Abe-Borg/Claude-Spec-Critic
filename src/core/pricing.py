@@ -37,11 +37,10 @@ MODEL_PRICING: dict[str, ModelPrice] = {
     "claude-opus-4-8": ModelPrice(5.00, 25.00, "Opus 4.8"),
     "claude-opus-4-7": ModelPrice(5.00, 25.00, "Opus 4.7"),
     "claude-opus-4-6": ModelPrice(5.00, 25.00, "Opus 4.6"),
-    # Sonnet 5 sticker pricing. An introductory discount ($2/$10 per MTok)
-    # runs through 2026-08-31; estimates use the sticker rate so they err
-    # slightly high during the intro window rather than under-forecasting
-    # after it lapses.
-    "claude-sonnet-5": ModelPrice(3.00, 15.00, "Sonnet 5"),
+    # Sonnet 5's introductory pricing ($2/$10 per MTok) was made the
+    # permanent standard price on 2026-08-10 — the previously scheduled
+    # increase to $3/$15 on 2026-09-01 will not occur.
+    "claude-sonnet-5": ModelPrice(2.00, 10.00, "Sonnet 5"),
     "claude-sonnet-4-6": ModelPrice(3.00, 15.00, "Sonnet 4.6"),
     "claude-haiku-4-5": ModelPrice(1.00, 5.00, "Haiku 4.5"),
 }
