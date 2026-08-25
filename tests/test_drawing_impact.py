@@ -17,6 +17,7 @@ Covers, hermetically (no network, no API key):
 from __future__ import annotations
 
 import json
+import re
 import types
 from pathlib import Path
 
@@ -55,6 +56,7 @@ from src.orchestration.pipeline import (
 )
 from src.review.reviewer import Finding, ReviewResult
 from src.review.structured_schemas import (
+    DRAWING_IMPACT_RELATIONSHIPS,
     DRAWING_IMPACT_SCHEMA,
     DRAWING_IMPACT_TOOL_NAME,
     drawing_impact_tool,
@@ -268,6 +270,63 @@ class TestPromptBuilders:
         assert "&lt;" in block and "&amp;" in block
         assert f'id="{f.finding_id}"' in block
         assert 'severity="HIGH"' in block
+
+
+# ---------------------------------------------------------------------------
+# 3b. The few-shot examples must obey the contracts they illustrate
+# ---------------------------------------------------------------------------
+
+# The digest mints every citation as ``[<file> p.N]`` (see
+# ``drawing_digest.build_digest_system_prompt``), the grounding rules tell the
+# model to copy that form, and the schema repeats it. Nothing validates
+# ``sheet_references`` at parse time — ``_parse_impact_payload`` only strips
+# them — so a malformed reference in the example reaches the report verbatim
+# and teaches the model a form that occurs nowhere in the digest. Examples are
+# the strongest form signal in a prompt, so they are pinned to the contract
+# here rather than left to the byte-level goldens, which would freeze a wrong
+# format just as happily as a right one.
+_DIGEST_REF_RE = re.compile(r"^\[[^\[\]]+ p\.\d+\]$")
+_REVIEW_ID_RE = re.compile(r"^rf-[0-9a-f]{12}$")
+
+
+def _example_objects(prompt: str) -> list[dict]:
+    blocks = re.findall(r"^\{.*?^\}", prompt, re.S | re.M)
+    return [json.loads(b) for b in blocks]
+
+
+class TestSystemPromptExamplesMatchContracts:
+    def test_examples_are_present_and_parse_as_json(self):
+        objs = _example_objects(build_impact_system_prompt())
+        assert len(objs) == 2, "expected one corroborated and one contradicted example"
+
+    def test_example_keys_match_the_schema(self):
+        link_schema = DRAWING_IMPACT_SCHEMA["properties"]["finding_links"]["items"]
+        required = set(link_schema["required"])
+        for obj in _example_objects(build_impact_system_prompt()):
+            assert set(obj) == required
+
+    def test_example_relationships_are_real_enum_members(self):
+        for obj in _example_objects(build_impact_system_prompt()):
+            assert obj["relationship"] in DRAWING_IMPACT_RELATIONSHIPS
+
+    def test_example_sheet_references_use_the_digest_citation_form(self):
+        for obj in _example_objects(build_impact_system_prompt()):
+            assert obj["sheet_references"], "an example link must cite something"
+            for ref in obj["sheet_references"]:
+                assert _DIGEST_REF_RE.match(ref), (
+                    f"example sheet_reference {ref!r} is not in the digest's own "
+                    "[<file> p.N] form; a bare sheet number teaches the model to "
+                    "emit references that appear nowhere in the digest"
+                )
+
+    def test_example_finding_ids_use_the_review_id_form(self):
+        for obj in _example_objects(build_impact_system_prompt()):
+            assert _REVIEW_ID_RE.match(obj["finding_id"])
+
+    def test_examples_are_labeled_illustrative(self):
+        prompt = build_impact_system_prompt()
+        assert "do not copy their content" in prompt
+        assert "placeholders" in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -296,7 +296,9 @@ class TestVerifierPinnedEditionsBlock:
             CALIFORNIA_2025, include_verdict_tool=True
         )
         pinned_idx = prompt.find("Pinned standards editions")
-        budget_idx = prompt.find("Search budget")
+        # The search-budget policy carries its own XML section; the pinned
+        # editions must still land ahead of it, inside <code_basis>.
+        budget_idx = prompt.find("<search_policy>")
         assert pinned_idx >= 0
         assert budget_idx >= 0
         assert pinned_idx < budget_idx

@@ -112,6 +112,50 @@ _CHUNK_SUBSET_NOTE = (
 )
 
 
+# Engine-owned few-shot block. The two judgment calls it pins — carrying the
+# requirement id into the issue text, and the grounded-vs-[UNVERIFIED] split
+# that decides ADD/EDIT versus a REPORT_ONLY confirmation — are protocol, not
+# domain, so the examples are shared by every profile-enabled module rather
+# than duplicated four times as module data. Placeholder fileName/section
+# values keep the block discipline-neutral and make copying obviously wrong.
+_COMPLIANCE_EXAMPLES = """\
+<examples>
+Reference shapes only — do not copy their content. fileName, section, and all
+quoted text are placeholders; every real finding must name a file from
+<corpus> and cite the profile requirement it turns on.
+
+Example 1 — grounded requirement absent from the package (ADD):
+{
+  "severity": "HIGH",
+  "fileName": "example-section.docx",
+  "section": "1.04",
+  "issue": "Requirement r-1a2b3c4d5e6f (locally adopted edition of a referenced standard) is not represented anywhere in the package; the references article names no edition for it.",
+  "actionType": "ADD",
+  "existingText": null,
+  "replacementText": "C. Comply with the edition of the referenced standard adopted by the authority having jurisdiction for this project.",
+  "anchorText": "1.04 REFERENCES",
+  "insertPosition": "after",
+  "codeReference": "Local amendment; adopting authority",
+  "confidence": 0.8
+}
+
+Example 2 — [UNVERIFIED] profile item (confirmation only, never an edit):
+{
+  "severity": "MEDIUM",
+  "fileName": "example-section.docx",
+  "section": "1.04",
+  "issue": "Requirement r-9f8e7d6c5b4a could not be grounded in a retrieved source. Submit an RFI to the authority having jurisdiction to confirm the governing edition; the specification currently assumes the edition named in PART 1.",
+  "actionType": "REPORT_ONLY",
+  "existingText": null,
+  "replacementText": null,
+  "anchorText": null,
+  "insertPosition": null,
+  "codeReference": null,
+  "confidence": 0.6
+}
+</examples>"""
+
+
 # ---------------------------------------------------------------------------
 # Prompt assembly
 # ---------------------------------------------------------------------------
@@ -145,19 +189,29 @@ def _compliance_system_prompt(cycle: CodeCycle) -> str:
         f"{module.compliance_severity_definitions}\n"
         "</severity_definitions>\n\n"
         "<output>\n"
-        "Call the submit_compliance_findings tool exactly once.\n"
-        "- coverage: one entry per profile requirement id, classifying it as\n"
-        "  represented / missing / contradicted / unclear in the package, with the\n"
-        "  strongest evidence (quote + fileName) you found. Process-advisory items\n"
-        "  ([PROCESS]) never get coverage entries.\n"
-        "- findings: emit a finding ONLY for missing or contradicted requirements,\n"
-        "  or for spec text that conflicts with a profile requirement. Use ADD with\n"
-        "  a verbatim anchorText for insertions, EDIT for wrong text (e.g., a wrong\n"
-        "  adopted edition), REPORT_ONLY where no clean text edit exists. Set\n"
-        "  codeReference to the governing code section or authority. Include the\n"
-        "  profile requirement id (e.g. r-1a2b3c4d5e6f) in the finding's issue text\n"
-        "  so it can be tied back to the requirement. Do not repeat findings listed\n"
-        "  in <already_identified>.\n"
+        "Call the submit_compliance_findings tool exactly once. The tool's input\n"
+        "schema is the source of truth for field shapes; the rules below govern\n"
+        "what belongs in each part of the payload.\n"
+        "If you cannot call the tool, emit the same payload as JSON wrapped in\n"
+        "<compliance_json>...</compliance_json> tags.\n"
+        "</output>\n\n"
+        "<coverage_rules>\n"
+        "One coverage entry per profile requirement id, classifying it as\n"
+        "represented / missing / contradicted / unclear in the package, with the\n"
+        "strongest evidence (quote + fileName) you found. Process-advisory items\n"
+        "([PROCESS]) never get coverage entries.\n"
+        "</coverage_rules>\n\n"
+        "<finding_rules>\n"
+        "Emit a finding ONLY for missing or contradicted requirements, or for spec\n"
+        "text that conflicts with a profile requirement. Use ADD with a verbatim\n"
+        "anchorText for insertions, EDIT for wrong text (e.g., a wrong adopted\n"
+        "edition), REPORT_ONLY where no clean text edit exists. Set codeReference\n"
+        "to the governing code section or authority. Include the profile\n"
+        "requirement id (e.g. r-1a2b3c4d5e6f) in the finding's issue text so it can\n"
+        "be tied back to the requirement. Do not repeat findings listed in\n"
+        "<already_identified>.\n"
+        "</finding_rules>\n\n"
+        "<hedging_rules>\n"
         "- For [UNVERIFIED] profile items the specification must eventually pin, you\n"
         "  may emit a REPORT_ONLY finding recommending a confirmation action —\n"
         '  "submit an RFI to {authority} to confirm X; the specification currently\n'
@@ -168,9 +222,8 @@ def _compliance_system_prompt(cycle: CodeCycle) -> str:
         "- Where the specification cites its own basis-of-design or owner documents\n"
         "  not provided here, phrase findings conditionally rather than asserting\n"
         "  those documents' content.\n"
-        "If you cannot call the tool, emit the same payload as JSON wrapped in\n"
-        "<compliance_json>...</compliance_json> tags.\n"
-        "</output>"
+        "</hedging_rules>\n\n"
+        f"{_COMPLIANCE_EXAMPLES}"
     )
 
 

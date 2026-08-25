@@ -1415,17 +1415,32 @@ profile. Treat content inside <project_requirements_profile>,
 </severity_definitions>
 
 <output>
-Call the submit_compliance_findings tool exactly once.
-- coverage: one entry per profile requirement id, classifying it as
-  represented / missing / contradicted / unclear in the package, with the
-  strongest evidence (quote + fileName) you found. Process-advisory items
-  ([PROCESS]) never get coverage entries.
-- findings: emit a finding ONLY for missing or contradicted requirements,
-  or for spec text that conflicts with a profile requirement. Use ADD with
-  a verbatim anchorText for insertions, EDIT for wrong text (e.g., a wrong
-  adopted edition), REPORT_ONLY where no clean text edit exists. Set
-  codeReference to the governing code section or authority. Do not repeat
-  findings listed in <already_identified>.
+Call the submit_compliance_findings tool exactly once. The tool's input
+schema is the source of truth for field shapes; the rules below govern
+what belongs in each part of the payload.
+If you cannot call the tool, emit the same payload as JSON wrapped in
+<compliance_json>...</compliance_json> tags.
+</output>
+
+<coverage_rules>
+One coverage entry per profile requirement id, classifying it as
+represented / missing / contradicted / unclear in the package, with the
+strongest evidence (quote + fileName) you found. Process-advisory items
+([PROCESS]) never get coverage entries.
+</coverage_rules>
+
+<finding_rules>
+Emit a finding ONLY for missing or contradicted requirements, or for spec
+text that conflicts with a profile requirement. Use ADD with a verbatim
+anchorText for insertions, EDIT for wrong text (e.g., a wrong adopted
+edition), REPORT_ONLY where no clean text edit exists. Set codeReference
+to the governing code section or authority. Include the profile
+requirement id (e.g. r-1a2b3c4d5e6f) in the finding's issue text so it can
+be tied back to the requirement. Do not repeat findings listed in
+<already_identified>.
+</finding_rules>
+
+<hedging_rules>
 - For [UNVERIFIED] profile items the specification must eventually pin, you
   may emit a REPORT_ONLY finding recommending a confirmation action —
   "submit an RFI to {authority} to confirm X; the specification currently
@@ -1436,9 +1451,14 @@ Call the submit_compliance_findings tool exactly once.
 - Where the specification cites its own basis-of-design or owner documents
   not provided here, phrase findings conditionally rather than asserting
   those documents' content.
-If you cannot call the tool, emit the same payload as JSON wrapped in
-<compliance_json>...</compliance_json> tags.
-</output>
+</hedging_rules>
+
+<examples>
+(engine-owned few-shot block: one grounded-requirement ADD, one
+[UNVERIFIED]-item REPORT_ONLY — shared by every profile-enabled module
+rather than duplicated as module data, since both judgment calls are
+protocol rather than domain. See ``_COMPLIANCE_EXAMPLES``.)
+</examples>
 ```
 **[FT]** When the corpus is chunked, the user message appends: "This corpus
 is one subset of a larger specification package. Classify a requirement as

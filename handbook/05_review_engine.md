@@ -276,13 +276,15 @@ cycle and has a fixed skeleton:
 - An **`<output>`** block restating the schema's field rules in prose (verbatim
   `existingText` for EDIT/DELETE; `anchorText` + `insertPosition` for ADD; all
   edit fields null for REPORT_ONLY) and naming the `<findings_json>` text
-  fallback for the path where the tool call is skipped.
+  fallback for the path where the tool call is skipped. Its `REPORT_ONLY`
+  bullet is also where the *editability* rule lives: when a finding needs
+  spec-author judgement, a decision between disciplines, or a multi-paragraph
+  rewrite, report it as `REPORT_ONLY` "rather than either suppressing it or
+  inventing an edit to carry it" — one statement covering both failure modes,
+  rather than the three overlapping restatements the prompt used to carry.
 - A set of stable **`<examples>`** — one valid EDIT, one valid ADD, one
   `REPORT_ONLY`, and a *negative* example ("generic boilerplate is not a
   finding"). These are few-shot anchors for the desired output shape.
-- An **editability clause** spelling out when to choose `REPORT_ONLY`, with an
-  explicit "do not self-censor real coordination problems just because the fix is
-  not a one-line replacement."
 - A **`<review_scope>`** of **17 categories** — the substantive domain content.
 
 That category list is the prompt's center of gravity, and one entry is called out

@@ -608,7 +608,7 @@ def _get_verification_system_prompt(
 ) -> str:
     """Build the verifier system prompt.
 
-    The Tool usage section is conditional on ``include_verdict_tool``.
+    The ``<tool_usage>`` section is conditional on ``include_verdict_tool``.
     When False, the prompt must not claim the model has the verdict tool
     because the request payload won't include it. Defaults to mirroring
     :func:`verification_request_includes_verdict_tool` so the prompt
@@ -620,27 +620,37 @@ def _get_verification_system_prompt(
     # content (resolved via the unique-label bridge); everything else in
     # this prompt is engine protocol shared by every module.
     module = module_for_cycle(cycle)
+    # Each distinct concern rides its own XML section so the model can tell
+    # verdict rules from search policy from tool mechanics — this prompt
+    # multiplexes the most concerns of any in the app.
     base_lines = [
         module.verifier_persona,
         "Your job is to verify or dispute a single finding using web search evidence.",
         "",
+        "<verdict_rules>",
         "Use web search before rendering a verdict.",
         "Do not speculate. Render CONFIRMED or CORRECTED only when a source you actually retrieved supports the claim; otherwise return UNVERIFIED.",
         "Do not invent URLs. Leave sources as [] if reliable references are unavailable.",
+        "</verdict_rules>",
         "",
+        "<code_basis>",
         *module.verifier_system_code_basis_lines.format(
             **code_basis_format_kwargs(cycle)
         ).splitlines(),
         "",
         *_pinned_standards_lines(cycle),
-        "Search budget:",
+        "</code_basis>",
+        "",
+        "<search_policy>",
         "- Your web_search budget is bounded and varies by severity (high-stakes findings",
         "  get more headroom). The exact ceiling is enforced per call; treat it as scarce.",
         "- Make your first query specific enough (include code section, edition, and the",
         "  exact claim being checked) so most findings settle in one or two searches.",
         "- Use additional searches only when a primary source contradicts a secondary one,",
         "  or when the first results don't include the authoritative passage.",
+        "</search_policy>",
         "",
+        "<source_priorities>",
         "Prefer authoritative sources in this priority order:",
         "",
         *module.verifier_source_priorities.splitlines(),
@@ -649,12 +659,12 @@ def _get_verification_system_prompt(
         "When a regulatory source conflicts with a manufacturer datasheet, treat the",
         "regulatory source as authoritative.",
         "Search diligently for a primary source, but when none of the sources you retrieved supports the claim, return UNVERIFIED rather than guessing — an ungrounded CONFIRMED is downgraded to UNVERIFIED anyway, so a guess only wastes the call.",
+        "</source_priorities>",
         "",
     ]
     if include_verdict_tool:
         tool_lines = [
-            "Tool usage:",
-            "",
+            "<tool_usage>",
             "- The available tools are ``web_search`` (server-side) and",
             "  ``submit_verification_verdict`` (the structured verdict tool).",
             "- Call web_search first, then call submit_verification_verdict exactly",
@@ -664,7 +674,7 @@ def _get_verification_system_prompt(
             "  if you cannot call the tool, emit the verdict as a JSON object with",
             "  the same field names (verdict, explanation, sources, source_quote,",
             "  correction) so it can still be parsed.",
-            "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
+            "</tool_usage>",
         ]
     else:
         # Structured outputs disabled: the request payload only includes
@@ -672,13 +682,12 @@ def _get_verification_system_prompt(
         # The model emits a plain JSON object that the text fallback parser
         # in :func:`_parse_verification_response` consumes.
         tool_lines = [
-            "Tool usage:",
-            "",
+            "<tool_usage>",
             "- The available tool is ``web_search`` (server-side).",
             "- Call web_search first, then emit your verdict as a JSON object",
             "  with the fields verdict, explanation, sources, source_quote, and",
             "  (for CORRECTED only) correction so it can be parsed.",
-            "- If continuing from a paused turn, finish pending work instead of restarting from scratch.",
+            "</tool_usage>",
         ]
     # Every grounded verdict must carry the
     # verbatim snippet text the model actually read. Without that quote
@@ -687,7 +696,8 @@ def _get_verification_system_prompt(
     # UNVERIFIED at parse time (see ``_demote_if_missing_source_quote``).
     quote_lines = [
         "",
-        "Source quote (CRITICAL for CONFIRMED / CORRECTED):",
+        "<source_quote_requirements>",
+        "Required whenever you render CONFIRMED or CORRECTED.",
         "",
         "- When you render a CONFIRMED or CORRECTED verdict, also extract the",
         "  verbatim text from the web_search result snippet that supports your",
@@ -709,6 +719,7 @@ def _get_verification_system_prompt(
         '  "source_quote": "Section 10.2.5.2.1 The maximum distance between sprinklers shall not exceed 15 ft (4.6 m) for ordinary hazard occupancies.",',
         '  "correction": null',
         "}",
+        "</source_quote_requirements>",
     ]
     # When the verification routing decision
     # attached the ``web_fetch`` tool (STANDARD_REASONING and
@@ -722,7 +733,8 @@ def _get_verification_system_prompt(
     # guidance accordingly: "if web_fetch is available, ...".
     fetch_lines = [
         "",
-        "Tool usage — web_fetch (when available):",
+        "<web_fetch_usage>",
+        "Applies when web_fetch is attached to this call.",
         "",
         "- ``web_fetch`` is a server-side tool that retrieves the full text",
         "  of a URL that previously appeared in a web_search result. Use it",
@@ -743,8 +755,20 @@ def _get_verification_system_prompt(
         "  web_search result in this conversation. If you want to read a",
         "  page that has not yet been surfaced by search, issue a web_search",
         "  that will return that URL first.",
+        "</web_fetch_usage>",
     ]
-    return "\n".join(base_lines + tool_lines + quote_lines + fetch_lines)
+    # Hoisted out of both ``tool_lines`` branches: the resume directive is
+    # its own concern and applies identically whether or not the verdict
+    # tool is attached, so it is stated once here instead of twice above.
+    continuation_lines = [
+        "",
+        "<continuation_note>",
+        "If continuing from a paused turn, finish pending work instead of restarting from scratch.",
+        "</continuation_note>",
+    ]
+    return "\n".join(
+        base_lines + tool_lines + quote_lines + fetch_lines + continuation_lines
+    )
 
 
 def _content_block_to_plain(block) -> dict | None:
