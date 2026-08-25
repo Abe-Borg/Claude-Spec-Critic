@@ -238,7 +238,36 @@ def build_impact_system_prompt() -> str:
         "Fallback: if for any reason you cannot call the tool, emit the JSON "
         "object wrapped in <drawing_impact_json>...</drawing_impact_json> "
         "tags. Prefer the tool.\n"
-        "</output>"
+        "</output>\n"
+        "\n"
+        "<examples>\n"
+        "Reference shapes only — do not copy their content. The ids and sheet "
+        "references below are placeholders; use only ids from the REVIEW "
+        "FINDINGS list and page references present in the digest.\n"
+        "\n"
+        "Example finding_link — corroborated (the drawings independently show "
+        "what the finding asserts about the spec):\n"
+        "{\n"
+        '  "finding_id": "rf-1a2b3c4d5e6f",\n'
+        '  "relationship": "corroborated",\n'
+        '  "explanation": "The equipment schedule on the drawings lists the '
+        'same capacity the finding flags the specification as omitting, '
+        'confirming the omission is a spec gap rather than a drawing '
+        'conflict.",\n'
+        '  "sheet_references": ["M-501 p.12"]\n'
+        "}\n"
+        "\n"
+        "Example finding_link — contradicted (the drawings show something the "
+        "finding's premise does not hold against):\n"
+        "{\n"
+        '  "finding_id": "rf-9f8e7d6c5b4a",\n'
+        '  "relationship": "contradicted",\n'
+        '  "explanation": "The finding reads the specification as requiring a '
+        'device the drawings do not show anywhere; the general notes assign '
+        'that scope to another package, so the requirement is not missing.",\n'
+        '  "sheet_references": ["E-001 p.3"]\n'
+        "}\n"
+        "</examples>"
     )
 
 

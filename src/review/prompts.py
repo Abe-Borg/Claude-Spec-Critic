@@ -34,20 +34,8 @@ _TASK_TEXT = (
     "classify severity, provide a confidence score, and provide actionable corrections.\n"
     "Cover the full scope listed below, including AEC constructability and coordination "
     "categories. Treat coordination, TAB/commissioning, scheduling, and closeout-quality "
-    "items as in-scope when supported by spec text — do not invent issues to fill "
-    "categories. Review every article in every specification. Return exactly as many "
-    "findings as genuinely supported, including zero."
-)
-
-
-_EDITABILITY_CLAUSE = (
-    "\nWhen a finding cannot be expressed as a clean edit (e.g., it requires "
-    "spec-author judgement, a meeting between disciplines, or a multi-paragraph "
-    "rewrite), set actionType to REPORT_ONLY and leave existingText, "
-    "replacementText, anchorText, and insertPosition null. Use the issue field "
-    "to describe the problem and the recommended follow-up. The report still "
-    "surfaces REPORT_ONLY findings — do not self-censor real coordination "
-    "problems just because the fix is not a one-line replacement.\n"
+    "items as in-scope when supported by spec text. Review every article in every "
+    "specification. Return exactly as many findings as genuinely supported, including zero."
 )
 
 
@@ -98,9 +86,12 @@ Notes that are not enforced by schema:
   REPORT_ONLY by the parser, so emitting it that way wastes output.
 - For actionType "REPORT_ONLY", leave existingText, replacementText,
   anchorText, and insertPosition all null. Use this when the finding is
-  real but cannot be expressed as a clean text edit (coordination,
-  interpretation, multi-paragraph rewrite). The report still includes
-  REPORT_ONLY findings; only the edit pipeline skips them.
+  real but cannot be expressed as a clean text edit — it needs spec-author
+  judgement, a decision between disciplines, or a multi-paragraph rewrite.
+  Describe the problem and the recommended follow-up in the issue field.
+  The report still includes REPORT_ONLY findings; only the edit pipeline
+  skips them — so report a real problem this way rather than either
+  suppressing it or inventing an edit to carry it.
 - Use null (not empty string) for fields that don't apply.
 
 Fallback: if for any reason you cannot call the submit_review_findings
@@ -120,15 +111,14 @@ evidence quoted from the spec under review.
 
 {module.review_examples}
 </examples>
-{_EDITABILITY_CLAUSE}
+
 <review_procedure>
 Work through each specification section in order. For every substantive requirement:
 1. Identify the requirement the paragraph actually states.
 2. Check it against the current code cycle and the pinned standard editions listed below.
 3. Check it against sibling sections, schedules, and defined terms cited in the same file.
 4. Emit a finding only when you can quote the exact spec text you are flagging; set confidence per the rubric above.
-5. When a real problem has no clean textual fix, prefer REPORT_ONLY over inventing an edit.
-Do not emit findings for standard boilerplate, and do not force findings to fill a category.
+Do not emit findings for standard boilerplate.
 </review_procedure>
 
 <review_scope>

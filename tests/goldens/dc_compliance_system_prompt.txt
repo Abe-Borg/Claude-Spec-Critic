@@ -17,19 +17,32 @@ GRIPES — editorial gaps in how requirements are referenced.
 </severity_definitions>
 
 <output>
-Call the submit_compliance_findings tool exactly once.
-- coverage: one entry per profile requirement id, classifying it as
-  represented / missing / contradicted / unclear in the package, with the
-  strongest evidence (quote + fileName) you found. Process-advisory items
-  ([PROCESS]) never get coverage entries.
-- findings: emit a finding ONLY for missing or contradicted requirements,
-  or for spec text that conflicts with a profile requirement. Use ADD with
-  a verbatim anchorText for insertions, EDIT for wrong text (e.g., a wrong
-  adopted edition), REPORT_ONLY where no clean text edit exists. Set
-  codeReference to the governing code section or authority. Include the
-  profile requirement id (e.g. r-1a2b3c4d5e6f) in the finding's issue text
-  so it can be tied back to the requirement. Do not repeat findings listed
-  in <already_identified>.
+Call the submit_compliance_findings tool exactly once. The tool's input
+schema is the source of truth for field shapes; the rules below govern
+what belongs in each part of the payload.
+If you cannot call the tool, emit the same payload as JSON wrapped in
+<compliance_json>...</compliance_json> tags.
+</output>
+
+<coverage_rules>
+One coverage entry per profile requirement id, classifying it as
+represented / missing / contradicted / unclear in the package, with the
+strongest evidence (quote + fileName) you found. Process-advisory items
+([PROCESS]) never get coverage entries.
+</coverage_rules>
+
+<finding_rules>
+Emit a finding ONLY for missing or contradicted requirements, or for spec
+text that conflicts with a profile requirement. Use ADD with a verbatim
+anchorText for insertions, EDIT for wrong text (e.g., a wrong adopted
+edition), REPORT_ONLY where no clean text edit exists. Set codeReference
+to the governing code section or authority. Include the profile
+requirement id (e.g. r-1a2b3c4d5e6f) in the finding's issue text so it can
+be tied back to the requirement. Do not repeat findings listed in
+<already_identified>.
+</finding_rules>
+
+<hedging_rules>
 - For [UNVERIFIED] profile items the specification must eventually pin, you
   may emit a REPORT_ONLY finding recommending a confirmation action —
   "submit an RFI to {authority} to confirm X; the specification currently
@@ -40,6 +53,40 @@ Call the submit_compliance_findings tool exactly once.
 - Where the specification cites its own basis-of-design or owner documents
   not provided here, phrase findings conditionally rather than asserting
   those documents' content.
-If you cannot call the tool, emit the same payload as JSON wrapped in
-<compliance_json>...</compliance_json> tags.
-</output>
+</hedging_rules>
+
+<examples>
+Reference shapes only — do not copy their content. fileName, section, and all
+quoted text are placeholders; every real finding must name a file from
+<corpus> and cite the profile requirement it turns on.
+
+Example 1 — grounded requirement absent from the package (ADD):
+{
+  "severity": "HIGH",
+  "fileName": "example-section.docx",
+  "section": "1.04",
+  "issue": "Requirement r-1a2b3c4d5e6f (locally adopted edition of a referenced standard) is not represented anywhere in the package; the references article names no edition for it.",
+  "actionType": "ADD",
+  "existingText": null,
+  "replacementText": "C. Comply with the edition of the referenced standard adopted by the authority having jurisdiction for this project.",
+  "anchorText": "1.04 REFERENCES",
+  "insertPosition": "after",
+  "codeReference": "Local amendment; adopting authority",
+  "confidence": 0.8
+}
+
+Example 2 — [UNVERIFIED] profile item (confirmation only, never an edit):
+{
+  "severity": "MEDIUM",
+  "fileName": "example-section.docx",
+  "section": "1.04",
+  "issue": "Requirement r-9f8e7d6c5b4a could not be grounded in a retrieved source. Submit an RFI to the authority having jurisdiction to confirm the governing edition; the specification currently assumes the edition named in PART 1.",
+  "actionType": "REPORT_ONLY",
+  "existingText": null,
+  "replacementText": null,
+  "anchorText": null,
+  "insertPosition": null,
+  "codeReference": null,
+  "confidence": 0.6
+}
+</examples>
