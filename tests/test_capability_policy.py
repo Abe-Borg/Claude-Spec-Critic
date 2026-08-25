@@ -150,11 +150,11 @@ class TestOpus5Whitelisted:
             "type": "adaptive"
         }
 
-    def test_review_runs_xhigh_effort_natively(self) -> None:
-        # Opus 5 accepts the full effort ladder, so review's declared xhigh
-        # survives ``_clamp_effort_for_model`` untouched.
+    def test_review_runs_high_effort_natively(self) -> None:
+        # Review declares ``high``; Opus 5 accepts the full ladder, so the
+        # level survives ``_clamp_effort_for_model`` untouched.
         assert effort_config_for(model=MODEL_OPUS_5, phase=PHASE_REVIEW) == {
-            "effort": "xhigh"
+            "effort": "high"
         }
 
     def test_high_effort_on_verification_escalation(self) -> None:
@@ -166,7 +166,7 @@ class TestOpus5Whitelisted:
         """Opus 5 rejects ``thinking={"type": "disabled"}`` at effort
         ``xhigh``/``max`` with a 400. The policy never emits ``disabled`` — it
         omits the key entirely — so the two can never be paired. Pinned
-        because the review phase runs at ``xhigh``."""
+        independently of the effort ceiling, which is a tuning knob."""
         kwargs: dict = {"model": MODEL_OPUS_5, "max_tokens": 1000}
         result = apply_thinking_config(kwargs, model=MODEL_OPUS_5, phase=PHASE_REVIEW)
         assert result["thinking"] == {"type": "adaptive"}
@@ -279,18 +279,38 @@ class TestUnknownModelWarnsLoudly:
 
 
 class TestEffortPolicy:
-    """Per-phase effort levels. Review and cross-check default to ``xhigh``
-    (Anthropic's recommended starting point for coding/agentic work);
-    verification stays medium (Sonnet) / high (Opus escalation) so the
-    verdict envelope doesn't balloon. ``xhigh`` is gated per model via
-    ``supports_xhigh_effort`` (Opus 5, Opus 4.8 and Sonnet 5 accept it;
-    Sonnet 4.6 clamps to ``high`` — see ``TestXhighClampGating``)."""
+    """Per-phase effort levels. The deep-reasoning phases (review,
+    cross-check, compliance) default to ``high`` — lowered from ``xhigh`` as a
+    token-spend measure; verification stays medium (Sonnet) / high (Opus
+    escalation) so the verdict envelope doesn't balloon. No phase declares a
+    level above ``high``, which ``test_no_phase_exceeds_high`` pins."""
 
-    def test_review_uses_xhigh(self) -> None:
-        # Review defaults to Opus 5, which accepts xhigh.
+    def test_review_uses_high(self) -> None:
         assert effort_config_for(model=MODEL_OPUS_5, phase=api_config.PHASE_REVIEW) == {
-            "effort": "xhigh"
+            "effort": "high"
         }
+
+    def test_deep_phases_use_high(self) -> None:
+        # Review / cross-check / compliance moved off ``xhigh`` together and
+        # must stay in lockstep — a partial revert is the likely mistake.
+        for phase in (
+            api_config.PHASE_REVIEW,
+            api_config.PHASE_CROSS_CHECK,
+            api_config.PHASE_COMPLIANCE,
+        ):
+            assert api_config._PHASE_DEFAULT_EFFORT[phase] == "high", phase
+
+    def test_no_phase_exceeds_high(self) -> None:
+        # The declared ceiling. ``xhigh``/``max`` cost materially more output
+        # per call, so re-introducing one is a deliberate decision that should
+        # fail this test first and be re-pinned on purpose.
+        allowed = {"low", "medium", "high"}
+        offenders = {
+            phase: level
+            for phase, level in api_config._PHASE_DEFAULT_EFFORT.items()
+            if level not in allowed
+        }
+        assert offenders == {}, offenders
 
     def test_sonnet_verification_stays_medium(self) -> None:
         # The xhigh bump must not leak into verification — the initial pass is
@@ -318,51 +338,59 @@ class TestXhighClampGating:
     """Regression: ``xhigh`` is rejected at submit (HTTP 400 "This model does
     not support effort level 'xhigh'. Supported levels: high, low, max,
     medium.") by models without the ``supports_xhigh_effort`` capability —
-    Sonnet 4.6 among them. When the cross-check phase (``xhigh`` default) ran
-    on Sonnet 4.6, every cross-spec coordination pass used to 400 at submit
-    and produce zero findings. ``effort_config_for`` must clamp ``xhigh``
-    down to ``high`` on any model whose capability entry lacks the flag —
-    while passing it through natively on Opus 4.8 and Sonnet 5."""
+    Sonnet 4.6 among them. When the cross-check phase (``xhigh`` default at
+    the time) ran on Sonnet 4.6, every cross-spec coordination pass used to
+    400 at submit and produce zero findings.
 
-    def test_cross_check_on_sonnet_46_clamps_to_high(self) -> None:
-        # The historical bug: this returned {"effort": "xhigh"} → 400. A
-        # pinned SPEC_CRITIC override to Sonnet 4.6 must still clamp.
-        assert effort_config_for(
-            model=MODEL_SONNET_46, phase=api_config.PHASE_CROSS_CHECK
-        ) == {"effort": "high"}
+    No phase declares ``xhigh`` any more (the deep phases were lowered to
+    ``high`` for token spend), so the clamp is currently inert on every real
+    call path. These tests therefore exercise ``_clamp_effort_for_model``
+    directly rather than through a phase lookup — asserting the clamp via
+    ``effort_config_for(PHASE_CROSS_CHECK)`` would now pass for the wrong
+    reason (the phase declares ``high`` outright) and would silently stop
+    protecting anything. The guard has to stay honest for the day someone
+    raises a phase's ceiling back to ``xhigh``."""
 
-    def test_cross_check_default_model_runs_xhigh_natively(self) -> None:
-        # Pin the real wiring: cross-check's default model (Sonnet 5) carries
-        # supports_xhigh_effort, so the phase's declared xhigh survives — and
-        # is only ever sent to a model whose whitelist entry vouches for it.
-        cfg = effort_config_for(
-            model=api_config.CROSS_CHECK_MODEL_DEFAULT,
-            phase=api_config.PHASE_CROSS_CHECK,
-        )
-        assert cfg == {"effort": "xhigh"}
+    def test_clamp_fires_for_models_without_the_flag(self) -> None:
+        # The historical bug, at the layer that actually prevents it: a phase
+        # declaring xhigh on Sonnet 4.6 must come back as high, not 400.
+        assert api_config._clamp_effort_for_model(
+            api_config.EFFORT_XHIGH, MODEL_SONNET_46
+        ) == "high"
+
+    def test_clamp_preserves_xhigh_where_supported(self) -> None:
+        for model in (MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5):
+            assert model_capabilities(model).supports_xhigh_effort is True
+            assert api_config._clamp_effort_for_model(
+                api_config.EFFORT_XHIGH, model
+            ) == "xhigh"
+
+    def test_restoring_xhigh_on_a_deep_phase_stays_safe(self) -> None:
+        # End-to-end proof that the guard still works through the real
+        # lookup: temporarily declare xhigh on cross-check and confirm it
+        # survives on a capable model and clamps on Sonnet 4.6. This is the
+        # scenario the clamp exists for, and it is unreachable without the
+        # patch now that every phase sits at high.
+        patched = dict(api_config._PHASE_DEFAULT_EFFORT)
+        patched[api_config.PHASE_CROSS_CHECK] = api_config.EFFORT_XHIGH
+        original = api_config._PHASE_DEFAULT_EFFORT
+        api_config._PHASE_DEFAULT_EFFORT = patched
+        try:
+            assert effort_config_for(
+                model=MODEL_SONNET_5, phase=api_config.PHASE_CROSS_CHECK
+            ) == {"effort": "xhigh"}
+            assert effort_config_for(
+                model=MODEL_SONNET_46, phase=api_config.PHASE_CROSS_CHECK
+            ) == {"effort": "high"}
+        finally:
+            api_config._PHASE_DEFAULT_EFFORT = original
+
+    def test_cross_check_default_model_could_take_xhigh(self) -> None:
+        # Cross-check's default model still carries the flag — the phase runs
+        # at high by policy, not because Sonnet 5 cannot go higher.
         assert model_capabilities(
             api_config.CROSS_CHECK_MODEL_DEFAULT
         ).supports_xhigh_effort is True
-
-    def test_review_on_sonnet_46_override_clamps_to_high(self) -> None:
-        # Latent variant: SPEC_CRITIC_REVIEW_MODEL=claude-sonnet-4-6 would
-        # otherwise 400.
-        assert effort_config_for(
-            model=MODEL_SONNET_46, phase=api_config.PHASE_REVIEW
-        ) == {"effort": "high"}
-
-    def test_xhigh_capable_models_keep_xhigh_on_deep_phases(self) -> None:
-        # Opus 5, Opus 4.8 and Sonnet 5 all accept xhigh — the clamp must
-        # not strip it.
-        for model in (MODEL_OPUS_5, MODEL_OPUS_48, MODEL_SONNET_5):
-            for phase in (
-                api_config.PHASE_REVIEW,
-                api_config.PHASE_CROSS_CHECK,
-                api_config.PHASE_COMPLIANCE,
-            ):
-                assert effort_config_for(model=model, phase=phase) == {
-                    "effort": "xhigh"
-                }
 
     def test_unknown_model_clamps_xhigh(self) -> None:
         # Conservative default capabilities leave supports_xhigh_effort off.
