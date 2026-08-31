@@ -1,6 +1,6 @@
 annotated-types==0.7.0
-anthropic==0.125.0
-anyio==4.13.0
+anthropic==1.2.0
+anyio==4.14.2
 certifi==2026.4.22
 charset-normalizer==3.4.7
 colorama==0.4.6
@@ -9,9 +9,9 @@ darkdetect==0.8.0
 distro==1.9.0
 docstring_parser==0.18.0
 h11==0.16.0
-httpcore==1.0.9
-httpx==0.28.1
-idna==3.13
+httpcore2==2.12.0
+httpx2==2.12.0
+idna==3.19
 iniconfig==2.3.0
 jiter==0.14.0
 lxml==6.1.0
@@ -29,6 +29,7 @@ requests==2.33.1
 sniffio==1.3.1
 tiktoken==0.12.0
 tkinterdnd2==0.4.3
+truststore==0.10.4
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.6.3
