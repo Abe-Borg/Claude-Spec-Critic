@@ -104,6 +104,35 @@ class ProfileKeywords:
 
 
 @dataclass(frozen=True)
+class SourceTier:
+    """One authoritative-source tier for the verifier prompt.
+
+    The ``<source_priorities>`` tier list and the ``<web_fetch_usage>``
+    ordering sentence used to be two independently authored strings per
+    module that restated the same ranking. Nothing tied them together, so a
+    tier added or re-ordered in one could silently miss the other. Both
+    renderings now derive from this one ordered tuple
+    (:meth:`ReviewModule.render_source_priority_lines` and
+    :meth:`ReviewModule.fetch_priority_ordering`), so the *ordering* cannot
+    drift; only a tier's short fetch wording is authored separately, and a
+    tier with no ``fetch_label`` simply is not named in the fetch sentence
+    (several tiers are search-only by design).
+
+    Attributes:
+        label: Tier heading rendered after the tier number.
+        entries: The domains / descriptive text listed under the heading.
+            May be multi-line — the renderer indents each line, so author it
+            hand-wrapped exactly as it should appear.
+        fetch_label: Short phrase naming this tier inside the derived
+            ``web_fetch`` ordering (``A > B > C``). Empty ⇒ omitted there.
+    """
+
+    label: str
+    entries: str
+    fetch_label: str = ""
+
+
+@dataclass(frozen=True)
 class ChunkGroup:
     """One CSI-division family for chunked cross-spec coordination.
 
@@ -288,22 +317,14 @@ class ReviewModule:
         cross_check_severity_definitions: Severity anchor lines for the
             cross-check prompt (block interior only).
         verifier_persona: First line of the verifier system prompt.
-        verifier_source_priorities: The numbered authoritative-source tier
-            list for the verifier prompt (the ``Prefer authoritative
-            sources`` header and the surrounding guidance are engine
-            protocol; the tiers and domains are the domain content).
-        verifier_fetch_priorities: The ``web_fetch`` bullet naming which
-            already-retrieved source to read in full first. A condensed
-            restatement of ``verifier_source_priorities`` in prose, so it
-            names jurisdiction-specific authorities and is domain content
-            for the same reason the tier list is. Supplied pre-wrapped —
-            the engine splits it into lines verbatim, exactly as it does
-            for the tier list — because the surrounding web_fetch usage
-            guidance (what the tool does, the budget, the blocklist note)
-            is engine protocol and must stay byte-identical across
-            modules. Hardcoded to the California ordering until v3.4.0,
-            which leaked "California regulatory pages" into every
-            non-California verifier prompt.
+        verifier_source_tiers: The ordered authoritative-source tiers for the
+            verifier prompt (see :class:`SourceTier`). The ``Prefer
+            authoritative sources`` header, the surrounding guidance, and the
+            ``web_fetch`` bullet's protocol sentence are engine-owned; the
+            tiers, their domains, and their short fetch labels are the domain
+            content. Both the numbered tier list and the ``web_fetch``
+            ordering render from this one tuple, so the two cannot disagree
+            about the ranking.
         review_user_code_basis_line: The "Current code cycle: …" line of the
             review user message. Like every ``*_code_basis_line*`` slot, a
             template formatted against :func:`code_basis_format_kwargs` —
@@ -356,8 +377,7 @@ class ReviewModule:
     cross_check_persona: str
     cross_check_severity_definitions: str
     verifier_persona: str
-    verifier_source_priorities: str
-    verifier_fetch_priorities: str
+    verifier_source_tiers: tuple[SourceTier, ...]
     # --- Code-basis rendering + detector vocabulary (Phase 3) ----------
     review_user_code_basis_line: str
     cross_check_code_basis_line: str
@@ -404,10 +424,40 @@ class ReviewModule:
         _coerce_str_tuple_fields(self, ("corpus_signal_patterns",))
         # Coerce list-valued dataclass-tuple fields (config-loaded module
         # data arrives with lists); keeps the frozen dataclass hashable.
-        for field_name in ("research_dimensions", "polity_suspect_tokens"):
+        for field_name in (
+            "research_dimensions",
+            "polity_suspect_tokens",
+            "verifier_source_tiers",
+        ):
             value = getattr(self, field_name)
             if not isinstance(value, tuple):
                 object.__setattr__(self, field_name, tuple(value))
+
+    def render_source_priority_lines(self) -> list[str]:
+        """Render the numbered authoritative-source tier list.
+
+        The engine splices these lines into the verifier prompt's
+        ``<source_priorities>`` section under its own header. Tier numbers are
+        derived, so inserting a tier renumbers the rest automatically.
+        """
+        lines: list[str] = []
+        for number, tier in enumerate(self.verifier_source_tiers, start=1):
+            if lines:
+                lines.append("")
+            lines.append(f"{number}. {tier.label}:")
+            lines.extend(f"   {line}" for line in tier.entries.splitlines())
+        return lines
+
+    def fetch_priority_ordering(self) -> str:
+        """The ``A > B > C`` ordering for the verifier's ``web_fetch`` guidance.
+
+        Derived from the same tuple that renders the tier list, in tier order,
+        naming only the tiers that carry a ``fetch_label`` — which is what
+        makes the fetch ordering incapable of contradicting the tier ranking.
+        """
+        return " > ".join(
+            tier.fetch_label for tier in self.verifier_source_tiers if tier.fetch_label
+        )
 
 
 _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
@@ -420,8 +470,6 @@ _PROMPT_SLOT_FIELDS: tuple[str, ...] = (
     "cross_check_persona",
     "cross_check_severity_definitions",
     "verifier_persona",
-    "verifier_source_priorities",
-    "verifier_fetch_priorities",
     "review_user_code_basis_line",
     "cross_check_code_basis_line",
     "verifier_system_code_basis_lines",
@@ -713,6 +761,52 @@ def _validate_chunk_groups(module: ReviewModule) -> None:
             seen_prefixes.add(prefix)
 
 
+def _validate_source_tiers(module: ReviewModule) -> None:
+    """Fail fast on verifier source tiers a module author got wrong.
+
+    Both the ``<source_priorities>`` list and the ``web_fetch`` ordering
+    render from this tuple, so an empty or malformed tier would degrade two
+    prompt sections at once. The ``>= 2`` fetch-label rule keeps the derived
+    ordering sentence meaningful — a one-item "A" ordering reads as a typo.
+    """
+    tiers = module.verifier_source_tiers
+    if not tiers:
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: verifier_source_tiers is empty "
+            "— the verifier prompt would list no authoritative sources"
+        )
+    seen_labels: set[str] = set()
+    for tier in tiers:
+        if not isinstance(tier, SourceTier):
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: verifier_source_tiers "
+                f"entries must be SourceTier, got {type(tier).__name__}"
+            )
+        if not tier.label.strip() or not tier.entries.strip():
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: source tier needs a "
+                f"non-empty label and entries (got label {tier.label!r})"
+            )
+        if tier.label in seen_labels:
+            raise ValueError(
+                f"ReviewModule {module.module_id!r}: duplicate source tier "
+                f"label {tier.label!r}"
+            )
+        seen_labels.add(tier.label)
+    fetch_labels = [t.fetch_label for t in tiers if t.fetch_label.strip()]
+    if len(fetch_labels) < 2:
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: at least two source tiers must "
+            "carry a fetch_label — they render the verifier's web_fetch "
+            f"ordering (got {fetch_labels})"
+        )
+    if len(set(fetch_labels)) != len(fetch_labels):
+        raise ValueError(
+            f"ReviewModule {module.module_id!r}: duplicate fetch_label in "
+            f"verifier_source_tiers ({fetch_labels})"
+        )
+
+
 def _validate_research_slots(module: ReviewModule) -> None:
     """Enforce the D-2 conditional rule on the profile-gated content slots.
 
@@ -869,6 +963,7 @@ def _validate_module_content(module: ReviewModule) -> None:
     _validate_detector_vocabulary(module)
     _validate_profile_keywords(module)
     _validate_chunk_groups(module)
+    _validate_source_tiers(module)
     _validate_research_slots(module)
     _validate_review_examples(module)
 

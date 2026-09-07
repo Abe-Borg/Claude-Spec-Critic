@@ -20,7 +20,13 @@ profile keywords, cross-check chunk map) moves in later phases.
 from __future__ import annotations
 
 from ..core.code_cycles import CALIFORNIA_2025
-from .base import ChunkGroup, DetectorVocabulary, ProfileKeywords, ReviewModule
+from .base import (
+    ChunkGroup,
+    DetectorVocabulary,
+    ProfileKeywords,
+    ReviewModule,
+    SourceTier,
+)
 
 # The review-scope category list. May reference the placeholders documented
 # by :func:`src.modules.base.code_basis_format_kwargs`; formatted against the
@@ -97,7 +103,35 @@ Example 3 — REPORT_ONLY (cross-section coordination, no clean text edit):
   "confidence": 0.7
 }
 
-Example 4 — DO NOT REPORT (generic boilerplate is not a finding):
+Example 4 — valid EDIT at CRITICAL severity (a life-safety rating a plan
+checker will reject):
+{
+  "severity": "CRITICAL",
+  "fileName": "23 33 00 Air Duct Accessories.docx",
+  "section": "2.04",
+  "issue": "Combination fire/smoke dampers are specified without the fire-resistance rating and leakage class required for the assemblies they penetrate, so the submittal cannot be reviewed against the rated construction.",
+  "actionType": "EDIT",
+  "existingText": "B. Provide combination fire/smoke dampers at rated wall penetrations.",
+  "replacementText": "B. Provide combination fire/smoke dampers, labeled and listed for the fire-resistance rating of each penetrated assembly and for the leakage class required by the smoke-control application, at rated wall penetrations.",
+  "codeReference": "CBC (current cycle)",
+  "confidence": 0.88
+}
+
+Example 5 — valid DELETE (remove a requirement that belongs to another
+discipline):
+{
+  "severity": "MEDIUM",
+  "fileName": "23 05 00 Common HVAC.docx",
+  "section": "2.02",
+  "issue": "A panelboard requirement from an electrical master specification was left in this mechanical section. Division 26 specifies this work, and leaving it here assigns the same scope twice.",
+  "actionType": "DELETE",
+  "existingText": "D. Provide 208Y/120 V panelboards with copper bus and bolt-on circuit breakers.",
+  "replacementText": null,
+  "codeReference": null,
+  "confidence": 0.75
+}
+
+Example 6 — DO NOT REPORT (generic boilerplate is not a finding):
 The phrase "Coordinate with related work specified in other Sections" is
 standard Division 23 boilerplate. It is not a contradiction, not a code-cycle
 issue, and not an invalid reference. Do not emit a finding for boilerplate
@@ -124,42 +158,58 @@ GRIPES — minor coordination polish items (e.g., inconsistent section-number fo
 # guidance ("Prefer authoritative sources in this priority order:", the
 # tier-1-3 fallback rule, regulatory-beats-manufacturer) is engine protocol;
 # the tiers and domains below are this module's source-quality policy.
-_VERIFIER_SOURCE_PRIORITIES = """\
-1. California regulatory authorities:
-   dgs.ca.gov, dsa.ca.gov, hcai.ca.gov, bsc.ca.gov, energy.ca.gov,
-   osfm.fire.ca.gov, calbo.org
-
-2. Code publishers with full text:
-   up.codes, codes.iccsafe.org, iccsafe.org
-
-3. Standards organizations:
-   nfpa.org, ashrae.org, iapmo.org, smacna.org, aspe.org, astm.org, asce.org
-
-4. Testing and listing agencies:
-   ul.com, fmglobal.com
-
-5. Major manufacturer technical data:
-   greenheck.com, trane.com, carrier.com, watts.com, zurn.com, victaulic.com
-
-6. Industry associations:
-   phccweb.org, mcaa.org, csinet.org, seaoc.org
-
-7. Healthcare-specific (for HCAI projects):
-   fgiguidelines.org, jointcommission.org
-
-8. Archived or historical standards:
-   archive.org"""
-
-# The web_fetch counterpart of the tier list above: which retrieved source to
-# read in full first. Pre-wrapped because the engine emits these lines verbatim.
-# Byte-identical to the block that used to be hardcoded in
-# ``verifier._get_verification_system_prompt`` — the California prompt must not
-# move when the ordering becomes module data.
-_VERIFIER_FETCH_PRIORITIES = """\
-- Fetch the most authoritative-looking source first (California
-  regulatory pages > code-publisher full text > standards bodies >
-  manufacturer datasheets). Don't fetch aggregators or forums —
-  they are blocked at the tool level anyway."""
+#
+# ``fetch_label`` supplies this tier's name in the derived web_fetch ordering.
+# Tiers without one are search-only: the listing agencies, associations,
+# healthcare, and archive tiers are worth searching but are not where a
+# full-page fetch is spent, which is why the ordering names four of eight.
+_VERIFIER_SOURCE_TIERS = (
+    SourceTier(
+        label="California regulatory authorities",
+        entries=(
+            "dgs.ca.gov, dsa.ca.gov, hcai.ca.gov, bsc.ca.gov, energy.ca.gov,\n"
+            "osfm.fire.ca.gov, calbo.org"
+        ),
+        fetch_label="California regulatory pages",
+    ),
+    SourceTier(
+        label="Code publishers with full text",
+        entries="up.codes, codes.iccsafe.org, iccsafe.org",
+        fetch_label="code-publisher full text",
+    ),
+    SourceTier(
+        label="Standards organizations",
+        entries=(
+            "nfpa.org, ashrae.org, iapmo.org, smacna.org, aspe.org, astm.org, "
+            "asce.org"
+        ),
+        fetch_label="standards bodies",
+    ),
+    SourceTier(
+        label="Testing and listing agencies",
+        entries="ul.com, fmglobal.com",
+    ),
+    SourceTier(
+        label="Major manufacturer technical data",
+        entries=(
+            "greenheck.com, trane.com, carrier.com, watts.com, zurn.com, "
+            "victaulic.com"
+        ),
+        fetch_label="manufacturer datasheets",
+    ),
+    SourceTier(
+        label="Industry associations",
+        entries="phccweb.org, mcaa.org, csinet.org, seaoc.org",
+    ),
+    SourceTier(
+        label="Healthcare-specific (for HCAI projects)",
+        entries="fgiguidelines.org, jointcommission.org",
+    ),
+    SourceTier(
+        label="Archived or historical standards",
+        entries="archive.org",
+    ),
+)
 
 
 # The deterministic preprocessor's California vocabulary. The detector
@@ -331,8 +381,7 @@ CALIFORNIA_K12_MEP = ReviewModule(
         "You are a construction specification verification assistant for "
         "California K-12 DSA projects."
     ),
-    verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
-    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
+    verifier_source_tiers=_VERIFIER_SOURCE_TIERS,
     review_user_code_basis_line=(
         "Current code cycle: CBC {cbc}, CMC {cmc}, CPC {cpc}, "
         "Energy Code {energy}, CALGreen {calgreen}, ASCE {asce7}."

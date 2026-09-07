@@ -55,6 +55,7 @@ from .base import (
     ProfileKeywords,
     ResearchDimension,
     ReviewModule,
+    SourceTier,
 )
 
 # ---------------------------------------------------------------------------
@@ -223,9 +224,20 @@ _REVIEW_CATEGORIES = """\
 14. Commissioning / ITM handoff: NFPA 25 responsibilities and phased fit-out boundaries.
 15. Cross-references to Division 28 (fire detection/alarm) and Division 26 (electrical) that the author should verify.
 16. Warranty, submittal, and O&M conflicts (what is required, when, in what form).
-17. Location- and client-specific requirements: where the project context includes a Project Requirements Profile, verify the specification aligns with the governing codes, local amendments, AHJ requirements, and client standards it lists; flag conflicts with, and omissions of, profile requirements.
-18. Master-specification remnants: content from other disciplines or other jurisdictions left in this section — HVAC/plumbing/refrigerant language in a fire-suppression section; another polity's codes, agencies, listing marks, or procurement clauses; another project's identifiers or placeholder tokens (TBD, XXXX); flag for deletion or adaptation.
-19. Document integrity: duplicated or out-of-sequence article numbering, empty lettered paragraphs, doubled words, garbled or dangling cross-references, related-section numbers that do not match their titles, and products/execution mismatches within the section."""
+17. Location- and client-specific requirements. Where the project context includes a Project Requirements Profile:
+  - verify the specification aligns with the governing codes, local amendments, AHJ requirements, and client standards it lists;
+  - flag conflicts with, and omissions of, profile requirements.
+18. Master-specification remnants — content from other disciplines or other jurisdictions left in this section. Flag each for deletion or adaptation:
+  - HVAC/plumbing/refrigerant language in a fire-suppression section;
+  - another polity's codes, agencies, listing marks, or procurement clauses;
+  - another project's identifiers or placeholder tokens (TBD, XXXX).
+19. Document integrity:
+  - duplicated or out-of-sequence article numbering;
+  - empty lettered paragraphs;
+  - doubled words;
+  - garbled or dangling cross-references;
+  - related-section numbers that do not match their titles;
+  - products named without corresponding execution requirements, or the reverse."""
 
 
 # Stable, cacheable few-shot examples. Like the California module's, these must
@@ -280,7 +292,35 @@ Example 3 — REPORT_ONLY (cross-discipline coordination, no clean text edit):
   "confidence": 0.75
 }
 
-Example 4 — DO NOT REPORT (boilerplate and in-scope LEED are not findings):
+Example 4 — valid EDIT at CRITICAL severity (a protection gap in
+mission-critical space):
+{
+  "severity": "CRITICAL",
+  "fileName": "21 13 13 Wet-Pipe Sprinkler Systems.docx",
+  "section": "2.03",
+  "issue": "The hydraulic design criteria specify an Ordinary Hazard Group 1 density for the data hall, which does not cover the commodity and storage arrangement the same section describes elsewhere, leaving occupied white space under-protected.",
+  "actionType": "EDIT",
+  "existingText": "Design the system for Ordinary Hazard Group 1 density over the most remote 1,500 square feet.",
+  "replacementText": "Design the system for the hazard classification and design area established by the governing sprinkler standard for the commodity classification and storage arrangement specified for this data hall.",
+  "codeReference": "NFPA 13 (adopted edition) — hazard classification",
+  "confidence": 0.86
+}
+
+Example 5 — valid DELETE (remove a master-specification remnant from another
+discipline):
+{
+  "severity": "MEDIUM",
+  "fileName": "21 13 16 Dry-Pipe Sprinkler Systems.docx",
+  "section": "2.05",
+  "issue": "A refrigerant piping requirement from an HVAC master specification was left in this fire-suppression section. It specifies no fire-suppression work and conflicts with the section's own piping materials article.",
+  "actionType": "DELETE",
+  "existingText": "F. Refrigerant piping shall be ACR copper tube, dehydrated and sealed.",
+  "replacementText": null,
+  "codeReference": null,
+  "confidence": 0.8
+}
+
+Example 6 — DO NOT REPORT (boilerplate and in-scope LEED are not findings):
 Generic Division 21 coordination boilerplate such as "Coordinate with related
 work specified in other Sections" is not a contradiction, not a code-edition
 issue, and not an invalid reference — do not emit a finding for it absent
@@ -291,7 +331,10 @@ copy/paste error.\
 
 
 _REVIEW_SEVERITY_DEFINITIONS = """\
-CRITICAL — life-safety or permit-blocking: protection gaps in occupied or mission-critical white space, fire-marshal or plan-review rejection triggers, a withdrawn or nonexistent standard controlling a life-safety system, a direct conflict with the governing code / a local amendment / an FM Global requirement that would halt approval, or a commercial/procurement conflict that would materially disrupt tender (e.g., an origin- or tariff-exposed sourcing clause).
+CRITICAL — a life-safety, approval-blocking, or tender-blocking defect. The three classes are:
+  - Life safety: a protection gap in occupied or mission-critical white space, or a withdrawn or nonexistent standard controlling a life-safety system.
+  - Approval: a fire-marshal or plan-review rejection trigger, or a direct conflict with the governing code, a local amendment, or an FM Global requirement that would halt approval.
+  - Tender: a commercial or procurement conflict that would materially disrupt tender (e.g., an origin- or tariff-exposed sourcing clause).
 HIGH — major technical issues requiring correction before the spec can be issued (e.g., a pre-action releasing sequence that contradicts the detection zoning, or fire pump / water supply arrangements that cannot meet the stated demand).
 MEDIUM — meaningful issues with moderate impact (e.g., a superseded standard-edition citation that should be updated to the project's adopted edition).
 GRIPES — quality/editorial issues that should still be fixed (e.g., inconsistent capitalization of a defined term)."""
@@ -309,37 +352,48 @@ GRIPES — minor coordination polish items (e.g., inconsistent cross-reference f
 # protocol; the tiers below are this module's source-quality policy. Canadian
 # authorities are included from day one — the module reviews US and Canadian
 # data-center projects.
-_VERIFIER_SOURCE_PRIORITIES = """\
-1. Standards organizations and code publishers:
-   nfpa.org, codes.iccsafe.org, up.codes, iccsafe.org
-
-2. Insurance and listing authorities:
-   fmglobal.com, fmapprovals.com, ul.com
-
-3. Government code authorities:
-   state fire marshal and building-code agency sites (.gov), municipal code
-   portals; for Canadian sites nrc.canada.ca, provincial statute / e-Laws
-   portals, provincial fire-marshal communiqués, scc-ccn.ca, csagroup.org
-
-4. Major manufacturer technical data:
-   vikinggroupinc.com, tyco-fire.com, johnsoncontrols.com,
-   reliablesprinkler.com, victaulic.com, pottersignal.com, xtralis.com,
-   ansul.com, kiddefiresystems.com
-
-5. Industry associations:
-   sfpe.org, afsa.org, nfsa.org
-
-6. Archived or historical standards:
-   archive.org"""
-
-# web_fetch counterpart of the tier list above. Module data, not engine
-# protocol: the ordering names this module's own authorities.
-_VERIFIER_FETCH_PRIORITIES = """\
-- Fetch the most authoritative-looking source first (standards and
-  code-publisher full text > insurance and listing authorities >
-  project-location government code portals > manufacturer
-  datasheets). Don't fetch aggregators or forums — they are blocked
-  at the tool level anyway."""
+_VERIFIER_SOURCE_TIERS = (
+    SourceTier(
+        label="Standards organizations and code publishers",
+        entries="nfpa.org, codes.iccsafe.org, up.codes, iccsafe.org",
+        fetch_label="standards and code-publisher full text",
+    ),
+    SourceTier(
+        label="Insurance and listing authorities",
+        entries="fmglobal.com, fmapprovals.com, ul.com",
+        fetch_label="insurance and listing authorities",
+    ),
+    SourceTier(
+        label="Government code authorities",
+        entries=(
+            "state fire marshal and building-code agency sites (.gov), "
+            "municipal code\n"
+            "portals; for Canadian sites nrc.canada.ca, provincial statute / "
+            "e-Laws\n"
+            "portals, provincial fire-marshal communiqués, scc-ccn.ca, "
+            "csagroup.org"
+        ),
+        fetch_label="project-location government code portals",
+    ),
+    SourceTier(
+        label="Major manufacturer technical data",
+        entries=(
+            "vikinggroupinc.com, tyco-fire.com, johnsoncontrols.com,\n"
+            "reliablesprinkler.com, victaulic.com, pottersignal.com, "
+            "xtralis.com,\n"
+            "ansul.com, kiddefiresystems.com"
+        ),
+        fetch_label="manufacturer datasheets",
+    ),
+    SourceTier(
+        label="Industry associations",
+        entries="sfpe.org, afsa.org, nfsa.org",
+    ),
+    SourceTier(
+        label="Archived or historical standards",
+        entries="archive.org",
+    ),
+)
 
 
 # The deterministic preprocessor's I-code vocabulary. The detector logic (regex
@@ -502,40 +556,43 @@ _RESEARCH_DIMENSIONS = (
         prompt_template=(
             "Determine the governing building and fire codes for a new "
             "hyperscale data-center project in {city}, {state_or_province}, "
-            "{country}. Identify: (a) the state or provincial building and fire "
-            "code editions currently in force and their model-code basis "
-            "(IBC/IFC year, or NBC/NFC year for Canadian sites) with effective "
-            "dates; (b) any municipal or county amendments adopted by {city} "
-            "affecting fire suppression, fire pumps, water supply, or fire "
-            "alarm; (c) the editions of NFPA 13, 14, 20, 22, 24, 25, and 72 "
-            "referenced by that adoption, including any state or provincial "
-            "amendments to those standards; (d) any licensing requirements for "
-            "sprinkler contractors or design professionals that the "
-            "specifications must reflect, including compulsory-trade or "
-            "contractor-license regimes; (e) the fire code or operations code "
-            "applicable to the completed facility and the editions of "
-            "inspection/testing/maintenance standards (e.g., NFPA 25) it "
-            "references — these frequently differ from the building code's "
-            "referenced editions — including in-force dates of recent "
-            "amendments; (f) retrieve the adopting instrument's "
-            "referenced-standards table itself (or its official summary) and "
-            "report the edition year for each standard the specifications cite "
-            "— do not infer editions from the model-code year, and do not skip "
-            "a standard because you believe you know its edition; (g) the "
-            "current published edition of each of those standards, so the "
-            "review can distinguish the legal minimum from current-edition "
-            "enhancements; (h) the product certification/listing regime — which "
-            "certification marks are legally recognized for fire-protection and "
-            "electrical components in this jurisdiction (e.g., ULC/cULus vs "
-            "US-only UL in Canada) and any field-evaluation path for unlisted "
-            "equipment; (i) pressure-vessel design-registration requirements "
-            "applicable to dry/pre-action air or nitrogen receivers (e.g., CRN "
-            "in Canada); (j) the fuel-storage regime applicable to diesel "
-            "fire-pump fuel systems. Prefer official adoption sources and "
-            "retrieve and cite the adopting instrument itself: the state fire "
-            "marshal or building-code agency, the provincial regulator or "
-            "National Research Council of Canada, and the municipal code of "
-            "{city}."
+            "{country}. Identify:\n"
+            "- The state or provincial building and fire code editions "
+            "currently in force and their model-code basis (IBC/IFC year, or "
+            "NBC/NFC year for Canadian sites), with effective dates.\n"
+            "- Any municipal or county amendments adopted by {city} affecting "
+            "fire suppression, fire pumps, water supply, or fire alarm.\n"
+            "- The editions of NFPA 13, 14, 20, 22, 24, 25, and 72 referenced "
+            "by that adoption, including any state or provincial amendments to "
+            "those standards.\n"
+            "- Any licensing requirements for sprinkler contractors or design "
+            "professionals that the specifications must reflect, including "
+            "compulsory-trade or contractor-license regimes.\n"
+            "- The fire code or operations code applicable to the completed "
+            "facility and the editions of inspection/testing/maintenance "
+            "standards (e.g., NFPA 25) it references — these frequently differ "
+            "from the building code's referenced editions — including in-force "
+            "dates of recent amendments.\n"
+            "- The adopting instrument's referenced-standards table itself (or "
+            "its official summary): retrieve it and report the edition year for "
+            "each standard the specifications cite. Do not infer editions from "
+            "the model-code year, and do not skip a standard because you "
+            "believe you know its edition.\n"
+            "- The current published edition of each of those standards, so "
+            "the review can distinguish the legal minimum from current-edition "
+            "enhancements.\n"
+            "- The product certification/listing regime: which certification "
+            "marks are legally recognized for fire-protection and electrical "
+            "components in this jurisdiction (e.g., ULC/cULus vs US-only UL in "
+            "Canada), and any field-evaluation path for unlisted equipment.\n"
+            "- Pressure-vessel design-registration requirements applicable to "
+            "dry/pre-action air or nitrogen receivers (e.g., CRN in Canada).\n"
+            "- The fuel-storage regime applicable to diesel fire-pump fuel "
+            "systems.\n"
+            "Prefer official adoption sources and retrieve and cite the "
+            "adopting instrument itself: the state fire marshal or "
+            "building-code agency, the provincial regulator or National "
+            "Research Council of Canada, and the municipal code of {city}."
         ),
     ),
     ResearchDimension(
@@ -548,17 +605,20 @@ _RESEARCH_DIMENSIONS = (
             "for a data-center project in {city}, {state_or_province}, "
             "{country} — assume multiplicity (fire department or fire marshal, "
             "building department, and in two-tier jurisdictions a regional "
-            "water wholesaler distinct from the municipal distributor) — and "
+            "water wholesaler distinct from the municipal distributor). Report "
             "any published requirements construction specifications should "
-            "reflect: plan submittal and shop-drawing requirements for "
-            "sprinkler, fire pump, and standpipe work; hydrant flow test and "
-            "water-supply data requirements including permits, fees, notice "
-            "periods, and any seasonal testing windows; required witnessed "
-            "acceptance tests; fire department connection and access "
-            "requirements; local policies or bulletins on pre-action systems, "
-            "aspirating smoke detection, or clean-agent systems; and the "
-            "inspection, testing, and maintenance documentation the AHJ "
-            "requires at closeout. Treat the water purveyor/utility as its own "
+            "reflect:\n"
+            "- Plan submittal and shop-drawing requirements for sprinkler, "
+            "fire pump, and standpipe work.\n"
+            "- Hydrant flow test and water-supply data requirements, including "
+            "permits, fees, notice periods, and any seasonal testing windows.\n"
+            "- Required witnessed acceptance tests.\n"
+            "- Fire department connection and access requirements.\n"
+            "- Local policies or bulletins on pre-action systems, aspirating "
+            "smoke detection, or clean-agent systems.\n"
+            "- The inspection, testing, and maintenance documentation the AHJ "
+            "requires at closeout.\n"
+            "Treat the water purveyor/utility as its own "
             "authority: identify its requirements for fire service connections "
             "— engineering-seal requirements for service drawings, metering "
             "rules for fire lines, backflow-prevention device class and tester "
@@ -831,17 +891,18 @@ DATACENTER_FIRE = ReviewModule(
     ),
     review_user_intro=(
         "Review the following fire-suppression specification for a hyperscale "
-        "data-center project. Where the project context includes a Project "
-        "Requirements Profile, treat its governing-code, local-amendment, AHJ, "
-        "and client-standard entries as the project's controlling "
-        "requirements — they take precedence over the model-code defaults for "
-        "edition and requirement checks. Where the specification declares its "
-        "own edition-governance rule, check that rule for consistency with the "
-        "profile's adopted editions. Where the specification cites its own "
-        "basis-of-design or owner documents that are not provided for review, "
-        "phrase findings about them conditionally ('per the BoD section the "
-        "spec cites — confirm against that document') rather than asserting "
-        "their content."
+        "data-center project.\n"
+        "- Where the project context includes a Project Requirements Profile, "
+        "treat its governing-code, local-amendment, AHJ, and client-standard "
+        "entries as the project's controlling requirements — they take "
+        "precedence over the model-code defaults for edition and requirement "
+        "checks.\n"
+        "- Where the specification declares its own edition-governance rule, "
+        "check that rule for consistency with the profile's adopted editions.\n"
+        "- Where the specification cites its own basis-of-design or owner "
+        "documents that are not provided for review, phrase findings about "
+        "them conditionally ('per the BoD section the spec cites — confirm "
+        "against that document') rather than asserting their content."
     ),
     review_severity_definitions=_REVIEW_SEVERITY_DEFINITIONS,
     review_confidence_high_example='an explicit stale "2015 IBC" citation',
@@ -857,8 +918,7 @@ DATACENTER_FIRE = ReviewModule(
         "fire-protection systems in hyperscale data-center projects under the "
         "IBC/IFC family of model codes."
     ),
-    verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
-    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
+    verifier_source_tiers=_VERIFIER_SOURCE_TIERS,
     review_user_code_basis_line=(
         "Current code basis: IBC {ibc}, IFC {ifc}, ASCE {asce7}."
     ),

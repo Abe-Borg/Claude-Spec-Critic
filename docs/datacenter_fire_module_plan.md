@@ -117,7 +117,7 @@ newest NFPA publication. Likely set:
 by FM-insured hyperscalers) are *guidance documents with revision dates, not
 adopted-code editions*. Do **not** force them into `StandardEdition` entries;
 represent FM as (a) a jurisdictional keyword, (b) a top source tier in
-`verifier_source_priorities`, and (c) a review category ("requirements
+`verifier_source_tiers`, and (c) a review category ("requirements
 attributed to FM Global data sheets that conflict with NFPA minimums or lack a
 data-sheet citation").
 
@@ -200,8 +200,9 @@ few-shot examples against the real parser contract.
   different parties).
 - **`verifier_persona`**: verification assistant for data-center fire
   protection under IBC/IFC.
-- **`verifier_source_priorities`** (tiers are module data; the surrounding
-  framing text is engine): suggested tiers — 1. nfpa.org;
+- **`verifier_source_tiers`** (tiers are module data; the surrounding
+  framing text is engine; each tier's optional `fetch_label` also renders the
+  web_fetch ordering): suggested tiers — 1. nfpa.org;
   2. codes.iccsafe.org / up.codes / iccsafe.org; 3. fmglobal.com (data
   sheets); 4. ul.com / fmapprovals.com; 5. state fire marshal / AHJ sites;
   6. manufacturer technical data (vikinggroupinc.com, tyco-fire.com /

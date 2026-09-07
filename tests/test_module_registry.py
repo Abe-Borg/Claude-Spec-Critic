@@ -47,6 +47,7 @@ from src.modules import (
     DetectorVocabulary,
     ProfileKeywords,
     ReviewModule,
+    SourceTier,
     code_basis_format_kwargs,
     get_module,
     module_for_cycle,
@@ -133,8 +134,18 @@ def _module(module_id: str = "test_module", label: str = "9999", **overrides) ->
             "CRITICAL — test.\nHIGH — test.\nMEDIUM — test.\nGRIPES — test."
         ),
         verifier_persona="You are a test verification assistant.",
-        verifier_source_priorities="1. Test sources:\n   example.gov",
-        verifier_fetch_priorities="- Fetch test sources first.",
+        verifier_source_tiers=(
+            SourceTier(
+                label="Test sources",
+                entries="example.gov",
+                fetch_label="test regulatory pages",
+            ),
+            SourceTier(
+                label="Test manufacturers",
+                entries="example.com",
+                fetch_label="test manufacturer datasheets",
+            ),
+        ),
         review_user_code_basis_line="Current code cycle: Test Code {code}.",
         cross_check_code_basis_line="Current cycle: Test Code {code}.",
         verifier_system_code_basis_lines="Current code cycle: Test Code {code}.",
@@ -414,10 +425,36 @@ Example — no-op EDIT:
     def test_california_examples_carry_multiple_json_shapes(self):
         # The CA module registered successfully at import (so its examples
         # already passed the real contract); pin that the block actually
-        # contains the three JSON teaching shapes.
+        # contains distinct JSON teaching shapes rather than one repeated one.
         examples = list(_iter_json_objects(CALIFORNIA_K12_MEP.review_examples))
-        assert len(examples) == 3
-        assert [e["actionType"] for e in examples] == ["EDIT", "ADD", "REPORT_ONLY"]
+        assert len(examples) >= 3
+        assert [e["actionType"] for e in examples][:3] == ["EDIT", "ADD", "REPORT_ONLY"]
+
+    def test_every_module_anchors_all_four_action_types(self):
+        # Few-shot examples are the strongest calibration signal in the
+        # prompt, and output tends to follow the example set's shape. An
+        # action type with no worked example leaves the model only the schema
+        # description to go on — DELETE was unanchored in every module until
+        # the v3.4.x example pass, despite flowing to the edit sidecar like
+        # any other action.
+        for module_id, module in AVAILABLE_MODULES.items():
+            examples = list(_iter_json_objects(module.review_examples))
+            actions = {e["actionType"] for e in examples}
+            assert actions == {"EDIT", "ADD", "DELETE", "REPORT_ONLY"}, (
+                f"{module_id}: example block covers only {sorted(actions)}"
+            )
+
+    def test_every_module_anchors_the_critical_severity_band(self):
+        # CRITICAL is the highest-stakes band and the one whose calibration
+        # matters most. Leaving it to prose while MEDIUM/HIGH carry worked
+        # examples biases the example set away from the band the report
+        # red-flags.
+        for module_id, module in AVAILABLE_MODULES.items():
+            examples = list(_iter_json_objects(module.review_examples))
+            severities = {e["severity"] for e in examples}
+            assert "CRITICAL" in severities, (
+                f"{module_id}: no CRITICAL example (has {sorted(severities)})"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -745,7 +782,18 @@ class TestSlotsDriveOutput:
             review_categories_template="1. Synthetic category for cycle {code}.",
             cross_check_persona="Synthetic cross-check persona.",
             verifier_persona="Synthetic verifier persona.",
-            verifier_source_priorities="1. Synthetic sources:\n   synthetic.example",
+            verifier_source_tiers=(
+                SourceTier(
+                    label="Synthetic sources",
+                    entries="synthetic.example",
+                    fetch_label="synthetic pages",
+                ),
+                SourceTier(
+                    label="Synthetic manufacturers",
+                    entries="synthetic-mfr.example",
+                    fetch_label="synthetic datasheets",
+                ),
+            ),
         )
         monkeypatch.setitem(registry_mod._MODULES_BY_CYCLE_LABEL, "8888", mod)
 
@@ -1155,10 +1203,10 @@ class TestVerifierPromptJurisdictionNeutrality:
     Until v3.4.0 the ``web_fetch`` usage block hardcoded a source-priority
     ordering naming "California regulatory pages", so every non-California
     verifier prompt told the model to prefer California authorities — an
-    Ontario data-center verification included. The ordering is now the
-    ``verifier_fetch_priorities`` module slot. These tests pin the fix at the
-    level the bug actually lived at: the rendered prompt, for every registered
-    module, not just the two that happen to have goldens.
+    Ontario data-center verification included. The ordering is now derived
+    from the module's ``verifier_source_tiers``. These tests pin the fix at
+    the level the bug actually lived at: the rendered prompt, for every
+    registered module, not just the two that happen to have goldens.
     """
 
     def test_no_module_leaks_california_into_another_domain(self):
@@ -1191,18 +1239,57 @@ class TestVerifierPromptJurisdictionNeutrality:
         assert "- Fetch the most authoritative-looking source first (California" in prompt
         assert "  regulatory pages > code-publisher full text > standards bodies >" in prompt
 
-    def test_fetch_priorities_render_verbatim_into_the_prompt(self):
+    def test_fetch_ordering_is_derived_from_the_tier_list(self):
+        """The fetch ordering must follow the tier ranking, for every module.
+
+        This is the invariant two hand-authored strings could not give: the
+        ordering now renders from the same tuple as ``<source_priorities>``,
+        so a tier that moves in the ranking moves in the fetch sentence too,
+        and a tier named in the ordering is necessarily a real tier.
+        """
         from src.modules.registry import AVAILABLE_MODULES
         from src.verification.verifier import _get_verification_system_prompt
 
         for module_id, module in AVAILABLE_MODULES.items():
             prompt = _get_verification_system_prompt(cycle=module.cycle)
-            for line in module.verifier_fetch_priorities.splitlines():
-                assert line in prompt, f"{module_id}: missing {line!r}"
+            ordering = module.fetch_priority_ordering()
+            assert ordering, f"{module_id}: rendered no fetch ordering"
+            # The bullet is wrapped for width, so compare whitespace-flattened.
+            flattened = " ".join(prompt.split())
+            assert " ".join(ordering.split()) in flattened, (
+                f"{module_id}: fetch ordering missing from the rendered prompt"
+            )
+            named = [
+                tier.fetch_label
+                for tier in module.verifier_source_tiers
+                if tier.fetch_label
+            ]
+            assert ordering.split(" > ") == named, (
+                f"{module_id}: fetch ordering diverges from tier order"
+            )
 
-    def test_empty_fetch_priorities_rejected_at_registration(self):
-        # The slot is required-non-empty like every other prompt slot, so a
-        # new module cannot silently ship without an ordering.
+    def test_too_few_fetch_labels_rejected_at_registration(self):
+        # An ordering naming fewer than two tiers reads as a typo, not a
+        # ranking, so registration rejects it.
+        import dataclasses
+
+        import pytest
+
+        from src.modules.base import validate_module_registry
+        from src.modules.registry import get_module
+
+        module = get_module("datacenter_fire")
+        stripped = tuple(
+            dataclasses.replace(tier, fetch_label="")
+            for tier in module.verifier_source_tiers
+        )
+        broken = dataclasses.replace(module, verifier_source_tiers=stripped)
+        with pytest.raises(ValueError):
+            validate_module_registry([broken])
+
+    def test_empty_source_tiers_rejected_at_registration(self):
+        # Both the tier list and the fetch ordering render from this tuple, so
+        # an empty one would silently gut two prompt sections at once.
         import dataclasses
 
         import pytest
@@ -1211,7 +1298,7 @@ class TestVerifierPromptJurisdictionNeutrality:
         from src.modules.registry import get_module
 
         broken = dataclasses.replace(
-            get_module("datacenter_fire"), verifier_fetch_priorities=""
+            get_module("datacenter_fire"), verifier_source_tiers=()
         )
         with pytest.raises(ValueError):
             validate_module_registry([broken])

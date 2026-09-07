@@ -20,6 +20,8 @@ payloads, so what the smoke test sends is byte-for-byte what the app sends.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src.core.api_config import (
@@ -201,3 +203,85 @@ def test_model_ids_exist_smoke(model_id):
     client = _get_client()
     info = client.models.retrieve(model_id)
     assert getattr(info, "id", None)
+
+
+# ---------------------------------------------------------------------------
+# 6. Structured outputs (output_config.format) — a GATE, not an adoption
+# ---------------------------------------------------------------------------
+
+
+def test_structured_outputs_with_adaptive_thinking_smoke():
+    """Does ``output_config.format`` compose with adaptive thinking?
+
+    The app does **not** use structured outputs today. Every extraction phase
+    exposes a custom submit-tool under ``tool_choice: auto`` (forcing a tool
+    choice is rejected while ``thinking`` is on) and keeps a tagged-JSON
+    text-fallback parser reachable, because ``auto`` permits a plain-text
+    detour. ``output_config.format`` constrains the *final response* by
+    constrained decoding and would close that gap outright — Anthropic's own
+    framing is "no more JSON.parse() errors ... no text-based fallback parser
+    required".
+
+    The blocker is an undocumented interaction: the structured-outputs docs
+    confirm the feature composes with tool use and with ``strict: true``, but
+    say nothing about extended/adaptive thinking, which every candidate phase
+    (cross-check, compliance, research, drawing impact) leans on for judgment
+    quality. This test is the gate on that unknown, sent with a real production
+    schema and the real per-phase thinking/effort policy. Green ⇒ a pilot on the
+    synchronous phases is worth doing; a 400 ⇒ the current tool-plus-fallback
+    design stays, and the error is the reason to record.
+
+    Out of scope deliberately: Batches-API compatibility is a *separate*
+    undocumented question, and review + verification run through the Batches
+    API for the 50% discount — so they stay out of any adoption regardless of
+    what this test says.
+    """
+    from src.core.api_config import (
+        PHASE_CROSS_CHECK,
+        apply_effort_config,
+        apply_thinking_config,
+    )
+    from src.review.structured_schemas import CROSS_CHECK_FINDINGS_SCHEMA
+
+    model = MODEL_SONNET_5
+    kwargs = {
+        "model": model,
+        "max_tokens": 4096,
+        "system": "You report construction-specification coordination findings.",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Section 23 05 48 and Section 23 31 00 assign the same "
+                    "seismic anchorage to different responsible parties. "
+                    "Report it as one coordination finding against file "
+                    "'23 05 48 Seismic.docx', section '2.1'."
+                ),
+            }
+        ],
+    }
+    apply_thinking_config(kwargs, model=model, phase=PHASE_CROSS_CHECK)
+    apply_effort_config(kwargs, model=model, phase=PHASE_CROSS_CHECK)
+    # Implementation note for whoever adopts this: ``effort`` and ``format``
+    # share the single ``output_config`` object, and ``apply_effort_config``
+    # assigns that object wholesale — so a real integration has to merge the
+    # format into it, not set ``output_config`` separately, or it silently
+    # drops the phase's effort policy.
+    kwargs.setdefault("output_config", {})["format"] = {
+        "type": "json_schema",
+        "schema": CROSS_CHECK_FINDINGS_SCHEMA,
+    }
+
+    client = _get_client()
+    resp = client.messages.create(**kwargs)
+
+    assert resp.stop_reason is not None
+    text = "".join(
+        block.text
+        for block in resp.content
+        if getattr(block, "type", None) == "text"
+    )
+    # The point of the feature: the final response parses without a fallback.
+    payload = json.loads(text)
+    assert set(payload) == {"coordination_summary", "findings"}
+    assert isinstance(payload["findings"], list)

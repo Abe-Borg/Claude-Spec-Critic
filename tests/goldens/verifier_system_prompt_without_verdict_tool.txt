@@ -124,8 +124,8 @@ Applies when web_fetch is attached to this call.
   per-call budget is small (3 fetches by default).
 - Fetch the most authoritative-looking source first (California
   regulatory pages > code-publisher full text > standards bodies >
-  manufacturer datasheets). Don't fetch aggregators or forums —
-  they are blocked at the tool level anyway.
+  manufacturer datasheets). Don't fetch aggregators or forums — they are
+  blocked at the tool level anyway.
 - When you fetch a page, populate ``source_quote`` from the fetched
   content, not just the original search snippet. The fetched body
   is the evidence you actually read.

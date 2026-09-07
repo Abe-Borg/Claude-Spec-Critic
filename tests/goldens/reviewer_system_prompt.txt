@@ -102,7 +102,35 @@ Example 3 — REPORT_ONLY (cross-section coordination, no clean text edit):
   "confidence": 0.7
 }
 
-Example 4 — DO NOT REPORT (generic boilerplate is not a finding):
+Example 4 — valid EDIT at CRITICAL severity (a life-safety rating a plan
+checker will reject):
+{
+  "severity": "CRITICAL",
+  "fileName": "23 33 00 Air Duct Accessories.docx",
+  "section": "2.04",
+  "issue": "Combination fire/smoke dampers are specified without the fire-resistance rating and leakage class required for the assemblies they penetrate, so the submittal cannot be reviewed against the rated construction.",
+  "actionType": "EDIT",
+  "existingText": "B. Provide combination fire/smoke dampers at rated wall penetrations.",
+  "replacementText": "B. Provide combination fire/smoke dampers, labeled and listed for the fire-resistance rating of each penetrated assembly and for the leakage class required by the smoke-control application, at rated wall penetrations.",
+  "codeReference": "CBC (current cycle)",
+  "confidence": 0.88
+}
+
+Example 5 — valid DELETE (remove a requirement that belongs to another
+discipline):
+{
+  "severity": "MEDIUM",
+  "fileName": "23 05 00 Common HVAC.docx",
+  "section": "2.02",
+  "issue": "A panelboard requirement from an electrical master specification was left in this mechanical section. Division 26 specifies this work, and leaving it here assigns the same scope twice.",
+  "actionType": "DELETE",
+  "existingText": "D. Provide 208Y/120 V panelboards with copper bus and bolt-on circuit breakers.",
+  "replacementText": null,
+  "codeReference": null,
+  "confidence": 0.75
+}
+
+Example 6 — DO NOT REPORT (generic boilerplate is not a finding):
 The phrase "Coordinate with related work specified in other Sections" is
 standard Division 23 boilerplate. It is not a contradiction, not a code-cycle
 issue, and not an invalid reference. Do not emit a finding for boilerplate

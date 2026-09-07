@@ -27,6 +27,7 @@ from .base import (
     ProfileKeywords,
     ResearchDimension,
     ReviewModule,
+    SourceTier,
 )
 
 
@@ -212,7 +213,21 @@ Example 3 — REPORT_ONLY (multi-section coordination without one safe edit):
   "confidence": 0.92
 }
 
-Example 4 — DO NOT REPORT:
+Example 4 — valid DELETE (remove a master-specification remnant from another
+building type):
+{
+  "severity": "MEDIUM",
+  "fileName": "09 51 13 Acoustical Panel Ceilings.docx",
+  "section": "2.06",
+  "issue": "A patient-room ceiling requirement carried over from a healthcare master specification remains in the section. The project has no such rooms, and the clause conflicts with the containment ceiling requirements specified for the data hall.",
+  "actionType": "DELETE",
+  "existingText": "E. At patient rooms, provide washable acoustical panels with a minimum NRC of 0.70.",
+  "replacementText": null,
+  "codeReference": null,
+  "confidence": 0.78
+}
+
+Example 5 — DO NOT REPORT:
 Do not report generic coordination clauses, ordinary product options that the
 project has actually resolved, or LEED/sustainability references merely because
 they appear in a data-center specification. Emit a finding only for a concrete,
@@ -234,39 +249,63 @@ MEDIUM — a meaningful inconsistency in products, ratings, dimensions, responsi
 GRIPES — minor package coordination or nomenclature inconsistencies."""
 
 
-_VERIFIER_SOURCE_PRIORITIES = """\
-1. Project-location authorities and official adopting instruments:
-   US state and municipal building, planning, fire, energy, and accessibility
-   authority sites (.gov); for Canada, nrc.canada.ca, canada.ca, official
-   provincial/territorial legislation and code-authority sites, and municipal
-   bylaw/permit portals.
-
-2. Code publishers and accessibility authorities:
-   codes.iccsafe.org, iccsafe.org, access-board.gov, ada.gov, and official
-   Canadian model-code / provincial accessibility publications.
-
-3. Standards, testing, and certification organizations:
-   ashrae.org, nfpa.org, astm.org, ansi.org, ul.com, csagroup.org,
-   scc-ccn.ca, and official evaluation/listing directories.
-
-4. Building-enclosure and architectural technical authorities:
-   iibec.org, airbarrier.org, nrca.net, spri.org, fgialonline.org, and
-   peer-reviewed building-science publications.
-
-5. Manufacturer technical literature and tested-assembly directories:
-   use current manufacturer data only after code, authority, listing, and
-   standards sources; do not treat marketing pages as proof of compliance.
-
-6. Archived or historical material:
-   archive.org, only to establish what an obsolete citation previously said."""
-
-# web_fetch counterpart of the tier list above. Module data, not engine
-# protocol: the ordering names this module's own authorities.
-_VERIFIER_FETCH_PRIORITIES = """\
-- Fetch the most authoritative-looking source first (project-location
-  authorities and adopting instruments > code-publisher full text >
-  standards bodies > manufacturer datasheets). Don't fetch
-  aggregators or forums — they are blocked at the tool level anyway."""
+_VERIFIER_SOURCE_TIERS = (
+    SourceTier(
+        label="Project-location authorities and official adopting instruments",
+        entries=(
+            "US state and municipal building, planning, fire, energy, and "
+            "accessibility\n"
+            "authority sites (.gov); for Canada, nrc.canada.ca, canada.ca, "
+            "official\n"
+            "provincial/territorial legislation and code-authority sites, and "
+            "municipal\n"
+            "bylaw/permit portals."
+        ),
+        fetch_label="project-location authorities and adopting instruments",
+    ),
+    SourceTier(
+        label="Code publishers and accessibility authorities",
+        entries=(
+            "codes.iccsafe.org, iccsafe.org, access-board.gov, ada.gov, and "
+            "official\n"
+            "Canadian model-code / provincial accessibility publications."
+        ),
+        fetch_label="code-publisher full text",
+    ),
+    SourceTier(
+        label="Standards, testing, and certification organizations",
+        entries=(
+            "ashrae.org, nfpa.org, astm.org, ansi.org, ul.com, csagroup.org,\n"
+            "scc-ccn.ca, and official evaluation/listing directories."
+        ),
+        fetch_label="standards bodies",
+    ),
+    SourceTier(
+        label="Building-enclosure and architectural technical authorities",
+        entries=(
+            "iibec.org, airbarrier.org, nrca.net, spri.org, fgialonline.org, "
+            "and\n"
+            "peer-reviewed building-science publications."
+        ),
+    ),
+    SourceTier(
+        label="Manufacturer technical literature and tested-assembly directories",
+        entries=(
+            "use current manufacturer data only after code, authority, "
+            "listing, and\n"
+            "standards sources; do not treat marketing pages as proof of "
+            "compliance."
+        ),
+        fetch_label="manufacturer datasheets",
+    ),
+    SourceTier(
+        label="Archived or historical material",
+        entries=(
+            "archive.org, only to establish what an obsolete citation "
+            "previously said."
+        ),
+    ),
+)
 
 
 _DETECTOR_VOCABULARY = DetectorVocabulary(
@@ -653,8 +692,7 @@ DATACENTER_ARCHITECTURE = ReviewModule(
         "architectural requirements on hyperscale data-center projects in the "
         "United States and Canada."
     ),
-    verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
-    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
+    verifier_source_tiers=_VERIFIER_SOURCE_TIERS,
     review_user_code_basis_line=(
         "Model-code fallback: IBC {ibc}, IFC {ifc}, IECC {iecc}, IEBC {iebc}, "
         "ASCE {asce7} with Supplement 1; project-profile adoptions "

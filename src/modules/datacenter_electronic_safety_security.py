@@ -26,6 +26,7 @@ from .base import (
     ProfileKeywords,
     ResearchDimension,
     ReviewModule,
+    SourceTier,
 )
 
 
@@ -161,7 +162,21 @@ Example 3 — REPORT_ONLY (multidisciplinary sequence conflict):
   "confidence": 0.95
 }
 
-Example 4 — DO NOT REPORT:
+Example 4 — valid DELETE (remove an obsolete product requirement that
+contradicts the section's own architecture):
+{
+  "severity": "MEDIUM",
+  "fileName": "28 46 00 Fire Detection and Alarm.docx",
+  "section": "2.02",
+  "issue": "A conventional zoned control-panel requirement carried over from an older master specification remains in the products article, while the rest of the section specifies an addressable system with device-level annunciation. The two cannot both govern.",
+  "actionType": "DELETE",
+  "existingText": "A. Provide a conventional zoned fire-alarm control panel with a minimum of eight initiating-device circuits.",
+  "replacementText": null,
+  "codeReference": null,
+  "confidence": 0.84
+}
+
+Example 5 — DO NOT REPORT:
 Do not report ordinary coordination boilerplate, a newer standard merely because
 it exists, access-control/video/intrusion requirements as though this phase
 reviewed those systems, or the presumed contents of confidential owner criteria
@@ -183,41 +198,70 @@ MEDIUM — a meaningful inconsistency in device data, calculations, messages, po
 GRIPES — minor package coordination, naming, or formatting inconsistencies."""
 
 
-_VERIFIER_SOURCE_PRIORITIES = """\
-1. Project-location authorities and adopted instruments:
-   official state/provincial/territorial statutes and regulations; municipal
-   building/fire authorities, fire-prevention bureaus, electrical inspectors,
-   fire marshals, and published permit/monitoring/acceptance requirements.
-
-2. Code and standards publishers:
-   nfpa.org, codes.iccsafe.org, nrc.canada.ca, ulc.ca, csagroup.org,
-   scc-ccn.ca, and official provincial or territorial code publishers.
-
-3. Listing, certification, and approval directories:
-   UL Product iQ, FM Approvals, CSA certification directories, Intertek/ETL,
-   and official Canadian accredited certification/field-evaluation directories.
-
-4. Supervising-station and emergency-service authorities:
-   official municipal communications requirements, recognized listing
-   directories, and the project's contracted service documentation when supplied.
-
-5. Manufacturer technical literature for product-specific claims only:
-   Notifier/Honeywell, Siemens, Edwards/EST, Simplex/Johnson Controls, Mircom,
-   Potter, Bosch, Kidde, Fike, Xtralis/VESDA, and other official manufacturer
-   sites. Never use reseller pages as code, compatibility, or listing proof.
-
-6. Owner/insurer/industry criteria:
-   owner standards, FM Global data sheets, and insurer criteria only when the
-   project invokes them; archive.org only for historical requirements."""
-
-# web_fetch counterpart of the tier list above. Module data, not engine
-# protocol: the ordering names this module's own authorities.
-_VERIFIER_FETCH_PRIORITIES = """\
-- Fetch the most authoritative-looking source first (project-location
-  authorities and adopted instruments > code-publisher full text >
-  standards and listing bodies > manufacturer datasheets). Don't
-  fetch aggregators or forums — they are blocked at the tool level
-  anyway."""
+_VERIFIER_SOURCE_TIERS = (
+    SourceTier(
+        label="Project-location authorities and adopted instruments",
+        entries=(
+            "official state/provincial/territorial statutes and regulations; "
+            "municipal\n"
+            "building/fire authorities, fire-prevention bureaus, electrical "
+            "inspectors,\n"
+            "fire marshals, and published permit/monitoring/acceptance "
+            "requirements."
+        ),
+        fetch_label="project-location authorities and adopted instruments",
+    ),
+    SourceTier(
+        label="Code and standards publishers",
+        entries=(
+            "nfpa.org, codes.iccsafe.org, nrc.canada.ca, ulc.ca, "
+            "csagroup.org,\n"
+            "scc-ccn.ca, and official provincial or territorial code "
+            "publishers."
+        ),
+        fetch_label="code-publisher full text",
+    ),
+    SourceTier(
+        label="Listing, certification, and approval directories",
+        entries=(
+            "UL Product iQ, FM Approvals, CSA certification directories, "
+            "Intertek/ETL,\n"
+            "and official Canadian accredited certification/field-evaluation "
+            "directories."
+        ),
+        fetch_label="standards and listing bodies",
+    ),
+    SourceTier(
+        label="Supervising-station and emergency-service authorities",
+        entries=(
+            "official municipal communications requirements, recognized "
+            "listing\n"
+            "directories, and the project's contracted service documentation "
+            "when supplied."
+        ),
+    ),
+    SourceTier(
+        label="Manufacturer technical literature for product-specific claims only",
+        entries=(
+            "Notifier/Honeywell, Siemens, Edwards/EST, Simplex/Johnson "
+            "Controls, Mircom,\n"
+            "Potter, Bosch, Kidde, Fike, Xtralis/VESDA, and other official "
+            "manufacturer\n"
+            "sites. Never use reseller pages as code, compatibility, or "
+            "listing proof."
+        ),
+        fetch_label="manufacturer datasheets",
+    ),
+    SourceTier(
+        label="Owner/insurer/industry criteria",
+        entries=(
+            "owner standards, FM Global data sheets, and insurer criteria only "
+            "when the\n"
+            "project invokes them; archive.org only for historical "
+            "requirements."
+        ),
+    ),
+)
 
 
 _DETECTOR_VOCABULARY = DetectorVocabulary(
@@ -578,8 +622,7 @@ DATACENTER_ELECTRONIC_SAFETY_SECURITY = ReviewModule(
         "detection and alarm systems on hyperscale data-center projects in the "
         "United States and Canada."
     ),
-    verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
-    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
+    verifier_source_tiers=_VERIFIER_SOURCE_TIERS,
     review_user_code_basis_line=(
         "US model-code fallback: IBC {ibc}, IFC {ifc}, IEBC {iebc}, ASCE {asce7}; "
         "fire-alarm references: {pinned_standards}. Project-profile adoptions govern."
