@@ -23,6 +23,7 @@ from .base import (
     ProfileKeywords,
     ResearchDimension,
     ReviewModule,
+    SourceTier,
 )
 
 
@@ -213,7 +214,21 @@ Example 3 — REPORT_ONLY (multi-section reliability conflict):
   "confidence": 0.93
 }
 
-Example 4 — DO NOT REPORT:
+Example 4 — valid DELETE (remove a remnant specifying another region's
+distribution voltage):
+{
+  "severity": "MEDIUM",
+  "fileName": "26 24 13 Switchboards.docx",
+  "section": "2.02",
+  "issue": "A distribution voltage from another region's master specification remains in the section. It does not match the service characteristics specified elsewhere in this section, and leaving it creates a conflicting requirement for the switchboard rating.",
+  "actionType": "DELETE",
+  "existingText": "C. Switchboards shall be rated 400Y/230 V, 50 Hz.",
+  "replacementText": null,
+  "codeReference": null,
+  "confidence": 0.85
+}
+
+Example 5 — DO NOT REPORT:
 Do not report generic coordination boilerplate, a newer standards edition merely
 because it exists, an Uptime Tier or redundancy requirement that the supplied
 documents do not establish, or the presumed contents of a confidential owner
@@ -236,42 +251,73 @@ MEDIUM — a meaningful inconsistency in equipment data, settings, products, sch
 GRIPES — minor package coordination, naming, or formatting inconsistencies."""
 
 
-_VERIFIER_SOURCE_PRIORITIES = """\
-1. Project-location authorities and utilities:
-   official adopting statutes/regulations; state/local electrical boards,
-   electrical inspectors, building/fire authorities, and serving-utility
-   service/interconnection manuals; for Canada, NRC and provincial/territorial
-   legislation, safety authorities, inspection bodies, and utility standards.
-
-2. Code and standards publishers:
-   nfpa.org, codes.iccsafe.org, csagroup.org, scc-ccn.ca, standards.ieee.org,
-   netaworld.org, nema.org, ashrae.org, and ansi.org.
-
-3. Listing, certification, and field-evaluation authorities:
-   ul.com / Product iQ, csagroup.org certification directories, Intertek/ETL,
-   and official directories of accredited Canadian certification or field-
-   evaluation bodies.
-
-4. Workplace-safety authorities when the claim is operational rather than design:
-   osha.gov, ccohs.ca, and the applicable provincial/territorial OHS regulator.
-
-5. Manufacturer technical literature for product-specific claims only:
-   Eaton, Schneider Electric/Square D, Siemens, ABB, GE Vernova, Vertiv,
-   ASCO, Russelectric, Cummins, Caterpillar, Kohler, SEL, Legrand/Starline,
-   and PDI official sites. Never use reseller or SEO pages as compliance proof.
-
-6. Owner/industry criteria and archives:
-   Uptime Institute, BICSI, insurer, and owner criteria only when the project
-   invokes them; archive.org only to establish historical requirements."""
-
-# web_fetch counterpart of the tier list above. Module data, not engine
-# protocol: the ordering names this module's own authorities.
-_VERIFIER_FETCH_PRIORITIES = """\
-- Fetch the most authoritative-looking source first (project-location
-  authorities and serving utilities > code-publisher full text >
-  standards and listing bodies > manufacturer datasheets). Don't
-  fetch aggregators or forums — they are blocked at the tool level
-  anyway."""
+_VERIFIER_SOURCE_TIERS = (
+    SourceTier(
+        label="Project-location authorities and utilities",
+        entries=(
+            "official adopting statutes/regulations; state/local electrical "
+            "boards,\n"
+            "electrical inspectors, building/fire authorities, and "
+            "serving-utility\n"
+            "service/interconnection manuals; for Canada, NRC and "
+            "provincial/territorial\n"
+            "legislation, safety authorities, inspection bodies, and utility "
+            "standards."
+        ),
+        fetch_label="project-location authorities and serving utilities",
+    ),
+    SourceTier(
+        label="Code and standards publishers",
+        entries=(
+            "nfpa.org, codes.iccsafe.org, csagroup.org, scc-ccn.ca, "
+            "standards.ieee.org,\n"
+            "netaworld.org, nema.org, ashrae.org, and ansi.org."
+        ),
+        fetch_label="code-publisher full text",
+    ),
+    SourceTier(
+        label="Listing, certification, and field-evaluation authorities",
+        entries=(
+            "ul.com / Product iQ, csagroup.org certification directories, "
+            "Intertek/ETL,\n"
+            "and official directories of accredited Canadian certification or "
+            "field-\n"
+            "evaluation bodies."
+        ),
+        fetch_label="standards and listing bodies",
+    ),
+    SourceTier(
+        label=(
+            "Workplace-safety authorities when the claim is operational rather "
+            "than design"
+        ),
+        entries=(
+            "osha.gov, ccohs.ca, and the applicable provincial/territorial OHS "
+            "regulator."
+        ),
+    ),
+    SourceTier(
+        label="Manufacturer technical literature for product-specific claims only",
+        entries=(
+            "Eaton, Schneider Electric/Square D, Siemens, ABB, GE Vernova, "
+            "Vertiv,\n"
+            "ASCO, Russelectric, Cummins, Caterpillar, Kohler, SEL, "
+            "Legrand/Starline,\n"
+            "and PDI official sites. Never use reseller or SEO pages as "
+            "compliance proof."
+        ),
+        fetch_label="manufacturer datasheets",
+    ),
+    SourceTier(
+        label="Owner/industry criteria and archives",
+        entries=(
+            "Uptime Institute, BICSI, insurer, and owner criteria only when "
+            "the project\n"
+            "invokes them; archive.org only to establish historical "
+            "requirements."
+        ),
+    ),
+)
 
 
 _DETECTOR_VOCABULARY = DetectorVocabulary(
@@ -685,8 +731,7 @@ DATACENTER_ELECTRICAL = ReviewModule(
         "electrical systems on hyperscale data-center projects in the United "
         "States and Canada."
     ),
-    verifier_source_priorities=_VERIFIER_SOURCE_PRIORITIES,
-    verifier_fetch_priorities=_VERIFIER_FETCH_PRIORITIES,
+    verifier_source_tiers=_VERIFIER_SOURCE_TIERS,
     review_user_code_basis_line=(
         "US model-code fallback: IBC {ibc}, IFC {ifc}, IECC {iecc}, IEBC {iebc}, "
         "ASCE {asce7} with Supplement 1. Fallback electrical references: "

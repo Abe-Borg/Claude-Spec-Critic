@@ -79,8 +79,8 @@ making cached verdicts ambiguous.
 `review_severity_definitions`, `review_confidence_high_example`,
 `review_categories_template`, `review_examples`, `cross_check_persona`,
 `cross_check_severity_definitions`, `verifier_persona`,
-`verifier_source_priorities`, `verifier_fetch_priorities`. These are the
-strings that used to live inside `prompts.py` and `verifier.py`.
+`verifier_source_tiers`. These are the strings that used to live inside
+`prompts.py` and `verifier.py`.
 
 **Code-basis line templates.** `review_user_code_basis_line`,
 `cross_check_code_basis_line`, `verifier_system_code_basis_lines`,
@@ -154,22 +154,41 @@ told the model to prefer California regulatory pages when choosing what to read
 in full.
 
 The fix is the same move §2 describes, applied one level deeper: the ordering is
-now the module slot `verifier_fetch_priorities`, supplied pre-wrapped and split
-into lines by the engine exactly as `verifier_source_priorities` already was.
-Each module states its own ordering — `datacenter_fire` leads with standards and
-code-publisher full text, the location-aware modules lead with project-location
-authorities — and the surrounding protocol bullets stay byte-identical across
-every module.
+module data, not engine text. Each module states its own ordering —
+`datacenter_fire` leads with standards and code-publisher full text, the
+location-aware modules lead with project-location authorities — and the
+surrounding protocol bullets stay byte-identical across every module.
+
+**The second pass made the ordering derived rather than restated.** The first
+fix gave each module two sibling slots: `verifier_source_priorities` (the
+numbered tier list) and `verifier_fetch_priorities` (a prose restatement of the
+same ranking for the `web_fetch` bullet). Nothing tied them together, so a tier
+added or re-ordered in one could silently miss the other — a drift risk the
+California module's own source comment called out ("the California prompt must
+not move"). Both now render from one ordered tuple of `SourceTier`
+(`verifier_source_tiers`): `render_source_priority_lines()` numbers the tiers,
+and `fetch_priority_ordering()` joins the `fetch_label` of each tier that has
+one, in tier order. A tier that moves in the ranking moves in both places, and a
+name in the fetch ordering is necessarily a real tier. Only a tier's short fetch
+wording is still authored by hand, and tiers with no `fetch_label` are
+search-only by design — which is why California names four of its eight tiers
+there. The blocklist sentence that closed every module's old fetch string
+("Don't fetch aggregators or forums…") turned out to be identical in all five;
+it is a fact about the tool, not a jurisdiction, so it moved to the engine.
 
 Two details are worth keeping.
 
-**The California prompt did not move.** The CA module's slot value reproduces
-the previous hardcoded text byte-for-byte, so
-`tests/test_golden_domain_surfaces.py` stayed green without regeneration. Only
-the two `dc_verifier_system_prompt_*` goldens changed, and their diff is exactly
-the four lines above. That is the §0 rule holding under a *behavioral* fix
-rather than a pure extraction: the change that corrects the data-center prompt
-is provably a no-op for California.
+**The California prompt did not move — the first time.** The original fix
+reproduced the previous hardcoded text byte-for-byte, so
+`tests/test_golden_domain_surfaces.py` stayed green without regeneration; only
+the two `dc_verifier_system_prompt_*` goldens changed. That was the §0 rule
+holding under a *behavioral* fix rather than a pure extraction. Deriving the
+ordering did move every module's fetch bullet, but only its line wrapping: the
+words and the ordering are unchanged, the tier lists render byte-identically,
+and the golden diff is four re-wrapped lines per verifier prompt. Worth
+remembering when reading a golden diff — "the bytes changed" and "what the model
+is told changed" are different claims, and only the second one needs
+justifying.
 
 **The regression test is at the prompt level, not the golden level.** Goldens
 only cover the modules that have goldens — two of five. The pin added to
@@ -178,7 +197,8 @@ registered module, in both `include_verdict_tool` states, and asserts no
 non-California module names California; a companion test asserts the California
 module still does, because the rule is "no *foreign* jurisdiction," not "no
 jurisdiction," and a fix that scrubbed the word everywhere would be its own
-regression.
+regression. A third pin asserts the derived ordering matches the tier order for
+every module, which is the invariant two hand-authored strings could not offer.
 
 The general lesson for a future module author: the audit that catches this class
 of bug is not "grep the module files," it is "render every prompt for every

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ from ..batch.batch_runtime import DEFAULT_VERIFICATION_POLL_POLICY, PollPolicy, 
 from ..review.reviewer import Finding, _get_client
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..core.resend_sanitizer import sanitize_messages_for_resend
-from ..modules import code_basis_format_kwargs, module_for_cycle
+from ..modules import ReviewModule, code_basis_format_kwargs, module_for_cycle
 from ..core.api_config import (
     PHASE_VERIFICATION,
     PHASE_VERIFICATION_CONTINUATION,
@@ -601,6 +602,30 @@ def _pinned_standards_lines(cycle: CodeCycle) -> list[str]:
     return lines
 
 
+def _fetch_priority_lines(module: ReviewModule) -> list[str]:
+    """Render the ``web_fetch`` source-ordering bullet for ``module``.
+
+    The sentence is engine protocol — it was duplicated verbatim in all five
+    modules' old ``verifier_fetch_priorities`` strings, including the
+    blocklist note, which is a fact about the tool rather than about any
+    jurisdiction. Only the ordering inside the parentheses is module data,
+    and it comes from the same :class:`~src.modules.base.SourceTier` tuple
+    that renders ``<source_priorities>``, so the fetch ranking cannot drift
+    away from the search ranking.
+    """
+    bullet = (
+        "- Fetch the most authoritative-looking source first "
+        f"({module.fetch_priority_ordering()}). Don't fetch aggregators or "
+        "forums — they are blocked at the tool level anyway."
+    )
+    # ``break_on_hyphens=False``: the tier labels are full of hyphenated terms
+    # ("code-publisher", "project-location") and splitting one across a line
+    # break makes the ordering harder to read, not easier.
+    return textwrap.wrap(
+        bullet, width=72, subsequent_indent="  ", break_on_hyphens=False
+    )
+
+
 def _get_verification_system_prompt(
     cycle: CodeCycle,
     *,
@@ -653,7 +678,7 @@ def _get_verification_system_prompt(
         "<source_priorities>",
         "Prefer authoritative sources in this priority order:",
         "",
-        *module.verifier_source_priorities.splitlines(),
+        *module.render_source_priority_lines(),
         "",
         "When tier 1-3 sources don't have what you need, search the broader web.",
         "When a regulatory source conflicts with a manufacturer datasheet, treat the",
@@ -744,10 +769,12 @@ def _get_verification_system_prompt(
         "- Reserve web_fetch for high-stakes claims where snippets are",
         "  insufficient. Each fetch is more expensive than a search and the",
         "  per-call budget is small (3 fetches by default).",
-        # Module data: the ordering names jurisdiction-specific authorities,
-        # so hardcoding it here put "California regulatory pages" into every
-        # non-California verifier prompt. Emitted verbatim like the tier list.
-        *module.verifier_fetch_priorities.splitlines(),
+        # The ordering names jurisdiction-specific authorities, so hardcoding
+        # it here put "California regulatory pages" into every non-California
+        # verifier prompt. It is now derived from the same tier tuple that
+        # renders <source_priorities> above, so the two cannot disagree about
+        # the ranking; only the sentence around it is engine protocol.
+        *_fetch_priority_lines(module),
         "- When you fetch a page, populate ``source_quote`` from the fetched",
         "  content, not just the original search snippet. The fetched body",
         "  is the evidence you actually read.",
