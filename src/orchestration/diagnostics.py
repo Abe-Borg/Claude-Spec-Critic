@@ -510,16 +510,23 @@ class DiagnosticsReport:
             cache_create = int(e.data.get("cache_creation_input_tokens", 0) or 0)
             cache_read = int(e.data.get("cache_read_input_tokens", 0) or 0)
             search_count = int(e.data.get("web_search_requests", 0) or 0)
-            total_input_tokens += in_tok
-            total_output_tokens += out_tok
-            total_cache_creation_tokens += cache_create
-            total_cache_read_tokens += cache_read
-            total_web_search_requests += search_count
-            if out_tok > 0:
-                output_samples.append(out_tok)
-                phase_max = output_max_by_phase.get(e.phase, 0)
-                if out_tok > phase_max:
-                    output_max_by_phase[e.phase] = out_tok
+            # An in-process shared verdict (``cache_status="shared"``) made no
+            # call of its own: the leader's event already carries the tokens
+            # and searches the clone repeats for its evidence panel, so a
+            # follower adds nothing to the run-wide totals or cost summary
+            # (the per-phase rollup below skips it for the same reason).
+            is_shared = (e.data.get("cache_status") or "") == _CACHE_STATUS_SHARED
+            if not is_shared:
+                total_input_tokens += in_tok
+                total_output_tokens += out_tok
+                total_cache_creation_tokens += cache_create
+                total_cache_read_tokens += cache_read
+                total_web_search_requests += search_count
+                if out_tok > 0:
+                    output_samples.append(out_tok)
+                    phase_max = output_max_by_phase.get(e.phase, 0)
+                    if out_tok > phase_max:
+                        output_max_by_phase[e.phase] = out_tok
             stop_reason = e.data.get("stop_reason")
             is_truncated = bool(
                 stop_reason and stop_reason not in ("end_turn", "tool_use", None)
@@ -544,7 +551,7 @@ class DiagnosticsReport:
                 or search_count
                 or e.data.get("model")
             )
-            if (e.data.get("cache_status") or "") == _CACHE_STATUS_SHARED:
+            if is_shared:
                 # An in-process shared verdict made no call of its own — the
                 # leader's event carries that call — but it still names the
                 # leader's model and search count, which would otherwise read

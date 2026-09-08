@@ -552,9 +552,11 @@ class DigestPreflight:
     max_output_tokens: int  # output cap x chunk count (the cost ceiling side)
     estimated_max_cost_usd: float | None  # None: model unknown to the pricing table
     over_window_chunk_indices: list[int] = field(default_factory=list)
-    # Chunks whose count came from the exact endpoint (the anchor); every
-    # other chunk is scaled from the anchor's per-page rate, or — when the
-    # endpoint was unavailable — the flat per-page estimate.
+    # Chunks whose count came from the exact endpoint: the anchor, plus any
+    # chunk with an uncountable part (no page count to scale from, so it is
+    # measured on its own). Every other chunk is scaled from the anchor's
+    # per-page rate, or — when the endpoint was unavailable — the flat
+    # per-page estimate.
     exact_chunk_indices: list[int] = field(default_factory=list)
 
 
@@ -594,13 +596,20 @@ def preflight_digest_cost(
 
     ``exact`` is True only when every chunk was measured, i.e. a
     single-chunk digest; a scaled chunk is an estimate and the confirm
-    dialog says so (``exact_chunk_indices`` names the measured ones). If the
-    endpoint is unavailable every chunk falls back to the flat
-    ``pages x DIGEST_TOKENS_PER_PAGE_ESTIMATE`` + prompt-text estimate as
-    before. A chunk whose measurement-derived count cannot fit the model's
-    context window (input + output cap) is recorded in
-    ``over_window_chunk_indices`` so the caller can refuse before the API
-    400s mid-run; the flat fallback never flags (it is a coarse band).
+    dialog says so (``exact_chunk_indices`` names the measured ones). A
+    chunk with an uncountable part (pypdf accepted the file but could not
+    read its page tree) has no page count to scale from, so it gets its own
+    exact count too — the packer isolates such a file into its own chunk,
+    so this stays rare — rather than a prompt-only estimate that would
+    ignore the whole document. If the endpoint is unavailable every chunk
+    falls back to the flat ``pages x DIGEST_TOKENS_PER_PAGE_ESTIMATE`` +
+    prompt-text estimate, and an uncountable part is charged at the largest
+    request the packing caps allow (``effective_page_cap`` pages) — a
+    fallback that over-states rather than silently drops the file. A chunk
+    whose measurement-derived count cannot fit the model's context window
+    (input + output cap) is recorded in ``over_window_chunk_indices`` so the
+    caller can refuse before the API 400s mid-run; fallback estimates never
+    flag (they are a coarse band).
     """
     system_prompt = build_digest_system_prompt()
     output_cap = drawing_digest_max_tokens(model=model)
@@ -622,13 +631,26 @@ def preflight_digest_cost(
         )
         return count_tokens(prompt_text)
 
+    def _measure(chunk: DigestChunk) -> int | None:
+        return count_tokens_via_api(
+            model=model,
+            system=system_prompt,
+            messages=build_chunk_messages(
+                chunk, total_chunks=total_chunks, module_display_name=module_display_name
+            ),
+            client=client,
+        )
+
+    # Fallback charge for a part whose page tree could not be read: assume
+    # the largest request the packing caps allow. It over-states a small
+    # scanned file rather than dropping it from the forecast, and it is
+    # used only when the exact endpoint is unavailable for that chunk.
+    uncountable_fallback_tokens = (
+        effective_page_cap(model=model) * DIGEST_TOKENS_PER_PAGE_ESTIMATE
+    )
+
     anchor = _select_anchor_chunk(chunks)
-    anchor_messages = build_chunk_messages(
-        anchor, total_chunks=total_chunks, module_display_name=module_display_name
-    )
-    anchor_exact = count_tokens_via_api(
-        model=model, system=system_prompt, messages=anchor_messages, client=client
-    )
+    anchor_exact = _measure(anchor)
 
     per_chunk: list[int] = []
     exact_indices: list[int] = []
@@ -637,6 +659,7 @@ def preflight_digest_cost(
         for chunk in chunks:
             per_chunk.append(
                 chunk.known_page_count * DIGEST_TOKENS_PER_PAGE_ESTIMATE
+                + (uncountable_fallback_tokens if chunk.has_uncountable else 0)
                 + _prompt_tokens(chunk)
             )
     else:
@@ -649,12 +672,25 @@ def preflight_digest_cost(
             else float(DIGEST_TOKENS_PER_PAGE_ESTIMATE)
         )
         for chunk in chunks:
+            flag_window = True
             if chunk is anchor:
                 counted = int(anchor_exact)
                 exact_indices.append(chunk.index)
+            elif chunk.has_uncountable:
+                measured = _measure(chunk)
+                if measured is None:
+                    counted = (
+                        int(round(chunk.known_page_count * tokens_per_page))
+                        + uncountable_fallback_tokens
+                        + _prompt_tokens(chunk)
+                    )
+                    flag_window = False  # a coarse band, like the flat fallback
+                else:
+                    counted = int(measured)
+                    exact_indices.append(chunk.index)
             else:
                 counted = int(round(chunk.known_page_count * tokens_per_page)) + _prompt_tokens(chunk)
-            if counted + output_cap > context_window:
+            if flag_window and counted + output_cap > context_window:
                 over_window.append(chunk.index)
             per_chunk.append(counted)
 

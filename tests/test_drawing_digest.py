@@ -622,6 +622,79 @@ class TestPreflightAndCost:
         )
         assert preflight.over_window_chunk_indices == []
 
+    def test_uncountable_non_anchor_chunk_is_measured_exactly(self, monkeypatch):
+        # A chunk whose page tree pypdf could not read has no pages to scale
+        # from; a prompt-only estimate would drop the whole document from
+        # the forecast, so it gets its own exact count.
+        countable = _two_chunks()[0]  # index 0, 2 countable pages
+        scanned = dd.DigestChunk(
+            index=1,
+            parts=(dd.DigestChunkPart(label="scan.pdf", data=b"%PDF-1.4 fake", page_count=None),),
+            known_page_count=0,
+            has_uncountable=True,
+            raw_bytes=13,
+        )
+        import base64
+
+        scanned_b64 = base64.b64encode(b"%PDF-1.4 fake").decode("ascii")
+        seen: list[bool] = []
+
+        def _count(**kwargs):
+            payloads = [
+                ((block.get("source") or {}).get("data") or "")
+                for block in kwargs["messages"][0]["content"]
+                if isinstance(block, dict) and block.get("type") == "document"
+            ]
+            carries_scan = scanned_b64 in payloads
+            seen.append(carries_scan)
+            return 5_000 if carries_scan else 1_234
+
+        monkeypatch.setattr(dd, "count_tokens_via_api", _count)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 100)
+        preflight = preflight_digest_cost([countable, scanned], model=MODEL_SONNET_5)
+        assert seen == [False, True]  # the anchor, then the uncountable chunk, once each
+        assert preflight.exact_chunk_indices == [0, 1]
+        assert preflight.exact is True
+        assert preflight.per_chunk_input_tokens == [1_234, 5_000]
+        assert preflight.over_window_chunk_indices == []
+
+    def test_uncountable_chunk_falls_back_conservatively_when_its_count_fails(self, monkeypatch):
+        countable = _two_chunks()[0]
+        scanned = dd.DigestChunk(
+            index=1,
+            parts=(dd.DigestChunkPart(label="scan.pdf", data=b"%PDF-1.4 fake", page_count=None),),
+            known_page_count=0,
+            has_uncountable=True,
+            raw_bytes=13,
+        )
+        answers = iter([1_234, None])
+        monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: next(answers))
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 100)
+        preflight = preflight_digest_cost([countable, scanned], model=MODEL_SONNET_5)
+        cap_tokens = dd.effective_page_cap(model=MODEL_SONNET_5) * dd.DIGEST_TOKENS_PER_PAGE_ESTIMATE
+        assert preflight.exact_chunk_indices == [0]
+        assert preflight.exact is False
+        # Charged at the largest request the caps allow, never prompt-only.
+        assert preflight.per_chunk_input_tokens[1] == cap_tokens + 100
+        assert preflight.per_chunk_input_tokens[1] > 100
+        # A coarse band never flags the window, like the flat fallback.
+        assert preflight.over_window_chunk_indices == []
+
+    def test_flat_fallback_charges_uncountable_parts(self, monkeypatch):
+        scanned = dd.DigestChunk(
+            index=0,
+            parts=(dd.DigestChunkPart(label="scan.pdf", data=b"%PDF-1.4 fake", page_count=None),),
+            known_page_count=0,
+            has_uncountable=True,
+            raw_bytes=13,
+        )
+        monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: None)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 100)
+        preflight = preflight_digest_cost([scanned], model=MODEL_SONNET_5)
+        cap_tokens = dd.effective_page_cap(model=MODEL_SONNET_5) * dd.DIGEST_TOKENS_PER_PAGE_ESTIMATE
+        assert preflight.per_chunk_input_tokens == [cap_tokens + 100]
+        assert preflight.over_window_chunk_indices == []
+
     def test_anchor_is_the_chunk_with_the_most_countable_pages(self, monkeypatch):
         chunks = build_digest_chunks(
             [_drawing_file("a.pdf", 1), _drawing_file("b.pdf", 3)],

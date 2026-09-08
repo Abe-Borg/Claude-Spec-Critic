@@ -206,14 +206,24 @@ def _font_scale_label_for(scale: float) -> str:
 
 
 def close_confirmation_message(
-    *, is_processing: bool, review_transport: str, drawing_digest_running: bool
+    *,
+    is_processing: bool,
+    review_transport: str,
+    drawing_digest_running: bool,
+    report_export_running: bool = False,
 ) -> str | None:
     """The close-confirmation text, or ``None`` when closing loses nothing.
 
     A batch run keeps running on Anthropic's servers and is offered for
     resume on the next launch, so closing needs no confirmation. A real-time
     run persists nothing and a drawing digest's spend is only realized when
-    its text lands in Project Context — both are discarded by closing.
+    its text lands in Project Context — both are discarded by closing. A
+    report export in flight is the third case, and it is *not* covered by
+    the transport rule: once a batch has been collected its pending state is
+    already cleared and the completed result lives only in memory while the
+    worker writes the Word report and sidecars, so closing mid-write (the
+    automatic export at completion, or an on-demand "Save Word Report…" run
+    while idle) can lose a paid, finished review.
     """
     if is_processing and review_transport == "realtime":
         return (
@@ -221,6 +231,12 @@ def close_confirmation_message(
             "real-time runs are not saved and cannot be resumed (a batch run "
             "would keep running on Anthropic's servers and be offered for "
             "resume on the next launch).\n\nClose anyway?"
+        )
+    if report_export_running:
+        return (
+            "A report is being written. Closing now can leave the Word report "
+            "and its sidecars incomplete, and the completed review results "
+            "would be lost with the window.\n\nClose anyway?"
         )
     if drawing_digest_running:
         return (
@@ -1239,6 +1255,9 @@ class SpecReviewApp(_CTkDnDRoot):
             or "batch",
             drawing_digest_running=bool(
                 getattr(self, "_drawing_digest_running", False)
+            ),
+            report_export_running=bool(
+                getattr(self, "_report_export_running", False)
             ),
         )
         if message is None:

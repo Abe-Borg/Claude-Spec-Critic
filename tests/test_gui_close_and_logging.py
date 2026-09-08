@@ -30,12 +30,15 @@ class _FakeApp:
     _on_close = SpecReviewApp._on_close
     _confirm_close = SpecReviewApp._confirm_close
 
-    def __init__(self, *, recorder=None, is_processing=False, transport="batch", digest=False):
+    def __init__(
+        self, *, recorder=None, is_processing=False, transport="batch", digest=False, export=False
+    ):
         self.calls: list[tuple] = []
         self._trace_recorder = recorder
         self.is_processing = is_processing
         self._review_transport_for_review = transport
         self._drawing_digest_running = digest
+        self._report_export_running = export
 
     def destroy(self):
         self.calls.append(("destroy",))
@@ -95,6 +98,34 @@ class TestCloseConfirmationPolicy:
         assert message is not None
         assert "drawing analysis" in message.lower()
 
+    def test_report_export_warns_even_during_a_batch_run(self):
+        # After collection the pending state is already cleared and the
+        # completed result lives only in memory while the worker writes the
+        # report — the batch transport is no reason to close silently.
+        message = close_confirmation_message(
+            is_processing=True,
+            review_transport="batch",
+            drawing_digest_running=False,
+            report_export_running=True,
+        )
+        assert message is not None
+        assert "report is being written" in message.lower()
+
+    def test_on_demand_export_warns_while_idle(self):
+        message = close_confirmation_message(
+            is_processing=False,
+            review_transport="batch",
+            drawing_digest_running=False,
+            report_export_running=True,
+        )
+        assert message is not None
+        assert "report" in message.lower()
+
+    def test_export_flag_defaults_to_false(self):
+        assert close_confirmation_message(
+            is_processing=True, review_transport="batch", drawing_digest_running=False
+        ) is None
+
 
 class TestOnClose:
     def test_idle_close_stops_recorder_then_destroys_without_prompt(self, stop_spy, ask_spy):
@@ -149,6 +180,22 @@ class TestOnClose:
         assert len(ask_spy["calls"]) == 1
         assert "drawing analysis" in ask_spy["calls"][0][1].lower()
         assert app.calls == []
+
+    def test_report_export_in_flight_prompts_on_a_batch_run(self, stop_spy, ask_spy):
+        ask_spy["answer"] = False
+        app = _FakeApp(recorder=None, is_processing=True, transport="batch", export=True)
+        app._on_close()
+        assert len(ask_spy["calls"]) == 1
+        assert "report is being written" in ask_spy["calls"][0][1].lower()
+        assert app.calls == []  # No -> window stays open, nothing torn down
+
+    def test_report_export_prompt_yes_still_drains_trace_then_destroys(self, stop_spy, ask_spy):
+        rec = object()
+        app = _FakeApp(recorder=rec, export=True)
+        app._on_close()
+        assert len(ask_spy["calls"]) == 1
+        assert stop_spy == [rec]
+        assert app.calls == [("destroy",)]
 
     def test_falls_back_to_the_global_recorder(self, monkeypatch, ask_spy):
         # A recorder installed globally but not on the app attribute (e.g. a

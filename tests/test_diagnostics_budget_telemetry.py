@@ -150,3 +150,37 @@ def test_shared_verdicts_are_counted_apart_from_hits_and_misses():
     assert phases["verification"]["calls"] == 1
     assert phases["verification"]["input_tokens"] == 900
     assert "shared=2" in report.to_text()
+
+
+def _walk_values(obj, key):
+    """Every value stored under ``key`` anywhere in a nested summary dict."""
+    found = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == key:
+                found.append(v)
+            found.extend(_walk_values(v, key))
+    elif isinstance(obj, list):
+        for v in obj:
+            found.extend(_walk_values(v, key))
+    return found
+
+
+def test_shared_verdicts_add_nothing_to_run_wide_totals():
+    # A shared clone deliberately keeps the leader's search count for its
+    # evidence panel; the run-wide totals and the cost summary must count
+    # the leader's searches and tokens once, not once per follower.
+    report = DiagnosticsReport()
+    _verdict_event(report, severity="MEDIUM", requests=3, cache_status="miss",
+                   input_tokens=900, output_tokens=200)
+    _verdict_event(report, severity="MEDIUM", requests=3, cache_status="shared",
+                   input_tokens=900, output_tokens=200)
+    _verdict_event(report, severity="MEDIUM", requests=3, cache_status="shared",
+                   input_tokens=900, output_tokens=200)
+
+    summary = report.summary()
+    totals = _walk_values(summary, "total_web_search_requests")
+    assert totals, "summary must expose the run-wide search total"
+    assert all(v == 3 for v in totals), totals
+    assert all(v == 900 for v in _walk_values(summary, "total_input_tokens")), summary
+    assert all(v == 200 for v in _walk_values(summary, "total_output_tokens")), summary
