@@ -111,7 +111,7 @@ Assume: the Hyperscale Data Centers program (4 modules), 12 spec files routing t
 
 | Phase | Calls | Model | Transport | Batch discount? | Web searches |
 |---|---|---|---|---|---|
-| Requirements research | 4 modules × 4 dimensions = **16**, each up to 9 turns (`RESEARCH_MAX_CONTINUATIONS = 8`) | Sonnet 5 | **synchronous stream** | **No** | 8–24 per dimension, ceiling 2× |
+| Requirements research | **18** (fire 4, architecture 4, electrical 5, ESS 5), each up to 9 turns (`RESEARCH_MAX_CONTINUATIONS = 8`) | Sonnet 5 | **synchronous stream** | **No** | 8–24 per dimension; per-request `max_uses`, post-hoc 2× ceiling |
 | Per-spec review | **14** | **Opus 5**, effort `high`, adaptive thinking, 128k cap | Batch | Yes | 0 |
 | Haiku triage | ~3 (batches of 20) | Haiku 4.5 | sync | No | 0 |
 | Verification round 1 | ~**90** + ~15 Opus escalations | Sonnet 5 / Opus 5 | Batch (waves) | Yes | 3–8 each, severity-tiered |
@@ -121,6 +121,16 @@ Assume: the Hyperscale Data Centers program (4 modules), 12 spec files routing t
 | Drawing impact | 0–1 | Sonnet 5 | sync | No | 0 |
 
 ≈ **200 API calls and 700–1,200 billable web searches** per run. Web search is $10/1,000 and is **never** batch-discounted, so searches alone are on the order of **$7–12 per run** before a single token is counted.
+
+On the research row specifically, do not trust a hand-count — enumerate the registry. `AVAILABLE_MODULES` yields **18** profile-enabled dimensions totalling **314** declared `max_searches` and **108** `max_fetches`:
+
+```
+datacenter_fire                        dims=4  max_searches= 64  max_fetches= 22
+datacenter_architecture                dims=4  max_searches= 70  max_fetches= 24
+datacenter_electrical                  dims=5  max_searches= 90  max_fetches= 31
+datacenter_electronic_safety_security  dims=5  max_searches= 90  max_fetches= 31
+TOTAL                                  dims=18 max_searches=314  max_fetches=108
+```
 
 ### The three structural cost facts I believe I established
 
@@ -153,7 +163,7 @@ There is real evidence this path gets large in practice: `core/resend_sanitizer.
 
 **Fact E — Requirements research has no cross-run cache.**
 
-The verification cache is a well-built, TTL'd, LRU-bounded, jurisdiction-fingerprinted, single-flighted, disk-persisted claim cache. Research has nothing equivalent. The `RequirementsProfile` is persisted for *resume* (`orchestration/batch_resume.py`) and exported as `<report-stem>.profile.json`, but there is no mechanism to reuse it on the next run. A designer doing five hyperscale packages for the same client in the same county in one week re-pays the entire 16-dimension, ~250-search research fan-out five times, for answers that did not change.
+The verification cache is a well-built, TTL'd, LRU-bounded, jurisdiction-fingerprinted, single-flighted, disk-persisted claim cache. Research has nothing equivalent. The `RequirementsProfile` is persisted for *resume* (`orchestration/batch_resume.py`) and exported as `<report-stem>.profile.json`, but there is no mechanism to reuse it on the next run. A designer doing five hyperscale packages for the same client in the same county in one week re-pays the entire 18-dimension research fan-out five times, for answers that did not change.
 
 ---
 
@@ -167,7 +177,7 @@ Ordered by (my estimate of) saving × confidence ÷ quality risk. **Every one of
 
 Three sites, in priority order:
 
-- **Review requests.** Split the user message into content blocks and put a `cache_control` breakpoint on the block that ends at the close of `</project_context>`. The cached prefix becomes tools + system + intro + Project Context; only the spec body and trailing blocks are uncached. Break-even math with the 1-hour TTL: a write costs 2× input, a read 0.1×, so caching beats plain input after **1.11 reads** — i.e. from the second request onward. With 14 specs sharing a 50k-token context that is roughly a 6–7× reduction on the shared portion.
+- **Review requests.** Split the user message into content blocks and put a `cache_control` breakpoint on the block that ends at the close of `</project_context>`. The cached prefix becomes tools + system + intro + Project Context; only the spec body and trailing blocks are uncached. Break-even math with the 1-hour TTL, for N requests sharing a prefix of T tokens: uncached costs `N` units of T; cached costs `2 + 0.1(N-1)` (one 2× write, then 0.1× reads). Caching wins when `2 + 0.1(N-1) < N`, i.e. **N > 2.11 — so from the third request onward**. At N = 2 caching is marginally *worse* (2.1 vs 2.0). At N = 14 it is `2 + 1.3 = 3.3` against 14, a **≈4.2× reduction** on the shared portion. (The batch discount scales both sides equally, so the ratio holds.) A single-spec run should not take the breakpoint at all.
 - **Continuation resumes** (research pause-turn loop, verifier real-time loop, `build_verification_request`'s `assistant_content` path). Breakpoint on the last block of the accumulated assistant turn. This converts the entire re-sent conversation from 1× to 0.1×. This is the canonical multi-turn caching pattern and it is exactly the case the feature was designed for.
 - **Cross-check / compliance chunks** — lower value, since each chunk's corpus differs, but worth measuring.
 
@@ -185,11 +195,13 @@ Design question for you: is per-dimension or per-profile the right granularity? 
 
 **4. Batch the research fan-out.** *(Confidence: medium. Saving: ~50% of research tokens. Cost: one extra latency stage before review submission.)*
 
-The 16 dimension calls are independent and already run in a bounded pool. They could go up as one batch. The trade-off is real: research currently blocks review submission, so batching it adds a wait *before* the wait. Given the run is already batch-shaped, this may be acceptable — but it is an operator-experience decision, not purely a cost one, and it interacts with hypothesis 3 (a cache hit makes this moot). Consider making it conditional or opt-in.
+The 18 dimension calls are independent and already run in a bounded pool. They could go up as one batch. The trade-off is real: research currently blocks review submission, so batching it adds a wait *before* the wait. Given the run is already batch-shaped, this may be acceptable — but it is an operator-experience decision, not purely a cost one, and it interacts with hypothesis 3 (a cache hit makes this moot). Consider making it conditional or opt-in.
 
 ### Tier 2 — policy tuning, requires measurement before you touch it
 
-**5. Research search budgets.** `datacenter_fire` alone declares `max_searches` of 24 / 20 / 12 / 8 across its four dimensions, with a 2× continuation ceiling. Across four modules that is up to 512 searches in the worst case — $5.12 in search fees plus the token cost of every snippet, re-sent across continuations. **Question to answer with data, not intuition: does the 20th search in a dimension change the resulting profile?** If the marginal value curve flattens at 8–10, the budgets are over-provisioned by 2–3×. If it does not flatten, leave them alone — this is the phase that grounds every downstream jurisdictional claim, and under-researching it is exactly the kind of saving that costs the product its reason to exist.
+**5. Research search budgets.** The four profile-enabled modules declare **314** `max_searches` across 18 dimensions (see §3), so the nominal 2× continuation ceiling is **628** searches — $6.28 in search fees at the cap, plus the token cost of every snippet, re-sent across continuations.
+
+Two details about that ceiling matter, and both cut against it being a real guard. First, `max_uses` is enforced by the API **per request**, and every `pause_turn` continuation is a new request with a fresh budget — so the only thing bounding a dimension across its 9 possible turns is the app's own check. Second, that check (`requirements_research.py`, in the `STOP_CLASS_PAUSE` branch) runs *after* a response has been received and billed, and it then **fails the whole dimension** rather than completing it. So the ceiling neither prevents the overshooting call nor salvages the spend that preceded it. **Question to answer with data, not intuition: does the 20th search in a dimension change the resulting profile?** If the marginal value curve flattens at 8–10, the budgets are over-provisioned by 2–3×. If it does not flatten, leave them alone — this is the phase that grounds every downstream jurisdictional claim, and under-researching it is exactly the kind of saving that costs the product its reason to exist.
 
 **6. `WEB_FETCH_MAX_CONTENT_TOKENS = 50_000` × up to 8 fetches per research dimension.** Is a full 50k-token fetch the right granularity for a dimension asking "which IBC edition is adopted"? A lower per-fetch cap for research (keeping verification at 50k) may be a pure win. Interacts strongly with hypothesis 1.
 
@@ -205,7 +217,7 @@ The 16 dimension calls are independent and already run in a bounded pool. They c
 
 ### Tier 3 — non-obvious, worth a look
 
-**12.** Does the `LARGE_REVIEW_INPUT_THRESHOLD = 200_000` extended-output gate interact badly with a large Project Context? A 100k context pushes more specs over the threshold, lifting the output cap to 300k on Opus ($25/MTok). Combined with Fact B, a large context is expensive twice over. Fixing hypothesis 1 reduces the *cost* of crossing the threshold but not the crossing itself.
+**12.** Does the `LARGE_REVIEW_INPUT_THRESHOLD = 200_000` extended-output gate interact with a large Project Context in a way worth caring about? A 100k context pushes more specs over the threshold, which raises `max_tokens` from 128k to 300k on Opus. **This is a ceiling, not a charge** — Anthropic bills actual output tokens, as `api_config.py` says of its own caps ("a fail-fast guard, not a billing knob") — so crossing it costs nothing by itself. The real question is whether the *headroom* changes behavior: a review that would have truncated at 128k (and triggered a paid repair pass) can now run to 300k instead, which is cheaper than the repair if the extra output was needed and pure spend if it was not. Treat it as an output-growth risk to measure against real `output_tokens` distributions, not as an automatic second cost. The concrete, certain cost of a large context remains the repeated uncached input in Fact B.
 
 **13.** `tokenizer.safe_local_estimate` pads Sonnet 5 by **1.45×**. Every gate driven by a local estimate is therefore conservative by 45% on the app's most-used model. Check whether that causes unnecessary chunking, unnecessary escalation into the extended-output path, or spurious preflight failures. A more accurate factor (or more use of the free `count_tokens` endpoint) may be worth more than it looks.
 
@@ -342,6 +354,7 @@ Work through this. Skip nothing without recording why. Where a section reaches a
 - I may have missed a message-level cache mechanism that does not use a literal `cache_control` string. Confirm Fact A independently.
 - My ranking in §4 encodes an assumption that token/search spend dominates the author's cost. If his actual runs are small (a handful of CA K-12 specs, no research fan-out, no drawings), then Tier 1 items 3 and 4 are near-worthless and the ranking is wrong. **Check the actual usage shape before optimizing for the shape I assumed.**
 - I have a bias toward finding cost savings because that is what the brief asked for. Correct for it. If the honest answer is "this is already well-optimized and the remaining levers trade quality for money," say that.
+- **Empirically, my arithmetic and my enumeration both needed correcting.** An automated review of this brief caught three errors before it reached you: I had the prompt-cache break-even wrong (claimed savings from the 2nd request and ~6–7×; the correct figures are the 3rd request and ≈4.2×), I hand-counted the research fan-out as 16 dimensions / 512 searches by extrapolating from one module when the registry says 18 / 628, and I asserted that crossing the extended-output threshold costs money when it only raises a ceiling. All three are fixed above. Draw the obvious inference: **enumerate the registry and redo the arithmetic yourself rather than quoting mine.**
 
 ---
 
