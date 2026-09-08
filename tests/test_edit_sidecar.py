@@ -273,3 +273,53 @@ class TestMultiFileFanOut:
         # b borrows the representative's anchor (no per-file original to use).
         assert by_file["b.docx"]["edit_proposal"]["anchor_text"] == "after Part 1"
         assert by_file["a.docx"]["finding_id"] == by_file["b.docx"]["finding_id"]
+
+
+# ---------------------------------------------------------------------------
+# B-33 — one named schema constant per record type
+# ---------------------------------------------------------------------------
+
+
+def test_sidecar_schema_constants_are_pinned():
+    from src.output.edit_sidecar import (
+        PROGRAM_SIDECAR_SCHEMA_VERSION,
+        sidecar_schema_version_for,
+    )
+
+    # The emitted numbers must not change: single-module payloads are v4,
+    # routed-program payloads are v5, and the two are independent.
+    assert SIDECAR_SCHEMA_VERSION == 4
+    assert PROGRAM_SIDECAR_SCHEMA_VERSION == 5
+    assert sidecar_schema_version_for(_StubPipelineResult()) == 4
+
+    @dataclass
+    class _StubProgramResult:
+        program_id: str = "hyperscale_datacenter"
+        module_results: dict = None
+
+    assert sidecar_schema_version_for(_StubProgramResult()) == 5
+
+
+def test_program_payload_emits_program_schema_constant():
+    from src.output.edit_sidecar import PROGRAM_SIDECAR_SCHEMA_VERSION
+
+    f = _finding_with_edit()
+    child = _StubPipelineResult(review_result=ReviewResult(findings=[f]))
+
+    class _StubProgramResult:
+        program_id = "hyperscale_datacenter"
+        module_results = {"datacenter_fire": child}
+        assignments: list = []
+        files_reviewed = ["Section_23_0000.docx"]
+        expected_files_reviewed = ["Section_23_0000.docx"]
+        routed_request_count = 1
+        expected_routed_request_count = 1
+        project_profile = None
+        module_errors: dict = {}
+
+    payload = build_edit_instructions(_StubProgramResult(), report_path=Path("r.docx"))
+    assert payload["schema_version"] == PROGRAM_SIDECAR_SCHEMA_VERSION == 5
+    assert payload["edits"][0]["module_id"] == "datacenter_fire"
+    # And the single-module child still emits its own constant.
+    child_payload = build_edit_instructions(child, report_path=Path("r.docx"))
+    assert child_payload["schema_version"] == SIDECAR_SCHEMA_VERSION == 4

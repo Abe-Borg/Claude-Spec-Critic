@@ -186,6 +186,18 @@ def _anchor_for_finding(finding) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _rejected_source_reasons(vr) -> dict[str, str]:
+    """``{url: explanation}`` off a verification result; ``{}`` when absent.
+
+    Mirrors the DOCX panel's defensive read: legacy cache rows carry no
+    explanations, and the panel then renders the bare ``reason`` only.
+    """
+    raw = getattr(vr, "rejected_source_reasons", None)
+    if not isinstance(raw, dict):
+        return {}
+    return {str(url): str(why) for url, why in raw.items() if url and why}
+
+
 def _serialize_verification(vr) -> dict | None:
     if vr is None:
         return None
@@ -200,6 +212,7 @@ def _serialize_verification(vr) -> dict | None:
             entry if isinstance(entry, dict) else {"url": str(entry), "reason": ""}
             for entry in (getattr(vr, "rejected_sources", None) or [])
         ],
+        "rejected_source_reasons": _rejected_source_reasons(vr),
         "fetched_sources": list(getattr(vr, "fetched_sources", None) or []),
         "initial_sources": list(getattr(vr, "initial_sources", None) or []),
         "source_quote": getattr(vr, "source_quote", "") or "",
@@ -1514,6 +1527,7 @@ def _render_evidence_panel(finding, vr) -> tuple[str, list[str]]:
             "Unsupported / rejected sources (cited by the model but not present "
             "in web_search results):"
         )
+        rejected_reasons = _rejected_source_reasons(vr)
         bits = []
         text_bits = []
         for entry in rejected:
@@ -1523,8 +1537,17 @@ def _render_evidence_panel(finding, vr) -> tuple[str, list[str]]:
             bit = f'<span class="sc-rejected">{_e(url_text)}</span>'
             if reason:
                 bit += f'<span style="color:#C00000"> [{_e(reason)}]</span>'
+            # DOCX parity: the plain-language explanation follows the
+            # machine reason, gray italic, only when the verifier recorded one.
+            explanation = rejected_reasons.get(url or "")
+            if explanation:
+                bit += f'<span class="sc-rejected"> — {_e(explanation)}</span>'
             bits.append(bit)
-            text_bits.append(url_text + (f" [{reason}]" if reason else ""))
+            text_bits.append(
+                url_text
+                + (f" [{reason}]" if reason else "")
+                + (f" — {explanation}" if explanation else "")
+            )
         parts.append(
             f'<p class="sc-srclabel" style="color:#C00000"><strong>{_e(label)}'
             "</strong><br>"

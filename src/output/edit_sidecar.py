@@ -42,20 +42,55 @@ from pathlib import Path
 from ..orchestration.pipeline import group_findings
 from .report_status import classify_status
 
-# v4 (WS-4, D-14): compliance findings (``lc-`` ids, from
-# ``PipelineResult.compliance_result``) join the finding sweep, and the
-# top level gains two optional keys — ``project`` (the run's
-# city/state/country/client identity dict, ``None`` on profile-less runs)
-# and ``requirements_coverage`` (the compliance pass's per-requirement
-# coverage matrix, ``[]`` when the pass didn't run) — so a downstream
-# applier can see what drove location-specific edits.
-# v3 fans out multi-file findings: one entry per affected file (was: a single
-# entry carrying only the representative file). Entries gain ``affected_files``
-# and ``has_per_file_original``, and their ``fileName`` / ``evidenceElementId``
-# / ``edit_proposal`` are now the per-file values. v2 dropped the per-entry
-# ``suppression_reason`` key along with the cross-check dependency-suppression
-# feature that produced it.
+# Two record types, two schema constants. ``sidecar_schema_version_for``
+# picks the right one from the result's shape; the two emission sites in
+# ``build_edit_instructions`` use them directly.
+#
+# - ``SIDECAR_SCHEMA_VERSION`` (4) applies to a **single-module**
+#   ``PipelineResult``: a flat ``edits`` list keyed by ``(finding_id,
+#   fileName)`` plus the run's ``cycle_label`` / ``project`` /
+#   ``requirements_coverage``.
+#   History — v4 (WS-4, D-14): compliance findings (``lc-`` ids, from
+#   ``PipelineResult.compliance_result``) join the finding sweep, and the
+#   top level gains two optional keys — ``project`` (the run's
+#   city/state/country/client identity dict, ``None`` on profile-less runs)
+#   and ``requirements_coverage`` (the compliance pass's per-requirement
+#   coverage matrix, ``[]`` when the pass didn't run) — so a downstream
+#   applier can see what drove location-specific edits. v3 fans out
+#   multi-file findings: one entry per affected file (was: a single entry
+#   carrying only the representative file). Entries gain ``affected_files``
+#   and ``has_per_file_original``, and their ``fileName`` /
+#   ``evidenceElementId`` / ``edit_proposal`` are now the per-file values.
+#   v2 dropped the per-entry ``suppression_reason`` key along with the
+#   cross-check dependency-suppression feature that produced it.
+# - ``PROGRAM_SIDECAR_SCHEMA_VERSION`` (5) applies to a **routed-program**
+#   ``ProgramPipelineResult`` (one payload for every module the program ran):
+#   each entry additionally carries ``module_id``, and the top level carries
+#   ``program_id`` / ``assignments`` / ``submission_coverage`` /
+#   ``module_errors`` / ``requirements_coverage_by_module`` in place of the
+#   single-module ``cycle_label`` / ``requirements_coverage`` keys.
+#
+# The two numbers are independent — bumping one never bumps the other.
 SIDECAR_SCHEMA_VERSION = 4
+PROGRAM_SIDECAR_SCHEMA_VERSION = 5
+
+
+def _is_program_result(pipeline_result) -> bool:
+    """Whether ``pipeline_result`` is a routed-program result (vs. one module)."""
+    return hasattr(pipeline_result, "module_results") and hasattr(
+        pipeline_result, "program_id"
+    )
+
+
+def sidecar_schema_version_for(pipeline_result) -> int:
+    """The ``schema_version`` a sidecar built from ``pipeline_result`` carries.
+
+    :data:`PROGRAM_SIDECAR_SCHEMA_VERSION` for a routed-program result,
+    :data:`SIDECAR_SCHEMA_VERSION` for a single-module result.
+    """
+    if _is_program_result(pipeline_result):
+        return PROGRAM_SIDECAR_SCHEMA_VERSION
+    return SIDECAR_SCHEMA_VERSION
 
 
 def _serialize_edit_proposal(proposal) -> dict | None:
@@ -155,8 +190,13 @@ def _group_entries(group) -> list[dict]:
 
 
 def build_edit_instructions(pipeline_result, *, report_path: Path | None = None) -> dict:
-    """Build the sidecar payload from a pipeline result."""
-    if hasattr(pipeline_result, "module_results") and hasattr(pipeline_result, "program_id"):
+    """Build the sidecar payload from a pipeline result.
+
+    A routed-program result emits the ``PROGRAM_SIDECAR_SCHEMA_VERSION``
+    shape; a single-module result emits the ``SIDECAR_SCHEMA_VERSION`` shape
+    (see the constants' comment for the two layouts).
+    """
+    if _is_program_result(pipeline_result):
         entries: list[dict] = []
         coverage_by_module: dict[str, list[dict]] = {}
         for module_id, child in pipeline_result.module_results.items():
@@ -167,7 +207,7 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
                 child_payload.get("requirements_coverage") or []
             )
         return {
-            "schema_version": 5,
+            "schema_version": PROGRAM_SIDECAR_SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "report_file": report_path.name if report_path is not None else None,
             "program_id": pipeline_result.program_id,
@@ -245,7 +285,7 @@ def build_requirements_profile_export(pipeline_result) -> dict | None:
     not be its only container. Returns ``None`` when the run produced no
     requirements profile (every profile-less run) so no file is written.
     """
-    if hasattr(pipeline_result, "module_results") and hasattr(pipeline_result, "program_id"):
+    if _is_program_result(pipeline_result):
         module_profiles = {}
         for module_id, child in pipeline_result.module_results.items():
             exported = build_requirements_profile_export(child)

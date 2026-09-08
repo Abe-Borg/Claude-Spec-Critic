@@ -555,13 +555,47 @@ def load_state(path: str | Path) -> dict:
 
 
 def save_state(path: str | Path, state: dict) -> None:
-    """Persist the check state (best-effort; a write failure is non-fatal)."""
+    """Persist the check state atomically (best-effort; a failure is non-fatal).
+
+    Writes to a sibling ``.tmp`` and promotes it with ``os.replace`` — the
+    same tmp + rename shape every other ``~/.spec_critic`` state file uses —
+    so a crash mid-write or a concurrent reader can never observe a truncated
+    file. Any failure leaves the previous state file untouched and removes
+    the temp file; nothing is raised.
+    """
+    tmp: Path | None = None
     try:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
-        pass
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _comparable_timestamp(last_dt: datetime, now: datetime) -> datetime:
+    """Return ``last_dt`` in the same aware/naive shape as ``now``.
+
+    The GUI supplies a naive local ``datetime.now()`` and :func:`record_check`
+    stores whatever it was given, so a state file written by an aware clock
+    (or hand-edited to carry an offset) would otherwise make ``now - last_dt``
+    raise ``TypeError``. An aware stamp is expressed as naive local wall time
+    (what ``datetime.now()`` produces); a naive stamp compared against an
+    aware clock is interpreted as local wall time and given the local zone.
+    Same-shape inputs are returned unchanged.
+    """
+    last_aware = last_dt.tzinfo is not None and last_dt.utcoffset() is not None
+    now_aware = now.tzinfo is not None and now.utcoffset() is not None
+    if last_aware == now_aware:
+        return last_dt
+    if last_aware:
+        return last_dt.astimezone().replace(tzinfo=None)
+    return last_dt.astimezone()
 
 
 def should_auto_check(
@@ -574,16 +608,19 @@ def should_auto_check(
 
     ``now`` is injected so the once-a-day throttle is deterministic under
     test. A missing or unparseable ``last_check`` means "never checked" →
-    check now.
+    check now. Never raises: an aware stamp compares against a naive ``now``
+    (and vice versa) through :func:`_comparable_timestamp`, and anything the
+    comparison still cannot handle reads as "check now" — a bad state file
+    must never block the launch check.
     """
     last = state.get("last_check")
     if not last:
         return True
     try:
-        last_dt = datetime.fromisoformat(str(last))
-    except ValueError:
+        last_dt = _comparable_timestamp(datetime.fromisoformat(str(last)), now)
+        return (now - last_dt) >= timedelta(days=min_interval_days)
+    except Exception:  # noqa: BLE001 - an unreadable stamp must read as "check now"
         return True
-    return (now - last_dt) >= timedelta(days=min_interval_days)
 
 
 def record_check(state: dict, *, now: datetime) -> dict:

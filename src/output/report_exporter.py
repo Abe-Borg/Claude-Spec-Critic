@@ -2294,7 +2294,10 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
     - Escalation history (when applicable): "Initial verdict … → Final
       verdict …" so a reviewer can see when the two models disagreed.
     - Accepted source URLs ("Web/code evidence").
-    - Rejected source URLs.
+    - Rejected source URLs, each followed by the machine ``reason`` and —
+      when the verifier recorded one — the plain-language explanation
+      ("blocked domain: <category>" / "not among searched or fetched
+      results") so the reader knows *why* the citation was not accepted.
 
     The Sources heading is collapsed-by-default — same behavior as
     before. Every paragraph inside the panel carries
@@ -2315,6 +2318,11 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
     escalation_attempted = bool(getattr(vr, "escalation_attempted", False))
     accepted = list(vr.sources or [])
     rejected = list(getattr(vr, "rejected_sources", []) or [])
+    # Per-URL rejection explanations (additive telemetry; ``{}`` on legacy
+    # cache rows, in which case only the bare ``reason`` renders).
+    rejected_reasons = getattr(vr, "rejected_source_reasons", None)
+    if not isinstance(rejected_reasons, dict):
+        rejected_reasons = {}
     # web_fetch evidence. STRICT_STRUCTURED /
     # LOCAL_SKIP modes never attach the fetch tool, so this is 0/[] for
     # them; STANDARD/DEEP modes attach the tool but the model may not
@@ -2580,6 +2588,12 @@ def _write_evidence_panel(doc: Document, finding, vr) -> None:
                 reason_run = rej_para.add_run(f" [{reason}]")
                 reason_run.font.size = Pt(9)
                 reason_run.font.color.rgb = RGBColor(192, 0, 0)
+            explanation = rejected_reasons.get(url or "")
+            if explanation:
+                why_run = rej_para.add_run(f" — {explanation}")
+                why_run.font.size = Pt(9)
+                why_run.font.italic = True
+                why_run.font.color.rgb = RGBColor(128, 128, 128)
 
     # --- Full-text sources consulted ---
     # When the verifier used web_fetch, list the URLs it pulled in full

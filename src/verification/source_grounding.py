@@ -23,9 +23,12 @@ This module owns the contract:
    *accepted* (matched a real search result) and *rejected* (did not).
    Rejected entries carry a structured reason so reports and diagnostics
    can explain the downgrade.
-3. :func:`is_grounded_against_search_results` is the single boolean used
-   to gate ``CONFIRMED`` / ``CORRECTED`` verdicts when at least one
-   cited source was supplied.
+3. :func:`describe_rejection` turns one rejection into the one-line
+   explanation the evidence panel renders next to the URL — ``"blocked
+   domain: <category>"`` when the host is on the search/fetch blocklist,
+   otherwise ``"not among searched or fetched results"`` (or the
+   malformed / empty variants) — so a reader can tell a hallucinated
+   citation from one the tools were never allowed to return.
 
 The helpers are deliberately string-only: no I/O, no network. They are
 called from inside :mod:`src.verifier` immediately after a verdict is
@@ -36,6 +39,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
+
+from ..core.api_config import blocked_domain_category
 
 
 # Tracking parameters that mean the same URL when stripped. Keep this
@@ -287,12 +292,34 @@ def validate_cited_sources(
     )
 
 
-def is_grounded_against_search_results(
-    cited: Iterable[str] | None,
-    searched: Iterable[str] | None,
-) -> bool:
-    """Convenience wrapper — True iff at least one cited URL is grounded."""
-    return validate_cited_sources(cited, searched).has_any_grounded_citation()
+# Human-readable rejection explanations rendered next to each rejected URL
+# in the evidence panel (and persisted with cached verdicts as
+# ``VerificationResult.rejected_source_reasons``). Distinct from the
+# ``REJECT_*`` sentinels above, which stay the machine-readable ``reason``.
+REJECTION_EXPLANATION_UNGROUNDED = "not among searched or fetched results"
+REJECTION_EXPLANATION_MALFORMED = "malformed URL"
+REJECTION_EXPLANATION_EMPTY = "empty citation"
+REJECTION_EXPLANATION_BLOCKED_PREFIX = "blocked domain: "
+
+
+def describe_rejection(url: str, reason: str) -> str:
+    """One-line explanation of why a cited URL was rejected.
+
+    A host on the search/fetch blocklist is explained by its category
+    (``"blocked domain: social media"``) — the tools could never have
+    returned it, so "ungrounded" would understate the problem. Otherwise
+    the ``REJECT_*`` sentinel maps to its plain-language form; anything
+    unrecognized reads as the ungrounded explanation, the only other way a
+    citation is rejected.
+    """
+    category = blocked_domain_category(url)
+    if category:
+        return REJECTION_EXPLANATION_BLOCKED_PREFIX + category
+    if reason == REJECT_MALFORMED:
+        return REJECTION_EXPLANATION_MALFORMED
+    if reason == REJECT_EMPTY:
+        return REJECTION_EXPLANATION_EMPTY
+    return REJECTION_EXPLANATION_UNGROUNDED
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,6 @@ from ..core.api_config import (
     cache_diagnostics_params,
     extract_cache_diagnostics,
     model_supports_adaptive_thinking,
-    verification_max_tokens,
 )
 from .retry_policy import (
     BatchWaveFailureTracker,
@@ -52,6 +51,7 @@ from ..review.prompt_serialization import (
 from .source_grounding import (
     SearchedSource,
     dedupe_searched_sources,
+    describe_rejection,
     validate_cited_sources,
 )
 from .verification_cache import VerificationCache
@@ -98,11 +98,6 @@ def _routing_decision_to_dict(decision: VerificationRoutingDecision | None) -> d
         pass
     return {"repr": repr(decision)}
 
-# VERIFICATION_MAX_TOKENS is computed once at import for backward-compat
-# with callers that read the constant. The dynamic helper is used for the
-# request shape so model routing can change it per call.
-VERIFICATION_MAX_TOKENS = verification_max_tokens()
-
 MAX_VERIFICATION_WAVES = 3
 
 # When a batch run finishes with only a few unresolved items, fall back to
@@ -145,6 +140,13 @@ class VerificationResult:
     #                         backward compatibility with cache + report code.
     #   - rejected_sources  : cited URLs that did NOT match any searched URL.
     #                         Each entry is ``{"url": ..., "reason": ...}``.
+    #   - rejected_source_reasons : ``{url: explanation}`` for the evidence
+    #                         panel — "blocked domain: <category>" when the
+    #                         host is on the search/fetch blocklist, else
+    #                         "not among searched or fetched results" (or
+    #                         the malformed / empty variants). Additive:
+    #                         legacy cache rows load as ``{}`` and the panel
+    #                         then shows the bare ``reason`` only.
     # ``verification_profile`` is the :class:`VerificationProfile` value used
     # to route the search budget for this call. Stored as a string so the
     # whole record round-trips through JSON cleanly.
@@ -152,6 +154,7 @@ class VerificationResult:
     cited_sources: list[str] = field(default_factory=list)
     accepted_sources: list[str] = field(default_factory=list)
     rejected_sources: list[dict] = field(default_factory=list)
+    rejected_source_reasons: dict[str, str] = field(default_factory=dict)
     verification_profile: str = ""
     # ----- Verification mode ----------------------------------------------
     # The :class:`VerificationMode` value that routed this verification.
@@ -421,7 +424,11 @@ def _apply_source_grounding(
        rendering URLs the model invented.
     4. ``rejected_sources`` records the ungrounded / malformed citations
        so diagnostics can audit them and reports can show the user the
-       evidence that was *not* accepted.
+       evidence that was *not* accepted; ``rejected_source_reasons`` maps
+       each rejected URL to the one-line explanation the evidence panel
+       renders beside it (:func:`source_grounding.describe_rejection` —
+       a blocked-domain category, or "not among searched or fetched
+       results").
 
     When the model emitted CONFIRMED / CORRECTED / DISPUTED with
     citations but every citation is ungrounded, the verdict is
@@ -463,6 +470,12 @@ def _apply_source_grounding(
     )
     result.accepted_sources = list(outcome.accepted)
     result.rejected_sources = [dict(r) for r in outcome.rejected]
+    result.rejected_source_reasons = {
+        str(r.get("url") or ""): describe_rejection(
+            str(r.get("url") or ""), str(r.get("reason") or "")
+        )
+        for r in outcome.rejected
+    }
     # ``sources`` is the public list — keep only accepted citations so
     # downstream reports and the cache don't echo invented URLs.
     result.sources = list(outcome.accepted)
@@ -1898,11 +1911,6 @@ def _run_verification_call(
     # run five rounds by default.
     policy = DEFAULT_VERIFICATION_RETRY_POLICY
     attempts_planned = max(1, int(max_retries) + 1)
-    # Per-call continuation accounting: the cap comes from the routing
-    # decision; we additionally track total web-search uses across
-    # continuations so a model that keeps pausing without making
-    # progress goes terminal-unverified.
-    continuation_total = 0
     for attempt in range(attempts_planned):
         is_last_attempt = attempt == attempts_planned - 1
         try:
@@ -1975,7 +1983,6 @@ def _run_verification_call(
                     # total continuations or the total web-search uses
                     # would exceed the configured budget.
                     continuation_count += 1
-                    continuation_total += 1
                     _trace.capture_pause_turn(trace_parent, continuation_count=continuation_count)
                     total_search_so_far = sum(
                         _web_search_count(r) for r in all_responses
