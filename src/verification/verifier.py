@@ -819,6 +819,15 @@ def _content_block_to_plain(block) -> dict | None:
     flow to a specific SDK shape; converting at capture time decouples it.
     ``maybe_transform`` accepts plain dicts or Pydantic models on the way
     out, so either form works downstream.
+
+    Dump mode is ``mode="json", exclude_none=True`` — the same call
+    :func:`src.core.resend_sanitizer._to_plain_block` makes on the same
+    resend payload. These dicts go straight into batch continuation
+    request bodies, so they must be JSON-native (no stray ``datetime`` /
+    enum members) and must not carry ``None``-valued optional fields the
+    API would reject as explicit nulls; keeping one dump mode on both
+    paths means a block converted here and one converted by the sanitizer
+    are byte-identical.
     """
     if block is None:
         return None
@@ -827,9 +836,18 @@ def _content_block_to_plain(block) -> dict | None:
     dumper = getattr(block, "model_dump", None)
     if callable(dumper):
         try:
-            data = dumper(mode="python", exclude_none=False)
+            data = dumper(mode="json", exclude_none=True)
             if isinstance(data, dict):
                 return data
+        except TypeError:
+            # Pre-v2-style ``model_dump`` without keyword support — the
+            # sanitizer takes the same fallback.
+            try:
+                data = dumper()
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
         except Exception:
             pass
     legacy_dumper = getattr(block, "dict", None)
@@ -1587,6 +1605,11 @@ def verify_finding(
     # is-initial); ``select_routing(escalated=True)`` is the single source
     # of truth for which model and request shape the escalation runs on, so
     # the real-time and batch escalation paths cannot drift.
+    # ``verification_failed`` is threaded so an initial pass that died
+    # operationally (rate limit / server error / network / parse error)
+    # is never re-issued on the escalation tier — that would be a paid
+    # retry of the same request, not a second opinion. The result already
+    # carries VERIFICATION_FAILED and stays out of the cache.
     escalation_fired = False
     if not escalated and should_escalate_verification(
         finding,
@@ -1594,6 +1617,7 @@ def verify_finding(
         grounded=result.grounded,
         successful_source_count=result.successful_source_count,
         search_error_count=result.search_error_count,
+        verification_failed=result.verification_failed,
     ):
         escalation_decision = select_routing(
             finding, escalated=True, local_skip=False, cycle=cycle,
@@ -1826,7 +1850,12 @@ def _run_verification_call(
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return _make_unverified("No API key available for verification.")
 
-    client = _get_client()
+    # This function owns its retry loop (``DEFAULT_VERIFICATION_RETRY_POLICY``
+    # below), so the SDK's built-in retries are switched off for it —
+    # otherwise a rate-limited call would issue (attempts × SDK retries)
+    # HTTP requests and the policy's backoff schedule would not mean what
+    # it says. See ``reviewer._get_client`` for the policy.
+    client = _get_client(sdk_retries=False)
     # Build prompt + tools through the shared helpers so the real-time
     # path matches batch initial / retry / continuation. The
     # ``include_verdict_tool`` flag is computed once and threaded into both
@@ -2825,12 +2854,17 @@ def _run_batch_escalation_wave(
         # real-time fallback path escalates inline, setting this flag).
         if v is None or v.escalation_attempted:
             continue
+        # Same gate as the real-time path, including the operational-
+        # failure input: a wave item that ended in a terminal failure
+        # (rate limit, server error, invalid request, cancel) is not
+        # re-issued on the escalation tier.
         if not should_escalate_verification(
             finding,
             verdict=v.verdict,
             grounded=v.grounded,
             successful_source_count=v.successful_source_count,
             search_error_count=v.search_error_count,
+            verification_failed=v.verification_failed,
         ):
             continue
         decision = select_routing(finding, escalated=True, local_skip=False, cycle=cycle)

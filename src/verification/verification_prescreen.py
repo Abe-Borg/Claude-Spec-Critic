@@ -7,7 +7,9 @@ finding get?" before any request is built:
   grounding (placeholders, TODOs, duplicate paragraphs, …) so we don't pay
   tokens verifying them.
 * **Escalation policy** — pick the Sonnet-first initial model and decide
-  when an UNVERIFIED result warrants an Opus escalation pass.
+  when an UNVERIFIED result warrants an Opus escalation pass (never after
+  an *operational* failure of the initial pass — see
+  :func:`should_escalate_verification`).
 
 Distinct from :mod:`verification_routing`, which takes these decisions and
 builds the concrete request (tools, headers, budgets) sent to the API.
@@ -203,13 +205,33 @@ def should_escalate_verification(
     grounded: bool,
     successful_source_count: int,
     search_error_count: int,
+    verification_failed: bool = False,
 ) -> bool:
     """Decide whether to retry a verification with the escalation model.
 
     Escalation only fires when the initial verifier is not already the
     escalation model.
+
+    ``verification_failed`` is the initial result's operational-failure
+    flag (``VerificationResult.verification_failed`` — rate limit, server
+    error, network error, parse error, invalid request, batch cancel).
+    Such a result is UNVERIFIED and ungrounded, so without this input every
+    other rule would say "escalate", and a CRITICAL finding whose initial
+    call was rate-limited would pay for an escalation-tier re-issue of the
+    very same request — an operational retry at the most expensive tier,
+    not an evidentiary second opinion. Escalation is reserved for a pass
+    that *ran and could not ground the claim*; operational failures are
+    the retry loops' job (real-time attempts / batch waves), surface as
+    ``VERIFICATION_FAILED`` in the report, and are never cached, so a
+    re-run sees them fresh. The default keeps legacy callers' behavior.
     """
     if VERIFICATION_MODEL_DEFAULT == VERIFICATION_ESCALATION_MODEL:
+        return False
+
+    # Operational failure of the initial pass: nothing to escalate. The
+    # initial tier never got to render a verdict, so a second tier cannot
+    # disagree with it — it would only re-issue the same request.
+    if verification_failed:
         return False
 
     severity = (finding.severity or "").strip().upper()

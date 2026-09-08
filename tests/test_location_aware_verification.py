@@ -169,6 +169,8 @@ class TestJurisdictionCacheKey:
             grounded=True,
             sources=["https://codes.example.gov/x"],
             accepted_sources=["https://codes.example.gov/x"],
+            # The cache enforces the v3 source_quote invariant on CONFIRMED.
+            source_quote="Section X applies.",
         )
         fp_markham = ProjectProfile("Markham", "ON", "CA", "X").jurisdiction_fingerprint()
         fp_ashburn = ProjectProfile("Ashburn", "VA", "US", "X").jurisdiction_fingerprint()
@@ -195,6 +197,8 @@ class TestJurisdictionCacheKey:
             grounded=True,
             sources=["https://codes.example.gov/x"],
             accepted_sources=["https://codes.example.gov/x"],
+            # The cache enforces the v3 source_quote invariant on CONFIRMED.
+            source_quote="Section X applies.",
         )
         cache.put(finding, cycle=DEFAULT_CYCLE, result=result)
         assert cache.get(finding, cycle=DEFAULT_CYCLE) is not None
@@ -320,3 +324,126 @@ class TestSidecarV4:
             is None
         )
         assert not (tmp_path / "report.profile.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# B-2: the profile-less web_search location is module data, not engine data
+# ---------------------------------------------------------------------------
+
+
+_CALIFORNIA_LOCATION = {
+    "type": "approximate",
+    "country": "US",
+    "region": "California",
+}
+
+
+def _datacenter_modules():
+    from src.modules import (
+        DATACENTER_ARCHITECTURE,
+        DATACENTER_ELECTRICAL,
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY,
+        DATACENTER_FIRE,
+    )
+
+    return (
+        DATACENTER_FIRE,
+        DATACENTER_ARCHITECTURE,
+        DATACENTER_ELECTRICAL,
+        DATACENTER_ELECTRONIC_SAFETY_SECURITY,
+    )
+
+
+class TestModuleDefaultSearchLocation:
+    def test_engine_builder_emits_no_location_by_default(self):
+        from src.core.api_config import build_web_search_tool
+
+        tool = build_web_search_tool()
+        assert "user_location" not in tool
+        assert list(tool.keys()) == ["type", "name", "blocked_domains", "max_uses"]
+
+    def test_engine_builder_copies_a_supplied_location(self):
+        from src.core.api_config import build_web_search_tool
+
+        loc = dict(_MARKHAM_LOCATION)
+        tool = build_web_search_tool(user_location=loc)
+        assert tool["user_location"] == _MARKHAM_LOCATION
+        tool["user_location"]["city"] = "Elsewhere"
+        assert loc["city"] == "Markham"
+
+    def test_california_module_supplies_exactly_the_legacy_dict(self):
+        from src.modules import CALIFORNIA_K12_MEP
+
+        assert CALIFORNIA_K12_MEP.default_web_search_user_location == _CALIFORNIA_LOCATION
+
+    def test_profile_less_california_run_is_byte_identical_including_key_order(self):
+        decision = select_routing(_finding(), cycle=DEFAULT_CYCLE)
+        assert decision.module_id == "california_k12_mep"
+        web_search = build_verification_tools_from_decision(decision)[0]
+        assert web_search["user_location"] == _CALIFORNIA_LOCATION
+        # The former engine default appended the key last; the module default
+        # lands in the same slot, so the serialized tool dict is unchanged.
+        assert list(web_search.keys()) == [
+            "type", "name", "blocked_domains", "max_uses", "user_location",
+        ]
+
+    def test_cycle_less_routing_degrades_to_california(self):
+        decision = select_routing(_finding())
+        assert decision.module_id == "california_k12_mep"
+        assert build_verification_tools_from_decision(decision)[0]["user_location"] == (
+            _CALIFORNIA_LOCATION
+        )
+
+    @pytest.mark.parametrize("module", _datacenter_modules(), ids=lambda m: m.module_id)
+    def test_profile_less_datacenter_run_searches_unlocalized(self, module):
+        assert module.default_web_search_user_location is None
+        decision = select_routing(_finding(), cycle=module.cycle)
+        assert decision.module_id == module.module_id
+        tools = build_verification_tools_from_decision(decision)
+        assert "user_location" not in tools[0]
+        request = build_verification_request(
+            decision, prompt="verify this", system_prompt="you verify"
+        )
+        assert "user_location" not in request.params["tools"][0]
+
+    def test_profile_wins_over_the_california_default(self):
+        decision = select_routing(_finding(), cycle=DEFAULT_CYCLE)
+        tools = build_verification_tools_from_decision(decision, user_location=_MARKHAM_LOCATION)
+        assert tools[0]["user_location"] == _MARKHAM_LOCATION
+
+    def test_profile_wins_for_a_datacenter_run(self):
+        from src.modules import DATACENTER_FIRE
+
+        decision = select_routing(_finding(), cycle=DATACENTER_FIRE.cycle)
+        request = build_verification_request(
+            decision,
+            prompt="verify this",
+            system_prompt="you verify",
+            user_location=_MARKHAM_LOCATION,
+        )
+        assert request.params["tools"][0]["user_location"] == _MARKHAM_LOCATION
+
+    def test_decision_carries_module_id_and_round_trips(self):
+        from src.modules import DATACENTER_FIRE
+        from src.verification.verification_routing import VerificationRoutingDecision
+
+        decision = select_routing(_finding(), cycle=DATACENTER_FIRE.cycle)
+        payload = decision.to_dict()
+        assert payload["module_id"] == "datacenter_fire"
+        rebuilt = VerificationRoutingDecision.from_dict(payload)
+        assert rebuilt == decision
+        assert "user_location" not in build_verification_tools_from_decision(rebuilt)[0]
+
+    def test_legacy_decision_row_without_module_id_behaves_like_california(self):
+        # A ``request_contexts`` row written before the field existed
+        # reconstructs with ``module_id=""`` → the default module → the same
+        # California localization the engine used to hardcode.
+        from src.verification.verification_routing import VerificationRoutingDecision
+
+        payload = select_routing(_finding(), cycle=DEFAULT_CYCLE).to_dict()
+        payload.pop("module_id")
+        rebuilt = VerificationRoutingDecision.from_dict(payload)
+        assert rebuilt.module_id == ""
+        assert build_verification_tools_from_decision(rebuilt)[0]["user_location"] == (
+            _CALIFORNIA_LOCATION
+        )

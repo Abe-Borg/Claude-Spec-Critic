@@ -1302,3 +1302,75 @@ class TestVerifierPromptJurisdictionNeutrality:
         )
         with pytest.raises(ValueError):
             validate_module_registry([broken])
+
+
+# ---------------------------------------------------------------------------
+# B-2: ``default_web_search_user_location`` slot
+# ---------------------------------------------------------------------------
+
+
+class TestWebSearchLocationSlot:
+    _CALIFORNIA = {"type": "approximate", "country": "US", "region": "California"}
+
+    def test_california_supplies_exactly_the_legacy_engine_dict(self):
+        assert CALIFORNIA_K12_MEP.default_web_search_user_location == self._CALIFORNIA
+
+    def test_datacenter_modules_have_no_default(self):
+        from src.modules import (
+            DATACENTER_ARCHITECTURE,
+            DATACENTER_ELECTRICAL,
+            DATACENTER_ELECTRONIC_SAFETY_SECURITY,
+            DATACENTER_FIRE,
+        )
+
+        for module in (
+            DATACENTER_FIRE,
+            DATACENTER_ARCHITECTURE,
+            DATACENTER_ELECTRICAL,
+            DATACENTER_ELECTRONIC_SAFETY_SECURITY,
+        ):
+            assert module.default_web_search_user_location is None, module.module_id
+
+    def test_slot_defaults_to_none_and_validates(self):
+        module = _module()
+        assert module.default_web_search_user_location is None
+        validate_module_registry([module])
+
+    @pytest.mark.parametrize(
+        "location",
+        [
+            {"type": "approximate", "city": "Austin"},
+            {"type": "approximate", "region": "Texas"},
+            {"type": "approximate", "country": "US"},
+            {"type": "approximate", "city": "Toronto", "region": "Ontario", "country": "CA", "timezone": "America/Toronto"},
+        ],
+    )
+    def test_valid_locations_accepted(self, location):
+        module = _module(default_web_search_user_location=location)
+        validate_module_registry([module])
+        assert module.default_web_search_user_location == location
+
+    def test_module_copies_the_literal(self):
+        literal = {"type": "approximate", "city": "Austin"}
+        module = _module(default_web_search_user_location=literal)
+        literal["city"] = "Elsewhere"
+        assert module.default_web_search_user_location == {"type": "approximate", "city": "Austin"}
+
+    @pytest.mark.parametrize(
+        ("location", "match"),
+        [
+            ({"type": "exact", "country": "US"}, "must be 'approximate'"),
+            ({"country": "US"}, "must be 'approximate'"),
+            ({"type": "approximate"}, "at least one of"),
+            ({"type": "approximate", "timezone": "America/Chicago"}, "at least one of"),
+            ({"type": "approximate", "country": "US", "planet": "Earth"}, "unsupported keys"),
+            ({"type": "approximate", "country": ""}, "non-empty string"),
+            ({"type": "approximate", "country": 5}, "non-empty string"),
+            ("California", "must be None or a dict"),
+            (["US"], "must be None or a dict"),
+        ],
+    )
+    def test_invalid_locations_rejected(self, location, match):
+        module = _module(default_web_search_user_location=location)
+        with pytest.raises(ValueError, match=match):
+            validate_module_registry([module])

@@ -422,14 +422,47 @@ _cached_key: str | None = None
 _client_lock = threading.Lock()
 
 
-def _get_client() -> Anthropic:
+def _get_client(*, sdk_retries: bool = True) -> Anthropic:
+    """Shared Anthropic client factory — one cached client per API key.
+
+    Retry policy: SDK retries versus app-level retry loops
+    -----------------------------------------------------
+    The SDK client retries connection errors, 408/409/429 and 5xx on its
+    own (``max_retries=2`` ⇒ up to 3 HTTP attempts per call). Several call
+    sites in this app *also* wrap their call in a
+    :mod:`src.verification.retry_policy` loop (3 attempts on the shared
+    backoff schedule). Left stacked, one rate-limited call issues
+    3 × 3 = 9 HTTP attempts, and the policy loop's backoff no longer means
+    what it says because each of its "attempts" is itself a retried
+    mini-loop. The factory therefore hands out two flavors of the same
+    cached client:
+
+    * ``sdk_retries=False`` — for call sites that own an app-level retry
+      loop. Returns a view of the cached client with ``max_retries=0``
+      (``with_options`` shares the underlying HTTP connection pool and API
+      key, so this is a cheap per-call wrapper, not a second client). The
+      policy loop is then the *only* retry layer, and its attempt count and
+      backoff are exact. Adopters: the real-time verification loop
+      (``verifier._run_verification_call``), cross-check, compliance,
+      requirements research, the drawing digest, drawing-impact synthesis,
+      realtime review, and the batch results-stream collector
+      (``batch._collect_batch_results_with_retry``).
+    * ``sdk_retries=True`` (the default) — for bare, single-shot call sites
+      with no app-level loop: batch submit / poll / follow-up-wave submit,
+      ``count_tokens_via_api``, and Haiku triage. The SDK's built-in retry
+      is their only retry, so the default keeps it — never set the cached
+      client itself to ``max_retries=0``.
+    """
     global _cached_client, _cached_key
     key = _get_api_key()
     with _client_lock:
         if _cached_client is None or _cached_key != key:
             _cached_client = Anthropic(api_key=key)
             _cached_key = key
-        return _cached_client
+        client = _cached_client
+    if not sdk_retries:
+        return client.with_options(max_retries=0)
+    return client
 
 
 def _extract_json_array(text: str, *, stop_reason: str | None = None) -> tuple[list, str]:

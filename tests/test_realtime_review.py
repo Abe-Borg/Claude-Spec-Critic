@@ -240,7 +240,7 @@ class TestRunnerHappyPath:
                 }
             )
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, request_map = run_realtime_review(specs)
 
@@ -266,7 +266,7 @@ class TestRunnerHappyPath:
             stop_reason="end_turn",
         )
         client = FakeRealtimeClient(lambda kwargs: message)
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review([_spec("a.docx")])
 
@@ -278,7 +278,7 @@ class TestRunnerHappyPath:
     def test_request_shape_pins(self, monkeypatch):
         spec = _spec("a.docx")
         client = FakeRealtimeClient(lambda kwargs: review_tool_use_response())
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         run_realtime_review([spec])
 
@@ -321,7 +321,7 @@ class TestTruncationParity:
                 {"a.docx": [max_tokens_incomplete_response(), review_tool_use_response()]}
             )
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review([_spec("a.docx")])
 
@@ -346,7 +346,7 @@ class TestTruncationParity:
                 }
             )
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, request_map = run_realtime_review(specs)
         assert results["review__bad__0"].parse_status == "incomplete"
@@ -368,7 +368,7 @@ class TestTruncationParity:
             ValueError("repair call exploded"),
         ]
         client = FakeRealtimeClient(lambda kwargs: script.pop(0))
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review([_spec("a.docx")])
 
@@ -390,7 +390,7 @@ class TestRetryTaxonomy:
             review_tool_use_response(),
         ]
         client = FakeRealtimeClient(lambda kwargs: script.pop(0))
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review([_spec("a.docx")])
 
@@ -399,7 +399,7 @@ class TestRetryTaxonomy:
 
     def test_non_retryable_is_terminal_after_one_call(self, monkeypatch):
         client = FakeRealtimeClient(lambda kwargs: ValueError("boom"))
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review([_spec("a.docx")])
 
@@ -411,7 +411,7 @@ class TestRetryTaxonomy:
     def test_exhausted_retries_are_terminal(self, monkeypatch):
         monkeypatch.setattr(rt, "compute_backoff_seconds", lambda *a, **k: 0.0)
         client = FakeRealtimeClient(lambda kwargs: Exception("connection reset by peer"))
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review([_spec("a.docx")])
 
@@ -429,7 +429,7 @@ class TestRetryTaxonomy:
                 }
             )
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review(specs)
 
@@ -458,7 +458,7 @@ class TestConcurrency:
             return review_tool_use_response()
 
         client = FakeRealtimeClient(route)
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
         specs = [_spec(f"s{i}.docx") for i in range(6)]
 
         results, _ = run_realtime_review(specs, max_workers=2)
@@ -503,7 +503,7 @@ class TestConcurrency:
             return review_tool_use_response()
 
         client = FakeRealtimeClient(route)
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review(
             [_spec(f"s{i}.docx") for i in range(4)], max_workers=8
@@ -527,7 +527,7 @@ class TestConcurrency:
             return review_tool_use_response()
 
         client = FakeRealtimeClient(route)
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
         parent_a = object()
         parent_b = object()
         jobs_a, map_a = rt.build_realtime_review_jobs(
@@ -576,7 +576,7 @@ class TestConcurrency:
 
         monkeypatch.setattr(rt, "build_review_request", fail_late)
 
-        def no_client():
+        def no_client(**_):
             raise AssertionError("client must not exist before every job builds")
 
         monkeypatch.setattr(rt, "_get_client", no_client)
@@ -586,7 +586,7 @@ class TestConcurrency:
 
     def test_coordinator_owns_diagnostics_mutation(self, monkeypatch):
         client = FakeRealtimeClient(lambda _kwargs: review_tool_use_response())
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
         jobs, _ = rt.build_realtime_review_jobs(
             [_spec("a.docx"), _spec("b.docx")]
         )
@@ -615,7 +615,7 @@ class TestOversizedInputGate:
     def test_gate_raises_before_any_spend(self, monkeypatch):
         monkeypatch.setattr(rt, "LARGE_REVIEW_INPUT_THRESHOLD", 10)
 
-        def _no_client():
+        def _no_client(**_):
             raise AssertionError("client must never be constructed when the gate fires")
 
         monkeypatch.setattr(rt, "_get_client", _no_client)
@@ -637,7 +637,7 @@ class TestOversizedInputGate:
             ),
         )
 
-        def _no_client():
+        def _no_client(**_):
             raise AssertionError(
                 "client must never be constructed when only the repair is oversized"
             )
@@ -652,7 +652,7 @@ class TestOversizedInputGate:
         # whitelist gains nothing from batch, so the gate must not fire.
         monkeypatch.setattr(rt, "LARGE_REVIEW_INPUT_THRESHOLD", 10)
         client = FakeRealtimeClient(lambda kwargs: review_tool_use_response())
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review([_spec("huge.docx")], model=MODEL_HAIKU_45)
 
@@ -1382,7 +1382,7 @@ class TestDiagnosticsTelemetry:
                 }
             )
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
         diag = FakeDiagnostics()
 
         run_realtime_review(specs, diagnostics=diag)
@@ -1404,7 +1404,7 @@ class TestDiagnosticsTelemetry:
                 {"a.docx": [max_tokens_incomplete_response(), review_tool_use_response()]}
             )
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
         diag = FakeDiagnostics()
 
         run_realtime_review([_spec("a.docx")], diagnostics=diag)
@@ -1415,7 +1415,7 @@ class TestDiagnosticsTelemetry:
 
     def test_terminal_failure_records_error_row(self, monkeypatch):
         client = FakeRealtimeClient(lambda kwargs: ValueError("boom"))
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
         diag = FakeDiagnostics()
 
         run_realtime_review([_spec("a.docx")], diagnostics=diag)
@@ -1460,7 +1460,7 @@ class TestRefusalIsTerminal:
                 }
             )
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
         logged: list[tuple[str, str | None]] = []
 
         results, request_map = run_realtime_review(
@@ -1503,7 +1503,7 @@ class TestRefusalIsTerminal:
         client = FakeRealtimeClient(
             _route_by_filename({"a.docx": [_refusal_response(with_details=False)]})
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review([_spec("a.docx")])
 
@@ -1518,7 +1518,7 @@ class TestRefusalIsTerminal:
                 {"a.docx": [_refusal_response(category="cyber", explanation=None)]}
             )
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, _ = run_realtime_review([_spec("a.docx")])
 
@@ -1532,7 +1532,7 @@ class TestRefusalIsTerminal:
                 {"a.docx": [max_tokens_incomplete_response(), max_tokens_incomplete_response()]}
             )
         )
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
 
         results, request_map = run_realtime_review([_spec("a.docx")])
 
@@ -1552,7 +1552,7 @@ class TestRefusalIsTerminal:
 
     def test_refusal_records_one_error_telemetry_row(self, monkeypatch):
         client = FakeRealtimeClient(_route_by_filename({"a.docx": [_refusal_response()]}))
-        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        monkeypatch.setattr(rt, "_get_client", lambda **_: client)
         diag = FakeDiagnostics()
 
         run_realtime_review([_spec("a.docx")], diagnostics=diag)

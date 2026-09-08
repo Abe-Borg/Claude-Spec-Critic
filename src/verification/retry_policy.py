@@ -288,8 +288,15 @@ def classify_batch_failure(
     if et:
         if "invalid_request" in et:
             return FailureClass.INVALID_REQUEST
-        if "overloaded" in et or "rate_limit" in et:
-            return FailureClass.RATE_LIMIT if "rate" in et else FailureClass.SERVER_ERROR
+        # Rate limiting and overload are distinct classes: a 429 waits on
+        # the longer rate-limit backoff multiplier, a 529 on the
+        # server-error one. The message-scan branch below mirrors this
+        # split exactly so an ``errored`` item without a structured type
+        # classifies the same way as one with it.
+        if "rate_limit" in et:
+            return FailureClass.RATE_LIMIT
+        if "overloaded" in et:
+            return FailureClass.SERVER_ERROR
         if "server_error" in et or "internal_server" in et or "api_error" in et:
             return FailureClass.SERVER_ERROR
         if "timeout" in et:
@@ -300,10 +307,16 @@ def classify_batch_failure(
     if rt == "canceled":
         return FailureClass.BATCH_CANCELED
     if rt == "errored":
-        # Try to find a structured signal in the message body.
+        # Try to find a structured signal in the message body. The
+        # rate-limit / overloaded split mirrors the structured branch
+        # above — a rate-limit message used to collapse into SERVER_ERROR
+        # here while the same failure with a typed ``error.type``
+        # classified RATE_LIMIT, so the two shapes backed off differently.
         if "invalid_request" in em or "invalid request" in em:
             return FailureClass.INVALID_REQUEST
-        if "overloaded" in em or "rate limit" in em or "rate_limit" in em:
+        if "rate limit" in em or "rate_limit" in em or "rate-limit" in em:
+            return FailureClass.RATE_LIMIT
+        if "overloaded" in em:
             return FailureClass.SERVER_ERROR
         if "server error" in em or "internal" in em:
             return FailureClass.SERVER_ERROR

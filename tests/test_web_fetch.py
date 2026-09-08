@@ -942,3 +942,70 @@ class TestEvidencePanelRendersFetchTelemetry:
         # The header should NOT appear when the list is empty — empty
         # sub-sections are confusing for reviewers.
         assert "Full-text sources consulted" not in text
+
+
+# ===========================================================================
+# B-14. The verdict tool is identified by name, not by elimination
+# ===========================================================================
+
+
+class TestVerdictToolIdentifiedByName:
+    """``build_verification_tools_from_decision`` used to treat "the one tool
+    that isn't web_search" as the verdict tool (last wins). It now matches
+    ``tool["name"] == VERIFICATION_TOOL_NAME``; any other tool passes through
+    ahead of the verdict tool, which stays last for the cache breakpoint."""
+
+    _EXTRA = {
+        "name": "unrelated_helper",
+        "description": "not the verdict tool",
+        "input_schema": {"type": "object", "properties": {}},
+    }
+
+    def _tools_with_extra_after_verdict(self, monkeypatch) -> list[dict]:
+        import src.batch.batch as B
+
+        real = B.build_verification_tools_for_profile
+
+        def with_extra(profile, severity=None, *, model=None):
+            # Extra custom tool AFTER the verdict tool — the shape that
+            # fooled the old last-wins split.
+            return real(profile, severity, model=model) + [dict(self._EXTRA)]
+
+        monkeypatch.setattr(B, "build_verification_tools_for_profile", with_extra)
+        decision = select_routing(
+            _finding(severity="HIGH", code_ref="NFPA 13 §10"), local_skip=False
+        )
+        return build_verification_tools_from_decision(decision)
+
+    def test_extra_tool_after_verdict_does_not_displace_it(self, monkeypatch):
+        from src.review.structured_schemas import VERIFICATION_TOOL_NAME
+
+        tools = self._tools_with_extra_after_verdict(monkeypatch)
+        names = [t.get("name") for t in tools]
+        assert names[0] == "web_search"
+        assert names[-1] == VERIFICATION_TOOL_NAME
+        assert names.count(VERIFICATION_TOOL_NAME) == 1
+        # The bystander is kept, ahead of the verdict tool.
+        assert "unrelated_helper" in names
+        assert names.index("unrelated_helper") < names.index(VERIFICATION_TOOL_NAME)
+
+    def test_last_tool_is_the_real_verdict_schema(self, monkeypatch):
+        from src.review.structured_schemas import VERIFICATION_TOOL_NAME
+
+        tools = self._tools_with_extra_after_verdict(monkeypatch)
+        verdict = tools[-1]
+        assert verdict["name"] == VERIFICATION_TOOL_NAME
+        assert "verdict" in verdict["input_schema"]["properties"]
+
+    def test_verdict_tool_dropped_when_decision_excludes_it(self, monkeypatch):
+        import dataclasses
+
+        from src.review.structured_schemas import VERIFICATION_TOOL_NAME
+
+        decision = select_routing(
+            _finding(severity="HIGH", code_ref="NFPA 13 §10"), local_skip=False
+        )
+        decision = dataclasses.replace(decision, include_verdict_tool=False)
+        names = [t.get("name") for t in build_verification_tools_from_decision(decision)]
+        assert VERIFICATION_TOOL_NAME not in names
+        assert names[0] == "web_search"

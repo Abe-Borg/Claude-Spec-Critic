@@ -781,12 +781,17 @@ def apply_thinking_config(kwargs: dict, *, model: str, phase: str) -> dict:
 # - Sonnet verification (PHASE_VERIFICATION{,_RETRY,_CONTINUATION}): medium.
 #   (Sonnet 5 at medium is comparable to Sonnet 4.6 at high, so the verdict
 #   envelope stays tight while the initial pass got smarter for free.)
+#   The STRICT_STRUCTURED verification mode overrides this to ``low`` —
+#   its cost lever is effort, not thinking (see
+#   :mod:`src.verification.verification_modes`); the mode passes the level
+#   through ``effort_override`` so the model clamp still applies.
 # - Opus verification (i.e. escalation): high.
 # - Deep review (PHASE_REVIEW, PHASE_CROSS_CHECK, PHASE_COMPLIANCE): high.
 # - Research / drawing impact: high. Drawing digest: medium.
 # - Triage (Haiku): omit (Haiku does not support effort).
 # - Unknown model: omit.
 
+EFFORT_LOW = "low"
 EFFORT_MEDIUM = "medium"
 EFFORT_HIGH = "high"
 EFFORT_XHIGH = "xhigh"
@@ -858,7 +863,9 @@ def _clamp_effort_for_model(level: str, model: str) -> str:
     return level
 
 
-def effort_config_for(*, model: str, phase: str) -> dict | None:
+def effort_config_for(
+    *, model: str, phase: str, effort_override: str | None = None
+) -> dict | None:
     """Return the ``output_config`` dict for ``(model, phase)``, or ``None``.
 
     Returns ``None`` (i.e. "omit the field") when:
@@ -873,9 +880,21 @@ def effort_config_for(*, model: str, phase: str) -> dict | None:
     supports (see :func:`_clamp_effort_for_model`). No phase declares a
     level above ``high`` today, so the clamp is currently inert — it stays
     wired so raising a phase's ceiling again cannot 400 at submit.
+
+    ``effort_override`` lets a caller whose policy is finer-grained than
+    the phase — the verification *mode* (``ModePolicy.effort``) is the one
+    such caller today — pin a level explicitly. It wins over both the phase
+    default and the verification-phase Opus bump, but never over the
+    capability gates: a model that doesn't support effort still omits the
+    field, and the level still passes through :func:`_clamp_effort_for_model`
+    so a gated level cannot 400 under a pinned-model override. ``None``
+    (the default) keeps the phase-only resolution byte-identical.
     """
     if not model_supports_effort(model):
         return None
+
+    if effort_override:
+        return {"effort": _clamp_effort_for_model(effort_override, model)}
 
     if phase in _VERIFICATION_PHASES:
         # Opus on a verification phase is the escalation tier — every
@@ -890,7 +909,9 @@ def effort_config_for(*, model: str, phase: str) -> dict | None:
     return {"effort": _clamp_effort_for_model(level, model)}
 
 
-def apply_effort_config(kwargs: dict, *, model: str, phase: str) -> dict:
+def apply_effort_config(
+    kwargs: dict, *, model: str, phase: str, effort_override: str | None = None
+) -> dict:
     """Insert ``output_config`` into ``kwargs`` only when applicable.
 
     Mutates and returns ``kwargs`` for fluent use. The key is omitted
@@ -899,9 +920,10 @@ def apply_effort_config(kwargs: dict, *, model: str, phase: str) -> dict:
 
     Mirrors :func:`apply_thinking_config` so request builders pair the
     two helpers the same way per directive 4 ("Pair effort decisions
-    with thinking decisions where appropriate").
+    with thinking decisions where appropriate"). ``effort_override`` is
+    forwarded verbatim to :func:`effort_config_for`.
     """
-    config = effort_config_for(model=model, phase=phase)
+    config = effort_config_for(model=model, phase=phase, effort_override=effort_override)
     if config is not None:
         kwargs["output_config"] = config
     return kwargs
@@ -1157,24 +1179,29 @@ def build_web_search_tool(
 ) -> dict:
     """Build the web_search server-tool dict.
 
-    ``user_location`` steers search localization. ``None`` (every existing
-    call site) keeps the long-standing hardcoded California default
-    byte-identical — the CA module's request shape must not change. A run
-    with a :class:`~src.core.project_profile.ProjectProfile` passes
-    ``profile.web_search_user_location()`` so research (WS-3) and
-    verification (WS-4) search as the project's own locale.
+    ``user_location`` steers search localization. The engine has **no**
+    location opinion of its own: when nothing is supplied the key is
+    omitted entirely, so the API searches un-localized. The two callers
+    that do have an opinion supply it explicitly — a run with a
+    :class:`~src.core.project_profile.ProjectProfile` passes
+    ``profile.web_search_user_location()`` (research WS-3, verification
+    WS-4), and a profile-less verification run gets the owning module's
+    ``ReviewModule.default_web_search_user_location`` from the routing
+    layer (:func:`src.verification.verification_routing.build_verification_tools_from_decision`),
+    which is how the California module keeps its long-standing
+    California-localized tool dict byte-identical while a data-center
+    module without a profile searches nowhere in particular instead of
+    being silently steered to California.
     """
-    return {
+    tool = {
         "type": "web_search_20260209",
         "name": "web_search",
         "blocked_domains": list(_WEB_SEARCH_BLOCKED_DOMAINS),
         "max_uses": max_uses,
-        "user_location": dict(user_location) if user_location else {
-            "type": "approximate",
-            "country": "US",
-            "region": "California",
-        },
     }
+    if user_location:
+        tool["user_location"] = dict(user_location)
+    return tool
 
 
 # ---------------------------------------------------------------------------

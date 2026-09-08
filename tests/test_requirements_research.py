@@ -313,15 +313,16 @@ class TestResearchSchema:
 
 
 class TestWebSearchUserLocation:
-    def test_default_is_byte_identical_to_legacy_shape(self):
-        # CA-neutrality pin (invariant 2): with no user_location the tool
-        # dict must be exactly today's hardcoded-California shape.
+    def test_no_location_emits_no_user_location_key(self):
+        # The engine has no location opinion of its own: with no
+        # user_location the tool dict carries no ``user_location`` key at
+        # all. The California default is module data now
+        # (``ReviewModule.default_web_search_user_location``, resolved in
+        # the verification routing layer and pinned byte-identical in
+        # tests/test_location_aware_verification.py); research always runs
+        # with a complete profile, so it never depends on a default.
         tool = build_web_search_tool(max_uses=DEFAULT_VERIFICATION_MAX_USES)
-        assert tool["user_location"] == {
-            "type": "approximate",
-            "country": "US",
-            "region": "California",
-        }
+        assert "user_location" not in tool
 
     def test_profile_location_threads_through(self):
         loc = _complete_profile().web_search_user_location()
@@ -1200,7 +1201,7 @@ class TestRunResearchPhaseIntegration:
         client = FakeResearchClient(
             _route_by_marker({"ALPHA": [research_tool_use_response()]})
         )
-        monkeypatch.setattr(rr, "_get_client", lambda: client)
+        monkeypatch.setattr(rr, "_get_client", lambda **_: client)
 
         log = _LogCollector()
         effective, profile_dict = pipeline._run_research_phase(

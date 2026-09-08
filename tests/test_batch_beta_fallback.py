@@ -232,7 +232,7 @@ class TestSubmitReviewBatchWiring:
             beta_create=_raise_beta_rejection,
             plain_create=lambda _k: SimpleNamespace(id="batch_recovered"),
         )
-        monkeypatch.setattr(B, "_get_client", lambda: client)
+        monkeypatch.setattr(B, "_get_client", lambda **_: client)
 
         specs = [SimpleNamespace(filename="23 21 13.docx", content="x", paragraph_map=None)]
         job = submit_review_batch(specs, model=MODEL_OPUS_48)

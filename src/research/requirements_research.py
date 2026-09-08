@@ -855,7 +855,8 @@ def run_requirements_research(
             f"Module {module.module_id!r} defines no research dimensions."
         )
     if client is None:
-        client = _get_client()
+        # Each dimension runs its own retry loop (B-5): SDK retries off.
+        client = _get_client(sdk_retries=False)
 
     # Echo the parsed location back the moment research starts (D-1 [FT]):
     # a typo'd city must be visible before review spend begins.

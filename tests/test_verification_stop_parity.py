@@ -152,7 +152,7 @@ class _FakeClient:
 
 def _run_realtime(monkeypatch, route) -> tuple[V.VerificationResult, _FakeClient]:
     client = _FakeClient(route)
-    monkeypatch.setattr(V, "_get_client", lambda: client)
+    monkeypatch.setattr(V, "_get_client", lambda **_: client)
     result = V.verify_finding(_finding(), max_retries=0, cycle=DEFAULT_CYCLE, cache=None)
     return result, client
 

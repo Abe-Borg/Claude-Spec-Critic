@@ -338,7 +338,7 @@ class TestBatchSubmissionFeedsAlerts:
             messages = FakeMessages()
             beta = FakeBeta()
 
-        monkeypatch.setattr(batch_mod, "_get_client", lambda: FakeClient())
+        monkeypatch.setattr(batch_mod, "_get_client", lambda **_: FakeClient())
 
         specs = [
             ExtractedSpec(

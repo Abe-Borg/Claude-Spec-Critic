@@ -479,3 +479,65 @@ class TestDefaultModels:
         assert api_config.CROSS_CHECK_MODEL_DEFAULT == MODEL_SONNET_5
         assert api_config.COMPLIANCE_MODEL_DEFAULT == MODEL_SONNET_5
         assert api_config.RESEARCH_MODEL_DEFAULT == MODEL_SONNET_5
+
+
+# ---------------------------------------------------------------------------
+# Mode-level effort override (B-1) — the plumbing the verification modes use
+# ---------------------------------------------------------------------------
+
+
+class TestEffortOverride:
+    """``effort_config_for(effort_override=...)`` is how a policy finer than
+    the phase (the verification *mode*) pins a level. It wins over the phase
+    default and the verification Opus bump, but never over the capability
+    gate or the per-model clamp; ``None`` keeps the phase path byte-identical."""
+
+    def test_effort_low_constant(self) -> None:
+        assert api_config.EFFORT_LOW == "low"
+
+    def test_override_wins_over_phase_default(self) -> None:
+        assert effort_config_for(
+            model=MODEL_SONNET_5, phase=PHASE_VERIFICATION, effort_override="low"
+        ) == {"effort": "low"}
+
+    def test_override_wins_over_verification_opus_bump(self) -> None:
+        assert effort_config_for(
+            model=MODEL_OPUS_5, phase=PHASE_VERIFICATION, effort_override="low"
+        ) == {"effort": "low"}
+
+    def test_override_none_is_byte_identical_to_the_phase_path(self) -> None:
+        for model in (MODEL_SONNET_5, MODEL_OPUS_5, MODEL_SONNET_46, MODEL_HAIKU_45):
+            for phase in (
+                PHASE_VERIFICATION,
+                api_config.PHASE_VERIFICATION_RETRY,
+                api_config.PHASE_REVIEW,
+                api_config.PHASE_TRIAGE,
+            ):
+                assert effort_config_for(model=model, phase=phase) == effort_config_for(
+                    model=model, phase=phase, effort_override=None
+                ), (model, phase)
+
+    def test_override_still_capability_gated(self) -> None:
+        assert effort_config_for(
+            model=MODEL_HAIKU_45, phase=PHASE_VERIFICATION, effort_override="low"
+        ) is None
+
+    def test_override_still_clamped_per_model(self) -> None:
+        assert effort_config_for(
+            model=MODEL_SONNET_46, phase=PHASE_VERIFICATION, effort_override="xhigh"
+        ) == {"effort": "high"}
+        assert effort_config_for(
+            model=MODEL_OPUS_5, phase=PHASE_VERIFICATION, effort_override="xhigh"
+        ) == {"effort": "xhigh"}
+
+    def test_apply_forwards_the_override(self) -> None:
+        from src.core.api_config import apply_effort_config
+
+        params: dict = {}
+        apply_effort_config(
+            params, model=MODEL_SONNET_5, phase=PHASE_VERIFICATION, effort_override="low"
+        )
+        assert params == {"output_config": {"effort": "low"}}
+        assert apply_effort_config(
+            {}, model=MODEL_HAIKU_45, phase=PHASE_VERIFICATION, effort_override="low"
+        ) == {}
