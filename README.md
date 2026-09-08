@@ -20,7 +20,7 @@ future program-level coordination pass.
 
 ## Design Emphasis
 
-- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually retrieved in that conversation. This establishes that the source is real and was read — not that it supports the claim; a grounded verdict can still misread its source.
+- **Evidence-grounded verification.** `CONFIRMED` / `CORRECTED` / `DISPUTED` verdicts require at least one cited URL that the verification tools (`web_search` or `web_fetch`) actually returned in that conversation. That is a check against fabricated citations — not proof the source supports the claim. In the usual search-only path the model saw a result **snippet**, not the full page; only `web_fetch` retrieves full text, and it is unavailable on the default Opus 5 escalation tier.
 - **Cost-aware defaults.** Sonnet-default verifier with Opus escalation, automatic Haiku triage (for eligible findings), severity-tiered + profile-aware search budgets, persistent on-disk claim cache.
 - **Robust batch processing.** Message Batches API (50% cost savings) with bounded polling and progressive backoff across the review, verification, and cross-check phases.
 - **Emit-only edit instructions.** Findings carry structured edit proposals (action / existing → replacement / target element id / confidence) rendered inline in the Word report and written to a `<report-stem>.edits.json` sidecar. Spec Critic never mutates spec documents — applying edits is left to a separate, downstream tool.
@@ -49,7 +49,8 @@ actually goes out:
 | Per-spec review | yes | **yes** | no |
 | Cross-spec coordination | yes | **yes** | no |
 | Local-code compliance | yes | **yes** | no |
-| Verification | no — the finding's own fields only | **no** | `web_search` always; `web_fetch` only on the standard/deep reasoning modes *and* only on models that support it — Opus 5 does not, so the default escalation tier is search-only |
+| Verification — remote modes | no — the finding's own fields only | **no** | `web_search` on `strict_structured` / `standard_reasoning` / `deep_reasoning`; `web_fetch` only on the latter two *and* only on models that support it — Opus 5 does not, so the default escalation tier is search-only |
+| Verification — `local_skip` or cache hit | — | — | none; no API call is made at all |
 | Drawing impact | no | digest block only | no |
 
 Verification is the exception worth knowing: it sees the finding (issue, section, severity, code
@@ -57,6 +58,10 @@ reference, existing/replacement text) and, on a location-aware run, a `user_loca
 steers its web search plus a jurisdiction fingerprint that namespaces its cache key. It does not
 see the spec body or Project Context, so researched jurisdiction facts folded into Project Context
 inform review, coordination, and compliance — but not the verifier that checks their findings.
+
+Not every finding reaches a remote verification call: the keyword classifier, Haiku triage, and the
+on-disk claim cache resolve findings in `prepare_findings_for_verification` before any request is
+built, and `local_skip` disables web search outright.
 
 ## Edit Instructions (Emit-Only)
 
