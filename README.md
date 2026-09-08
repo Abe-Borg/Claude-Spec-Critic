@@ -28,7 +28,7 @@ future program-level coordination pass.
 
 ## Pipeline at a Glance
 
-1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers. Cached by file hash. Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …).
+1. **Text Extraction** — `.docx` paragraphs, tables, headers/footers. Cached per file, keyed by path, size, modification time, and a content fingerprint of the file's head and tail (not a hash of the whole file). Each element gets a stable `element_id` (`p7`, `t0r2`, `s1h0`, …).
 2. **Program Routing** — Under a multi-module program, each extracted spec is assigned to zero, one, or several implemented modules from CSI number/title/content evidence. Ambiguous routes are resolved before review submission.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
@@ -87,7 +87,7 @@ network permission at all.
 
 ## Processing Mode
 
-All reviews submit via the Message Batches API — queued at 50% cost savings, typical turnaround ~45 min – 2 hrs (24 hrs max). The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header) and triggers only for inputs ≥200k tokens.
+By default, reviews submit via the Message Batches API — queued at 50% cost savings, typical turnaround ~45 min – 2 hrs (24 hrs max); the opt-in real-time transport described below streams them synchronously instead. The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header) and triggers only for inputs ≥200k tokens.
 
 A submitted review batch keeps running on Anthropic's servers even if the app closes or the network drops. Spec Critic persists the small amount of state needed to reconnect — the batch id, its request map, and your project-context text (which can include text extracted from attached `.docx`/`.pdf` context files); the spec bodies themselves are re-extracted rather than stored — so an interrupted run can be finished without re-submitting or re-paying for the review. The startup resume prompt rejoins a still-running batch from that saved state; the manual **Recover batch…** action (and `scripts/recover_batch.py`) recover a batch by id even with no saved state, rebuilding the request map from the batch's results — which requires the batch to have **ended** first (on that bare-id path the CLI requires `--module`, since a batch id does not carry its discipline). `scripts/recover_batch.py` with no arguments resumes whatever the app saved — a single-module batch or a routed Hyperscale program run (every child batch polled and combined into one program report). If a collect step had submitted a review repair batch, its id and request map are kept in the saved state too, and the resumed collect re-attaches to that batch rather than submitting another. The state file lives at `~/.spec_critic/pending_batch.json` (override with `SPEC_CRITIC_PENDING_BATCH_PATH`).
 
@@ -158,7 +158,7 @@ See `docs/RELEASE_WINDOWS.md` for how releases are built and published.
 
 - Python 3.11+ (source install; the Windows installer bundles its own)
 - Anthropic API key (`ANTHROPIC_API_KEY`)
-- See `requirements.txt`: `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic`
+- See `requirements.txt`: `anthropic`, `python-docx`, `customtkinter`, `tkinterdnd2`, `tiktoken`, `platformdirs`, `pypdf`, `pydantic`, `lxml`, `keyring` (API-key storage), `truststore` (OS trust store for corporate TLS proxies in the frozen app). Test tooling (`pytest` and friends) lives in `requirements-dev.txt`.
 
 ## Testing
 
@@ -235,7 +235,7 @@ recheck can confirm end-to-end telemetry. The
 
 Every run captures a forensic trace of agent invocations to JSONL on disk. When a verdict looks off or a finding landed in an unexpected status, the trace lets you reconstruct what the model actually saw, what it produced, and how the pipeline interpreted that output.
 
-**Default-on.** The trace directory lives at `~/.spec_critic/traces/<run_id>/` (override via `SPEC_CRITIC_TRACE_DIR`). The `<run_id>` matches `DiagnosticsReport.run_id` so a trace can be correlated with the diagnostics report by directory name.
+**Default-on.** Traces live under the platformdirs state directory — `%LOCALAPPDATA%\SpecCritic\traces\` on Windows, `~/.local/state/SpecCritic/traces/` on Linux, `~/Library/Application Support/SpecCritic/traces/` on macOS — one `<run_id>/` directory per run (override the root via `SPEC_CRITIC_TRACE_DIR`). This is the one piece of state not under `~/.spec_critic/`; the cache, pending-batch, UI-state, update, and log files stay there. The `<run_id>` matches `DiagnosticsReport.run_id` so a trace can be correlated with the diagnostics report by directory name.
 
 ### Files
 
@@ -253,13 +253,13 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 |---|---|---|
 | `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. |
 | `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. |
-| `SPEC_CRITIC_TRACE_DIR` | `~/.spec_critic/traces/` (state dir on macOS/Linux, equivalent on Windows) | Override the trace root. `~` and `$VAR` are expanded. |
+| `SPEC_CRITIC_TRACE_DIR` | platformdirs state dir: `%LOCALAPPDATA%\SpecCritic\traces\` (Windows), `~/.local/state/SpecCritic/traces/` (Linux), `~/Library/Application Support/SpecCritic/traces/` (macOS) | Override the trace root. `~` and `$VAR` are expanded. |
 | `SPEC_CRITIC_TRACE_RETENTION_DAYS` | `30` | Runs older than this are deleted on every run start (never the run being started). `0` disables. |
 | `SPEC_CRITIC_TRACE_MAX_RUNS` | `50` | Only the N most recent runs are kept on every run start. `0` disables. |
 
 ### GUI
 
-The GUI's Tracing row exposes two checkboxes ("Record agent trace", "Deep mode"), a "Show folder" button that opens the trace root in the OS file explorer, and an "Open viewer" button that opens the bundled HTML viewer in the default browser. The checkboxes set the env vars at run start, so toggling between runs takes effect without a process restart. The default is "Record agent trace" on, "Deep mode" off.
+The GUI's Tracing row is hidden by default — enable the "Show agent tracing tools" option (persisted as `show_tracing_tools` in the UI state) to reveal it. It exposes two checkboxes ("Record agent trace", "Deep mode"), a "Show folder" button that opens the trace root in the OS file explorer, and an "Open viewer" button that opens the bundled HTML viewer in the default browser. The checkboxes set the env vars at run start, so toggling between runs takes effect without a process restart. The default is "Record agent trace" on, "Deep mode" off.
 
 ### HTML viewer
 
