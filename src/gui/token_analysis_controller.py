@@ -12,6 +12,17 @@ re-browse) collapse into a single outbound API call. The cl100k_base
 estimate stays visible during the debounce window; only the final state
 pays for an exact ``count_tokens`` call. Stale-result protection inside
 ``dispatch`` is unchanged.
+
+Threading contract: ``refresh_exact_token_count`` is called both from the
+Tk thread (a checkbox toggle) and from the analysis worker thread. The
+debounce timer id (``app._exact_token_refresh_timer_id``) and the
+``after`` / ``after_cancel`` calls that manage it are owned by the Tk
+thread only — the scheduling step is marshaled through ``dispatch`` (an
+``app.after(0, ...)`` wrapper), so a worker never touches the timer.
+
+The program's token-gauge basis (the largest routed module's system prompt)
+is computed once per program per process (``_program_basis_cycle``) rather
+than re-tokenizing every module's prompt on every checkbox click.
 """
 from __future__ import annotations
 
@@ -33,6 +44,36 @@ from ..core.tokenizer import count_tokens, exceeds_per_call_limit
 EXACT_TOKEN_REFRESH_DEBOUNCE_MS = 400
 
 
+# Per-program gauge basis, keyed by the program's module ids (the only input
+# the choice depends on). Tokenizing every routed module's system prompt is
+# a few hundred milliseconds — fine once, not on every checkbox click.
+_PROGRAM_BASIS_CACHE: dict[tuple[str, ...], object] = {}
+_PROGRAM_BASIS_LOCK = threading.Lock()
+
+
+def _program_basis_cycle(module_ids: tuple[str, ...]):
+    """The cycle of the routed module with the largest system prompt (cached)."""
+    with _PROGRAM_BASIS_LOCK:
+        cached = _PROGRAM_BASIS_CACHE.get(module_ids)
+    if cached is not None:
+        return cached
+    modules = [require_module(module_id) for module_id in module_ids]
+    basis = max(
+        modules,
+        key=lambda module: count_tokens(get_system_prompt(module.cycle)),
+    ).cycle
+    with _PROGRAM_BASIS_LOCK:
+        # A concurrent first computation for the same key yields the same
+        # deterministic answer; keep whichever landed first.
+        return _PROGRAM_BASIS_CACHE.setdefault(module_ids, basis)
+
+
+def clear_program_basis_cache() -> None:
+    """Drop the memoized gauge bases (tests; module registry is static at runtime)."""
+    with _PROGRAM_BASIS_LOCK:
+        _PROGRAM_BASIS_CACHE.clear()
+
+
 def _token_cycle_for_app(app):
     """Use the largest routed-module prompt as the program's safe gauge basis.
 
@@ -43,13 +84,7 @@ def _token_cycle_for_app(app):
     if not program_id:
         return get_module(getattr(app, "_selected_module_id", None)).cycle
     program = get_program(program_id)
-    modules = [
-        require_module(module_id) for module_id in program.implemented_module_ids
-    ]
-    return max(
-        modules,
-        key=lambda module: count_tokens(get_system_prompt(module.cycle)),
-    ).cycle
+    return _program_basis_cycle(tuple(program.implemented_module_ids))
 
 
 def resolve_initial_selection(paths, prior_selection):
@@ -305,33 +340,67 @@ def refresh_exact_token_count(app, file_data, extracted_specs, project_context, 
         app._exact_token_refresh_timer_id = None
         threading.Thread(target=_exact, daemon=True).start()
 
-    # Cancel any pending debounce timer and reschedule. Each rapid
-    # invocation slides the deadline forward — only the final state
-    # ever launches the thread.
-    prev_timer_id = getattr(app, "_exact_token_refresh_timer_id", None)
-    if prev_timer_id is not None:
-        try:
-            app.after_cancel(prev_timer_id)
-        except Exception:
-            # Already fired or invalid id; safe to ignore — we always
-            # overwrite ``_exact_token_refresh_timer_id`` immediately
-            # below.
-            pass
-    app._exact_token_refresh_timer_id = app.after(
-        EXACT_TOKEN_REFRESH_DEBOUNCE_MS, _launch_thread,
-    )
+    def _schedule_refresh():
+        # Tk thread only (marshaled via ``dispatch``): cancel any pending
+        # debounce timer and reschedule. Each rapid invocation slides the
+        # deadline forward — only the final state ever launches the thread.
+        prev_timer_id = getattr(app, "_exact_token_refresh_timer_id", None)
+        if prev_timer_id is not None:
+            try:
+                app.after_cancel(prev_timer_id)
+            except Exception:
+                # Already fired or invalid id; safe to ignore — we always
+                # overwrite ``_exact_token_refresh_timer_id`` immediately
+                # below.
+                pass
+        app._exact_token_refresh_timer_id = app.after(
+            EXACT_TOKEN_REFRESH_DEBOUNCE_MS, _launch_thread,
+        )
+
+    # This function runs on the analysis worker as well as the Tk thread;
+    # ``dispatch`` hops onto the Tk thread (and, for the worker, applies the
+    # analysis-epoch staleness guard) so only the Tk thread ever reads or
+    # writes the timer id or calls ``after`` / ``after_cancel`` on it.
+    dispatch(_schedule_refresh)
 
 
-def on_file_selection_change(app) -> None:
-    if not app._loaded_file_data:
-        return
+def _selected_call_metrics(app) -> tuple[list, CallMetrics]:
+    """``(selected_data, metrics)`` for the currently *checked* files."""
     sel = set(app.file_list_panel.get_selected_files())
     selected_data = [d for d in app._loaded_file_data if d["path"] in sel]
     overhead = (
         getattr(app, "_system_prompt_tokens", 0)
         + getattr(app, "_project_context_tokens", 0)
     )
-    metrics = compute_call_metrics(selected_data, overhead)
+    return selected_data, compute_call_metrics(selected_data, overhead)
+
+
+def apply_run_button_gate(app) -> None:
+    """Re-evaluate the Run button's enabled state from the current selection.
+
+    ``AnimatedButton.set_ready()`` re-enables unconditionally, so every path
+    that calls it after a run (``reset_ui`` / ``on_review_error``) re-runs
+    this gate: with a selected spec over the per-call limit the button stays
+    disabled and the panel keeps its over-limit flag, instead of the run
+    becoming clickable again until ``_prepare_specs`` raises. No exact-count
+    refresh is triggered — nothing about the selection changed. A no-op
+    before any file is loaded (the initial button state is unchanged).
+    """
+    if not getattr(app, "_loaded_file_data", None):
+        return
+    if getattr(app, "file_list_panel", None) is None:
+        return
+    _selected, metrics = _selected_call_metrics(app)
+    app.run_button.configure(
+        state="normal" if (metrics.file_count > 0 and not metrics.per_file_limit_exceeded) else "disabled"
+    )
+    app.file_list_panel.set_over_limit(metrics.per_file_limit_exceeded)
+
+
+def on_file_selection_change(app) -> None:
+    if not app._loaded_file_data:
+        return
+    selected_data, metrics = _selected_call_metrics(app)
     app.token_gauge.update_gauge(metrics.largest_call, metrics.file_count)
     app.run_button.configure(
         state="normal" if (metrics.file_count > 0 and not metrics.per_file_limit_exceeded) else "disabled"

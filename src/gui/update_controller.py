@@ -34,6 +34,18 @@ from ..core import updates
 from .widgets import COLORS
 
 
+def _dialog_owner(app):
+    """The update dialog while it is open (dialogs stack over it), else the app."""
+    win = getattr(app, "_update_dialog", None)
+    if win is not None:
+        try:
+            if win.winfo_exists():
+                return win
+        except Exception:  # noqa: BLE001 — a torn-down Toplevel falls back to the app
+            pass
+    return app
+
+
 def init_update_state(app) -> None:
     """Initialise the updater's app-level state. Called from ``__init__``."""
     app._update_state_path = updates.default_state_path()
@@ -161,6 +173,7 @@ def on_update_check_done(app, result, manual: bool) -> None:
                     "update is a Windows installer and can't be applied to "
                     "this install.\n\n"
                     f"See {updates.releases_page_url()} for the release.",
+                    parent=app,
                 )
             return
         if not manual and getattr(app, "is_processing", False):
@@ -186,6 +199,7 @@ def on_update_check_done(app, result, manual: bool) -> None:
             messagebox.showinfo(
                 "Up to date",
                 f"You're running the latest version (v{__version__}).",
+                parent=app,
             )
         return
 
@@ -195,6 +209,7 @@ def on_update_check_done(app, result, manual: bool) -> None:
                 "Update checks are off",
                 "Automatic update checks are disabled by the "
                 "SPEC_CRITIC_DISABLE_UPDATE_CHECK environment variable.",
+                parent=app,
             )
         return
 
@@ -207,6 +222,7 @@ def on_update_check_done(app, result, manual: bool) -> None:
             f"{result.error or 'Unknown error.'}\n\n"
             "You can download the latest version manually from the "
             "releases page.",
+            parent=app,
         )
 
 
@@ -336,6 +352,7 @@ def start_update_download(app, info) -> None:
             "Work in progress",
             "Please wait for the current review / drawing analysis to "
             "finish before updating.",
+            parent=_dialog_owner(app),
         )
         return
     app._update_downloading = True
@@ -416,6 +433,7 @@ def on_update_download_done(app, path) -> None:
         "The update downloaded and passed its integrity check.\n\n"
         "Spec Critic will now close so the installer can replace it. "
         "Continue?",
+        parent=_dialog_owner(app),
     )
     if not proceed:
         reset_update_dialog_buttons(app)
@@ -429,6 +447,7 @@ def on_update_download_done(app, path) -> None:
             f"The installer was saved to:\n\n{path}\n\n"
             f"but could not be launched automatically ({exc}).\n"
             "You can run it manually.",
+            parent=_dialog_owner(app),
         )
         reset_update_dialog_buttons(app)
         return
@@ -451,6 +470,7 @@ def on_update_download_error(app, message: str) -> None:
         "Download failed",
         f"The update could not be downloaded or verified:\n\n{message}\n\n"
         "You can download it manually from the releases page.",
+        parent=_dialog_owner(app),
     )
 
 

@@ -418,6 +418,26 @@ class TestRunner:
         assert "--- Chunk 2 of 2: b.pdf ---" in result.digest_text
         assert result.digest_text.startswith("CONSTRUCTION DRAWING DIGEST")
 
+    def test_progress_reports_percent_complete_on_the_gui_scale(self):
+        # The GUI's progress consumers divide by 100 (diagnostics_controller
+        # / context_controller), matching the research fan-out's scale.
+        chunks = _two_chunks()
+        client = FakeDigestClient(
+            _route_by_chunk_marker(
+                {
+                    "chunk 1 of 2": [_digest_message("ALPHA DIGEST")],
+                    "chunk 2 of 2": [_digest_message("BETA DIGEST")],
+                }
+            )
+        )
+        seen: list[tuple[float, str]] = []
+        run_drawing_digest(
+            chunks, client=client, progress=lambda pct, msg, **_kw: seen.append((pct, msg))
+        )
+        assert [pct for pct, _ in seen] == [0.0, 50.0, 100.0]
+        assert seen[0][1].endswith("(0/2 request(s))...")
+        assert seen[-1][1].endswith("(2/2 request(s))...")
+
     def test_single_chunk_digest_has_no_chunk_headers(self):
         chunks = build_digest_chunks([_drawing_file("a.pdf", 2)])
         client = FakeDigestClient(
@@ -567,13 +587,31 @@ class TestRunner:
 
 
 class TestPreflightAndCost:
-    def test_preflight_uses_exact_count_when_available(self, monkeypatch):
-        monkeypatch.setattr(
-            dd, "count_tokens_via_api", lambda **_kw: 1_234
-        )
-        chunks = _two_chunks()
+    """One anchored ``count_tokens`` call; every other chunk scales by pages.
+
+    The old preflight posted EVERY chunk's base64 document blocks to the
+    count endpoint, and the real digest call then posted them all again. Now
+    the anchor (most countable pages, earliest index on a tie) is measured
+    exactly and the rest inherit its per-page rate plus their own locally
+    counted prompt text, flagged inexact.
+    """
+
+    def test_preflight_measures_one_anchor_and_scales_the_rest(self, monkeypatch):
+        calls: list[dict] = []
+
+        def _count(**kwargs):
+            calls.append(kwargs)
+            return 1_234
+
+        monkeypatch.setattr(dd, "count_tokens_via_api", _count)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 100)  # every prompt
+        chunks = _two_chunks()  # two chunks of 2 pages each
         preflight = preflight_digest_cost(chunks, model=MODEL_SONNET_5)
-        assert preflight.exact is True
+        assert len(calls) == 1  # the document blocks went up ONCE
+        assert preflight.exact_chunk_indices == [0]  # tie on pages -> earliest
+        assert preflight.exact is False  # a scaled chunk is an estimate
+        # anchor: 1,234 - 100 prompt = 1,134 document tokens / 2 pages =
+        # 567 per page; the sibling: 2 x 567 + its own 100-token prompt.
         assert preflight.per_chunk_input_tokens == [1_234, 1_234]
         assert preflight.total_input_tokens == 2_468
         assert preflight.max_output_tokens == DRAWING_DIGEST_OUTPUT_CAP * 2
@@ -584,6 +622,37 @@ class TestPreflightAndCost:
         )
         assert preflight.over_window_chunk_indices == []
 
+    def test_anchor_is_the_chunk_with_the_most_countable_pages(self, monkeypatch):
+        chunks = build_digest_chunks(
+            [_drawing_file("a.pdf", 1), _drawing_file("b.pdf", 3)],
+            max_pages_per_request=3,
+            tokens_per_page=1,
+        )
+        assert [c.known_page_count for c in chunks] == [1, 3]
+        measured: list[dict] = []
+
+        def _count(**kwargs):
+            measured.append(kwargs)
+            return 3_100
+
+        monkeypatch.setattr(dd, "count_tokens_via_api", _count)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 100)
+        preflight = preflight_digest_cost(chunks, model=MODEL_SONNET_5)
+        assert preflight.exact_chunk_indices == [1]
+        # The measured request carried the 3-page chunk's manifest.
+        assert "chunk 2 of 2" in _user_text(measured[0])
+        # 3,000 document tokens / 3 pages = 1,000 per page -> 1 x 1,000 + 100.
+        assert preflight.per_chunk_input_tokens == [1_100, 3_100]
+
+    def test_single_chunk_preflight_is_exact(self, monkeypatch):
+        monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: 1_234)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 100)
+        chunks = build_digest_chunks([_drawing_file("a.pdf", 2)])
+        preflight = preflight_digest_cost(chunks, model=MODEL_SONNET_5)
+        assert preflight.exact is True
+        assert preflight.exact_chunk_indices == [0]
+        assert preflight.per_chunk_input_tokens == [1_234]
+
     def test_preflight_falls_back_to_local_page_estimate_flagged_inexact(
         self, monkeypatch
     ):
@@ -592,6 +661,7 @@ class TestPreflightAndCost:
         chunks = build_digest_chunks([_drawing_file("a.pdf", 4)])
         preflight = preflight_digest_cost(chunks, model=MODEL_SONNET_5)
         assert preflight.exact is False
+        assert preflight.exact_chunk_indices == []
         prompt_text = (
             build_digest_system_prompt()
             + "\n"
@@ -600,15 +670,38 @@ class TestPreflightAndCost:
         expected = 4 * dd.DIGEST_TOKENS_PER_PAGE_ESTIMATE + len(prompt_text.split())
         assert preflight.per_chunk_input_tokens == [expected]
 
+    def test_fallback_scales_every_chunk_by_the_flat_rate_and_never_flags(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: None)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 10)
+        chunks = _two_chunks()
+        preflight = preflight_digest_cost(chunks, model=MODEL_SONNET_5)
+        flat = 2 * dd.DIGEST_TOKENS_PER_PAGE_ESTIMATE + 10
+        assert preflight.per_chunk_input_tokens == [flat, flat]
+        assert preflight.over_window_chunk_indices == []
+
     def test_preflight_flags_over_window_chunk(self, monkeypatch):
         window = model_capabilities(MODEL_SONNET_5).context_window
         monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: window)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 10)
         chunks = build_digest_chunks([_drawing_file("a.pdf", 2)])
         preflight = preflight_digest_cost(chunks, model=MODEL_SONNET_5)
         assert preflight.over_window_chunk_indices == [0]
 
+    def test_empty_chunk_list_is_a_zero_preflight_with_no_api_call(self, monkeypatch):
+        def _boom(**_kw):
+            raise AssertionError("count_tokens must not be called for no chunks")
+
+        monkeypatch.setattr(dd, "count_tokens_via_api", _boom)
+        preflight = preflight_digest_cost([], model=MODEL_SONNET_5)
+        assert preflight.per_chunk_input_tokens == []
+        assert preflight.total_input_tokens == 0
+        assert preflight.exact is True
+
     def test_unknown_model_cost_is_none_not_a_guess(self, monkeypatch):
         monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: 1_000)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 10)
         chunks = build_digest_chunks([_drawing_file("a.pdf", 2)])
         preflight = preflight_digest_cost(chunks, model="mystery-model-9")
         assert preflight.estimated_max_cost_usd is None
@@ -617,8 +710,9 @@ class TestPreflightAndCost:
         )
         assert "Cost: unknown" in message
 
-    def test_confirm_message_contents(self, monkeypatch):
+    def test_confirm_message_contents_names_the_scaled_estimate(self, monkeypatch):
         monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: 10_000)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 0)
         chunks = _two_chunks()
         preflight = preflight_digest_cost(chunks, model=MODEL_SONNET_5)
         message = format_digest_confirm_message(
@@ -628,10 +722,26 @@ class TestPreflightAndCost:
         assert "2 document(s)" in message
         assert "4 page(s)" in message
         assert "Requests: 2" in message
+        # 10,000 measured + (2 pages x 5,000/page + 0 prompt) scaled.
         assert "20,000 input tokens" in message
-        assert "(estimated)" not in message
+        assert "1 of 2 request(s) measured exactly" in message
+        assert "scaled by page count" in message
+        assert "(estimated)" not in message  # that marker means NOTHING was measured
         assert "Cost: up to $" in message
         assert "editable text digest" in message
+
+    def test_confirm_message_single_measured_chunk_has_no_estimate_marker(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: 10_000)
+        monkeypatch.setattr(dd, "count_tokens", lambda text: 0)
+        chunks = build_digest_chunks([_drawing_file("a.pdf", 2)])
+        preflight = preflight_digest_cost(chunks, model=MODEL_SONNET_5)
+        message = format_digest_confirm_message(
+            preflight, chunks=chunks, model=MODEL_SONNET_5
+        )
+        assert "10,000 input tokens" in message
+        assert "estimated" not in message
 
     def test_confirm_message_marks_inexact_estimates(self, monkeypatch):
         monkeypatch.setattr(dd, "count_tokens_via_api", lambda **_kw: None)

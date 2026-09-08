@@ -149,6 +149,7 @@ def browse_for_specs(parent) -> list[Path]:
     files = filedialog.askopenfilenames(
         title="Select specification files",
         filetypes=_SPEC_FILETYPES,
+        parent=parent,
     )
     return [Path(f) for f in files] if files else []
 

@@ -12,13 +12,26 @@ delegates all workflow concerns to focused controller modules:
 - ``batch_controller`` — batch submission, polling, collection
 - ``report_controller`` — report export and the report window
 - ``diagnostics_controller`` — diagnostics callbacks and window
+
+Window close (``WM_DELETE_WINDOW`` → ``_on_close``): the trace writer is a
+daemon thread that only drains its queue on ``stop()``, so a plain
+``destroy()`` mid-run loses queued trace lines and leaves ``run.json``'s
+``ended_at`` null. ``_on_close`` always stops the run recorder before
+destroying the window, and asks first when closing would discard work that
+cannot be resumed — a real-time review (nothing is persisted for it, unlike a
+batch, which keeps running remotely and is offered for resume on the next
+launch) or a drawing digest in flight.
 """
+import logging
 import os
 import sys
 from pathlib import Path
+from tkinter import messagebox
 from typing import Optional
 
 import customtkinter as ctk
+
+_log = logging.getLogger(__name__)
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -49,22 +62,30 @@ from src.core.api_config import (
     REVIEW_MODEL_DEFAULT,
 )
 from src.core.code_cycles import DEFAULT_CYCLE
+from src.core.logging_setup import configure_file_logging
 from src.core.pricing import friendly_model_name, price_for
 from src.core.tokenizer import PROJECT_CONTEXT_MAX_TOKENS, RECOMMENDED_MAX
 from src.core.project_profile import ProjectProfile
 from src.core.ui_state import (
+    FONT_SCALE_DEFAULT,
+    load_cross_check_enabled,
+    load_font_scale,
     load_project_profile,
     load_realtime_review_workers,
     load_review_transport,
     load_selected_module_id,
     load_selected_program_id,
     load_show_tracing_tools,
+    save_cross_check_enabled,
+    save_font_scale,
     save_review_transport,
     save_realtime_review_workers,
     save_selected_module_id,
     save_selected_program_id,
     save_show_tracing_tools,
 )
+from src.tracing.recorder import get_recorder
+from src.tracing.session import stop_run_recorder
 
 from src.gui.project_profile_inputs import (
     COUNTRY_OPTIONS,
@@ -133,7 +154,11 @@ from src.gui.file_selection_controller import (
     parse_dropped_paths,
     set_file_data,
 )
-from src.gui.report_controller import export_html_report_to_file, export_report_to_file
+from src.gui.report_controller import (
+    export_html_report_to_file,
+    export_report_to_file,
+    export_word_report_to_file,
+)
 from src.gui.realtime_cost_gate import (
     REALTIME_WORKER_TRADEOFF_TEXT,
     should_warn_before_live_run,
@@ -171,6 +196,39 @@ _FONT_SCALE_OPTIONS = {
     "Larger (+20%)": 1.2,
 }
 
+
+def _font_scale_label_for(scale: float) -> str:
+    """Segmented-button label for a persisted scale (default label if unknown)."""
+    for label, value in _FONT_SCALE_OPTIONS.items():
+        if abs(value - scale) < 1e-6:
+            return label
+    return next(iter(_FONT_SCALE_OPTIONS))
+
+
+def close_confirmation_message(
+    *, is_processing: bool, review_transport: str, drawing_digest_running: bool
+) -> str | None:
+    """The close-confirmation text, or ``None`` when closing loses nothing.
+
+    A batch run keeps running on Anthropic's servers and is offered for
+    resume on the next launch, so closing needs no confirmation. A real-time
+    run persists nothing and a drawing digest's spend is only realized when
+    its text lands in Project Context — both are discarded by closing.
+    """
+    if is_processing and review_transport == "realtime":
+        return (
+            "A real-time review is running. Closing now discards it \u2014 "
+            "real-time runs are not saved and cannot be resumed (a batch run "
+            "would keep running on Anthropic's servers and be offered for "
+            "resume on the next launch).\n\nClose anyway?"
+        )
+    if drawing_digest_running:
+        return (
+            "A drawing analysis is running. Closing now discards it and the "
+            "API cost already spent on it.\n\nClose anyway?"
+        )
+    return None
+
 # Consistent font size for all input row labels and controls
 _UI_FONT_SIZE = 12
 
@@ -182,7 +240,7 @@ class SpecReviewApp(_CTkDnDRoot):
             try:
                 self.TkdndVersion = TkinterDnD._require(self)
             except Exception as e:
-                print(f"[SpecCritic] Drag-and-drop unavailable: {e}")
+                _log.warning("Drag-and-drop unavailable: %s", e)
         self.title("Spec Critic")
         self.geometry("900x950")
         self.minsize(750, 700)
@@ -236,13 +294,25 @@ class SpecReviewApp(_CTkDnDRoot):
         self._selected_cycle_label = get_module(self._selected_module_id).cycle.label
         self._routing_assignments_for_review = ()
         self._routed_module_ids_for_review = ()
-        self._font_scale_label: str = "Default (100%)"
+        # Accessibility font scale, restored from the persisted UI state and
+        # applied before any widget is built so the whole tree is scaled.
+        self._font_scale: float = load_font_scale()
+        self._font_scale_label: str = _font_scale_label_for(self._font_scale)
+        if abs(self._font_scale - FONT_SCALE_DEFAULT) > 1e-6:
+            ctk.set_widget_scaling(self._font_scale)
+        # True while the at-completion export or "Save Word Report…" is
+        # writing on its worker; a second export is refused meanwhile.
+        self._report_export_running: bool = False
         # Self-update checker (Windows desktop build). The last-check date and
         # any "skipped" version persist in ~/.spec_critic/update_check.json;
         # the network fetch/download always runs off the UI thread. See
         # core/updates.py and docs/RELEASE_WINDOWS.md.
         init_update_state(self)
         self._create_ui()
+        # Route the window-manager close button through ``_on_close`` so the
+        # trace recorder is drained and a non-resumable run is confirmed
+        # before the window goes away (see the module docstring).
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         # The silent once/day update check is scheduled by main()'s startup
         # sequence AFTER the batch-resume prompt resolves — a timer stagger
         # alone can't prevent the two startup prompts from stacking, because
@@ -273,6 +343,20 @@ class SpecReviewApp(_CTkDnDRoot):
             command=self._on_save_html_report_clicked,
         )
         self.save_html_btn.pack(side="right", padx=(0, 8))
+        # The at-completion Word export, on demand: a report lost to a locked
+        # file or a canceled dialog can be produced later from the retained
+        # result (same writer, same sidecars). Enabled by the same setter.
+        self.save_word_btn = ctk.CTkButton(
+            self.check_update_btn.master, text="Save Word Report…",
+            width=150, height=28,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["border"],
+            border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text_secondary"],
+            state="disabled",
+            command=self._on_save_word_report_clicked,
+        )
+        self.save_word_btn.pack(side="right", padx=(0, 8))
 
         # Header
         self.hdr = ctk.CTkFrame(c, fg_color="transparent")
@@ -454,9 +538,13 @@ class SpecReviewApp(_CTkDnDRoot):
         options_frame.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=8)
         options_line1 = ctk.CTkFrame(options_frame, fg_color="transparent")
         options_line1.pack(anchor="w")
-        self._cross_check_var = ctk.BooleanVar(value=False)
+        # Persisted across launches (like the transport toggle); a corrupt
+        # or missing value reads as off so the extra pass is never paid for
+        # by accident.
+        self._cross_check_var = ctk.BooleanVar(value=load_cross_check_enabled())
         self._cross_check_cb = ctk.CTkCheckBox(
             options_line1, text="Cross-spec coordination check", variable=self._cross_check_var,
+            command=self._on_cross_check_toggle,
             font=ctk.CTkFont(family="Segoe UI", size=_UI_FONT_SIZE), fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"], border_color=COLORS["border"],
             checkmark_color=COLORS["text_primary"], text_color=COLORS["text_secondary"],
@@ -777,7 +865,13 @@ class SpecReviewApp(_CTkDnDRoot):
     def _on_font_scale_change(self, value: str):
         scale = _FONT_SCALE_OPTIONS.get(value, 1.0)
         ctk.set_widget_scaling(scale)
+        self._font_scale = scale
         self._font_scale_label = value
+        save_font_scale(scale)
+
+    def _on_cross_check_toggle(self) -> None:
+        """Persist the cross-spec coordination choice for the next launch."""
+        save_cross_check_enabled(bool(self._cross_check_var.get()))
 
     def _module_subtitle(self) -> str:
         # Label derives from the configured review model so it tracks a
@@ -990,13 +1084,16 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _register_specs_drop_target(self):
         if DND_FILES is None:
-            print("[SpecCritic] Drag-and-drop unavailable: install tkinterdnd2 to enable dropping .docx files")
+            _log.info(
+                "Drag-and-drop unavailable: install tkinterdnd2 to enable "
+                "dropping .docx files"
+            )
             return
         try:
             self.input_dir_entry.drop_target_register(DND_FILES)
             self.input_dir_entry.dnd_bind("<<Drop>>", self._on_specs_drop)
         except Exception as e:
-            print(f"[SpecCritic] Drag-and-drop unavailable: {e}")
+            _log.warning("Drag-and-drop unavailable: %s", e)
 
     def _parse_dropped_paths(self, payload: str) -> list[Path]:
         return parse_dropped_paths(self, payload)
@@ -1051,13 +1148,32 @@ class SpecReviewApp(_CTkDnDRoot):
         on_review_complete(self, result)
 
     def _export_report_to_file(self, result) -> str:
+        """Synchronous at-completion export (legacy seam; blocks the Tk thread)."""
         return export_report_to_file(self, result)
+
+    def _export_report_async(self, result, on_complete) -> None:
+        """At-completion export: save dialog now, ``.docx`` + sidecars on a
+        worker, ``on_complete(status)`` back on the Tk thread.
+
+        ``review_run_controller.on_review_complete`` prefers this seam when
+        present so the DOCX write never freezes the window; the run stays in
+        its processing state until the status lands.
+        """
+        self._report_export_running = True
+        self._sync_export_buttons()
+
+        def _done(status: str) -> None:
+            self._report_export_running = False
+            self._sync_export_buttons()
+            on_complete(status)
+
+        export_report_to_file(self, result, on_complete=_done)
 
     # ``_last_result`` is assigned by review_run_controller.on_review_complete
     # when a run finishes. Intercepting the assignment here (instead of adding
     # a call into that controller) keeps every review-lifecycle file untouched
-    # while still enabling the post-run "Save HTML Report…" button the moment
-    # a completed result is retained.
+    # while still enabling the post-run "Save HTML Report…" / "Save Word
+    # Report…" buttons the moment a completed result is retained.
     @property
     def _last_result(self):
         return self._last_result_value
@@ -1065,12 +1181,39 @@ class SpecReviewApp(_CTkDnDRoot):
     @_last_result.setter
     def _last_result(self, value):
         self._last_result_value = value
-        btn = getattr(self, "save_html_btn", None)
-        if btn is not None:
+        self._sync_export_buttons()
+
+    def _sync_export_buttons(self) -> None:
+        """Enable the footer export buttons iff a completed result is retained."""
+        has_result = getattr(self, "_last_result_value", None) is not None
+        for name in ("save_html_btn", "save_word_btn"):
+            btn = getattr(self, name, None)
+            if btn is None:
+                continue
             try:
-                btn.configure(state="normal" if value is not None else "disabled")
+                btn.configure(state="normal" if has_result else "disabled")
             except Exception:  # pragma: no cover - defensive UI update
                 pass
+
+    def _on_save_word_report_clicked(self):
+        if self.is_processing:
+            self.log.log_warning(
+                "A review is running — save the Word report after it completes."
+            )
+            return
+        if getattr(self, "_report_export_running", False):
+            self.log.log_warning("A report export is already running.")
+            return
+        result = self._last_result
+        if result is None:
+            self.log.log_warning("No completed review in this session yet.")
+            return
+        self._report_export_running = True
+
+        def _done(_status: str) -> None:
+            self._report_export_running = False
+
+        export_word_report_to_file(self, result, on_complete=_done)
 
     def _on_save_html_report_clicked(self):
         if self.is_processing:
@@ -1086,6 +1229,39 @@ class SpecReviewApp(_CTkDnDRoot):
 
     def _on_review_error(self, err):
         on_review_error(self, err)
+
+    # ----- Window close -----
+
+    def _confirm_close(self) -> bool:
+        message = close_confirmation_message(
+            is_processing=bool(getattr(self, "is_processing", False)),
+            review_transport=getattr(self, "_review_transport_for_review", "batch")
+            or "batch",
+            drawing_digest_running=bool(
+                getattr(self, "_drawing_digest_running", False)
+            ),
+        )
+        if message is None:
+            return True
+        return bool(messagebox.askyesno("Close Spec Critic?", message, parent=self))
+
+    def _on_close(self) -> None:
+        """``WM_DELETE_WINDOW`` handler: confirm, drain the trace, destroy.
+
+        The recorder is stopped unconditionally — even with no run in
+        flight the call is a cheap no-op — so a closed window never leaves
+        queued trace lines unwritten or ``run.json`` without ``ended_at``.
+        """
+        if not self._confirm_close():
+            return
+        recorder = getattr(self, "_trace_recorder", None) or get_recorder()
+        try:
+            stop_run_recorder(recorder)
+        except Exception:  # noqa: BLE001 — teardown must never keep the window open
+            _log.warning("Trace recorder did not stop cleanly on close", exc_info=True)
+        finally:
+            self._trace_recorder = None
+        self.destroy()
 
     # ----- Batch mode -----
 
@@ -1156,6 +1332,10 @@ class SpecReviewApp(_CTkDnDRoot):
 
 
 def main():
+    # First thing, before any widget exists: the windowed build has no
+    # console, so without a file handler every warning the app logs (unknown
+    # model ids, count_tokens failures, drag-and-drop setup) is dropped.
+    configure_file_logging()
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
     app = SpecReviewApp()

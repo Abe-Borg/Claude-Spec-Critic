@@ -1,4 +1,4 @@
-"""Persisted GUI selections (currently: the selected review module).
+"""Persisted GUI selections (program, transport, workers, toggles, font scale).
 
 A tiny JSON sidecar next to the other Spec Critic state
 (``~/.spec_critic/``, matching the verification cache and the pending-batch
@@ -8,6 +8,11 @@ save, never an exception into GUI startup. The stored module id is resolved
 through ``modules.get_module`` at use, so a stale id from an uninstalled
 module degrades to the default module rather than erroring.
 
+Every save is a read-modify-write of the whole file, serialized under one
+module-level lock (``_STATE_LOCK``): the GUI writes from the Tk thread, but
+the run-start path and background completions can persist too, and an
+unguarded interleaving would silently drop the other writer's key.
+
 Overridable via ``SPEC_CRITIC_UI_STATE_PATH`` (``~`` and ``$VAR`` expanded)
 so tests never touch the real home directory.
 """
@@ -15,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 from .api_config import (
@@ -47,6 +53,19 @@ _SUPPRESS_REALTIME_COST_WARNING_KEY = "suppress_realtime_cost_warning"
 # opts in via the Options toggle. Anything non-bool (missing / hand-edited)
 # reads as False.
 _SHOW_TRACING_KEY = "show_tracing_tools"
+# Accessibility font scale. Stored as the numeric widget-scaling factor (not
+# the segmented-button label, which is display text and free to change);
+# anything outside the supported choices reads as the 100% default.
+_FONT_SCALE_KEY = "font_scale"
+FONT_SCALE_CHOICES = (1.0, 1.1, 1.2)
+FONT_SCALE_DEFAULT = 1.0
+# The "Cross-spec coordination check" Options checkbox. Non-bool (missing /
+# hand-edited) reads as False — the pass costs a full-content model call, so
+# it is never switched on by a corrupt file.
+_CROSS_CHECK_KEY = "cross_check_enabled"
+
+# Serializes every read-modify-write below (see the module docstring).
+_STATE_LOCK = threading.Lock()
 
 
 def ui_state_path() -> Path:
@@ -172,6 +191,45 @@ def save_show_tracing_tools(value: bool, *, path: Path | None = None) -> None:
     _write_key(_SHOW_TRACING_KEY, bool(value), path=path)
 
 
+def _canonical_font_scale(value: object) -> float | None:
+    """Snap ``value`` onto a supported scale, or ``None`` when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    for choice in FONT_SCALE_CHOICES:
+        if abs(float(value) - choice) < 1e-6:
+            return choice
+    return None
+
+
+def load_font_scale(*, path: Path | None = None) -> float:
+    """Persisted accessibility font scale; ``1.0`` when unset or unknown."""
+    value = _load(path).get(_FONT_SCALE_KEY, FONT_SCALE_DEFAULT)
+    canonical = _canonical_font_scale(value)
+    return canonical if canonical is not None else FONT_SCALE_DEFAULT
+
+
+def save_font_scale(scale: float, *, path: Path | None = None) -> None:
+    """Persist one of the supported font scales. Unknown values are dropped."""
+    canonical = _canonical_font_scale(scale)
+    if canonical is None:
+        return
+    _write_key(_FONT_SCALE_KEY, canonical, path=path)
+
+
+def load_cross_check_enabled(*, path: Path | None = None) -> bool:
+    """Whether the cross-spec coordination checkbox was last ticked.
+
+    ``False`` by default and for any non-bool stored value.
+    """
+    value = _load(path).get(_CROSS_CHECK_KEY, False)
+    return value if isinstance(value, bool) else False
+
+
+def save_cross_check_enabled(value: bool, *, path: Path | None = None) -> None:
+    """Persist the cross-spec coordination checkbox. Best-effort: never raises."""
+    _write_key(_CROSS_CHECK_KEY, bool(value), path=path)
+
+
 def load_project_profile(module_id: str, *, path: Path | None = None) -> dict:
     """Last-entered project profile for ``module_id`` (``{}`` when none saved)."""
     profiles = _load(path).get(_PROFILES_KEY, {})
@@ -190,20 +248,24 @@ def save_project_profile(
     modules' saved profiles are never clobbered.
     """
     target = path or ui_state_path()
-    state = _load(target)
-    profiles = state.get(_PROFILES_KEY)
-    if not isinstance(profiles, dict):
-        profiles = {}
-    profiles[module_id] = dict(profile)
-    state[_PROFILES_KEY] = profiles
-    _write_state(state, path=target)
+    with _STATE_LOCK:
+        state = _load(target)
+        profiles = state.get(_PROFILES_KEY)
+        if not isinstance(profiles, dict):
+            profiles = {}
+        profiles[module_id] = dict(profile)
+        state[_PROFILES_KEY] = profiles
+        _write_state(state, path=target)
 
 
 def _write_key(key: str, value: object, *, path: Path | None = None) -> None:
+    """Read-modify-write one key under ``_STATE_LOCK`` so concurrent savers
+    (Tk thread + a run-start or completion path) never lose each other's key."""
     target = path or ui_state_path()
-    state = _load(target)
-    state[key] = value
-    _write_state(state, path=target)
+    with _STATE_LOCK:
+        state = _load(target)
+        state[key] = value
+        _write_state(state, path=target)
 
 
 def _write_state(state: dict, *, path: Path | None = None) -> None:

@@ -9,6 +9,12 @@ This module owns:
 
 Batch submission/polling lives in ``batch_controller`` and uses these
 shared helpers via the SpecReviewApp delegators.
+
+Dialog ownership: the routing confirmations here are exercised by hermetic
+tests with a ``SimpleNamespace`` app and fixed-arity ``messagebox`` fakes,
+so this file binds its dialogs to the window through ``dialog_owner(app)``
+(``{"parent": app}`` for a live Tk widget, ``{}`` for a double) instead of
+the literal ``parent=`` keyword the other controllers use.
 """
 from __future__ import annotations
 
@@ -32,8 +38,10 @@ from ..core.api_config import REALTIME_REVIEW_WORKER_CHOICES
 from ..core.pricing import friendly_model_name
 from ..core.tokenizer import count_tokens, PROJECT_CONTEXT_MAX_TOKENS
 from ..core.ui_state import load_realtime_review_workers, save_project_profile
+from .dialog_owner import dialog_owner
 from .project_profile_inputs import completeness_error
 from .realtime_cost_gate import should_warn_before_live_run
+from .token_analysis_controller import apply_run_button_gate
 from ..tracing.session import (
     start_run_recorder,
     stop_run_recorder as _stop_recorder,
@@ -92,6 +100,7 @@ def validate_inputs(app) -> bool:
                 f"Project Context is {ctx_tokens:,} tokens, exceeding the "
                 f"{PROJECT_CONTEXT_MAX_TOKENS:,}-token limit.\n\n"
                 f"Trim the context (or remove some attachments) before running.",
+                **dialog_owner(app),
             )
             return False
     # When the selected module opts into a project profile, block the run
@@ -103,7 +112,9 @@ def validate_inputs(app) -> bool:
         error = completeness_error(profile)
         if error:
             app.log.log_error(error)
-            messagebox.showerror("Project details required", error)
+            messagebox.showerror(
+                "Project details required", error, **dialog_owner(app)
+            )
             return False
     return True
 
@@ -191,6 +202,7 @@ def _build_program_assignments(app, selected_files: list) -> tuple[SpecAssignmen
                 f"Router confidence: {assignment.decision.confidence:.0%}"
                 f"{evidence_text}\n\n"
                 "Choose No to skip this specification as a coverage gap.",
+                **dialog_owner(app),
             )
             chosen = candidates if confirmed else ()
         else:
@@ -241,6 +253,7 @@ def _build_program_assignments(app, selected_files: list) -> tuple[SpecAssignmen
             "No implemented module in this program can safely review:\n\n"
             + "\n".join(f"• {name}" for name in unsupported)
             + "\n\nContinue and record these files as skipped coverage gaps?",
+            **dialog_owner(app),
         )
         if not proceed:
             app.log.log(
@@ -268,6 +281,7 @@ def _build_program_assignments(app, selected_files: list) -> tuple[SpecAssignmen
         "The program will use these per-spec reviewers:\n\n"
         + "\n".join(route_lines)
         + "\n\nProceed with the review?",
+        **dialog_owner(app),
     ):
         app.log.log("Review canceled during routing confirmation.", level="muted")
         return None
@@ -409,75 +423,107 @@ def on_review_complete(app, result) -> None:
     # ``collect_review_batch_results`` whenever any spec truncated /
     # parse-errored / errored / returned nothing.
     has_review_errors = getattr(result, "status", "") == "partial"
-    if result.review_result:
-        rv = result.review_result
-        has_review_errors = has_review_errors or bool(rv.error)
-        if has_review_errors:
-            app.log.log_warning(
-                "Review completed with partial coverage or errors; see the report for details."
-            )
-            if rv.error:
-                app.log.log_warning(rv.error)
-            skipped = list(getattr(result, "skipped_files", None) or [])
-            if skipped:
-                app.log.log_warning(
-                    "Unsupported specifications skipped: " + ", ".join(skipped)
-                )
-            missing = list(getattr(result, "missing_module_ids", None) or [])
-            if missing:
-                app.log.log_warning(
-                    "No result available for routed module(s): " + ", ".join(missing)
-                )
-            module_errors = dict(getattr(result, "module_errors", None) or {})
-            for module_id, message in module_errors.items():
-                app.log.log_warning(
-                    f"{module_id} collection failed; pending batch state was retained: "
-                    f"{message}"
-                )
-        else:
-            app.log.log_success("Review complete!")
-        app.log.log(
-            f"Findings: {rv.critical_count} critical, {rv.high_count} high, "
-            f"{rv.medium_count} medium, {rv.gripe_count} gripes",
-            level="info",
-        )
-
-        if result.cross_check_result and result.cross_check_result.findings:
-            cc = result.cross_check_result
-            app.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
-        total_elapsed = (
-            result.total_elapsed_seconds
-            if getattr(result, "total_elapsed_seconds", None) is not None
-            else rv.elapsed_seconds
-        )
-        app.log.log(f"Time: {total_elapsed:.1f}s", level="muted")
-        export_status = app._export_report_to_file(result)
-        if export_status == "canceled":
-            app.log.log_warning("Export canceled; results are still available in memory.")
-            app._finalize_diagnostics(
-                "finalization",
-                "warning" if has_review_errors else "info",
-                "Run completed with review errors after export canceled"
-                if has_review_errors
-                else "Run completed after export canceled",
-            )
-        elif export_status == "error":
-            app.log.log_warning("Export failed.")
-            app._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
-        elif export_status == "success":
-            if has_review_errors:
-                app._finalize_diagnostics(
-                    "finalization",
-                    "warning",
-                    "Run completed with errors — one or more specs failed review",
-                )
-            else:
-                app._finalize_diagnostics("finalization", "success", "Run completed successfully")
     if not result.review_result:
         app._finalize_diagnostics("finalization", "success", "Run completed successfully")
-    # Partial failure gets a distinct amber terminal state; a clean run
-    # keeps the celebratory green check-mark.
+        _enter_terminal_state(app, with_errors=has_review_errors)
+        return
+    rv = result.review_result
+    has_review_errors = has_review_errors or bool(rv.error)
     if has_review_errors:
+        app.log.log_warning(
+            "Review completed with partial coverage or errors; see the report for details."
+        )
+        if rv.error:
+            app.log.log_warning(rv.error)
+        skipped = list(getattr(result, "skipped_files", None) or [])
+        if skipped:
+            app.log.log_warning(
+                "Unsupported specifications skipped: " + ", ".join(skipped)
+            )
+        missing = list(getattr(result, "missing_module_ids", None) or [])
+        if missing:
+            app.log.log_warning(
+                "No result available for routed module(s): " + ", ".join(missing)
+            )
+        module_errors = dict(getattr(result, "module_errors", None) or {})
+        for module_id, message in module_errors.items():
+            app.log.log_warning(
+                f"{module_id} collection failed; pending batch state was retained: "
+                f"{message}"
+            )
+    else:
+        app.log.log_success("Review complete!")
+    app.log.log(
+        f"Findings: {rv.critical_count} critical, {rv.high_count} high, "
+        f"{rv.medium_count} medium, {rv.gripe_count} gripes",
+        level="info",
+    )
+
+    if result.cross_check_result and result.cross_check_result.findings:
+        cc = result.cross_check_result
+        app.log.log(f"Cross-check: {len(cc.findings)} coordination issues found", level="info")
+    total_elapsed = (
+        result.total_elapsed_seconds
+        if getattr(result, "total_elapsed_seconds", None) is not None
+        else rv.elapsed_seconds
+    )
+    app.log.log(f"Time: {total_elapsed:.1f}s", level="muted")
+
+    def _finish(export_status: str) -> None:
+        _finish_review_complete(app, export_status, has_review_errors)
+
+    # The DOCX write (plus sidecars) can take seconds on a large run, so the
+    # real app exports on a worker and delivers the terminal status through
+    # ``_finish`` on the Tk thread; ``is_processing`` stays True and the run
+    # button stays in its processing state until then. A double without the
+    # asynchronous seam keeps the legacy synchronous export.
+    export_async = getattr(app, "_export_report_async", None)
+    if callable(export_async):
+        export_async(result, _finish)
+    else:
+        _finish(app._export_report_to_file(result))
+
+
+def _finish_review_complete(app, export_status: str, has_review_errors: bool) -> None:
+    """Finalize diagnostics + terminal button state once the export settled.
+
+    Order is load-bearing: diagnostics finalize first (so the Diagnostics
+    button re-enables with the terminal line recorded), then the run button
+    takes its terminal color, then the delayed ``reset_ui``.
+    """
+    export_failed = export_status == "error"
+    if export_status == "canceled":
+        app.log.log_warning("Export canceled; results are still available in memory.")
+        app._finalize_diagnostics(
+            "finalization",
+            "warning" if has_review_errors else "info",
+            "Run completed with review errors after export canceled"
+            if has_review_errors
+            else "Run completed after export canceled",
+        )
+    elif export_failed:
+        app.log.log_warning(
+            "Export failed; results are still in memory \u2014 use \u201cSave Word "
+            "Report\u2026\u201d in the footer to try again."
+        )
+        app._finalize_diagnostics("finalization", "warning", "Run completed with export failure")
+    elif export_status == "success":
+        if has_review_errors:
+            app._finalize_diagnostics(
+                "finalization",
+                "warning",
+                "Run completed with errors \u2014 one or more specs failed review",
+            )
+        else:
+            app._finalize_diagnostics("finalization", "success", "Run completed successfully")
+    # Partial failure — or a report the operator does not have on disk —
+    # gets the distinct amber terminal state; a clean run keeps the
+    # celebratory green check-mark.
+    _enter_terminal_state(app, with_errors=has_review_errors or export_failed)
+
+
+def _enter_terminal_state(app, *, with_errors: bool) -> None:
+    if with_errors:
         app.run_button.set_complete_with_errors()
     else:
         app.run_button.set_complete()
@@ -492,6 +538,10 @@ def on_review_error(app, err) -> None:
     if hasattr(app, "module_selector"):
         app.module_selector.configure(state="normal")
     app.is_processing = False
+    # ``set_ready`` re-enables unconditionally; re-run the selection gate so
+    # a spec over the per-call limit stays blocked instead of becoming
+    # runnable until ``_prepare_specs`` raises again.
+    apply_run_button_gate(app)
 
 
 def reset_ui(app) -> None:
@@ -516,3 +566,5 @@ def reset_ui(app) -> None:
     # having torn the recorder down. (STRUCTURAL_AUDIT P2-4.)
     _stop_recorder(getattr(app, "_trace_recorder", None))
     app._trace_recorder = None
+    # Same gate re-run as ``on_review_error``: ``set_ready`` is unconditional.
+    apply_run_button_gate(app)
