@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spec-critic"
-version = "3.4.0"
+version = "3.5.0"
 license = {text = "PolyForm-Noncommercial-1.0.0"}
 # tomllib (stdlib since 3.11) is used by the release guard and the workflows;
 # the CI matrix and the Windows build both pin 3.11.
