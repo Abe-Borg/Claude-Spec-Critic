@@ -171,3 +171,56 @@ class TestAdditiveGuiWiring:
         assert "app._last_result = result" in source
         assert "html" not in source.lower()
         assert "save_html_btn" not in source
+
+
+class TestWordReportButtonWiring:
+    """The footer "Save Word Report…" button mirrors the HTML button's pins.
+
+    A report lost to a locked ``.docx`` (or a canceled save dialog) can be
+    produced later from the retained result; the button is enabled by the
+    same ``_last_result`` setter and guarded by the same click checks.
+    """
+
+    GUI = TestAdditiveGuiWiring.GUI
+
+    def test_button_created_disabled_in_footer_beside_html(self):
+        source = self.GUI.read_text(encoding="utf-8")
+        assert "save_word_btn" in source
+        assert "Save Word Report…" in source
+        block = source.split("self.save_word_btn = ")[1].split(".pack(")[0]
+        assert 'state="disabled"' in block
+        assert "_on_save_word_report_clicked" in block
+        # Same footer strip as the HTML button (the parent widget matches).
+        html_block = source.split("self.save_html_btn = ")[1].split(".pack(")[0]
+        assert "self.check_update_btn.master" in block
+        assert "self.check_update_btn.master" in html_block
+
+    def test_last_result_setter_enables_both_buttons(self):
+        source = self.GUI.read_text(encoding="utf-8")
+        setter = source.split("@_last_result.setter")[1].split("def _on_save")[0]
+        assert "_sync_export_buttons" in setter
+        assert "save_word_btn" in setter and "save_html_btn" in setter
+        assert '"normal"' in setter and '"disabled"' in setter
+
+    def test_click_handler_guards(self):
+        source = self.GUI.read_text(encoding="utf-8")
+        handler = source.split("def _on_save_word_report_clicked(self):")[1].split(
+            "\n    def "
+        )[0]
+        assert "is_processing" in handler
+        assert "_report_export_running" in handler
+        assert "No completed review in this session yet." in handler
+        assert "export_word_report_to_file" in handler
+
+    def test_controller_entry_point_exists_and_delegates(self):
+        # The button reuses the at-completion exporter (same writer, same
+        # sidecars) rather than a second, drift-prone DOCX path.
+        assert callable(report_controller.export_word_report_to_file)
+        src = Path(report_controller.__file__).read_text(encoding="utf-8")
+        body = src.split("def export_word_report_to_file(")[1].split("\ndef ")[0]
+        assert "return export_report_to_file(app, result, on_complete=on_complete)" in body
+
+    def test_review_lifecycle_still_has_no_button_awareness(self):
+        source = TestAdditiveGuiWiring.RUN_CONTROLLER.read_text(encoding="utf-8")
+        assert "save_word_btn" not in source
+        assert "app._last_result = result" in source

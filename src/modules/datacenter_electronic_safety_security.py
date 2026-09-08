@@ -652,4 +652,8 @@ DATACENTER_ELECTRONIC_SAFETY_SECURITY = ReviewModule(
     compliance_persona=_COMPLIANCE_PERSONA,
     compliance_severity_definitions=_COMPLIANCE_SEVERITY_DEFINITIONS,
     polity_suspect_tokens=_POLITY_SUSPECT_TOKENS,
+    # No profile-less search localization: the project profile is the only
+    # location source for this module, so a headless / recovery run without
+    # one searches un-localized rather than being steered to California.
+    default_web_search_user_location=None,
 )

@@ -403,4 +403,12 @@ CALIFORNIA_K12_MEP = ReviewModule(
     cross_check_chunk_groups=_CROSS_CHECK_CHUNK_GROUPS,
     report_context_phrase="California K-12 DSA projects",
     report_title="Spec Critic — M&P Specification Review Report",
+    # The engine's web_search tool carries no location of its own; this is
+    # the module's long-standing California localization for profile-less
+    # verification searches (byte-identical to the former engine default).
+    default_web_search_user_location={
+        "type": "approximate",
+        "country": "US",
+        "region": "California",
+    },
 )

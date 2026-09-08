@@ -23,9 +23,14 @@ because the cross-checker sends ALL spec content in a single call.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
-from typing import Any, Optional
+import os
+import tempfile
+import threading
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
 
 import tiktoken
 
@@ -169,13 +174,177 @@ def exceeds_per_call_limit_for_model(
     return padded > RECOMMENDED_MAX
 
 
+# ---------------------------------------------------------------------------
+# Encoder loading — memoized, and honest about where the rank file comes from
+# ---------------------------------------------------------------------------
+#
+# The tiktoken wheel does NOT ship the cl100k_base BPE rank file. On first use
+# ``tiktoken.get_encoding`` looks for a cached copy in the directory named by
+# ``TIKTOKEN_CACHE_DIR`` (then ``DATA_GYM_CACHE_DIR``, then
+# ``<tempdir>/data-gym-cache``) and, when the file is absent, downloads it from
+# a public Azure blob host. A workstation that allows api.anthropic.com but
+# blocks that host therefore fails at the very first ``count_tokens`` call —
+# and it used to fail with a bare connection error that named neither
+# tiktoken, nor the cache directory, nor the download. The Windows build
+# bundles the rank file and points ``TIKTOKEN_CACHE_DIR`` at it before any
+# ``src`` import (``packaging/windows/app_entry.py``;
+# ``packaging/windows/bundle_assets.py`` decides what to bundle and verifies
+# it at build time).
+#
+# The constants below are this repo's single description of the file tiktoken
+# expects — shared by the build helper (what to bundle, how to verify it), the
+# frozen app's ``--selfcheck`` probe, and the actionable error raised here.
+# They mirror ``tiktoken_ext/openai_public.py::cl100k_base`` for the pinned
+# tiktoken release; ``tests/test_tokenizer_encoder.py`` fails if that pin
+# drifts from these values.
+
+ENCODING_NAME = "cl100k_base"
+CL100K_BASE_BLOB_URL = (
+    "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+)
+CL100K_BASE_SHA256 = "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+TIKTOKEN_CACHE_DIR_ENV = "TIKTOKEN_CACHE_DIR"
+_TIKTOKEN_LEGACY_CACHE_DIR_ENV = "DATA_GYM_CACHE_DIR"
+_TIKTOKEN_DEFAULT_CACHE_SUBDIR = "data-gym-cache"
+
+
+def cl100k_cache_filename() -> str:
+    """The file name tiktoken caches the cl100k_base rank file under.
+
+    tiktoken keys its cache by ``sha1(<download URL>)`` — no extension, no
+    encoding name — so the bundled file and the self-check must use the same
+    derivation rather than a human-readable name.
+    """
+    return hashlib.sha1(CL100K_BASE_BLOB_URL.encode("utf-8")).hexdigest()
+
+
+def effective_tiktoken_cache_dir(environ: Mapping[str, str] | None = None) -> str:
+    """The directory tiktoken will look in for (and write) its rank-file cache.
+
+    Mirrors the resolution order in ``tiktoken.load.read_file_cached``:
+    ``TIKTOKEN_CACHE_DIR`` → ``DATA_GYM_CACHE_DIR`` → ``<tempdir>/data-gym-cache``.
+    An *empty* ``TIKTOKEN_CACHE_DIR`` disables caching inside tiktoken (every
+    load fetches); it is returned as-is so a report can show it verbatim.
+    """
+    env: Mapping[str, str] = os.environ if environ is None else environ
+    if TIKTOKEN_CACHE_DIR_ENV in env:
+        return env[TIKTOKEN_CACHE_DIR_ENV]
+    if _TIKTOKEN_LEGACY_CACHE_DIR_ENV in env:
+        return env[_TIKTOKEN_LEGACY_CACHE_DIR_ENV]
+    return os.path.join(tempfile.gettempdir(), _TIKTOKEN_DEFAULT_CACHE_SUBDIR)
+
+
+@dataclass(frozen=True)
+class EncoderCacheStatus:
+    """Where tiktoken will look for the cl100k_base rank file, and whether it is there."""
+
+    cache_dir: str
+    rank_file: str
+    rank_file_present: bool
+
+
+def encoder_cache_status(environ: Mapping[str, str] | None = None) -> EncoderCacheStatus:
+    """Snapshot the cache location + rank-file presence WITHOUT loading anything.
+
+    Sampled *before* a load, this distinguishes "read the local file" from
+    "downloaded it" — the frozen app's ``--selfcheck`` relies on that because
+    the CI runner has network access, so a post-load check could not tell the
+    two apart.
+    """
+    cache_dir = effective_tiktoken_cache_dir(environ)
+    rank_file = os.path.join(cache_dir, cl100k_cache_filename()) if cache_dir else ""
+    present = bool(rank_file) and os.path.isfile(rank_file)
+    return EncoderCacheStatus(
+        cache_dir=cache_dir, rank_file=rank_file, rank_file_present=present
+    )
+
+
+class EncoderLoadError(RuntimeError):
+    """The cl100k_base encoder could not be loaded.
+
+    Raised by :func:`get_encoder` (and therefore :func:`count_tokens`) in
+    place of tiktoken's bare connection / hash error, with a message that
+    names the cache directory in effect and explains the network fetch. A
+    plain ``RuntimeError`` subclass, so every existing ``except Exception``
+    around ``count_tokens`` keeps catching it; no caller catches a narrower
+    class.
+    """
+
+
+_ENCODER: Any = None
+_ENCODER_LOCK = threading.Lock()
+
+
+def _encoder_load_message(exc: BaseException, status: EncoderCacheStatus) -> str:
+    if status.cache_dir:
+        state = "present" if status.rank_file_present else "absent"
+        location = (
+            f"Cache directory in effect: {status.cache_dir!r} "
+            f"(rank file {status.rank_file!r} is {state})"
+        )
+    else:
+        location = (
+            f"{TIKTOKEN_CACHE_DIR_ENV} is set to an empty string, which disables "
+            f"tiktoken's cache so every load downloads"
+        )
+    return (
+        f"Could not load the {ENCODING_NAME} tokenizer used for local token "
+        f"estimates ({type(exc).__name__}: {exc}). tiktoken does not ship the "
+        f"BPE rank file: it reads a cached copy from the directory named by "
+        f"{TIKTOKEN_CACHE_DIR_ENV} and, when the file is absent, downloads it "
+        f"from {CL100K_BASE_BLOB_URL} — a host commonly blocked on networks "
+        f"that allow api.anthropic.com. {location}. Fix: put the rank file in "
+        f"that directory, or set {TIKTOKEN_CACHE_DIR_ENV} to a directory that "
+        f"already contains it (the Windows installer bundles one and sets the "
+        f"variable itself)."
+    )
+
+
 def get_encoder():
-    """Get the tokenizer used for approximate token estimates."""
-    return tiktoken.get_encoding("cl100k_base")
+    """Return the process-wide cl100k_base encoder, loading it at most once.
+
+    Memoized per process (double-checked under a lock) so the registry lookup
+    and the first-use rank-file load happen once rather than on every
+    ``count_tokens`` call — the GUI counts every selected file plus the system
+    prompt on each browse. A *failed* load is not memoized: the next call
+    retries, so fixing ``TIKTOKEN_CACHE_DIR`` (or the network) takes effect
+    without a restart.
+
+    Raises:
+        EncoderLoadError: the rank file was neither cached nor fetchable, or
+            was rejected as corrupt. Chained from tiktoken's original error;
+            the message names the cache directory in effect and the download
+            tiktoken attempted.
+    """
+    global _ENCODER
+    encoder = _ENCODER
+    if encoder is not None:
+        return encoder
+    with _ENCODER_LOCK:
+        if _ENCODER is None:
+            status = encoder_cache_status()
+            try:
+                _ENCODER = tiktoken.get_encoding(ENCODING_NAME)
+            except Exception as exc:
+                message = _encoder_load_message(exc, status)
+                _log.error("%s", message)
+                raise EncoderLoadError(message) from exc
+        return _ENCODER
+
+
+def _reset_encoder_for_tests() -> None:
+    """Drop the memoized encoder (test seam; never called by app code)."""
+    global _ENCODER
+    with _ENCODER_LOCK:
+        _ENCODER = None
 
 
 def count_tokens(text: str) -> int:
-    """Count tokens in a text string (local cl100k_base estimate)."""
+    """Count tokens in a text string (local cl100k_base estimate).
+
+    Raises :class:`EncoderLoadError` (an ``Exception`` subclass) when the
+    encoder cannot be loaded — see :func:`get_encoder`.
+    """
     encoder = get_encoder()
     return len(encoder.encode(text))
 

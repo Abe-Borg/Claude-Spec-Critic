@@ -272,7 +272,7 @@ class TestThinSubmission:
         # ``_get_client`` is imported inside the function from ``batch.batch``;
         # patch it there so the function picks up the fake.
         import src.batch.batch as batch_mod
-        monkeypatch.setattr(batch_mod, "_get_client", lambda: _FakeClient(results))
+        monkeypatch.setattr(batch_mod, "_get_client", lambda **_: _FakeClient(results))
 
         sub = thin_submission_from_batch_results("msgbatch_X", model="claude-opus-4-8")
         assert sub.review_request_ids == ["review__AAA__0", "review__BBB__1"]
@@ -298,7 +298,7 @@ class TestThinSubmission:
             FakeBatchResult(custom_id="review__22_11_16_-_Water__0", result=FakeBatchResultEnvelope(type="succeeded")),
         ]
         import src.batch.batch as batch_mod
-        monkeypatch.setattr(batch_mod, "_get_client", lambda: _FakeClient(results))
+        monkeypatch.setattr(batch_mod, "_get_client", lambda **_: _FakeClient(results))
 
         sub = thin_submission_from_batch_results(
             "msgbatch_X",

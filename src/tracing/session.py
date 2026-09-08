@@ -7,7 +7,10 @@ unit-testable in a headless environment.
 
 - ``start_run_recorder``: gated on ``SPEC_CRITIC_TRACE``; creates a fresh
   recorder keyed by ``run_id`` (which the caller sources from
-  ``DiagnosticsReport.run_id`` so the trace correlates with diagnostics).
+  ``DiagnosticsReport.run_id`` so the trace correlates with diagnostics),
+  then applies automatic retention to *older* runs
+  (``retention.apply_startup_retention`` — never the run just started,
+  never raises).
 - ``reattach_run_recorder``: reopens an existing trace directory on an
   app-restart batch resume so the resumed work appends to the original
   run's trace rather than starting a new one.
@@ -19,6 +22,7 @@ from pathlib import Path
 
 from .config import current_capture_level, trace_dir_for_run, trace_enabled
 from .recorder import TraceRecorder, set_recorder
+from .retention import apply_startup_retention
 
 
 def _version() -> str:
@@ -62,6 +66,12 @@ def start_run_recorder(
         project_profile=project_profile,
     )
     set_recorder(rec)
+    # Automatic retention: the new run's directory now exists (run.json was
+    # written synchronously by start()), so it can be protected by identity
+    # while older runs are pruned per SPEC_CRITIC_TRACE_RETENTION_DAYS /
+    # SPEC_CRITIC_TRACE_MAX_RUNS. Never raises. A resume
+    # (``reattach_run_recorder``) is not a new run and does not prune.
+    apply_startup_retention(current_run_dir=rec.trace_dir, root=rec.trace_dir.parent)
     return rec
 
 

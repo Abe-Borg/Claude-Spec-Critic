@@ -32,7 +32,9 @@ class ParagraphMapping:
     # Stable, deterministic element identifier scoped to a single
     # extracted document. The format is human-readable so a finding that
     # cites it can be debugged at a glance: ``p<body_index>`` for body
-    # paragraphs, ``t<table>r<row>`` for table-cell rows, ``s<n>h<i>`` /
+    # paragraphs, ``t<table>r<row>`` for table-cell rows (a row of a table
+    # nested inside a cell extends that path — ``t<table>r<row>c<cell>t<nested>r<row>``,
+    # see ``_collect_table_mappings``), ``s<n>h<i>`` /
     # ``s<n>f<i>`` for section header / footer paragraphs, ``tb<box>p<para>``
     # for text-box paragraphs, ``fn<id>p<para>`` / ``en<id>p<para>`` for
     # footnote / endnote paragraphs, and ``meta:hf`` / ``meta:tb`` /
@@ -423,11 +425,14 @@ def _accept_all_paragraph_text(p_el) -> str:
 
 
 def _accept_all_cell_text(cell) -> str:
-    """Accept-All text for a whole table cell.
+    """Accept-All text for a table cell's own paragraphs.
 
-    Matches python-docx ``_Cell.text`` (its paragraphs joined by newlines, not
-    descending into nested tables) but resolves each paragraph through the
-    revision-aware walk.
+    Matches python-docx ``_Cell.text`` (the cell's direct-child paragraphs
+    joined by newlines) but resolves each paragraph through the revision-aware
+    walk. Deliberately does **not** descend into tables nested in the cell:
+    those are walked separately by :func:`_collect_table_mappings`, which
+    emits their rows under their own element ids, so keeping this helper
+    paragraphs-only is what guarantees nested text is never counted twice.
     """
     return "\n".join(_accept_all_paragraph_text(p._p) for p in cell.paragraphs)
 
@@ -470,6 +475,126 @@ def _document_has_tracked_changes(doc) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Table walk: merged cells + nested tables
+# ---------------------------------------------------------------------------
+
+# Deepest table nesting the walk descends into (a top-level body table is
+# depth 1). Specs authored inside a one-cell layout table routinely nest
+# their schedule tables one level down; nothing real nests four levels deep,
+# so the bound only keeps the recursion finite on a pathological document.
+# Text below the bound is not extracted, and the spec is flagged with an
+# extraction warning rather than losing that text silently.
+_NESTED_TABLE_MAX_DEPTH = 4
+_NESTED_TABLE_DEPTH_WARNING = (
+    f"Spec contains tables nested more than {_NESTED_TABLE_MAX_DEPTH} levels deep; "
+    "text below that depth was not extracted for review. Verify visually."
+)
+
+
+def _unique_row_cells(row, seen_tcs: set) -> list:
+    """Return the distinct cells of ``row`` in grid order, each exactly once.
+
+    python-docx's ``_Row.cells`` approximates a uniform grid: a horizontally
+    merged ``<w:tc>`` (``gridSpan``) is returned once per grid column it
+    spans, and the continuation rows of a vertically merged cell
+    (``vMerge``) resolve to the origin ``<w:tc>`` in the row above. Walking
+    it naively emits a three-column merged heading three times on its row
+    and a three-row merged label once per spanned row. The XML stores the
+    text exactly once — in the origin ``<w:tc>`` — so the walk dedupes on
+    that element's identity across the whole table (``seen_tcs`` is shared
+    by every row of one table): each cell contributes its text once, in the
+    row and column where it originates. Holding the elements in
+    ``seen_tcs`` keeps their lxml proxies alive, which is what makes
+    identity stable across successive ``row.cells`` calls.
+    """
+    cells = []
+    for cell in row.cells:
+        tc = cell._tc
+        if tc in seen_tcs:
+            continue
+        seen_tcs.add(tc)
+        cells.append(cell)
+    return cells
+
+
+def _collect_table_mappings(
+    table,
+    *,
+    paragraphs: list[str],
+    paragraph_map: list[ParagraphMapping],
+    warnings: list[str],
+    body_index: int,
+    table_index: int,
+    id_prefix: str,
+    section_id: str,
+    depth: int,
+) -> None:
+    """Append one mapping per non-empty row of ``table``, then recurse into
+    the tables nested in its cells.
+
+    Each row renders as its distinct cells' text joined with ``" | "`` under
+    the id ``{id_prefix}r<row>`` (``t<table>r<row>`` at the top level). The
+    rows of a table nested in a cell follow the row that contains them, in
+    cell order, under ``{row_id}c<cell>t<nested>r<row>`` — ``t0r1c0t0r0`` is
+    row 0 of the first table nested in cell 0 of row 1 of body table 0. The
+    path form cannot collide with any other id. Nested rows keep
+    ``element_type="table_cell"`` (they render as ``<row>`` in the prompt)
+    and carry ``container_type="nested_table"``; ``table_index`` stays the
+    body table's index and ``row_index`` is the row's index within its own
+    table. A cell's own paragraphs never include its nested tables' text
+    (:func:`_accept_all_cell_text`), so nothing is emitted twice, and a cell
+    that holds only a nested table still surfaces that table even though its
+    own row emits no text. ``paragraphs`` and ``paragraph_map`` are appended
+    in lockstep so the reconstruction invariant holds.
+    """
+    seen_tcs: set = set()
+    for row_index, row in enumerate(table.rows):
+        cells = _unique_row_cells(row, seen_tcs)
+        row_id = f"{id_prefix}r{row_index}"
+        row_text = [
+            cell_text
+            for cell in cells
+            if (cell_text := _accept_all_cell_text(cell).strip())
+        ]
+        if row_text:
+            joined_text = " | ".join(row_text)
+            paragraphs.append(joined_text)
+            paragraph_map.append(
+                ParagraphMapping(
+                    body_index=body_index,
+                    element_type="table_cell",
+                    text=joined_text,
+                    table_index=table_index,
+                    row_index=row_index,
+                    cell_index=None,
+                    container_type="nested_table" if depth > 1 else None,
+                    element_id=row_id,
+                    section_id=section_id,
+                )
+            )
+        for cell_index, cell in enumerate(cells):
+            nested_tables = cell.tables
+            if not nested_tables:
+                continue
+            if depth >= _NESTED_TABLE_MAX_DEPTH:
+                if _NESTED_TABLE_DEPTH_WARNING not in warnings:
+                    warnings.append(_NESTED_TABLE_DEPTH_WARNING)
+                continue
+            for nested_index, nested in enumerate(nested_tables):
+                _collect_table_mappings(
+                    nested,
+                    paragraphs=paragraphs,
+                    paragraph_map=paragraph_map,
+                    warnings=warnings,
+                    body_index=body_index,
+                    table_index=table_index,
+                    id_prefix=f"{row_id}c{cell_index}t{nested_index}",
+                    section_id=section_id,
+                    depth=depth + 1,
+                )
+
+
 def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     if not filepath.exists():
         raise FileNotFoundError(f"File not found: {filepath}")
@@ -485,6 +610,9 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     paragraphs: list[str] = []
     paragraph_map: list[ParagraphMapping] = []
     table_counter = 0
+    # Warnings raised by the table walk (nesting deeper than the bound);
+    # merged into ``extraction_warnings`` after the content-loss scan.
+    table_warnings: list[str] = []
     # Track the most recently seen heading paragraph so each
     # element below it can carry a ``section_id``. Reset to empty when the
     # extractor crosses a top-level "PART ..." boundary so subsequent
@@ -511,28 +639,19 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
                     )
                 )
         elif child.tag.endswith("}tbl"):
-            table = DocxTable(child, doc)
-            for row_index, row in enumerate(table.rows):
-                row_text = [
-                    cell_text
-                    for cell in row.cells
-                    if (cell_text := _accept_all_cell_text(cell).strip())
-                ]
-                if row_text:
-                    joined_text = " | ".join(row_text)
-                    paragraphs.append(joined_text)
-                    paragraph_map.append(
-                        ParagraphMapping(
-                            body_index=body_index,
-                            element_type="table_cell",
-                            text=joined_text,
-                            table_index=table_counter,
-                            row_index=row_index,
-                            cell_index=None,
-                            element_id=f"t{table_counter}r{row_index}",
-                            section_id=current_section,
-                        )
-                    )
+            # Merged cells are emitted once and nested tables are walked
+            # (depth-bounded) — see ``_collect_table_mappings``.
+            _collect_table_mappings(
+                DocxTable(child, doc),
+                paragraphs=paragraphs,
+                paragraph_map=paragraph_map,
+                warnings=table_warnings,
+                body_index=body_index,
+                table_index=table_counter,
+                id_prefix=f"t{table_counter}",
+                section_id=current_section,
+                depth=1,
+            )
             table_counter += 1
 
     header_footer_entries: list[ParagraphMapping] = []
@@ -632,6 +751,7 @@ def extract_text_from_docx(filepath: Path) -> ExtractedSpec:
     content_loss_warning = _detect_content_loss_warning(doc.element.body)
     if content_loss_warning is not None:
         extraction_warnings.append(content_loss_warning)
+    extraction_warnings.extend(table_warnings)
 
     # The extracted ``content`` above is the Accept-All-Changes view. Flag
     # whether any pending revision markup was present on any extracted surface

@@ -33,7 +33,7 @@ future program-level coordination pass.
 3. **Local Pre-Screening** — Deterministic detectors run separately under each assigned module before any review call: LEED (module-dependent — flagged for CA K-12, where it is usually a copy/paste error), placeholders, template markers, stale/invalid code cycles, empty sections, duplicate headings/paragraphs, inconsistent file naming.
 4. **Per-Spec Review** — Each routed `(spec, module)` request is sent to Claude Opus 5 via the `submit_review_findings` tool. Tagged-JSON text parser as fallback.
 5. **Deduplication** — Identical findings consolidated within each module result; per-file occurrences tracked separately so multi-file edit proposals keep their per-file existing/replacement text.
-6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default; CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5. Persistent on-disk cache.
+6. **Verification** — Findings routed into one of four modes (`local_skip` / `strict_structured` / `standard_reasoning` / `deep_reasoning`). Sonnet 5 default (`strict_structured` runs at effort `low`); CRITICAL/HIGH `UNVERIFIED` escalates to Opus 5 unless the initial pass failed operationally (reported as VERIFICATION_FAILED instead). Persistent on-disk cache.
 7. **Cross-Spec Coordination** *(optional)* — Runs after verification within each assigned module using verified verdicts as input (DISPUTED findings are filtered out of the "already identified" context). Large projects are chunked by that module's CSI division families. Its own coordination findings are then put through a second verification pass.
 8. **Report + Edit Sidecar** — A Word report is exported with module-scoped sections, every finding, its trust-model status, and any proposed replacement; a machine-readable `<report-stem>.edits.json` sidecar carries `program_id` and `module_id` provenance for downstream use. Spec Critic does not modify spec documents.
 
@@ -254,6 +254,8 @@ Every run captures a forensic trace of agent invocations to JSONL on disk. When 
 | `SPEC_CRITIC_TRACE` | on | Disable with `0` / `false` / `no` / `off`. |
 | `SPEC_CRITIC_TRACE_DEEP` | off | Enable with any truthy value to record per-stream chunks, full web_search snippet bodies, untruncated raw responses, and inline prompts. Implies trace enabled. |
 | `SPEC_CRITIC_TRACE_DIR` | `~/.spec_critic/traces/` (state dir on macOS/Linux, equivalent on Windows) | Override the trace root. `~` and `$VAR` are expanded. |
+| `SPEC_CRITIC_TRACE_RETENTION_DAYS` | `30` | Runs older than this are deleted on every run start (never the run being started). `0` disables. |
+| `SPEC_CRITIC_TRACE_MAX_RUNS` | `50` | Only the N most recent runs are kept on every run start. `0` disables. |
 
 ### GUI
 
@@ -261,7 +263,7 @@ The GUI's Tracing row exposes two checkboxes ("Record agent trace", "Deep mode")
 
 ### HTML viewer
 
-`src/tracing/viewer/trace_viewer.html` is a single-file, zero-build replay tool (open it in any browser, then pick a trace folder). Four views: **By Finding** (finding → review → verification → grounding → verdict), **By Span** (raw tree + prompt resolution), **Timeline** (filterable events), **Search / Grounding** (queries + accepted/rejected URLs). Colors and glyphs mirror the Word report.
+`src/tracing/viewer/trace_viewer.html` is a single-file, zero-build, fully offline replay tool — its styling is an inline stylesheet, it references no external script, stylesheet, font, or image, and opening it performs zero network requests (it renders local prompts and full spec text). Open it in any browser, then pick a trace folder. Four views: **By Finding** (finding → review → verification → grounding → verdict), **By Span** (raw tree + prompt resolution), **Timeline** (filterable events), **Search / Grounding** (queries + accepted/rejected URLs). Colors and glyphs mirror the Word report.
 
 ### CLI
 
@@ -272,6 +274,11 @@ python -m src.tracing prune --keep-last 20          # keep the 20 newest
 python -m src.tracing prune --older-than 30d --yes  # delete runs older than 30 days
 ```
 
+Pruning also runs automatically on every run start (`SPEC_CRITIC_TRACE_RETENTION_DAYS` / `SPEC_CRITIC_TRACE_MAX_RUNS`, default 30 days / 50 runs; `0` disables either) through the same code path, so the manual command is only needed for one-off cleanup.
+
+```bash
+```
+
 All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` resolves `<run_id>` by directory name or by the `run_id` embedded in `run.json`.
 
 ### Trace silo guarantees
@@ -280,10 +287,19 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 - `DiagnosticsReport.summary()` output is byte-identical with and without tracing enabled.
 - Capture-hook failures never escape into pipeline code. A first-of-kind warning is logged once per (exception-type, frame) and suppressed afterward.
 - API keys and bearer tokens are redacted before serialization (shared regex with `diagnostics.py`).
+- The HTML viewer loads nothing from the network, and every trace-derived string is HTML-escaped for both text and attribute context (`& < > " '`); `tests/test_trace_viewer_offline.py` pins both.
 
 ## Changelog (recent)
 
 ### Unreleased
+- **Windows installer is self-contained.** The build bundles tiktoken's `cl100k_base` rank file (previously fetched from a public blob host at first use, which corporate networks block even when `api.anthropic.com` is allowed — token analysis raised and the Run button never enabled), points the frozen app at it before any import, and `--selfcheck` now counts a token so CI catches a missing rank file. The executable embeds a `longPathAware` manifest.
+- **The app has a log file.** Warnings the console-less build used to drop (unknown-model fallbacks, trace-writer crashes, token-count API failures) now land in `~/.spec_critic/logs/spec_critic.log` (`SPEC_CRITIC_LOG_PATH`).
+- **Closing the window is safe.** The close button stops the trace recorder first (queued trace lines and `run.json` end time are written) and asks for confirmation only when it would discard a real-time run or a drawing analysis; a batch run closes silently and resumes next launch.
+- **The window no longer freezes** on drawing validation/splitting, context-file extraction, the completion Word export, or the token gauge for routed programs — all run in the background. The drawing cost-confirm dialog measures one request exactly and scales the rest (each PDF is uploaded once, not twice), and the progress bar tracks the analysis.
+- **Export failures are recoverable.** A failed Word export prompts Retry/Cancel with the usual cause (the `.docx` open in Word) and ends the run in the amber state; a footer **Save Word Report…** button re-runs the export with the same sidecars. Every dialog names its owner window, font scale and the cross-check toggle persist, and the Run button gate survives a reset.
+- **Trace viewer is offline and traces are pruned.** The viewer no longer loads a stylesheet from a CDN and escapes attribute quotes; runs older than 30 days or beyond the 50 most recent are pruned on every run start (`SPEC_CRITIC_TRACE_RETENTION_DAYS` / `SPEC_CRITIC_TRACE_MAX_RUNS`).
+- **Verifier policy.** The cheap `strict_structured` mode now runs adaptive thinking at effort `low` (its old "thinking off" setting merely omitted a key that current models read as adaptive-on at medium); the California search location is module data rather than an engine default, so profile-less data-center runs no longer search as California; escalation never fires after an operational failure; app-level retry loops run with SDK retries off so attempts do not stack; the verdict tool is matched by name; single-flight verification shares a clean ungrounded verdict across equivalent findings instead of re-verifying each in turn; the collection-call permit is held per API call, not per pass; a cross-check parse failure gets one retry; the verification cache enforces its source-quote invariant; budget-saturation telemetry uses each finding's severity budget.
+- **DOCX extraction.** Horizontally/vertically merged table cells are extracted once (they were repeated per spanned column), tables nested inside cells are extracted, running headers/footers no longer trip the duplicate-paragraph detector, and the stale-code-cycle suppression window cuts at the earliest sentence boundary.
 - **Ask AI no longer fails on its default model.** The embedded chat attached `web_fetch` to every request, but web fetch is not available on Claude Opus 5 (the chat's default), so the first message returned HTTP 400 until the reader switched models. The exporter now embeds a per-model fetch map derived from the capability whitelist and the page builds its server-tool list per request from the selected model.
 - **Hyperscale (program) reports now open with the Run Diagnostics banner and carry the trust-model summary.** Previously only single-module reports rendered them, so a program run where a spec's review failed read as clean. The banner is aggregated across modules (failed specs are named with their module), in both the Word and HTML reports, and the report title uses the program's display name.
 - **Batch verification continuations keep earlier waves' search evidence.** A finding that paused after searching and delivered its verdict in a later wave was judged on the last wave alone, so it failed the "did not search" gate or had its citations rejected. Every wave now sees the whole conversation, including the running search budget.

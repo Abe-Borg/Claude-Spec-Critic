@@ -1008,6 +1008,7 @@ def offer_batch_resume(app) -> None:
         "The batch most likely finished on Anthropic's servers. Resume polling "
         "and finish the run (verification, cross-check, and report)?\n\n"
         "Choose No to discard it.",
+        parent=app,
     )
     if not resume:
         clear_pending_batch()
@@ -1086,7 +1087,9 @@ def recover_batch_dialog(app) -> None:
     """
     if getattr(app, "is_processing", False):
         messagebox.showinfo(
-            "Busy", "A run is already in progress — wait for it to finish, then recover."
+            "Busy",
+            "A run is already in progress — wait for it to finish, then recover.",
+            parent=app,
         )
         return
     from tkinter import simpledialog
@@ -1135,6 +1138,7 @@ def recover_batch_dialog(app) -> None:
                 "Reviewer required",
                 "The batch reviewer was not recognized. Recovery was canceled "
                 "so the batch cannot be verified under the wrong discipline.",
+                parent=app,
             )
             return
     cycle_label = module.cycle.label
@@ -1236,6 +1240,7 @@ def _begin_reconnect_run(
         messagebox.showerror(
             "API key required",
             "Enter your Anthropic API key, then try again.",
+            parent=app,
         )
         return
     os.environ["ANTHROPIC_API_KEY"] = key

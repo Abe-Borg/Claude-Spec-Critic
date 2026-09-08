@@ -619,7 +619,8 @@ def run_realtime_review_jobs(
     # Load-bearing ordering: do not move client construction above the full
     # build/preflight above.  A late invalid/oversize program partition must
     # abort before any earlier partition can incur review spend.
-    client = _get_client()
+    # App-level retry loop owns retries (B-5): SDK retries off.
+    client = _get_client(sdk_retries=False)
     configured = (
         realtime_review_max_workers()
         if max_workers is None

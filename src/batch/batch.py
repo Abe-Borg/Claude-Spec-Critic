@@ -291,7 +291,8 @@ def _collect_batch_results_with_retry(batch_id: str, *, log=None) -> dict[str, A
         is_retryable_failure_class,
     )
 
-    client = _get_client()
+    # This helper is its own retry loop (B-5): SDK retries off.
+    client = _get_client(sdk_retries=False)
     attempts = max(1, _POLICY.max_attempts)
     for attempt in range(attempts):
         try:

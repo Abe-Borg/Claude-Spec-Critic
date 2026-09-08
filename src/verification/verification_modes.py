@@ -1,7 +1,7 @@
 """Verification modes and model routing.
 
 A finding's verification mode bundles the ``(model, thinking_enabled,
-web_search_enabled, allows_escalation)`` decisions into one record.
+effort, web_search_enabled, allows_escalation)`` decisions into one record.
 The search budget itself is severity-based and lives in
 :mod:`verification_profiles`; modes pick whether to attach the web
 search tool at all, not how much budget it gets.
@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..core.api_config import (
+    EFFORT_LOW,
     MODEL_SONNET_5,
     VERIFICATION_ESCALATION_MODEL,
     VERIFICATION_MODEL_DEFAULT,
@@ -57,20 +58,27 @@ class VerificationMode(str, Enum):
 
     STRICT_STRUCTURED = "strict_structured"
     """Cheap, narrow verification for simple factual / editorial
-    claims. Sonnet, ``thinking`` disabled, search budget scaled down
-    from the profile ceiling. Used for GRIPES-severity findings that
-    pass the keyword classifier (e.g. a GRIPES with a non-empty
-    ``codeReference`` — local-skip would not catch it, but it does
-    not need deep reasoning either)."""
+    claims: the initial-tier (Sonnet) model at effort ``low``, the plain
+    severity-based search budget, and no ``web_fetch`` tool. Adaptive
+    thinking is NOT turned off — the request simply omits the ``thinking``
+    key, which on current models means adaptive thinking stays on (see
+    ``ModePolicy.thinking_enabled`` for why an explicit ``disabled`` is
+    never sent). The lever that makes this mode cheap is ``effort``.
+    Used for GRIPES-severity findings that pass the keyword classifier
+    (e.g. a GRIPES with a non-empty ``codeReference`` — local-skip would
+    not catch it, but it does not need deep reasoning either) and for
+    non-GRIPES internal-coordination findings."""
 
     STANDARD_REASONING = "standard_reasoning"
-    """The default for substantive technical claims. Sonnet,
-    ``thinking`` enabled, full profile-aware search budget. This is
-    the mode that most CODE_STANDARD / MANUFACTURER / JURISDICTIONAL
-    /CONSTRUCTABILITY findings of MEDIUM and above ride."""
+    """The default for substantive technical claims. Sonnet, adaptive
+    ``thinking`` requested explicitly, phase-default effort, the full
+    severity-based search budget, and ``web_fetch`` where the model
+    supports it. This is the mode that most CODE_STANDARD /
+    MANUFACTURER / JURISDICTIONAL / CONSTRUCTABILITY findings of MEDIUM
+    and above ride."""
 
     DEEP_REASONING = "deep_reasoning"
-    """Opus + adaptive thinking + full profile budget. Reserved for
+    """Opus + adaptive thinking + full severity-based budget. Reserved for
     CRITICAL JURISDICTIONAL findings (where the initial pass jumps
     straight to Opus) and for escalation re-runs of CRITICAL / HIGH
     findings that the standard pass could not ground. Terminal — a
@@ -101,9 +109,29 @@ class ModePolicy:
         overrides, escalation paths, tests), but the default flows
         from here.
     thinking_enabled:
-        Whether the verifier should request ``thinking`` on this
-        call. ``False`` for LOCAL_SKIP (which makes no remote call
-        anyway) and STRICT_STRUCTURED (cheap, narrow).
+        Whether the request builder emits an explicit ``thinking`` key
+        (``{"type": "adaptive"}``) for this mode. ``False`` means the key
+        is *omitted* — it does NOT mean thinking is off. On the current
+        model generation the API default for an omitted key is adaptive
+        thinking ON, so ``True`` and ``False`` produce the same thinking
+        behavior there; on the previous Opus generation (reachable only
+        through a pinned env override) an omitted key means thinking OFF,
+        so the two values genuinely diverge on that override. The app
+        never sends ``{"type": "disabled"}`` — on the current escalation
+        tier it has documented tool-call-as-text failure modes and is
+        rejected above effort ``high`` — so a mode that wants to be cheap
+        says so through ``effort``, not this flag. ``False`` for
+        LOCAL_SKIP (which makes no remote call anyway) and
+        STRICT_STRUCTURED (whose cost lever is ``effort=low``).
+    effort:
+        Mode-level ``output_config.effort`` override, or ``None`` to defer
+        to the phase default (``medium`` on the initial verifier, ``high``
+        on the escalation tier — see
+        :func:`src.core.api_config.effort_config_for`). STRICT_STRUCTURED
+        pins ``low``: adaptive thinking at ``medium`` inside the 16k
+        verification output cap is not the cheap path the mode promises.
+        The request builder forwards the value as ``effort_override`` so
+        the per-model effort clamp still applies.
     web_search_enabled:
         Whether the request should attach the web_search tool. Only
         ``False`` for LOCAL_SKIP; every other mode uses the full
@@ -120,6 +148,7 @@ class ModePolicy:
     thinking_enabled: bool
     web_search_enabled: bool
     allows_escalation: bool
+    effort: str | None = None
 
 
 def _default_initial_model() -> str:
@@ -166,16 +195,19 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
             allows_escalation=False,
         )
     if mode is VerificationMode.STRICT_STRUCTURED:
-        # Sonnet, no thinking — the cheap / narrow path. STRICT_STRUCTURED
+        # Sonnet at effort ``low`` — the cheap / narrow path. STRICT_STRUCTURED
         # stays on the cheaper model even when the operator overrides the
         # default verifier to Opus; the whole point of the mode is "use a
         # cheaper path for findings that do not need deep reasoning."
+        # Thinking is left to the model default (adaptive on current
+        # models) rather than disabled — ``effort`` is the cost lever.
         return ModePolicy(
             mode=mode,
             model=MODEL_SONNET_5,
             thinking_enabled=False,
             web_search_enabled=True,
             allows_escalation=False,
+            effort=EFFORT_LOW,
         )
     if mode is VerificationMode.DEEP_REASONING:
         return ModePolicy(
@@ -233,9 +265,10 @@ def mode_policy(mode: VerificationMode | str) -> ModePolicy:
 #      codeReference) do not need deep reasoning. Save the budget.
 #   5. INTERNAL_COORDINATION (non-GRIPES) → STRICT_STRUCTURED. The
 #      local-skip classifier only catches GRIPES; a HIGH-severity
-#      internal contradiction still falls through here. The profile
-#      classifier already throttled the search budget to 1-2 — match
-#      that with the cheaper mode.
+#      internal contradiction still falls through here. The search
+#      budget is severity-based regardless of profile, so the saving
+#      comes from the cheap mode itself (effort ``low``, no web_fetch),
+#      not from a smaller budget.
 #   6. Default → STANDARD_REASONING.
 
 
@@ -297,8 +330,8 @@ def select_verification_mode(
     if severity == "GRIPES":
         return VerificationMode.STRICT_STRUCTURED
 
-    # 5. Non-GRIPES internal-coordination findings — match the
-    # profile classifier's tight budget with a cheap mode.
+    # 5. Non-GRIPES internal-coordination findings — web search adds
+    # little for an intra-document contradiction, so take the cheap mode.
     if profile is VerificationProfile.INTERNAL_COORDINATION:
         return VerificationMode.STRICT_STRUCTURED
 

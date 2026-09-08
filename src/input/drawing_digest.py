@@ -548,10 +548,33 @@ class DigestPreflight:
 
     per_chunk_input_tokens: list[int]
     total_input_tokens: int
-    exact: bool  # False: at least one chunk used the local pages-based estimate
+    exact: bool  # True only when EVERY chunk was measured by count_tokens
     max_output_tokens: int  # output cap x chunk count (the cost ceiling side)
     estimated_max_cost_usd: float | None  # None: model unknown to the pricing table
     over_window_chunk_indices: list[int] = field(default_factory=list)
+    # Chunks whose count came from the exact endpoint: the anchor, plus any
+    # chunk with an uncountable part (no page count to scale from, so it is
+    # measured on its own). Every other chunk is scaled from the anchor's
+    # per-page rate, or — when the endpoint was unavailable — the flat
+    # per-page estimate.
+    exact_chunk_indices: list[int] = field(default_factory=list)
+
+
+def _select_anchor_chunk(chunks: Sequence[DigestChunk]) -> DigestChunk:
+    """The chunk whose exact count calibrates the rest.
+
+    Prefer a chunk with no uncountable part (its pages are known, so a
+    per-page rate can be derived), then the most countable pages (its
+    measurement bounds the smaller chunks), then the earliest index.
+    """
+    return max(
+        chunks,
+        key=lambda chunk: (
+            not chunk.has_uncountable,
+            chunk.known_page_count,
+            -chunk.index,
+        ),
+    )
 
 
 def preflight_digest_cost(
@@ -563,57 +586,126 @@ def preflight_digest_cost(
 ) -> DigestPreflight:
     """Forecast the digest's input tokens and worst-case cost.
 
-    Uses the exact ``count_tokens`` endpoint per chunk (free; accepts
-    document blocks) — the full base64 payload is already built for the
-    real call, and exact beats the 2x error band of the per-page estimate.
-    Any chunk whose exact count fails falls back to the local estimate
-    (``pages x DIGEST_TOKENS_PER_PAGE_ESTIMATE`` + prompt text) and flips
-    ``exact`` off. A chunk whose exact count cannot fit the model's context
-    window (input + output cap) is recorded in
-    ``over_window_chunk_indices`` so the caller can refuse before the API
-    400s mid-run.
+    ONE exact ``count_tokens`` call (free; accepts document blocks) is made,
+    for the anchor chunk (:func:`_select_anchor_chunk`); every other chunk
+    is scaled from the anchor's measured per-page rate plus its own locally
+    counted prompt text. The old per-chunk preflight posted every chunk's
+    full base64 document blocks, then the real digest call posted them all
+    again — for a multi-hundred-megabyte set that doubled the upload for a
+    number the page count already predicts to within a few percent.
+
+    ``exact`` is True only when every chunk was measured, i.e. a
+    single-chunk digest; a scaled chunk is an estimate and the confirm
+    dialog says so (``exact_chunk_indices`` names the measured ones). A
+    chunk with an uncountable part (pypdf accepted the file but could not
+    read its page tree) has no page count to scale from, so it gets its own
+    exact count too — the packer isolates such a file into its own chunk,
+    so this stays rare — rather than a prompt-only estimate that would
+    ignore the whole document. If the endpoint is unavailable every chunk
+    falls back to the flat ``pages x DIGEST_TOKENS_PER_PAGE_ESTIMATE`` +
+    prompt-text estimate, and an uncountable part is charged at the largest
+    request the packing caps allow (``effective_page_cap`` pages) — a
+    fallback that over-states rather than silently drops the file. A chunk
+    whose measurement-derived count cannot fit the model's context window
+    (input + output cap) is recorded in ``over_window_chunk_indices`` so the
+    caller can refuse before the API 400s mid-run; fallback estimates never
+    flag (they are a coarse band).
     """
     system_prompt = build_digest_system_prompt()
     output_cap = drawing_digest_max_tokens(model=model)
     context_window = model_capabilities(model).context_window
+    total_chunks = len(chunks)
+
+    if not chunks:
+        return DigestPreflight(
+            per_chunk_input_tokens=[],
+            total_input_tokens=0,
+            exact=True,
+            max_output_tokens=0,
+            estimated_max_cost_usd=estimate_request_cost(0, 0, model=model, batch=False),
+        )
+
+    def _prompt_tokens(chunk: DigestChunk) -> int:
+        prompt_text = system_prompt + "\n" + build_chunk_user_text(
+            chunk, total_chunks=total_chunks, module_display_name=module_display_name
+        )
+        return count_tokens(prompt_text)
+
+    def _measure(chunk: DigestChunk) -> int | None:
+        return count_tokens_via_api(
+            model=model,
+            system=system_prompt,
+            messages=build_chunk_messages(
+                chunk, total_chunks=total_chunks, module_display_name=module_display_name
+            ),
+            client=client,
+        )
+
+    # Fallback charge for a part whose page tree could not be read: assume
+    # the largest request the packing caps allow. It over-states a small
+    # scanned file rather than dropping it from the forecast, and it is
+    # used only when the exact endpoint is unavailable for that chunk.
+    uncountable_fallback_tokens = (
+        effective_page_cap(model=model) * DIGEST_TOKENS_PER_PAGE_ESTIMATE
+    )
+
+    anchor = _select_anchor_chunk(chunks)
+    anchor_exact = _measure(anchor)
 
     per_chunk: list[int] = []
-    exact = True
+    exact_indices: list[int] = []
     over_window: list[int] = []
-    for chunk in chunks:
-        messages = build_chunk_messages(
-            chunk, total_chunks=len(chunks), module_display_name=module_display_name
-        )
-        counted = count_tokens_via_api(
-            model=model, system=system_prompt, messages=messages, client=client
-        )
-        if counted is None:
-            exact = False
-            prompt_text = system_prompt + "\n" + build_chunk_user_text(
-                chunk,
-                total_chunks=len(chunks),
-                module_display_name=module_display_name,
-            )
-            counted = (
+    if anchor_exact is None:
+        for chunk in chunks:
+            per_chunk.append(
                 chunk.known_page_count * DIGEST_TOKENS_PER_PAGE_ESTIMATE
-                + count_tokens(prompt_text)
+                + (uncountable_fallback_tokens if chunk.has_uncountable else 0)
+                + _prompt_tokens(chunk)
             )
-        else:
-            if counted + output_cap > context_window:
+    else:
+        document_tokens = max(int(anchor_exact) - _prompt_tokens(anchor), 0)
+        # Only a fully countable anchor yields a per-page rate; with an
+        # uncountable part its tokens are not attributable to its pages.
+        tokens_per_page: float = (
+            document_tokens / anchor.known_page_count
+            if anchor.known_page_count > 0 and not anchor.has_uncountable
+            else float(DIGEST_TOKENS_PER_PAGE_ESTIMATE)
+        )
+        for chunk in chunks:
+            flag_window = True
+            if chunk is anchor:
+                counted = int(anchor_exact)
+                exact_indices.append(chunk.index)
+            elif chunk.has_uncountable:
+                measured = _measure(chunk)
+                if measured is None:
+                    counted = (
+                        int(round(chunk.known_page_count * tokens_per_page))
+                        + uncountable_fallback_tokens
+                        + _prompt_tokens(chunk)
+                    )
+                    flag_window = False  # a coarse band, like the flat fallback
+                else:
+                    counted = int(measured)
+                    exact_indices.append(chunk.index)
+            else:
+                counted = int(round(chunk.known_page_count * tokens_per_page)) + _prompt_tokens(chunk)
+            if flag_window and counted + output_cap > context_window:
                 over_window.append(chunk.index)
-        per_chunk.append(int(counted))
+            per_chunk.append(counted)
 
     total_input = sum(per_chunk)
-    max_output = output_cap * len(chunks)
+    max_output = output_cap * total_chunks
     return DigestPreflight(
         per_chunk_input_tokens=per_chunk,
         total_input_tokens=total_input,
-        exact=exact,
+        exact=len(exact_indices) == total_chunks,
         max_output_tokens=max_output,
         estimated_max_cost_usd=estimate_request_cost(
             total_input, max_output, model=model, batch=False
         ),
         over_window_chunk_indices=over_window,
+        exact_chunk_indices=exact_indices,
     )
 
 
@@ -633,10 +725,17 @@ def format_digest_confirm_message(
     pages_line = f"{total_pages:,} page(s)"
     if any_uncountable:
         pages_line += " (some files' page counts could not be determined)"
-    tokens_line = (
-        f"{preflight.total_input_tokens:,} input tokens"
-        + ("" if preflight.exact else " (estimated)")
-    )
+    measured = len(getattr(preflight, "exact_chunk_indices", []) or [])
+    if preflight.exact:
+        precision = ""
+    elif measured:
+        precision = (
+            f" (estimated \u2014 {measured} of {len(chunks)} request(s) measured "
+            "exactly, the rest scaled by page count)"
+        )
+    else:
+        precision = " (estimated)"
+    tokens_line = f"{preflight.total_input_tokens:,} input tokens" + precision
     lines = [
         "Analyze these construction drawings with "
         f"{friendly_model_name(model)}?",
@@ -908,7 +1007,9 @@ def run_drawing_digest(
         # avoids a hard SDK dependency for the pure helpers above.
         from ..review.reviewer import _get_client
 
-        client = _get_client()
+        # This pass runs its own retry loop (retry_policy); SDK retries off so
+        # attempts do not stack.
+        client = _get_client(sdk_retries=False)
 
     total = len(chunks)
     progress(0.0, f"Analyzing drawings (0/{total} request(s))...")
@@ -957,8 +1058,10 @@ def run_drawing_digest(
                     level="info",
                 )
             _record_chunk_diag(diag, status, model)
+            done = len(outcomes)
             progress(
-                0.0, f"Analyzing drawings ({len(outcomes)}/{total} request(s))..."
+                (done / total) * 100.0,
+                f"Analyzing drawings ({done}/{total} request(s))...",
             )
 
     statuses = [outcomes[chunk.index].status for chunk in chunks]

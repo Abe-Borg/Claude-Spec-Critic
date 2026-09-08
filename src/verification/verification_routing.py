@@ -22,23 +22,32 @@ Why this exists
 
 Previously, the verification routing decision lived in three places:
 
-* ``verifier._run_verification_call`` — real-time path. Calls
-  ``select_verification_mode`` + ``mode_policy``, applies the mode's
-  ``thinking_enabled`` gate (skipping ``thinking`` for STRICT_STRUCTURED),
-  scales ``max_uses`` by the mode multiplier, and stamps the routed mode
-  + profile on the result.
+* ``verifier._run_verification_call`` — real-time path. Called
+  ``select_verification_mode`` + ``mode_policy``, applied the mode's
+  ``thinking_enabled`` gate (omitting the ``thinking`` key for
+  STRICT_STRUCTURED), scaled ``max_uses`` by a since-retired per-mode
+  multiplier, and stamped the routed mode + profile on the result.
 * The batch initial path applied ``apply_thinking_config`` unconditionally
-  and used the profile-aware ``max_uses`` ceiling *without* the mode
+  and used the profile-aware ``max_uses`` ceiling *without* that
   multiplier. A GRIPES-severity finding that would have been
-  STRICT_STRUCTURED in real-time (Sonnet, no thinking, half budget) ran
-  through the batch path as STANDARD_REASONING (Sonnet, thinking on, full
-  budget). The result was then *re-stamped* by the wave parser as
-  STRICT_STRUCTURED — disagreeing with what the request actually sent.
+  STRICT_STRUCTURED in real-time ran through the batch path as
+  STANDARD_REASONING, and the result was then *re-stamped* by the wave
+  parser as STRICT_STRUCTURED — disagreeing with what the request
+  actually sent.
 * ``verifier._build_retry_request`` / ``_build_continuation_request`` —
   retry and continuation paths. Same problem as the batch initial path:
-  they take ``model`` / ``severity`` / ``profile`` but not the mode, so
-  thinking is applied unconditionally and the search budget is profile-
+  they took ``model`` / ``severity`` / ``profile`` but not the mode, so
+  thinking was applied unconditionally and the search budget was profile-
   only.
+
+Today the per-mode policy is: the search budget is severity-based and
+identical across modes (the multiplier is gone); STRICT_STRUCTURED differs
+from the reasoning modes in *effort* (``low`` via ``ModePolicy.effort``,
+forwarded to :func:`src.core.api_config.apply_effort_config` as
+``effort_override``), in omitting the explicit ``thinking`` key (which on
+current models still leaves adaptive thinking ON — the app never sends
+``disabled``; see ``ModePolicy.thinking_enabled``), and in not attaching
+``web_fetch``.
 
 The plan calls this out directly: "Make batch verification and real-time
 verification use the same routing decision and request builder."
@@ -97,8 +106,9 @@ from .retry_policy import (
 )
 from ..core.code_cycles import CodeCycle
 from ..core.resend_sanitizer import sanitize_messages_for_resend
-from ..modules import module_for_cycle
+from ..modules import get_module, module_for_cycle
 from ..review.reviewer import Finding
+from ..review.structured_schemas import VERIFICATION_TOOL_NAME
 from .verification_modes import (
     ModePolicy,
     VerificationMode,
@@ -168,11 +178,15 @@ class VerificationRoutingDecision:
         mode's model unless an explicit override was passed in (operator
         overrides, escalation paths, tests).
     thinking_enabled:
-        Whether the request should include the ``thinking`` key. Two
-        conditions must be true: the mode policy asks for thinking, AND
-        the selected model supports adaptive thinking. The builder
-        consults both — the field on the decision is the *intent*, the
-        builder is the gate.
+        Whether the request should include an explicit ``thinking`` key.
+        Two conditions must be true: the mode policy asks for it, AND the
+        selected model supports adaptive thinking. The builder consults
+        both — the field on the decision is the *intent*, the builder is
+        the gate. ``False`` omits the key; it does not send ``disabled``
+        (on current models an omitted key still means adaptive thinking
+        ON — see ``ModePolicy.thinking_enabled``). Effort is not stored
+        here: the builder reads ``mode_policy(mode).effort`` so the
+        mode stays the single authority for the cheap path.
     web_search_enabled / web_search_max_uses:
         Whether the request should attach the ``web_search`` server tool
         and, if so, how many uses it gets. ``max_uses`` is severity-based
@@ -208,6 +222,17 @@ class VerificationRoutingDecision:
     trace_reason:
         Short machine-readable tag explaining why this routing was
         selected. See the ``TRACE_*`` constants.
+    module_id:
+        Registry id of the module that owns the run's code cycle, resolved
+        by :func:`select_routing` through the ``cycle`` → ``module_for_cycle``
+        bridge. The tool builder reads the module's
+        ``default_web_search_user_location`` from it when the run carries
+        no project profile, so a profile-less California run keeps its
+        California-localized ``web_search`` tool while a profile-less
+        data-center run gets no location at all. Defaults to ``""`` —
+        which :func:`src.modules.get_module` resolves to the default
+        module — so a decision rebuilt from a legacy ``request_contexts``
+        row (or built by hand in a test) behaves like the pre-slot engine.
     """
 
     finding_id: str
@@ -225,6 +250,7 @@ class VerificationRoutingDecision:
     local_skip: bool
     escalated: bool
     trace_reason: str
+    module_id: str = ""
 
     # -------------------------------------------------------------------
     # Serialization. Returns a JSON-safe dict so the decision can be
@@ -249,6 +275,7 @@ class VerificationRoutingDecision:
             "local_skip": bool(self.local_skip),
             "escalated": bool(self.escalated),
             "trace_reason": self.trace_reason,
+            "module_id": self.module_id,
         }
 
     @classmethod
@@ -289,6 +316,7 @@ class VerificationRoutingDecision:
             local_skip=bool(payload.get("local_skip", False)),
             escalated=bool(payload.get("escalated", False)),
             trace_reason=str(payload.get("trace_reason") or ""),
+            module_id=str(payload.get("module_id") or ""),
         )
 
 
@@ -404,8 +432,12 @@ def select_routing(
         local_skip = False
 
     # The keyword vocabulary comes from the cycle's owning module (the
-    # unique-label bridge); None degrades to the default module's.
-    keywords = module_for_cycle(cycle).profile_keywords
+    # unique-label bridge); None degrades to the default module's. The
+    # module's id rides the decision so the tool builder can reach the
+    # module's profile-less ``web_search`` location default (B-2) without
+    # the batch / wave callers having to thread ``cycle`` a second time.
+    module = module_for_cycle(cycle)
+    keywords = module.profile_keywords
 
     if finding is None:
         # Pure-defensive fallback. Real callers always have a finding;
@@ -499,6 +531,7 @@ def select_routing(
         local_skip=local_skip,
         escalated=escalated,
         trace_reason=trace_reason,
+        module_id=module.module_id,
     )
 
 
@@ -519,17 +552,27 @@ def build_verification_tools_from_decision(
     a run, while the decision is per-finding policy. When provided (a run
     with a :class:`ProjectProfile`), it is patched onto the **web_search
     tool only** — the web_fetch server tool has no location parameter and an
-    unsupported field would reject the request at submit. ``None`` (every
-    profile-less run) keeps today's hardcoded-California default
-    byte-identical.
+    unsupported field would reject the request at submit. ``None`` (a
+    profile-less run) falls back to the owning module's
+    ``default_web_search_user_location`` (resolved from
+    ``decision.module_id``): the California module supplies its
+    long-standing California localization, so its tool dict is
+    byte-identical to before the slot existed; the data-center modules
+    supply ``None``, so the key is omitted and the search is un-localized
+    rather than silently steered to California. The engine's own tool
+    builder emits no location when given none — the module default is a
+    routing-layer decision, not an engine one.
 
     Routes through :func:`src.batch.build_verification_tools_for_profile`
     so the profile-aware web_search budget is used, then patches
-    ``max_uses`` with the mode-scaled value from the decision. Adding
-    the verdict tool is controlled by the decision's
-    ``include_verdict_tool`` field rather than re-querying the env
-    helper, so a decision built with one value remains internally
-    consistent even if the env toggle flips mid-flight.
+    ``max_uses`` with the value from the decision. The verdict tool is
+    identified **by name** (``VERIFICATION_TOOL_NAME``) — not as "the one
+    tool that isn't web_search" — so an unrelated custom tool appearing in
+    the list can never be mistaken for it; any such tool passes through
+    ahead of the verdict tool, which stays last. Adding the verdict tool is
+    controlled by the decision's ``include_verdict_tool`` field rather
+    than re-querying the env helper, so a decision built with one value
+    remains internally consistent even if the env toggle flips mid-flight.
 
     STANDARD_REASONING and DEEP_REASONING modes
     additionally get the ``web_fetch`` server tool so the verifier can
@@ -556,22 +599,33 @@ def build_verification_tools_from_decision(
     # ``verification_request_includes_verdict_tool()`` is True at its call
     # site; we strip here so the decision is the final authority.
     web_tool_list: list[dict] = []
+    passthrough_tools: list[dict] = []
     verdict_tool: dict | None = None
     for tool in tool_list:
-        if tool.get("type", "").startswith("web_search") or tool.get("name", "").startswith("web_search"):
+        if tool.get("name") == VERIFICATION_TOOL_NAME:
+            verdict_tool = tool
+        elif tool.get("type", "").startswith("web_search") or tool.get("name", "").startswith("web_search"):
             web_tool_list.append(dict(tool))
         else:
-            verdict_tool = tool
+            passthrough_tools.append(tool)
 
-    # Mode-scaled max_uses. The real-time path already overwrote this; the
-    # batch path used to ignore it. Centralizing here closes that gap.
+    # Severity-based max_uses from the decision. The real-time path already
+    # overwrote this; the batch path used to ignore it. Centralizing here
+    # closes that gap.
     if web_tool_list and decision.web_search_max_uses != web_tool_list[0].get("max_uses"):
         web_tool_list[0]["max_uses"] = decision.web_search_max_uses
-    # Project location (WS-4, D-9): patched onto the web_search tool only.
-    if web_tool_list and user_location:
-        web_tool_list[0]["user_location"] = dict(user_location)
+    # Search localization, patched onto the web_search tool only: the run's
+    # project location (WS-4, D-9) wins; a profile-less run takes the owning
+    # module's default; ``None`` from both leaves the key out entirely.
+    location = (
+        dict(user_location)
+        if user_location
+        else get_module(decision.module_id).default_web_search_user_location
+    )
+    if web_tool_list and location:
+        web_tool_list[0]["user_location"] = dict(location)
 
-    out: list[dict] = list(web_tool_list)
+    out: list[dict] = list(web_tool_list) + list(passthrough_tools)
     # Attach web_fetch only for modes that benefit from a
     # deeper read. The mode set is small and closed; future modes that
     # want fetch should be added here. Web fetch needs no beta header, but
@@ -731,12 +785,22 @@ def build_verification_request(
     # capability). The helper still applies the per-phase no-thinking
     # opt-out for triage, but the verification phases are all eligible
     # so the gate here is the union of (mode allows, model supports).
+    # ``False`` omits the key — it never sends ``disabled`` — so on current
+    # models adaptive thinking stays on either way; the mode's cost lever
+    # is the effort override below.
     if decision.thinking_enabled:
         apply_thinking_config(params, model=decision.model, phase=decision.cache_phase)
-    # Effort: paired with thinking. The helper is model-
-    # aware and phase-aware on its own; we always call it (the helper
-    # omits ``output_config`` for unsupported models).
-    apply_effort_config(params, model=decision.model, phase=decision.cache_phase)
+    # Effort: paired with thinking. The mode policy may pin a level
+    # (STRICT_STRUCTURED → ``low``); ``None`` defers to the phase default.
+    # The helper is model-aware on its own — it omits ``output_config`` for
+    # unsupported models and clamps gated levels — so the override rides
+    # through it rather than being written onto ``params`` directly.
+    apply_effort_config(
+        params,
+        model=decision.model,
+        phase=decision.cache_phase,
+        effort_override=mode_policy(decision.mode).effort,
+    )
 
     # Web fetch is generally available and needs no ``anthropic-beta``
     # header, so verification requests attach none (sending the retired

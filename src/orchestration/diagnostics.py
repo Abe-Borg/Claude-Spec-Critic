@@ -56,6 +56,15 @@ _SECRET_VALUE_PATTERNS = (
 _REDACTED = "<redacted>"
 
 
+# ``VerificationResult.cache_status`` value stamped on a single-flight follower
+# that inherited its leader's clean ungrounded verdict in-process. Mirrors
+# ``verification_cache.CACHE_STATUS_SHARED`` (kept as a literal so this leaf
+# module does not import the verification layer). Such an event is neither a
+# disk replay (``hit``) nor a fresh call (``miss``) and must be counted apart
+# from both.
+_CACHE_STATUS_SHARED = "shared"
+
+
 def _synchronized(method):
     """Serialize access to a report's mutable in-memory state.
 
@@ -341,10 +350,12 @@ class DiagnosticsReport:
         # truncation happened so the summary can flag it.
         if self.max_events > 0 and len(self.events) >= self.max_events:
             oldest = self.events.pop(0)
+            evicted_size = _event_data_byte_size(oldest.data)
             self.events_dropped += 1
-            self.total_data_bytes = max(
-                0, self.total_data_bytes - _event_data_byte_size(oldest.data)
-            )
+            self.total_data_bytes = max(0, self.total_data_bytes - evicted_size)
+            # Same accounting as the byte-cap eviction below: a dropped
+            # event's payload is dropped bytes whichever cap evicted it.
+            self.bytes_dropped += evicted_size
         bounded_data, byte_size = self._accept_event_data(data)
         self.events.append(DiagnosticEvent(
             timestamp=time.time(),
@@ -499,16 +510,23 @@ class DiagnosticsReport:
             cache_create = int(e.data.get("cache_creation_input_tokens", 0) or 0)
             cache_read = int(e.data.get("cache_read_input_tokens", 0) or 0)
             search_count = int(e.data.get("web_search_requests", 0) or 0)
-            total_input_tokens += in_tok
-            total_output_tokens += out_tok
-            total_cache_creation_tokens += cache_create
-            total_cache_read_tokens += cache_read
-            total_web_search_requests += search_count
-            if out_tok > 0:
-                output_samples.append(out_tok)
-                phase_max = output_max_by_phase.get(e.phase, 0)
-                if out_tok > phase_max:
-                    output_max_by_phase[e.phase] = out_tok
+            # An in-process shared verdict (``cache_status="shared"``) made no
+            # call of its own: the leader's event already carries the tokens
+            # and searches the clone repeats for its evidence panel, so a
+            # follower adds nothing to the run-wide totals or cost summary
+            # (the per-phase rollup below skips it for the same reason).
+            is_shared = (e.data.get("cache_status") or "") == _CACHE_STATUS_SHARED
+            if not is_shared:
+                total_input_tokens += in_tok
+                total_output_tokens += out_tok
+                total_cache_creation_tokens += cache_create
+                total_cache_read_tokens += cache_read
+                total_web_search_requests += search_count
+                if out_tok > 0:
+                    output_samples.append(out_tok)
+                    phase_max = output_max_by_phase.get(e.phase, 0)
+                    if out_tok > phase_max:
+                        output_max_by_phase[e.phase] = out_tok
             stop_reason = e.data.get("stop_reason")
             is_truncated = bool(
                 stop_reason and stop_reason not in ("end_turn", "tool_use", None)
@@ -533,6 +551,12 @@ class DiagnosticsReport:
                 or search_count
                 or e.data.get("model")
             )
+            if is_shared:
+                # An in-process shared verdict made no call of its own — the
+                # leader's event carries that call — but it still names the
+                # leader's model and search count, which would otherwise read
+                # as a call marker.
+                looks_like_api_call = False
             if not looks_like_api_call:
                 continue
             bucket = phase_telemetry.setdefault(e.phase, _new_phase_bucket())
@@ -567,6 +591,11 @@ class DiagnosticsReport:
             "cache_hits": 0,
             "cache_misses": 0,
             "local_skips": 0,
+            # Single-flight followers that inherited their leader's clean
+            # ungrounded verdict in-process (``cache_status="shared"``).
+            # Neither a disk replay nor a fresh call, so counted apart from
+            # ``cache_hits`` / ``cache_misses``.
+            "shared_verdicts": 0,
             "search_errors": 0,
             "search_requests": 0,
         }
@@ -633,8 +662,14 @@ class DiagnosticsReport:
                     verification_stats["cache_misses"] += 1
                 elif cs == "local_skip":
                     verification_stats["local_skips"] += 1
-                verification_stats["search_errors"] += int(e.data.get("search_error_count", 0) or 0)
-                verification_stats["search_requests"] += int(e.data.get("web_search_requests", 0) or 0)
+                elif cs == _CACHE_STATUS_SHARED:
+                    verification_stats["shared_verdicts"] += 1
+                if cs != _CACHE_STATUS_SHARED:
+                    # A shared verdict carries its leader's search evidence
+                    # for the report; the leader's own event already counted
+                    # those searches here.
+                    verification_stats["search_errors"] += int(e.data.get("search_error_count", 0) or 0)
+                    verification_stats["search_requests"] += int(e.data.get("web_search_requests", 0) or 0)
                 mode_key = str(e.data.get("verification_mode") or "unknown")
                 verification_modes[mode_key] = verification_modes.get(mode_key, 0) + 1
                 profile_key = str(e.data.get("verification_profile") or "unknown")
@@ -690,28 +725,51 @@ class DiagnosticsReport:
                             )
 
         # Search-budget telemetry. We aggregate per-finding search-request
-        # counts so a future tuning pass can see whether the default
-        # ``max_uses`` is over- or under-allocated. Findings with zero
-        # web-search activity (local-skip / cache hit) are excluded so the
-        # budget percentile reflects calls that actually used the tool.
+        # counts so a future tuning pass can see whether the severity-tiered
+        # ``max_uses`` budgets are over- or under-allocated. Findings with no
+        # web-search activity of their own (local-skip / cache hit / shared
+        # verdict) are excluded so the budget percentile reflects calls that
+        # actually used the tool. Saturation is judged per event against the
+        # budget for *that finding's* severity (``finding_severity`` on the
+        # verdict event; the default budget when it is absent) — the flat
+        # default would under-report a GRIPES finding that spent its whole
+        # 3-search budget and over-report a CRITICAL one that stopped at 6 of 8.
         search_budget_samples: list[int] = []
         budget_ceiling = 0
+        budget_by_severity: dict[str, int] = {}
+        budget_for_severity = None
         try:
-            from ..core.api_config import DEFAULT_VERIFICATION_MAX_USES
-            budget_ceiling = int(DEFAULT_VERIFICATION_MAX_USES)
+            from ..core.api_config import (
+                _SEVERITY_MAX_USES,
+                web_search_max_uses_for_severity,
+            )
+            budget_for_severity = web_search_max_uses_for_severity
+            budget_by_severity = {
+                str(sev): int(uses) for sev, uses in _SEVERITY_MAX_USES.items()
+            }
+            budget_ceiling = max(budget_by_severity.values(), default=0)
         except Exception:
-            budget_ceiling = 0
+            budget_for_severity = None
         budget_saturated = 0
         for e in self.events:
             if not e.data or "verdict" not in e.data:
                 continue
-            if (e.data.get("cache_status") or "") in {"hit", "local_skip"}:
+            if (e.data.get("cache_status") or "") in {
+                "hit", "local_skip", _CACHE_STATUS_SHARED,
+            }:
                 continue
             requests = int(e.data.get("web_search_requests", 0) or 0)
             if requests <= 0:
                 continue
             search_budget_samples.append(requests)
-            if budget_ceiling and requests >= budget_ceiling:
+            if budget_for_severity is None:
+                continue
+            severity = e.data.get("finding_severity") or e.data.get("severity")
+            try:
+                event_budget = int(budget_for_severity(severity))
+            except Exception:
+                event_budget = 0
+            if event_budget and requests >= event_budget:
                 budget_saturated += 1
 
         def _percentile(values: list[int], pct: float) -> int:
@@ -723,7 +781,11 @@ class DiagnosticsReport:
 
         search_budget = {
             "samples": len(search_budget_samples),
+            # ``ceiling`` is the largest severity budget (the CRITICAL tier);
+            # per-tier values ride in ``ceiling_by_severity`` and
+            # ``saturated_calls`` is judged per event against its own tier.
             "ceiling": budget_ceiling,
+            "ceiling_by_severity": budget_by_severity,
             "saturated_calls": budget_saturated,
             "max_observed": max(search_budget_samples) if search_budget_samples else 0,
             "p50": _percentile(search_budget_samples, 50),
@@ -928,6 +990,7 @@ class DiagnosticsReport:
                 f"escalated={evidence['escalated']}, "
                 f"cache_hits={evidence['cache_hits']}, "
                 f"local_skips={evidence['local_skips']}, "
+                f"shared={evidence.get('shared_verdicts', 0)}, "
                 f"search_errors={evidence['search_errors']}"
             )
         modes_breakdown = s.get("verification_modes") or {}

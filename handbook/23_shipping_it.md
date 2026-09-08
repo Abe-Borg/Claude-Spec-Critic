@@ -55,6 +55,20 @@ the app builds cleanly and dies on launch. `tiktoken_ext`,
 `keyring.backends.Windows`, and the customtkinter / tkinterdnd2 asset trees are
 all enumerated in `spec-critic.spec` for exactly this reason.
 
+It also catches a second, quieter failure since v3.4.x: a build that ships without
+tiktoken's `cl100k_base` rank file. The tiktoken wheel does not include it —
+tiktoken downloads it from a public blob host at first use, which corporate
+networks routinely block even when `api.anthropic.com` is allowed, so the token
+gauge never enabled the Run button on such a workstation. The release workflow
+warms the file into `build/tiktoken_cache`, `bundle_assets.py` bundles it (and
+fails the build when it is missing, empty, or fails tiktoken's own hash check),
+`app_entry.py` points `TIKTOKEN_CACHE_DIR` at the bundled copy before any `src`
+import, and `--selfcheck` counts one string and reports
+`tokenizer: cl100k_base tokens=<n> rank_file_present=<bool> cache_dir=<dir>`;
+the smoke step asserts a positive count and `rank_file_present=True` (sampled
+before the load, because the CI runner *has* network and a count alone could be
+a download).
+
 ## 2. The version guard
 
 `check_release_version.py` requires the tag to equal **both** `pyproject.toml`'s

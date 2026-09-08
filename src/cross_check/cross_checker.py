@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from contextlib import nullcontext
 from typing import Callable
 
 
@@ -57,6 +58,26 @@ LogFn = Callable[..., None]
 
 def _noop_log(_msg: str, **_kwargs: object) -> None:
     return
+
+
+def _gate(call_gate):
+    """Resolve the optional per-call permit gate to a context manager.
+
+    ``call_gate`` is any re-enterable context manager — a routed program
+    passes its ``SPEC_CRITIC_REALTIME_COLLECTION_CALLS`` semaphore — held
+    around one API call at a time and released across backoff sleeps.
+    ``None`` is the single-module path: no gate, byte-identical behavior.
+    """
+    return call_gate if call_gate is not None else nullcontext()
+
+
+class _CrossCheckParseError(Exception):
+    """The response streamed fine but its findings payload was unparseable.
+
+    Raised from inside the attempt loop so the failure is classified as
+    ``FailureClass.PARSE_ERROR`` rather than falling through
+    ``classify_exception`` to ``UNKNOWN`` (non-retryable on attempt one).
+    """
 
 
 def _sanitize_narrative(text: str) -> str:
@@ -228,13 +249,22 @@ def _get_cross_check_user_message(spec_input: str, file_count: int, project_cont
     return f"Review the following {file_count} specs for cross-spec coordination only.\n{ctx}\n{spec_input}"
 
 
-def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, verbose: bool = False, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None) -> ReviewResult:
+def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, verbose: bool = False, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None, call_gate=None) -> ReviewResult:
     """Single-pass cross-check.
 
     ``_trace_parent``: when set (by ``run_chunked_cross_check``), the
     function does NOT open its own ``cross_check`` span — it emits its
     api_call under the caller's chunk span instead. When ``None`` (direct
     callers, tests), opens a fresh ``cross_check`` span.
+
+    ``call_gate``: optional per-call permit gate (see :func:`_gate`),
+    acquired around each streaming call and released before any backoff.
+
+    Retry taxonomy: transient classes retry per ``DEFAULT_REALTIME_RETRY_POLICY``;
+    an unparseable response is ``PARSE_ERROR`` and gets exactly **one**
+    re-request (the review path treats ``parse_error`` as repairable — the
+    model usually produces a clean payload on the second ask); a second parse
+    failure is terminal ``parse_error`` with no third attempt.
     """
     # Tracing: open the outer cross_check span only when not nested under
     # a chunk span. The "skipped — fewer than 2 specs" early return still
@@ -256,7 +286,9 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
         _trace.capture_cross_check_end(own_cross_check_span, finding_count=0, status="skipped")
         return result
 
-    client = _get_client()
+    # This pass runs its own retry loop (retry_policy); SDK retries off so
+    # attempts do not stack.
+    client = _get_client(sdk_retries=False)
     start = time.time()
     result = ReviewResult(model=model)
     output_limit = cross_check_max_tokens(model=model)
@@ -289,6 +321,7 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
     policy = DEFAULT_REALTIME_RETRY_POLICY
     attempts_planned = max(1, max_retries)
     last_failure_class: FailureClass | None = None
+    parse_retry_used = False
     for attempt in range(attempts_planned):
         is_last_attempt = attempt == attempts_planned - 1
         # Open one api_call span per attempt under whichever cross_check
@@ -307,15 +340,20 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             except Exception:
                 trace_api = None
         try:
-            with client.messages.stream(**request_kwargs) as stream:
-                chunks: list[str] = []
-                for text in stream.text_stream:
-                    chunks.append(text)
-                    if stream_callback:
-                        try: stream_callback(text)
-                        except Exception: pass
-                    _trace.capture_stream_chunk(trace_api, text)
-                resp = stream.get_final_message()
+            # The gate covers exactly one API call (stream open through the
+            # final message) and is released before parsing, backoff, or
+            # the next attempt — a chunked pass therefore takes one permit
+            # per call, never one permit for the whole pass.
+            with _gate(call_gate):
+                with client.messages.stream(**request_kwargs) as stream:
+                    chunks: list[str] = []
+                    for text in stream.text_stream:
+                        chunks.append(text)
+                        if stream_callback:
+                            try: stream_callback(text)
+                            except Exception: pass
+                        _trace.capture_stream_chunk(trace_api, text)
+                    resp = stream.get_final_message()
 
             result.raw_response = "".join(chunks)
             result.stop_reason = getattr(resp, "stop_reason", None)
@@ -341,19 +379,29 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
                 )
                 return result
 
-            payload = extract_tool_use_block(resp, CROSS_CHECK_TOOL_NAME) if use_structured_tool else None
+            try:
+                payload = extract_tool_use_block(resp, CROSS_CHECK_TOOL_NAME) if use_structured_tool else None
+                if isinstance(payload, dict):
+                    data = payload.get("findings") or []
+                    thinking = _sanitize_narrative(str(payload.get("coordination_summary") or ""))
+                    parse_source = "structured"
+                else:
+                    data, thinking = _extract_json_array(result.raw_response, stop_reason=result.stop_reason)
+                    thinking = _sanitize_narrative(thinking)
+                    parse_source = "text_json"
+                if not isinstance(data, list):
+                    data = []
+                findings = _parse_findings(data)
+            except Exception as parse_exc:  # noqa: BLE001 — re-raised as PARSE_ERROR
+                _trace.capture_parse_attempt(
+                    trace_api, status="error", source="text_json",
+                    payload_preview=str(parse_exc)[:200],
+                )
+                raise _CrossCheckParseError(str(parse_exc)) from parse_exc
             if isinstance(payload, dict):
-                data = payload.get("findings") or []
-                thinking = _sanitize_narrative(str(payload.get("coordination_summary") or ""))
                 result.structured_payload = payload
-                _trace.capture_parse_attempt(trace_api, status="ok", source="structured")
-            else:
-                data, thinking = _extract_json_array(result.raw_response, stop_reason=result.stop_reason)
-                thinking = _sanitize_narrative(thinking)
-                _trace.capture_parse_attempt(trace_api, status="ok", source="text_json")
-            if not isinstance(data, list):
-                data = []
-            result.findings = _parse_findings(data)
+            _trace.capture_parse_attempt(trace_api, status="ok", source=parse_source)
+            result.findings = findings
             result.thinking = thinking
             result.parse_status = "ok"
             result.cross_check_status = "completed"
@@ -368,8 +416,32 @@ def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding]
             _close_cross_api_span(trace_api, result, source="interrupt", status="error", error="interrupted")
             raise
         except Exception as e:
-            failure_class = classify_exception(e)
+            if isinstance(e, _CrossCheckParseError):
+                failure_class = FailureClass.PARSE_ERROR
+            else:
+                failure_class = classify_exception(e)
             last_failure_class = failure_class
+            if (
+                failure_class is FailureClass.PARSE_ERROR
+                and not parse_retry_used
+                and not is_last_attempt
+            ):
+                # One re-request for an unparseable payload. PARSE_ERROR is
+                # deliberately outside the global retryable set (a finding
+                # that keeps failing to parse must not burn attempt after
+                # attempt), so the single retry is granted here, once; a
+                # second parse failure falls through to the terminal branch.
+                parse_retry_used = True
+                _close_cross_api_span(trace_api, result, source="will_retry", status="error", error=str(e))
+                backoff = compute_backoff_seconds(
+                    policy, attempt=attempt, failure_class=failure_class
+                )
+                _trace.capture_retry(
+                    trace_anchor, attempt=attempt + 1,
+                    failure_class=failure_class.value, backoff_seconds=backoff,
+                )
+                time.sleep(backoff)
+                continue
             if not is_retryable_failure_class(failure_class):
                 if failure_class is FailureClass.INVALID_REQUEST:
                     result.error = f"API error: {e}"
@@ -614,8 +686,13 @@ def run_chunked_cross_check(
     cycle: CodeCycle = DEFAULT_CYCLE,
     model: str = CROSS_CHECK_MODEL_DEFAULT,
     log: LogFn = _noop_log,
+    call_gate=None,
 ) -> ReviewResult:
     """Run cross-check, chunking by CSI division when the input is too large.
+
+    ``call_gate`` (see :func:`_gate`) is threaded to every
+    :func:`run_cross_check` call so a chunked pass takes one permit **per
+    API call** — never one permit for the whole pass.
 
     Plan section 12.3: large projects historically returned a ``skipped``
     status because the combined input exceeded ``CROSS_CHECK_RECOMMENDED_MAX``.
@@ -649,6 +726,7 @@ def run_chunked_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
             verbose=verbose, stream_callback=stream_callback, cycle=cycle, model=model,
+            call_gate=call_gate,
         )
 
     system_prompt = _cross_system_prompt(cycle)
@@ -660,6 +738,7 @@ def run_chunked_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
             verbose=verbose, stream_callback=stream_callback, cycle=cycle, model=model,
+            call_gate=call_gate,
         )
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
@@ -723,6 +802,7 @@ def run_chunked_cross_check(
             cycle=cycle,
             model=model,
             _trace_parent=trace_chunk,
+            call_gate=call_gate,
         )
         _trace.capture_cross_check_end(
             trace_chunk, finding_count=len(chunk_result.findings),

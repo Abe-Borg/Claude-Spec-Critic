@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Application manifest embedded in SpecCritic.exe. spec-critic.spec passes
+  this file to EXE(manifest=...).
+
+  PyInstaller 6.11.1 treats a supplied manifest as a REPLACEMENT for its
+  built-in template, not an overlay: create_application_manifest() re-injects
+  only the requestedExecutionLevel (from uac_admin / uac_uiaccess) and the
+  Common-Controls v6 dependentAssembly. The supportedOS compatibility list and
+  the windowsSettings block come solely from this file. So this file mirrors
+  PyInstaller 6.11.1's default template entry for entry and pins the one
+  setting the app depends on, longPathAware, explicitly instead of relying on
+  whichever default a future PyInstaller pin happens to ship.
+
+  longPathAware lets the process open paths beyond MAX_PATH (260 characters),
+  e.g. deep OneDrive / SharePoint sync folders. Windows honors it ONLY when the
+  machine's LongPathsEnabled policy is also on; the manifest is necessary, not
+  sufficient. On a machine without that policy only the extended-length
+  ("\\?\") path form reaches such files, which is a code-side concern
+  outside this manifest.
+
+  No DPI-awareness entry is declared on purpose: customtkinter sets process
+  DPI awareness itself at runtime, and a manifest declaration would take
+  precedence over that call.
+
+  tests/test_packaging_entry.py parses this file and pins longPathAware=true,
+  the supportedOS list, and the Common-Controls dependency.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"></requestedExecutionLevel>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows Vista -->
+      <supportedOS Id="{e2011457-1546-43c5-a5fe-008deee3d3f0}"></supportedOS>
+      <!-- Windows 7 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"></supportedOS>
+      <!-- Windows 8 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"></supportedOS>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"></supportedOS>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"></supportedOS>
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3" xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
+    <windowsSettings>
+      <ws2:longPathAware>true</ws2:longPathAware>
+    </windowsSettings>
+  </application>
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"></assemblyIdentity>
+    </dependentAssembly>
+  </dependency>
+</assembly>

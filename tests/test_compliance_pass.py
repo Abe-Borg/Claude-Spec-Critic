@@ -169,7 +169,7 @@ def fake_client(monkeypatch):
     """Install a scripted client; tests set ``holder['route']``."""
     holder: dict = {"route": None}
     client = FakeComplianceClient(lambda kwargs: holder["route"](kwargs))
-    monkeypatch.setattr(cc, "_get_client", lambda: client)
+    monkeypatch.setattr(cc, "_get_client", lambda **_: client)
     holder["client"] = client
     return holder
 
@@ -892,3 +892,84 @@ class TestReportSurfaces:
         assert "Local-code compliance" in text
         assert "skipped" in text
         assert "NOT evaluated against the researched" in text
+
+
+# ---------------------------------------------------------------------------
+# Collection-call gate: one permit per API call, released across backoff (B-12)
+# ---------------------------------------------------------------------------
+
+
+class _CountingGate:
+    def __init__(self) -> None:
+        self.acquisitions = 0
+        self.held = False
+
+    def __enter__(self):
+        assert not self.held, "gate re-entered while held"
+        self.held = True
+        self.acquisitions += 1
+        return self
+
+    def __exit__(self, *_args):
+        self.held = False
+        return False
+
+
+class TestCallGate:
+    def test_chunked_pass_takes_one_permit_per_call(self, fake_client, monkeypatch):
+        monkeypatch.setattr(cc, "COMPLIANCE_RECOMMENDED_MAX", 5_000)
+        pad = "word " * 2_000
+        specs = [
+            _spec(pad + " DIV21SPEC alpha", "21 13 13 Wet.docx"),
+            _spec(pad + " DIV21SPEC beta", "21 13 16 Dry.docx"),
+            _spec(pad + " DIV22SPEC alpha", "22 11 13 Water.docx"),
+            _spec(pad + " DIV22SPEC beta", "22 11 16 Piping.docx"),
+        ]
+        payload = {"compliance_summary": "Fine.", "coverage": [], "findings": []}
+        gate = _CountingGate()
+        held_at_call: list[bool] = []
+        inner = _route_by_marker(
+            {
+                "DIV21SPEC": [compliance_tool_use_response(payload=payload)],
+                "DIV22SPEC": [compliance_tool_use_response(payload=payload)],
+            }
+        )
+
+        def route(kwargs):
+            held_at_call.append(gate.held)
+            return inner(kwargs)
+
+        fake_client["route"] = route
+
+        result = run_chunked_compliance_check(
+            specs, _profile(), [], cycle=_enabled_module().cycle, call_gate=gate
+        )
+
+        assert result.cross_check_status == "completed"
+        assert len(fake_client["client"].calls) == 2
+        assert gate.acquisitions == 2
+        assert held_at_call == [True, True]
+        assert gate.held is False
+
+    def test_gate_is_released_across_backoff(self, fake_client, monkeypatch):
+        gate = _CountingGate()
+        held_during_sleep: list[bool] = []
+        monkeypatch.setattr(cc.time, "sleep", lambda _s: held_during_sleep.append(gate.held))
+        payload = {"compliance_summary": "Fine.", "coverage": [], "findings": []}
+        script = [RuntimeError("connection reset by peer"), compliance_tool_use_response(payload=payload)]
+        fake_client["route"] = lambda _kwargs: script.pop(0)
+
+        result = run_compliance_check(
+            [_spec("Body text.")], _profile(), [], cycle=_enabled_module().cycle, call_gate=gate
+        )
+
+        assert result.cross_check_status == "completed"
+        assert held_during_sleep == [False]
+        assert gate.acquisitions == 2
+        assert gate.held is False
+
+    def test_no_gate_is_the_ungated_path(self, fake_client):
+        payload = {"compliance_summary": "Fine.", "coverage": [], "findings": []}
+        fake_client["route"] = _route_single(compliance_tool_use_response(payload=payload))
+        result = run_compliance_check([_spec("Body text.")], _profile(), [], cycle=_enabled_module().cycle)
+        assert result.cross_check_status == "completed"

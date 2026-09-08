@@ -28,6 +28,9 @@ recorder in ``recorder``; the capture hooks in ``capture_hooks``.
 
 Default-on: ``SPEC_CRITIC_TRACE`` controls the main switch (disable with
 ``0/false/no/off``). ``SPEC_CRITIC_TRACE_DEEP=1`` opts into deep mode.
+Old runs are pruned automatically on every run start
+(``SPEC_CRITIC_TRACE_RETENTION_DAYS`` default 30, ``SPEC_CRITIC_TRACE_MAX_RUNS``
+default 50, ``0`` disables either) — see ``retention.py``.
 """
 from __future__ import annotations
 
@@ -40,6 +43,8 @@ from .config import (
     trace_deep_enabled,
     trace_dir_for_run,
     trace_enabled,
+    trace_max_runs,
+    trace_retention_days,
 )
 from .recorder import (
     TraceRecorder,
@@ -64,6 +69,8 @@ __all__ = [
     "trace_deep_enabled",
     "trace_dir_for_run",
     "trace_enabled",
+    "trace_max_runs",
+    "trace_retention_days",
     "TraceRecorder",
     "activate_span",
     "bind_to_current_context",

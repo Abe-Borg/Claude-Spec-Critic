@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -82,6 +83,16 @@ LogFn = Callable[..., None]
 
 def _noop_log(_msg: str, **_kwargs: object) -> None:
     return
+
+
+def _gate(call_gate):
+    """Resolve the optional per-call permit gate (cross-check's contract).
+
+    A routed program passes its collection-call semaphore; it is held around
+    one API call at a time and released across backoff sleeps. ``None`` is
+    the ungated single-module path.
+    """
+    return call_gate if call_gate is not None else nullcontext()
 
 
 # The digest is wrapped into Project Context by
@@ -443,8 +454,12 @@ def run_drawing_impact(
     max_retries: int = 3,
     log: LogFn = _noop_log,
     client: Any = None,
+    call_gate=None,
 ) -> DrawingImpactResult:
     """Run the single synthesis call and return the structured explanation.
+
+    ``call_gate``: optional per-call permit gate (see :func:`_gate`) held
+    around each streaming call only — never across a backoff sleep.
 
     ``findings`` may include findings without an id (they are filtered — the
     model can only link ids it is shown) and may be empty (the narrative can
@@ -461,7 +476,9 @@ def run_drawing_impact(
     )
 
     if client is None:
-        client = _get_client()
+        # This pass runs its own retry loop (retry_policy); SDK retries off so
+        # attempts do not stack.
+        client = _get_client(sdk_retries=False)
     start = time.time()
     output_limit = drawing_impact_max_tokens(model=model)
     system_payload = system_prompt_with_cache(system_prompt, phase=PHASE_DRAWING_IMPACT)
@@ -495,11 +512,12 @@ def run_drawing_impact(
     for attempt in range(attempts_planned):
         is_last_attempt = attempt == attempts_planned - 1
         try:
-            with client.messages.stream(**request_kwargs) as stream:
-                chunks: list[str] = []
-                for text in stream.text_stream:
-                    chunks.append(text)
-                resp = stream.get_final_message()
+            with _gate(call_gate):
+                with client.messages.stream(**request_kwargs) as stream:
+                    chunks: list[str] = []
+                    for text in stream.text_stream:
+                        chunks.append(text)
+                    resp = stream.get_final_message()
 
             raw_response = "".join(chunks)
             stop_reason = getattr(resp, "stop_reason", None)

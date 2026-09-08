@@ -7,7 +7,21 @@ uses to smoke-test the frozen executable without opening a window:
     SpecCritic.exe --version     print the version and exit
     SpecCritic.exe --selfcheck   import the app's heavy modules — proving
                                  PyInstaller bundled every hidden import —
-                                 and exit 0 (non-zero on any import error)
+                                 then count one string with the app's
+                                 tokenizer, and exit 0 (non-zero on any
+                                 import error, a tokenizer failure, or a
+                                 zero count)
+
+Frozen-run environment (must happen BEFORE any ``src`` import): tiktoken does
+not ship the ``cl100k_base`` rank file and downloads it at first use from a
+host many corporate networks block. The spec bundles a pre-warmed copy at
+``<bundle>/tiktoken_cache/`` (``bundle_assets.py``); ``configure_tiktoken_cache``
+points ``TIKTOKEN_CACHE_DIR`` there when running frozen so the tokenizer reads
+the bundled file and never fetches. Unfrozen runs (``python main.py``, the
+tests) are untouched, and an operator-set ``TIKTOKEN_CACHE_DIR`` is respected.
+Nothing from ``src`` (or the packaging helpers) is imported at module load —
+every ``src`` import in this file sits inside a function that ``main`` reaches
+only after the environment is configured.
 
 The GUI build is windowed (``console=False``), so ``sys.stdout`` may be ``None``
 in the frozen app; ``_emit`` writes results to the file named by
@@ -18,6 +32,51 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import MutableMapping
+
+# Bundle-relative folder the spec places the warmed tiktoken cache in. Pinned
+# in lockstep with packaging/windows/bundle_assets.py::TIKTOKEN_CACHE_BUNDLE_DIR
+# by tests/test_packaging_entry.py (duplicated rather than imported: this
+# script must import nothing at module load).
+TIKTOKEN_CACHE_BUNDLE_DIR = "tiktoken_cache"
+TIKTOKEN_CACHE_DIR_ENV = "TIKTOKEN_CACHE_DIR"
+
+# Short, deterministic text the self-check counts. Any non-empty English
+# sentence yields a positive cl100k_base count.
+SELFCHECK_PROBE_TEXT = "Spec Critic self-check: count these tokens."
+
+
+def frozen_bundle_dir() -> str | None:
+    """PyInstaller's bundle directory (``sys._MEIPASS``) when frozen, else ``None``.
+
+    In a one-folder build ``_MEIPASS`` is ``<install dir>/_internal`` — the
+    directory the spec's ``datas`` land in. The executable's own directory is
+    the fallback only for a bootloader that did not set ``_MEIPASS``.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return str(meipass)
+    return os.path.dirname(os.path.abspath(sys.executable))
+
+
+def configure_tiktoken_cache(
+    environ: MutableMapping[str, str] | None = None,
+) -> str | None:
+    """Point tiktoken at the bundled rank file when running frozen.
+
+    Returns the cache directory in effect after the call: the bundled
+    ``<_MEIPASS>/tiktoken_cache`` folder, or an operator's pre-existing
+    ``TIKTOKEN_CACHE_DIR`` (``setdefault`` never overrides an explicit value).
+    Returns ``None`` — and touches nothing — when not frozen.
+    """
+    env = os.environ if environ is None else environ
+    base = frozen_bundle_dir()
+    if base is None:
+        return None
+    env.setdefault(TIKTOKEN_CACHE_DIR_ENV, os.path.join(base, TIKTOKEN_CACHE_BUNDLE_DIR))
+    return env[TIKTOKEN_CACHE_DIR_ENV]
 
 
 def _emit(message: str) -> None:
@@ -42,6 +101,39 @@ def _print_version() -> int:
     return 0
 
 
+def tokenizer_probe() -> dict[str, object]:
+    """Count one short string with the app's tokenizer; report where it loaded from.
+
+    ``rank_file_present`` is sampled BEFORE the count on purpose: the CI runner
+    has network access, so a successful count alone cannot distinguish "read
+    the bundled file" from "downloaded it". The smoke step asserts both a
+    positive count and ``rank_file_present=True``.
+    """
+    from src.core import tokenizer
+
+    status = tokenizer.encoder_cache_status()
+    tokens = tokenizer.count_tokens(SELFCHECK_PROBE_TEXT)
+    return {
+        "encoding": tokenizer.ENCODING_NAME,
+        "tokens": tokens,
+        "rank_file_present": status.rank_file_present,
+        "cache_dir": status.cache_dir,
+    }
+
+
+def format_tokenizer_probe(probe: dict[str, object]) -> str:
+    """One parseable line: ``tokenizer: <enc> tokens=<n> rank_file_present=<bool> cache_dir=<dir>``.
+
+    ``cache_dir`` goes last because a Windows path may contain spaces; the
+    release workflow's smoke step regex-matches ``tokens=(\\d+)`` and
+    ``rank_file_present=True``.
+    """
+    return (
+        f"tokenizer: {probe['encoding']} tokens={probe['tokens']} "
+        f"rank_file_present={probe['rank_file_present']} cache_dir={probe['cache_dir']}"
+    )
+
+
 def _selfcheck() -> int:
     try:
         import src
@@ -53,12 +145,27 @@ def _selfcheck() -> int:
 
         _emit("SELFCHECK FAILED:\n" + traceback.format_exc())
         return 1
-    _emit(f"SpecCritic {src.__version__} selfcheck ok")
+    # An app that cannot count tokens never enables Run (the gauge stays
+    # blank), so the probe is part of "the frozen app works", not an extra.
+    try:
+        probe = tokenizer_probe()
+    except Exception:
+        import traceback
+
+        _emit("SELFCHECK FAILED: tokenizer probe\n" + traceback.format_exc())
+        return 1
+    if int(probe["tokens"]) <= 0:  # type: ignore[call-overload]
+        _emit("SELFCHECK FAILED: tokenizer probe counted 0 tokens\n" + format_tokenizer_probe(probe))
+        return 1
+    _emit(f"SpecCritic {src.__version__} selfcheck ok\n" + format_tokenizer_probe(probe))
     return 0
 
 
-def main() -> int:
-    args = sys.argv[1:]
+def main(argv: list[str] | None = None) -> int:
+    # First, before any ``src`` import: the tokenizer must find the bundled
+    # rank file the moment it is first used.
+    configure_tiktoken_cache()
+    args = sys.argv[1:] if argv is None else list(argv)
     if "--version" in args:
         return _print_version()
     if "--selfcheck" in args:

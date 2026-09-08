@@ -7,6 +7,10 @@ disable tracing without consulting the docs.
 
 Default-on for the main trace flag; default-off for deep mode. Deep mode
 implies trace enabled.
+
+Automatic retention (``SPEC_CRITIC_TRACE_RETENTION_DAYS`` /
+``SPEC_CRITIC_TRACE_MAX_RUNS``) is parsed here too; the prune logic itself
+lives in ``retention.py``.
 """
 from __future__ import annotations
 
@@ -28,6 +32,13 @@ LEVEL_DEEP = "deep"
 ENV_TRACE = "SPEC_CRITIC_TRACE"
 ENV_TRACE_DEEP = "SPEC_CRITIC_TRACE_DEEP"
 ENV_TRACE_DIR = "SPEC_CRITIC_TRACE_DIR"
+ENV_TRACE_RETENTION_DAYS = "SPEC_CRITIC_TRACE_RETENTION_DAYS"
+ENV_TRACE_MAX_RUNS = "SPEC_CRITIC_TRACE_MAX_RUNS"
+
+# Automatic retention defaults, applied on recorder start (see
+# ``retention.apply_startup_retention``). ``0`` disables the matching knob.
+DEFAULT_TRACE_RETENTION_DAYS = 30
+DEFAULT_TRACE_MAX_RUNS = 50
 
 
 # Canonical "disable" tokens. Mirrored from verification_cache._DISABLE_TOKENS
@@ -96,3 +107,34 @@ def default_trace_root() -> Path:
 
 def trace_dir_for_run(run_id: str) -> Path:
     return default_trace_root() / run_id
+
+
+def _env_non_negative_int(name: str, default: int) -> int:
+    """Parse a non-negative integer env var; malformed / negative → default.
+
+    Mirrors the ``SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS`` convention: an
+    explicit ``0`` is an operator override (meaning "disabled" here) and is
+    returned as-is, while anything unparsable or negative falls back to the
+    default so a typo can never silently disable retention or wipe every
+    trace.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    if value < 0:
+        return default
+    return value
+
+
+def trace_retention_days() -> int:
+    """Age limit for automatic trace pruning (default 30 days; ``0`` disables)."""
+    return _env_non_negative_int(ENV_TRACE_RETENTION_DAYS, DEFAULT_TRACE_RETENTION_DAYS)
+
+
+def trace_max_runs() -> int:
+    """Count limit for automatic trace pruning (default 50 runs kept; ``0`` disables)."""
+    return _env_non_negative_int(ENV_TRACE_MAX_RUNS, DEFAULT_TRACE_MAX_RUNS)

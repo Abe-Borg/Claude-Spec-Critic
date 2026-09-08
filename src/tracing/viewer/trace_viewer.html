@@ -4,8 +4,137 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Spec Critic — Agent Trace Viewer</title>
-<script src="https://cdn.tailwindcss.com"></script>
 <style>
+  /* ------------------------------------------------------------------
+     The viewer is fully offline by contract: it renders local prompts and
+     full spec text, so no remote script, stylesheet, font, or image may load
+     (no CDN, no stylesheet link elements, no CSS imports, no external asset
+     references of any kind). The rules below are hand-written
+     equivalents of the Tailwind utility classes the page uses; the class
+     names are kept so the rendering JS is untouched. Ordering matters in
+     two places, mirroring the order Tailwind emits:
+       - `.hidden` is declared after `.flex` / `.grid` so toggling `hidden`
+         on an element that also carries `flex` hides it;
+       - `.border-transparent` precedes the colored border utilities so the
+         active tab's `border-blue-600` wins.
+     tests/test_trace_viewer_offline.py pins that every class in use has a
+     rule here and that the file carries no external reference.
+     ------------------------------------------------------------------ */
+
+  /* Base reset (the subset of Tailwind's preflight this page relies on). */
+  *, ::before, ::after { box-sizing: border-box; border-width: 0; border-style: solid; border-color: #e5e7eb; }
+  html { line-height: 1.5; -webkit-text-size-adjust: 100%; tab-size: 4;
+         font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"; }
+  body { margin: 0; line-height: inherit; }
+  h1, h2, h3, h4, h5, h6 { font-size: inherit; font-weight: inherit; margin: 0; }
+  p, pre { margin: 0; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 1em; }
+  table { text-indent: 0; border-color: inherit; border-collapse: collapse; }
+  button, input { font-family: inherit; font-size: 100%; font-weight: inherit; line-height: inherit;
+                  letter-spacing: inherit; color: inherit; margin: 0; padding: 0; }
+  button { text-transform: none; -webkit-appearance: button; background-color: transparent; background-image: none; cursor: pointer; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  summary { display: list-item; }
+  [hidden] { display: none; }
+
+  /* Display / flex / grid */
+  .flex { display: flex; }
+  .grid { display: grid; }
+  .hidden { display: none; }
+  .flex-col { flex-direction: column; }
+  .flex-1 { flex: 1 1 0%; }
+  .shrink-0 { flex-shrink: 0; }
+  .items-center { align-items: center; }
+  .justify-center { justify-content: center; }
+  .gap-1 { gap: 0.25rem; }
+  .gap-1\.5 { gap: 0.375rem; }
+  .gap-2 { gap: 0.5rem; }
+  .gap-4 { gap: 1rem; }
+  .space-y-1 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.25rem; }
+
+  /* Sizing / overflow */
+  .h-screen { height: 100vh; }
+  .h-full { height: 100%; }
+  .w-full { width: 100%; }
+  .overflow-hidden { overflow: hidden; }
+
+  /* Spacing */
+  .p-2 { padding: 0.5rem; }
+  .p-3 { padding: 0.75rem; }
+  .p-4 { padding: 1rem; }
+  .px-1\.5 { padding-left: 0.375rem; padding-right: 0.375rem; }
+  .px-2 { padding-left: 0.5rem; padding-right: 0.5rem; }
+  .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+  .px-4 { padding-left: 1rem; padding-right: 1rem; }
+  .px-8 { padding-left: 2rem; padding-right: 2rem; }
+  .py-0\.5 { padding-top: 0.125rem; padding-bottom: 0.125rem; }
+  .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+  .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+  .pr-2 { padding-right: 0.5rem; }
+  .pb-1 { padding-bottom: 0.25rem; }
+  .mb-1 { margin-bottom: 0.25rem; }
+  .mb-2 { margin-bottom: 0.5rem; }
+  .mt-1 { margin-top: 0.25rem; }
+  .mt-2 { margin-top: 0.5rem; }
+  .mt-3 { margin-top: 0.75rem; }
+  .mt-4 { margin-top: 1rem; }
+
+  /* Typography */
+  .text-xs { font-size: 0.75rem; line-height: 1rem; }
+  .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+  .text-lg { font-size: 1.125rem; line-height: 1.75rem; }
+  .text-xl { font-size: 1.25rem; line-height: 1.75rem; }
+  .font-medium { font-weight: 500; }
+  .font-semibold { font-weight: 600; }
+  .italic { font-style: italic; }
+  .uppercase { text-transform: uppercase; }
+  .tracking-wide { letter-spacing: 0.025em; }
+  .text-left { text-align: left; }
+  .text-center { text-align: center; }
+  .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .break-all { word-break: break-all; }
+
+  /* Text colors */
+  .text-white { color: #ffffff; }
+  .text-slate-300 { color: #cbd5e1; }
+  .text-slate-400 { color: #94a3b8; }
+  .text-slate-500 { color: #64748b; }
+  .text-slate-600 { color: #475569; }
+  .text-slate-700 { color: #334155; }
+  .text-slate-800 { color: #1e293b; }
+  .text-blue-600 { color: #2563eb; }
+  .text-green-700 { color: #15803d; }
+  .text-orange-600 { color: #ea580c; }
+  .text-red-300 { color: #fca5a5; }
+  .text-red-500 { color: #ef4444; }
+  .text-red-600 { color: #dc2626; }
+  .text-red-700 { color: #b91c1c; }
+
+  /* Backgrounds */
+  .bg-white { background-color: #ffffff; }
+  .bg-slate-50 { background-color: #f8fafc; }
+  .bg-slate-800 { background-color: #1e293b; }
+  .bg-blue-600 { background-color: #2563eb; }
+  .bg-red-50 { background-color: #fef2f2; }
+
+  /* Borders */
+  .rounded { border-radius: 0.25rem; }
+  .border { border-width: 1px; }
+  .border-t { border-top-width: 1px; }
+  .border-r { border-right-width: 1px; }
+  .border-b { border-bottom-width: 1px; }
+  .border-b-2 { border-bottom-width: 2px; }
+  .border-transparent { border-color: transparent; }
+  .border-slate-100 { border-color: #f1f5f9; }
+  .border-slate-200 { border-color: #e2e8f0; }
+  .border-red-200 { border-color: #fecaca; }
+  .border-blue-600 { border-color: #2563eb; }
+
+  /* Interaction / state variants */
+  .cursor-pointer { cursor: pointer; }
+  .hover\:bg-blue-500:hover { background-color: #3b82f6; }
+
+  /* ---- Viewer-specific rules ---- */
   /* Monospace for IDs / payloads; keep the chrome in a system sans. */
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   .tree-row:hover { background: rgba(59,130,246,0.08); }
@@ -255,9 +384,14 @@ function selectTab(tab) {
 }
 
 // ---- Utility renderers ----
+// HTML-escape for BOTH text nodes and quoted attribute values: span names
+// and finding text are interpolated into title="…" / data-*="…", so a
+// literal quote must never be able to terminate the attribute. `&` first so
+// the entities introduced by the later replacements are not re-escaped.
 function esc(s) {
   return String(s == null ? "" : s)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 function fmtTs(ts) {
   if (!ts) return "";
@@ -501,8 +635,11 @@ function renderFindingDetail(findingId) {
   document.getElementById("rightPane").innerHTML = hint("Select a lifecycle span to inspect its spans / events");
 }
 function lifecycleRow(span, prefix) {
+  // No inline on*= handler: the span id is trace data, so it rides an
+  // escaped data attribute and the delegated click listener on #middlePane
+  // (below) dispatches to window.__selectSpanFromFinding.
   const div = `<div class="tree-row px-2 py-1 cursor-pointer flex items-center gap-1.5 border border-slate-100 rounded"
-      onclick="window.__selectSpanFromFinding('${span.span_id}')">
+      data-lifecycle-span="${esc(span.span_id)}">
       ${kindBadge(span.kind)} ${spanStatusDot(span)}
       <span class="text-xs flex-1 truncate">${esc(prefix || span.name)}</span>
       <span class="text-xs text-slate-400 mono">${durMs(span)}</span></div>`;
@@ -527,6 +664,10 @@ window.__selectSpanFromFinding = function(spanId) {
   }
   right.innerHTML = html;
 };
+document.getElementById("middlePane").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-lifecycle-span]");
+  if (row) window.__selectSpanFromFinding(row.getAttribute("data-lifecycle-span"));
+});
 function vRow(k, val) {
   if (val === undefined || val === null || val === "") return "";
   let disp = val;

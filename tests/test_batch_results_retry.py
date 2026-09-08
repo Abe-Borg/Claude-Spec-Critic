@@ -56,7 +56,7 @@ def _no_real_sleep(monkeypatch):
 
 
 def _install(monkeypatch, batches: _FlakyBatches) -> _FlakyBatches:
-    monkeypatch.setattr(batch_mod, "_get_client", lambda: _FakeClient(batches))
+    monkeypatch.setattr(batch_mod, "_get_client", lambda **_: _FakeClient(batches))
     return batches
 
 

@@ -361,6 +361,24 @@ class ReviewModule:
             ``True`` and required-empty when ``False`` (design decision D-2),
             so a module cannot ship dead location-aware content — that
             conditional validation lands with the slots, not here.
+        default_web_search_user_location: The ``user_location`` dict the
+            verification ``web_search`` tool carries on a **profile-less**
+            run of this module, or ``None`` for no localization at all. The
+            engine's tool builder has no location opinion of its own (it
+            omits the key when nothing is supplied); a run with a
+            :class:`~src.core.project_profile.ProjectProfile` always wins
+            with the profile's location. California supplies its
+            long-standing ``{"type": "approximate", "country": "US",
+            "region": "California"}`` so its tool dict stays byte-identical;
+            the data-center modules leave it ``None`` so a headless or
+            recovery run without a profile searches nowhere in particular
+            instead of being silently steered to California. Validated at
+            registration: ``None``, or a dict of string values whose
+            ``type`` is ``"approximate"`` with at least one of ``city`` /
+            ``region`` / ``country`` (the only keys the API accepts, plus
+            ``timezone``). The one non-hashable slot on the module — nothing
+            hashes a ``ReviewModule`` (only its vocabulary / keyword
+            sub-objects), so a plain dict keeps the API's own shape.
     """
 
     module_id: str
@@ -419,9 +437,25 @@ class ReviewModule:
     # detector enhancement, not the core of the capability — but
     # required-empty when off (no dead content).
     polity_suspect_tokens: tuple[PolityTokenRule, ...] = ()
+    # --- Profile-less web_search localization -----------------------------
+    # ``None`` ⇒ the web_search tool carries no ``user_location`` key on a
+    # profile-less run. A present project profile always wins over this
+    # default (resolved in ``verification_routing``, never in the engine's
+    # tool builder). Copied on construction so a caller's later mutation
+    # of the literal cannot reach the registered module.
+    default_web_search_user_location: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         _coerce_str_tuple_fields(self, ("corpus_signal_patterns",))
+        # Copy only a real mapping; any other non-None value is left as-is
+        # so ``_validate_web_search_location`` rejects it with a precise
+        # message instead of ``dict()`` failing here with a cryptic one.
+        if isinstance(self.default_web_search_user_location, Mapping):
+            object.__setattr__(
+                self,
+                "default_web_search_user_location",
+                dict(self.default_web_search_user_location),
+            )
         # Coerce list-valued dataclass-tuple fields (config-loaded module
         # data arrives with lists); keeps the frozen dataclass hashable.
         for field_name in (
@@ -925,6 +959,50 @@ def _validate_research_slots(module: ReviewModule) -> None:
             ) from exc
 
 
+# ``user_location`` keys the web_search server tool accepts. ``type`` is
+# mandatory and must be ``"approximate"``; the API needs at least one
+# geographic component to localize on. Anything else would be rejected at
+# submit, so it is rejected at registration instead.
+_WEB_SEARCH_LOCATION_KEYS = frozenset({"type", "city", "region", "country", "timezone"})
+_WEB_SEARCH_LOCATION_GEO_KEYS = ("city", "region", "country")
+
+
+def _validate_web_search_location(module: ReviewModule) -> None:
+    """``default_web_search_user_location`` is ``None`` or a valid location dict."""
+    loc = module.default_web_search_user_location
+    if loc is None:
+        return
+    mid = module.module_id
+    if not isinstance(loc, Mapping):
+        raise ValueError(
+            f"ReviewModule {mid!r}: default_web_search_user_location must be "
+            f"None or a dict (got {type(loc).__name__})"
+        )
+    unknown = set(loc) - _WEB_SEARCH_LOCATION_KEYS
+    if unknown:
+        raise ValueError(
+            f"ReviewModule {mid!r}: default_web_search_user_location has "
+            f"unsupported keys {sorted(unknown)}; allowed: "
+            f"{sorted(_WEB_SEARCH_LOCATION_KEYS)}"
+        )
+    for key, value in loc.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"ReviewModule {mid!r}: default_web_search_user_location[{key!r}] "
+                "must be a non-empty string"
+            )
+    if loc.get("type") != "approximate":
+        raise ValueError(
+            f"ReviewModule {mid!r}: default_web_search_user_location['type'] "
+            f"must be 'approximate' (got {loc.get('type')!r})"
+        )
+    if not any(loc.get(key) for key in _WEB_SEARCH_LOCATION_GEO_KEYS):
+        raise ValueError(
+            f"ReviewModule {mid!r}: default_web_search_user_location needs at "
+            f"least one of {list(_WEB_SEARCH_LOCATION_GEO_KEYS)}"
+        )
+
+
 def _validate_module_content(module: ReviewModule) -> None:
     """Fail fast on prompt-slot / vocabulary content a module author got wrong."""
     for field_name in _PROMPT_SLOT_FIELDS:
@@ -965,6 +1043,7 @@ def _validate_module_content(module: ReviewModule) -> None:
     _validate_chunk_groups(module)
     _validate_source_tiers(module)
     _validate_research_slots(module)
+    _validate_web_search_location(module)
     _validate_review_examples(module)
 
 
