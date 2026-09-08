@@ -386,3 +386,64 @@ class TestOnReviewCompleteAsync:
         assert callable(getattr(SpecReviewApp, "_export_report_async", None))
         src = Path(SpecReviewApp.__module__.replace(".", "/") + ".py").read_text(encoding="utf-8")
         assert "export_report_to_file(self, result, on_complete=_done)" in src
+
+
+# ---------------------------------------------------------------------------
+# Default filename stem (C-2): unique per run so the unconditionally written
+# sidecars of a second same-day run never silently overwrite the first's.
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultReportStem:
+    _CLOCK = __import__("datetime").datetime(2026, 9, 8, 14, 7, 59)
+
+    def test_single_module_result_stem_is_date_plus_minute(self):
+        result = build_full_pipeline_result()
+        assert rc.default_report_stem(result, now=self._CLOCK) == (
+            "spec-critic-report-2026-09-08-14-07"
+        )
+
+    def test_program_result_appends_the_program_id(self):
+        from tests.test_html_report_exporter import build_program_result
+
+        result = build_program_result()
+        assert rc.default_report_stem(result, now=self._CLOCK) == (
+            "spec-critic-report-2026-09-08-14-07-hyperscale_datacenter"
+        )
+
+    def test_program_id_is_sanitized_for_filenames(self):
+        from types import SimpleNamespace
+
+        stem = rc.default_report_stem(
+            SimpleNamespace(program_id="odd/id with:chars"), now=self._CLOCK
+        )
+        assert stem == "spec-critic-report-2026-09-08-14-07-odd-id-with-chars"
+
+    def test_no_result_falls_back_to_the_stamp_only(self):
+        assert rc.default_report_stem(None, now=self._CLOCK) == (
+            "spec-critic-report-2026-09-08-14-07"
+        )
+
+    def test_two_runs_a_minute_apart_do_not_collide(self):
+        import datetime as _dt
+
+        a = rc.default_report_stem(None, now=self._CLOCK)
+        b = rc.default_report_stem(None, now=self._CLOCK + _dt.timedelta(minutes=1))
+        assert a != b
+
+    def test_save_dialogs_seed_initialfile_from_the_stem(self, monkeypatch):
+        seen: list[str] = []
+
+        def _ask(**kw):
+            seen.append(kw["initialfile"])
+            return ""
+
+        monkeypatch.setattr(rc.filedialog, "asksaveasfilename", _ask)
+        monkeypatch.setattr(
+            rc, "default_report_stem", lambda result=None, *, now=None: "STEM"
+        )
+        app = _App()
+        result = build_full_pipeline_result()
+        assert rc.export_report_to_file(app, result) == "canceled"
+        assert rc.export_html_report_to_file(app, result) == "canceled"
+        assert seen == ["STEM.docx", "STEM.html"]

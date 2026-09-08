@@ -660,3 +660,144 @@ def test_higher_severity_follower_does_not_inherit_from_a_lower_leader(monkeypat
     assert medium.verification.cache_status == "miss"
     assert high.verification.cache_status == "miss"
     assert cache.singleflight.active_count() == 0
+
+
+# ---------------------------------------------------------------------------
+# Bounded follower wait (a leader that dies without ``complete``)
+# ---------------------------------------------------------------------------
+
+
+def test_wait_returns_false_when_the_bound_elapses():
+    from src.verification.verification_cache import VerificationSingleFlight
+
+    coordinator = VerificationSingleFlight()
+    leader = coordinator.claim_many(["k"])["k"]
+    follower = coordinator.claim_many(["k"])["k"]
+    assert leader.leader and not follower.leader
+
+    assert coordinator.wait(follower, timeout=0.05) is False
+    assert coordinator.active_count() == 1  # the generation is still registered
+
+    coordinator.complete(leader)
+    assert coordinator.wait(follower, timeout=0.05) is True
+    assert coordinator.active_count() == 0
+
+
+def test_wait_default_bound_comes_from_the_env(monkeypatch):
+    from src.verification.verification_cache import VerificationSingleFlight
+
+    monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_SINGLEFLIGHT_WAIT_SECONDS", "0.05")
+    coordinator = VerificationSingleFlight()
+    coordinator.claim_many(["k"])
+    follower = coordinator.claim_many(["k"])["k"]
+    assert coordinator.wait(follower) is False
+
+
+def test_follower_times_out_and_verifies_independently_without_double_write(monkeypatch):
+    """Leader never completes within the bound → the follower logs a WARNING,
+    runs its own verification, and is stamped exactly once (its own result);
+    the leader's later completion touches only the leader's finding."""
+    monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_SINGLEFLIGHT_WAIT_SECONDS", "0.2")
+    cache = VerificationCache()
+    leader_finding = _finding("Check the hanger spacing rule", filename="module-a.docx")
+    follower_finding = _finding("Check the hanger spacing rule", filename="module-b.docx")
+    monkeypatch.setattr(
+        pipeline,
+        "prepare_findings_for_verification",
+        lambda items, **_kwargs: list(items),
+    )
+
+    leader_started = threading.Event()
+    release_leader = threading.Event()
+    lock = threading.Lock()
+    calls: list[str] = []
+
+    def fake_verify(finding, **kwargs):
+        with lock:
+            calls.append(finding.fileName)
+        if finding is leader_finding:
+            leader_started.set()
+            assert release_leader.wait(timeout=10)  # "dead" leader: stuck past the bound
+        result = VerificationResult(
+            verdict="UNVERIFIED",
+            explanation=f"own attempt for {finding.fileName}",
+            grounded=False,
+            cache_status="miss",
+        )
+        return result
+
+    monkeypatch.setattr(pipeline, "verify_finding", fake_verify)
+
+    log_lines: list[tuple[str, str]] = []
+    log_lock = threading.Lock()
+
+    def log(msg, **kw):
+        with log_lock:
+            log_lines.append((str(kw.get("level", "info")), str(msg)))
+
+    def run(finding):
+        pipeline.verify_findings_for_run(
+            [finding], transport="realtime", cache=cache, log=log
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader_future = pool.submit(run, leader_finding)
+        assert leader_started.wait(timeout=5)
+        follower_future = pool.submit(run, follower_finding)
+        # The follower must finish while the leader is still stuck.
+        follower_future.result(timeout=10)
+        assert not leader_future.done()
+
+        assert follower_finding.verification is not None
+        follower_result = follower_finding.verification
+        assert follower_result.explanation == "own attempt for module-b.docx"
+        assert follower_result.cache_status == "miss"
+        assert sorted(calls) == ["module-a.docx", "module-b.docx"]
+        assert any(
+            level == "warning" and "did not complete within" in msg
+            for level, msg in log_lines
+        )
+
+        release_leader.set()
+        leader_future.result(timeout=10)
+
+    # Exactly-once: the follower's result object is untouched by the leader's
+    # completion, and the leader stamped only its own finding.
+    assert follower_finding.verification is follower_result
+    assert leader_finding.verification.explanation == "own attempt for module-a.docx"
+    assert cache.singleflight.active_count() == 0
+    assert cache.stats()["size"] == 0  # both ungrounded → nothing cached
+
+
+def test_follower_that_times_out_still_reuses_a_late_cache_fill(monkeypatch):
+    """If the leader filled the cache but never called ``complete`` (crashed
+    between the two), the timed-out follower replays the grounded entry
+    rather than paying again."""
+    monkeypatch.setenv("SPEC_CRITIC_VERIFICATION_SINGLEFLIGHT_WAIT_SECONDS", "0.1")
+    cache = VerificationCache()
+    finding = _finding("Check the seismic bracing rule", filename="module-b.docx")
+    twin = _finding("Check the seismic bracing rule", filename="module-a.docx")
+    monkeypatch.setattr(
+        pipeline,
+        "prepare_findings_for_verification",
+        lambda items, **_kwargs: list(items),
+    )
+    calls = 0
+
+    def fake_verify(*_a, **_k):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("must not be called: a grounded entry exists")
+
+    monkeypatch.setattr(pipeline, "verify_finding", fake_verify)
+
+    # A leader claims the key and fills the cache, then "dies".
+    key = pipeline.make_cache_key(twin, cycle=DEFAULT_MODULE.cycle)
+    cache.singleflight.claim_many([key])
+    cache.put(twin, cycle=DEFAULT_MODULE.cycle, result=_grounded_result())
+
+    pipeline.verify_findings_for_run([finding], transport="realtime", cache=cache)
+
+    assert calls == 0
+    assert finding.verification.cache_status == "hit"
+    assert finding.verification.grounded

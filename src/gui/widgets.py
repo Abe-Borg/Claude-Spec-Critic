@@ -7,6 +7,7 @@ AnimatedButton, DiagnosticsWindow.
 import math
 from datetime import datetime
 from collections import deque
+from tkinter import TclError
 
 import customtkinter as ctk
 
@@ -433,6 +434,50 @@ class AnimatedButton(ctk.CTkButton):
 # DIAGNOSTICS WINDOW (pop-out toplevel)
 # ============================================================================
 
+# Diagnostics timeline rendering: events are inserted into the textbox in
+# bounded chunks scheduled with ``after(0, ...)`` so a long run's timeline
+# (thousands of events, 3-5 text runs each) never freezes the window behind
+# one synchronous insert loop. The first chunk renders synchronously so the
+# window shows content immediately; the rest yield to the Tk event loop
+# between chunks. ``TIMELINE_CHUNK_EVENTS`` is events per chunk.
+TIMELINE_CHUNK_EVENTS = 200
+
+_TIMELINE_LEVEL_ICONS = {
+    "info": "  ",
+    "success": "+ ",
+    "warning": "! ",
+    "error": "X ",
+    "step": "> ",
+}
+
+
+def timeline_event_runs(event, *, first: bool) -> list[tuple[str, tuple]]:
+    """The ``(text, tags)`` insert runs for one diagnostics event.
+
+    Pure (no Tk) so the chunked renderer and its tests share one definition
+    of what an event looks like: a separating newline (every event but the
+    first), timestamp + elapsed, the level icon, the phase tag when present,
+    the message, and one ``data_tag`` line per data key. Byte-identical to the
+    former single synchronous loop.
+    """
+    runs: list[tuple[str, tuple]] = []
+    if not first:
+        runs.append(("\n", ()))
+    ts = datetime.fromtimestamp(event.timestamp).strftime("%H:%M:%S")
+    elapsed = f"{event.elapsed:7.1f}s"
+    icon = _TIMELINE_LEVEL_ICONS.get(event.level, "  ")
+    phase_str = f"[{event.phase}]" if event.phase else ""
+    runs.append((f"{ts} {elapsed} ", ("info",)))
+    runs.append((icon, (event.level,)))
+    if phase_str:
+        runs.append((f"{phase_str:20s} ", ("phase_tag",)))
+    runs.append((event.message, (event.level,)))
+    if event.data:
+        for k, v in event.data.items():
+            runs.append((f"\n{'':38s}{k}: {v}", ("data_tag",)))
+    return runs
+
+
 class DiagnosticsWindow(ctk.CTkToplevel):
     """Displays the in-memory diagnostics report for a pipeline run."""
 
@@ -733,13 +778,6 @@ class DiagnosticsWindow(ctk.CTkToplevel):
             "error": COLORS["error"],
             "step": COLORS["accent"],
         }
-        level_icons = {
-            "info": "  ",
-            "success": "+ ",
-            "warning": "! ",
-            "error": "X ",
-            "step": "> ",
-        }
 
         # Use a textbox for efficient rendering of many events
         textbox = ctk.CTkTextbox(
@@ -757,24 +795,32 @@ class DiagnosticsWindow(ctk.CTkToplevel):
         inner_text.tag_configure("data_tag", foreground=COLORS["text_muted"])
         inner_text.tag_configure("phase_tag", foreground=COLORS["coordination"])
 
-        textbox.configure(state="normal")
-        for i, e in enumerate(self._report.events):
-            if i > 0:
-                inner_text.insert("end", "\n", ())
-            ts = datetime.fromtimestamp(e.timestamp).strftime("%H:%M:%S")
-            elapsed = f"{e.elapsed:7.1f}s"
-            icon = level_icons.get(e.level, "  ")
-            phase_str = f"[{e.phase}]" if e.phase else ""
+        self._render_timeline_events(textbox, list(self._report.events))
 
-            inner_text.insert("end", f"{ts} {elapsed} ", ("info",))
-            inner_text.insert("end", icon, (e.level,))
-            if phase_str:
-                inner_text.insert("end", f"{phase_str:20s} ", ("phase_tag",))
-            inner_text.insert("end", e.message, (e.level,))
-            if e.data:
-                for k, v in e.data.items():
-                    inner_text.insert("end", f"\n{'':38s}{k}: {v}", ("data_tag",))
-        textbox.configure(state="disabled")
+    def _render_timeline_events(self, textbox, events, start: int = 0) -> None:
+        """Insert ``events[start:]`` in chunks of ``TIMELINE_CHUNK_EVENTS``.
+
+        One chunk is inserted synchronously; the remainder is scheduled with
+        ``self.after(0, ...)`` so the Tk loop can paint and handle input
+        between chunks. The textbox is re-disabled after every chunk, so it
+        is never left editable while a continuation is pending. A window
+        closed mid-render stops silently (the continuation would hit a
+        destroyed widget).
+        """
+        stop = min(start + TIMELINE_CHUNK_EVENTS, len(events))
+        inner_text = textbox._textbox
+        try:
+            textbox.configure(state="normal")
+            for i in range(start, stop):
+                for text, tags in timeline_event_runs(events[i], first=(i == 0)):
+                    inner_text.insert("end", text, tags)
+            textbox.configure(state="disabled")
+        except TclError:
+            return  # window destroyed mid-render; nothing left to show
+        if stop < len(events):
+            self.after(
+                0, lambda: self._render_timeline_events(textbox, events, stop)
+            )
 
     # ------------------------------------------------------------------
     # Export actions
