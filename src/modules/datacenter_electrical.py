@@ -346,6 +346,7 @@ _PROFILE_KEYWORDS = ProfileKeywords(
         "provincial electrical code",
         "local amendment",
         "permit",
+        "permitting",
         "plan review",
         "field evaluation",
         "fire marshal",
@@ -414,11 +415,10 @@ _PROFILE_KEYWORDS = ProfileKeywords(
         "[select]",
         "[verify]",
         "[insert",
-        "formatting",
         "typo",
         "typographical",
         "missing placeholder",
-        "self-referen",
+        "self-referen*",  # open-ended stem: "self-referential", "self-references"
         "inconsistent within",
     ),
 )

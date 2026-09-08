@@ -15,6 +15,13 @@ jurisdictional-profile generalization did: ``CALIFORNIA_AHJ`` became
 ``parse_verification_profile``), with the CA keyword vocabulary moved onto
 the module. The finding->profile mappings below are unchanged.
 
+One later intentional change (A-11 / B-19, ``test_keyword_word_boundaries``):
+keyword tests became whole-word instead of substring, and ``"formatting"``
+left every module's ``internal_coordination`` vocabulary. The single pin
+that encoded ``"formatting"`` → ``INTERNAL_COORDINATION`` now pins the
+opposite (``CODE_STANDARD`` via its ``codeReference``); the precedence it
+used to demonstrate is re-pinned with a real internal-coordination keyword.
+
 Complements ``test_golden_domain_surfaces.py`` (byte pins of the prompt /
 detector output); these tests pin decisions rather than text. Existing suites
 already lock adjacent behavior — cross-check chunk assignment lives in
@@ -128,11 +135,24 @@ _PROFILE_CASES = [
     ),
     pytest.param(
         dict(
-            issue="Valve label color formatting is inconsistent.",
+            issue="Placeholder [SELECT] left in the valve label paragraph.",
             code_reference="ASME A13.1",
         ),
         VerificationProfile.INTERNAL_COORDINATION,
         id="internal-coordination-precedes-code-reference",
+    ),
+    pytest.param(
+        dict(
+            issue="Valve label color formatting is inconsistent.",
+            code_reference="ASME A13.1",
+        ),
+        VerificationProfile.CODE_STANDARD,
+        id="formatting-is-not-internal-coordination",
+    ),
+    pytest.param(
+        dict(issue="Bleed valve on the hydronic loop has no size called out."),
+        VerificationProfile.CONSTRUCTABILITY,
+        id="bleed-does-not-match-leed",
     ),
     pytest.param(
         dict(issue="LEED reference is inappropriate for this project type."),
@@ -324,6 +344,15 @@ _PRESCREEN_CASES = [
         "web_required",
         False,
         id="gripes-without-keyword-web-required",
+    ),
+    pytest.param(
+        dict(
+            severity="GRIPES",
+            issue="Bleed valve on the hydronic loop has no size called out.",
+        ),
+        "web_required",
+        False,
+        id="gripes-bleed-does-not-match-leed",
     ),
 ]
 

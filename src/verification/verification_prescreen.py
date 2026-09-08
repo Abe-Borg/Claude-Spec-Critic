@@ -20,6 +20,7 @@ from ..core.api_config import (
     VERIFICATION_MODEL_DEFAULT,
 )
 from ..review.reviewer import Finding
+from .verification_profiles import matches_any_keyword
 
 
 # Severities that warrant Opus escalation when the first pass returns
@@ -50,6 +51,15 @@ _ESCALATION_SEVERITIES = frozenset({"CRITICAL", "HIGH"})
 # local_skip (web search adds no signal for either) but are tagged with
 # ``requires_elevated_confidence=True`` on the verification result,
 # raising the bar for the residual-risk classes.
+#
+# Matching is whole-word, not substring — both lists go through
+# :func:`verification_profiles.matches_any_keyword` (the same matcher the
+# profile classifier uses), so ``"leed"`` no longer fires on "bleed valve"
+# and ``"tbd"`` cannot fire inside a longer token. A trailing ``*`` marks
+# an open-ended stem (``"typo*"`` covers "typo", "typos", "typographical");
+# every other entry matches as a whole word, tolerating a plural ``s``. The
+# ``"xxx"`` entry is a whole word on purpose — it mirrors the preprocessor's
+# own ``\bXXX\b`` template-marker detector.
 _LOCAL_SKIP_KEYWORDS = (
     "placeholder",
     "[select]",
@@ -66,7 +76,7 @@ _LOCAL_SKIP_KEYWORDS = (
     "duplicate section",
     "empty section",
     "missing placeholder",
-    "typo",
+    "typo*",
     "invalid code cycle",
     "invalid california code cycle",
     "template marker",
@@ -138,9 +148,9 @@ def classify_finding_for_verification(finding: Finding) -> str:
     if not text:
         return "web_required"
 
-    if any(keyword in text for keyword in _LOCAL_SKIP_KEYWORDS):
+    if matches_any_keyword(text, _LOCAL_SKIP_KEYWORDS):
         return "local_skip"
-    if any(keyword in text for keyword in _LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED):
+    if matches_any_keyword(text, _LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED):
         return "local_skip"
     return "web_required"
 
@@ -171,9 +181,9 @@ def local_skip_requires_elevated_confidence(finding: Finding) -> bool:
     text = _normalized_finding_text(finding)
     if not text:
         return False
-    if any(keyword in text for keyword in _LOCAL_SKIP_KEYWORDS):
+    if matches_any_keyword(text, _LOCAL_SKIP_KEYWORDS):
         return False
-    return any(keyword in text for keyword in _LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED)
+    return matches_any_keyword(text, _LOCAL_SKIP_KEYWORDS_REQUIRES_ELEVATED)
 
 
 # ---------------------------------------------------------------------------
