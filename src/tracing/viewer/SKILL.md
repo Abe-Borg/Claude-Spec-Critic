@@ -7,11 +7,25 @@ artifacts the `TraceRecorder` writes to `~/.spec_critic/traces/<run_id>/`.
 
 - No build step, no `npm install`, no server. A reviewer double-clicks the
   file (or the GUI opens it) and picks a trace folder.
-- Tailwind via CDN for styling only — if the CDN is unreachable the layout
-  degrades but the data still renders (the tree/table structure is plain
-  HTML).
+- **Fully offline.** Styling is a hand-written inline `<style>` block of
+  utility classes (Tailwind-style names, no CDN, no `<link>`, no `@import`,
+  no external `url()`), so opening the file performs zero network requests.
+  The page renders local prompts and full spec text — a remote script has no
+  business executing on it. `tests/test_trace_viewer_offline.py` pins the
+  no-external-reference rule, that every class in use has a rule, and (when
+  headless Chromium is available) that the page renders with all network
+  requests aborted.
 - All parsing is local (`FileReader` via `<input webkitdirectory>`). Nothing
   is uploaded — trace data can contain full spec text.
+
+## Escaping contract
+
+Every trace-derived string reaches the DOM through `esc()`, which escapes
+`&`, `<`, `>`, `"` and `'` — it is used in text *and* attribute context
+(`title="…"`, `data-*="…"`), so attribute quotes must be covered. No element
+carries an inline `on*=` handler; interactive rows use a data attribute plus
+a delegated listener (see `lifecycleRow` / `#middlePane`), so a hostile id
+in `spans.jsonl` can never become script.
 
 ## Data contract (must stay in sync with the recorder)
 

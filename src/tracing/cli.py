@@ -9,7 +9,9 @@ Usage:
 without opening the HTML viewer. ``list`` enumerates available runs.
 ``prune`` deletes old trace directories — ``--keep-last N`` keeps the N
 most recent, ``--older-than`` deletes anything older than a duration
-(e.g. ``30d``, ``12h``).
+(e.g. ``30d``, ``12h``). Selection and deletion go through
+``retention.py`` — the same code the recorder runs automatically on every
+run start — so the manual and automatic paths cannot drift.
 
 All reads are local JSONL; no network, no Anthropic SDK import.
 """
@@ -17,12 +19,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 import time
 from pathlib import Path
 
 from .config import default_trace_root
+from .retention import (
+    delete_run_dirs,
+    iter_run_dirs as _iter_run_dirs,
+    load_run_meta as _load_run,
+    select_prune_candidates,
+)
 
 
 # Mirror report_status.classify_status so the CLI labels match the report
@@ -75,24 +82,6 @@ def _parse_jsonl(path: Path) -> list[dict]:
         except json.JSONDecodeError:
             continue
     return out
-
-
-def _load_run(trace_dir: Path) -> dict | None:
-    run_path = trace_dir / "run.json"
-    if not run_path.exists():
-        return None
-    try:
-        return json.loads(run_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
-
-
-def _iter_run_dirs(root: Path):
-    if not root.exists():
-        return
-    for child in sorted(root.iterdir()):
-        if child.is_dir() and (child / "run.json").exists():
-            yield child
 
 
 def _parse_duration(text: str) -> float:
@@ -205,23 +194,20 @@ def cmd_prune(args) -> int:
         print(f"No traces found under {root}")
         return 0
 
-    # Sort newest-first by started_at (fall back to mtime).
-    def _started(d: Path) -> float:
-        run = _load_run(d) or {}
-        return run.get("started_at") or d.stat().st_mtime
-
-    runs.sort(key=_started, reverse=True)
-
-    to_delete: list[Path] = []
+    # Selection is shared with the automatic startup retention
+    # (retention.select_prune_candidates): newest-first by started_at
+    # (mtime fallback), one knob at a time on the CLI.
     if args.keep_last is not None:
-        to_delete = runs[args.keep_last:]
+        selection = select_prune_candidates(root, keep_last=args.keep_last)
     elif args.older_than is not None:
-        cutoff = time.time() - _parse_duration(args.older_than)
-        to_delete = [d for d in runs if _started(d) < cutoff]
+        selection = select_prune_candidates(
+            root, older_than_seconds=_parse_duration(args.older_than)
+        )
     else:
         print("Specify --keep-last N or --older-than DURATION", file=sys.stderr)
         return 2
 
+    to_delete = list(selection.candidates)
     if not to_delete:
         print("Nothing to prune.")
         return 0
@@ -234,10 +220,11 @@ def cmd_prune(args) -> int:
         if reply not in ("y", "yes"):
             print("Aborted.")
             return 0
-    for d in to_delete:
-        shutil.rmtree(d, ignore_errors=True)
-    print(f"Deleted {len(to_delete)} trace director{'y' if len(to_delete)==1 else 'ies'}.")
-    return 0
+    deleted, failed = delete_run_dirs(to_delete)
+    for d, reason in failed:
+        print(f"  could not delete {d.name}: {reason}", file=sys.stderr)
+    print(f"Deleted {len(deleted)} trace director{'y' if len(deleted)==1 else 'ies'}.")
+    return 1 if failed else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
