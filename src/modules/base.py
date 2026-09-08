@@ -138,7 +138,8 @@ class ChunkGroup:
 
     The chunking *invariants* (every spec in exactly one chunk, singleton
     pooling into ``"general"``, completeness across chunks) stay engine-owned
-    in ``cross_check/cross_checker.py``; the division families are module
+    in ``core/chunked_pass.py`` (the engine both cross-check and compliance
+    drive); the division families are module
     data. ``chunk_id`` must not be ``"general"`` — that id is the engine's
     reserved pool for unmatched / singleton specs.
     """
