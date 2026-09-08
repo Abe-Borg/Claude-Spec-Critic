@@ -36,7 +36,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 if TYPE_CHECKING:
     from .verifier import VerificationResult
@@ -81,6 +81,31 @@ _CACHE_SCHEMA_VERSION = 4
 # that violates it, so a v4 file written before the gate cannot replay an
 # uncited "the claim is wrong" verdict for 60 days.
 _CITATION_GATED_VERDICTS = ("CONFIRMED", "CORRECTED", "DISPUTED")
+
+# Verdicts that may only be persisted with a non-empty ``source_quote`` — the
+# verbatim snippet the model said it relied on (the v3 invariant above).
+# Mirrors ``verifier._demote_if_missing_source_quote``, which demotes exactly
+# these two verdicts at parse time; a DISPUTED may legitimately carry no quote
+# (the evidence conflicts rather than supports), so it is citation-gated but
+# not quote-gated. Enforced in :meth:`VerificationCache.put` and re-checked in
+# :meth:`VerificationCache.load_from_disk`, so a quote-less CONFIRMED /
+# CORRECTED can neither be written by a future call site nor resurrected from
+# a hand-edited file — before this the parse-time demotion was the only guard.
+_QUOTE_GATED_VERDICTS = ("CONFIRMED", "CORRECTED")
+
+# Closed set of the ``VerificationResult.cache_status`` values the run-local
+# reuse layers stamp (``"n/a"`` / ``"local_skip"`` are the verifier's own).
+# ``miss`` — the verifier ran fresh; ``hit`` — replayed from a cache entry
+# (the only value that carries ``cache_entry_created_ts`` and earns the
+# report's cache-age badge); ``shared`` — a single-flight follower inherited
+# its leader's clean *ungrounded* verdict in-process
+# (``pipeline._verify_findings_singleflight``). A shared verdict never touches
+# the entry store in either direction, so it must never be counted as a disk
+# replay: the badge, the force-refresh hint, and the diagnostics hit/miss
+# counters all key on ``hit`` / ``miss`` exactly.
+CACHE_STATUS_MISS = "miss"
+CACHE_STATUS_HIT = "hit"
+CACHE_STATUS_SHARED = "shared"
 
 # Cache-key claim digest length (hex chars). 24 hex chars = 96 bits of entropy,
 # enough that two distinct claims colliding is astronomically unlikely even
@@ -267,6 +292,11 @@ class _VerificationFlightState:
 
     generation: int
     done: threading.Event = field(default_factory=threading.Event)
+    # Leader-published payload for this generation's followers (see
+    # :meth:`VerificationSingleFlight.share`). In-process only — it is the
+    # channel for verdicts the entry store deliberately refuses (ungrounded
+    # terminals), so it never goes near ``VerificationCache.put``.
+    shared_payload: Any = None
 
 
 @dataclass(frozen=True)
@@ -345,6 +375,33 @@ class VerificationSingleFlight:
         if claim.leader:
             raise ValueError("A single-flight leader cannot wait on itself")
         claim._state.done.wait()
+
+    @staticmethod
+    def share(claim: VerificationFlightClaim, payload: Any) -> None:
+        """Publish a leader's non-cacheable terminal result to its followers.
+
+        The cache's grounded invariant means an ungrounded verdict never
+        enters the entry store, so without this channel every follower of a
+        clean-UNVERIFIED leader would have to take over a fresh generation
+        and pay for its own call. The payload is opaque to the coordinator
+        (the pipeline decides what is shareable and who may inherit it) and
+        lives only on this generation's state: it is visible to followers
+        that waited on *this* claim and to nobody else, and it is never
+        persisted. Must be called by the leader before :meth:`complete`.
+        """
+
+        if not claim.leader:
+            raise ValueError("Only a single-flight leader can share a result")
+        claim._state.shared_payload = payload
+
+    @staticmethod
+    def shared_payload(claim: VerificationFlightClaim) -> Any:
+        """Return what the leader shared for a follower ``claim`` (or None).
+
+        Meaningful only after :meth:`wait` returned for the claim.
+        """
+
+        return claim._state.shared_payload
 
     def complete(self, claim: VerificationFlightClaim) -> None:
         """Release a leader generation and wake all of its followers.
@@ -462,6 +519,16 @@ class VerificationCache:
             getattr(result, "accepted_sources", None) or getattr(result, "sources", None)
         ):
             return
+        # Refuse to cache a CONFIRMED/CORRECTED without the verbatim
+        # ``source_quote`` the v3 shape exists to carry. The verifier's
+        # ``_demote_if_missing_source_quote`` downgrades such a result at
+        # parse time; this closes the gap for any call site that puts
+        # directly, so a hit can never render a grounded verdict with no
+        # quote behind it.
+        if verdict_upper in _QUOTE_GATED_VERDICTS and not (
+            (getattr(result, "source_quote", "") or "").strip()
+        ):
+            return
         key = make_cache_key(
             finding, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
         )
@@ -550,6 +617,14 @@ class VerificationCache:
                 verdict_upper = (entry_result.verdict or "").strip().upper()
                 if verdict_upper in _CITATION_GATED_VERDICTS and not (
                     entry_result.accepted_sources or entry_result.sources
+                ):
+                    continue
+                # Same re-check for the source-quote invariant: a v4 row
+                # hand-edited (or written by a pre-gate build) to hold a
+                # quote-less CONFIRMED / CORRECTED is dropped here rather
+                # than replayed for the TTL window.
+                if verdict_upper in _QUOTE_GATED_VERDICTS and not (
+                    (entry_result.source_quote or "").strip()
                 ):
                     continue
                 self._entries[key] = _CacheEntry(
@@ -751,7 +826,7 @@ def _result_from_dict(
 
 def _clone_for_store(result: "VerificationResult") -> "VerificationResult":
     """In-memory store clone — round-trips through the persisted-field policy."""
-    return _result_from_dict(_result_to_dict(result), cache_status="miss")
+    return _result_from_dict(_result_to_dict(result), cache_status=CACHE_STATUS_MISS)
 
 
 def _clone_for_hit(entry: _CacheEntry) -> "VerificationResult":
@@ -766,6 +841,6 @@ def _clone_for_hit(entry: _CacheEntry) -> "VerificationResult":
     """
     return _result_from_dict(
         _result_to_dict(entry.result),
-        cache_status="hit",
+        cache_status=CACHE_STATUS_HIT,
         cache_entry_created_ts=entry.created_ts,
     )

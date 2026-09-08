@@ -436,6 +436,9 @@ class TestVerificationCacheInvariant:
                 grounded=True,
                 accepted_sources=["https://dgs.ca.gov/page"],
                 sources=["https://dgs.ca.gov/page"],
+                # The cache also enforces the v3 source_quote invariant on
+                # CONFIRMED / CORRECTED (``_QUOTE_GATED_VERDICTS``).
+                source_quote="Per the cited page.",
             ),
         )
         hit = cache.get(f, cycle=DEFAULT_CYCLE)

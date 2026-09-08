@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
@@ -63,6 +63,7 @@ from ..verification.verifier import (
     verify_finding,
 )
 from ..verification.verification_cache import (
+    CACHE_STATUS_SHARED,
     VerificationCache,
     VerificationFlightClaim,
     cache_persist_enabled,
@@ -1943,7 +1944,23 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
     )
 
 
-def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[ExtractedSpec] | None = None, project_context: str | None = None, log: LogFn = _noop_log) -> CollectedBatchState:
+def run_cross_check_for_batch(
+    state: CollectedBatchState,
+    *,
+    specs: list[ExtractedSpec] | None = None,
+    project_context: str | None = None,
+    log: LogFn = _noop_log,
+    call_gate=None,
+) -> CollectedBatchState:
+    """Run cross-spec coordination over a collected batch.
+
+    ``call_gate`` is an optional re-enterable context manager (a routed
+    program passes its ``SPEC_CRITIC_REALTIME_COLLECTION_CALLS`` semaphore)
+    acquired around **each** API call inside the cross-check retry loop and
+    released during backoff sleeps — never around the whole pass, which for a
+    chunked project is several calls. ``None`` (the single-module GUI path)
+    is a no-op gate, byte-identical to the ungated behavior.
+    """
     if not state.submission.cross_check_enabled:
         return state
     if specs is None:
@@ -1997,7 +2014,14 @@ def run_cross_check_for_batch(state: CollectedBatchState, *, specs: list[Extract
     # would get a ``skipped`` status and no coordination review at all.
     # ``run_chunked_cross_check`` falls back to the single-pass
     # ``run_cross_check`` when the input fits.
-    cross = run_chunked_cross_check(specs, dedup_findings, project_context=project_context, cycle=cycle, log=log)
+    cross = run_chunked_cross_check(
+        specs,
+        dedup_findings,
+        project_context=project_context,
+        cycle=cycle,
+        log=log,
+        call_gate=call_gate,
+    )
     # Deterministic anchor validation (WS-4, D-16) — coordination findings
     # claim anchors in named files too; check them against the same texts.
     validate_finding_anchors(
@@ -2034,8 +2058,12 @@ def run_compliance_for_batch(
     specs: list[ExtractedSpec] | None = None,
     project_context: str | None = None,
     log: LogFn = _noop_log,
+    call_gate=None,
 ) -> CollectedBatchState:
     """Run the WS-4 local-code compliance pass over a collected batch.
+
+    ``call_gate`` has the same per-API-call contract as in
+    :func:`run_cross_check_for_batch` (``None`` = no gate).
 
     Mirrors :func:`run_cross_check_for_batch`'s shape: gate → input
     fallback to submission fields → failed-spec exclusion → cycle
@@ -2129,6 +2157,7 @@ def run_compliance_for_batch(
         project_context=project_context,
         cycle=cycle,
         log=log,
+        call_gate=call_gate,
     )
     # Deterministic anchor validation (WS-4, D-16): compliance ADD/EDIT
     # findings must anchor on text that exists verbatim in the named spec.
@@ -2156,8 +2185,12 @@ def run_drawing_impact_for_batch(
     *,
     project_context: str | None = None,
     log: LogFn = _noop_log,
+    call_gate=None,
 ) -> CollectedBatchState:
     """Explain how attached construction drawings informed the review (WS-5).
+
+    ``call_gate`` has the same per-API-call contract as in
+    :func:`run_cross_check_for_batch` (``None`` = no gate).
 
     Runs LAST in the collect sequence — after cross-check and compliance and
     their round-2 verification — so every finding it can link already carries
@@ -2200,6 +2233,7 @@ def run_drawing_impact_for_batch(
         findings=findings,
         module=module,
         log=log,
+        call_gate=call_gate,
     )
     state.drawing_impact_result = result
     if result.status == "completed":
@@ -2418,6 +2452,101 @@ def _execute_verification_attempts(
         )
 
 
+# ---------------------------------------------------------------------------
+# Verification single-flight (one paid call per equivalent claim)
+# ---------------------------------------------------------------------------
+
+# Severity rank used when a single-flight follower inherits a leader's
+# ungrounded verdict. Search budget and escalation are both monotone in
+# severity, so a verdict is only as thorough as the severity it was verified
+# at: the local representative is the group's highest-severity member, and a
+# cross-thread follower inherits only from a leader of equal or higher rank.
+_SEVERITY_SHARE_RANK = {"GRIPES": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+
+# Backstop on single-flight re-rounds. A group whose leader produced a result
+# nobody may inherit (operational failure, budget exhaustion, a local
+# classification, or a grounded verdict the cache refused) is re-queued so one
+# follower takes over — at most this many times. Past the cap the rest of the
+# group verifies directly, each finding its own attempt, so a pathological key
+# can never turn N equivalent findings into N sequential rounds.
+_SINGLEFLIGHT_MAX_REROUNDS = 1
+
+
+def _severity_share_rank(finding: Finding) -> int:
+    severity = str(getattr(finding, "severity", "") or "").strip().upper()
+    return _SEVERITY_SHARE_RANK.get(severity, 0)
+
+
+@dataclass(frozen=True)
+class _SharedVerdict:
+    """What a leader publishes for its followers (in-process only)."""
+
+    result: VerificationResult
+    severity_rank: int
+
+
+def _shareable_verdict(result: VerificationResult | None) -> bool:
+    """True when a leader's result may be inherited in-process by followers.
+
+    Shareable means a clean, ungrounded, terminal verdict: the verifier ran to
+    completion and could not ground the claim, so an equivalent claim would get
+    the same answer. Everything else keeps its existing path:
+
+    * a grounded verdict shares through the cache — its invariant stays the
+      only route for CONFIRMED / CORRECTED / DISPUTED;
+    * an operational failure (``verification_failed``) is never inherited —
+      each follower deserves its own attempt, the same reason the cache
+      refuses to persist one;
+    * a ``budget_exhausted`` shortfall is not inherited either — a follower's
+      own budget (or a re-run's) may still ground the claim;
+    * a local classification is per-finding (severity-gated) and free, so it
+      is re-derived rather than copied.
+    """
+    if result is None:
+        return False
+    if getattr(result, "grounded", False):
+        return False
+    if getattr(result, "verification_failed", False):
+        return False
+    if getattr(result, "budget_exhausted", False):
+        return False
+    if (getattr(result, "cache_status", "") or "") == "local_skip":
+        return False
+    return bool((getattr(result, "verdict", "") or "").strip())
+
+
+def _shared_clone(result: VerificationResult) -> VerificationResult:
+    """Copy a leader's verdict for a follower, stamped ``cache_status="shared"``.
+
+    The evidence (explanation, searched sources, search count) is the verdict's
+    own and rides along; the operational telemetry does not — tokens are zeroed
+    and the retry / raw payloads dropped so a shared verdict never double-counts
+    the leader's spend in diagnostics. ``cache_entry_created_ts`` stays 0.0:
+    this is not a disk replay and must not earn the report's cache-age badge.
+    """
+    clone = copy.deepcopy(result)
+    clone.cache_status = CACHE_STATUS_SHARED
+    clone.cache_entry_created_ts = 0.0
+    clone.input_tokens = 0
+    clone.output_tokens = 0
+    clone.retry_telemetry = None
+    clone.structured_payload = None
+    return clone
+
+
+def _stamp_shared_verdict(
+    findings: list[Finding], shared: _SharedVerdict
+) -> list[Finding]:
+    """Stamp every finding the leader's rank covers; return the holdouts."""
+    holdouts: list[Finding] = []
+    for finding in findings:
+        if _severity_share_rank(finding) <= shared.severity_rank:
+            finding.verification = _shared_clone(shared.result)
+        else:
+            holdouts.append(finding)
+    return holdouts
+
+
 @dataclass
 class _VerificationFlightGroup:
     """Equivalent local findings sharing one normalized cache key."""
@@ -2425,6 +2554,22 @@ class _VerificationFlightGroup:
     key: str
     findings: list[Finding]
     claim: VerificationFlightClaim | None = None
+    # Takeover generations this group has already been through (bounded by
+    # ``_SINGLEFLIGHT_MAX_REROUNDS``).
+    depth: int = 0
+
+    def elect_representative(self) -> Finding:
+        """Move the highest-severity member to index 0 and return it.
+
+        Ties keep declaration order, so a same-severity group is unchanged.
+        """
+        best = max(
+            range(len(self.findings)),
+            key=lambda i: _severity_share_rank(self.findings[i]),
+        )
+        if best:
+            self.findings[0], self.findings[best] = self.findings[best], self.findings[0]
+        return self.findings[0]
 
 
 def _stamp_grounded_cache_hits(
@@ -2466,7 +2611,25 @@ def _verify_findings_singleflight(
     jurisdiction_fingerprint: str | None,
     api_call_semaphore,
 ) -> None:
-    """Verify each cache key once while allowing safe follower takeover."""
+    """Verify each cache key once; followers reuse or inherit the leader's verdict.
+
+    Per round, one leader per key makes the paid call. What its followers
+    (equivalent findings in this call and in concurrent callers) receive:
+
+    * a grounded verdict — replayed from the cache (``cache_status="hit"``),
+      the only path for CONFIRMED / CORRECTED / DISPUTED;
+    * a clean ungrounded terminal — inherited in-process
+      (``cache_status="shared"``, see :func:`_shareable_verdict`), never via
+      the cache, whose grounded invariant is untouched;
+    * anything else (operational failure, budget exhaustion, local
+      classification, a grounded verdict the cache refused) — one follower
+      takes over a fresh generation; past ``_SINGLEFLIGHT_MAX_REROUNDS`` the
+      remaining members verify directly, each its own attempt.
+
+    Exactly-once holds throughout: every finding leaves with one
+    ``VerificationResult`` — stamped by its own attempt, a cache hit, or a
+    shared clone — and no finding is handed to two attempts.
+    """
 
     cycle = module.cycle
     grouped: dict[str, list[Finding]] = {}
@@ -2483,6 +2646,21 @@ def _verify_findings_singleflight(
         for key, group_findings in grouped.items()
     ]
     reused = 0
+    shared = 0
+    direct: list[Finding] = []
+
+    def execute(items: list[Finding]) -> None:
+        _execute_verification_attempts(
+            items,
+            module=module,
+            transport=transport,
+            log=log,
+            progress=progress,
+            cache=cache,
+            user_location=user_location,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            api_call_semaphore=api_call_semaphore,
+        )
 
     while pending:
         # ``claim_many`` sorts and registers the whole key set under one lock.
@@ -2511,26 +2689,28 @@ def _verify_findings_singleflight(
                 ):
                     reused += len(group.findings)
                     continue
+                group.elect_representative()
                 leaders.append(group)
 
             if leaders:
-                representatives = [group.findings[0] for group in leaders]
-                _execute_verification_attempts(
-                    representatives,
-                    module=module,
-                    transport=transport,
-                    log=log,
-                    progress=progress,
-                    cache=cache,
-                    user_location=user_location,
-                    jurisdiction_fingerprint=jurisdiction_fingerprint,
-                    api_call_semaphore=api_call_semaphore,
-                )
+                execute([group.findings[0] for group in leaders])
+            # Publish each leader's clean ungrounded verdict to this
+            # generation's waiters before the claims are released below.
+            for group in leaders:
+                leader = group.findings[0]
+                if _shareable_verdict(leader.verification):
+                    cache.singleflight.share(
+                        group.claim,
+                        _SharedVerdict(
+                            result=leader.verification,
+                            severity_rank=_severity_share_rank(leader),
+                        ),
+                    )
         finally:
             # Always wake peers, including when cache lookup, batch submission,
             # collection, logging, progress, or interpreter control-flow raises.
-            # Waiters consult the cache and one takes over every key whose leader
-            # failed to produce a cacheable verdict.
+            # Waiters consult the shared payload and the cache; one takes over
+            # every key whose leader produced nothing inheritable.
             # Iterate the complete atomic claim map, not only groups visited by
             # the loop above: if key 1's cache lookup raises, leader claims for
             # keys 2..N still have to be released.
@@ -2540,32 +2720,53 @@ def _verify_findings_singleflight(
 
         next_pending: list[_VerificationFlightGroup] = []
 
-        # A local group leader already owns its actual (cache-miss, local-skip,
-        # or operational-failure) result. Equivalent siblings may reuse only a
-        # grounded entry; otherwise they become candidates for a new generation
-        # rather than inheriting an ungrounded verdict.
+        def requeue(group: _VerificationFlightGroup, members: list[Finding]) -> None:
+            if not members:
+                return
+            if group.depth < _SINGLEFLIGHT_MAX_REROUNDS:
+                next_pending.append(
+                    _VerificationFlightGroup(
+                        key=group.key, findings=members, depth=group.depth + 1
+                    )
+                )
+            else:
+                direct.extend(members)
+
+        # A local group leader already owns its actual result. Equivalent
+        # siblings replay a grounded entry, inherit a clean ungrounded verdict
+        # (the representative is the group's highest severity, so every
+        # sibling is covered), or become candidates for a new generation.
         for group in leaders:
             local_followers = group.findings[1:]
             if not local_followers:
                 continue
-            if _stamp_grounded_cache_hits(
+            leader_result = group.findings[0].verification
+            if getattr(leader_result, "grounded", False) and _stamp_grounded_cache_hits(
                 local_followers,
                 cache=cache,
                 cycle=cycle,
                 jurisdiction_fingerprint=jurisdiction_fingerprint,
             ):
                 reused += len(local_followers)
+            elif _shareable_verdict(leader_result):
+                for follower in local_followers:
+                    follower.verification = _shared_clone(leader_result)
+                shared += len(local_followers)
             else:
-                next_pending.append(
-                    _VerificationFlightGroup(
-                        key=group.key,
-                        findings=local_followers,
-                    )
-                )
+                requeue(group, local_followers)
 
         for group in followers:
             cache.singleflight.wait(group.claim)
-            if _stamp_grounded_cache_hits(
+            payload = cache.singleflight.shared_payload(group.claim)
+            if isinstance(payload, _SharedVerdict):
+                # The leader ran and could not ground the claim; a grounded
+                # entry cannot exist for this generation, so the cache is not
+                # consulted. Members above the leader's severity still take
+                # their own attempt (their budget / escalation is larger).
+                holdouts = _stamp_shared_verdict(group.findings, payload)
+                shared += len(group.findings) - len(holdouts)
+                requeue(group, holdouts)
+            elif _stamp_grounded_cache_hits(
                 group.findings,
                 cache=cache,
                 cycle=cycle,
@@ -2573,22 +2774,30 @@ def _verify_findings_singleflight(
             ):
                 reused += len(group.findings)
             else:
-                # The prior leader yielded a local/ungrounded/failed result.
-                # Re-entering the atomic group claim elects exactly one waiter
-                # as the next leader; the others follow that generation.
-                next_pending.append(
-                    _VerificationFlightGroup(
-                        key=group.key,
-                        findings=group.findings,
-                    )
-                )
+                # The prior leader yielded a local / failed / uncacheable
+                # result. Re-entering the atomic group claim elects exactly one
+                # waiter as the next leader; the others follow that generation.
+                requeue(group, group.findings)
 
         pending = next_pending
 
-    if reused:
+    if direct:
         log(
-            f"Verification single-flight: reused {reused} grounded verdict(s) "
-            "from concurrent/equivalent findings.",
+            f"Verification single-flight: {len(direct)} equivalent finding(s) "
+            "exhausted the takeover cap; verifying each directly.",
+            level="info",
+        )
+        execute(direct)
+
+    if reused or shared:
+        parts: list[str] = []
+        if reused:
+            parts.append(f"reused {reused} grounded verdict(s) from the cache")
+        if shared:
+            parts.append(f"shared {shared} ungrounded verdict(s) in-process")
+        log(
+            "Verification single-flight: " + "; ".join(parts)
+            + " across concurrent/equivalent findings.",
             level="info",
         )
 
@@ -2610,9 +2819,13 @@ def verify_findings_for_run(
     Both the GUI and headless drivers call this entry point in verification
     rounds one and two. With a shared :class:`VerificationCache`, equivalent
     claims on either transport use one remote leader. Followers wait without
-    holding API permits and reuse only grounded cache entries. If a leader
-    yields a local, ungrounded, or failed result, exactly one follower takes
-    over a fresh generation. Calls without a cache retain the legacy path.
+    holding API permits and then replay a grounded cache entry or inherit the
+    leader's clean ungrounded verdict in-process (``cache_status="shared"``).
+    If a leader yields a local, failed, budget-exhausted, or uncacheable
+    result, exactly one follower takes over a fresh generation — at most
+    once; past that cap the remainder verify directly (see
+    :func:`_verify_findings_singleflight`). Calls without a cache retain the
+    legacy path.
     """
 
     if not findings:
@@ -2928,25 +3141,30 @@ def run_batch_collection_headless(
     progress(40.0, "Initial findings verified")
 
     progress(40.0, "Cross-checking coordination across specifications")
-    with api_call_semaphore if api_call_semaphore is not None else nullcontext():
-        review_state = run_cross_check_for_batch(
-            review_state,
-            specs=submission.prepared_specs,
-            project_context=submission.project_context,
-            log=log,
-        )
+    # The program-wide permit pool is threaded down as a per-call gate: the
+    # runners acquire it around each API call inside their retry loops and
+    # release it across backoff sleeps. Holding one permit across a whole
+    # chunked pass (five-plus calls with sleeps between them) would let a
+    # single module collector monopolize the budget while doing no work.
+    review_state = run_cross_check_for_batch(
+        review_state,
+        specs=submission.prepared_specs,
+        project_context=submission.project_context,
+        log=log,
+        call_gate=api_call_semaphore,
+    )
     progress(60.0, "Cross-check complete")
     # WS-4 compliance pass: after cross-check, before verification round 2.
     # No-op (state unchanged) for flag-off modules; explicit ``skipped``
     # when the module opted in but the profile is unavailable (recovery).
     progress(60.0, "Checking project requirements compliance")
-    with api_call_semaphore if api_call_semaphore is not None else nullcontext():
-        review_state = run_compliance_for_batch(
-            review_state,
-            specs=submission.prepared_specs,
-            project_context=submission.project_context,
-            log=log,
-        )
+    review_state = run_compliance_for_batch(
+        review_state,
+        specs=submission.prepared_specs,
+        project_context=submission.project_context,
+        log=log,
+        call_gate=api_call_semaphore,
+    )
     progress(75.0, "Compliance check complete")
     cross_findings = (
         list(review_state.cross_check_result.findings)
@@ -2979,12 +3197,12 @@ def run_batch_collection_headless(
     # just picked up their verdicts. No-op (state unchanged) when no drawing
     # digest is in Project Context.
     if include_drawing_impact:
-        with api_call_semaphore if api_call_semaphore is not None else nullcontext():
-            review_state = run_drawing_impact_for_batch(
-                review_state,
-                project_context=submission.project_context,
-                log=log,
-            )
+        review_state = run_drawing_impact_for_batch(
+            review_state,
+            project_context=submission.project_context,
+            log=log,
+            call_gate=api_call_semaphore,
+        )
 
     progress(100.0, "Module collection complete")
 

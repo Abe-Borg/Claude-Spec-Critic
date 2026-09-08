@@ -49,6 +49,7 @@ from ..core.api_config import (
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from ..cross_check.cross_checker import (
+    _gate,
     _group_specs_by_chunk,
     _label_finding_with_chunk,
     _sanitize_narrative,
@@ -503,6 +504,7 @@ def run_compliance_check(
     chunk_subset: bool = False,
     log: LogFn = _noop_log,
     _trace_parent=None,
+    call_gate=None,
 ) -> ReviewResult:
     """Single-pass compliance evaluation. Mirrors ``run_cross_check``.
 
@@ -510,6 +512,10 @@ def run_compliance_check(
     the pass status (``completed`` / ``failed`` / ``skipped``) and the
     coverage matrix on ``ReviewResult.coverage``. Never raises on API
     errors — failures land in the result per the cross-check convention.
+
+    ``call_gate``: optional per-call permit gate (cross-check's
+    ``_gate`` contract) — held around each streaming call only, released
+    before any backoff sleep.
     """
     own_span = None
     if _trace_parent is None:
@@ -565,7 +571,9 @@ def run_compliance_check(
         _trace.capture_compliance_end(own_span, finding_count=0, status="skipped")
         return result
 
-    client = _get_client()
+    # This pass runs its own retry loop (retry_policy); SDK retries off so
+    # attempts do not stack.
+    client = _get_client(sdk_retries=False)
     start = time.time()
     result = ReviewResult(model=model)
     valid_ids = {item.item_id for item in controlling} | {
@@ -591,12 +599,15 @@ def run_compliance_check(
     for attempt in range(attempts_planned):
         is_last_attempt = attempt == attempts_planned - 1
         try:
-            with client.messages.stream(**request_kwargs) as stream:
-                chunks: list[str] = []
-                for text in stream.text_stream:
-                    chunks.append(text)
-                    _trace.capture_stream_chunk(trace_anchor, text)
-                response = stream.get_final_message()
+            # One permit per API call (cross-check parity): released before
+            # parsing and before any backoff sleep.
+            with _gate(call_gate):
+                with client.messages.stream(**request_kwargs) as stream:
+                    chunks: list[str] = []
+                    for text in stream.text_stream:
+                        chunks.append(text)
+                        _trace.capture_stream_chunk(trace_anchor, text)
+                    response = stream.get_final_message()
 
             result.raw_response = "".join(chunks)
             result.stop_reason = getattr(response, "stop_reason", None)
@@ -709,8 +720,12 @@ def run_chunked_compliance_check(
     model: str = COMPLIANCE_MODEL_DEFAULT,
     max_retries: int = 3,
     log: LogFn = _noop_log,
+    call_gate=None,
 ) -> ReviewResult:
     """Size-aware compliance entry point (the pipeline calls this).
+
+    ``call_gate`` is threaded to every :func:`run_compliance_check` call so
+    a chunked pass takes one permit per API call, never one for the pass.
 
     Delegates to :func:`run_compliance_check` when the corpus fits; falls
     back to per-CSI-chunk passes with the D-7 coverage merge otherwise.
@@ -735,6 +750,7 @@ def run_chunked_compliance_check(
             model=model,
             max_retries=max_retries,
             log=log,
+            call_gate=call_gate,
         )
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
@@ -771,6 +787,7 @@ def run_chunked_compliance_check(
             chunk_subset=True,
             log=log,
             _trace_parent=trace_span,
+            call_gate=call_gate,
         )
         chunk_results.append((chunk_id, chunk_result))
 
