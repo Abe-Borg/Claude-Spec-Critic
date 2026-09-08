@@ -115,7 +115,7 @@ You need a Windows machine with Python 3.11+.
 ```powershell
 pip install -r requirements.txt
 pip install -e . --no-deps
-pip install keyring pyinstaller
+pip install pyinstaller
 
 # Warm the tokenizer's rank file into the directory the spec bundles (see
 # "Bundled tokenizer data" below). Mandatory: the build fails without it.

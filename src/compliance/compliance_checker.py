@@ -21,9 +21,10 @@ fee or seasonal test window is a project-team fact, not spec content, and
 must never generate a ``missing`` coverage row (D-7 [FT]).
 
 Chunking: when the corpus exceeds the recommended input size, the pass
-reuses the cross-check chunk helpers (module CSI chunk groups, singleton
-pooling, completeness invariants). **A chunk-local absence is NOT a package
-miss**: each chunk sees only its CSI subset, so per-``requirement_id``
+drives the shared chunked-pass engine (``core.chunked_pass`` — module CSI
+chunk groups, singleton pooling, completeness invariants, the per-chunk
+tally and status/error synthesis cross-check uses too). **A chunk-local
+absence is NOT a package miss**: each chunk sees only its CSI subset, so per-``requirement_id``
 coverage merges with precedence ``contradicted`` > ``represented`` >
 ``unclear`` > ``missing`` (missing only when every chunk that classified
 the requirement said missing), and ADD/missing findings survive only when
@@ -46,12 +47,11 @@ from ..core.api_config import (
     system_prompt_with_cache,
     tools_with_cache,
 )
+from ..core.chunked_pass import ChunkJob, group_specs_by_chunk, run_chunked_pass
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
 from ..cross_check.cross_checker import (
     _gate,
-    _group_specs_by_chunk,
-    _label_finding_with_chunk,
     _sanitize_narrative,
     render_already_identified_block,
     render_corpus_block,
@@ -729,11 +729,15 @@ def run_chunked_compliance_check(
 
     Delegates to :func:`run_compliance_check` when the corpus fits; falls
     back to per-CSI-chunk passes with the D-7 coverage merge otherwise.
-    Same conventions as ``run_chunked_cross_check``: every spec lands in
-    exactly one chunk, a partial chunk failure keeps the other chunks'
-    output (status stays ``completed`` when ≥1 chunk completed), and the
-    per-chunk tally is recorded in the summary plus
-    ``chunk_failures`` / ``chunk_skips`` for the diagnostics banner.
+    The grouping, per-chunk loop, tally, and status/error synthesis are
+    the shared :func:`~src.core.chunked_pass.run_chunked_pass` engine
+    cross-check drives too, so the conventions are one implementation:
+    every spec lands in exactly one chunk, a partial chunk failure keeps
+    the other chunks' output (status stays ``completed`` when ≥1 chunk
+    completed), and the per-chunk tally is recorded in the summary plus
+    ``chunk_failures`` / ``chunk_skips`` for the diagnostics banner. This
+    adapter supplies the runner, the coverage merge + finding filter
+    hooks, the log line, and the trace span.
     """
     system_tokens = count_tokens(_compliance_system_prompt(cycle))
     full_message = _build_compliance_user_message(
@@ -754,7 +758,7 @@ def run_chunked_compliance_check(
         )
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
-    chunks = _group_specs_by_chunk(specs, groups)
+    chunks = group_specs_by_chunk(specs, groups)
     log(
         f"Compliance input exceeds {COMPLIANCE_RECOMMENDED_MAX:,} tokens; "
         f"evaluating in {len(chunks)} CSI chunks. Each chunk sees only its "
@@ -767,19 +771,11 @@ def run_chunked_compliance_check(
         chunked=True,
     )
 
-    chunk_results: list[tuple[str, ReviewResult]] = []
-    for chunk_id, chunk_specs in chunks:
-        chunk_filenames = {spec.filename for spec in chunk_specs}
-        chunk_findings = [
-            f
-            for f in existing_findings
-            if f.fileName in chunk_filenames
-            or any(name in chunk_filenames for name in f.affected_files)
-        ]
-        chunk_result = run_compliance_check(
-            chunk_specs,
+    def run_chunk(job: ChunkJob) -> ReviewResult:
+        return run_compliance_check(
+            job.specs,
             requirements_profile,
-            chunk_findings,
+            job.existing_findings,
             project_context=project_context,
             cycle=cycle,
             model=model,
@@ -789,74 +785,27 @@ def run_chunked_compliance_check(
             _trace_parent=trace_span,
             call_gate=call_gate,
         )
-        chunk_results.append((chunk_id, chunk_result))
 
-    # Merge. Coverage first (per-requirement precedence), then findings
-    # (chunk-local ADDs disproven by the merged coverage are dropped).
-    completed = [r for _cid, r in chunk_results if r.cross_check_status == "completed"]
-    failed = [r for _cid, r in chunk_results if r.cross_check_status == "failed"]
-    skipped = [r for _cid, r in chunk_results if r.cross_check_status == "skipped"]
-
-    merged_coverage = _merge_coverage_lists([r.coverage for r in completed])
-    labeled_findings: list[Finding] = []
-    for chunk_id, chunk_result in chunk_results:
-        if chunk_result.cross_check_status != "completed":
-            continue
-        for finding in chunk_result.findings:
-            labeled_findings.append(
-                _label_finding_with_chunk(finding, chunk_id, groups)
-            )
-    merged_findings = _filter_chunk_findings(labeled_findings, merged_coverage)
-
-    summaries: list[str] = []
-    for chunk_id, chunk_result in chunk_results:
-        status = chunk_result.cross_check_status
-        if status == "completed" and chunk_result.thinking:
-            summaries.append(f"--- {chunk_id} ---\n{chunk_result.thinking.strip()}")
-        elif status == "skipped":
-            summaries.append(
-                f"--- {chunk_id} ---\nSkipped: {chunk_result.thinking or 'no reason given'}"
-            )
-        elif status == "failed":
-            summaries.append(
-                f"--- {chunk_id} ---\nFailed: {chunk_result.error or 'unknown error'}"
-            )
-
-    if not completed:
-        status = "failed" if failed else "skipped"
-    else:
-        status = "completed"
-    header = (
-        f"Chunked compliance check ({len(completed)} completed, "
-        f"{len(failed)} failed, {len(skipped)} skipped). Per-chunk summaries follow.\n"
-    )
-
-    merged = ReviewResult(
-        findings=merged_findings,
-        thinking=header + "\n\n".join(summaries) if summaries else header,
+    # Merge order (D-7): coverage first (per-requirement precedence over the
+    # completed chunks), then findings — chunk-local ADDs the merged coverage
+    # disproves are dropped. Per-chunk summaries are headed by chunk id.
+    merged = run_chunked_pass(
+        chunks,
+        existing_findings,
+        groups=groups,
+        run_chunk=run_chunk,
+        pass_name="compliance",
+        summary_title="Chunked compliance check",
         model=model,
-        cross_check_status=status,
-        chunk_failures=len(failed),
-        chunk_skips=len(skipped),
-        coverage=merged_coverage,
+        summary_heading=lambda chunk_id: chunk_id,
+        coverage_merge=_merge_coverage_lists,
+        finding_filter=_filter_chunk_findings,
     )
-    merged.input_tokens = sum(r.input_tokens for _cid, r in chunk_results)
-    merged.output_tokens = sum(r.output_tokens for _cid, r in chunk_results)
-    merged.cache_creation_input_tokens = sum(
-        r.cache_creation_input_tokens for _cid, r in chunk_results
-    )
-    merged.cache_read_input_tokens = sum(
-        r.cache_read_input_tokens for _cid, r in chunk_results
-    )
-    if status == "failed":
-        merged.error = "; ".join(
-            filter(None, (r.error for r in failed))
-        ) or "All compliance chunks failed."
     _trace.capture_compliance_end(
         trace_span,
-        finding_count=len(merged_findings),
-        coverage_count=len(merged_coverage),
-        status=status,
-        error=merged.error if status == "failed" else None,
+        finding_count=len(merged.findings),
+        coverage_count=len(merged.coverage),
+        status=merged.cross_check_status,
+        error=merged.error if merged.cross_check_status == "failed" else None,
     )
     return merged

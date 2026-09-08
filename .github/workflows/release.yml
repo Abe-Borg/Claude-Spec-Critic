@@ -104,13 +104,22 @@ jobs:
 
       - name: Install app + PyInstaller
         shell: pwsh
-        # keyring is an optional dependency of the app (Credential Manager key
-        # storage); installed here so the frozen build ships with it.
+        # requirements.txt is the runtime lock (it now pins keyring, whose
+        # Credential Manager backend the frozen build bundles); the test-only
+        # chain in requirements-dev.txt is deliberately NOT installed here so
+        # nothing test-related can leak into the bundle.
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -e . --no-deps
-          pip install keyring "pyinstaller==6.11.1"
+          pip install "pyinstaller==6.11.1"
+
+      - name: Verify installed dependency graph (pip check)
+        shell: pwsh
+        # Fails the build when the pinned set contradicts pyproject's declared
+        # dependencies (or a package's own requirements) — a broken graph would
+        # otherwise surface only as a missing module inside the frozen exe.
+        run: python -m pip check
 
       - name: Warm the tiktoken cache (bundled so the app never downloads it)
         shell: pwsh

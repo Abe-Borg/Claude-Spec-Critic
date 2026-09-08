@@ -229,7 +229,15 @@ def cmd_prune(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m src.tracing", description="Inspect and prune agent traces.")
-    parser.add_argument("--trace-dir", help="Override the trace root (default: ~/.spec_critic/traces)")
+    parser.add_argument(
+        "--trace-dir",
+        help=(
+            "Override the trace root (default: SPEC_CRITIC_TRACE_DIR when set, else "
+            "the per-user state directory: %%LOCALAPPDATA%%\\SpecCritic\\traces on "
+            "Windows, ~/Library/Application Support/SpecCritic/traces on macOS, "
+            "~/.local/state/SpecCritic/traces on Linux)"
+        ),
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_list = sub.add_parser("list", help="List available trace runs")
@@ -249,7 +257,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_utf8_stdio() -> None:
+    """Best-effort: make ``stdout`` / ``stderr`` UTF-8 so the status glyphs never raise.
+
+    ``show`` prints ``✓ ✎ ✗ ◆ — ⚠ ⚡``; a legacy Windows console or a
+    redirected pipe hands Python a cp1252 stream on which the first glyph
+    raises ``UnicodeEncodeError`` and kills the listing mid-output.
+    ``reconfigure`` exists only on ``TextIOWrapper`` streams (and never on a
+    ``None`` stream in a windowed build), so anything else is left alone, and
+    ``errors="replace"`` degrades an unencodable character to ``?`` rather
+    than a traceback. Never raises.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if stream is None or reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 - a console we cannot reconfigure keeps its encoding
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

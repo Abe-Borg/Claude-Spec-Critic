@@ -1,0 +1,9 @@
+# Test / CI dependencies. Installs the runtime lock first, then the pytest chain.
+# The hermetic suite (tests/) needs nothing else — no API key, no network.
+-r requirements.txt
+pytest==9.0.3
+iniconfig==2.3.0
+pluggy==1.6.0
+Pygments==2.20.0
+# pytest's Windows-only dependency (console colors); harmless elsewhere.
+colorama==0.4.6; sys_platform == "win32"

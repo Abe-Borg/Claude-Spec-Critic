@@ -8,10 +8,17 @@ separately.
 
 Phase 10: the cache persists to disk between runs. Cycle label is part of
 the key, so switching code cycles naturally invalidates everything from the
-prior cycle — no calendar TTL is required for correctness. An optional
-``SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS`` environment override is provided
-for users who want age-based pruning anyway; the default (0) is a database,
-not a cache.
+prior cycle. On top of that, entries expire by age: the
+``SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS`` override defaults to **60 days**
+(pruned on load — see :func:`cache_ttl_days`); an explicit ``0`` restores the
+legacy no-expiry "database" behavior. Growth is bounded independently of age
+by an LRU entry cap, ``SPEC_CRITIC_VERIFICATION_CACHE_MAX_ENTRIES`` (default
+5000, ``0`` disables — see :func:`cache_max_entries`): a hit touches the
+entry's ``last_used_ts`` and the least-recently-used entries are evicted when
+a put / save / load leaves the store over the cap. ``last_used_ts`` is an
+additive on-disk field (a legacy row loads with ``created_ts`` as its
+fallback — no schema bump), and the file is written compact (no indentation)
+through the same atomic temp-file + replace.
 
 Only ``grounded=True`` results are stored, preserving the existing safety
 guarantee that cached verdicts are always backed by external evidence.
@@ -265,6 +272,71 @@ def cache_ttl_days() -> int:
     return value
 
 
+_DEFAULT_CACHE_MAX_ENTRIES = 5000
+
+
+def cache_max_entries() -> int:
+    """LRU entry cap for the cache. Default 5000 entries; ``0`` disables.
+
+    Age-based pruning alone does not bound the file: a busy operator can
+    accumulate tens of thousands of grounded verdicts inside the TTL window,
+    every one of which is re-serialized on each save. The cap keeps the
+    store (and the save) bounded by evicting the least-recently-used entries
+    — recency is ``_CacheEntry.last_used_ts``, touched on every hit — when
+    a put / save / load leaves the store over the cap.
+
+    Override via ``SPEC_CRITIC_VERIFICATION_CACHE_MAX_ENTRIES``. Explicit
+    ``0`` disables the cap (unbounded, the pre-cap behavior). Malformed or
+    negative values fall back to the default so a typo never silently
+    disables the bound or evicts the whole cache.
+    """
+    raw = os.environ.get("SPEC_CRITIC_VERIFICATION_CACHE_MAX_ENTRIES")
+    if raw is None or not raw.strip():
+        return _DEFAULT_CACHE_MAX_ENTRIES
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return _DEFAULT_CACHE_MAX_ENTRIES
+    if value == 0:
+        return 0
+    if value < 0:
+        return _DEFAULT_CACHE_MAX_ENTRIES
+    return value
+
+
+_DEFAULT_SINGLEFLIGHT_WAIT_SECONDS = 900.0
+
+
+def singleflight_wait_seconds() -> float:
+    """How long a single-flight follower waits on its leader. Default 900 s.
+
+    A leader that dies without calling :meth:`VerificationSingleFlight.complete`
+    (a crashed worker thread, a killed process sharing the coordinator) would
+    otherwise park every follower of that generation forever. After the bound
+    a follower proceeds with its own independent verification instead
+    (``pipeline._verify_findings_singleflight`` logs the takeover).
+
+    Override via ``SPEC_CRITIC_VERIFICATION_SINGLEFLIGHT_WAIT_SECONDS``
+    (fractional seconds accepted). Explicit ``0`` waits forever (the legacy
+    unbounded behavior). Malformed, negative, or non-finite values fall back
+    to the default.
+    """
+    raw = os.environ.get("SPEC_CRITIC_VERIFICATION_SINGLEFLIGHT_WAIT_SECONDS")
+    if raw is None or not raw.strip():
+        return _DEFAULT_SINGLEFLIGHT_WAIT_SECONDS
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return _DEFAULT_SINGLEFLIGHT_WAIT_SECONDS
+    if value != value or value in (float("inf"), float("-inf")):
+        return _DEFAULT_SINGLEFLIGHT_WAIT_SECONDS
+    if value == 0:
+        return 0.0
+    if value < 0:
+        return _DEFAULT_SINGLEFLIGHT_WAIT_SECONDS
+    return value
+
+
 def default_cache_path() -> Path:
     """Return the on-disk cache file path.
 
@@ -281,9 +353,20 @@ def default_cache_path() -> Path:
 
 @dataclass
 class _CacheEntry:
-    """Stored verdict with sidecar metadata for future maintenance tools."""
+    """Stored verdict with sidecar metadata for future maintenance tools.
+
+    ``last_used_ts`` is the LRU recency stamp — refreshed on every hit and
+    persisted additively (a legacy row without it loads with ``created_ts``).
+    ``created_ts`` stays the age reference for the TTL and the report's
+    cache-age badge; a hit never rewrites it.
+    """
     result: "VerificationResult"
     created_ts: float
+    last_used_ts: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.last_used_ts:
+            self.last_used_ts = self.created_ts
 
 
 @dataclass
@@ -369,12 +452,28 @@ class VerificationSingleFlight:
         return claims
 
     @staticmethod
-    def wait(claim: VerificationFlightClaim) -> None:
-        """Wait for the generation represented by a follower ``claim``."""
+    def wait(
+        claim: VerificationFlightClaim, timeout: float | None = None
+    ) -> bool:
+        """Wait for the generation represented by a follower ``claim``.
+
+        Returns ``True`` once the leader completed, ``False`` if the bound
+        elapsed first. ``timeout`` defaults to
+        :func:`singleflight_wait_seconds` (``0`` / ``None`` from that seam
+        means wait forever). A ``False`` return leaves the generation
+        registered — the caller must not re-claim the key expecting to lead;
+        it should proceed independently (see
+        ``pipeline._verify_findings_singleflight``).
+        """
 
         if claim.leader:
             raise ValueError("A single-flight leader cannot wait on itself")
-        claim._state.done.wait()
+        if timeout is None:
+            timeout = singleflight_wait_seconds()
+        if not timeout or timeout <= 0:
+            claim._state.done.wait()
+            return True
+        return claim._state.done.wait(timeout)
 
     @staticmethod
     def share(claim: VerificationFlightClaim, payload: Any) -> None:
@@ -432,12 +531,15 @@ class VerificationCache:
     metadata (creation timestamp per entry) is preserved across save/load
     so an external maintenance tool can prune by age or model version.
     """
+    # Insertion order doubles as LRU order: a hit re-inserts the entry at the
+    # end, so the least-recently-used entry is always the first key.
     _entries: dict[str, _CacheEntry] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     hits: int = 0
     misses: int = 0
     loaded_from_disk: int = 0
     expired_on_load: int = 0
+    evicted: int = 0
     _singleflight: VerificationSingleFlight = field(
         default_factory=VerificationSingleFlight,
         init=False,
@@ -462,11 +564,14 @@ class VerificationCache:
             finding, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
         )
         with self._lock:
-            entry = self._entries.get(key)
+            entry = self._entries.pop(key, None)
             if entry is None:
                 self.misses += 1
                 return None
             self.hits += 1
+            # Touch: refresh the recency stamp and move to the LRU tail.
+            entry.last_used_ts = time.time()
+            self._entries[key] = entry
         return _clone_for_hit(entry)
 
     def put(
@@ -534,7 +639,32 @@ class VerificationCache:
         )
         with self._lock:
             stored = _clone_for_store(result)
-            self._entries[key] = _CacheEntry(result=stored, created_ts=time.time())
+            now = time.time()
+            # Pop first so an overwrite lands at the LRU tail too.
+            self._entries.pop(key, None)
+            self._entries[key] = _CacheEntry(
+                result=stored, created_ts=now, last_used_ts=now
+            )
+            self._evict_over_cap_locked()
+
+    def _evict_over_cap_locked(self, cap: int | None = None) -> int:
+        """Drop least-recently-used entries until the store fits the cap.
+
+        Caller holds ``_lock``. Returns the number evicted (0 when the cap is
+        disabled). Because :meth:`get` re-inserts a hit at the tail, the
+        first key is always the least-recently-used entry.
+        """
+        if cap is None:
+            cap = cache_max_entries()
+        if cap <= 0:
+            return 0
+        evicted = 0
+        while len(self._entries) > cap:
+            oldest_key = next(iter(self._entries))
+            del self._entries[oldest_key]
+            evicted += 1
+        self.evicted += evicted
+        return evicted
 
     def stats(self) -> dict[str, int]:
         with self._lock:
@@ -545,6 +675,8 @@ class VerificationCache:
                 "size": len(self._entries),
                 "loaded_from_disk": self.loaded_from_disk,
                 "expired_on_load": self.expired_on_load,
+                "evicted": self.evicted,
+                "max_entries": cache_max_entries(),
                 "oldest_entry_ts": int(oldest_ts) if oldest_ts else 0,
             }
 
@@ -562,6 +694,11 @@ class VerificationCache:
 
         Honors the optional TTL: entries older than
         ``SPEC_CRITIC_VERIFICATION_CACHE_TTL_DAYS`` are dropped on load.
+        Surviving entries are installed in ``last_used_ts`` order (a legacy
+        row without the field takes its ``created_ts``) so the in-memory LRU
+        order reflects on-disk recency, and the LRU cap is applied once at
+        the end (``evicted`` counts them; ``loaded_from_disk`` counts only
+        the entries that survived).
         """
         target = Path(path) if path is not None else default_cache_path()
         if not target.exists():
@@ -582,6 +719,7 @@ class VerificationCache:
         cutoff = time.time() - (ttl_days * 86400) if ttl_days > 0 else 0.0
         loaded = 0
         expired = 0
+        accepted: list[tuple[str, _CacheEntry]] = []
 
         with self._lock:
             for key, raw in raw_entries.items():
@@ -591,6 +729,10 @@ class VerificationCache:
                 if cutoff and created_ts and created_ts < cutoff:
                     expired += 1
                     continue
+                try:
+                    last_used_ts = float(raw.get("last_used_ts") or 0.0)
+                except (TypeError, ValueError):
+                    last_used_ts = 0.0
                 result_payload = raw.get("result")
                 if not isinstance(result_payload, dict):
                     continue
@@ -627,11 +769,25 @@ class VerificationCache:
                     (entry_result.source_quote or "").strip()
                 ):
                     continue
-                self._entries[key] = _CacheEntry(
-                    result=entry_result,
-                    created_ts=created_ts or time.time(),
+                accepted.append(
+                    (
+                        key,
+                        _CacheEntry(
+                            result=entry_result,
+                            created_ts=created_ts or time.time(),
+                            last_used_ts=last_used_ts,
+                        ),
+                    )
                 )
-                loaded += 1
+            # Least-recently-used first, so the dict's insertion order is the
+            # LRU order the eviction relies on. Stable sort keeps the file's
+            # order for equal stamps (legacy rows all fall back to created_ts).
+            accepted.sort(key=lambda kv: kv[1].last_used_ts)
+            for key, entry in accepted:
+                self._entries.pop(key, None)
+                self._entries[key] = entry
+            evicted = self._evict_over_cap_locked()
+            loaded = len(accepted) - evicted
             self.loaded_from_disk = loaded
             self.expired_on_load = expired
         return loaded
@@ -641,13 +797,18 @@ class VerificationCache:
 
         Returns the number of entries written. Atomic via temp-file +
         rename so a crash mid-write cannot corrupt an existing cache file.
+        The LRU cap is applied before serializing, and the JSON is written
+        compact (``separators=(",", ":")``, no indentation) — the file is
+        machine-read only, and the whitespace was a large share of its bytes.
         """
         target = Path(path) if path is not None else default_cache_path()
         target.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
+            self._evict_over_cap_locked()
             entries_payload = {
                 key: {
                     "created_ts": entry.created_ts,
+                    "last_used_ts": entry.last_used_ts,
                     "result": _result_to_dict(entry.result),
                 }
                 for key, entry in self._entries.items()
@@ -666,7 +827,7 @@ class VerificationCache:
         )
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as fp:
-                json.dump(payload, fp, indent=2)
+                json.dump(payload, fp, separators=(",", ":"))
             os.replace(tmp_name, target)
         except Exception:
             try:
@@ -721,8 +882,9 @@ _PERSISTED_STR_LIST_FIELDS = (
     "fetched_sources",
     "initial_sources",
 )
-# ``correction`` (str | None) and ``rejected_sources`` (list[dict]) need
-# bespoke coercion, so they sit outside the typed tuples above.
+# ``correction`` (str | None), ``rejected_sources`` (list[dict]) and
+# ``rejected_source_reasons`` (dict[str, str]) need bespoke coercion, so they
+# sit outside the typed tuples above.
 _PERSISTED_FIELD_ORDER = (
     *_PERSISTED_STR_FIELDS,
     "correction",
@@ -730,6 +892,7 @@ _PERSISTED_FIELD_ORDER = (
     *_PERSISTED_INT_FIELDS,
     *_PERSISTED_STR_LIST_FIELDS,
     "rejected_sources",
+    "rejected_source_reasons",
 )
 _PERSISTED_FIELDS = frozenset(_PERSISTED_FIELD_ORDER)
 
@@ -759,9 +922,14 @@ _SKIPPED_FIELDS = frozenset({
     "initial_verdict",
     "escalation_changed_verdict",
     "escalation_reason",
-    # Operational token counts — diagnostics only, not persisted.
+    # Operational token counts — diagnostics only, not persisted. The
+    # per-call ``call_usage`` list (an escalated result's two conversations)
+    # is the same spend telemetry in per-call form.
     "input_tokens",
     "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "call_usage",
 })
 
 
@@ -773,6 +941,13 @@ def _coerce_rejected(raw) -> list[dict]:
                 {"url": str(r.get("url") or ""), "reason": str(r.get("reason") or "")}
             )
     return out
+
+
+def _coerce_reasons(raw) -> dict[str, str]:
+    """``{url: explanation}`` from a persisted row; legacy rows (no key) → ``{}``."""
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if k and v}
 
 
 def _result_to_dict(result: "VerificationResult") -> dict:
@@ -817,6 +992,9 @@ def _result_from_dict(
         str(payload["correction"]) if payload.get("correction") is not None else None
     )
     kwargs["rejected_sources"] = _coerce_rejected(payload.get("rejected_sources"))
+    kwargs["rejected_source_reasons"] = _coerce_reasons(
+        payload.get("rejected_source_reasons")
+    )
     return VerificationResult(
         cache_status=cache_status,
         cache_entry_created_ts=cache_entry_created_ts,

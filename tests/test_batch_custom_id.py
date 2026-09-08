@@ -51,8 +51,8 @@ def test_sanitize_respects_passed_max_len():
 
 @pytest.mark.parametrize("idx", [0, 9, 999, 9999])
 def test_low_index_stem_matches_legacy_default_50(idx):
-    # Resume compatibility: the bare-batch recovery path
-    # (orchestration/batch_resume.recover_from_bare_batch_id) re-sanitizes local
+    # Resume compatibility: the bare-batch-id recovery path
+    # (orchestration/batch_resume.thin_submission_from_batch_results) re-sanitizes local
     # filenames with the default 50 and matches them against the parsed
     # custom_id stem. For every realistic index (< 10000) the submitted stem must
     # therefore stay byte-identical to the legacy 50-char truncation, or the

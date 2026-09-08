@@ -358,9 +358,11 @@ def count_tokens(text: str) -> int:
 # clamped to a per-model token cap. The published cost tables match
 # ``ceil(w*h/750)`` with no extra padding, so we mirror that exactly:
 #
-#   * Opus 4.7 / 4.8 (high-resolution): up to 4784 tokens, long edge <= 2576 px.
-#   * Other models (Sonnet 4.6 / Haiku 4.5 / unknown): up to 1568 tokens,
-#     long edge <= 1568 px.
+#   * High-resolution tier — every model in ``api_config.HIRES_VISION_MODELS``
+#     (the single source of truth for which models get it): up to 4784 tokens,
+#     long edge <= 2576 px.
+#   * Every other model, including unknown ids: up to 1568 tokens, long edge
+#     <= 1568 px.
 #
 # These are local *estimates* for budgeting (mirroring the documented formula);
 # the authoritative number is still Anthropic's ``count_tokens`` endpoint, which
@@ -368,19 +370,19 @@ def count_tokens(text: str) -> int:
 
 _IMAGE_TOKEN_DIVISOR = 750
 
-_IMAGE_TOKEN_CAP_HIRES = 4784      # Opus 4.7 / 4.8
+_IMAGE_TOKEN_CAP_HIRES = 4784      # models in api_config.HIRES_VISION_MODELS
 _IMAGE_LONG_EDGE_HIRES = 2576
-_IMAGE_TOKEN_CAP_DEFAULT = 1568    # Sonnet 4.6 / Haiku 4.5 / unknown
+_IMAGE_TOKEN_CAP_DEFAULT = 1568    # every other model / unknown ids
 _IMAGE_LONG_EDGE_DEFAULT = 1568
 
 
 def _image_caps_for_model(model: str | None) -> tuple[int, int]:
     """Return ``(token_cap, long_edge_cap_px)`` for ``model``.
 
-    Reads the high-resolution vision tier from the api_config whitelist so
-    the capability source of truth stays single (Opus 4.8 and Sonnet 5 —
-    Sonnet 5 is the first Sonnet-tier model with high-res image support).
-    Imported lazily to avoid any import-order coupling at module load.
+    Reads the high-resolution vision tier from the api_config whitelist
+    (``HIRES_VISION_MODELS``) so the capability source of truth stays single —
+    membership is decided there, never restated here. Imported lazily to avoid
+    any import-order coupling at module load.
     """
     try:
         from .api_config import HIRES_VISION_MODELS

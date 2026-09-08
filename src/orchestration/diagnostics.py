@@ -12,6 +12,8 @@ from datetime import datetime
 from functools import wraps
 from typing import Any, Optional
 
+from ..core.pricing import estimate_cost_breakdown
+
 
 # Cap retained events so a long-running batch poll cannot grow the in-memory
 # report unbounded. Truncation tracking lets the report still surface that
@@ -63,6 +65,127 @@ _REDACTED = "<redacted>"
 # disk replay (``hit``) nor a fresh call (``miss``) and must be counted apart
 # from both.
 _CACHE_STATUS_SHARED = "shared"
+
+
+def _new_cost_lines() -> dict:
+    """A zeroed priced-spend block: the four billable line items + total.
+
+    ``priced_calls`` counts the API-call events that contributed; a call
+    whose model id is not in the pricing table lands in ``unpriced_calls``
+    instead of being silently priced at zero, so the dollar figure is
+    honest about what it excludes.
+    """
+    return {
+        "tokens": 0.0,
+        "cache_writes": 0.0,
+        "cache_reads": 0.0,
+        "web_searches": 0.0,
+        "total": 0.0,
+        "priced_calls": 0,
+        "unpriced_calls": 0,
+    }
+
+
+_COST_MONEY_KEYS = ("tokens", "cache_writes", "cache_reads", "web_searches", "total")
+
+
+def _round_cost_lines(lines: dict) -> dict:
+    """Round the money fields for stable JSON (sub-cent precision kept)."""
+    for key in _COST_MONEY_KEYS:
+        lines[key] = round(float(lines.get(key, 0.0) or 0.0), 6)
+    return lines
+
+
+_CALL_USAGE_COUNTERS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "web_search_requests",
+)
+
+
+def _billable_calls(data: dict) -> list[dict]:
+    """Expand one event into the API calls it bills for.
+
+    An event normally describes one call through its flat ``model`` / token /
+    search keys. A verification event whose result escalated carries
+    ``call_usage`` — one entry per paid conversation (the initial pass and
+    the escalated pass, each with its own model) — and is priced per entry,
+    so both calls reach the totals at their own rates. ``call_usage`` is the
+    complete list when present: the flat fields then describe only the kept
+    verdict's call and are NOT counted again. Every entry is normalized to
+    the same counter keys with a model defaulting to the event's.
+    """
+    event_model = str(data.get("model") or "").strip()
+    raw = data.get("call_usage")
+    entries = (
+        [entry for entry in raw if isinstance(entry, dict)]
+        if isinstance(raw, list)
+        else []
+    )
+    if not entries:
+        entries = [data]
+    calls: list[dict] = []
+    for entry in entries:
+        call = {
+            key: int(entry.get(key, 0) or 0) for key in _CALL_USAGE_COUNTERS
+        }
+        call["model"] = str(entry.get("model") or event_model).strip()
+        calls.append(call)
+    return calls
+
+
+def _price_api_call(
+    targets: tuple[dict, ...],
+    *,
+    model: str,
+    batch: bool,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_input_tokens: int,
+    cache_read_input_tokens: int,
+    web_search_requests: int,
+) -> None:
+    """Price one API-call event into every cost block in ``targets``.
+
+    Routes through :func:`src.core.pricing.estimate_cost_breakdown` so the
+    diagnostics dollar figure uses the same rates as the preflight estimate:
+    cache writes at the 1-hour write rate, cache reads at the read rate, web
+    searches at the per-request rate (never batch-discounted). An event with
+    no billable usage at all (a failed call that returned no ``usage``) is
+    skipped rather than counted as an unpriced call.
+    """
+    if not any(
+        (
+            input_tokens,
+            output_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+            web_search_requests,
+        )
+    ):
+        return
+    breakdown = estimate_cost_breakdown(
+        input_tokens,
+        output_tokens,
+        model=model,
+        batch=batch,
+        cache_creation_input_tokens=cache_creation_input_tokens,
+        cache_read_input_tokens=cache_read_input_tokens,
+        web_search_requests=web_search_requests,
+    )
+    if breakdown is None:
+        for lines in targets:
+            lines["unpriced_calls"] += 1
+        return
+    for lines in targets:
+        lines["tokens"] += breakdown.tokens
+        lines["cache_writes"] += breakdown.cache_writes
+        lines["cache_reads"] += breakdown.cache_reads
+        lines["web_searches"] += breakdown.web_searches
+        lines["total"] += breakdown.total
+        lines["priced_calls"] += 1
 
 
 def _synchronized(method):
@@ -471,6 +594,11 @@ class DiagnosticsReport:
         total_cache_creation_tokens = 0
         total_cache_read_tokens = 0
         total_web_search_requests = 0
+        # Priced spend. Every API-call event is priced on its own model and
+        # transport (batch vs. standard) through the shared estimator, so
+        # the tokens / cache-write / cache-read / web-search line items
+        # roll up with the same rates the preflight dialog uses.
+        cost_lines = _new_cost_lines()
         # Output-size and search-budget telemetry. We track the maximum
         # output observed per phase, the count of truncated calls
         # (stop_reason != end_turn), and aggregate search budget consumption
@@ -500,16 +628,21 @@ class DiagnosticsReport:
                 "realtime_calls": 0,
                 "batch_calls": 0,
                 "truncated_calls": 0,
+                "estimated_cost_usd": _new_cost_lines(),
             }
         phase_telemetry: dict[str, dict] = {}
         for e in self.events:
             if not e.data:
                 continue
-            in_tok = int(e.data.get("input_tokens", 0) or 0)
-            out_tok = int(e.data.get("output_tokens", 0) or 0)
-            cache_create = int(e.data.get("cache_creation_input_tokens", 0) or 0)
-            cache_read = int(e.data.get("cache_read_input_tokens", 0) or 0)
-            search_count = int(e.data.get("web_search_requests", 0) or 0)
+            # One event may bill for more than one call (an escalated
+            # verification: initial pass + escalated pass on different
+            # models). Totals sum over every call; pricing runs per call.
+            calls = _billable_calls(e.data)
+            in_tok = sum(c["input_tokens"] for c in calls)
+            out_tok = sum(c["output_tokens"] for c in calls)
+            cache_create = sum(c["cache_creation_input_tokens"] for c in calls)
+            cache_read = sum(c["cache_read_input_tokens"] for c in calls)
+            search_count = sum(c["web_search_requests"] for c in calls)
             # An in-process shared verdict (``cache_status="shared"``) made no
             # call of its own: the leader's event already carries the tokens
             # and searches the clone repeats for its evidence panel, so a
@@ -522,11 +655,13 @@ class DiagnosticsReport:
                 total_cache_creation_tokens += cache_create
                 total_cache_read_tokens += cache_read
                 total_web_search_requests += search_count
-                if out_tok > 0:
-                    output_samples.append(out_tok)
-                    phase_max = output_max_by_phase.get(e.phase, 0)
-                    if out_tok > phase_max:
-                        output_max_by_phase[e.phase] = out_tok
+                for call in calls:
+                    call_out = call["output_tokens"]
+                    if call_out > 0:
+                        output_samples.append(call_out)
+                        phase_max = output_max_by_phase.get(e.phase, 0)
+                        if call_out > phase_max:
+                            output_max_by_phase[e.phase] = call_out
             stop_reason = e.data.get("stop_reason")
             is_truncated = bool(
                 stop_reason and stop_reason not in ("end_turn", "tool_use", None)
@@ -550,6 +685,7 @@ class DiagnosticsReport:
                 or cache_read
                 or search_count
                 or e.data.get("model")
+                or len(calls) > 1
             )
             if is_shared:
                 # An in-process shared verdict made no call of its own — the
@@ -560,15 +696,16 @@ class DiagnosticsReport:
             if not looks_like_api_call:
                 continue
             bucket = phase_telemetry.setdefault(e.phase, _new_phase_bucket())
-            bucket["calls"] += 1
+            bucket["calls"] += len(calls)
             bucket["input_tokens"] += in_tok
             bucket["output_tokens"] += out_tok
             bucket["cache_creation_input_tokens"] += cache_create
             bucket["cache_read_input_tokens"] += cache_read
             bucket["web_search_requests"] += search_count
-            model = str(e.data.get("model") or "").strip()
-            if model and model not in bucket["models"]:
-                bucket["models"].append(model)
+            for call in calls:
+                model = call["model"]
+                if model and model not in bucket["models"]:
+                    bucket["models"].append(model)
             retry_status = str(e.data.get("retry_status") or "").lower()
             if retry_status == "retry":
                 bucket["retries"] += 1
@@ -581,6 +718,22 @@ class DiagnosticsReport:
                 bucket["batch_calls"] += 1
             if is_truncated:
                 bucket["truncated_calls"] += 1
+            # Price the call. An explicit ``api_call=False`` marks a replayed
+            # (cache hit) or locally classified verdict that made no call —
+            # it may still carry the replayed search count for its evidence
+            # panel, but nothing was billed for it in this run.
+            if e.data.get("api_call", True):
+                for call in calls:
+                    _price_api_call(
+                        (cost_lines, bucket["estimated_cost_usd"]),
+                        model=call["model"],
+                        batch=(call_mode == "batch"),
+                        input_tokens=call["input_tokens"],
+                        output_tokens=call["output_tokens"],
+                        cache_creation_input_tokens=call["cache_creation_input_tokens"],
+                        cache_read_input_tokens=call["cache_read_input_tokens"],
+                        web_search_requests=call["web_search_requests"],
+                    )
 
         # Verification verdict breakdown + evidence telemetry
         verdicts: dict[str, int] = {}
@@ -819,6 +972,7 @@ class DiagnosticsReport:
             bucket["cache_hit_ratio"] = (
                 round(bucket["cache_read_input_tokens"] / denom, 4) if denom else 0.0
             )
+            _round_cost_lines(bucket["estimated_cost_usd"])
         cache_total = total_cache_creation_tokens + total_cache_read_tokens
         cost_summary = {
             "total_input_tokens": total_input_tokens,
@@ -829,6 +983,11 @@ class DiagnosticsReport:
             "cache_hit_ratio": (
                 round(total_cache_read_tokens / cache_total, 4) if cache_total else 0.0
             ),
+            # Priced line items (USD): uncached tokens, prompt-cache writes,
+            # prompt-cache reads, web searches, and their total — plus how
+            # many calls were priced and how many carried an unpriced model
+            # id. Additive: the token/search totals above are unchanged.
+            "estimated_cost_usd": _round_cost_lines(cost_lines),
             "phases": dict(phase_telemetry),
         }
 
@@ -977,6 +1136,20 @@ class DiagnosticsReport:
             if cache_total:
                 hit_ratio = cache_read / cache_total
                 lines.append(f"  Cache Hit Ratio: {hit_ratio:.1%}")
+        est = (s.get("cost_summary") or {}).get("estimated_cost_usd") or {}
+        if est.get("priced_calls") or est.get("unpriced_calls"):
+            lines.append(
+                f"  Est. Cost (USD): ${est.get('total', 0.0):,.4f}  "
+                f"(tokens ${est.get('tokens', 0.0):,.4f}, "
+                f"cache writes ${est.get('cache_writes', 0.0):,.4f}, "
+                f"cache reads ${est.get('cache_reads', 0.0):,.4f}, "
+                f"web searches ${est.get('web_searches', 0.0):,.4f})"
+            )
+            if est.get("unpriced_calls"):
+                lines.append(
+                    f"                   {est['unpriced_calls']} call(s) on an "
+                    "unpriced model id excluded from the estimate"
+                )
         if s["severity_counts"]:
             lines.append(f"  Findings:        {s['severity_counts']}")
         if s["verification_verdicts"]:
@@ -1099,6 +1272,9 @@ class DiagnosticsReport:
                     )
                 if bucket["web_search_requests"]:
                     bits.append(f"searches={bucket['web_search_requests']}")
+                est_phase = bucket.get("estimated_cost_usd") or {}
+                if est_phase.get("priced_calls"):
+                    bits.append(f"cost=${est_phase.get('total', 0.0):,.4f}")
                 if bucket["retries"]:
                     bits.append(f"retries={bucket['retries']}")
                 if bucket["continuations"]:

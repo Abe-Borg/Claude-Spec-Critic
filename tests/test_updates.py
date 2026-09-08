@@ -673,3 +673,70 @@ def test_controller_gates_on_installer_platform() -> None:
     # macOS/Linux source run is never offered an unusable .exe.
     src = _controller_source()
     assert src.count("updates.installer_platform_supported()") >= 2
+
+
+# --------------------------------------------------------------------------
+# B-18 — atomic state write + aware/naive timestamp comparison
+# --------------------------------------------------------------------------
+
+
+def test_should_auto_check_aware_stamp_against_naive_now_does_not_raise() -> None:
+    # A tz-aware ``last_check`` used to raise TypeError when subtracted from
+    # the naive ``datetime.now()`` the GUI supplies. Deltas are chosen well
+    # clear of the one-day threshold so the result holds under any local
+    # UTC offset (±14h) the normalization may apply.
+    from datetime import timezone
+
+    stamp = datetime(2026, 7, 17, 9, 0, tzinfo=timezone.utc).isoformat()
+    assert updates.should_auto_check({"last_check": stamp}, now=datetime(2026, 7, 17, 10, 0)) is False
+    assert updates.should_auto_check({"last_check": stamp}, now=datetime(2026, 7, 27, 9, 0)) is True
+
+
+def test_should_auto_check_naive_stamp_against_aware_now_does_not_raise() -> None:
+    from datetime import timezone
+
+    fresh = updates.record_check({}, now=datetime(2026, 7, 17, 9, 0))  # naive stamp
+    aware_now_soon = datetime(2026, 7, 17, 10, 0, tzinfo=timezone.utc)
+    aware_now_later = datetime(2026, 7, 27, 9, 0, tzinfo=timezone.utc)
+    assert updates.should_auto_check(fresh, now=aware_now_soon) is False
+    assert updates.should_auto_check(fresh, now=aware_now_later) is True
+
+
+def test_should_auto_check_both_aware_compares_directly() -> None:
+    from datetime import timezone
+
+    now = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
+    fresh = updates.record_check({}, now=now - timedelta(hours=2))
+    assert updates.should_auto_check(fresh, now=now) is False
+    stale = updates.record_check({}, now=now - timedelta(days=2))
+    assert updates.should_auto_check(stale, now=now) is True
+
+
+@pytest.mark.parametrize("bad", [123, 12.5, ["2026-07-17"], {"y": 2026}, "2026-13-45T99:99:99"])
+def test_should_auto_check_never_raises_on_garbage(bad) -> None:
+    # Anything unparseable reads as "check now" — a bad state file must never
+    # block the launch check.
+    assert updates.should_auto_check({"last_check": bad}, now=datetime(2026, 7, 17)) is True
+
+
+def test_save_state_is_atomic_and_leaves_no_temp_file(tmp_path: Path) -> None:
+    path = tmp_path / "update_check.json"
+    updates.save_state(path, {"a": 1})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
+    assert not (tmp_path / "update_check.json.tmp").exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["update_check.json"]
+
+
+def test_save_state_failed_replace_keeps_previous_file(tmp_path: Path, monkeypatch) -> None:
+    # If the promote step fails, the previous state must survive untouched
+    # (never a truncated / half-written file) and the temp must be cleaned up.
+    path = tmp_path / "update_check.json"
+    updates.save_state(path, {"generation": 1})
+
+    def _deny(src, dst):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(updates.os, "replace", _deny)
+    updates.save_state(path, {"generation": 2})  # must not raise
+    assert json.loads(path.read_text(encoding="utf-8")) == {"generation": 1}
+    assert not (tmp_path / "update_check.json.tmp").exists()

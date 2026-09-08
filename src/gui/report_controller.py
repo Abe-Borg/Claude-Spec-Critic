@@ -29,6 +29,7 @@ leaves the retained result and every existing export intact.
 """
 from __future__ import annotations
 
+import re
 import threading
 import webbrowser
 from datetime import datetime
@@ -56,8 +57,34 @@ _EXPORT_FAILURE_HINT = (
 )
 
 
-def _ask_report_path(app) -> str:
-    default_name = f"spec-critic-report-{datetime.now().strftime('%Y-%m-%d')}.docx"
+_STEM_PREFIX = "spec-critic-report"
+_UNSAFE_STEM_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def default_report_stem(result=None, *, now: datetime | None = None) -> str:
+    """The save dialog's default filename stem, unique per run.
+
+    ``spec-critic-report-<YYYY-MM-DD>-<HH-MM>`` plus ``-<program id>`` when
+    ``result`` is a routed-program result. The ``.docx`` itself goes through
+    the OS save dialog (which prompts before overwriting), but the sidecars
+    (``<stem>.edits.json``, ``<stem>.profile.json``) are written
+    unconditionally beside it — so a date-only default made a second
+    same-day run silently overwrite the first run's sidecars on accept. The
+    minute-resolution stamp (and the program id) keep the default from
+    colliding; the sidecar writers are unchanged. ``now`` is a test seam.
+    """
+    stamp = (now or datetime.now()).strftime("%Y-%m-%d-%H-%M")
+    stem = f"{_STEM_PREFIX}-{stamp}"
+    program_id = str(getattr(result, "program_id", "") or "").strip()
+    if program_id:
+        safe = _UNSAFE_STEM_CHARS.sub("-", program_id).strip("-")
+        if safe:
+            stem = f"{stem}-{safe}"
+    return stem
+
+
+def _ask_report_path(app, result=None) -> str:
+    default_name = f"{default_report_stem(result)}.docx"
     return filedialog.asksaveasfilename(
         title="Save Review Report",
         defaultextension=".docx",
@@ -170,7 +197,7 @@ def export_report_to_file(app, result, *, on_complete=None) -> str:
     ``"canceled"`` immediately. Returns ``EXPORT_STATUS_PENDING`` while the
     worker runs (or ``"canceled"``).
     """
-    path = _ask_report_path(app)
+    path = _ask_report_path(app, result)
     if not path:
         app.log.log_warning("Export canceled")
         if on_complete is not None:
@@ -203,7 +230,7 @@ def export_html_report_to_file(app, result) -> str:
     result usable; on success the report is opened in the default browser as
     a nonfatal convenience.
     """
-    default_name = f"spec-critic-report-{datetime.now().strftime('%Y-%m-%d')}.html"
+    default_name = f"{default_report_stem(result)}.html"
     path = filedialog.asksaveasfilename(
         title="Save HTML Report",
         defaultextension=".html",

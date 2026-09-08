@@ -1,7 +1,7 @@
 # Trace Viewer — design notes
 
 `trace_viewer.html` is a single-file, zero-build replay tool for the JSONL
-artifacts the `TraceRecorder` writes to `~/.spec_critic/traces/<run_id>/`.
+artifacts the `TraceRecorder` writes to `the platformdirs state directory (`%LOCALAPPDATA%\SpecCritic\traces\<run_id>\` on Windows, `~/.local/state/SpecCritic/traces/<run_id>/` on Linux; override with `SPEC_CRITIC_TRACE_DIR`)`.
 
 ## Why single-file vanilla JS
 

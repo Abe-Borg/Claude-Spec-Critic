@@ -166,7 +166,7 @@ flowchart TD
     B -- Yes --> Z[run_cross_check &rarr; skipped]
     B -- No --> C{Combined input<br/>&gt; 822k tokens?}
     C -- No --> D[Single-pass run_cross_check<br/>whole corpus, one streamed call]
-    C -- Yes --> E[_group_specs_by_chunk<br/>by CSI division prefix]
+    C -- Yes --> E[group_specs_by_chunk<br/>by CSI division prefix]
     E --> F{More than one<br/>viable chunk?}
     F -- No --> Y[skipped &mdash; cannot chunk<br/>better than truncating]
     F -- Yes --> G1[Div 21 &mdash; Fire]
@@ -175,14 +175,20 @@ flowchart TD
     F -- Yes --> G4[Controls / Commissioning / TAB<br/>25 + 01]
     F -- Yes --> G5[Project-wide / Other<br/>general]
     G1 & G2 & G3 & G4 & G5 --> H[Per-chunk run_cross_check<br/>chunk specs + filtered prior findings]
-    H --> I[_label_finding_with_chunk<br/>stamp chunk label into section]
-    I --> J[_synthesize_chunk_findings<br/>merge findings + per-chunk summaries + status]
+    H --> I[label_finding_with_chunk<br/>stamp chunk label into section]
+    I --> J[synthesize_chunk_results<br/>merge findings + per-chunk summaries + status]
     D --> K[ReviewResult: coordination findings]
     J --> K
 ```
 
+> Since v3.4.x these helpers live in `src/core/chunked_pass.py`, the shared
+> chunked-pass engine that both `run_chunked_cross_check` and
+> `run_chunked_compliance_check` drive through thin adapters; the engine owns
+> grouping, pooling, per-chunk scoping, the tally, and status/error synthesis,
+> so the two merges cannot drift apart.
+
 The division families are defined once, in `_CHUNK_GROUPS`, and a spec is routed
-by the first two digits of its CSI number (`_csi_prefix` → `_assign_chunk`):
+by the first two digits of its CSI number (`assign_chunk`, which parses the two-digit CSI prefix):
 
 | CSI prefix | Chunk (`chunk_id`) | Label | Example coordination defects within the chunk |
 |---|---|---|---|
@@ -194,7 +200,7 @@ by the first two digits of its CSI number (`_csi_prefix` → `_assign_chunk`):
 
 The grouping is intentionally coarse. The comment in the source calls it so
 directly: each chunk gets *enough context to find within-discipline conflicts*,
-and that is the whole ambition. `_group_specs_by_chunk` adds one pragmatic rule —
+and that is the whole ambition. `group_specs_by_chunk` adds one pragmatic rule —
 a chunk needs at least two specs to have anything to coordinate, so any division
 that contributes only a single spec is folded into the `general`
 ("Project-wide / Other") bucket rather than reviewed against itself. Files whose
@@ -204,7 +210,7 @@ in some chunk, even if only the catch-all.
 
 Each chunk is then handed to the very same `run_cross_check` used for small
 projects, with two scoping moves. Its specs are just that chunk's specs. And its
-"already-identified" context is filtered by `_filter_findings_for_chunk` down to
+"already-identified" context is filtered by `filter_findings_for_chunk` down to
 only the per-spec findings that originate inside the chunk's files — showing a
 plumbing chunk the HVAC chunk's findings would be noise, not signal. The chunk
 calls nest under a shared tracing span (the `_trace_parent` plumbing in
@@ -213,9 +219,9 @@ child per chunk; observability is [**Ch 14 — Observability**](14_observability
 
 ### Labeling and synthesis
 
-When the chunks come back, `_synthesize_chunk_findings` stitches them into one
+When the chunks come back, `synthesize_chunk_results` stitches them into one
 result. Two things happen. First, every finding is stamped with its origin by
-`_label_finding_with_chunk`, which prepends the chunk label into the finding's
+`label_finding_with_chunk`, which prepends the chunk label into the finding's
 `section` field — `[Division 22 — Plumbing] …`. There is no dedicated
 "which chunk" field on `Finding`; the provenance rides in `section`, which is
 pragmatic and a little lossy but keeps the chunk visible all the way to the

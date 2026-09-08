@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
     from ..drawing_impact import DrawingImpactResult
 
 from ..input.extractor import ExtractedSpec, SUPPORTED_EXTENSIONS
+
+_logger = logging.getLogger(__name__)
 from ..input.extraction_cache import (
     cache_token_count,
     extract_multiple_specs_cached,
@@ -68,6 +71,7 @@ from ..verification.verification_cache import (
     VerificationFlightClaim,
     cache_persist_enabled,
     make_cache_key,
+    singleflight_wait_seconds,
 )
 from ..cross_check.cross_checker import run_chunked_cross_check
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
@@ -246,10 +250,39 @@ class CollectedBatchState:
 
 
 def _get_spec_files(input_dir: Path) -> list[Path]:
-    files = []
-    for ext in SUPPORTED_EXTENSIONS:
-        files.extend(input_dir.glob(f"*{ext}"))
-    return sorted([p for p in files if not p.name.startswith("~$")], key=lambda p: p.name.lower())
+    """Discover reviewable specs directly inside ``input_dir``.
+
+    Extension matching is **case-insensitive** (``SPEC.DOCX`` is a spec on
+    Linux/macOS, where a literal ``*.docx`` glob would have skipped it — the
+    GUI picker already lower-cases suffixes; this is the headless /
+    ``recover_batch.py`` directory path). Word lock files (``~$…``) and
+    non-files are skipped. Entries are deduplicated by resolved path so a
+    case-insensitive filesystem (or a symlink alias) can never yield the same
+    spec twice, and the order is deterministic: case-folded name, then the
+    exact name as a tie-break, with the first entry in that order winning a
+    dedup tie.
+    """
+    supported = {ext.lower() for ext in SUPPORTED_EXTENSIONS}
+    candidates = [
+        entry
+        for entry in input_dir.iterdir()
+        if entry.suffix.lower() in supported
+        and not entry.name.startswith("~$")
+        and entry.is_file()
+    ]
+    candidates.sort(key=lambda p: (p.name.lower(), p.name))
+    seen: set[str] = set()
+    files: list[Path] = []
+    for entry in candidates:
+        try:
+            identity = str(entry.resolve())
+        except OSError:
+            identity = str(entry)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        files.append(entry)
+    return files
 
 
 # ---------------------------------------------------------------------------
@@ -2529,6 +2562,9 @@ def _shared_clone(result: VerificationResult) -> VerificationResult:
     clone.cache_entry_created_ts = 0.0
     clone.input_tokens = 0
     clone.output_tokens = 0
+    clone.cache_creation_input_tokens = 0
+    clone.cache_read_input_tokens = 0
+    clone.call_usage = []
     clone.retry_telemetry = None
     clone.structured_payload = None
     return clone
@@ -2648,6 +2684,11 @@ def _verify_findings_singleflight(
     reused = 0
     shared = 0
     direct: list[Finding] = []
+    # Followers whose leader never completed within the single-flight wait
+    # bound (``SPEC_CRITIC_VERIFICATION_SINGLEFLIGHT_WAIT_SECONDS``). They
+    # verify independently below — never re-claimed, since the dead leader's
+    # generation is still registered and a re-claim would only wait again.
+    orphaned: list[Finding] = []
 
     def execute(items: list[Finding]) -> None:
         _execute_verification_attempts(
@@ -2756,7 +2797,31 @@ def _verify_findings_singleflight(
                 requeue(group, local_followers)
 
         for group in followers:
-            cache.singleflight.wait(group.claim)
+            if not cache.singleflight.wait(group.claim):
+                # The leader did not complete within the bound (a crashed
+                # worker, or a leader stuck well past any sane verification).
+                # Close the race in which it *did* fill the cache just before
+                # the deadline, then proceed independently. Exactly-once
+                # still holds: these findings are stamped only by their own
+                # attempt below; the leader's own findings are not ours.
+                if _stamp_grounded_cache_hits(
+                    group.findings,
+                    cache=cache,
+                    cycle=cycle,
+                    jurisdiction_fingerprint=jurisdiction_fingerprint,
+                ):
+                    reused += len(group.findings)
+                    continue
+                message = (
+                    "Verification single-flight: leader for an equivalent "
+                    f"finding did not complete within "
+                    f"{singleflight_wait_seconds():g}s; verifying "
+                    f"{len(group.findings)} finding(s) independently."
+                )
+                log(message, level="warning")
+                _logger.warning("%s (key %s)", message, group.key)
+                orphaned.extend(group.findings)
+                continue
             payload = cache.singleflight.shared_payload(group.claim)
             if isinstance(payload, _SharedVerdict):
                 # The leader ran and could not ground the claim; a grounded
@@ -2788,6 +2853,9 @@ def _verify_findings_singleflight(
             level="info",
         )
         execute(direct)
+
+    if orphaned:
+        execute(orphaned)
 
     if reused or shared:
         parts: list[str] = []

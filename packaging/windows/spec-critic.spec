@@ -5,7 +5,7 @@ Build (on Windows, from the repo root) with:
 
     pip install -r requirements.txt
     pip install -e . --no-deps
-    pip install keyring pyinstaller
+    pip install pyinstaller
     $env:TIKTOKEN_CACHE_DIR = "$PWD\build\tiktoken_cache"   # warm the tokenizer
     python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
     Remove-Item Env:TIKTOKEN_CACHE_DIR

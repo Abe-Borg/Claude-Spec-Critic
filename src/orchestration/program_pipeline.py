@@ -6,6 +6,7 @@ before remote submission, and retains module provenance through collection.
 """
 from __future__ import annotations
 
+import logging
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -47,6 +48,8 @@ from .pipeline import (
     run_batch_collection_headless,
     submit_prepared_batch_review,
 )
+
+_logger = logging.getLogger(__name__)
 
 LogFn = Callable[..., None]
 ProgressFn = Callable[..., None]
@@ -324,7 +327,31 @@ class ProgramSubmissionError(RuntimeError):
 
 @dataclass
 class ProgramPipelineResult:
-    """Composite final result that never flattens away module provenance."""
+    """Composite final result that never flattens away module provenance.
+
+    ``__post_init__`` is the sole construction gate and it runs at the END of
+    collection — after every review, verification, cross-check, and
+    compliance call has been billed — so it distinguishes two kinds of check:
+
+    * **Programming errors** keep raising. Program membership (duplicate /
+      cross-program / unknown-module assignments, partitions outside the
+      catalog or outside every assignment), a child result whose
+      ``module_id`` disagrees with its key, and ``module_errors`` that name a
+      module outside the catalog / outside every assignment / that also has
+      a completed result are all invariants of how the collector builds its
+      maps, and the same membership rule is already enforced before any
+      spend by :class:`ProgramSubmission`. Reaching them here is a bug, and a
+      report built on a mislabeled module map would be wrong, not partial.
+    * **Data inconsistencies degrade.** ``submitted_files`` and
+      ``submitted_request_count`` are re-hydrated from per-child submission
+      state (a resumed manifest, a recovered batch), so a stale or hand-edited
+      file can present a spec name outside the assignments or a request count
+      outside the routed range. Those are logged at WARNING, the offending
+      entries are dropped / the count clamped, and every one is recorded in
+      the additive ``integrity_warnings`` list — the paid module results are
+      kept and the report + sidecar still export. A clean result carries an
+      empty list.
+    """
 
     program_id: str
     assignments: tuple[SpecAssignment, ...]
@@ -336,9 +363,13 @@ class ProgramPipelineResult:
     submitted_files: tuple[str, ...] | None = None
     submitted_request_count: int | None = None
     total_elapsed_seconds: float | None = None
+    # Data-inconsistency degradations recorded by ``__post_init__`` (see the
+    # class docstring). Empty on a clean result; additive, never raised.
+    integrity_warnings: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.assignments = tuple(self.assignments)
+        self.integrity_warnings = [str(w) for w in (self.integrity_warnings or [])]
         _validate_program_membership(
             self.program_id, self.assignments, self.module_results
         )
@@ -389,9 +420,16 @@ class ProgramPipelineResult:
             self.submitted_files = tuple(dict.fromkeys(self.submitted_files))
         unknown_files = set(self.submitted_files) - set(self.selected_files)
         if unknown_files:
-            raise ValueError(
-                "Program result records submitted file(s) outside its assignments: "
+            # Data inconsistency (degrade, never raise — see class docstring):
+            # keep the files the assignments know about, in their recorded
+            # order, and record the rest.
+            self._record_integrity_warning(
+                "Program result recorded submitted file(s) outside its "
+                "assignments; dropped from the submission coverage: "
                 + ", ".join(sorted(unknown_files))
+            )
+            self.submitted_files = tuple(
+                name for name in self.submitted_files if name not in unknown_files
             )
         if self.submitted_request_count is None:
             self.submitted_request_count = sum(
@@ -399,11 +437,20 @@ class ProgramPipelineResult:
                 for item in self.assignments
             )
         self.submitted_request_count = int(self.submitted_request_count)
-        if not 0 <= self.submitted_request_count <= self.expected_routed_request_count:
-            raise ValueError(
-                "Program result submitted_request_count must be between zero and "
-                "the expected routed request count"
+        expected_requests = self.expected_routed_request_count
+        if not 0 <= self.submitted_request_count <= expected_requests:
+            # Same degrade policy: clamp into the routed range and record it.
+            clamped = min(max(self.submitted_request_count, 0), expected_requests)
+            self._record_integrity_warning(
+                "Program result recorded a submitted request count of "
+                f"{self.submitted_request_count} outside the routed range "
+                f"0..{expected_requests}; clamped to {clamped}"
             )
+            self.submitted_request_count = clamped
+
+    def _record_integrity_warning(self, message: str) -> None:
+        self.integrity_warnings.append(message)
+        _logger.warning("%s (program %s)", message, self.program_id)
 
     @property
     def selected_files(self) -> list[str]:
@@ -453,11 +500,15 @@ class ProgramPipelineResult:
 
     @property
     def status(self) -> str:
+        # ``integrity_warnings`` counts as partial: the coverage figures
+        # were normalized from inconsistent saved state, so the run must
+        # not present the same clean terminal state as a consistent one.
         if (
             self.failed_review_specs
             or self.skipped_files
             or self.missing_module_ids
             or self.module_errors
+            or self.integrity_warnings
             or self.routed_request_count < self.expected_routed_request_count
         ):
             return "partial"
@@ -1118,7 +1169,7 @@ def collect_program_results(
         # A later child may fail after earlier verification calls completed.
         # Persist their cache entries so resume does not repay for them.
         _persist_verification_cache(cache, log=log)
-    return ProgramPipelineResult(
+    result = ProgramPipelineResult(
         program_id=submission.program_id,
         assignments=submission.assignments,
         module_results=results,
@@ -1130,6 +1181,12 @@ def collect_program_results(
         submitted_request_count=submission.routed_request_count,
         total_elapsed_seconds=time.time() - submission.submitted_at,
     )
+    # ``__post_init__`` records a degraded coverage figure on the module
+    # logger (the file log); repeat it on the run log so the operator sees
+    # it in the GUI / diagnostics window, not only in a log file.
+    for warning in result.integrity_warnings:
+        log(f"Result integrity: {warning}", level="warning")
+    return result
 
 
 def _run_program_drawing_impact(

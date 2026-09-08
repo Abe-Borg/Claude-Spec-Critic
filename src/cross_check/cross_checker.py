@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from contextlib import nullcontext
 from typing import Callable
@@ -11,6 +10,13 @@ from typing import Callable
 from ..input.extractor import ExtractedSpec
 from ..review.reviewer import Finding, ReviewResult, _extract_json_array, _parse_findings, _get_client
 from ..core.tokenizer import CROSS_CHECK_RECOMMENDED_MAX, count_tokens
+from ..core.chunked_pass import (
+    ChunkJob,
+    assign_chunk,
+    chunk_label,
+    group_specs_by_chunk,
+    run_chunked_pass,
+)
 from ..core.code_cycles import CodeCycle, DEFAULT_CYCLE
 from ..modules import code_basis_format_kwargs, module_for_cycle
 from ..review.prompt_serialization import (
@@ -249,7 +255,7 @@ def _get_cross_check_user_message(spec_input: str, file_count: int, project_cont
     return f"Review the following {file_count} specs for cross-spec coordination only.\n{ctx}\n{spec_input}"
 
 
-def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, verbose: bool = False, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None, call_gate=None) -> ReviewResult:
+def run_cross_check(specs: list[ExtractedSpec], existing_findings: list[Finding], *, project_context: str = "", max_retries: int = 3, stream_callback: StreamCallback | None = None, cycle: CodeCycle = DEFAULT_CYCLE, model: str = CROSS_CHECK_MODEL_DEFAULT, _trace_parent=None, call_gate=None) -> ReviewResult:
     """Single-pass cross-check.
 
     ``_trace_parent``: when set (by ``run_chunked_cross_check``), the
@@ -516,13 +522,14 @@ def _close_cross_api_span(handle, result, *, source: str, status: str = "ok", er
 # get coordination review instead of returning a "skipped" status when the
 # combined input exceeds CROSS_CHECK_RECOMMENDED_MAX.
 #
-# The division families themselves are module data
-# (``ReviewModule.cross_check_chunk_groups`` — see ``modules.ChunkGroup``);
-# the chunking invariants below (every spec in exactly one chunk, singleton
-# pooling, the reserved "general" bucket for unmatched prefixes) are engine
-# logic. Files whose CSI prefix does not match any group are pooled into
-# "general" so they are never silently dropped.
-_CSI_PREFIX_RE = re.compile(r"^\s*(\d{2})\s?(\d{2})?")
+# The division families are module data
+# (``ReviewModule.cross_check_chunk_groups`` — see ``modules.ChunkGroup``).
+# The chunking invariants (every spec in exactly one chunk, singleton
+# pooling, the reserved "general" bucket for unmatched prefixes) and the
+# chunk-result synthesis are the shared engine in ``core.chunked_pass``,
+# which the compliance pass drives too. This module owns only what is
+# cross-check-specific: the fit decision, the log lines, the trace spans,
+# and the per-chunk ``run_cross_check`` call.
 
 
 def _default_chunk_groups():
@@ -530,149 +537,14 @@ def _default_chunk_groups():
     return module_for_cycle(None).cross_check_chunk_groups
 
 
-def _csi_prefix(filename: str) -> str:
-    match = _CSI_PREFIX_RE.match(filename)
-    if not match:
-        return ""
-    return match.group(1) or ""
-
-
 def _assign_chunk(filename: str, groups=None) -> str:
-    if groups is None:
-        groups = _default_chunk_groups()
-    prefix = _csi_prefix(filename)
-    if prefix:
-        for group in groups:
-            if prefix in group.csi_prefixes:
-                return group.chunk_id
-    return "general"
+    """Engine :func:`assign_chunk` over the default module's groups when omitted."""
+    return assign_chunk(filename, groups if groups is not None else _default_chunk_groups())
 
 
 def _chunk_label(chunk_id: str, groups=None) -> str:
-    if groups is None:
-        groups = _default_chunk_groups()
-    for group in groups:
-        if group.chunk_id == chunk_id:
-            return group.label
-    return "Project-wide / Other"
-
-
-def _group_specs_by_chunk(specs: list[ExtractedSpec], groups=None) -> list[tuple[str, list[ExtractedSpec]]]:
-    """Group specs by CSI division-family chunk, preserving order.
-
-    Returns a list of ``(chunk_id, specs)`` pairs with at least two specs
-    per chunk; smaller chunks are merged into ``"general"`` so the chunked
-    pass still has cross-spec context to work with.
-    """
-    if groups is None:
-        groups = _default_chunk_groups()
-    buckets: dict[str, list[ExtractedSpec]] = {}
-    for spec in specs:
-        cid = _assign_chunk(spec.filename, groups)
-        buckets.setdefault(cid, []).append(spec)
-
-    # Merge singletons into the project-wide bucket so each chunk has at
-    # least two specs to coordinate against.
-    merged: dict[str, list[ExtractedSpec]] = {}
-    project_wide: list[ExtractedSpec] = []
-    for cid, group in buckets.items():
-        if len(group) >= 2:
-            merged[cid] = group
-        else:
-            project_wide.extend(group)
-    if project_wide:
-        merged.setdefault("general", []).extend(project_wide)
-
-    # Stable order: predefined chunk groups first, then "general" last.
-    ordered: list[tuple[str, list[ExtractedSpec]]] = []
-    for group in groups:
-        if group.chunk_id in merged:
-            ordered.append((group.chunk_id, merged[group.chunk_id]))
-    if "general" in merged:
-        ordered.append(("general", merged["general"]))
-    # Anything else (shouldn't happen, but be defensive) preserves insertion order.
-    for cid, group in merged.items():
-        if cid not in {c for c, _ in ordered}:
-            ordered.append((cid, group))
-    return ordered
-
-
-def _filter_findings_for_chunk(
-    existing_findings: list[Finding], chunk_filenames: set[str]
-) -> list[Finding]:
-    """Restrict the "already-identified" context to findings inside a chunk.
-
-    Per-spec review findings are noisy when shown to a chunk that does not
-    contain the source file. Chunked cross-check sees only the findings
-    that originate inside its files.
-    """
-    if not chunk_filenames:
-        return list(existing_findings)
-    return [
-        f for f in existing_findings
-        if f.fileName in chunk_filenames
-        or any(name in chunk_filenames for name in f.affected_files)
-    ]
-
-
-def _label_finding_with_chunk(finding: Finding, chunk_id: str, groups=None) -> Finding:
-    label = _chunk_label(chunk_id, groups)
-    if not label:
-        return finding
-    section = finding.section or ""
-    if label.lower() in section.lower():
-        return finding
-    finding.section = f"[{label}] {section}".strip().rstrip(":")
-    return finding
-
-
-def _synthesize_chunk_findings(
-    chunk_results: list[tuple[str, ReviewResult]],
-    *,
-    fallback_model: str,
-    cycle: CodeCycle,
-    groups=None,
-    log: LogFn = _noop_log,
-) -> tuple[list[Finding], str, str]:
-    """Combine chunk-level findings into a single ReviewResult payload.
-
-    Returns ``(findings, summary, status)``.
-    """
-    findings: list[Finding] = []
-    summaries: list[str] = []
-    chunks_completed = 0
-    chunks_failed = 0
-    chunks_skipped = 0
-
-    for chunk_id, result in chunk_results:
-        label = _chunk_label(chunk_id, groups)
-        if result.cross_check_status == "completed":
-            chunks_completed += 1
-            for f in result.findings:
-                findings.append(_label_finding_with_chunk(f, chunk_id, groups))
-            if result.thinking:
-                summaries.append(f"--- {label} ---\n{result.thinking.strip()}")
-        elif result.cross_check_status == "skipped":
-            chunks_skipped += 1
-            summaries.append(f"--- {label} ---\nSkipped: {result.thinking or 'no reason given'}")
-        else:
-            chunks_failed += 1
-            summaries.append(
-                f"--- {label} ---\nFailed: {result.error or 'unknown error'}"
-            )
-
-    if chunks_completed == 0 and (chunks_failed or chunks_skipped):
-        status = "failed" if chunks_failed else "skipped"
-    else:
-        status = "completed"
-
-    summary_header = (
-        f"Chunked cross-check ({chunks_completed} completed, "
-        f"{chunks_failed} failed, {chunks_skipped} skipped). "
-        "Per-chunk summaries follow.\n"
-    )
-    summary_text = summary_header + "\n\n".join(summaries) if summaries else summary_header
-    return findings, summary_text, status
+    """Engine :func:`chunk_label` over the default module's groups when omitted."""
+    return chunk_label(chunk_id, groups if groups is not None else _default_chunk_groups())
 
 
 def run_chunked_cross_check(
@@ -681,7 +553,6 @@ def run_chunked_cross_check(
     *,
     project_context: str = "",
     max_retries: int = 3,
-    verbose: bool = False,
     stream_callback: StreamCallback | None = None,
     cycle: CodeCycle = DEFAULT_CYCLE,
     model: str = CROSS_CHECK_MODEL_DEFAULT,
@@ -701,7 +572,10 @@ def run_chunked_cross_check(
     findings into a single :class:`ReviewResult` with the chunk label
     preserved in each finding's ``section``. When the input fits, it
     delegates to the original :func:`run_cross_check` so behavior is
-    unchanged for small projects.
+    unchanged for small projects. The grouping, per-chunk loop, and merge
+    are the shared :func:`~src.core.chunked_pass.run_chunked_pass` engine;
+    this adapter supplies the cross-check-specific runner, log lines, and
+    trace spans.
 
     **Known limitation — cross-division coordination across chunks (TRUST_AUDIT
     P1-3).** Each chunk is cross-checked *in isolation*: a single
@@ -719,13 +593,14 @@ def run_chunked_cross_check(
     un-chunked path and have no such limitation. Findings themselves are never
     dropped or mis-attributed across chunks: every spec lands in exactly one
     chunk (singletons pool into ``"general"``), and each finding keeps its own
-    chunk label (see :func:`_group_specs_by_chunk` / :func:`_label_finding_with_chunk`).
+    chunk label (see :func:`~src.core.chunked_pass.group_specs_by_chunk` /
+    :func:`~src.core.chunked_pass.label_finding_with_chunk`).
     """
     if len(specs) < 2:
         return run_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
-            verbose=verbose, stream_callback=stream_callback, cycle=cycle, model=model,
+            stream_callback=stream_callback, cycle=cycle, model=model,
             call_gate=call_gate,
         )
 
@@ -737,12 +612,12 @@ def run_chunked_cross_check(
         return run_cross_check(
             specs, existing_findings,
             project_context=project_context, max_retries=max_retries,
-            verbose=verbose, stream_callback=stream_callback, cycle=cycle, model=model,
+            stream_callback=stream_callback, cycle=cycle, model=model,
             call_gate=call_gate,
         )
 
     groups = module_for_cycle(cycle).cross_check_chunk_groups
-    chunks = _group_specs_by_chunk(specs, groups)
+    chunks = group_specs_by_chunk(specs, groups)
     if len(chunks) <= 1 or all(len(group) < 2 for _, group in chunks):
         # Cannot meaningfully chunk — surface the original skip so the GUI
         # can warn the user. Better than silently truncating.
@@ -777,27 +652,21 @@ def run_chunked_cross_check(
     # the alternative (delegating to run_cross_check) has its own span
     # opened inside that function.
     trace_cross = _trace.capture_cross_check_start(spec_count=len(specs), chunked=True)
-    chunk_results: list[tuple[str, ReviewResult]] = []
-    aggregate_in = aggregate_out = 0
-    started = time.time()
-    for chunk_id, chunk_specs in chunks:
-        label = _chunk_label(chunk_id, groups)
-        chunk_filenames = {s.filename for s in chunk_specs}
-        scoped_findings = _filter_findings_for_chunk(existing_findings, chunk_filenames)
+
+    def run_chunk(job: ChunkJob) -> ReviewResult:
         log(
-            f"Cross-check chunk: {label} ({len(chunk_specs)} spec(s)).",
+            f"Cross-check chunk: {job.label} ({len(job.specs)} spec(s)).",
             level="step",
         )
         trace_chunk = _trace.capture_cross_check_chunk_start(
-            chunk_name=chunk_id, spec_count=len(chunk_specs),
-            finding_count=len(scoped_findings), parent=trace_cross,
+            chunk_name=job.chunk_id, spec_count=len(job.specs),
+            finding_count=len(job.existing_findings), parent=trace_cross,
         )
         chunk_result = run_cross_check(
-            chunk_specs,
-            scoped_findings,
+            job.specs,
+            job.existing_findings,
             project_context=project_context,
             max_retries=max_retries,
-            verbose=verbose,
             stream_callback=stream_callback,
             cycle=cycle,
             model=model,
@@ -809,53 +678,26 @@ def run_chunked_cross_check(
             status=chunk_result.cross_check_status or "completed",
             error=chunk_result.error,
         )
-        chunk_results.append((chunk_id, chunk_result))
-        aggregate_in += chunk_result.input_tokens
-        aggregate_out += chunk_result.output_tokens
+        return chunk_result
 
-    findings, summary_text, status = _synthesize_chunk_findings(
-        chunk_results, fallback_model=model, cycle=cycle, groups=groups, log=log,
-    )
-    # Surface partially-incomplete chunked passes (TRUST_AUDIT P1-3 follow-up):
-    # when status is "completed" because ≥1 chunk produced findings, a chunk
-    # that failed/skipped means that division's coordination did not run. The
-    # counts ride to the Run Diagnostics banner so the operator sees it instead
-    # of a falsely-clean green row. Mirrors the status rule in
-    # ``_synthesize_chunk_findings`` (failed = not completed and not skipped).
-    chunk_skips = sum(1 for _cid, r in chunk_results if r.cross_check_status == "skipped")
-    chunk_failures = sum(
-        1 for _cid, r in chunk_results if r.cross_check_status not in ("completed", "skipped")
-    )
-    combined = ReviewResult(
-        findings=findings,
-        thinking=summary_text,
+    # The engine tallies completed / failed / skipped, keeps every completed
+    # chunk's findings (labelled with their own chunk), stamps the
+    # ``chunk_failures`` / ``chunk_skips`` telemetry the Run Diagnostics
+    # banner reads (TRUST_AUDIT P1-3 follow-up), and carries the joined
+    # chunk errors on a failed combined result so the log reads
+    # "Cross-check failed: <why>" rather than "None".
+    combined = run_chunked_pass(
+        chunks,
+        existing_findings,
+        groups=groups,
+        run_chunk=run_chunk,
+        pass_name="cross-check",
+        summary_title="Chunked cross-check",
         model=model,
-        input_tokens=aggregate_in,
-        output_tokens=aggregate_out,
-        elapsed_seconds=time.time() - started,
-        cross_check_status=status,
-        chunk_failures=chunk_failures,
-        chunk_skips=chunk_skips,
     )
-    if status == "failed":
-        # Zero chunks completed: carry the per-chunk errors on the combined
-        # result so the operator sees WHY ("Cross-check failed: <errors>")
-        # instead of "Cross-check failed: None". A partial completion stays
-        # ``completed`` with ``error=None`` — its chunk_failures telemetry
-        # and the summary header already surface the failed chunks.
-        # (Compliance's chunked merge applies the same rule.)
-        combined.error = "; ".join(
-            filter(
-                None,
-                (
-                    r.error
-                    for _cid, r in chunk_results
-                    if r.cross_check_status not in ("completed", "skipped")
-                ),
-            )
-        ) or "All cross-check chunks failed."
     _trace.capture_cross_check_end(
-        trace_cross, finding_count=len(findings), status=status,
-        error=combined.error if status == "failed" else None,
+        trace_cross, finding_count=len(combined.findings),
+        status=combined.cross_check_status,
+        error=combined.error if combined.cross_check_status == "failed" else None,
     )
     return combined

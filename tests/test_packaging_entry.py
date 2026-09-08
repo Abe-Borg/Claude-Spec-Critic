@@ -315,6 +315,75 @@ print("RC=" + str(rc))
 
 
 # --------------------------------------------------------------------------
+# app_entry.configure_os_trust_store — frozen-only, best-effort, logged
+# --------------------------------------------------------------------------
+
+
+class TestConfigureOsTrustStore:
+    def test_not_frozen_is_a_no_op_that_imports_nothing(self, monkeypatch, app_entry):
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        # A None entry makes ``import truststore`` raise, so touching it here
+        # would surface as "unavailable" instead of "not-frozen".
+        monkeypatch.setitem(sys.modules, "truststore", None)
+        assert app_entry.configure_os_trust_store() == "not-frozen"
+
+    def test_frozen_injects_into_ssl(self, monkeypatch, app_entry):
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        calls: list[str] = []
+        fake = types.ModuleType("truststore")
+        fake.inject_into_ssl = lambda: calls.append("inject")  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "truststore", fake)
+        assert app_entry.configure_os_trust_store() == "injected"
+        assert calls == ["inject"]
+
+    def test_frozen_without_truststore_logs_and_continues(self, monkeypatch, app_entry, caplog):
+        import logging
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setitem(sys.modules, "truststore", None)  # ImportError on import
+        with caplog.at_level(logging.WARNING, logger="spec_critic.app_entry"):
+            assert app_entry.configure_os_trust_store() == "unavailable"
+        messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("truststore" in m and "certifi" in m for m in messages), messages
+
+    def test_frozen_injection_failure_logs_and_continues(self, monkeypatch, app_entry, caplog):
+        import logging
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        fake = types.ModuleType("truststore")
+
+        def boom():
+            raise RuntimeError("no OpenSSL here")
+
+        fake.inject_into_ssl = boom  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "truststore", fake)
+        with caplog.at_level(logging.WARNING, logger="spec_critic.app_entry"):
+            assert app_entry.configure_os_trust_store() == "unavailable"
+        assert any("no OpenSSL here" in r.getMessage() for r in caplog.records)
+
+    def test_main_configures_trust_store_second_before_any_src_import(self):
+        # Cache first (pinned above), trust store second, and both strictly
+        # before the first ``src`` import inside ``main`` — the updater's
+        # urllib TLS contexts must already honour the OS store.
+        tree = ast.parse((_PACKAGING / "app_entry.py").read_text(encoding="utf-8"))
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        second = main.body[1]
+        assert isinstance(second, ast.Expr) and isinstance(second.value, ast.Call)
+        assert isinstance(second.value.func, ast.Name)
+        assert second.value.func.id == "configure_os_trust_store"
+        first_src_import = next(
+            i
+            for i, node in enumerate(main.body)
+            if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "src"
+        )
+        assert first_src_import > 1
+
+    def test_truststore_is_pinned_in_the_runtime_lock(self):
+        lock = (_REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
+        assert re.search(r"^truststore==\d", lock, re.M), "truststore must stay pinned for the frozen build"
+
+
+# --------------------------------------------------------------------------
 # --selfcheck tokenizer probe
 # --------------------------------------------------------------------------
 

@@ -6,6 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
+# ``src.gui.review_run_controller`` imports ``tkinter.messagebox`` /
+# ``simpledialog`` at module scope; skip cleanly on hosts without the system
+# Tk package (conftest's ``_GUI_DEPENDENT_TESTS`` is the second guard).
+pytest.importorskip("tkinter")
+
 from src.gui import review_run_controller
 from src.programs import (
     DATACENTER_ARCHITECTURE_MODULE_ID,

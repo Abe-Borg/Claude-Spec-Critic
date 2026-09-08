@@ -1064,25 +1064,51 @@ def splice_profile_into_context(
         return candidate, 0
 
     items = list(profile.items)
-    dropped = 0
-    while items:
-        # Lowest confidence first; among ties, the later item drops first so
-        # earlier (higher-priority dimension) items survive longest.
-        lowest = min(range(len(items)), key=lambda i: (items[i].confidence, -i))
-        items.pop(lowest)
-        dropped += 1
-        trimmed = dataclasses.replace(profile, items=items)
-        candidate = _render(trimmed)
-        _tokens, fits = context_within_token_cap(candidate)
-        if fits:
+    total = len(items)
+    if total:
+        # Drop order: lowest confidence first; among ties, the later item
+        # drops first so earlier (higher-priority dimension) items survive
+        # longest. Computed ONCE — popping preserves the relative order of
+        # the survivors, so "the min over the current list by (confidence,
+        # -position)" at every step is exactly this sequence.
+        drop_order = sorted(range(total), key=lambda i: (items[i].confidence, -i))
+
+        def render_after_dropping(count: int) -> tuple[str, bool]:
+            dropped_idx = set(drop_order[:count])
+            kept = [item for i, item in enumerate(items) if i not in dropped_idx]
+            rendered = _render(dataclasses.replace(profile, items=kept))
+            _t, ok = context_within_token_cap(rendered)
+            return rendered, ok
+
+        # The render is monotone in item count (dropping an item can only
+        # shrink the block), so the smallest fitting drop count is found by
+        # binary search — O(log n) renders/tokenizations of a block that can
+        # be ~100k tokens, instead of the linear loop's O(n) full re-renders.
+        # ``memo`` guarantees each drop count renders at most once.
+        memo: dict[int, tuple[str, bool]] = {}
+
+        def probe(count: int) -> bool:
+            if count not in memo:
+                memo[count] = render_after_dropping(count)
+            return memo[count][1]
+
+        lo, hi = 1, total
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if probe(mid):
+                hi = mid
+            else:
+                lo = mid + 1
+        if probe(lo):
+            candidate, _ok = memo[lo]
             log(
                 f"Project Requirements Profile trimmed to fit the Project "
-                f"Context token cap: dropped {dropped} lowest-confidence "
+                f"Context token cap: dropped {lo} lowest-confidence "
                 f"item(s) from the rendered block (structured profile keeps "
-                f"all {len(profile.items)} items).",
+                f"all {total} items).",
                 level="warning",
             )
-            return candidate, dropped
+            return candidate, lo
 
     log(
         "Project Context is already at the token cap; the Project Requirements "
@@ -1090,4 +1116,4 @@ def splice_profile_into_context(
         "profile retained).",
         level="warning",
     )
-    return user_context, len(profile.items)
+    return user_context, total

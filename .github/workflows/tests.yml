@@ -24,12 +24,24 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
+      # requirements-dev.txt pulls in requirements.txt (the runtime lock) and
+      # adds the pytest chain. The package itself is installed without deps so
+      # `pip check` below validates pyproject's declared dependencies against
+      # the pinned set — a dependency imported by src/ but declared nowhere, or
+      # a pin that contradicts pyproject, fails here instead of on a user's
+      # machine.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install -e . --no-deps
+
+      - name: Verify installed dependency graph (pip check)
+        run: python -m pip check
 
       # The suite is hermetic (no API key, no network) per CLAUDE.md section 10:
       # conftest injects a placeholder ANTHROPIC_API_KEY and skips @pytest.mark.network.

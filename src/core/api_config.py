@@ -22,6 +22,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Iterable
+from urllib.parse import urlsplit
 
 _log = logging.getLogger(__name__)
 
@@ -103,7 +104,6 @@ DRAWING_IMPACT_MODEL_DEFAULT = os.environ.get(
 # neither depends on this set anymore, so a new Opus id missing from it can
 # no longer be silently clamped to a smaller output cap.
 OPUS_MODELS = frozenset({MODEL_OPUS_5, MODEL_OPUS_48})
-HAIKU_MODELS = frozenset({MODEL_HAIKU_45})
 
 # Models whose vision tier is the high-resolution one (2576px long edge,
 # ~4784-token image cap). Sonnet 5 is the first Sonnet-tier model with
@@ -1097,46 +1097,130 @@ def token_count_preflight_enabled() -> bool:
 # "this apex and every subdomain", so adding ``simple.wikipedia.org`` when
 # ``wikipedia.org`` is already on the list adds nothing.
 #
-# Categories (kept as inline comment groups so the intent of each line is
-# obvious; do *not* hand-sort across categories without checking that no
-# entry's category interpretation changes):
-#   - Aggregators / Q&A: forums where contractor-grade evidence is rare.
-#   - LLM-assistant outputs: another model's answer is not a citable source.
-#   - Trade forums: useful peer chatter, not authoritative for code.
-#   - DIY / home-improvement content farms.
-#   - Social: unsuitable for a defensible engineering review.
-#   - General encyclopedias: tertiary sources.
+# Every entry carries a category so the evidence panel can explain *why* a
+# model-cited URL was rejected ("blocked domain: social media") instead of the
+# bare "ungrounded" — see ``blocked_domain_category`` and
+# ``source_grounding.describe_rejection``. The labels are rendered verbatim in
+# the DOCX / HTML reports and persist inside cached verdicts' rejection
+# explanations, so treat them as stable strings.
 #
-# TODO: explore a category-based blocking helper so each entry is annotated
-# with its category and the report can explain *why* a citation was rejected
-# (deferred for now; the immediate fix here is just deduplicating the
-# obvious subdomain overlap). Any change to this list should be exercised
-# against the verifier's grounding tests in
-# ``tests/test_source_grounding_invariant.py``.
-_WEB_SEARCH_BLOCKED_DOMAINS = [
-    # Aggregators / Q&A
-    "reddit.com", "quora.com", "medium.com",
-    "stackexchange.com", "stackoverflow.com",
-    "answers.yahoo.com", "fixya.com",
-    # LLM-assistant outputs
-    "chatgpt.com", "perplexity.ai", "openai.com", "gemini.google.com",
-    "claude.ai", "you.com", "phind.com", "copilot.microsoft.com",
-    "poe.com", "character.ai", "jasper.ai", "writesonic.com",
-    # Trade forums (peer chatter, not authoritative for code compliance)
-    "diychatroom.com", "forums.jlconline.com", "hvac-talk.com",
-    "inspectionnews.net", "inspectorsforum.com", "contractortalk.com",
-    # DIY / home-improvement / lead-gen content farms
-    "doityourself.com", "homeadvisor.com", "thumbtack.com", "angi.com",
-    "ehow.com", "wikihow.com", "about.com", "thespruce.com", "bobvila.com",
-    "familyhandyman.com", "hunker.com", "sapling.com", "reference.com",
-    "leaf.tv", "sciencing.com", "bizfluent.com", "pocketsense.com",
-    # Social
-    "facebook.com", "twitter.com", "x.com", "instagram.com", "tiktok.com",
-    "linkedin.com", "pinterest.com", "youtube.com", "threads.net",
+# The entries live in ONE ordered tuple (annotated, not regrouped) so the flat
+# ``blocked_domains`` list the two server-tool builders emit stays
+# byte-identical in content and order — it sits inside the prompt-cache
+# prefix. Any change to this list should be exercised against the verifier's
+# grounding tests in ``tests/test_source_grounding_invariant.py``.
+BLOCKED_DOMAIN_CATEGORY_AGGREGATOR = "user-generated Q&A / aggregator"
+BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT = "LLM-assistant output"
+BLOCKED_DOMAIN_CATEGORY_TRADE_FORUM = "trade forum"
+BLOCKED_DOMAIN_CATEGORY_MARKETPLACE = "lead-generation marketplace"
+BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM = "DIY / content farm"
+BLOCKED_DOMAIN_CATEGORY_SOCIAL = "social media"
+BLOCKED_DOMAIN_CATEGORY_ENCYCLOPEDIA = "general encyclopedia"
+
+_WEB_SEARCH_BLOCKED_DOMAIN_ENTRIES: tuple[tuple[str, str], ...] = (
+    # User-generated Q&A / aggregators: contractor-grade evidence is rare.
+    ("reddit.com", BLOCKED_DOMAIN_CATEGORY_AGGREGATOR),
+    ("quora.com", BLOCKED_DOMAIN_CATEGORY_AGGREGATOR),
+    ("medium.com", BLOCKED_DOMAIN_CATEGORY_AGGREGATOR),
+    ("stackexchange.com", BLOCKED_DOMAIN_CATEGORY_AGGREGATOR),
+    ("stackoverflow.com", BLOCKED_DOMAIN_CATEGORY_AGGREGATOR),
+    ("answers.yahoo.com", BLOCKED_DOMAIN_CATEGORY_AGGREGATOR),
+    ("fixya.com", BLOCKED_DOMAIN_CATEGORY_AGGREGATOR),
+    # LLM-assistant outputs: another model's answer is not a citable source.
+    ("chatgpt.com", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("perplexity.ai", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("openai.com", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("gemini.google.com", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("claude.ai", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("you.com", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("phind.com", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("copilot.microsoft.com", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("poe.com", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("character.ai", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("jasper.ai", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    ("writesonic.com", BLOCKED_DOMAIN_CATEGORY_LLM_OUTPUT),
+    # Trade forums: useful peer chatter, not authoritative for code compliance.
+    ("diychatroom.com", BLOCKED_DOMAIN_CATEGORY_TRADE_FORUM),
+    ("forums.jlconline.com", BLOCKED_DOMAIN_CATEGORY_TRADE_FORUM),
+    ("hvac-talk.com", BLOCKED_DOMAIN_CATEGORY_TRADE_FORUM),
+    ("inspectionnews.net", BLOCKED_DOMAIN_CATEGORY_TRADE_FORUM),
+    ("inspectorsforum.com", BLOCKED_DOMAIN_CATEGORY_TRADE_FORUM),
+    ("contractortalk.com", BLOCKED_DOMAIN_CATEGORY_TRADE_FORUM),
+    # DIY / home-improvement content farms, with the lead-generation
+    # marketplaces that sit among them (the flat order is preserved).
+    ("doityourself.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("homeadvisor.com", BLOCKED_DOMAIN_CATEGORY_MARKETPLACE),
+    ("thumbtack.com", BLOCKED_DOMAIN_CATEGORY_MARKETPLACE),
+    ("angi.com", BLOCKED_DOMAIN_CATEGORY_MARKETPLACE),
+    ("ehow.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("wikihow.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("about.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("thespruce.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("bobvila.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("familyhandyman.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("hunker.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("sapling.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("reference.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("leaf.tv", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("sciencing.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("bizfluent.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    ("pocketsense.com", BLOCKED_DOMAIN_CATEGORY_CONTENT_FARM),
+    # Social: unsuitable for a defensible engineering review.
+    ("facebook.com", BLOCKED_DOMAIN_CATEGORY_SOCIAL),
+    ("twitter.com", BLOCKED_DOMAIN_CATEGORY_SOCIAL),
+    ("x.com", BLOCKED_DOMAIN_CATEGORY_SOCIAL),
+    ("instagram.com", BLOCKED_DOMAIN_CATEGORY_SOCIAL),
+    ("tiktok.com", BLOCKED_DOMAIN_CATEGORY_SOCIAL),
+    ("linkedin.com", BLOCKED_DOMAIN_CATEGORY_SOCIAL),
+    ("pinterest.com", BLOCKED_DOMAIN_CATEGORY_SOCIAL),
+    ("youtube.com", BLOCKED_DOMAIN_CATEGORY_SOCIAL),
+    ("threads.net", BLOCKED_DOMAIN_CATEGORY_SOCIAL),
     # General encyclopedias (tertiary). ``wikipedia.org`` already covers
     # every subdomain (``simple.wikipedia.org``, ``en.wikipedia.org``, ...).
-    "wikipedia.org", "britannica.com",
+    ("wikipedia.org", BLOCKED_DOMAIN_CATEGORY_ENCYCLOPEDIA),
+    ("britannica.com", BLOCKED_DOMAIN_CATEGORY_ENCYCLOPEDIA),
+)
+
+# The flat list the ``web_search`` / ``web_fetch`` tool dicts emit — derived
+# from the annotated entries so the two can never drift.
+_WEB_SEARCH_BLOCKED_DOMAINS = [
+    domain for domain, _category in _WEB_SEARCH_BLOCKED_DOMAIN_ENTRIES
 ]
+
+
+def _blocked_domain_host(url: str | None) -> str:
+    """Lowercased hostname of ``url`` (bare ``host/path`` accepted), or ``""``."""
+    if not url or not isinstance(url, str):
+        return ""
+    cleaned = url.strip()
+    if not cleaned:
+        return ""
+    try:
+        parts = urlsplit(cleaned)
+        if not parts.scheme and not parts.netloc and parts.path:
+            # ``reddit.com/r/hvac`` parses as a bare path; assume https.
+            parts = urlsplit("https://" + cleaned)
+        host = parts.hostname or ""
+    except ValueError:
+        return ""
+    return host.lower().rstrip(".")
+
+
+def blocked_domain_category(url: str | None) -> str | None:
+    """The blocklist category of ``url``'s host, or ``None`` when not blocked.
+
+    Mirrors the server tools' own matching rule — an entry covers its apex
+    and every subdomain — so a citation the tools would never have returned
+    can be explained as "blocked domain: <category>" rather than merely
+    "ungrounded". A URL whose host cannot be parsed is not blocked.
+    """
+    host = _blocked_domain_host(url)
+    if not host:
+        return None
+    for domain, category in _WEB_SEARCH_BLOCKED_DOMAIN_ENTRIES:
+        if host == domain or host.endswith("." + domain):
+            return category
+    return None
 
 # Fallback budget for severities outside the known set.
 DEFAULT_VERIFICATION_MAX_USES = 5

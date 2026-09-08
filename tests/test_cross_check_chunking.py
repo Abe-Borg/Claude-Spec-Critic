@@ -23,16 +23,20 @@ from __future__ import annotations
 import pytest
 
 import src.cross_check.cross_checker as cc
+from src.core.chunked_pass import group_specs_by_chunk, synthesize_chunk_results
+from src.core.code_cycles import DEFAULT_CYCLE
 from src.cross_check.cross_checker import (
     _assign_chunk,
     _chunk_label,
-    _group_specs_by_chunk,
-    _synthesize_chunk_findings,
     run_chunked_cross_check,
 )
-from src.core.code_cycles import DEFAULT_CYCLE
 from src.input.extractor import ExtractedSpec
+from src.modules import DEFAULT_MODULE
 from src.review.reviewer import Finding, ReviewResult
+
+# The chunk grouping/synthesis helpers moved into the shared engine
+# (``core.chunked_pass``), which takes the module's chunk groups explicitly.
+_GROUPS = DEFAULT_MODULE.cross_check_chunk_groups
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +131,7 @@ class TestChunkCompleteness:
             _spec("21 13 00 - Sprinklers.docx"),  # singleton division
             _spec("Cover.docx"),                   # unparseable
         ]
-        chunks = _group_specs_by_chunk(specs)
+        chunks = group_specs_by_chunk(specs, _GROUPS)
 
         # The union of every chunk's specs equals the input set — no drop.
         grouped = [s for _cid, group in chunks for s in group]
@@ -148,7 +152,7 @@ class TestChunkCompleteness:
             _spec("23 05 00 - HVAC.docx"),
             _spec("23 07 00 - Insulation.docx"),
         ]
-        chunks = dict(_group_specs_by_chunk(specs))
+        chunks = dict(group_specs_by_chunk(specs, _GROUPS))
         assert set(chunks) == {"div_22", "div_23"}
         assert len(chunks["div_22"]) == 2
         assert len(chunks["div_23"]) == 2
@@ -161,7 +165,7 @@ class TestChunkCompleteness:
             _spec("22 13 00 - Sanitary.docx"),
             _spec("21 13 00 - Sprinklers.docx"),  # singleton
         ]
-        chunks = dict(_group_specs_by_chunk(specs))
+        chunks = dict(group_specs_by_chunk(specs, _GROUPS))
         assert "div_21" not in chunks
         assert "general" in chunks
         assert [s.filename for s in chunks["general"]] == ["21 13 00 - Sprinklers.docx"]
@@ -335,33 +339,33 @@ class TestSynthesisStatusMatrix:
             ("div_22", _chunk_result("completed", findings=[_finding("22 11 00.docx")])),
             ("div_23", _chunk_result("failed", error="x")),
         ]
-        findings, _summary, status = _synthesize_chunk_findings(
-            results, fallback_model="m", cycle=DEFAULT_CYCLE
+        synthesis = synthesize_chunk_results(
+            results, groups=_GROUPS, summary_title="Chunked cross-check"
         )
-        assert status == "completed"
-        assert len(findings) == 1
+        assert synthesis.status == "completed"
+        assert len(synthesis.findings) == 1
 
     def test_zero_completed_with_failures_is_failed(self):
         results = [
             ("div_22", _chunk_result("failed", error="x")),
             ("div_23", _chunk_result("failed", error="y")),
         ]
-        findings, summary, status = _synthesize_chunk_findings(
-            results, fallback_model="m", cycle=DEFAULT_CYCLE
+        synthesis = synthesize_chunk_results(
+            results, groups=_GROUPS, summary_title="Chunked cross-check"
         )
-        assert status == "failed"
-        assert findings == []
-        assert "0 completed, 2 failed" in summary
+        assert synthesis.status == "failed"
+        assert synthesis.findings == []
+        assert "0 completed, 2 failed" in synthesis.summary_text
 
     def test_zero_completed_only_skipped_is_skipped(self):
         results = [
             ("div_22", _chunk_result("skipped", thinking="too small")),
             ("div_23", _chunk_result("skipped", thinking="too small")),
         ]
-        _findings, _summary, status = _synthesize_chunk_findings(
-            results, fallback_model="m", cycle=DEFAULT_CYCLE
+        synthesis = synthesize_chunk_results(
+            results, groups=_GROUPS, summary_title="Chunked cross-check"
         )
-        assert status == "skipped"
+        assert synthesis.status == "skipped"
 
 
 # ===========================================================================

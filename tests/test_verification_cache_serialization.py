@@ -117,6 +117,9 @@ def test_skipped_fields_are_not_persisted(tmp_path: Path):
     result.requires_elevated_confidence = True
     result.input_tokens = 1234
     result.output_tokens = 567
+    result.cache_creation_input_tokens = 89
+    result.cache_read_input_tokens = 1011
+    result.call_usage = [{"model": "claude-sonnet-4-6", "input_tokens": 1234}]
     result.structured_payload = {"foo": "bar"}
     result.retry_telemetry = {"attempts": 2}
 
@@ -141,6 +144,9 @@ def test_skipped_fields_are_not_persisted(tmp_path: Path):
     assert hit.requires_elevated_confidence is False
     assert hit.input_tokens == 0
     assert hit.output_tokens == 0
+    assert hit.cache_creation_input_tokens == 0
+    assert hit.cache_read_input_tokens == 0
+    assert hit.call_usage == []
     assert hit.structured_payload is None
     assert hit.retry_telemetry is None
     # Replay state the cache stamps on a hit.

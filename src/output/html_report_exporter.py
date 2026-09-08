@@ -186,6 +186,18 @@ def _anchor_for_finding(finding) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _rejected_source_reasons(vr) -> dict[str, str]:
+    """``{url: explanation}`` off a verification result; ``{}`` when absent.
+
+    Mirrors the DOCX panel's defensive read: legacy cache rows carry no
+    explanations, and the panel then renders the bare ``reason`` only.
+    """
+    raw = getattr(vr, "rejected_source_reasons", None)
+    if not isinstance(raw, dict):
+        return {}
+    return {str(url): str(why) for url, why in raw.items() if url and why}
+
+
 def _serialize_verification(vr) -> dict | None:
     if vr is None:
         return None
@@ -200,6 +212,7 @@ def _serialize_verification(vr) -> dict | None:
             entry if isinstance(entry, dict) else {"url": str(entry), "reason": ""}
             for entry in (getattr(vr, "rejected_sources", None) or [])
         ],
+        "rejected_source_reasons": _rejected_source_reasons(vr),
         "fetched_sources": list(getattr(vr, "fetched_sources", None) or []),
         "initial_sources": list(getattr(vr, "initial_sources", None) or []),
         "source_quote": getattr(vr, "source_quote", "") or "",
@@ -448,6 +461,8 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
     extraction_warnings = int(summary.get("extraction_warning_count", 0) or 0)
     budget_exhausted_count = int(summary.get("budget_exhausted_count", 0) or 0)
     tracked_changes = int(summary.get("tracked_changes_spec_count", 0) or 0)
+    integrity_warnings = [str(w) for w in (summary.get("integrity_warnings") or [])]
+    integrity_warning_count = len(integrity_warnings)
 
     cache_text = (
         f"{cache_count} (oldest {oldest_age}d old)"
@@ -462,6 +477,11 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
             str(failed_review_count),
             failed_review_count > 0,
         ),
+    ]
+    # Conditional program-only row (see ``_write_run_diagnostics_banner``).
+    if integrity_warning_count > 0:
+        rows.append(("Result integrity warnings", str(integrity_warning_count), True))
+    rows += [
         ("Cache replays", cache_text, False),
         (
             "Verification failures (operational)",
@@ -576,6 +596,21 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
                 f"absence of findings does NOT mean {'they are' if plural else 'it is'} "
                 f"compliant. Re-run {'these specs' if plural else 'this spec'} "
                 "individually to obtain a review.",
+                "#C00000",
+            )
+        )
+    if integrity_warning_count > 0:
+        integrity_plural = integrity_warning_count != 1
+        integrity_details = "; ".join(integrity_warnings)
+        hints.append(
+            (
+                f"⚠ {integrity_warning_count} result integrity warning"
+            f"{'s' if integrity_plural else ''}: the submission coverage "
+            "figures above (Files Reviewed / Routed Specifications Submitted) "
+            "were normalized from inconsistent saved submission state and must "
+            f"be treated as unverified — {integrity_details}. Confirm each "
+            "specification against the per-module Files Reviewed lists and "
+            "re-run any that are missing.",
                 "#C00000",
             )
         )
@@ -1514,6 +1549,7 @@ def _render_evidence_panel(finding, vr) -> tuple[str, list[str]]:
             "Unsupported / rejected sources (cited by the model but not present "
             "in web_search results):"
         )
+        rejected_reasons = _rejected_source_reasons(vr)
         bits = []
         text_bits = []
         for entry in rejected:
@@ -1523,8 +1559,17 @@ def _render_evidence_panel(finding, vr) -> tuple[str, list[str]]:
             bit = f'<span class="sc-rejected">{_e(url_text)}</span>'
             if reason:
                 bit += f'<span style="color:#C00000"> [{_e(reason)}]</span>'
+            # DOCX parity: the plain-language explanation follows the
+            # machine reason, gray italic, only when the verifier recorded one.
+            explanation = rejected_reasons.get(url or "")
+            if explanation:
+                bit += f'<span class="sc-rejected"> — {_e(explanation)}</span>'
             bits.append(bit)
-            text_bits.append(url_text + (f" [{reason}]" if reason else ""))
+            text_bits.append(
+                url_text
+                + (f" [{reason}]" if reason else "")
+                + (f" — {explanation}" if explanation else "")
+            )
         parts.append(
             f'<p class="sc-srclabel" style="color:#C00000"><strong>{_e(label)}'
             "</strong><br>"

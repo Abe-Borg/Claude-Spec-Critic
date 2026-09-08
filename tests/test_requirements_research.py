@@ -1367,3 +1367,135 @@ class TestRequirementsProfilePersistence:
         )
         result = finalize_batch_result(state)
         assert result.requirements_profile == profile_dict
+
+
+# ---------------------------------------------------------------------------
+# Trim loop: binary search over the drop count, equivalent to the linear loop
+# ---------------------------------------------------------------------------
+
+
+def _reference_linear_trim(user_context, profile, cap):
+    """The pre-binary-search loop, verbatim, as the equivalence oracle."""
+    def _render(p):
+        return rr.merge_into_context(
+            user_context, rr.wrap_attachment(rr.PROFILE_ATTACHMENT_LABEL, p.render_text())
+        )
+
+    candidate = _render(profile)
+    if cap(candidate)[1]:
+        return candidate, 0
+    items = list(profile.items)
+    dropped = 0
+    while items:
+        lowest = min(range(len(items)), key=lambda i: (items[i].confidence, -i))
+        items.pop(lowest)
+        dropped += 1
+        candidate = _render(dataclasses.replace(profile, items=items))
+        if cap(candidate)[1]:
+            return candidate, dropped
+    return user_context, len(profile.items)
+
+
+def _synthetic_profile(n: int, seed: int) -> RequirementsProfile:
+    import random
+
+    rng = random.Random(seed)
+    categories = ["governing_code", "ahj_requirement", "local_amendment", "client_standard"]
+    dims = ["governing_codes", "ahj_requirements", "client_standards"]
+    items = []
+    for i in range(n):
+        # Coarse confidences so ties (the "-i" tie-break) are exercised.
+        confidence = rng.choice([0.2, 0.4, 0.5, 0.6, 0.8, 0.9])
+        items.append(
+            ResearchItem(
+                item_id=f"r-{i:012d}",
+                dimension_id=rng.choice(dims),
+                topic=f"Topic {i}",
+                category=rng.choice(categories),
+                requirement=f"Requirement {i} " + "word " * rng.randint(3, 30),
+                authority="Agency" if rng.random() < 0.5 else "",
+                confidence=confidence,
+                grounded=confidence >= 0.5,
+                accepted_sources=[f"https://x.example/{i}"] if confidence >= 0.5 else [],
+            )
+        )
+    return RequirementsProfile(
+        items=items,
+        dimension_statuses=[
+            DimensionStatus(dimension_id=d, status="completed", item_count=1) for d in dims
+        ],
+        research_date="2026-09-08",
+        project={"city": "Reno", "state_or_province": "NV", "country": "US", "client_name": "X"},
+    )
+
+
+class TestSpliceTrimBinarySearch:
+    @pytest.mark.parametrize("n,seed,limit_fraction", [
+        (1, 1, 0.5), (2, 2, 0.5), (7, 3, 0.3), (64, 4, 0.55), (200, 5, 0.12),
+        (200, 6, 0.9), (333, 7, 0.02),
+    ])
+    def test_matches_the_linear_loop(self, monkeypatch, n, seed, limit_fraction):
+        profile = _synthetic_profile(n, seed)
+        full = rr.merge_into_context(
+            "User context.",
+            rr.wrap_attachment(rr.PROFILE_ATTACHMENT_LABEL, profile.render_text()),
+        )
+        limit = int(len(full) * limit_fraction)
+
+        def cap(text):  # monotone in item count: the render only shrinks
+            return len(text), len(text) <= limit
+
+        expected = _reference_linear_trim("User context.", profile, cap)
+        monkeypatch.setattr(rr, "context_within_token_cap", cap)
+        actual = splice_profile_into_context("User context.", profile)
+
+        assert actual == expected
+        assert len(profile.items) == n  # structured profile never trimmed
+
+    def test_degenerate_cap_still_drops_the_block_entirely(self, monkeypatch):
+        profile = _synthetic_profile(50, 9)
+        monkeypatch.setattr(rr, "context_within_token_cap", lambda text: (len(text), False))
+        log = _LogCollector()
+        effective, dropped = splice_profile_into_context("User context.", profile, log=log)
+        assert effective == "User context."
+        assert dropped == 50
+        assert any("dropped from review context entirely" in m for m in log.messages("warning"))
+
+    def test_render_and_tokenize_calls_are_logarithmic(self, monkeypatch):
+        import math
+
+        n = 4096
+        profile = _synthetic_profile(n, 11)
+        renders = 0
+        original_render = RequirementsProfile.render_text
+
+        def counting_render(self):
+            nonlocal renders
+            renders += 1
+            return original_render(self)
+
+        monkeypatch.setattr(RequirementsProfile, "render_text", counting_render)
+        full = rr.merge_into_context(
+            "User context.",
+            rr.wrap_attachment(rr.PROFILE_ATTACHMENT_LABEL, original_render(profile)),
+        )
+        limit = int(len(full) * 0.4)
+        tokenizes = 0
+
+        def cap(text):
+            nonlocal tokenizes
+            tokenizes += 1
+            return len(text), len(text) <= limit
+
+        monkeypatch.setattr(rr, "context_within_token_cap", cap)
+        renders = 0
+        effective, dropped = splice_profile_into_context("User context.", profile)
+
+        assert 0 < dropped < n
+        # The linear loop would have rendered ``dropped`` (+1) times — well
+        # over a thousand here. Binary search: the initial full render plus
+        # at most ceil(log2 n) + 1 probes.
+        bound = math.ceil(math.log2(n)) + 2
+        assert renders <= bound, (renders, bound)
+        assert tokenizes <= bound, (tokenizes, bound)
+        assert dropped > bound  # i.e. the linear loop really was O(n) here

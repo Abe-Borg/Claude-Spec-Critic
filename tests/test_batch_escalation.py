@@ -156,6 +156,90 @@ class TestApplyEscalationOutcome:
         assert merged.models_disagreed is False
         assert merged.escalation_changed_verdict is False
 
+    @staticmethod
+    def _priced(verdict, *, grounded, model, tokens, searches, cache=(0, 0)):
+        return VerificationResult(
+            verdict=verdict,
+            grounded=grounded,
+            sources=["https://x"] if grounded else [],
+            accepted_sources=["https://x"] if grounded else [],
+            model_used=model,
+            cache_status="miss",
+            input_tokens=tokens[0],
+            output_tokens=tokens[1],
+            cache_creation_input_tokens=cache[0],
+            cache_read_input_tokens=cache[1],
+            web_search_requests=searches,
+        )
+
+    def test_call_usage_carries_both_calls_when_the_escalated_result_is_kept(self):
+        initial = self._priced(
+            "UNVERIFIED", grounded=False, model=INIT_MODEL,
+            tokens=(1_000, 200), searches=5, cache=(3_000, 0),
+        )
+        esc = self._priced(
+            "CONFIRMED", grounded=True, model="claude-opus-5",
+            tokens=(4_000, 900), searches=8, cache=(0, 3_000),
+        )
+        merged = _apply_escalation_outcome(
+            initial_result=initial, esc_result=esc,
+            initial_verdict="UNVERIFIED", initial_model=INIT_MODEL,
+            initial_grounded=False, initial_sources=[],
+            escalation_reason="initial_unverified",
+        )
+        assert merged is esc
+        # The flat fields still describe only the kept call...
+        assert (merged.input_tokens, merged.web_search_requests) == (4_000, 8)
+        # ...while call_usage carries BOTH paid conversations, each on its
+        # own model, so diagnostics can price the Sonnet pass too.
+        assert merged.call_usage == [
+            {
+                "model": INIT_MODEL, "escalated": False,
+                "input_tokens": 1_000, "output_tokens": 200,
+                "cache_creation_input_tokens": 3_000, "cache_read_input_tokens": 0,
+                "web_search_requests": 5, "web_fetch_requests": 0,
+            },
+            {
+                "model": "claude-opus-5", "escalated": True,
+                "input_tokens": 4_000, "output_tokens": 900,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 3_000,
+                "web_search_requests": 8, "web_fetch_requests": 0,
+            },
+        ]
+
+    def test_call_usage_carries_both_calls_when_the_initial_result_is_kept(self):
+        initial = self._priced(
+            "DISPUTED", grounded=True, model=INIT_MODEL, tokens=(1_000, 200), searches=5,
+        )
+        esc = self._priced(
+            "UNVERIFIED", grounded=False, model="claude-opus-5",
+            tokens=(4_000, 900), searches=8,
+        )
+        merged = _apply_escalation_outcome(
+            initial_result=initial, esc_result=esc,
+            initial_verdict="DISPUTED", initial_model=INIT_MODEL,
+            initial_grounded=True, initial_sources=["https://x"],
+            escalation_reason="initial_ungrounded",
+        )
+        assert merged is initial
+        assert [(c["model"], c["escalated"], c["input_tokens"]) for c in merged.call_usage] == [
+            (INIT_MODEL, False, 1_000),
+            ("claude-opus-5", True, 4_000),
+        ]
+
+    def test_call_usage_falls_back_to_the_snapshot_model(self):
+        # A result whose ``model_used`` is empty still prices its call on the
+        # model the caller snapshotted.
+        initial = self._priced("UNVERIFIED", grounded=False, model="", tokens=(10, 1), searches=0)
+        esc = self._priced("CONFIRMED", grounded=True, model="claude-opus-5", tokens=(20, 2), searches=1)
+        merged = _apply_escalation_outcome(
+            initial_result=initial, esc_result=esc,
+            initial_verdict="UNVERIFIED", initial_model=INIT_MODEL,
+            initial_grounded=False, initial_sources=[],
+            escalation_reason="initial_unverified",
+        )
+        assert merged.call_usage[0]["model"] == INIT_MODEL
+
     def test_initial_sources_recorded_even_for_noncontested(self):
         initial = _vr("UNVERIFIED", grounded=False, model=INIT_MODEL)
         esc = _vr("CONFIRMED", grounded=True, sources=["https://x"], model="claude-opus-4-8")
@@ -283,6 +367,16 @@ class TestRunBatchEscalationWave:
         # Exactly one escalation request, stable custom_id.
         assert len(recorded["requests"]) == 1
         assert recorded["requests"][0]["custom_id"] == "verify_escalation__0"
+        # Both paid conversations are recorded for pricing: the initial
+        # Sonnet pass (no tokens on this hand-built result) and the Opus
+        # pass with the usage the wave read (120/60, 2 searches).
+        esc_model = recorded["request_map"]["verify_escalation__0"]["model"]
+        assert [(c["model"], c["escalated"]) for c in f.verification.call_usage] == [
+            (INIT_MODEL, False), (esc_model, True),
+        ]
+        assert f.verification.call_usage[1]["input_tokens"] == 120
+        assert f.verification.call_usage[1]["output_tokens"] == 60
+        assert f.verification.call_usage[1]["web_search_requests"] == 2
 
     def test_skips_finding_already_on_escalation_model(self, monkeypatch):
         # A CRITICAL california_ahj finding ran its INITIAL pass on Opus, so
@@ -345,11 +439,21 @@ class TestRunBatchEscalationWave:
             monkeypatch,
             results_by_id=lambda cid: batch_errored_result(custom_id=cid),
         )
+        recorded = _mock_batch_primitives(
+            monkeypatch,
+            results_by_id=lambda cid: batch_errored_result(custom_id=cid),
+        )
         _run([f])
         assert f.verification.verdict == "UNVERIFIED"
         # escalation_attempted stays False because the merge only runs on a
         # successful escalation result.
         assert f.verification.escalation_attempted is False
+        # ...but the escalated call was still submitted and paid for, so its
+        # usage joins the initial call's for pricing instead of vanishing.
+        esc_model = recorded["request_map"]["verify_escalation__0"]["model"]
+        assert [(c["model"], c["escalated"]) for c in f.verification.call_usage] == [
+            (INIT_MODEL, False), (esc_model, True),
+        ]
 
     def test_contested_when_both_grounded_disagree(self, monkeypatch):
         # Initial is grounded but escalation-eligible via the all-search-errors

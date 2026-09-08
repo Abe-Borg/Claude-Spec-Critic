@@ -718,6 +718,14 @@ class TestAggregateRunDiagnostics:
     def test_empty_input_keeps_the_single_module_shape(self):
         agg = _aggregate_run_diagnostics([])
         assert set(agg) == set(_findings_to_summary([]))
+
+    def test_integrity_warnings_key_only_when_present(self):
+        # Empty / blank warnings keep the single-module shape byte-for-byte;
+        # a real warning adds the program-only key the banner renders from.
+        agg = _aggregate_run_diagnostics([], integrity_warnings=["", "  "])
+        assert "integrity_warnings" not in agg
+        agg = _aggregate_run_diagnostics([], integrity_warnings=["count clamped to 2"])
+        assert agg["integrity_warnings"] == ["count clamped to 2"]
         assert agg["failed_review_count"] == 0
         assert agg["failed_review_specs"] == []
         assert agg["oldest_cache_age_days"] is None
@@ -945,6 +953,33 @@ class TestProgramBanner:
         assert _banner_value(doc, "Specs that failed review (not reviewed)") == "0"
         assert _banner_value_shading(doc, "Specs that failed review (not reviewed)") is None
         assert "failed review and" not in text
+        # The program-only integrity row is conditional: absent on a clean run.
+        assert _banner_value(doc, "Result integrity warnings") is None
+        assert "result integrity warning" not in text
+
+    def test_integrity_warning_row_sits_after_the_failed_review_row(self, tmp_path: Path):
+        from src.orchestration.program_pipeline import ProgramPipelineResult
+
+        base = _program_result(failed_fire_spec=True)
+        degraded = ProgramPipelineResult(
+            program_id=base.program_id,
+            assignments=base.assignments,
+            module_results=base.module_results,
+            submitted_files=("FS-21-1300.docx", "ZZ-99-9999.docx", "EL-26-0500.docx"),
+        )
+        doc = self._export(tmp_path, degraded)
+        labels = [row.cells[0].text.strip() for row in _banner_table(doc).rows]
+        assert labels.index("Result integrity warnings") == (
+            labels.index("Specs that failed review (not reviewed)") + 1
+        )
+        assert _banner_value(doc, "Result integrity warnings") == "1"
+        assert _banner_value_shading(doc, "Result integrity warnings") == "FFE5E5"
+        text = _all_text_from(doc)
+        # Both red hints render, failed-review first.
+        assert text.index("failed review and was NOT reviewed") < text.index(
+            "result integrity warning"
+        )
+        assert "ZZ-99-9999.docx" in text
 
     def test_banner_once_after_title_and_trust_summary_after_program_summary(
         self, tmp_path: Path

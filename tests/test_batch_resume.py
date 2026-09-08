@@ -316,6 +316,100 @@ class TestThinSubmission:
         assert sub.prepared_specs[0].filename == real_name
 
 
+class TestThinSubmissionCollidingStems:
+    """B-17: two supplied files whose sanitized custom-id stems agree on the
+    50-char key must not both resolve to the first one. The custom id's
+    index is the submission-order position, so when the supplied list replays
+    that order the index disambiguates exactly; otherwise the legacy
+    first-match fallback applies and the ambiguity is logged."""
+
+    # 60+ chars before the "Rev" so the sanitized stem is truncated to the
+    # same 50 characters for both names.
+    REV_A = "23 05 93 - Testing Adjusting and Balancing for HVAC Systems Rev A.docx"
+    REV_B = "23 05 93 - Testing Adjusting and Balancing for HVAC Systems Rev B.docx"
+
+    def _results(self):
+        from src.batch.batch import _review_custom_id
+
+        cid_a = _review_custom_id(self.REV_A, 0)
+        cid_b = _review_custom_id(self.REV_B, 1)
+        # Precondition of the whole scenario: the two ids share one stem.
+        assert br._parse_review_custom_id(cid_a)[0] == br._parse_review_custom_id(cid_b)[0]
+        return cid_a, cid_b, [
+            FakeBatchResult(custom_id=cid_b, result=FakeBatchResultEnvelope(type="succeeded")),
+            FakeBatchResult(custom_id=cid_a, result=FakeBatchResultEnvelope(type="succeeded")),
+        ]
+
+    def _patch_client(self, monkeypatch, results):
+        import src.batch.batch as batch_mod
+        monkeypatch.setattr(batch_mod, "_get_client", lambda **_: _FakeClient(results))
+
+    def test_index_disambiguates_when_supplied_order_replays_submission(self, monkeypatch, tmp_path):
+        cid_a, cid_b, results = self._results()
+        self._patch_client(monkeypatch, results)
+        messages: list[tuple[str, str]] = []
+        sub = thin_submission_from_batch_results(
+            "msgbatch_X",
+            model="claude-opus-4-8",
+            files=[str(tmp_path / self.REV_A), str(tmp_path / self.REV_B)],
+            log=lambda msg, level="info": messages.append((level, msg)),
+        )
+        assert sub.job.request_map[cid_a]["filename"] == self.REV_A
+        assert sub.job.request_map[cid_b]["filename"] == self.REV_B
+        assert sub.files_reviewed == [self.REV_A, self.REV_B]
+        # (The files are not on disk, so the unrelated "recovering findings
+        # only" warning fires; only the collision warning is under test.)
+        assert not [m for lvl, m in messages if "more than one supplied file" in m]
+
+    def test_falls_back_to_first_match_and_warns_when_order_cannot_be_trusted(self, monkeypatch, tmp_path):
+        cid_a, cid_b, results = self._results()
+        self._patch_client(monkeypatch, results)
+        messages: list[tuple[str, str]] = []
+        # Supplied in the REVERSE of submission order: index 0 now points at
+        # Rev B, whose stem matches, but the pairing is wrong — the whole-list
+        # check must reject it... unless every index still lines up. Reversing
+        # two colliders lines them up perfectly (same stem), so add a third,
+        # non-colliding file out of position to break the replay.
+        other = tmp_path / "22 11 16 - Water.docx"
+        cid_other = "review__22_11_16_-_Water__2"
+        results.append(FakeBatchResult(custom_id=cid_other, result=FakeBatchResultEnvelope(type="succeeded")))
+        sub = thin_submission_from_batch_results(
+            "msgbatch_X",
+            model="claude-opus-4-8",
+            files=[str(other), str(tmp_path / self.REV_B), str(tmp_path / self.REV_A)],
+            log=lambda msg, level="info": messages.append((level, msg)),
+        )
+        # Legacy behavior for the colliding pair: both map to the FIRST
+        # supplied match (Rev B here) — never dropped, never a stem.
+        assert sub.job.request_map[cid_a]["filename"] == self.REV_B
+        assert sub.job.request_map[cid_b]["filename"] == self.REV_B
+        # The non-colliding file still resolves by its unique key.
+        assert sub.job.request_map[cid_other]["filename"] == "22 11 16 - Water.docx"
+        warnings = [m for lvl, m in messages if "more than one supplied file" in m]
+        assert len(warnings) == 1
+        assert self.REV_A in warnings[0] and self.REV_B in warnings[0]
+        assert "first matching file" in warnings[0]
+
+    def test_unique_stems_unaffected(self, monkeypatch, tmp_path):
+        # Non-colliding names keep the existing first-and-only-match path even
+        # when the supplied order does not replay the submission order.
+        results = [
+            FakeBatchResult(custom_id="review__AAA__0", result=FakeBatchResultEnvelope(type="succeeded")),
+            FakeBatchResult(custom_id="review__BBB__1", result=FakeBatchResultEnvelope(type="succeeded")),
+        ]
+        self._patch_client(monkeypatch, results)
+        messages: list[tuple[str, str]] = []
+        sub = thin_submission_from_batch_results(
+            "msgbatch_X",
+            model="claude-opus-4-8",
+            files=[str(tmp_path / "BBB.docx"), str(tmp_path / "AAA.docx")],
+            log=lambda msg, level="info": messages.append((level, msg)),
+        )
+        assert sub.job.request_map["review__AAA__0"]["filename"] == "AAA.docx"
+        assert sub.job.request_map["review__BBB__1"]["filename"] == "BBB.docx"
+        assert not [m for lvl, m in messages if "more than one supplied file" in m]
+
+
 class TestRepairFallbackResolvesByFilename:
     """Fix for the resume misalignment: the review-repair fallback must select
     the retryable spec by FILENAME, so a re-extracted prepared_specs in a
@@ -692,4 +786,5 @@ class TestRepairBatchCarryThrough:
 
         monkeypatch.setattr(_P, "replace", _deny)
         assert br.save_pending_batch(pending, path=tmp_path / "p.json") is False
-        assert br.save_pending_run(pending, path=tmp_path / "p.json") is False
+        program_run = br.PendingProgramRun(program_id="hyperscale_datacenter")
+        assert br.save_pending_program_run(program_run, path=tmp_path / "p.json") is False

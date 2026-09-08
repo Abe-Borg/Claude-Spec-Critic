@@ -425,14 +425,6 @@ def save_pending_program_run(
     return _write_pending_state(asdict(pending), target, what="pending program-run manifest")
 
 
-def save_pending_run(
-    pending: PendingBatch | PendingProgramRun, *, path: Path | None = None
-) -> bool:
-    if isinstance(pending, PendingProgramRun):
-        return save_pending_program_run(pending, path=path)
-    return save_pending_batch(pending, path=path)
-
-
 def _pending_batch_from_mapping(data: object) -> PendingBatch:
     if not isinstance(data, dict):
         raise ValueError("pending batch entry must be an object")
@@ -660,19 +652,62 @@ def thin_submission_from_batch_results(
     # re-extracted spec's filename, so the failed-spec cross-check exclusion and
     # the filename-keyed review-repair fallback both match. Falls back to the
     # stem when no supplied file sanitizes to it (findings-only recovery).
-    real_by_key: dict[str, str] = {}
-    for f in files or []:
-        name = Path(f).name
-        real_by_key.setdefault(_sanitize_custom_id(name), name)
+    #
+    # The sanitized stem is truncated to 50 chars, so two supplied files whose
+    # first 50 sanitized characters agree ("... Balancing for HVAC Rev A.docx"
+    # / "... Rev B.docx") collide on one key. The custom id's index is the
+    # submission-order position, so when the supplied list replays the
+    # submission order — every result's index points at a supplied file whose
+    # sanitized stem equals the result's stem — the index resolves a collision
+    # exactly. When that check fails the order cannot be trusted; colliding
+    # stems then map to the first matching file (the legacy behavior) and the
+    # ambiguity is logged so the operator can re-run with the original order.
+    supplied_names = [Path(f).name for f in (files or [])]
+    candidates_by_key: dict[str, list[str]] = {}
+    for name in supplied_names:
+        key = _sanitize_custom_id(name)
+        bucket = candidates_by_key.setdefault(key, [])
+        if name not in bucket:
+            bucket.append(name)
+    order_replays_submission = bool(supplied_names) and bool(indexed) and all(
+        0 <= idx < len(supplied_names)
+        and _sanitize_custom_id(supplied_names[idx]) == stem
+        for idx, _custom_id, stem in indexed
+    )
 
     request_map: dict[str, Any] = {}
     review_request_ids: list[str] = []
     resolved_names: list[str] = []
+    ambiguous_stems: list[str] = []
     for idx, custom_id, stem in indexed:
-        name = real_by_key.get(stem, stem)
+        candidates = candidates_by_key.get(stem) or []
+        if not candidates:
+            name = stem
+        elif len(candidates) == 1:
+            name = candidates[0]
+        elif order_replays_submission:
+            name = supplied_names[idx]
+        else:
+            name = candidates[0]
+            if stem not in ambiguous_stems:
+                ambiguous_stems.append(stem)
         request_map[custom_id] = {"filename": name, "index": idx, "type": "review"}
         review_request_ids.append(custom_id)
         resolved_names.append(name)
+
+    if ambiguous_stems:
+        detail = "; ".join(
+            f"{stem!r} -> {', '.join(candidates_by_key[stem])}"
+            for stem in ambiguous_stems
+        )
+        log(
+            f"Batch {batch_id}: {len(ambiguous_stems)} sanitized custom-id "
+            f"stem(s) match more than one supplied file ({detail}). The "
+            "supplied file order does not replay the submission order, so each "
+            "colliding stem maps to the first matching file. Re-run with the "
+            "files in their original submission order for an exact mapping.",
+            level="warning",
+        )
 
     if not request_map:
         log(
