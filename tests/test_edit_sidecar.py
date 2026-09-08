@@ -320,6 +320,12 @@ def test_program_payload_emits_program_schema_constant():
     payload = build_edit_instructions(_StubProgramResult(), report_path=Path("r.docx"))
     assert payload["schema_version"] == PROGRAM_SIDECAR_SCHEMA_VERSION == 5
     assert payload["edits"][0]["module_id"] == "datacenter_fire"
+    # Additive: a stub without the attribute (and a clean result) emits an
+    # empty list; a degraded result's warnings are carried verbatim.
+    assert payload["integrity_warnings"] == []
+    _StubProgramResult.integrity_warnings = ["request count clamped to 1"]
+    degraded = build_edit_instructions(_StubProgramResult(), report_path=Path("r.docx"))
+    assert degraded["integrity_warnings"] == ["request count clamped to 1"]
     # And the single-module child still emits its own constant.
     child_payload = build_edit_instructions(child, report_path=Path("r.docx"))
     assert child_payload["schema_version"] == SIDECAR_SCHEMA_VERSION == 4

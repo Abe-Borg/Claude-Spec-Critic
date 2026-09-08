@@ -1266,6 +1266,53 @@ class TestProgramDiagnostics:
         assert "failed review and" not in _plaintext(html)
         assert html.count('id="sc-diagnostics"') == 1
 
+    def test_integrity_warnings_row_and_hint_mirror_the_word_banner(self, tmp_path):
+        import html as html_mod
+
+        from docx import Document
+
+        from src.orchestration.program_pipeline import ProgramPipelineResult
+        from src.output.html_report_exporter import _banner_rows_and_hints
+        from src.output.report_exporter import _program_run_diagnostics, export_report
+
+        base = build_program_result()
+        degraded = ProgramPipelineResult(
+            program_id=base.program_id,
+            assignments=base.assignments,
+            module_results=base.module_results,
+            submitted_request_count=99,
+        )
+        assert degraded.status == "partial"
+        html = render_html_report(degraded, generated_at=GENERATED)
+        aggregate, _ = _program_run_diagnostics(degraded)
+        rows, hints = _banner_rows_and_hints(aggregate)
+        labels = [label for label, _v, _h in rows]
+        assert labels.index("Result integrity warnings") == (
+            labels.index("Specs that failed review (not reviewed)") + 1
+        )
+        assert (
+            '<tr><th>Result integrity warnings</th><td class="sc-flag">1</td></tr>'
+            in html
+        )
+        assert any(
+            "result integrity warning" in text and "clamped" in text
+            for text, _color in hints
+        )
+        text = _plaintext(html)
+        for hint_text, _color in hints:
+            assert hint_text in text
+        assert _data_payload(html)["run_diagnostics"]["integrity_warnings"] == (
+            aggregate["integrity_warnings"]
+        )
+        # Word and HTML render the same row set, in the same order.
+        doc = Document(str(export_report(degraded, tmp_path / "degraded.docx")))
+        banner = next(
+            t for t in doc.tables if t.rows[0].cells[0].text.strip() == "Edit suggested"
+        )
+        assert [r.cells[0].text.strip() for r in banner.rows] == [
+            html_mod.unescape(label) for label in labels
+        ]
+
     def test_rows_hints_and_payload_come_from_the_shared_aggregate(self):
         import html as html_mod
 

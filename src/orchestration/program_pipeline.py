@@ -500,11 +500,15 @@ class ProgramPipelineResult:
 
     @property
     def status(self) -> str:
+        # ``integrity_warnings`` counts as partial: the coverage figures
+        # were normalized from inconsistent saved state, so the run must
+        # not present the same clean terminal state as a consistent one.
         if (
             self.failed_review_specs
             or self.skipped_files
             or self.missing_module_ids
             or self.module_errors
+            or self.integrity_warnings
             or self.routed_request_count < self.expected_routed_request_count
         ):
             return "partial"
@@ -1165,7 +1169,7 @@ def collect_program_results(
         # A later child may fail after earlier verification calls completed.
         # Persist their cache entries so resume does not repay for them.
         _persist_verification_cache(cache, log=log)
-    return ProgramPipelineResult(
+    result = ProgramPipelineResult(
         program_id=submission.program_id,
         assignments=submission.assignments,
         module_results=results,
@@ -1177,6 +1181,12 @@ def collect_program_results(
         submitted_request_count=submission.routed_request_count,
         total_elapsed_seconds=time.time() - submission.submitted_at,
     )
+    # ``__post_init__`` records a degraded coverage figure on the module
+    # logger (the file log); repeat it on the run log so the operator sees
+    # it in the GUI / diagnostics window, not only in a log file.
+    for warning in result.integrity_warnings:
+        log(f"Result integrity: {warning}", level="warning")
+    return result
 
 
 def _run_program_drawing_impact(

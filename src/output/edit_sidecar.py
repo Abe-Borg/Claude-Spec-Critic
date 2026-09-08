@@ -222,6 +222,15 @@ def build_edit_instructions(pipeline_result, *, report_path: Path | None = None)
             "module_errors": dict(
                 getattr(pipeline_result, "module_errors", None) or {}
             ),
+            # Additive: the coverage figures in ``submission_coverage`` were
+            # normalized from inconsistent saved state when this is
+            # non-empty (see ``ProgramPipelineResult.integrity_warnings``),
+            # so an applier can treat them as unverified. Empty on a clean
+            # result.
+            "integrity_warnings": [
+                str(w)
+                for w in (getattr(pipeline_result, "integrity_warnings", None) or [])
+            ],
             "requirements_coverage_by_module": coverage_by_module,
             "edit_count": len(entries),
             "edits": entries,

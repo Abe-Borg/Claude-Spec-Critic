@@ -461,6 +461,8 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
     extraction_warnings = int(summary.get("extraction_warning_count", 0) or 0)
     budget_exhausted_count = int(summary.get("budget_exhausted_count", 0) or 0)
     tracked_changes = int(summary.get("tracked_changes_spec_count", 0) or 0)
+    integrity_warnings = [str(w) for w in (summary.get("integrity_warnings") or [])]
+    integrity_warning_count = len(integrity_warnings)
 
     cache_text = (
         f"{cache_count} (oldest {oldest_age}d old)"
@@ -475,6 +477,11 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
             str(failed_review_count),
             failed_review_count > 0,
         ),
+    ]
+    # Conditional program-only row (see ``_write_run_diagnostics_banner``).
+    if integrity_warning_count > 0:
+        rows.append(("Result integrity warnings", str(integrity_warning_count), True))
+    rows += [
         ("Cache replays", cache_text, False),
         (
             "Verification failures (operational)",
@@ -589,6 +596,21 @@ def _banner_rows_and_hints(summary: dict) -> tuple[list[tuple[str, str, bool]], 
                 f"absence of findings does NOT mean {'they are' if plural else 'it is'} "
                 f"compliant. Re-run {'these specs' if plural else 'this spec'} "
                 "individually to obtain a review.",
+                "#C00000",
+            )
+        )
+    if integrity_warning_count > 0:
+        integrity_plural = integrity_warning_count != 1
+        integrity_details = "; ".join(integrity_warnings)
+        hints.append(
+            (
+                f"⚠ {integrity_warning_count} result integrity warning"
+            f"{'s' if integrity_plural else ''}: the submission coverage "
+            "figures above (Files Reviewed / Routed Specifications Submitted) "
+            "were normalized from inconsistent saved submission state and must "
+            f"be treated as unverified — {integrity_details}. Confirm each "
+            "specification against the per-module Files Reviewed lists and "
+            "re-run any that are missing.",
                 "#C00000",
             )
         )

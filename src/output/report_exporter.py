@@ -697,6 +697,7 @@ def _aggregate_run_diagnostics(
     labeled_summaries: list[tuple[str, dict]],
     *,
     drawing_impact_result=None,
+    integrity_warnings=(),
 ) -> dict:
     """Roll per-module Run Diagnostics summaries up into one program summary.
 
@@ -734,6 +735,12 @@ def _aggregate_run_diagnostics(
     * The drawing-impact state comes from ``drawing_impact_result`` — the
       program-level synthesis, which runs once after every module joins —
       falling back to the first module-level state when none is passed.
+    * ``integrity_warnings`` (program-level, from
+      ``ProgramPipelineResult.integrity_warnings``) ride along under their
+      own key ONLY when non-empty, so a clean program keeps the exact
+      single-module summary shape; the banner renders a red row + hint from
+      them because the title block's coverage figures were normalized from
+      inconsistent saved state.
     """
     totals = {key: 0 for key in _SUMMED_DIAGNOSTIC_KEYS}
     failed_review_specs: list[str] = []
@@ -780,7 +787,8 @@ def _aggregate_run_diagnostics(
         if drawing_impact_result is not None
         else fallback_drawing_impact
     )
-    return {
+    integrity = [str(w) for w in (integrity_warnings or []) if str(w).strip()]
+    aggregate = {
         "edit_suggested": totals["edit_suggested"],
         "report_only": totals["report_only"],
         "failed_review_count": failed_review_count,
@@ -809,6 +817,9 @@ def _aggregate_run_diagnostics(
         ),
         "drawing_impact": drawing_impact,
     }
+    if integrity:
+        aggregate["integrity_warnings"] = integrity
+    return aggregate
 
 
 def _collect_report_findings(pipeline_result) -> list:
@@ -872,6 +883,7 @@ def _program_run_diagnostics(program_result) -> tuple[dict, dict]:
     aggregate = _aggregate_run_diagnostics(
         labeled_summaries,
         drawing_impact_result=getattr(program_result, "drawing_impact_result", None),
+        integrity_warnings=getattr(program_result, "integrity_warnings", None) or (),
     )
     return aggregate, _summarize_verification_outcomes(all_findings)
 
@@ -922,6 +934,10 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
     failed_review_count = int(
         summary.get("failed_review_count", len(failed_review_specs)) or 0
     )
+    integrity_warnings = [
+        str(w) for w in (summary.get("integrity_warnings") or [])
+    ]
+    integrity_warning_count = len(integrity_warnings)
 
     # Build row tuples: (label, value, highlight). ``highlight=True``
     # paints the value cell with light-red shading + dark-red text so
@@ -945,6 +961,22 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             failed_review_count > 0,
         )
     )
+
+    # Result integrity warnings (routed-program reports only). The composite
+    # result re-hydrates its submission coverage from per-child saved state;
+    # when that state named a spec outside the assignments or a request
+    # count outside the routed range, the title block's coverage figures
+    # were normalized (entry dropped / count clamped) and must not be read
+    # as verified. Conditional so a clean report is byte-identical; red
+    # because it is an honesty signal, like the failed-review row above.
+    if integrity_warning_count > 0:
+        rows.append(
+            (
+                "Result integrity warnings",
+                str(integrity_warning_count),
+                True,
+            )
+        )
 
     # Cache replays: when there are any, show oldest age too so a
     # reviewer doesn't have to expand each Sources panel to find the
@@ -1151,6 +1183,29 @@ def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
             f"{'they are' if plural else 'it is'} compliant. Re-run "
             f"{'these specs' if plural else 'this spec'} individually to "
             "obtain a review."
+        )
+        hint_run.font.size = Pt(10)
+        hint_run.font.italic = True
+        hint_run.font.color.rgb = RGBColor(192, 0, 0)
+
+    # --- Result integrity hint ---
+    # Names each normalized figure so the reader knows exactly which
+    # coverage number not to trust. Same failure-red as the failed-review
+    # hint: both say "the headline counts are not what they seem".
+    if integrity_warning_count > 0:
+        integrity_plural = integrity_warning_count != 1
+        integrity_details = "; ".join(integrity_warnings)
+        hint_para = doc.add_paragraph()
+        hint_para.paragraph_format.space_before = Pt(6)
+        hint_para.paragraph_format.space_after = Pt(8)
+        hint_run = hint_para.add_run(
+            f"⚠ {integrity_warning_count} result integrity warning"
+            f"{'s' if integrity_plural else ''}: the submission coverage "
+            "figures above (Files Reviewed / Routed Specifications Submitted) "
+            "were normalized from inconsistent saved submission state and must "
+            f"be treated as unverified — {integrity_details}. Confirm each "
+            "specification against the per-module Files Reviewed lists and "
+            "re-run any that are missing."
         )
         hint_run.font.size = Pt(10)
         hint_run.font.italic = True

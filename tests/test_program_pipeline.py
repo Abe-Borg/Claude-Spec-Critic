@@ -1045,6 +1045,7 @@ def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
     assert sidecar["schema_version"] == 5
     assert sidecar["program_id"] == HYPERSCALE_DATACENTER_PROGRAM.program_id
     assert sidecar["module_errors"] == {}
+    assert sidecar["integrity_warnings"] == []
     assert sidecar["submission_coverage"] == {
         "submitted_files": [name],
         "expected_files": [name],

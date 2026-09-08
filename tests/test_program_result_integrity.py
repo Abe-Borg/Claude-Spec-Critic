@@ -19,7 +19,8 @@ from docx import Document
 
 from src.orchestration import program_pipeline as pp
 from src.output.edit_sidecar import build_edit_instructions
-from src.output.report_exporter import export_report
+from src.output.html_report_exporter import render_html_report
+from src.output.report_exporter import _program_run_diagnostics, export_report
 from src.programs import HYPERSCALE_DATACENTER_PROGRAM
 from tests.test_program_pipeline import _assignment, _result
 
@@ -99,7 +100,9 @@ class TestRequestCountDegrades:
         with caplog.at_level(logging.WARNING, logger=pp.__name__):
             result = _two_module_result(submitted_request_count=7)
         assert result.routed_request_count == 2
-        assert result.status == "completed"
+        # A normalized figure is never "completed": the clamp is recorded and
+        # the run presents as partial (amber terminal state in the GUI).
+        assert result.status == "partial"
         assert any("clamped to 2" in w for w in result.integrity_warnings)
         assert any("clamped to 2" in r.getMessage() for r in caplog.records)
 
@@ -108,6 +111,82 @@ class TestRequestCountDegrades:
         assert result.routed_request_count == 0
         assert result.status == "partial"
         assert any("clamped to 0" in w for w in result.integrity_warnings)
+
+
+class TestIntegrityWarningsAreSurfaced:
+    """A recorded degradation reaches every surface a reader looks at —
+    ``status``, the program-level Run Diagnostics banner (Word + HTML), the
+    HTML payload, and the program sidecar — so a normalized "2 of 2" can
+    never pass as clean coverage."""
+
+    ROW = "Result integrity warnings"
+
+    @staticmethod
+    def _degraded():
+        return _two_module_result(
+            submitted_files=(FIRE, "99 99 99 Moved.docx", ARCH),
+        )
+
+    def test_status_is_partial(self):
+        assert self._degraded().status == "partial"
+        assert _two_module_result().status == "completed"
+
+    def test_aggregate_carries_the_warnings_only_when_present(self):
+        degraded, _ = _program_run_diagnostics(self._degraded())
+        assert len(degraded["integrity_warnings"]) == 1
+        assert "99 99 99 Moved.docx" in degraded["integrity_warnings"][0]
+        clean, _ = _program_run_diagnostics(_two_module_result())
+        assert "integrity_warnings" not in clean
+
+    def test_word_banner_renders_red_row_and_hint(self, tmp_path):
+        from tests.test_diagnostic_banner import _banner_value, _banner_value_shading
+
+        doc = Document(export_report(self._degraded(), tmp_path / "degraded.docx"))
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert _banner_value(doc, self.ROW) == "1"
+        assert _banner_value_shading(doc, self.ROW) == "FFE5E5"
+        assert "⚠ 1 result integrity warning:" in text
+        assert "must be treated as unverified" in text
+        assert "99 99 99 Moved.docx" in text
+        # The normalized figure still renders — now next to its warning.
+        assert "Routed Specifications Submitted: 2 of 2" in text
+
+    def test_clean_word_report_has_no_row_or_hint(self, tmp_path):
+        from tests.test_diagnostic_banner import _banner_value
+
+        doc = Document(export_report(_two_module_result(), tmp_path / "clean.docx"))
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert _banner_value(doc, self.ROW) is None
+        assert "result integrity warning" not in text
+
+    def test_html_report_mirrors_the_row_hint_and_payload(self):
+        from tests.test_html_report_exporter import _data_payload, _plaintext
+
+        html = render_html_report(self._degraded())
+        assert (
+            f"<tr><th>{self.ROW}</th><td class=\"sc-flag\">1</td></tr>" in html
+        )
+        text = _plaintext(html)
+        assert "⚠ 1 result integrity warning:" in text
+        assert "99 99 99 Moved.docx" in text
+        payload = _data_payload(html)
+        assert len(payload["run_diagnostics"]["integrity_warnings"]) == 1
+        clean_html = render_html_report(_two_module_result())
+        assert self.ROW not in clean_html
+        assert "integrity_warnings" not in _data_payload(clean_html)["run_diagnostics"]
+
+    def test_sidecar_carries_the_warnings(self, tmp_path):
+        degraded = build_edit_instructions(
+            self._degraded(), report_path=tmp_path / "degraded.docx"
+        )
+        assert len(degraded["integrity_warnings"]) == 1
+        assert "99 99 99 Moved.docx" in degraded["integrity_warnings"][0]
+        # The normalized coverage is still exported, flagged by the list.
+        assert degraded["submission_coverage"]["submitted_files"] == [FIRE, ARCH]
+        clean = build_edit_instructions(
+            _two_module_result(), report_path=tmp_path / "clean.docx"
+        )
+        assert clean["integrity_warnings"] == []
 
 
 class TestProgrammingErrorsStillRaise:
