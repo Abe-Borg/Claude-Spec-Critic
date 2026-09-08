@@ -75,8 +75,10 @@ itself. On first use it asks for an Anthropic API key — the key lives only in
 that browser tab's session storage (a visible "Forget key" clears it), opening
 the file makes zero network requests, and chat usage bills to your key at
 standard API prices. The assistant streams answers with summarized reasoning,
-can search and fetch the public web for code/standards references (with cited
-links), and can act on the page for you: filter the visible findings, jump to
+can search the public web for code/standards references (with cited
+links) — and read full pages on models that support web fetch (Sonnet 5 does,
+Opus 5 does not; the tool is attached per request from the selected model) —
+and can act on the page for you: filter the visible findings, jump to
 sections, highlight terms, query the structured findings data, and run
 arithmetic. It sees the report only — not the original specification documents
 — and says so when a question would need source text. The exporter API can also
@@ -87,7 +89,7 @@ network permission at all.
 
 All reviews submit via the Message Batches API — queued at 50% cost savings, typical turnaround ~45 min – 2 hrs (24 hrs max). The 300k extended-output path is batch-only (`output-300k-2026-03-24` beta header) and triggers only for inputs ≥200k tokens.
 
-A submitted review batch keeps running on Anthropic's servers even if the app closes or the network drops. Spec Critic persists the small amount of state needed to reconnect — the batch id, its request map, and your project-context text (which can include text extracted from attached `.docx`/`.pdf` context files); the spec bodies themselves are re-extracted rather than stored — so an interrupted run can be finished without re-submitting or re-paying for the review. The startup resume prompt rejoins a still-running batch from that saved state; the manual **Recover batch…** action (and `scripts/recover_batch.py`) recover a batch by id even with no saved state, rebuilding the request map from the batch's results — which requires the batch to have **ended** first. The state file lives at `~/.spec_critic/pending_batch.json` (override with `SPEC_CRITIC_PENDING_BATCH_PATH`).
+A submitted review batch keeps running on Anthropic's servers even if the app closes or the network drops. Spec Critic persists the small amount of state needed to reconnect — the batch id, its request map, and your project-context text (which can include text extracted from attached `.docx`/`.pdf` context files); the spec bodies themselves are re-extracted rather than stored — so an interrupted run can be finished without re-submitting or re-paying for the review. The startup resume prompt rejoins a still-running batch from that saved state; the manual **Recover batch…** action (and `scripts/recover_batch.py`) recover a batch by id even with no saved state, rebuilding the request map from the batch's results — which requires the batch to have **ended** first (on that bare-id path the CLI requires `--module`, since a batch id does not carry its discipline). `scripts/recover_batch.py` with no arguments resumes whatever the app saved — a single-module batch or a routed Hyperscale program run (every child batch polled and combined into one program report). If a collect step had submitted a review repair batch, its id is kept in the saved state too. The state file lives at `~/.spec_critic/pending_batch.json` (override with `SPEC_CRITIC_PENDING_BATCH_PATH`).
 
 **Real-time review transport (opt-in).** The GUI's Options block has a "Real-time review (streaming)" toggle that runs the per-spec reviews and verification synchronously instead of via the Batches API — results arrive immediately (as little as ~10 minutes vs. batch's typical under-2-hours) at standard, non-discounted API pricing, since real-time forfeits the 50% batch savings and verification runs live too. Switching into real-time pops a one-time cost-warning dialog (dismissable). Real-time runs have no resume story — nothing is persisted for an in-progress synchronous run — so the startup resume prompt and **Recover batch…** stay batch-only. Batch remains the default transport.
 
@@ -280,6 +282,18 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 - API keys and bearer tokens are redacted before serialization (shared regex with `diagnostics.py`).
 
 ## Changelog (recent)
+
+### Unreleased
+- **Ask AI no longer fails on its default model.** The embedded chat attached `web_fetch` to every request, but web fetch is not available on Claude Opus 5 (the chat's default), so the first message returned HTTP 400 until the reader switched models. The exporter now embeds a per-model fetch map derived from the capability whitelist and the page builds its server-tool list per request from the selected model.
+- **Hyperscale (program) reports now open with the Run Diagnostics banner and carry the trust-model summary.** Previously only single-module reports rendered them, so a program run where a spec's review failed read as clean. The banner is aggregated across modules (failed specs are named with their module), in both the Word and HTML reports, and the report title uses the program's display name.
+- **Batch verification continuations keep earlier waves' search evidence.** A finding that paused after searching and delivered its verdict in a later wave was judged on the last wave alone, so it failed the "did not search" gate or had its citations rejected. Every wave now sees the whole conversation, including the running search budget.
+- **DISPUTED verdicts must be grounded.** A DISPUTED with no accepted citation is downgraded to UNVERIFIED, renders as insufficient evidence, keeps the review confidence prominent, and is neither cached nor replayed from an older cache file.
+- **Incomplete verification stops classify the same on both transports.** A `max_tokens` (or refusal) stop in a real-time verification now counts as a verification failure with its consumed search budget reported, exactly as in batch, instead of a clean "insufficient evidence".
+- **Model refusals during review are reported as refusals, not truncation, and are not retried** by either transport; the refused spec still surfaces in the failed-review banner.
+- **Review repair pass hardened.** A failure anywhere in the repair batch (submit, poll, retrieve) no longer discards the already-paid primary results; the repair batch id is logged and saved in the pending-batch state; repair polling reports progress; and the repair prompt's pre-detected alerts now include the polity and file-naming alerts the original carried.
+- **Recovery CLI handles routed program runs**, and `--module` is required when recovering a bare batch id (a batch id does not carry its discipline; the old California K-12 default would have reviewed a data-center batch under the wrong prompts).
+- **Keyword routing matches whole words.** "bleed valve" no longer matches the `leed` local-skip keyword, and `"formatting"` was removed from every module's internal-coordination vocabulary so real code formatting requirements are verified rather than routed to the cheap path.
+- **Chunked cross-check failures carry their error text**, and pending-batch state saves retry and log a warning instead of silently dropping the write.
 
 ### v3.4.0
 - **HTML report + Ask AI.** A completed run can now be saved as **one self-contained HTML file** via the footer's **Save HTML Report…** button (see "HTML Report & Ask AI" above). Inline CSS/JS, zero external assets, and content parity with the Word report by construction — it imports the DOCX exporter's own summarizers, classifiers, and color constants, so counts and labels cannot drift. The embedded **Ask AI** chat is grounded in the report only, runs entirely in the reader's browser, and never ships an API key inside the file (the reader supplies one; it lives in tab-scoped `sessionStorage`). Opening the file performs zero network requests, and a chat-free variant is available. The automatic Word report + JSON sidecars at run completion are unchanged — HTML is purely additive, and no review-lifecycle code path changed.
