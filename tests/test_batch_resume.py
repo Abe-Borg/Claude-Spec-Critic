@@ -598,3 +598,98 @@ class TestPendingStateSaveRetries:
             save_pending_batch(PendingBatch.from_submission(_submission()), path=path)
         assert path.exists()
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+# ---------------------------------------------------------------------------
+# repair_request_map + re-attach carry-through (Codex P1 on PR #339)
+# ---------------------------------------------------------------------------
+
+
+class TestRepairBatchCarryThrough:
+    def _pending(self, tmp_path):
+        from src.batch.batch import BatchJob
+        from src.orchestration.batch_resume import PendingBatch
+        from src.orchestration.pipeline import BatchSubmission
+
+        job = BatchJob(
+            batch_id="msgbatch_PARENT",
+            job_type="review",
+            request_map={"review__0__0": {"filename": "A.docx", "index": 0, "type": "review"}},
+            created_at=1.0,
+        )
+        sub = BatchSubmission(job=job, files_reviewed=["A.docx"], review_request_ids=["review__0__0"], model="m")
+        sub.repair_batch_id = "msgbatch_REPAIR"
+        sub.repair_request_map = {"review__r__0": {"filename": "A.docx", "index": 0, "type": "review"}}
+        return PendingBatch.from_submission(sub)
+
+    def test_from_submission_carries_repair_fields(self, tmp_path):
+        pending = self._pending(tmp_path)
+        assert pending.repair_batch_id == "msgbatch_REPAIR"
+        assert pending.repair_request_map == {
+            "review__r__0": {"filename": "A.docx", "index": 0, "type": "review"}
+        }
+
+    def test_request_map_round_trips_and_legacy_loads_none(self, tmp_path):
+        import json
+        from src.orchestration.batch_resume import load_pending_batch, save_pending_batch
+
+        path = tmp_path / "pending.json"
+        pending = self._pending(tmp_path)
+        assert save_pending_batch(pending, path=path) is True
+        loaded = load_pending_batch(path=path)
+        assert loaded.repair_batch_id == "msgbatch_REPAIR"
+        assert loaded.repair_request_map == pending.repair_request_map
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for junk in (None, {}, "nope", 7):
+            data["repair_request_map"] = junk
+            path.write_text(json.dumps(data), encoding="utf-8")
+            assert load_pending_batch(path=path).repair_request_map is None
+
+    def test_to_submission_stamps_repair_fields(self, tmp_path, monkeypatch):
+        import src.orchestration.batch_resume as br
+        from src.batch.batch import BatchJob
+        from src.orchestration.pipeline import BatchSubmission
+
+        pending = self._pending(tmp_path)
+        bare = BatchSubmission(
+            job=BatchJob(batch_id="msgbatch_PARENT", job_type="review", request_map={}, created_at=1.0)
+        )
+        monkeypatch.setattr(br, "reconstruct_batch_submission", lambda **_k: bare)
+        sub = pending.to_submission()
+        assert sub is bare
+        assert sub.repair_batch_id == "msgbatch_REPAIR"
+        assert sub.repair_request_map == pending.repair_request_map
+
+    def test_stamp_child_repair_targets_only_the_matching_partition(self):
+        from src.orchestration.batch_resume import PendingProgramRun
+
+        run = PendingProgramRun(
+            program_id="hyperscale_datacenter",
+            partitions={
+                "datacenter_fire": {"batch_id": "msgbatch_FIRE", "module_id": "datacenter_fire"},
+                "datacenter_electrical": {"batch_id": "msgbatch_ELEC", "module_id": "datacenter_electrical"},
+            },
+        )
+        assert run.stamp_child_repair("msgbatch_FIRE", repair_batch_id="msgbatch_R", repair_request_map={"x": {}}) is True
+        assert run.partitions["datacenter_fire"]["repair_batch_id"] == "msgbatch_R"
+        assert run.partitions["datacenter_fire"]["repair_request_map"] == {"x": {}}
+        assert "repair_batch_id" not in run.partitions["datacenter_electrical"]
+        assert run.stamp_child_repair("msgbatch_NOPE", repair_batch_id="z", repair_request_map=None) is False
+        # The stamped child loads back with both fields.
+        child = run.child_batch("msgbatch_FIRE")
+        assert child.repair_batch_id == "msgbatch_R"
+        assert child.repair_request_map == {"x": {}}
+
+    def test_save_helpers_report_failure(self, tmp_path, monkeypatch):
+        import src.orchestration.batch_resume as br
+        from pathlib import Path as _P
+
+        pending = self._pending(tmp_path)
+        monkeypatch.setattr(br, "_PENDING_SAVE_RETRY_DELAY_SECONDS", 0)
+
+        def _deny(self, target):
+            raise PermissionError("locked")
+
+        monkeypatch.setattr(_P, "replace", _deny)
+        assert br.save_pending_batch(pending, path=tmp_path / "p.json") is False
+        assert br.save_pending_run(pending, path=tmp_path / "p.json") is False

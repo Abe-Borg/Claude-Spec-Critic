@@ -383,13 +383,32 @@ class TestRepairBatchIdVisibility:
         assert "msgbatch_REPAIR_777" in info
         assert "not recorded" in info
 
-    def test_id_not_persisted_for_program_manifest(self, monkeypatch, isolated_pending_state):
+    def test_id_and_request_map_persisted_onto_program_manifest_child(
+        self, monkeypatch, isolated_pending_state
+    ):
+        import json
+
         isolated_pending_state.write_text(
-            '{"schema_version": 2, "record_type": "program", "program_id": "hyperscale_datacenter", '
-            '"assignments": [], "partitions": {"datacenter_fire": {"batch_id": "msgbatch_PARENT"}}}',
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "record_type": "program",
+                    "program_id": "hyperscale_datacenter",
+                    "assignments": [],
+                    "partitions": {
+                        "datacenter_fire": {
+                            "batch_id": "msgbatch_PARENT",
+                            "module_id": "datacenter_fire",
+                        },
+                        "datacenter_electrical": {
+                            "batch_id": "msgbatch_OTHER",
+                            "module_id": "datacenter_electrical",
+                        },
+                    },
+                }
+            ),
             encoding="utf-8",
         )
-        before = isolated_pending_state.read_text(encoding="utf-8")
         sub = _submission(["A.docx", "B.docx"], batch_id="msgbatch_PARENT", module_id="datacenter_fire")
         monkeypatch.setattr(pl, "submit_review_batch", _fake_submit("msgbatch_REPAIR_777"))
         monkeypatch.setattr(pl, "poll_batch_bounded", _ended)
@@ -398,9 +417,33 @@ class TestRepairBatchIdVisibility:
 
         out = _recover_retryable_review_batch_results(sub, self._results(), log=log)
 
-        assert out[_rid(1)].parse_status == "ok"  # repair still worked
-        assert isolated_pending_state.read_text(encoding="utf-8") == before  # manifest untouched
-        assert "msgbatch_REPAIR_777" in log.text("info")
+        assert out[_rid(1)].parse_status == "ok"
+        saved = json.loads(isolated_pending_state.read_text(encoding="utf-8"))
+        fire = saved["partitions"]["datacenter_fire"]
+        assert fire["repair_batch_id"] == "msgbatch_REPAIR_777"
+        assert set(fire["repair_request_map"]) == {"review__r__0"}
+        assert fire["repair_request_map"]["review__r__0"]["filename"] == "B.docx"
+        # The sibling partition is untouched.
+        assert "repair_batch_id" not in saved["partitions"]["datacenter_electrical"]
+        assert "Recorded repair batch msgbatch_REPAIR_777 in the saved program-run manifest" in log.text("info")
+        # And the in-memory submission carries it for a same-process retry.
+        assert sub.repair_batch_id == "msgbatch_REPAIR_777"
+        assert sub.repair_request_map == fire["repair_request_map"]
+
+    def test_write_failure_logs_warning_not_success(self, monkeypatch, isolated_pending_state):
+        sub = _submission(["A.docx", "B.docx"], batch_id="msgbatch_PARENT")
+        save_pending_batch(PendingBatch.from_submission(sub))
+        monkeypatch.setattr(br, "save_pending_batch", lambda *_a, **_k: False)
+        monkeypatch.setattr(pl, "submit_review_batch", _fake_submit("msgbatch_REPAIR_777"))
+        monkeypatch.setattr(pl, "poll_batch_bounded", _ended)
+        monkeypatch.setattr(pl, "retrieve_review_results", _ok_retrieve)
+        log = _Log()
+
+        out = _recover_retryable_review_batch_results(sub, self._results(), log=log)
+
+        assert out[_rid(1)].parse_status == "ok"
+        assert "Recorded repair batch" not in log.text("info")
+        assert "Could not record repair batch msgbatch_REPAIR_777" in log.text("warning")
 
     def test_persistence_failure_never_breaks_the_repair(self, monkeypatch, isolated_pending_state):
         sub = _submission(["A.docx", "B.docx"], batch_id="msgbatch_PARENT")
@@ -566,3 +609,185 @@ class TestRepairPreDetectedParity:
         rules = [a.get("deterministic_rule") for a in captured["kwargs"]["pre_detected_alerts"][repaired]]
         assert "inconsistent_filename" not in rules
         assert "wrong_polity_token" in rules
+
+
+# ===========================================================================
+# Saved repair batch is re-attached on resume, never re-submitted (Codex P1)
+# ===========================================================================
+
+
+def _saved_map(filename: str = "B.docx") -> dict:
+    return {"review__s__0": {"filename": filename, "index": 0, "type": "review"}}
+
+
+class TestSavedRepairBatchReuse:
+    def _results(self):
+        return {
+            _rid(0): ReviewResult(findings=[], parse_status="ok"),
+            _rid(1): ReviewResult(
+                findings=[], parse_status="incomplete", stop_reason="max_tokens", error="truncated"
+            ),
+        }
+
+    def _saved_sub(self, request_map: dict | None = None) -> BatchSubmission:
+        sub = _submission(["A.docx", "B.docx"], batch_id="msgbatch_PARENT")
+        sub.repair_batch_id = "msgbatch_SAVED"
+        sub.repair_request_map = request_map
+        return sub
+
+    def test_reattaches_to_saved_repair_and_submits_nothing(self, monkeypatch, isolated_pending_state):
+        sub = self._saved_sub(_saved_map())
+        monkeypatch.setattr(
+            pl, "submit_review_batch", lambda *_a, **_k: pytest.fail("a replacement repair must not be submitted")
+        )
+        polled: list[str] = []
+
+        def _poll(batch_id, **_k):
+            polled.append(batch_id)
+            return PollOutcome(terminal=True, terminal_status="ended")
+
+        monkeypatch.setattr(pl, "poll_batch_bounded", _poll)
+        retrieved: list[BatchJob] = []
+
+        def _retrieve(job, *, model):
+            retrieved.append(job)
+            return {cid: ReviewResult(findings=[], parse_status="ok") for cid in job.request_map}
+
+        monkeypatch.setattr(pl, "retrieve_review_results", _retrieve)
+        log = _Log()
+
+        out = _recover_retryable_review_batch_results(sub, self._results(), log=log)
+
+        assert polled == ["msgbatch_SAVED"]
+        assert [j.batch_id for j in retrieved] == ["msgbatch_SAVED"]
+        assert retrieved[0].request_map == _saved_map()
+        assert out[_rid(1)].parse_status == "ok"
+        assert out[_rid(0)].parse_status == "ok"
+        assert "Re-attaching to saved review repair batch msgbatch_SAVED" in log.text("step")
+        assert "recovered 1/1" in log.text("success")
+
+    def test_still_running_saved_repair_submits_nothing_and_keeps_primary(self, monkeypatch, isolated_pending_state):
+        sub = self._saved_sub(_saved_map())
+        monkeypatch.setattr(
+            pl, "submit_review_batch", lambda *_a, **_k: pytest.fail("a replacement repair must not be submitted")
+        )
+        monkeypatch.setattr(
+            pl,
+            "poll_batch_bounded",
+            lambda *_a, **_k: PollOutcome(detached=True, detach_reason="max_elapsed"),
+        )
+        monkeypatch.setattr(pl, "retrieve_review_results", lambda *_a, **_k: pytest.fail("no retrieve"))
+        log = _Log()
+        primary = self._results()
+
+        out = _recover_retryable_review_batch_results(sub, primary, log=log)
+
+        assert out[_rid(0)].parse_status == "ok"
+        assert out[_rid(1)].parse_status == "incomplete"
+        assert "Not submitting a replacement" in log.text("warning")
+        assert "msgbatch_SAVED" in log.text("warning")
+
+    def test_poll_failure_on_saved_repair_submits_nothing(self, monkeypatch, isolated_pending_state):
+        sub = self._saved_sub(_saved_map())
+        monkeypatch.setattr(
+            pl, "submit_review_batch", lambda *_a, **_k: pytest.fail("a replacement repair must not be submitted")
+        )
+        monkeypatch.setattr(
+            pl,
+            "poll_batch_bounded",
+            lambda *_a, **_k: PollOutcome(poll_failed=True, poll_error="503 x3"),
+        )
+        log = _Log()
+
+        out = _recover_retryable_review_batch_results(sub, self._results(), log=log)
+
+        assert out[_rid(1)].parse_status == "incomplete"
+        assert "did not complete (503 x3)" in log.text("warning")
+
+    def test_reattach_exception_submits_nothing(self, monkeypatch, isolated_pending_state):
+        sub = self._saved_sub(_saved_map())
+        monkeypatch.setattr(
+            pl, "submit_review_batch", lambda *_a, **_k: pytest.fail("a replacement repair must not be submitted")
+        )
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("connection reset")
+
+        monkeypatch.setattr(pl, "poll_batch_bounded", _boom)
+        log = _Log()
+
+        out = _recover_retryable_review_batch_results(sub, self._results(), log=log)
+
+        assert out[_rid(1)].parse_status == "incomplete"
+        assert "Could not re-attach to saved review repair batch msgbatch_SAVED: connection reset" in log.text("error")
+
+    @pytest.mark.parametrize("status", ["expired", "failed", "canceled"])
+    def test_unusable_saved_repair_falls_back_to_one_fresh_submit(
+        self, monkeypatch, isolated_pending_state, status
+    ):
+        sub = self._saved_sub(_saved_map())
+        save_pending_batch(PendingBatch.from_submission(sub))
+        captured: dict = {}
+        monkeypatch.setattr(pl, "submit_review_batch", _fake_submit("msgbatch_FRESH", captured=captured))
+        outcomes = iter(
+            [
+                PollOutcome(terminal=True, terminal_status=status),
+                PollOutcome(terminal=True, terminal_status="ended"),
+            ]
+        )
+        polled: list[str] = []
+
+        def _poll(batch_id, **_k):
+            polled.append(batch_id)
+            return next(outcomes)
+
+        monkeypatch.setattr(pl, "poll_batch_bounded", _poll)
+        monkeypatch.setattr(pl, "retrieve_review_results", _ok_retrieve)
+        log = _Log()
+
+        out = _recover_retryable_review_batch_results(sub, self._results(), log=log)
+
+        assert polled == ["msgbatch_SAVED", "msgbatch_FRESH"]
+        assert [s.filename for s in captured["specs"]] == ["B.docx"]
+        assert out[_rid(1)].parse_status == "ok"
+        assert f"ended with status '{status}'" in log.text("warning")
+        # The fresh repair replaces the unusable saved one in the state.
+        reloaded = load_pending_batch()
+        assert reloaded.repair_batch_id == "msgbatch_FRESH"
+        assert sub.repair_batch_id == "msgbatch_FRESH"
+
+    def test_saved_id_without_map_rebuilds_custom_ids_deterministically(self, monkeypatch, isolated_pending_state):
+        from src.batch.batch import _review_custom_id
+
+        sub = self._saved_sub(None)
+        monkeypatch.setattr(
+            pl, "submit_review_batch", lambda *_a, **_k: pytest.fail("a replacement repair must not be submitted")
+        )
+        monkeypatch.setattr(pl, "poll_batch_bounded", _ended)
+        seen: dict = {}
+
+        def _retrieve(job, *, model):
+            seen["map"] = dict(job.request_map)
+            return {cid: ReviewResult(findings=[], parse_status="ok") for cid in job.request_map}
+
+        monkeypatch.setattr(pl, "retrieve_review_results", _retrieve)
+
+        out = _recover_retryable_review_batch_results(sub, self._results(), log=_Log())
+
+        assert seen["map"] == {
+            _review_custom_id("B.docx", 0): {"filename": "B.docx", "index": 0, "type": "review"}
+        }
+        assert out[_rid(1)].parse_status == "ok"
+
+    def test_no_saved_repair_takes_the_fresh_path(self, monkeypatch, isolated_pending_state):
+        sub = self._saved_sub(_saved_map())
+        sub.repair_batch_id = None
+        captured: dict = {}
+        monkeypatch.setattr(pl, "submit_review_batch", _fake_submit("msgbatch_FRESH", captured=captured))
+        monkeypatch.setattr(pl, "poll_batch_bounded", _ended)
+        monkeypatch.setattr(pl, "retrieve_review_results", _ok_retrieve)
+
+        out = _recover_retryable_review_batch_results(sub, self._results(), log=_Log())
+
+        assert [s.filename for s in captured["specs"]] == ["B.docx"]
+        assert out[_rid(1)].parse_status == "ok"

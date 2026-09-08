@@ -121,6 +121,11 @@ class PendingBatch:
     # trace files. Additive — same posture as ``project_profile`` (defensive
     # load, legacy files read as ``None``, NO schema bump).
     repair_batch_id: str | None = None
+    # The repair job's ``request_map`` (``custom_id`` → filename / index), so
+    # a resumed collect can RE-ATTACH to the saved repair batch and map its
+    # results back onto the failed primary items instead of submitting a
+    # second, billable repair. Same additive posture as ``repair_batch_id``.
+    repair_request_map: dict | None = None
     project_context: str = ""
     cross_check_enabled: bool = False
     submitted_at: float = 0.0
@@ -163,6 +168,10 @@ class PendingBatch:
             module_id=getattr(submission, "module_id", "") or DEFAULT_MODULE.module_id,
             project_profile=getattr(submission, "project_profile", None),
             requirements_profile=getattr(submission, "requirements_profile", None),
+            repair_batch_id=getattr(submission, "repair_batch_id", None) or None,
+            repair_request_map=(
+                dict(getattr(submission, "repair_request_map", None) or {}) or None
+            ),
             project_context=submission.project_context,
             cross_check_enabled=submission.cross_check_enabled,
             submitted_at=float(submission.job.created_at or time.time()),
@@ -184,7 +193,7 @@ class PendingBatch:
                 f"{module.cycle.label!r}. Resume is blocked to avoid verifying "
                 "results under a different code basis."
             )
-        return reconstruct_batch_submission(
+        submission = reconstruct_batch_submission(
             batch_id=self.batch_id,
             request_map=self.request_map,
             review_request_ids=self.review_request_ids,
@@ -201,6 +210,15 @@ class PendingBatch:
             log=log,
             progress=progress,
         )
+        # Carry the saved repair batch (id + request map) onto the in-memory
+        # submission so the collect step re-attaches to it instead of paying
+        # for a second repair. ``reconstruct_batch_submission`` is the shared
+        # resume/recovery constructor and knows nothing about repairs.
+        submission.repair_batch_id = self.repair_batch_id
+        submission.repair_request_map = (
+            dict(self.repair_request_map) if self.repair_request_map else None
+        )
+        return submission
 
 
 @dataclass
@@ -282,6 +300,30 @@ class PendingProgramRun:
                 return None
         return None
 
+    def stamp_child_repair(
+        self,
+        batch_id: str,
+        *,
+        repair_batch_id: str,
+        repair_request_map: dict | None,
+    ) -> bool:
+        """Record a review repair batch on the child partition whose remote
+        batch is ``batch_id``.
+
+        Returns ``True`` when a partition matched (the caller then re-saves
+        the manifest), ``False`` when no child carries that id. Additive:
+        the two keys ride the child's mapping and load through
+        ``_pending_batch_from_mapping`` like every other child field.
+        """
+        for child in self.partitions.values():
+            if isinstance(child, dict) and child.get("batch_id") == batch_id:
+                child["repair_batch_id"] = repair_batch_id
+                child["repair_request_map"] = (
+                    dict(repair_request_map) if repair_request_map else None
+                )
+                return True
+        return False
+
     def to_submission(
         self, *, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress
     ) -> ProgramSubmission:
@@ -360,31 +402,35 @@ def _write_pending_state(payload: dict, target: Path, *, what: str) -> bool:
     return False
 
 
-def save_pending_batch(pending: PendingBatch, *, path: Path | None = None) -> None:
+def save_pending_batch(pending: PendingBatch, *, path: Path | None = None) -> bool:
     """Atomically persist ``pending``. Best-effort: never raises.
 
     Retries a transient write/rename failure and logs a warning if every
-    attempt fails (see :func:`_write_pending_state`).
+    attempt fails (see :func:`_write_pending_state`). Returns ``True`` when
+    the state is on disk, ``False`` when every attempt failed — callers that
+    report "recorded" to the operator must check it rather than assume.
     """
     target = path or pending_batch_path()
-    _write_pending_state(asdict(pending), target, what="pending-batch state")
+    return _write_pending_state(asdict(pending), target, what="pending-batch state")
 
 
 def save_pending_program_run(
     pending: PendingProgramRun, *, path: Path | None = None
-) -> None:
-    """Atomically persist a routed program manifest. Best-effort, never raises."""
+) -> bool:
+    """Atomically persist a routed program manifest. Best-effort, never raises.
+
+    Returns ``True`` when saved, ``False`` when every attempt failed.
+    """
     target = path or pending_batch_path()
-    _write_pending_state(asdict(pending), target, what="pending program-run manifest")
+    return _write_pending_state(asdict(pending), target, what="pending program-run manifest")
 
 
 def save_pending_run(
     pending: PendingBatch | PendingProgramRun, *, path: Path | None = None
-) -> None:
+) -> bool:
     if isinstance(pending, PendingProgramRun):
-        save_pending_program_run(pending, path=path)
-    else:
-        save_pending_batch(pending, path=path)
+        return save_pending_program_run(pending, path=path)
+    return save_pending_batch(pending, path=path)
 
 
 def _pending_batch_from_mapping(data: object) -> PendingBatch:
@@ -407,6 +453,7 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
     profile = data.get("project_profile")
     requirements = data.get("requirements_profile")
     repair_batch_id = data.get("repair_batch_id")
+    repair_request_map = data.get("repair_request_map")
     return PendingBatch(
         batch_id=batch_id,
         model=_str("model") or REVIEW_MODEL_DEFAULT,
@@ -422,6 +469,11 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
         repair_batch_id=(
             repair_batch_id.strip()
             if isinstance(repair_batch_id, str) and repair_batch_id.strip()
+            else None
+        ),
+        repair_request_map=(
+            dict(repair_request_map)
+            if isinstance(repair_request_map, dict) and repair_request_map
             else None
         ),
         project_context=_str("project_context"),

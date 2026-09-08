@@ -128,8 +128,8 @@ def _note_repair_batch(pending: PendingBatch) -> None:
     if repair_id:
         _log(
             f"Saved state also records review repair batch {repair_id} for this "
-            "batch (submitted by an earlier collect attempt). The repair pass "
-            "re-runs from the primary results during collection.",
+            "batch (submitted by an earlier collect attempt). The collect step "
+            "re-attaches to it instead of submitting a new repair batch.",
             level="info",
         )
 
