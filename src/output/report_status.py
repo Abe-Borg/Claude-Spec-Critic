@@ -44,7 +44,11 @@ class ReportStatus(str, Enum):
     VERIFIED_SUPPORTED = "VERIFIED_SUPPORTED"
     # External verification corrected the claim with grounded sources.
     VERIFIED_CONTRADICTED = "VERIFIED_CONTRADICTED"
-    # Verifier explicitly disputed the claim (not just unverified).
+    # Verifier explicitly disputed the claim (not just unverified) and
+    # grounded that dispute in at least one accepted external citation —
+    # the same evidence bar as VERIFIED_SUPPORTED / VERIFIED_CONTRADICTED,
+    # because a DISPUTED is the verdict that makes a reviewer discard a
+    # real finding. An uncited DISPUTED renders as INSUFFICIENT_EVIDENCE.
     DISPUTED = "DISPUTED"
     # Verifier ran but could not produce a grounded verdict.
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
@@ -164,20 +168,26 @@ def classify_status(finding) -> ReportStatus:
        → ``VERIFIED_SUPPORTED``.
     6. Verdict ``CORRECTED`` + grounded + accepted citation
        → ``VERIFIED_CONTRADICTED``.
-    7. Verdict ``DISPUTED`` → ``DISPUTED``.
-    8. Everything else (UNVERIFIED, an ungrounded CONFIRMED/CORRECTED
-       that slipped past :func:`_enforce_grounding_invariant`, a
-       CONFIRMED/CORRECTED with no accepted citation, unknown verdict
-       strings) → ``INSUFFICIENT_EVIDENCE``.
+    7. Verdict ``DISPUTED`` + grounded + accepted citation → ``DISPUTED``.
+    8. Everything else (UNVERIFIED, an ungrounded CONFIRMED/CORRECTED/
+       DISPUTED that slipped past :func:`_enforce_grounding_invariant`,
+       a CONFIRMED/CORRECTED/DISPUTED with no accepted citation, unknown
+       verdict strings) → ``INSUFFICIENT_EVIDENCE``.
 
-    The explicit accepted-citation check on rules 5/6 is
+    The explicit accepted-citation check on rules 5/6/7 is
     belt-and-suspenders for the case where a finding reaches the report
     without going through :func:`src.verifier._enforce_grounding_invariant`
     (e.g. a future call site that bypasses the verifier wrapper, or a
     unit test that constructs the result directly). The verifier
     invariant already downgrades these to UNVERIFIED in production; the
     duplicate check here means the report cannot accidentally show
-    "Verified — supported" for a source-less verdict.
+    "Verified — supported" — or "Disputed", the verdict that tells a
+    reviewer to discard a finding — for a source-less verdict.
+
+    A grounding *downgrade* never reaches rule 7: the verifier rewrites a
+    CONFIRMED / CORRECTED / DISPUTED whose citations all missed to
+    ``verdict="UNVERIFIED"`` with ``grounded=False``, which lands on rule
+    8 (INSUFFICIENT_EVIDENCE), not on DISPUTED.
     """
     verification = getattr(finding, "verification", None)
     if verification is None:
@@ -211,7 +221,7 @@ def classify_status(finding) -> ReportStatus:
         return ReportStatus.VERIFIED_SUPPORTED
     if verdict == _VERDICT_CORRECTED and grounded and has_accepted:
         return ReportStatus.VERIFIED_CONTRADICTED
-    if verdict == _VERDICT_DISPUTED:
+    if verdict == _VERDICT_DISPUTED and grounded and has_accepted:
         return ReportStatus.DISPUTED
     return ReportStatus.INSUFFICIENT_EVIDENCE
 
@@ -221,9 +231,10 @@ def classify_status(finding) -> ReportStatus:
 #
 # ``Finding.confidence`` is the *review* model's self-rated certainty,
 # assigned BEFORE any verification ran. Once the verifier reaches a
-# verdict — supported, contradicted, contested, or disputed — that
-# verdict, not the stale review confidence, is the trust signal a reader
-# should rely on. The pre-verification number can actively mislead on
+# verdict — supported, contradicted, contested, or (grounded) disputed —
+# that verdict, not the stale review confidence, is the trust signal a
+# reader should rely on. Membership follows the *status*, so an uncited
+# DISPUTED (INSUFFICIENT_EVIDENCE) keeps the review % prominent. The pre-verification number can actively mislead on
 # these findings: a confirmed finding can carry a low review confidence
 # (the model was unsure, the verifier then grounded it), and a disputed
 # finding a high one. So the report de-emphasizes the confidence % for

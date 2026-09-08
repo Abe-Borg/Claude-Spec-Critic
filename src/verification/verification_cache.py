@@ -73,6 +73,15 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # repopulates with edition-fingerprinted keys.
 _CACHE_SCHEMA_VERSION = 4
 
+# Verdicts that may only be persisted with at least one accepted external
+# citation. Mirrors ``verifier._GROUNDING_GATED_VERDICTS`` (not imported —
+# the verifier imports this module; a module-level import would be circular).
+# DISPUTED joined CONFIRMED / CORRECTED without a schema bump: the load-time
+# re-check in :meth:`VerificationCache.load_from_disk` drops any legacy row
+# that violates it, so a v4 file written before the gate cannot replay an
+# uncited "the claim is wrong" verdict for 60 days.
+_CITATION_GATED_VERDICTS = ("CONFIRMED", "CORRECTED", "DISPUTED")
+
 # Cache-key claim digest length (hex chars). 24 hex chars = 96 bits of entropy,
 # enough that two distinct claims colliding is astronomically unlikely even
 # across a corpus of millions of findings; the previous 16 hex chars / 64-bit
@@ -443,13 +452,13 @@ class VerificationCache:
         # site that constructs a grounded+exhausted result directly.
         if bool(getattr(result, "budget_exhausted", False)):
             return
-        # Refuse to cache a CONFIRMED/CORRECTED that lacks any accepted
-        # external citation. The verifier's
+        # Refuse to cache a CONFIRMED/CORRECTED/DISPUTED that lacks any
+        # accepted external citation. The verifier's
         # ``_enforce_grounding_invariant`` would have downgraded such a
         # result to UNVERIFIED before reaching here; this is defense in
         # depth against a test or future call site that puts directly.
         verdict_upper = (getattr(result, "verdict", "") or "").strip().upper()
-        if verdict_upper in ("CONFIRMED", "CORRECTED") and not (
+        if verdict_upper in _CITATION_GATED_VERDICTS and not (
             getattr(result, "accepted_sources", None) or getattr(result, "sources", None)
         ):
             return
@@ -530,13 +539,16 @@ class VerificationCache:
                     # Defensive: only grounded entries should ever be on
                     # disk, but reject any that slipped in.
                     continue
-                # Belt-and-suspenders against a v2 entry that somehow
+                # Belt-and-suspenders against an entry that somehow
                 # shipped without an accepted citation — silently
-                # reusing it would power a source-less CONFIRMED on a
-                # cache hit. Mirrors the invariant in
-                # :func:`src.verifier._enforce_grounding_invariant`.
+                # reusing it would power a source-less CONFIRMED (or
+                # DISPUTED — written by a pre-gate version of this app)
+                # on a cache hit. Mirrors the invariant in
+                # :func:`src.verifier._enforce_grounding_invariant`; this
+                # re-check, not a schema bump, is what retires legacy
+                # uncited DISPUTED rows.
                 verdict_upper = (entry_result.verdict or "").strip().upper()
-                if verdict_upper in ("CONFIRMED", "CORRECTED") and not (
+                if verdict_upper in _CITATION_GATED_VERDICTS and not (
                     entry_result.accepted_sources or entry_result.sources
                 ):
                     continue
