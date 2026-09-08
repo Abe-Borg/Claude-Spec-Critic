@@ -67,7 +67,7 @@ the application's conservative treatment of unsupported findings and its ability
 | 2 | Edition authority across review, verification, and the deterministic detector, with cache and resume safeguards | WP2 | The correctness fix. Highest real-world consequence. |
 | 3 | Exported-JavaScript syntax check in CI | WP5.1 | Near-zero cost; the extraction helper already exists. |
 | 4 | Bounded redaction fixes and cache-accounting correction, as small independent changes | WP1, WP4 | Real but bounded; independently revertible. |
-| 5 | Cost optimization, only if ordinary-run diagnostics justify it | WP6/7/8 | Gated on evidence that does not yet exist. |
+| 5 | Cost optimization, only if diagnostics from the user's ordinary runs justify it | WP6/7/8 | Gated on evidence that does not yet exist, and that this work may not initiate billed runs to create. |
 
 Steps 3 and 4 are independent of steps 1–2 and may be done in any order or in parallel. Step 2 depends
 on step 1 only for the documentation correction (so the implementing agent is not working from a
@@ -347,13 +347,44 @@ shared-work grouping, and resume.
 
 | Surface | Change |
 |---|---|
-| Deterministic pre-screen (`preprocessor.py:405`) | With a profile: compare against the researched adoption rather than `cycle.primary_code_year`. **Without a profile: do not run the stale-cycle detector for a profile-enabled module at all.** A national model-code year is not a defensible comparison target for an unknown jurisdiction, and suppressing a detector is smaller and safer than making it provenance-aware. California is untouched. |
+| Deterministic pre-screen (`preprocessor.py:405`) | **Suppress the stale-cycle detector for a profile-enabled module unless an unambiguous structured adoption target exists** (defined in §5.2.1). A profile-less run always suppresses. California is untouched. |
 | Review prompt (`prompts.py:176`) | Mark `UNVERIFIED` provenance explicitly where pins are rendered. Category #2's deference rule stays; the pins it may be weighed against must not present themselves as verified. Do not remove the deference instruction. |
 | Verifier prompt (`verifier.py:646`) | Replace the unconditional authority clause on the affected DC path with the rules in §5.5, and supply the basis in §5.3. |
 
 Because a `<pre_detected>` alert primes the review model, the pre-screen change must land with or before
 the prompt changes; a suppressed-detector run and an authority-corrected prompt are consistent, but a
 firing detector plus a corrected prompt sends contradictory signals into the same request.
+
+#### 5.2.1 What qualifies as a structured adoption target
+
+Revision 2 initially said "with a profile, compare against the researched adoption." That is not
+implementable as written, and the gap is worth stating so nobody re-derives it:
+
+- `ResearchItem` carries adoption only as free-form `requirement` and `code_reference` **strings**.
+  §5.3 forbids inventing typed adoption or effective dates by guessing from prose. There is therefore
+  no typed year to compare against unless one is constructed under a validated contract.
+- The detector's contract is deliberately **single code family with one primary target year**. The
+  data-center modules are I-code-only on purpose — `src/modules/datacenter_architecture.py:15` records
+  that adding NBC/NFC/NECB to the abbreviation set "would create false stale/invalid alerts," because
+  one shared year vocabulary cannot represent both families. The hyperscale program covers **USA and
+  Canada**, so a Canadian project's governing adoption can never be expressed as a target for this
+  detector.
+
+A target therefore qualifies **only** when all of the following hold; otherwise suppress:
+
+1. It names the same code family as the module's `code_abbreviations`.
+2. It resolves to a year already in that module's `plausible_cycle_years`.
+3. It comes from a grounded research item, not an ungrounded or process-advisory one.
+4. No other item in the basis contradicts it.
+
+Most runs will not qualify, and **suppression is the intended default**, not a degraded path. A
+suppressed detector loses nothing that matters: the review prompt still receives the research text and
+category #2 still instructs deference, so the edition question reaches a model that can weigh it —
+which a regex comparing two integers cannot.
+
+Constructing typed targets more broadly requires a validated code-family-to-edition contract with
+Canadian coverage. That is **out of scope here**. Propose it separately, with its own detector-contract
+change, if suppression proves too coarse in practice.
 
 ### 5.3 Contract
 
@@ -542,8 +573,10 @@ cache, transport, and preprocessor tests.
    masquerade as missing historical assumptions.
 10. Both rounds, repair/retry, continuation, escalation, and fallback carry the same basis.
 11. Oversized context is bounded with visible omissions.
-12. **Pre-screen:** a profile-less DC run emits no stale-cycle alert; a profile-present run compares
-    against the researched adoption; California pre-screen output is byte-identical.
+12. **Pre-screen:** a profile-less DC run emits no stale-cycle alert; a profile-present run whose
+    research yields no qualifying target (§5.2.1) also emits none; a run with a qualifying same-family
+    target compares against it; a Canadian profile never produces an I-code stale alert; California
+    pre-screen output is byte-identical.
 13. California prompts, tools, cache keys, and unaffected reports remain byte-identical.
 14. Existing unsupported-verdict, disputed-grounding, `models_disagreed`, budget-exhaustion, and
     exactly-once regressions remain green.
@@ -721,10 +754,14 @@ are the only intended report-data differences.
 
 Do not build a measurement apparatus to decide whether to build an optimization.
 
-After step 4, run two or three ordinary jobs and read the diagnostics already produced. If the
-attribution is legible, decide WP7/WP8 from it and record the decision. Build a dedicated offline
-reader (WP6) **only** if those records prove genuinely hard to analyze — and then extend existing
-tracing/reporting tooling rather than creating a second reporting framework.
+After step 4, read the diagnostics from ordinary runs **the user performs in the course of their normal
+work**. Do not initiate application runs to generate measurement data: that is a billed API experiment
+under §1.3 and §11, and the presence of an API key is not authorization to spend. If no suitable
+diagnostics have accumulated yet, wait for them or request an authorized budget with a dataset, cost
+cap, and stopping rule — do not manufacture a baseline. If the attribution in those records is legible,
+decide WP7/WP8 from it and record the decision. Build a dedicated offline reader (WP6) **only** if the
+records prove genuinely hard to analyze — and then extend existing tracing/reporting tooling rather than
+creating a second reporting framework.
 
 If a reader is built, it must not initialize `TraceRecorder`, trigger retention or pruning, extract
 specifications, resolve live URLs, or construct an API client; it must take explicit paths and never
@@ -732,8 +769,8 @@ traverse unrelated home directories. Establish source precedence so one run repr
 a trace directory, and an HTML report is counted once. Separate HTTP-response counts from aggregated
 conversation counts. Do not infer billable searches from URL counts, equate cache-token ratios with
 whole-run savings, or present historical usage repriced at current rates as a reconstructed invoice.
-Keep incomplete and failed paid runs visible as a separate cohort. Two or three runs are an initial
-signal, not a characterization of every workload.
+Keep incomplete and failed paid runs visible as a separate cohort. A handful of ordinary runs is an
+initial signal, not a characterization of every workload.
 
 **Reference break-even arithmetic** (idealized; concurrent batch execution produces additional writes):
 
