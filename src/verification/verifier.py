@@ -8,6 +8,7 @@ import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from ..batch.batch import (
@@ -315,15 +316,28 @@ class VerificationResult:
     output_tokens: int = 0
 
 
+# Verdicts that assert something about the outside world and therefore
+# must carry at least one accepted external citation: a CONFIRMED /
+# CORRECTED says the claim checks out (or how to fix it); a DISPUTED says
+# the claim is wrong — the verdict that makes a reviewer *discard* a real
+# finding, so it deserves the same gate. UNVERIFIED is the only verdict
+# that may stand without a citation. The cache mirrors this tuple
+# (``verification_cache._CITATION_GATED_VERDICTS``) and
+# ``report_status.classify_status`` applies the same rule at render time.
+_GROUNDING_GATED_VERDICTS = ("CONFIRMED", "CORRECTED", "DISPUTED")
+
+
 def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResult:
     """Downgrade verified-but-ungrounded verdicts to UNVERIFIED.
 
-    An *externally* verified ``CONFIRMED`` / ``CORRECTED`` result must
-    carry at least one accepted external citation. ``grounded=True`` alone
-    (the search tool returned at least one successful block) is not
-    enough; allowing it would permit a CONFIRMED to slip through with
-    ``cited_sources=[]`` because the model declined to cite anything,
-    which is an audit liability for the report.
+    An *externally* verified ``CONFIRMED`` / ``CORRECTED`` / ``DISPUTED``
+    result must carry at least one accepted external citation.
+    ``grounded=True`` alone (the search tool returned at least one
+    successful block) is not enough; allowing it would permit a CONFIRMED
+    to slip through with ``cited_sources=[]`` because the model declined
+    to cite anything, which is an audit liability for the report. The
+    same applies to DISPUTED: an uncited "the claim is wrong" would make
+    a reviewer discard a real finding on the model's say-so.
 
     Two separate downgrade paths flow through this single function:
 
@@ -345,7 +359,7 @@ def _enforce_grounding_invariant(result: VerificationResult) -> VerificationResu
     kept in sync by ``_apply_source_grounding``.
     """
     verdict = (result.verdict or "").strip().upper()
-    if verdict not in ("CONFIRMED", "CORRECTED"):
+    if verdict not in _GROUNDING_GATED_VERDICTS:
         return result
 
     if not result.grounded:
@@ -409,12 +423,12 @@ def _apply_source_grounding(
        so diagnostics can audit them and reports can show the user the
        evidence that was *not* accepted.
 
-    When the model emitted CONFIRMED / CORRECTED with citations but
-    every citation is ungrounded, the verdict is downgraded to
-    UNVERIFIED. A CONFIRMED with no citations *and* no searched
-    sources is already blocked by :func:`_enforce_grounding_invariant`;
-    this helper handles the inverse case (citations present but none
-    actually grounded).
+    When the model emitted CONFIRMED / CORRECTED / DISPUTED with
+    citations but every citation is ungrounded, the verdict is
+    downgraded to UNVERIFIED. A CONFIRMED with no citations *and* no
+    searched sources is already blocked by
+    :func:`_enforce_grounding_invariant`; this helper handles the
+    inverse case (citations present but none actually grounded).
 
     ``fetched`` is the optional list of URLs
     the model pulled in full via ``web_fetch``. Fetched URLs validate
@@ -455,7 +469,7 @@ def _apply_source_grounding(
 
     if cited_raw and not outcome.has_any_grounded_citation():
         verdict = (result.verdict or "").strip().upper()
-        if verdict in ("CONFIRMED", "CORRECTED"):
+        if verdict in _GROUNDING_GATED_VERDICTS:
             result.verdict = "UNVERIFIED"
             suffix = (
                 " (downgraded: model cited sources that did not appear in "
@@ -1036,6 +1050,143 @@ def _search_gate_failure(message) -> str | None:
     return "Verification did not perform web search. Verdict requires external grounding."
 
 
+# ---------------------------------------------------------------------------
+# Whole-conversation evidence
+#
+# A verification conversation can span several responses: the real-time
+# loop collects one response per ``pause_turn`` resume, and the batch wave
+# loop sees one message per wave. The grounding gate, the searched /
+# fetched evidence pools, and the server-tool counters must all be read
+# over the WHOLE conversation — a verdict emitted after a pause routinely
+# cites a URL an earlier turn searched, and the search budget is spent
+# across turns, not per turn. The helpers below give both paths one
+# accumulation rule.
+# ---------------------------------------------------------------------------
+
+# The per-message counters the batch wave loop carries across waves. Kept
+# as a plain dict of ints so it rides ``request_contexts`` / outcomes with
+# no SDK shape attached.
+_USAGE_COUNTER_KEYS = (
+    "web_search_requests",
+    "web_fetch_requests",
+    "input_tokens",
+    "output_tokens",
+)
+
+
+def _usage_counters(message) -> dict[str, int]:
+    """Read one message's server-tool and token counters as a plain dict."""
+    input_tokens, output_tokens = _token_usage(message)
+    return {
+        "web_search_requests": _web_search_count(message),
+        "web_fetch_requests": _web_fetch_count(message),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+
+
+def _merge_usage_counters(prior: dict | None, current: dict | None) -> dict[str, int]:
+    """Sum two counter dicts key-wise (missing / malformed values count 0)."""
+    merged: dict[str, int] = {}
+    for key in _USAGE_COUNTER_KEYS:
+        prior_value = (prior or {}).get(key, 0) or 0
+        current_value = (current or {}).get(key, 0) or 0
+        merged[key] = int(prior_value) + int(current_value)
+    return merged
+
+
+@dataclass
+class _ConversationView:
+    """Duck-typed message over a multi-wave batch conversation.
+
+    ``content`` is every prior wave's plain-dict block followed by the
+    current wave's blocks; ``usage`` mirrors the SDK ``usage`` shape
+    (``input_tokens`` / ``output_tokens`` / ``server_tool_use``) with the
+    counters summed across waves. The evidence collectors and counters
+    (:func:`_collect_search_evidence_detailed`,
+    :func:`_collect_fetch_evidence_detailed`, :func:`_web_search_count`,
+    :func:`_web_fetch_count`, :func:`_token_usage`,
+    :func:`_search_gate_failure`) read exactly these two attributes, so
+    they see the whole conversation without changing signature.
+    """
+
+    content: list
+    usage: Any
+
+
+def _conversation_view(message, *, prior_blocks: list, prior_usage: dict | None):
+    """Return ``message`` itself when there is no prior-wave state (the
+    first-wave / retry / escalation common path — byte-identical
+    behavior), otherwise a :class:`_ConversationView` merging the prior
+    waves' blocks and counters with the current message."""
+    if not prior_blocks and not prior_usage:
+        return message
+    merged = _merge_usage_counters(prior_usage, _usage_counters(message))
+    usage = SimpleNamespace(
+        input_tokens=merged["input_tokens"],
+        output_tokens=merged["output_tokens"],
+        server_tool_use=SimpleNamespace(
+            web_search_requests=merged["web_search_requests"],
+            web_fetch_requests=merged["web_fetch_requests"],
+        ),
+    )
+    current_content = list(_maybe_attr(message, "content") or [])
+    return _ConversationView(content=list(prior_blocks) + current_content, usage=usage)
+
+
+@dataclass
+class _ConversationEvidence:
+    """Server-tool evidence summed over every response of one real-time
+    verification conversation (initial call plus each ``pause_turn``
+    resume). ``searched`` / ``fetched`` are NOT deduped here — callers
+    dedupe with :func:`dedupe_searched_sources` at the point of use."""
+
+    searched: list[SearchedSource] = field(default_factory=list)
+    fetched: list[SearchedSource] = field(default_factory=list)
+    # Successful web_search_tool_result blocks + successful web_fetch
+    # result blocks — the ``grounded`` gate is ``success_blocks > 0``.
+    success_blocks: int = 0
+    # web_search + web_fetch error items.
+    search_errors: int = 0
+    search_requests: int = 0
+    fetch_requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+def _collect_conversation_evidence(responses) -> _ConversationEvidence:
+    """Walk every response in order and sum the evidence.
+
+    Used by the real-time success path AND its incomplete-stop return so
+    a ``max_tokens`` / ``refusal`` stop on continuation #k still reports
+    the searches turns 1..k burned (evidence-panel honesty) — the same
+    counters the batch wave loop accumulates via ``prior_usage``.
+    """
+    evidence = _ConversationEvidence()
+    for resp in responses:
+        detailed, successes, errors = _collect_search_evidence_detailed(resp)
+        evidence.searched.extend(detailed)
+        evidence.success_blocks += successes
+        evidence.search_errors += errors
+        evidence.search_requests += _web_search_count(resp)
+        # web_fetch evidence in parallel with web_search. A successful
+        # fetch counts toward ``success_blocks`` for the grounded check
+        # so a verifier that fetched a page (even without searching first
+        # in the current turn — possible when the URL was surfaced by a
+        # prior continuation) still clears the grounding gate.
+        fetched_detailed, fetch_successes, fetch_errors = (
+            _collect_fetch_evidence_detailed(resp)
+        )
+        evidence.fetched.extend(fetched_detailed)
+        evidence.success_blocks += fetch_successes
+        evidence.search_errors += fetch_errors
+        evidence.fetch_requests += _web_fetch_count(resp)
+        resp_in, resp_out = _token_usage(resp)
+        evidence.input_tokens += resp_in
+        evidence.output_tokens += resp_out
+    return evidence
+
+
 _VALID_VERDICTS = ("CONFIRMED", "CORRECTED", "UNVERIFIED", "DISPUTED")
 
 
@@ -1331,6 +1482,15 @@ class VerificationItemOutcome:
     # retry" rule without re-parsing the error message. ``None`` on
     # success / continue outcomes.
     failure_class: FailureClass | None = None
+    # Server-tool / token counters summed over the finding's WHOLE batch
+    # conversation so far (every prior wave's ``prior_usage`` plus this
+    # wave's message). Set on ``continue`` outcomes — the wave loop copies
+    # it into the next wave's context alongside ``assistant_content_blocks``
+    # (which is likewise the accumulated block list) — and on message-
+    # derived ``terminal_unverified`` outcomes so the terminal result can
+    # report the searches the failed attempt did burn. ``None`` when no
+    # message was available (missing / errored batch result).
+    accumulated_usage: dict | None = None
 
 
 def verify_finding(
@@ -1642,6 +1802,7 @@ def _run_verification_call(
         fetched_urls: list[str] | None = None,
         failed: bool = False,
         budget_exhausted: bool = False,
+        retry_telemetry: dict | None = None,
     ) -> VerificationResult:
         return _enforce_grounding_invariant(VerificationResult(
             verdict="UNVERIFIED",
@@ -1659,6 +1820,7 @@ def _run_verification_call(
             web_fetch_requests=fetch_requests,
             fetched_sources=list(fetched_urls or []),
             budget_exhausted=budget_exhausted,
+            retry_telemetry=retry_telemetry,
         ))
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -1817,7 +1979,33 @@ def _run_verification_call(
                     messages = sanitize_messages_for_resend(messages)
                     _trace.capture_continuation_resume(trace_parent, continuation_index=continuation_count)
                     continue
-                return _make_unverified(f"Verification response incomplete (stop_reason: {stop_reason}).")
+                # Incomplete stop (``max_tokens`` / ``refusal`` / ...): the
+                # model never finished its turn, so there is no verdict to
+                # parse. That is an operational failure, not verifier
+                # silence — ``failed=True`` routes it to VERIFICATION_FAILED
+                # and keeps it out of the cache, exactly as the batch wave
+                # path classifies the same stop (``terminal_unverified`` /
+                # PARSE_ERROR). The counters cover every response so far,
+                # continuations included, so the evidence panel reports
+                # the searches this attempt did burn.
+                partial = _collect_conversation_evidence(all_responses)
+                return _make_unverified(
+                    f"Verification response incomplete (stop_reason: {stop_reason}).",
+                    search_requests=partial.search_requests,
+                    search_errors=partial.search_errors,
+                    search_successes=len(dedupe_searched_sources(partial.searched)),
+                    fetch_requests=partial.fetch_requests,
+                    fetched_urls=[
+                        s.url for s in dedupe_searched_sources(partial.fetched)
+                    ],
+                    failed=True,
+                    retry_telemetry=retry_diagnostics_payload(
+                        attempts=attempt + 1,
+                        failure_class=FailureClass.PARSE_ERROR,
+                        terminal_reason="terminal_unverified",
+                        continuation_count=continuation_count,
+                    ),
+                )
             final_stop = getattr(all_responses[-1], "stop_reason", None) if all_responses else None
             if classify_verification_stop_reason(final_stop) != STOP_CLASS_COMPLETE:
                 # The model never completed its turn. Recompute
@@ -1835,36 +2023,19 @@ def _run_verification_call(
                     ),
                 )
 
-            all_searched: list[SearchedSource] = []
-            all_fetched: list[SearchedSource] = []
-            success_blocks = 0
-            total_search_errors = 0
-            total_search_requests = 0
-            total_fetch_requests = 0
-            total_input_tokens = 0
-            total_output_tokens = 0
-            for resp in all_responses:
-                detailed, successes, errors = _collect_search_evidence_detailed(resp)
-                all_searched.extend(detailed)
-                success_blocks += successes
-                total_search_errors += errors
-                total_search_requests += _web_search_count(resp)
-                # Collect web_fetch evidence in
-                # parallel with web_search. A successful fetch counts toward
-                # ``success_blocks`` for the grounded-check below so a
-                # verifier that fetched a page (even without searching first
-                # in the current call — possible when the URL was surfaced
-                # by a prior continuation) still clears the grounding gate.
-                fetched_detailed, fetch_successes, fetch_errors = (
-                    _collect_fetch_evidence_detailed(resp)
-                )
-                all_fetched.extend(fetched_detailed)
-                success_blocks += fetch_successes
-                total_search_errors += fetch_errors
-                total_fetch_requests += _web_fetch_count(resp)
-                resp_in, resp_out = _token_usage(resp)
-                total_input_tokens += resp_in
-                total_output_tokens += resp_out
+            # Sum search / fetch evidence and counters over EVERY response
+            # of this conversation (initial call + each pause_turn resume)
+            # through the shared accumulator, so the grounding gate and
+            # the accepted-URL pool see URLs an earlier turn searched.
+            evidence = _collect_conversation_evidence(all_responses)
+            all_searched = evidence.searched
+            all_fetched = evidence.fetched
+            success_blocks = evidence.success_blocks
+            total_search_errors = evidence.search_errors
+            total_search_requests = evidence.search_requests
+            total_fetch_requests = evidence.fetch_requests
+            total_input_tokens = evidence.input_tokens
+            total_output_tokens = evidence.output_tokens
 
             # Dedupe across waves with normalized URLs so two queries that
             # landed on the same page are counted once.
@@ -2361,6 +2532,16 @@ def _classify_wave_results(
         finding_idx = context["finding_idx"]
         model_used = context.get("model") or job.request_map.get(custom_id, {}).get("model") or VERIFICATION_MODEL
         escalated = bool(context.get("escalated", False))
+        # Continuation state carried from this finding's prior waves
+        # (both empty on a first-wave / retry / escalation request): the
+        # plain-dict content blocks every earlier wave produced and the
+        # server-tool / token counters those waves reported. The gate,
+        # the evidence collectors, and the counters below run over the
+        # WHOLE conversation so a verdict emitted after a ``pause_turn``
+        # can ground on a URL an earlier wave searched — the real-time
+        # loop's ``all_responses`` semantics.
+        prior_blocks = list(context.get("prior_blocks") or [])
+        prior_usage = dict(context.get("prior_usage") or {})
         result = detailed.get(custom_id)
         if result is None:
             # A missing batch result is a SERVER_ERROR-equivalent transient
@@ -2424,6 +2605,12 @@ def _classify_wave_results(
         message = result.result.message
         stop_reason = getattr(message, "stop_reason", None)
         stop_class = classify_verification_stop_reason(stop_reason)
+        # Whole-conversation view + running counters (identical to the
+        # bare message when there is no prior-wave state).
+        conversation = _conversation_view(
+            message, prior_blocks=prior_blocks, prior_usage=prior_usage
+        )
+        conversation_usage = _merge_usage_counters(prior_usage, _usage_counters(message))
         if stop_class == STOP_CLASS_PAUSE:
             raw_blocks = getattr(message, "content", []) or []
             plain_blocks = [b for b in (_content_block_to_plain(rb) for rb in raw_blocks) if b is not None]
@@ -2434,8 +2621,14 @@ def _classify_wave_results(
                     classification="continue",
                     # Plain dicts decouple the continuation payload from SDK
                     # Pydantic shape changes. ``maybe_transform`` accepts
-                    # these the same way it accepts model objects.
-                    assistant_content_blocks=plain_blocks,
+                    # these the same way it accepts model objects. The
+                    # list is the ACCUMULATED conversation (every prior
+                    # wave's blocks, then this wave's) so the next wave's
+                    # resume re-sends the whole assistant turn — the
+                    # real-time loop's growing ``messages`` list — and
+                    # the next wave's grounding check sees every search.
+                    assistant_content_blocks=prior_blocks + plain_blocks,
+                    accumulated_usage=conversation_usage,
                     unverified_reason="pause_turn",
                     failure_class=FailureClass.PAUSE_TURN,
                 )
@@ -2454,10 +2647,13 @@ def _classify_wave_results(
                     classification="terminal_unverified",
                     unverified_reason=f"Verification response incomplete (stop_reason: {stop_reason}).",
                     failure_class=FailureClass.PARSE_ERROR,
+                    accumulated_usage=conversation_usage,
                 )
             )
             continue
-        gate_failure = _search_gate_failure(message)
+        # The gate reads the whole conversation: a wave that only emits
+        # the verdict after an earlier wave did the searching passes.
+        gate_failure = _search_gate_failure(conversation)
         if gate_failure:
             outcomes.append(
                 VerificationItemOutcome(
@@ -2466,6 +2662,7 @@ def _classify_wave_results(
                     classification="terminal_unverified",
                     unverified_reason=gate_failure,
                     failure_class=FailureClass.PARSE_ERROR,
+                    accumulated_usage=conversation_usage,
                 )
             )
             continue
@@ -2484,6 +2681,7 @@ def _classify_wave_results(
                     classification="terminal_unverified",
                     unverified_reason="Verification produced no text response.",
                     failure_class=FailureClass.PARSE_ERROR,
+                    accumulated_usage=conversation_usage,
                 )
             )
             continue
@@ -2495,11 +2693,14 @@ def _classify_wave_results(
                     classification="terminal_unverified",
                     unverified_reason=outcome.verdict.explanation,
                     failure_class=FailureClass.PARSE_ERROR,
+                    accumulated_usage=conversation_usage,
                 )
             )
             continue
         parsed = outcome.verdict
-        searched_detailed, success_blocks, error_count = _collect_search_evidence_detailed(message)
+        # Evidence pools over the whole conversation so a URL searched in
+        # wave 1 grounds a citation emitted in wave 2 (real-time parity).
+        searched_detailed, success_blocks, error_count = _collect_search_evidence_detailed(conversation)
         deduped_searched = dedupe_searched_sources(searched_detailed)
         # Parallel fetch-evidence collection.
         # The batch wave path applies the same grounding pool as the
@@ -2508,7 +2709,7 @@ def _classify_wave_results(
         # grounded check so a finding that converged purely via web_fetch
         # (rare but possible) still clears the gate.
         fetched_detailed, fetch_successes, fetch_errors = (
-            _collect_fetch_evidence_detailed(message)
+            _collect_fetch_evidence_detailed(conversation)
         )
         deduped_fetched = dedupe_searched_sources(fetched_detailed)
         # Source trimming: keep only the model's cited sources from the
@@ -2521,12 +2722,16 @@ def _classify_wave_results(
         parsed.model_used = model_used
         parsed.escalated = escalated
         parsed.cache_status = "miss"
-        parsed.web_search_requests = _web_search_count(message)
+        # Counters are the running sum across waves (``prior_usage`` +
+        # this message) so the budget-exhaustion check below compares the
+        # budget the conversation actually spent, not the last wave's.
+        parsed.web_search_requests = conversation_usage["web_search_requests"]
         parsed.successful_source_count = len(deduped_searched)
         parsed.search_error_count = error_count + fetch_errors
-        parsed.web_fetch_requests = _web_fetch_count(message)
+        parsed.web_fetch_requests = conversation_usage["web_fetch_requests"]
         parsed.fetched_sources = [s.url for s in deduped_fetched]
-        parsed.input_tokens, parsed.output_tokens = _token_usage(message)
+        parsed.input_tokens = conversation_usage["input_tokens"]
+        parsed.output_tokens = conversation_usage["output_tokens"]
         # Prefer the stored routing decision from the request context so
         # the wave parser stamps the result with the *same*
         # mode/profile/escalation the request was actually built against.
@@ -2991,6 +3196,11 @@ def collect_verification_batch_results(
                 # verdicts. A missing failure_class would mean the
                 # parser couldn't attribute the cause; treat as failed
                 # too since this branch only fires on non-success.
+                # Server-tool counters over the whole conversation (real-
+                # time parity: the evidence panel reports the searches the
+                # failed attempt did burn). Empty when the wave had no
+                # message to read (missing / errored batch result).
+                usage = outcome.accumulated_usage or {}
                 finding.verification = VerificationResult(
                     verdict="UNVERIFIED",
                     explanation=outcome.unverified_reason or "Verification failed.",
@@ -3001,6 +3211,10 @@ def collect_verification_batch_results(
                         continuation_count=continuation_counts.get(stable_key, 0),
                     ),
                     verification_failed=True,
+                    web_search_requests=int(usage.get("web_search_requests", 0) or 0),
+                    web_fetch_requests=int(usage.get("web_fetch_requests", 0) or 0),
+                    input_tokens=int(usage.get("input_tokens", 0) or 0),
+                    output_tokens=int(usage.get("output_tokens", 0) or 0),
                 )
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 terminal_unverified += 1
@@ -3230,6 +3444,14 @@ def collect_verification_batch_results(
                 # Preserve the stable original custom_id so the failure
                 # tracker can follow the finding across wave re-stamps.
                 "original_custom_id": original.get("original_custom_id") or item.original_custom_id,
+                # Accumulated conversation state: the outcome's block list
+                # already includes every prior wave's blocks (the wave
+                # parser prepends the context's ``prior_blocks``) and the
+                # counters are the running sum, so a finding that pauses N
+                # times carries all N waves of search evidence — and the
+                # budget it spent — into wave N+1's grounding check.
+                "prior_blocks": list(item.assistant_content_blocks or []),
+                "prior_usage": dict(item.accumulated_usage or {}),
             }
         log(f"Verification wave {wave_index + 2} submitting: {len(needs_retry)} retries, {len(needs_continue)} continuations", level="step")
         # If the only unresolved items this wave are tracker_terminated

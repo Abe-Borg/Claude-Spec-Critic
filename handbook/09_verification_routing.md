@@ -156,15 +156,17 @@ misstatement of the ASME A13.1 color scheme. Removing the keyword closes that
 hole: such a finding now falls through to `web_required` and gets a (cheap) check
 instead of no check.
 
-It is worth being precise about *what* removing the keyword changed, because the
-word `"formatting"` still appears elsewhere. It was removed only from the
-pre-screen's **skip** list — the decision to make no call at all. It remains in
-the *profile* classifier's internal-coordination keyword set (next section), which
-only affects which priority-source language the verifier prompt uses and, for the
-GRIPES case, routes the finding to the cheap STRICT_STRUCTURED mode. So the net
-effect of the tightening is surgical: a GRIPES "formatting" finding went from
-*skipped entirely* (zero searches) to *checked cheaply* (a no-thinking Sonnet pass
-with up to three searches). The check got cheaper-but-real rather than absent.
+It is worth being precise about *what* removing the keyword changed. It was first
+removed only from the pre-screen's **skip** list — the decision to make no call at
+all — while it lingered in every module's *profile* classifier internal-coordination
+keyword set, which routed any-severity "formatting" findings to the cheap
+STRICT_STRUCTURED mode with a tightened budget and no web fetch. That second copy
+has since been removed as well, so an ASME A13.1 labeling finding now classifies by
+its code reference (CODE_STANDARD) and gets the standard grounded check. The same
+pass replaced bare substring matching with whole-word matching for both the skip
+lists and the profile vocabularies (`verification_profiles.matches_any_keyword`),
+which is why `"leed"` no longer fires on "bleed valve"; a keyword that is meant to
+be a fragment carries a trailing `*` (`"typo*"`, `"self-referen*"`).
 
 ### The elevated-confidence flag
 
@@ -263,7 +265,7 @@ a five-way keyword classifier over the finding's `codeReference`, `issue`,
 | `code_standard` | cites a code section or standards body (CBC/NFPA/ASHRAE/…) without California signals |
 | `manufacturer` | mentions a manufacturer / model number / datasheet / submittal / "or approved equal" |
 | `constructability` | default for substantive technical claims with no clear kind signal |
-| `internal_coordination` | mentions internal contradiction / placeholder / LEED / typo / duplicate / formatting |
+| `internal_coordination` | mentions internal contradiction / placeholder / LEED / typo / duplicate (whole-word matches; `"formatting"` is deliberately not a trigger) |
 
 The **priority order** is what makes the classifier well-defined when a finding
 trips multiple keyword sets, and it runs:

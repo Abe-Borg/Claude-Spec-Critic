@@ -1423,3 +1423,200 @@ class TestDiagnosticsTelemetry:
         assert len(diag.calls) == 1
         assert diag.calls[0]["level"] == "error"
         assert diag.calls[0]["mode"] == "realtime"
+
+
+# ===========================================================================
+# 15. Refusal stops are terminal — never repaired, still surfaced as failed
+# ===========================================================================
+
+
+def _refusal_response(
+    *,
+    category: str | None = "general_harms",
+    explanation: str | None = "The request was declined by policy.",
+    with_details: bool = True,
+):
+    """A ``stop_reason="refusal"`` message, optionally carrying the SDK's
+    ``stop_details`` (category + explanation). The attribute only exists on
+    refusal stops, so the fake sets it after construction."""
+    import types as _types
+
+    message = FakeMessage(content=[FakeTextBlock(text="")], stop_reason="refusal")
+    if with_details:
+        message.stop_details = _types.SimpleNamespace(
+            type="refusal", category=category, explanation=explanation
+        )
+    return message
+
+
+class TestRefusalIsTerminal:
+    def test_refusal_makes_exactly_one_call_and_no_repair(self, monkeypatch):
+        specs = [_spec("refused.docx"), _spec("good.docx")]
+        client = FakeRealtimeClient(
+            _route_by_filename(
+                {
+                    "refused.docx": [_refusal_response()],
+                    "good.docx": [review_tool_use_response()],
+                }
+            )
+        )
+        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        logged: list[tuple[str, str | None]] = []
+
+        results, request_map = run_realtime_review(
+            specs, log=lambda msg, **kw: logged.append((msg, kw.get("level")))
+        )
+
+        rr = results["review__refused__0"]
+        assert rr.parse_status == "refusal"
+        assert rr.stop_reason == "refusal"
+        assert rr.findings == []
+        # stop_details surface in the error text.
+        assert "refus" in rr.error.lower()
+        assert "general_harms" in rr.error
+        assert "declined by policy" in rr.error
+        # One call per spec — the refused spec got NO repair call.
+        assert len(client.calls) == 2
+        for call in client.calls:
+            assert RETRY_TRUNCATED_REVIEW_INSTRUCTION not in call["messages"][0]["content"]
+        # The coordinator's failure line names the refusal, not a truncation.
+        failed_lines = [m for m, _lvl in logged if "refused.docx" in m and "review failed" in m]
+        assert failed_lines, logged
+        assert "refus" in failed_lines[0].lower()
+        assert "truncat" not in failed_lines[0].lower()
+
+        # Shared collect tail: the refused spec is a failed review.
+        submission = _realtime_submission(specs, results, request_map)
+        state = collect_review_batch_results(submission)
+        assert state.truncated_specs == ["refused.docx"]
+        combined_error = state.review_result.error.lower()
+        assert "refus" in combined_error
+        assert "truncated" not in combined_error
+        assert "token limit" not in combined_error
+        assert "not retried" in combined_error
+
+        final = finalize_batch_result(state)
+        assert final.failed_review_specs == ["refused.docx"]
+        assert len(final.review_result.findings) == 1  # the healthy spec survived
+
+    def test_refusal_without_stop_details_is_still_terminal(self, monkeypatch):
+        client = FakeRealtimeClient(
+            _route_by_filename({"a.docx": [_refusal_response(with_details=False)]})
+        )
+        monkeypatch.setattr(rt, "_get_client", lambda: client)
+
+        results, _ = run_realtime_review([_spec("a.docx")])
+
+        rr = results["review__a__0"]
+        assert rr.parse_status == "refusal"
+        assert "stop_reason: refusal" in rr.error
+        assert len(client.calls) == 1
+
+    def test_refusal_details_without_explanation_omit_trailing_colon(self, monkeypatch):
+        client = FakeRealtimeClient(
+            _route_by_filename(
+                {"a.docx": [_refusal_response(category="cyber", explanation=None)]}
+            )
+        )
+        monkeypatch.setattr(rt, "_get_client", lambda: client)
+
+        results, _ = run_realtime_review([_spec("a.docx")])
+
+        rr = results["review__a__0"]
+        assert rr.error == "Review refused by the model (stop_reason: refusal, category: cyber)"
+
+    def test_max_tokens_still_repairs_exactly_once(self, monkeypatch):
+        # Contrast case: a token-limit truncation keeps the one inline repair.
+        client = FakeRealtimeClient(
+            _route_by_filename(
+                {"a.docx": [max_tokens_incomplete_response(), max_tokens_incomplete_response()]}
+            )
+        )
+        monkeypatch.setattr(rt, "_get_client", lambda: client)
+
+        results, request_map = run_realtime_review([_spec("a.docx")])
+
+        rr = results["review__a__0"]
+        assert rr.parse_status == "incomplete"
+        assert rr.stop_reason == "max_tokens"
+        assert "truncated" in rr.error.lower()
+        assert len(client.calls) == 2  # initial + exactly one repair
+        assert RETRY_TRUNCATED_REVIEW_INSTRUCTION not in client.calls[0]["messages"][0]["content"]
+        assert RETRY_TRUNCATED_REVIEW_INSTRUCTION in client.calls[1]["messages"][0]["content"]
+
+        state = collect_review_batch_results(
+            _realtime_submission([_spec("a.docx")], results, request_map)
+        )
+        assert state.truncated_specs == ["a.docx"]
+        assert "exceeded token limit" in state.review_result.error
+
+    def test_refusal_records_one_error_telemetry_row(self, monkeypatch):
+        client = FakeRealtimeClient(_route_by_filename({"a.docx": [_refusal_response()]}))
+        monkeypatch.setattr(rt, "_get_client", lambda: client)
+        diag = FakeDiagnostics()
+
+        run_realtime_review([_spec("a.docx")], diagnostics=diag)
+
+        assert len(diag.calls) == 1
+        row = diag.calls[0]
+        assert row["level"] == "error"
+        assert row["retry_status"] == "initial"
+        assert row["stop_reason"] == "refusal"
+        assert row["extra"]["parse_status"] == "refusal"
+
+
+class TestReviewParseStatusVocabulary:
+    def test_closed_set_and_repairable_subset(self):
+        from src.review.reviewer import (
+            PARSE_STATUS_INCOMPLETE,
+            PARSE_STATUS_OK,
+            PARSE_STATUS_PARSE_ERROR,
+            PARSE_STATUS_REFUSAL,
+            REPAIRABLE_PARSE_STATUSES,
+            REVIEW_PARSE_STATUSES,
+        )
+
+        assert REVIEW_PARSE_STATUSES == {
+            PARSE_STATUS_OK, PARSE_STATUS_INCOMPLETE, PARSE_STATUS_PARSE_ERROR, PARSE_STATUS_REFUSAL,
+        }
+        assert REPAIRABLE_PARSE_STATUSES == {PARSE_STATUS_INCOMPLETE, PARSE_STATUS_PARSE_ERROR}
+        assert PARSE_STATUS_REFUSAL not in REPAIRABLE_PARSE_STATUSES
+
+    def test_unexpected_stop_keeps_generic_incomplete_wording(self):
+        from src.review.reviewer import review_result_from_message
+
+        message = FakeMessage(content=[FakeTextBlock(text="partial")], stop_reason="stop_sequence")
+        rr = review_result_from_message(message, model="m")
+        assert rr.parse_status == "incomplete"
+        assert rr.error == "Review response incomplete (stop_reason: stop_sequence)"
+        assert "truncated" not in rr.error
+
+    def test_context_window_stop_uses_truncation_wording(self):
+        from src.review.reviewer import review_result_from_message
+
+        message = FakeMessage(
+            content=[FakeTextBlock(text="partial")], stop_reason="model_context_window_exceeded"
+        )
+        rr = review_result_from_message(message, model="m")
+        assert rr.parse_status == "incomplete"
+        assert "truncated" in rr.error.lower()
+
+    def test_unexpected_stop_is_bucketed_with_its_own_wording(self):
+        # The collect tail distinguishes a token-limit truncation from an
+        # unexpected stop, and keeps the historical truncation wording for a
+        # legacy/hand-built incomplete result that carries no stop_reason.
+        spec = _spec("a.docx")
+        request_map = {"review__a__0": {"filename": "a.docx", "index": 0, "type": "review"}}
+        for stop_reason, expected in (
+            ("stop_sequence", "incomplete (stop_reason: stop_sequence)"),
+            ("max_tokens", "exceeded token limit"),
+            (None, "exceeded token limit"),
+        ):
+            results = {
+                "review__a__0": ReviewResult(
+                    findings=[], parse_status="incomplete", stop_reason=stop_reason
+                )
+            }
+            state = collect_review_batch_results(_realtime_submission([spec], results, request_map))
+            assert state.truncated_specs == ["a.docx"]
+            assert expected in state.review_result.error, (stop_reason, state.review_result.error)

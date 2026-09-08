@@ -495,11 +495,10 @@ _PROFILE_KEYWORDS = ProfileKeywords(
         "[select]",
         "[verify]",
         "[insert",
-        "formatting",
         "typo",
         "typographical",
         "missing placeholder",
-        "self-referen",  # "self-referential", "self-references"
+        "self-referen*",  # open-ended stem: "self-referential", "self-references"
         "inconsistent within",
     ),
 )

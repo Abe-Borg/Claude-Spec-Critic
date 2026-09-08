@@ -599,6 +599,66 @@ def _parse_findings(data: list) -> list[Finding]:
     return findings
 
 
+# ---------------------------------------------------------------------------
+# Review-response classification vocabulary
+# ---------------------------------------------------------------------------
+
+#: The closed set of ``ReviewResult.parse_status`` values the review
+#: classifier emits. Every consumer (pipeline bucketing into
+#: ``truncated_specs``, the real-time inline-repair gate, the batch repair
+#: filter, diagnostics rows) branches on this set — extend it here, not at a
+#: call site.
+PARSE_STATUS_OK = "ok"
+PARSE_STATUS_INCOMPLETE = "incomplete"
+PARSE_STATUS_PARSE_ERROR = "parse_error"
+PARSE_STATUS_REFUSAL = "refusal"
+REVIEW_PARSE_STATUSES = frozenset(
+    {PARSE_STATUS_OK, PARSE_STATUS_INCOMPLETE, PARSE_STATUS_PARSE_ERROR, PARSE_STATUS_REFUSAL}
+)
+
+#: ``parse_status`` values the instructed repair (real-time inline retry and
+#: the batch repair pass) is allowed to re-attempt. A refusal is deliberately
+#: NOT here: re-sending the same spec with a "be more concise" instruction
+#: cannot address a safety refusal and would only bill a second full call.
+REPAIRABLE_PARSE_STATUSES = frozenset({PARSE_STATUS_INCOMPLETE, PARSE_STATUS_PARSE_ERROR})
+
+#: The API stop reason for a model refusal.
+REFUSAL_STOP_REASON = "refusal"
+#: Stop reasons that mean the response was cut off by an output/context
+#: limit — the case the "truncated — output exceeded token limit" wording
+#: and the instructed repair are for.
+TRUNCATION_STOP_REASONS = frozenset({"max_tokens", "model_context_window_exceeded"})
+
+
+def _read_field(obj, name: str):
+    """Attribute-or-key read that tolerates SDK objects, dicts, and fakes."""
+    if obj is None:
+        return None
+    value = getattr(obj, name, None)
+    if value is None and isinstance(obj, dict):
+        value = obj.get(name)
+    return value
+
+
+def describe_review_refusal(message) -> str:
+    """Human-readable error text for a ``stop_reason="refusal"`` response.
+
+    Surfaces ``message.stop_details`` (``category`` + ``explanation``) when
+    the API populated them. The field only exists on refusal stops and may be
+    absent on fakes / older SDK shapes, so every read is defensive.
+    """
+    details = _read_field(message, "stop_details")
+    category = _read_field(details, "category")
+    explanation = _read_field(details, "explanation")
+    text = "Review refused by the model (stop_reason: refusal"
+    if category:
+        text += f", category: {category}"
+    text += ")"
+    if explanation:
+        text += f": {str(explanation).strip()}"
+    return text
+
+
 def review_result_from_message(message, *, model: str) -> ReviewResult:
     """Classify one review response message into a :class:`ReviewResult`.
 
@@ -606,12 +666,26 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
     succeeded batch item's ``result.message``) and the real-time streaming
     runner (``stream.get_final_message()``). One classification contract:
 
-    * ``stop_reason`` outside ``("end_turn", "tool_use")`` ⇒
-      ``parse_status="incomplete"`` (truncation / unexpected stop).
+    * ``stop_reason="refusal"`` ⇒ ``parse_status="refusal"`` — the model
+      declined the request outright. Its ``error`` surfaces the message's
+      ``stop_details`` (policy category + explanation) when the API
+      populated them. A refusal is NOT a truncation: neither review
+      transport retries it (the instructed repair asks the model to be
+      more concise, which cannot address a refusal), but both still
+      surface it as a failed review.
+    * Any other ``stop_reason`` outside ``("end_turn", "tool_use")`` ⇒
+      ``parse_status="incomplete"``. ``max_tokens`` (and the context-window
+      stop) carry truncation wording; an unexpected stop keeps the generic
+      "incomplete" wording.
     * Structured tool use (``submit_review_findings``) is the primary
       parse; the tagged-JSON text fallback stays reachable for plain-text
       responses (``tool_choice`` is ``auto``).
     * Any parse exception ⇒ ``parse_status="parse_error"``.
+
+    The closed ``parse_status`` set is therefore ``ok`` / ``incomplete`` /
+    ``parse_error`` / ``refusal`` (``REVIEW_PARSE_STATUSES``); the pipeline
+    bucketing, the real-time repair gate, and the batch repair filter all
+    branch on it.
 
     The message may be an SDK Pydantic object or a plain dict-shaped
     variant (the batch results stream can return either);
@@ -633,13 +707,25 @@ def review_result_from_message(message, *, model: str) -> ReviewResult:
     # Tool-use stops are the success path when the model invoked the
     # ``submit_review_findings`` custom tool.
     if stop_reason not in ("end_turn", "tool_use"):
+        if stop_reason == REFUSAL_STOP_REASON:
+            parse_status = PARSE_STATUS_REFUSAL
+            error = describe_review_refusal(message)
+        elif stop_reason in TRUNCATION_STOP_REASONS:
+            parse_status = PARSE_STATUS_INCOMPLETE
+            error = (
+                "Review response truncated — output exceeded the token limit "
+                f"(stop_reason: {stop_reason})"
+            )
+        else:
+            parse_status = PARSE_STATUS_INCOMPLETE
+            error = f"Review response incomplete (stop_reason: {stop_reason})"
         return ReviewResult(
             findings=[], raw_response=response_text, stop_reason=stop_reason,
-            parse_status="incomplete", model=model,
+            parse_status=parse_status, model=model,
             input_tokens=input_tokens, output_tokens=output_tokens,
             cache_creation_input_tokens=cache["cache_creation_input_tokens"],
             cache_read_input_tokens=cache["cache_read_input_tokens"],
-            error=f"Review response incomplete (stop_reason: {stop_reason})",
+            error=error,
         )
     try:
         structured_payload = extract_tool_use_block(message, REVIEW_TOOL_NAME)

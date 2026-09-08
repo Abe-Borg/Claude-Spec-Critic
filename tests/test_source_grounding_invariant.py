@@ -22,6 +22,12 @@ The tests below pin down the contract: well-grounded verdicts pass
 through, source-less verdicts downgrade with a clear reason, local
 skips are exempt, and the cache cannot resurrect a pre-Chunk-5
 source-less entry.
+
+A-4 extended the gate to ``DISPUTED``: it is the verdict that tells a
+reviewer to *discard* a real finding, so an uncited one is downgraded to
+UNVERIFIED by the same invariant, refused by ``VerificationCache.put``,
+and dropped by the load-time re-check (no schema bump — a legacy uncited
+DISPUTED row in a current-version file is retired on load).
 """
 from __future__ import annotations
 
@@ -153,8 +159,13 @@ class TestEnforceGroundingInvariantWithAcceptedCitations:
         out = _enforce_grounding_invariant(r)
         assert out.verdict == "UNVERIFIED"
 
-    def test_disputed_with_no_sources_unchanged(self):
-        """DISPUTED is allowed without accepted citations (it's not 'verified')."""
+    def test_disputed_with_no_accepted_citation_downgrades(self):
+        """DISPUTED sits under the same gate as CONFIRMED (A-4).
+
+        A DISPUTED is the verdict that makes a reviewer discard a real
+        finding; letting an uncited one through would let the model
+        discard findings on its own say-so.
+        """
         r = VerificationResult(
             verdict="DISPUTED",
             grounded=True,
@@ -163,7 +174,33 @@ class TestEnforceGroundingInvariantWithAcceptedCitations:
             explanation="Sources contradict each other.",
         )
         out = _enforce_grounding_invariant(r)
+        assert out.verdict == "UNVERIFIED"
+        assert out.grounded is False
+        assert "no accepted external citation" in out.explanation.lower()
+
+    def test_disputed_with_accepted_citation_survives(self):
+        r = VerificationResult(
+            verdict="DISPUTED",
+            grounded=True,
+            accepted_sources=["https://dgs.ca.gov/example"],
+            sources=["https://dgs.ca.gov/example"],
+            explanation="The cited section does not exist in the 2025 edition.",
+        )
+        out = _enforce_grounding_invariant(r)
         assert out.verdict == "DISPUTED"
+        assert out.grounded is True
+
+    def test_ungrounded_disputed_downgrades(self):
+        """``not grounded`` fires for DISPUTED exactly as for CONFIRMED."""
+        r = VerificationResult(
+            verdict="DISPUTED",
+            grounded=False,
+            sources=["https://dgs.ca.gov/example"],
+            explanation="Search returned no results.",
+        )
+        out = _enforce_grounding_invariant(r)
+        assert out.verdict == "UNVERIFIED"
+        assert "external grounding" in out.explanation.lower()
 
     def test_downgrade_explanation_not_double_appended(self):
         """Running the invariant twice keeps the explanation idempotent."""
@@ -237,6 +274,50 @@ class TestProductionGroundingFlow:
             "did not appear in web_search results" in explanation
             or "no accepted external citation" in explanation
         )
+
+    def test_disputed_with_only_invented_sources_downgrades(self):
+        """DISPUTED citing two URLs the search never retrieved → UNVERIFIED.
+
+        The motivating A-4 scenario: both citations rejected, ``sources``
+        emptied, and the verdict must NOT survive as "Disputed" (which
+        would supersede the review confidence and discard the finding).
+        """
+        r = VerificationResult(
+            verdict="DISPUTED",
+            sources=[
+                "https://invented.example.com/fake-1",
+                "https://invented.example.com/fake-2",
+            ],
+            grounded=True,
+            explanation="The section was renumbered.",
+        )
+        searched = [SearchedSource(url="https://dgs.ca.gov/page")]
+        out = self._run_chain(r, searched)
+        assert out.verdict == "UNVERIFIED"
+        assert out.grounded is False
+        assert out.accepted_sources == []
+        assert out.sources == []
+        assert len(out.rejected_sources) == 2
+        assert "downgraded" in out.explanation.lower()
+
+    def test_disputed_with_one_accepted_citation_stays_disputed(self):
+        """One real + one invented citation → the dispute stands on the
+        grounded URL; the invented one is partitioned out."""
+        r = VerificationResult(
+            verdict="DISPUTED",
+            sources=["https://dgs.ca.gov/page", "https://invented.example.com/fake"],
+            grounded=True,
+            explanation="The section was renumbered.",
+        )
+        searched = [SearchedSource(url="https://dgs.ca.gov/page")]
+        out = self._run_chain(r, searched)
+        assert out.verdict == "DISPUTED"
+        assert out.grounded is True
+        assert out.accepted_sources == ["https://dgs.ca.gov/page"]
+        assert out.sources == ["https://dgs.ca.gov/page"]
+        assert [rj["url"] for rj in out.rejected_sources] == [
+            "https://invented.example.com/fake"
+        ]
 
     @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED"])
     def test_verified_verdict_with_no_citations_downgrades_via_invariant(
@@ -322,13 +403,13 @@ class TestVerificationCacheInvariant:
         source_quote bump) only tighten the invariant further."""
         assert _CACHE_SCHEMA_VERSION >= 2
 
-    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED"])
+    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED", "DISPUTED"])
     def test_cache_put_refuses_source_less_verified_verdict(self, verdict: str):
         cache = VerificationCache()
         f = _finding()
         # Source-less verified verdict — would have been stored under the
-        # old rule ("grounded is enough"). Now silently refused for both
-        # CONFIRMED and CORRECTED.
+        # old rule ("grounded is enough"). Now silently refused for
+        # CONFIRMED, CORRECTED, and (A-4) DISPUTED.
         cache.put(
             f,
             cycle=DEFAULT_CYCLE,
@@ -362,6 +443,65 @@ class TestVerificationCacheInvariant:
         assert hit.verdict == "CONFIRMED"
         assert hit.accepted_sources == ["https://dgs.ca.gov/page"]
         assert hit.cache_status == "hit"
+
+    def test_cache_put_accepts_source_bearing_disputed(self):
+        cache = VerificationCache()
+        f = _finding()
+        cache.put(
+            f,
+            cycle=DEFAULT_CYCLE,
+            result=VerificationResult(
+                verdict="DISPUTED",
+                grounded=True,
+                accepted_sources=["https://dgs.ca.gov/page"],
+                sources=["https://dgs.ca.gov/page"],
+            ),
+        )
+        hit = cache.get(f, cycle=DEFAULT_CYCLE)
+        assert hit is not None
+        assert hit.verdict == "DISPUTED"
+        assert hit.accepted_sources == ["https://dgs.ca.gov/page"]
+
+    def test_cache_load_drops_legacy_uncited_disputed_row(self, tmp_path: Path):
+        """A current-version file written BEFORE the DISPUTED gate may hold an
+        uncited DISPUTED. There is deliberately no schema bump for A-4 —
+        the load-time re-check is the mechanism that retires such rows,
+        while a cited DISPUTED in the same file loads normally.
+        """
+        cache_path = tmp_path / "cache.json"
+
+        def _row(sources: list[str]) -> dict:
+            return {
+                "created_ts": time.time(),
+                "result": {
+                    "verdict": "DISPUTED",
+                    "grounded": True,
+                    "sources": list(sources),
+                    "accepted_sources": list(sources),
+                    "explanation": "legacy dispute",
+                    "model_used": "claude-sonnet-4-6",
+                    "escalated": False,
+                    "web_search_requests": 2,
+                    "successful_source_count": 1,
+                    "search_error_count": 0,
+                    "correction": None,
+                    "source_quote": "",
+                },
+            }
+
+        payload = {
+            "version": _CACHE_SCHEMA_VERSION,
+            "saved_at": time.time(),
+            "entries": {
+                "uncited_disputed": _row([]),
+                "cited_disputed": _row(["https://dgs.ca.gov/page"]),
+            },
+        }
+        cache_path.write_text(json.dumps(payload), encoding="utf-8")
+        cache = VerificationCache()
+        loaded = cache.load_from_disk(path=cache_path)
+        assert loaded == 1
+        assert cache.stats()["size"] == 1
 
     def test_cache_load_drops_v1_files(self, tmp_path: Path, monkeypatch):
         """A v1 cache file on disk is silently ignored (schema bump)."""
@@ -508,8 +648,22 @@ class TestBatchAndRealtimePathParity:
             ("CONFIRMED", [], [], "UNVERIFIED"),
             # UNVERIFIED stays UNVERIFIED.
             ("UNVERIFIED", [], [], "UNVERIFIED"),
-            # DISPUTED stays DISPUTED (not in downgrade branch).
-            ("DISPUTED", [], ["https://dgs.ca.gov/page"], "DISPUTED"),
+            # DISPUTED is under the gate (A-4): cited + searched survives …
+            (
+                "DISPUTED",
+                ["https://dgs.ca.gov/page"],
+                ["https://dgs.ca.gov/page"],
+                "DISPUTED",
+            ),
+            # … cited-but-unsearched downgrades …
+            (
+                "DISPUTED",
+                ["https://invented.example.com"],
+                ["https://dgs.ca.gov/page"],
+                "UNVERIFIED",
+            ),
+            # … and no citations at all downgrades.
+            ("DISPUTED", [], ["https://dgs.ca.gov/page"], "UNVERIFIED"),
         ],
     )
     def test_chain_applies_uniformly(
@@ -546,7 +700,7 @@ class TestReportClassificationGuards:
     flowing through the invariant (e.g. a future code path, a test).
     """
 
-    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED"])
+    @pytest.mark.parametrize("verdict", ["CONFIRMED", "CORRECTED", "DISPUTED"])
     def test_verified_verdict_no_accepted_sources_renders_as_insufficient_evidence(
         self, verdict: str
     ):
@@ -554,7 +708,7 @@ class TestReportClassificationGuards:
 
         # Hand-construct a result that violates the invariant — as if a
         # bug let it slip through. The classifier should still refuse to
-        # promote either verified verdict to VERIFIED_SUPPORTED.
+        # promote any gated verdict to VERIFIED_SUPPORTED / DISPUTED.
         f = _finding()
         f.verification = VerificationResult(
             verdict=verdict,
@@ -564,6 +718,18 @@ class TestReportClassificationGuards:
             correction="2025 cycle." if verdict == "CORRECTED" else None,
         )
         assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
+
+    def test_disputed_with_accepted_citation_renders_as_disputed(self):
+        from src.output.report_status import ReportStatus, classify_status
+
+        f = _finding()
+        f.verification = VerificationResult(
+            verdict="DISPUTED",
+            grounded=True,
+            accepted_sources=["https://dgs.ca.gov"],
+            sources=["https://dgs.ca.gov"],
+        )
+        assert classify_status(f) is ReportStatus.DISPUTED
 
     def test_confirmed_with_accepted_citation_renders_as_verified_supported(
         self,

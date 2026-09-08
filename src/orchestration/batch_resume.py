@@ -31,6 +31,7 @@ matching the verification cache), overridable via
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import asdict, dataclass, field
@@ -55,6 +56,16 @@ from .pipeline import (
 # ignored on load (treated as "no pending batch") rather than mis-parsed.
 _SCHEMA_VERSION = 2
 _LEGACY_SCHEMA_VERSION = 1
+
+_log = logging.getLogger(__name__)
+
+# Pending-state writes retry a few times before giving up: on Windows an
+# antivirus scanner / search indexer can hold the just-written temp file or
+# the target for a moment, making the atomic ``replace`` raise
+# ``PermissionError``. Dropping the write silently left the batch with no
+# resume handle at all, so the final failure is now logged as a warning.
+_PENDING_SAVE_ATTEMPTS = 3
+_PENDING_SAVE_RETRY_DELAY_SECONDS = 0.25
 
 
 def pending_batch_path() -> Path:
@@ -102,6 +113,19 @@ class PendingBatch:
     # ``project_context``; this dict restores the structured items for the
     # compliance pass / report surfaces (WS-4).
     requirements_profile: dict | None = None
+    # Id of the review *repair* batch the collect step submitted for this
+    # batch's retryable failed items (``pipeline._recover_retryable_review_
+    # batch_results``), or ``None`` when no repair was submitted (or this
+    # record predates the field). A detached repair batch is billed like any
+    # other; persisting its id keeps it recoverable without digging through
+    # trace files. Additive — same posture as ``project_profile`` (defensive
+    # load, legacy files read as ``None``, NO schema bump).
+    repair_batch_id: str | None = None
+    # The repair job's ``request_map`` (``custom_id`` → filename / index), so
+    # a resumed collect can RE-ATTACH to the saved repair batch and map its
+    # results back onto the failed primary items instead of submitting a
+    # second, billable repair. Same additive posture as ``repair_batch_id``.
+    repair_request_map: dict | None = None
     project_context: str = ""
     cross_check_enabled: bool = False
     submitted_at: float = 0.0
@@ -144,6 +168,10 @@ class PendingBatch:
             module_id=getattr(submission, "module_id", "") or DEFAULT_MODULE.module_id,
             project_profile=getattr(submission, "project_profile", None),
             requirements_profile=getattr(submission, "requirements_profile", None),
+            repair_batch_id=getattr(submission, "repair_batch_id", None) or None,
+            repair_request_map=(
+                dict(getattr(submission, "repair_request_map", None) or {}) or None
+            ),
             project_context=submission.project_context,
             cross_check_enabled=submission.cross_check_enabled,
             submitted_at=float(submission.job.created_at or time.time()),
@@ -165,7 +193,7 @@ class PendingBatch:
                 f"{module.cycle.label!r}. Resume is blocked to avoid verifying "
                 "results under a different code basis."
             )
-        return reconstruct_batch_submission(
+        submission = reconstruct_batch_submission(
             batch_id=self.batch_id,
             request_map=self.request_map,
             review_request_ids=self.review_request_ids,
@@ -182,6 +210,15 @@ class PendingBatch:
             log=log,
             progress=progress,
         )
+        # Carry the saved repair batch (id + request map) onto the in-memory
+        # submission so the collect step re-attaches to it instead of paying
+        # for a second repair. ``reconstruct_batch_submission`` is the shared
+        # resume/recovery constructor and knows nothing about repairs.
+        submission.repair_batch_id = self.repair_batch_id
+        submission.repair_request_map = (
+            dict(self.repair_request_map) if self.repair_request_map else None
+        )
+        return submission
 
 
 @dataclass
@@ -238,6 +275,55 @@ class PendingProgramRun:
             app_version=app_version,
         )
 
+    @property
+    def batch_ids(self) -> dict[str, str]:
+        """``{module_id: batch_id}`` for every child partition in the manifest."""
+        return {
+            module_id: str(child.get("batch_id") or "")
+            for module_id, child in self.partitions.items()
+            if isinstance(child, dict)
+        }
+
+    def child_batch(self, batch_id: str) -> PendingBatch | None:
+        """The child :class:`PendingBatch` whose remote batch is ``batch_id``.
+
+        Lets a bare-id recovery of ONE child of a routed program run use the
+        module the manifest recorded for it (never a defaulted module).
+        ``None`` when no partition carries that id.
+        """
+        for child in self.partitions.values():
+            if not isinstance(child, dict) or child.get("batch_id") != batch_id:
+                continue
+            try:
+                return _pending_batch_from_mapping(child)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def stamp_child_repair(
+        self,
+        batch_id: str,
+        *,
+        repair_batch_id: str,
+        repair_request_map: dict | None,
+    ) -> bool:
+        """Record a review repair batch on the child partition whose remote
+        batch is ``batch_id``.
+
+        Returns ``True`` when a partition matched (the caller then re-saves
+        the manifest), ``False`` when no child carries that id. Additive:
+        the two keys ride the child's mapping and load through
+        ``_pending_batch_from_mapping`` like every other child field.
+        """
+        for child in self.partitions.values():
+            if isinstance(child, dict) and child.get("batch_id") == batch_id:
+                child["repair_batch_id"] = repair_batch_id
+                child["repair_request_map"] = (
+                    dict(repair_request_map) if repair_request_map else None
+                )
+                return True
+        return False
+
     def to_submission(
         self, *, log: LogFn = _noop_log, progress: ProgressFn = _noop_progress
     ) -> ProgramSubmission:
@@ -280,39 +366,71 @@ class PendingProgramRun:
         )
 
 
-def save_pending_batch(pending: PendingBatch, *, path: Path | None = None) -> None:
-    """Atomically persist ``pending``. Best-effort: never raise on I/O error."""
+def _write_pending_state(payload: dict, target: Path, *, what: str) -> bool:
+    """Atomically write ``payload`` to ``target``, retrying transient failures.
+
+    Write to a sibling ``.tmp`` then ``replace`` (an atomic rename, so a crash
+    mid-write can never truncate the state file). The whole mkdir → write →
+    replace sequence is retried ``_PENDING_SAVE_ATTEMPTS`` times with a short
+    sleep between attempts — a Windows AV/indexer lock on either file is
+    momentary. Never raises: on final failure it logs a ``WARNING`` naming the
+    path and the error, because the consequence (the batch cannot be resumed
+    from saved state) must not be invisible. Returns ``True`` when saved.
+    """
+    text = json.dumps(payload, indent=2)
+    last_exc: OSError | None = None
+    for attempt in range(1, _PENDING_SAVE_ATTEMPTS + 1):
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(target)
+            return True
+        except OSError as exc:
+            last_exc = exc
+            if attempt < _PENDING_SAVE_ATTEMPTS:
+                time.sleep(_PENDING_SAVE_RETRY_DELAY_SECONDS)
+    _log.warning(
+        "Could not save %s to %s after %d attempt(s) (%s: %s); the batch will "
+        "not be resumable from saved state — note its batch id for manual recovery.",
+        what,
+        target,
+        _PENDING_SAVE_ATTEMPTS,
+        type(last_exc).__name__ if last_exc is not None else "OSError",
+        last_exc,
+    )
+    return False
+
+
+def save_pending_batch(pending: PendingBatch, *, path: Path | None = None) -> bool:
+    """Atomically persist ``pending``. Best-effort: never raises.
+
+    Retries a transient write/rename failure and logs a warning if every
+    attempt fails (see :func:`_write_pending_state`). Returns ``True`` when
+    the state is on disk, ``False`` when every attempt failed — callers that
+    report "recorded" to the operator must check it rather than assume.
+    """
     target = path or pending_batch_path()
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(pending), indent=2), encoding="utf-8")
-        tmp.replace(target)  # atomic rename so a crash mid-write can't truncate
-    except OSError:
-        pass
+    return _write_pending_state(asdict(pending), target, what="pending-batch state")
 
 
 def save_pending_program_run(
     pending: PendingProgramRun, *, path: Path | None = None
-) -> None:
-    """Atomically persist a routed program manifest. Best-effort."""
+) -> bool:
+    """Atomically persist a routed program manifest. Best-effort, never raises.
+
+    Returns ``True`` when saved, ``False`` when every attempt failed.
+    """
     target = path or pending_batch_path()
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(pending), indent=2), encoding="utf-8")
-        tmp.replace(target)
-    except OSError:
-        pass
+    return _write_pending_state(asdict(pending), target, what="pending program-run manifest")
 
 
 def save_pending_run(
     pending: PendingBatch | PendingProgramRun, *, path: Path | None = None
-) -> None:
+) -> bool:
     if isinstance(pending, PendingProgramRun):
-        save_pending_program_run(pending, path=path)
-    else:
-        save_pending_batch(pending, path=path)
+        return save_pending_program_run(pending, path=path)
+    return save_pending_batch(pending, path=path)
 
 
 def _pending_batch_from_mapping(data: object) -> PendingBatch:
@@ -334,6 +452,8 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
     request_map = data.get("request_map")
     profile = data.get("project_profile")
     requirements = data.get("requirements_profile")
+    repair_batch_id = data.get("repair_batch_id")
+    repair_request_map = data.get("repair_request_map")
     return PendingBatch(
         batch_id=batch_id,
         model=_str("model") or REVIEW_MODEL_DEFAULT,
@@ -346,6 +466,16 @@ def _pending_batch_from_mapping(data: object) -> PendingBatch:
         module_id=_str("module_id", DEFAULT_MODULE.module_id) or DEFAULT_MODULE.module_id,
         project_profile=profile if isinstance(profile, dict) else None,
         requirements_profile=requirements if isinstance(requirements, dict) else None,
+        repair_batch_id=(
+            repair_batch_id.strip()
+            if isinstance(repair_batch_id, str) and repair_batch_id.strip()
+            else None
+        ),
+        repair_request_map=(
+            dict(repair_request_map)
+            if isinstance(repair_request_map, dict) and repair_request_map
+            else None
+        ),
         project_context=_str("project_context"),
         cross_check_enabled=bool(data.get("cross_check_enabled", False)),
         submitted_at=(

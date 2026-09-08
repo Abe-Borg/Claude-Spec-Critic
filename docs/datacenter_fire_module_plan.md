@@ -246,7 +246,8 @@ few-shot examples against the real parser contract.
     "ansi", "asce", "fire code", "building code", "code section",
     "standard", …
   - `internal_coordination`: reuse the CA generic set (placeholder / tbd /
-    typo / duplicate / internal contradiction / formatting / self-referen…)
+    typo / duplicate / internal contradiction / self-referen*…; keywords match
+    whole words, and a trailing `*` marks a deliberate open-ended stem)
     **minus `"leed"`** — LEED findings here are substantive, not internal
     noise.
 - **`cross_check_chunk_groups`**: suggested —

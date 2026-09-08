@@ -215,3 +215,284 @@ class TestEnsureBatchEnded:
                 cancel_event=cancel,
             )
         assert exc_info.value.reason == "user_canceled"
+
+
+# ===========================================================================
+# scripts/recover_batch.py — routed-program runs + no defaulted module
+# ===========================================================================
+#
+# The CLI used to call only ``load_pending_batch`` (which reads a program
+# manifest as "no pending batch") and defaulted ``--module`` to the CA K-12
+# module on the bare-id path — so a detached hyperscale run reported "No
+# saved pending batch found", and a bare data-center batch id was collected,
+# cross-checked, and verified under CA prompts and cycle.
+
+
+import types
+from pathlib import Path
+
+from src.batch.batch import BatchJob
+from src.modules import require_module
+from src.orchestration import program_pipeline as pp
+from src.orchestration.batch_resume import (
+    PendingBatch,
+    PendingProgramRun,
+    save_pending_batch,
+    save_pending_program_run,
+)
+from src.orchestration.pipeline import BatchSubmission
+from src.programs import (
+    HYPERSCALE_DATACENTER_PROGRAM,
+    RoutingState,
+    SpecAssignment,
+    SpecRoutingDecision,
+)
+from src.review.reviewer import ReviewResult
+
+
+def _load_recovery_cli():
+    import importlib.util
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "recover_batch.py"
+    spec = importlib.util.spec_from_file_location("recover_batch_cli_under_test", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+@pytest.fixture
+def cli():
+    return _load_recovery_cli()
+
+
+@pytest.fixture
+def state_path(tmp_path, monkeypatch):
+    path = tmp_path / "pending.json"
+    monkeypatch.setenv("SPEC_CRITIC_PENDING_BATCH_PATH", str(path))
+    return path
+
+
+def _assignment(name: str, module_ids: tuple[str, ...]) -> SpecAssignment:
+    return SpecAssignment(
+        source_path=str(Path("C:/specs") / name),
+        decision=SpecRoutingDecision(
+            spec_id=name,
+            program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+            automatic_state=RoutingState.SUPPORTED,
+            automatic_module_ids=module_ids,
+            confidence=0.95,
+            evidence=(),
+        ),
+    )
+
+
+def _child(module_id: str, name: str) -> BatchSubmission:
+    module = require_module(module_id)
+    request_id = f"review__{module_id}__0"
+    return BatchSubmission(
+        job=BatchJob(
+            batch_id=f"msgbatch_{module_id}",
+            job_type="review",
+            request_map={request_id: {"filename": name, "index": 0, "type": "review"}},
+            created_at=1_700_000_000.0,
+        ),
+        files_reviewed=[name],
+        review_request_ids=[request_id],
+        model="test-model",
+        cycle_label=module.cycle.label,
+        module_id=module_id,
+    )
+
+
+_PROGRAM_MODULES = ("datacenter_fire", "datacenter_architecture")
+
+
+def _save_program_manifest(state_path: Path) -> None:
+    name = "21 13 13 Wet Pipe.docx"
+    submission = pp.ProgramSubmission(
+        program_id=HYPERSCALE_DATACENTER_PROGRAM.program_id,
+        assignments=(_assignment(name, _PROGRAM_MODULES),),
+        partitions={module_id: _child(module_id, name) for module_id in _PROGRAM_MODULES},
+    )
+    save_pending_program_run(PendingProgramRun.from_submission(submission), path=state_path)
+
+
+def _stub_result(**overrides):
+    base = dict(
+        review_result=ReviewResult(findings=[], parse_status="ok"),
+        failed_review_specs=[],
+        module_errors={},
+        review_transport="batch",
+    )
+    base.update(overrides)
+    return types.SimpleNamespace(**base)
+
+
+def _stub_exports(cli, monkeypatch):
+    monkeypatch.setattr(cli, "export_report", lambda result, path: path)
+    monkeypatch.setattr(cli, "write_edit_instructions_sidecar", lambda result, path: path)
+    monkeypatch.setattr(cli, "write_requirements_profile_sidecar", lambda result, path: None)
+
+
+def _ended(*_a, **_k):
+    return rt.PollOutcome(terminal=True, terminal_status="ended")
+
+
+def _never(*_a, **_k):
+    raise AssertionError("must not be called on this path")
+
+
+class TestRecoveryCliProgramRuns:
+    def test_saved_program_manifest_takes_the_program_path(self, cli, state_path, tmp_path, monkeypatch):
+        _save_program_manifest(state_path)
+        assert state_path.exists()
+        monkeypatch.setattr(cli, "poll_batch_bounded", _ended)
+        monkeypatch.setattr(cli, "run_batch_collection_headless", _never)
+        monkeypatch.setattr(cli, "thin_submission_from_batch_results", _never)
+        collected: dict = {}
+
+        def fake_collect(submission, *, log, progress):
+            collected["submission"] = submission
+            return _stub_result()
+
+        monkeypatch.setattr(cli, "collect_program_results", fake_collect)
+        _stub_exports(cli, monkeypatch)
+
+        rc = cli.main(["-o", str(tmp_path / "out.docx")])
+
+        assert rc == 0
+        submission = collected["submission"]
+        assert isinstance(submission, pp.ProgramSubmission)
+        assert submission.program_id == HYPERSCALE_DATACENTER_PROGRAM.program_id
+        assert tuple(submission.partitions) == _PROGRAM_MODULES
+        # Every child kept its own module identity — nothing defaulted.
+        for module_id, child in submission.partitions.items():
+            assert child.module_id == module_id
+            assert child.cycle_label == require_module(module_id).cycle.label
+        # Full success clears the manifest (the GUI's rule).
+        assert not state_path.exists()
+
+    def test_program_polls_every_child_batch(self, cli, state_path, tmp_path, monkeypatch):
+        _save_program_manifest(state_path)
+        polled: list[str] = []
+
+        def fake_poll(batch_id, **_k):
+            polled.append(batch_id)
+            return rt.PollOutcome(terminal=True, terminal_status="ended")
+
+        monkeypatch.setattr(cli, "poll_batch_bounded", fake_poll)
+        monkeypatch.setattr(cli, "collect_program_results", lambda s, **_k: _stub_result())
+        _stub_exports(cli, monkeypatch)
+
+        cli.main(["-o", str(tmp_path / "out.docx")])
+
+        assert sorted(polled) == sorted(f"msgbatch_{m}" for m in _PROGRAM_MODULES)
+
+    def test_program_with_module_error_keeps_state_and_exits_2(self, cli, state_path, tmp_path, monkeypatch):
+        _save_program_manifest(state_path)
+        monkeypatch.setattr(cli, "poll_batch_bounded", _ended)
+        monkeypatch.setattr(
+            cli, "collect_program_results",
+            lambda s, **_k: _stub_result(module_errors={"datacenter_architecture": "boom"}),
+        )
+        _stub_exports(cli, monkeypatch)
+
+        rc = cli.main(["-o", str(tmp_path / "out.docx")])
+
+        assert rc == 2
+        assert state_path.exists()  # kept for a retry
+
+    def test_program_child_batch_id_uses_the_saved_module(self, cli, state_path, tmp_path, monkeypatch):
+        # Recovering ONE child of a saved program run by its bare id must use
+        # the module the manifest recorded for it — and must not clear the
+        # manifest (the sibling batch stays resumable).
+        _save_program_manifest(state_path)
+        monkeypatch.setattr(cli, "poll_batch_bounded", _ended)
+        monkeypatch.setattr(cli, "collect_program_results", _never)
+        monkeypatch.setattr(cli, "thin_submission_from_batch_results", _never)
+        seen: dict = {}
+
+        def fake_headless(submission, *, log, progress):
+            seen["submission"] = submission
+            return _stub_result()
+
+        monkeypatch.setattr(cli, "run_batch_collection_headless", fake_headless)
+        _stub_exports(cli, monkeypatch)
+
+        rc = cli.main(["--batch-id", "msgbatch_datacenter_architecture", "-o", str(tmp_path / "o.docx")])
+
+        assert rc == 0
+        assert seen["submission"].module_id == "datacenter_architecture"
+        assert seen["submission"].job.batch_id == "msgbatch_datacenter_architecture"
+        assert state_path.exists()
+
+
+class TestRecoveryCliBareBatchId:
+    def test_bare_batch_id_requires_module(self, cli, state_path, capsys):
+        assert not state_path.exists()
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main(["--batch-id", "msgbatch_X"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--module is required" in err
+        assert "does not carry its discipline" in err
+        assert "california_k12_mep" in err
+        assert "datacenter_fire" in err
+
+    def test_bare_batch_id_with_module_reaches_thin_reconstruction(self, cli, state_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_batch_ended", lambda batch_id, **_k: None)
+
+        class _Stop(Exception):
+            pass
+
+        captured: dict = {}
+
+        def fake_thin(batch_id, **kwargs):
+            captured["batch_id"] = batch_id
+            captured.update(kwargs)
+            raise _Stop()
+
+        monkeypatch.setattr(cli, "thin_submission_from_batch_results", fake_thin)
+
+        with pytest.raises(_Stop):
+            cli.main(["--batch-id", "msgbatch_X", "--module", "datacenter_fire"])
+
+        assert captured["batch_id"] == "msgbatch_X"
+        assert captured["module"].module_id == "datacenter_fire"
+
+    def test_unknown_module_is_rejected_by_argparse(self, cli, state_path, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main(["--batch-id", "msgbatch_X", "--module", "not_a_module"])
+        assert exc_info.value.code == 2
+        assert "invalid choice" in capsys.readouterr().err
+
+    def test_saved_single_batch_ignores_module_flag(self, cli, state_path, tmp_path, monkeypatch):
+        child = _child("datacenter_fire", "21 13 13 Wet Pipe.docx")
+        save_pending_batch(PendingBatch.from_submission(child), path=state_path)
+        monkeypatch.setattr(cli, "poll_batch_bounded", _ended)
+        monkeypatch.setattr(cli, "thin_submission_from_batch_results", _never)
+        seen: dict = {}
+
+        def fake_headless(submission, *, log, progress):
+            seen["submission"] = submission
+            return _stub_result()
+
+        monkeypatch.setattr(cli, "run_batch_collection_headless", fake_headless)
+        _stub_exports(cli, monkeypatch)
+        printed: list[str] = []
+        monkeypatch.setattr(cli, "_log", lambda msg, *, level="info": printed.append(f"{level}:{msg}"))
+
+        rc = cli.main(["--module", "california_k12_mep", "-o", str(tmp_path / "o.docx")])
+
+        assert rc == 0
+        assert seen["submission"].module_id == "datacenter_fire"  # saved state wins
+        assert any("Ignoring --module california_k12_mep" in line for line in printed)
+        assert not state_path.exists()
+
+    def test_no_state_and_no_batch_id_errors_with_module_hint(self, cli, state_path, capsys):
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main([])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "No saved pending batch or program run" in err
+        assert "--module" in err

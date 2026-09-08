@@ -90,14 +90,14 @@ def _verification(
     rejected: list[dict] | None = None,
     correction: str | None = None,
 ) -> VerificationResult:
-    # A grounded CONFIRMED/CORRECTED requires at least one
+    # A grounded CONFIRMED/CORRECTED/DISPUTED requires at least one
     # accepted external citation. Default to a representative one so
     # individual tests focused on status / edit-action classification
     # do not have to thread sources through every call.
     if sources is None:
         sources = (
             ["https://dgs.ca.gov"]
-            if grounded and verdict.upper() in ("CONFIRMED", "CORRECTED")
+            if grounded and verdict.upper() in ("CONFIRMED", "CORRECTED", "DISPUTED")
             else []
         )
     return VerificationResult(
@@ -134,8 +134,60 @@ class TestReportStatusClassification:
         assert classify_status(f) is ReportStatus.VERIFIED_CONTRADICTED
 
     def test_disputed_verdict_is_disputed(self):
-        f = _finding(verification=_verification("DISPUTED", grounded=False))
+        # Grounded + accepted citation — the same evidence bar as
+        # VERIFIED_SUPPORTED (A-4).
+        f = _finding(verification=_verification("DISPUTED", grounded=True))
         assert classify_status(f) is ReportStatus.DISPUTED
+
+    def test_disputed_without_accepted_citation_is_insufficient_evidence(self):
+        """An uncited DISPUTED must not render as "Disputed" (A-4).
+
+        DISPUTED is the verdict that makes a reviewer discard a finding;
+        with zero accepted citations there is nothing backing that call,
+        so it falls through to INSUFFICIENT_EVIDENCE like an uncited
+        CONFIRMED does.
+        """
+        f = _finding(verification=_verification("DISPUTED", grounded=True, sources=[]))
+        assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
+
+    def test_disputed_ungrounded_is_insufficient_evidence(self):
+        f = _finding(
+            verification=_verification(
+                "DISPUTED", grounded=False, sources=["https://dgs.ca.gov"]
+            )
+        )
+        assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
+
+    @pytest.mark.parametrize("verdict", ["CONFIRMED", "DISPUTED"])
+    def test_grounding_downgrade_classifies_as_insufficient_evidence(self, verdict):
+        """Pin what a grounding *downgrade* looks like at the report.
+
+        The verifier rewrites a verdict whose citations all missed the
+        searched pool to ``verdict="UNVERIFIED"`` with ``grounded=False``
+        (it never produces a DISPUTED from a downgrade), so the report
+        lands on INSUFFICIENT_EVIDENCE — before and after A-4. Runs the
+        real production chain rather than hand-setting fields.
+        """
+        from src.verification.source_grounding import SearchedSource
+        from src.verification.verifier import (
+            _apply_source_grounding,
+            _enforce_grounding_invariant,
+        )
+
+        v = VerificationResult(
+            verdict=verdict,
+            explanation="cites an invented page",
+            sources=["https://invented.example.com/fake"],
+            grounded=True,
+        )
+        v = _apply_source_grounding(v, searched=[SearchedSource(url="https://dgs.ca.gov")])
+        v = _enforce_grounding_invariant(v)
+        assert v.verdict == "UNVERIFIED"
+        assert v.grounded is False
+        assert v.sources == []
+        f = _finding(verification=v)
+        assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
+        assert verdict_supersedes_confidence(f) is False
 
     def test_unverified_verdict_is_insufficient_evidence(self):
         f = _finding(verification=_verification("UNVERIFIED", grounded=False))
@@ -171,10 +223,19 @@ class TestVerdictSupersedesConfidence:
         assert verdict_supersedes_confidence(f) is True
 
     def test_disputed_supersedes(self):
-        # A high review confidence next to a DISPUTED verdict is just as
-        # misleading as a low one next to CONFIRMED — the verdict wins.
-        f = _finding(verification=_verification("DISPUTED", grounded=False))
+        # A high review confidence next to a grounded DISPUTED verdict is
+        # just as misleading as a low one next to CONFIRMED — the verdict
+        # wins.
+        f = _finding(verification=_verification("DISPUTED", grounded=True))
         assert verdict_supersedes_confidence(f) is True
+
+    def test_uncited_disputed_does_not_supersede(self):
+        # Membership follows the *status*: an uncited DISPUTED classifies
+        # as INSUFFICIENT_EVIDENCE, so the review % stays the headline
+        # signal instead of being suppressed by an unbacked dispute.
+        f = _finding(verification=_verification("DISPUTED", grounded=True, sources=[]))
+        assert classify_status(f) is ReportStatus.INSUFFICIENT_EVIDENCE
+        assert verdict_supersedes_confidence(f) is False
 
     def test_contested_supersedes(self):
         v = VerificationResult(
@@ -304,7 +365,7 @@ class TestSummarizeHelpers:
     def test_summarize_statuses_sums_to_input_length(self):
         findings = [
             _finding(verification=_verification("CONFIRMED", grounded=True)),
-            _finding(verification=_verification("DISPUTED", grounded=False)),
+            _finding(verification=_verification("DISPUTED", grounded=True)),
             _finding(verification=None),
             _finding(
                 verification=_verification(
@@ -418,8 +479,9 @@ class TestReportExporterStatusIntegration:
             issue="Claims wrong fitting standard",
             verification=_verification(
                 "DISPUTED",
-                grounded=False,
+                grounded=True,
                 explanation="Search results contradict the finding's claim.",
+                sources=["https://www.ashrae.org/technical-resources/standards"],
                 rejected=[{"url": "https://blog.example.com/foo", "reason": "ungrounded"}],
             ),
         )

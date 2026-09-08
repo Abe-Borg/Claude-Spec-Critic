@@ -338,6 +338,7 @@ _PROFILE_KEYWORDS = ProfileKeywords(
         "provincial building code",
         "accessibility authority",
         "permit",
+        "permitting",
     ),
     manufacturer=(
         "product data",
@@ -387,11 +388,10 @@ _PROFILE_KEYWORDS = ProfileKeywords(
         "[select]",
         "[verify]",
         "[insert",
-        "formatting",
         "typo",
         "typographical",
         "missing placeholder",
-        "self-referen",
+        "self-referen*",  # open-ended stem: "self-referential", "self-references"
         "inconsistent within",
     ),
 )

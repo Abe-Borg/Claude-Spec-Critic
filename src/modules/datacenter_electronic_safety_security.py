@@ -288,6 +288,7 @@ _PROFILE_KEYWORDS = ProfileKeywords(
         "ahj",
         "local amendment",
         "permit",
+        "permitting",
         "plan review",
         "occupancy approval",
         "supervising station",
@@ -352,11 +353,10 @@ _PROFILE_KEYWORDS = ProfileKeywords(
         "[select]",
         "[verify]",
         "[insert",
-        "formatting",
         "typo",
         "typographical",
         "missing placeholder",
-        "self-referen",
+        "self-referen*",  # open-ended stem: "self-referential", "self-references"
         "inconsistent within",
     ),
 )

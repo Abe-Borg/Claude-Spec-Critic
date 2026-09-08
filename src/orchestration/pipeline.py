@@ -29,7 +29,16 @@ from ..core.tokenizer import (
     local_estimate_safety_factor,
     safe_local_estimate,
 )
-from ..review.reviewer import ReviewResult, Finding, validate_finding_anchors
+from ..review.reviewer import (
+    PARSE_STATUS_INCOMPLETE,
+    PARSE_STATUS_PARSE_ERROR,
+    PARSE_STATUS_REFUSAL,
+    REPAIRABLE_PARSE_STATUSES,
+    TRUNCATION_STOP_REASONS,
+    ReviewResult,
+    Finding,
+    validate_finding_anchors,
+)
 from ..review.review_request_builder import (
     RETRY_TRUNCATED_REVIEW_INSTRUCTION,
     ReviewRequestSpec,
@@ -38,7 +47,12 @@ from ..review.review_request_builder import (
     review_request_cache_key,
 )
 from ..review.realtime_review import REALTIME_JOB_SENTINEL, run_realtime_review
-from ..batch.batch import BatchJob, submit_review_batch, retrieve_review_results
+from ..batch.batch import (
+    BatchJob,
+    _review_custom_id,
+    retrieve_review_results,
+    submit_review_batch,
+)
 from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from ..core.api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
 from ..verification.verifier import (
@@ -884,6 +898,14 @@ class BatchSubmission:
     # compliance pass and report surfaces (WS-4) reconstruct the structured
     # items from. Additive — same precedent as ``project_profile``.
     requirements_profile: dict | None = None
+    # The review *repair* batch an earlier collect attempt submitted for this
+    # batch's retryable failed items (id + its ``request_map``), restored from
+    # the saved pending state on resume and stamped by the repair pass itself
+    # in-process. When set, the repair pass RE-ATTACHES to that batch rather
+    # than submitting (and paying for) a replacement. ``None`` until a repair
+    # is submitted; never persisted for realtime runs.
+    repair_batch_id: str | None = None
+    repair_request_map: dict | None = None
     cross_check_enabled: bool = False
     # Carry the remaining deterministic alert lists so the collect /
     # finalize path can hand them off to the final PipelineResult.
@@ -1356,12 +1378,303 @@ def start_batch_review(
 def _is_retryable_batch_review_result(rr: ReviewResult | None) -> bool:
     if rr is None:
         return True
-    if rr.parse_status in ("parse_error", "incomplete"):
+    if rr.parse_status == PARSE_STATUS_REFUSAL:
+        # A refusal is terminal: the instructed repair cannot address it and
+        # re-submitting would bill a second full review for the same answer.
+        # It still surfaces as a failed review through the collect bucketing.
+        return False
+    if rr.parse_status in REPAIRABLE_PARSE_STATUSES:
         return True
     if not rr.error:
         return False
     lowered = rr.error.lower()
     return any(token in lowered for token in ("batch request errored", "batch request expired", "batch request canceled"))
+
+
+def _repair_profile_country(submission: BatchSubmission, module: ReviewModule) -> str | None:
+    """Wrong-polity detector activation for the repair prompt (WS-4, D-15).
+
+    Derived exactly as the submit path (``prepare_batch_review``) and the
+    resume path (``reconstruct_batch_submission``) derive it: the country
+    rides the submission's persisted profile dict; an opted-out module or an
+    incomplete/absent profile degrades to ``None`` (detector off), so a
+    profile-less run's repair ``<pre_detected>`` block stays byte-identical
+    to its original.
+    """
+    profile = ProjectProfile.from_dict(getattr(submission, "project_profile", None))
+    if (
+        getattr(module, "project_profile_enabled", False)
+        and profile is not None
+        and profile.is_complete()
+    ):
+        return profile.country
+    return None
+
+
+def _repair_pre_detected_alerts(
+    submission: BatchSubmission,
+    repair_specs: list[ExtractedSpec],
+    *,
+    module: ReviewModule,
+) -> dict[str, list[dict]]:
+    """Rebuild each repair spec's ``<pre_detected>`` alert list.
+
+    The repair batch reuses the same prompt builder as the original review,
+    so it must tell the model the same things the original did. Alerts are
+    deterministic given (content, filename, cycle, profile country), so they
+    are recomputed here rather than threaded through resume state — but the
+    recomputation has to match ``_prepare_specs`` **exactly**, including the
+    two inputs the original merges in that a naive per-spec
+    ``preprocess_spec`` call misses:
+
+    * ``profile_country`` (so ``pre.polity_alerts`` is populated on a
+      profile-bearing run instead of unconditionally empty), and
+    * the project-level ``naming_alerts`` from
+      ``detect_inconsistent_file_naming`` — a cross-file check over the
+      *whole* reviewed set (``submission.prepared_specs``, the same list the
+      original ran it over), routed back to the file each alert describes.
+
+    Per-spec alert order matches ``_prepare_specs`` (LEED, placeholder,
+    code-cycle, structural, template-marker, invalid-cycle, duplicate
+    paragraph, polity), with the naming alerts appended last — the same
+    order the original ``pre_detected_by_filename`` map carried.
+    """
+    profile_country = _repair_profile_country(submission, module)
+    pre_detected: dict[str, list[dict]] = {}
+    for spec in repair_specs:
+        pre = preprocess_spec(
+            spec.content, spec.filename, cycle=module.cycle, profile_country=profile_country
+        )
+        pre_detected[spec.filename] = [
+            *pre.leed_alerts,
+            *pre.placeholder_alerts,
+            *pre.code_cycle_alerts,
+            *pre.structural_alerts,
+            *pre.template_marker_alerts,
+            *pre.invalid_code_cycle_alerts,
+            *pre.duplicate_paragraph_alerts,
+            *(getattr(pre, "polity_alerts", None) or []),
+        ]
+    all_filenames = [s.filename for s in (submission.prepared_specs or [])]
+    for alert in detect_inconsistent_file_naming(all_filenames):
+        fname = alert.get("filename")
+        if fname in pre_detected:
+            pre_detected[fname].append(alert)
+    return pre_detected
+
+
+def _persist_repair_batch(
+    submission: BatchSubmission, repair_job: BatchJob, *, log: LogFn = _noop_log
+) -> None:
+    """Record the repair batch (id + request map) on the parent's saved state.
+
+    A detached repair batch is billed like any other; without its id in the
+    saved state it was recoverable only by digging through trace files, and
+    without its ``request_map`` its results could not be mapped back onto
+    the failed primary items. Both are stamped onto the in-memory submission
+    (so a same-process retry re-attaches) and onto the saved record: the
+    parent ``PendingBatch`` for a single-module run, or the matching child
+    partition of a ``PendingProgramRun`` manifest for a routed program. The
+    stamp is additive (no schema bump). A save that fails is reported as a
+    WARNING — never as success — because the saved id is the only recovery
+    handle; a persistence failure never breaks the repair.
+    """
+    request_map = dict(repair_job.request_map or {})
+    submission.repair_batch_id = repair_job.batch_id
+    submission.repair_request_map = request_map or None
+    repair_batch_id = repair_job.batch_id
+    try:
+        # Lazy import: ``batch_resume`` imports from this module.
+        from .batch_resume import (
+            PendingBatch,
+            PendingProgramRun,
+            load_pending_run,
+            save_pending_batch,
+            save_pending_program_run,
+        )
+
+        parent_batch_id = submission.job.batch_id
+        pending = load_pending_run()
+        if isinstance(pending, PendingBatch) and pending.batch_id == parent_batch_id:
+            pending.repair_batch_id = repair_batch_id
+            pending.repair_request_map = request_map or None
+            saved = save_pending_batch(pending)
+            what = "pending-batch state"
+        elif isinstance(pending, PendingProgramRun) and pending.stamp_child_repair(
+            parent_batch_id,
+            repair_batch_id=repair_batch_id,
+            repair_request_map=request_map or None,
+        ):
+            saved = save_pending_program_run(pending)
+            what = "program-run manifest"
+        else:
+            log(
+                f"Repair batch {repair_batch_id} is not recorded in the saved "
+                f"pending state (no saved record for batch {parent_batch_id}); "
+                "note the id if the repair batch needs manual recovery.",
+                level="info",
+            )
+            return
+        if saved:
+            log(
+                f"Recorded repair batch {repair_batch_id} in the saved {what}.",
+                level="info",
+            )
+        else:
+            log(
+                f"Could not record repair batch {repair_batch_id} in the saved {what} "
+                "(the write failed after retries); note the id — a resumed collect "
+                "cannot re-attach to it without the saved state.",
+                level="warning",
+            )
+    except Exception as exc:  # noqa: BLE001 — persistence must never break the repair
+        log(
+            f"Could not record repair batch {repair_batch_id} in the pending "
+            f"state: {exc}",
+            level="warning",
+        )
+
+
+def _repair_poll_progress(log: LogFn) -> Callable[[object], None]:
+    """Forward repair-poll status to ``log`` — the primary poll's shape.
+
+    Mirrors the primary batch poll's progress reporting (the recovery CLI
+    and the GUI both log every status the poller reports), so a repair
+    batch that runs for hours is visibly alive instead of silent.
+    """
+
+    def report(status) -> None:
+        try:
+            log(
+                f"  Repair batch: {status.succeeded}/{status.total} done, "
+                f"{status.processing} processing, {status.errored} errored",
+                level="info",
+            )
+        except Exception:  # noqa: BLE001 — progress reporting is never fatal
+            pass
+
+    return report
+
+def _saved_repair_job(
+    submission: BatchSubmission, repair_specs: list[ExtractedSpec]
+) -> BatchJob:
+    """The ``BatchJob`` handle for the repair batch a saved state recorded.
+
+    Uses the persisted ``repair_request_map`` when present. A record that
+    carries only the id gets the map rebuilt deterministically: a repair
+    batch's custom ids are minted by ``_review_custom_id`` over the repair
+    specs in submission order, which is exactly the order ``repair_specs``
+    is built in from the same primary results.
+    """
+    saved_map = getattr(submission, "repair_request_map", None)
+    if isinstance(saved_map, dict) and saved_map:
+        request_map = dict(saved_map)
+    else:
+        request_map = {
+            _review_custom_id(spec.filename, idx): {
+                "filename": spec.filename,
+                "index": idx,
+                "type": "review",
+            }
+            for idx, spec in enumerate(repair_specs)
+        }
+    return BatchJob(
+        batch_id=str(submission.repair_batch_id),
+        job_type="review",
+        request_map=request_map,
+        created_at=time.time(),
+    )
+
+
+def _reattach_saved_repair_batch(
+    submission: BatchSubmission,
+    repair_specs: list[ExtractedSpec],
+    *,
+    log: LogFn = _noop_log,
+) -> tuple[str, dict[str, ReviewResult] | None, BatchJob]:
+    """Re-attach to the repair batch an earlier collect attempt submitted.
+
+    A collect that detached after submitting its repair batch (the app
+    closed, the network dropped) left that batch running and billed; a
+    resumed collect must consume it, never pay for a replacement. Returns
+    ``(disposition, results, job)``:
+
+    * ``"consumed"`` — the saved batch ended and its results were retrieved;
+      the caller merges them and the one repair pass is spent.
+    * ``"pending"`` — the saved batch is still running, its poll failed, or
+      re-attaching raised: the caller returns the primary results unchanged
+      and submits NOTHING (a replacement would bill a second repair for
+      work that may still complete; re-running collection retries).
+    * ``"unusable"`` — the saved batch ended expired / failed / canceled, so
+      its results are gone for good; the caller may submit a fresh repair.
+    """
+    job = _saved_repair_job(submission, repair_specs)
+    log(
+        f"Re-attaching to saved review repair batch {job.batch_id} (submitted by an "
+        "earlier collect attempt) instead of submitting a new one...",
+        level="step",
+    )
+    try:
+        outcome = poll_batch_bounded(
+            job.batch_id,
+            policy=DEFAULT_REVIEW_POLL_POLICY,
+            log=log,
+            progress_cb=_repair_poll_progress(log),
+        )
+        if outcome.detached or outcome.poll_failed:
+            reason = outcome.detach_reason or outcome.poll_error or "unknown"
+            log(
+                f"Saved review repair batch {job.batch_id} did not complete ({reason}); "
+                "it may still be running remotely. Not submitting a replacement — "
+                "re-run collection later to pick it up. The failed items will appear "
+                "as failed in the report.",
+                level="warning",
+            )
+            return "pending", None, job
+        terminal_status = outcome.terminal_status or "ended"
+        if terminal_status != "ended":
+            log(
+                f"Saved review repair batch {job.batch_id} ended with status "
+                f"'{terminal_status}'; its results are unavailable, so a fresh repair "
+                "batch will be submitted.",
+                level="warning",
+            )
+            return "unusable", None, job
+        return "consumed", retrieve_review_results(job, model=submission.model), job
+    except Exception as exc:  # noqa: BLE001 — never discard the paid primary results
+        log(
+            f"Could not re-attach to saved review repair batch {job.batch_id}: {exc}. "
+            "Not submitting a replacement (the saved batch may still be usable); "
+            "re-run collection to retry. The failed items will appear as failed in "
+            "the report.",
+            level="error",
+        )
+        return "pending", None, job
+
+
+def _merge_repair_results(
+    results_by_request: dict[str, ReviewResult],
+    repair_results: dict[str, ReviewResult],
+    repair_job: BatchJob,
+    repair_id_map: dict[str, str],
+    *,
+    expected: int,
+    log: LogFn = _noop_log,
+) -> dict[str, ReviewResult]:
+    """Fold a repair batch's successful results back onto the primary ids."""
+    recovered = 0
+    for repair_custom_id, repair_rr in repair_results.items():
+        repair_meta = repair_job.request_map.get(repair_custom_id) or {}
+        original_rid = repair_id_map.get(repair_meta.get("filename", ""))
+        if original_rid and repair_rr and not repair_rr.error:
+            results_by_request[original_rid] = repair_rr
+            recovered += 1
+    repair_level = "success" if recovered == expected else "warning"
+    log(
+        f"Review repair batch {repair_job.batch_id} recovered {recovered}/{expected} item(s).",
+        level=repair_level,
+    )
+    return results_by_request
 
 
 def _recover_retryable_review_batch_results(
@@ -1370,6 +1683,22 @@ def _recover_retryable_review_batch_results(
     *,
     log: LogFn = _noop_log,
 ) -> dict[str, ReviewResult]:
+    """Re-submit the retryable failed review items as one repair batch.
+
+    Contract: this function only ever *adds* recovered results to
+    ``results_by_request``; it never discards the already-paid primary
+    results. Every failure of the repair itself — submit, poll (detached /
+    poll failure / exception), or retrieve — logs the repair batch id when
+    one was obtained and returns ``results_by_request`` unchanged, so the
+    failed items surface in the report exactly as they would without a
+    repair pass.
+
+    One repair pass per batch, ever: when the submission already carries a
+    repair batch (``submission.repair_batch_id``, restored from the saved
+    pending state after a detached collect), the pass re-attaches to it via
+    :func:`_reattach_saved_repair_batch` and submits a replacement only if
+    that batch ended unusable (expired / failed / canceled).
+    """
     retryable_request_ids = [rid for rid in submission.review_request_ids if _is_retryable_batch_review_result(results_by_request.get(rid))]
     if not retryable_request_ids:
         return results_by_request
@@ -1381,7 +1710,8 @@ def _recover_retryable_review_batch_results(
     # identity — the same degrade-to-default posture as the legacy
     # ``AVAILABLE_CYCLES`` lookup this replaced. ``getattr`` keeps
     # hand-built test doubles without the field working.
-    cycle = get_module(getattr(submission, "module_id", None)).cycle
+    module = get_module(getattr(submission, "module_id", None))
+    cycle = module.cycle
     # Resolve each retryable request's spec by FILENAME first. The positional
     # index is only reliable in the normal submit flow, where request_map is
     # built from the same prepared_specs list (index ⇄ position). On the resume
@@ -1411,57 +1741,80 @@ def _recover_retryable_review_batch_results(
         log("No specs eligible for review repair batch.", level="warning")
         return results_by_request
 
+    if getattr(submission, "repair_batch_id", None):
+        # An earlier collect attempt already paid for a repair batch (the id
+        # rides the saved pending state onto the submission). Consume it —
+        # or leave it alone while it is still running — before considering
+        # a replacement; only an expired/failed/canceled saved batch is
+        # replaced.
+        disposition, saved_results, saved_job = _reattach_saved_repair_batch(
+            submission, repair_specs, log=log
+        )
+        if disposition == "consumed":
+            return _merge_repair_results(
+                results_by_request,
+                saved_results or {},
+                saved_job,
+                repair_id_map,
+                expected=len(repair_specs),
+                log=log,
+            )
+        if disposition == "pending":
+            return results_by_request
+        # "unusable": fall through to a fresh repair submission.
+
     log(f"Submitting review repair batch for {len(repair_specs)} failed item(s)...", level="step")
-    # The repair batch reuses the same prompt builder, so it should also
-    # tell the model what was already detected locally. Alerts are
-    # deterministic given (content, filename, cycle), so we recompute
-    # them here rather than threading the original map through resume
-    # state.
-    repair_pre_detected: dict[str, list[dict]] = {}
-    for spec in repair_specs:
-        pre = preprocess_spec(spec.content, spec.filename, cycle=cycle)
-        repair_pre_detected[spec.filename] = [
-            *pre.leed_alerts,
-            *pre.placeholder_alerts,
-            *pre.code_cycle_alerts,
-            *pre.structural_alerts,
-            *pre.template_marker_alerts,
-            *pre.invalid_code_cycle_alerts,
-            *pre.duplicate_paragraph_alerts,
-        ]
-    repair_job = submit_review_batch(
-        repair_specs,
-        project_context=submission.project_context,
-        model=submission.model,
-        cycle=cycle,
-        retry_instruction=RETRY_TRUNCATED_REVIEW_INSTRUCTION,
-        pre_detected_alerts=repair_pre_detected,
-    )
-    outcome = poll_batch_bounded(
-        repair_job.batch_id,
-        policy=DEFAULT_REVIEW_POLL_POLICY,
-        log=log,
-        progress_cb=lambda _status: None,
-    )
-    if outcome.detached or outcome.poll_failed:
+    # The repair batch reuses the same prompt builder, so it must also tell
+    # the model what was already detected locally — byte-for-byte what the
+    # original ``<pre_detected>`` block carried (profile country + project
+    # naming alerts included; see ``_repair_pre_detected_alerts``).
+    repair_pre_detected = _repair_pre_detected_alerts(submission, repair_specs, module=module)
+    repair_job: BatchJob | None = None
+    try:
+        repair_job = submit_review_batch(
+            repair_specs,
+            project_context=submission.project_context,
+            model=submission.model,
+            cycle=cycle,
+            retry_instruction=RETRY_TRUNCATED_REVIEW_INSTRUCTION,
+            pre_detected_alerts=repair_pre_detected,
+        )
+        log(f"Review repair batch submitted: {repair_job.batch_id}", level="step")
+        _persist_repair_batch(submission, repair_job, log=log)
+        outcome = poll_batch_bounded(
+            repair_job.batch_id,
+            policy=DEFAULT_REVIEW_POLL_POLICY,
+            log=log,
+            progress_cb=_repair_poll_progress(log),
+        )
+        if outcome.detached or outcome.poll_failed:
+            reason = outcome.detach_reason or outcome.poll_error or "unknown"
+            log(
+                f"Review repair batch {repair_job.batch_id} did not complete ({reason}); "
+                f"it may still be running remotely. {len(retryable_request_ids)} item(s) "
+                "will appear as failed in the report.",
+                level="warning",
+            )
+            return results_by_request
+        repair_results = retrieve_review_results(repair_job, model=submission.model)
+    except Exception as exc:  # noqa: BLE001 — never discard the paid primary results
+        batch_label = f" {repair_job.batch_id}" if repair_job is not None else ""
         log(
-            f"Review repair batch did not complete. {len(retryable_request_ids)} item(s) "
-            "will appear as failed in the report.",
-            level="warning",
+            f"Review repair batch{batch_label} failed: {exc}. "
+            f"{len(retryable_request_ids)} item(s) will appear as failed in the "
+            "report; the primary review results are retained.",
+            level="error",
         )
         return results_by_request
 
-    repair_results = retrieve_review_results(repair_job, model=submission.model)
-    recovered = 0
-    for repair_custom_id, repair_rr in repair_results.items():
-        repair_meta = repair_job.request_map.get(repair_custom_id) or {}
-        original_rid = repair_id_map.get(repair_meta.get("filename", ""))
-        if original_rid and repair_rr and not repair_rr.error:
-            results_by_request[original_rid] = repair_rr
-            recovered += 1
-    repair_level = "success" if recovered == len(repair_specs) else "warning"
-    log(f"Review repair batch recovered {recovered}/{len(repair_specs)} item(s).", level=repair_level)
-    return results_by_request
+    return _merge_repair_results(
+        results_by_request,
+        repair_results,
+        repair_job,
+        repair_id_map,
+        expected=len(repair_specs),
+        log=log,
+    )
 
 
 def _log_cross_check_status(log: LogFn, cross: ReviewResult):
@@ -1503,14 +1856,33 @@ def collect_review_batch_results(submission: BatchSubmission, *, log: LogFn = _n
             errors.append(f"{filename}: No result returned from batch")
             truncated_specs.append(filename)
             continue
-        if rr.parse_status == "incomplete":
+        if rr.parse_status == PARSE_STATUS_REFUSAL:
+            # Not a truncation and never retried (see
+            # ``_is_retryable_batch_review_result`` / the real-time gate);
+            # still a failed review — the spec was not analyzed.
             errors.append(
-                f"{filename}: Review response truncated — output exceeded token limit. "
-                "No findings extracted. Re-run this spec individually."
+                f"{filename}: {rr.error or 'Review refused by the model (stop_reason: refusal)'}. "
+                "No findings extracted — the spec was not reviewed. This is a "
+                "model refusal, not a token-limit truncation, and was not retried."
             )
             truncated_specs.append(filename)
             continue
-        if rr.parse_status == "parse_error":
+        if rr.parse_status == PARSE_STATUS_INCOMPLETE:
+            # ``stop_reason`` is None on legacy/hand-built results, which
+            # historically meant truncation; keep that wording for them.
+            if rr.stop_reason is None or rr.stop_reason in TRUNCATION_STOP_REASONS:
+                errors.append(
+                    f"{filename}: Review response truncated — output exceeded token limit. "
+                    "No findings extracted. Re-run this spec individually."
+                )
+            else:
+                errors.append(
+                    f"{filename}: Review response incomplete (stop_reason: {rr.stop_reason}). "
+                    "No findings extracted. Re-run this spec individually."
+                )
+            truncated_specs.append(filename)
+            continue
+        if rr.parse_status == PARSE_STATUS_PARSE_ERROR:
             errors.append(
                 f"{filename}: Could not parse review output. "
                 "No findings extracted. Re-run this spec individually."
