@@ -1,6 +1,6 @@
 # Spec Critic
 
-**v3.4.0** — AI-assisted construction-specification review, organized around selectable **review programs** backed by independently versioned discipline modules. The default program is California K-12 DSA mechanical/plumbing.
+**v3.5.0** — AI-assisted construction-specification review, organized around selectable **review programs** backed by independently versioned discipline modules. The default program is California K-12 DSA mechanical/plumbing.
 
 Spec Critic reviews CSI-format `.docx` specifications against the applicable module's code basis and pinned standards editions, using Claude. With the default **California K-12 DSA M&P** program that means California building codes (CBC, CMC, CPC, Energy Code, CALGreen, ASCE 7) and the NFPA / ASHRAE / IAPMO / UL editions adopted for the current cycle. The single **Hyperscale Data Centers — USA and Canada** GUI choice instead routes each specification to its Fire Suppression, Architecture, Electrical, or Electronic Safety & Security module, a justified combination, or an explicit unsupported coverage gap. The Electronic Safety & Security module's first phase is limited to Fire Detection & Alarm. It produces structured findings with severity classifications, confidence scores, web-search-backed verification verdicts, optional cross-spec coordination analysis, and structured edit instructions — rendered in a Word report and written to a machine-readable JSON sidecar for a separate, downstream applier to ingest. Spec Critic emits edit instructions but does not apply them.
 
@@ -291,7 +291,7 @@ All subcommands accept `--trace-dir DIR` to point at a non-default root. `show` 
 
 ## Changelog (recent)
 
-### Unreleased
+### v3.5.0
 - **Cost estimates are complete.** Estimates now price one-hour prompt-cache writes (2× input), cache reads (0.1×), and web searches ($10 per 1,000, never batch-discounted) alongside tokens; the diagnostics report shows the line items per phase and counts calls on unrecognized model ids instead of pricing them at zero. An escalated verification is priced as the two calls it made (the Sonnet pass and the Opus pass, each at its own rate — including an escalation that failed after being billed), and verification requests now report their prompt-cache write/read tokens, which were previously priced as zero.
 - **Result integrity warnings are visible.** When a routed-program run's saved submission state names a spec outside the assignments or a request count outside the routed range, the normalized coverage figures no longer pass as clean: the run ends in the amber state, the warning is on the run log, the Word and HTML Run Diagnostics banners show a red "Result integrity warnings" row and hint naming it, and the program sidecar carries an `integrity_warnings` list.
 - **Rejected citations say why.** The evidence panel (Word and HTML) explains each rejected URL — a blocked domain with its category, or a URL that was never among the searched or fetched results.
