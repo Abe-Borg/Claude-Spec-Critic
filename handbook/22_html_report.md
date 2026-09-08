@@ -50,6 +50,20 @@ helpers** rather than reimplementing them:
 and by mirroring the DOCX section walk for both report types. Counts and labels
 therefore *cannot* diverge, because there is only one implementation of each.
 
+The program (routed multi-module) report follows the same rule one level up.
+Its title is the program's display name inside the shared "Spec Critic — …
+Specification Review Report" framing (`_program_report_title`), and it opens
+with **one program-level Run Diagnostics banner** — aggregated across the child
+modules by `_aggregate_run_diagnostics` (counts sum; failed-review spec names
+are unioned and prefixed with their module's display name; the oldest cache age
+and the worst cross-check / compliance status win) — followed by one
+program-level Trust Model Summary after the program severity summary. Both
+exporters consume the single `_program_run_diagnostics(program_result)`
+computation, so a program run where one module's review of a spec failed
+renders the same red "Specs that failed review" row and the same "absence of
+findings does NOT mean … compliant" hint in Word and HTML alike; the per-module
+sections render no banner of their own.
+
 This is the same anti-drift argument [**Ch 21 — The Real-Time Review
 Transport**](21_realtime_transport.md) makes about shared request builders, and
 it generalizes: when two paths must agree, sharing the function is a guarantee
@@ -122,7 +136,20 @@ lookup:
 | `navigate_to_section` | Report-local |
 | `highlight_terms`, `clear_highlights` | Report-local |
 | `calculate` | Report-local |
-| `web_search_20260209`, `web_fetch_20260209` | External |
+| `web_search_20260209` | External — attached on every offered model |
+| `web_fetch_20260209` | External — attached **only on models that support it** (Sonnet 5 yes, Opus 5 no) |
+
+Web fetch is not uniform across current models, and the API rejects a request
+that attaches the tool to a model lacking it — so an unconditional tool list
+would fail on the first message under the default model. The exporter therefore
+embeds a per-model `model_web_fetch` map in the chat config, derived at render
+time from `api_config.model_capabilities(...)` — the same capability whitelist
+the verifier consults, never a second hand-kept list — and the script builds the
+server-tool list **per request from the selected model**: `web_search` always,
+`web_fetch` only when that model's flag is true. Switching models in the
+selector therefore also switches whether fetch rides along; the system prompt
+and the key-view copy are worded so they never promise fetching a model cannot
+do.
 
 The report-local tools are the interesting design choice. Rather than having the
 model *describe* where to look ("scroll to the Division 23 findings"), it can
@@ -133,7 +160,7 @@ Streaming is SSE, buffered against split CRLF frames. Thinking is summarized and
 adaptive. Loops are bounded: **8 tool rounds** (`MAX_TOOL_ROUNDS`) and **5
 `pause_turn` continuations**, each with a visible notice when the bound is hit
 rather than a silent stop. The model selector offers an Opus 5 default and a
-Sonnet 5 option.
+Sonnet 5 option (only the latter carries `web_fetch`, per the table above).
 
 The system prompt does two things that matter for trust: it **treats report
 content as untrusted data**, and it **discloses that the source specifications are

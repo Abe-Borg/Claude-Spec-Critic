@@ -1023,7 +1023,10 @@ def test_program_report_and_sidecar_preserve_module_provenance(tmp_path):
     report_path = export_report(result, tmp_path / "program.docx")
     doc = Document(report_path)
     text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
-    assert "Hyperscale Data Center Specification Review Report" in text
+    assert (
+        f"Spec Critic — {HYPERSCALE_DATACENTER_PROGRAM.display_name} "
+        "Specification Review Report"
+    ) in text
     assert require_module("datacenter_fire").display_name in text
     assert require_module("datacenter_architecture").display_name in text
     assert require_module("datacenter_electrical").display_name in text

@@ -602,15 +602,9 @@ def _summarize_run_diagnostics(
     # WS-5 drawing-impact synthesis state. ``None`` when no construction
     # drawings were attached (no drawing-impact result), so the banner row is
     # absent and a drawing-less report stays byte-identical.
-    drawing_impact_state: dict | None = None
-    di = getattr(pipeline_result, "drawing_impact_result", None)
-    if di is not None:
-        drawing_impact_state = {
-            "status": str(getattr(di, "status", "") or ""),
-            "impact_level": str(getattr(di, "impact_level", "") or ""),
-            "linked_finding_count": int(getattr(di, "linked_finding_count", 0) or 0),
-            "error": str(getattr(di, "error", "") or ""),
-        }
+    drawing_impact_state = _drawing_impact_state(
+        getattr(pipeline_result, "drawing_impact_result", None)
+    )
 
     return {
         "edit_suggested": edit_suggested,
@@ -629,6 +623,257 @@ def _summarize_run_diagnostics(
         "compliance": compliance_state,
         "drawing_impact": drawing_impact_state,
     }
+
+
+def _drawing_impact_state(drawing_impact) -> dict | None:
+    """Banner-shaped drawing-impact state, or ``None`` when no pass ran."""
+    if drawing_impact is None:
+        return None
+    return {
+        "status": str(getattr(drawing_impact, "status", "") or ""),
+        "impact_level": str(getattr(drawing_impact, "impact_level", "") or ""),
+        "linked_finding_count": int(
+            getattr(drawing_impact, "linked_finding_count", 0) or 0
+        ),
+        "error": str(getattr(drawing_impact, "error", "") or ""),
+    }
+
+
+# Worst-first ranking of a package-level pass status for the program roll-up:
+# a pass that failed in any module outranks one skipped in any module, which
+# outranks a completed pass.
+_PASS_STATUS_RANK: dict[str, int] = {"completed": 0, "skipped": 1, "failed": 2}
+
+
+def _worst_pass_status(statuses) -> str:
+    worst = "completed"
+    for status in statuses:
+        status = str(status or "completed")
+        if _PASS_STATUS_RANK.get(status, 0) > _PASS_STATUS_RANK.get(worst, 0):
+            worst = status
+    return worst
+
+
+def _merge_pass_states(
+    labeled_states: list[tuple[str, dict]], *, count_keys: tuple[str, ...]
+) -> dict | None:
+    """Merge per-module banner pass states (cross-check / compliance).
+
+    Worst status wins (see ``_PASS_STATUS_RANK``); every key in
+    ``count_keys`` sums; the ``reason`` strings of the modules sitting at
+    the winning status are joined, each prefixed with its module label.
+    ``None`` when no module carried the state (the pass never ran anywhere).
+    """
+    if not labeled_states:
+        return None
+    status = _worst_pass_status(state.get("status") for _, state in labeled_states)
+    reasons: list[str] = []
+    for label, state in labeled_states:
+        if str(state.get("status") or "completed") != status:
+            continue
+        reason = str(state.get("reason") or "").strip()
+        if reason:
+            reasons.append(f"{label}: {reason}")
+    merged: dict = {"status": status}
+    for key in count_keys:
+        merged[key] = sum(int(state.get(key, 0) or 0) for _, state in labeled_states)
+    merged["reason"] = "; ".join(reasons)
+    return merged
+
+
+_SUMMED_DIAGNOSTIC_KEYS: tuple[str, ...] = (
+    "edit_suggested",
+    "report_only",
+    "verification_failed",
+    "cache_replay_count",
+    "demotion_count",
+    "extraction_warning_count",
+    "tracked_changes_spec_count",
+    "budget_exhausted_count",
+)
+
+
+def _aggregate_run_diagnostics(
+    labeled_summaries: list[tuple[str, dict]],
+    *,
+    drawing_impact_result=None,
+) -> dict:
+    """Roll per-module Run Diagnostics summaries up into one program summary.
+
+    Pure: consumes ``(module_label, summary)`` pairs — each ``summary`` the
+    dict :func:`_summarize_run_diagnostics` produced for one module — and
+    returns a dict of the **same shape**, so the single-module banner
+    renderers (:func:`_write_run_diagnostics_banner` here and
+    ``_render_run_diagnostics`` in the HTML exporter) render it unchanged:
+    the failed-review / verification-failure / budget-exhaustion hint
+    paragraphs fire for the aggregate exactly as they do for one module.
+
+    Roll-up rules:
+
+    * Plain counts sum (edit-suggested, report-only, verification failures,
+      cache replays, demotions, extraction warnings, tracked changes, budget
+      exhaustion, failed reviews).
+    * Failed-review spec names are unioned in module order, each prefixed
+      with its module label (``"<module>: <file>"``) so the reader can tell
+      *which* module's review of a spec failed — a spec routed to two
+      modules can fail in one and succeed in the other.
+    * The oldest cache-entry age is the maximum across modules.
+    * Cross-spec coordination and local-code compliance report the **worst**
+      status across modules (``failed`` > ``skipped`` > ``completed``) with
+      finding / chunk-failure / chunk-skip (and, for compliance, missing /
+      contradicted) counts summed, and the reasons of the modules at that
+      status joined. This deliberately over-warns relative to the program's
+      merged ``cross_check_result`` (which reports ``completed`` when any
+      module completed): the banner is the at-a-glance "did every pass
+      actually run?" surface, and a module whose coordination pass never ran
+      is precisely what it exists to flag.
+    * Research dimension / item counts sum. A conditional state (research,
+      compliance, cross-check) stays ``None`` only when *no* module carried
+      it, so a program of profile-less modules keeps the single-module
+      banner shape.
+    * The drawing-impact state comes from ``drawing_impact_result`` — the
+      program-level synthesis, which runs once after every module joins —
+      falling back to the first module-level state when none is passed.
+    """
+    totals = {key: 0 for key in _SUMMED_DIAGNOSTIC_KEYS}
+    failed_review_specs: list[str] = []
+    failed_review_count = 0
+    oldest_age: int | None = None
+    cross_check_parts: list[tuple[str, dict]] = []
+    compliance_parts: list[tuple[str, dict]] = []
+    research_parts: list[dict] = []
+    fallback_drawing_impact: dict | None = None
+    for label, summary in labeled_summaries:
+        for key in _SUMMED_DIAGNOSTIC_KEYS:
+            totals[key] += int(summary.get(key, 0) or 0)
+        names = [str(name) for name in (summary.get("failed_review_specs") or [])]
+        failed_review_specs.extend(f"{label}: {name}" for name in names)
+        failed_review_count += int(
+            summary.get("failed_review_count", len(names)) or 0
+        )
+        age = summary.get("oldest_cache_age_days")
+        if age is not None and (oldest_age is None or int(age) > oldest_age):
+            oldest_age = int(age)
+        if summary.get("cross_check") is not None:
+            cross_check_parts.append((label, summary["cross_check"]))
+        if summary.get("compliance") is not None:
+            compliance_parts.append((label, summary["compliance"]))
+        if summary.get("research") is not None:
+            research_parts.append(summary["research"])
+        if fallback_drawing_impact is None and summary.get("drawing_impact") is not None:
+            fallback_drawing_impact = dict(summary["drawing_impact"])
+
+    research: dict | None = None
+    if research_parts:
+        research = {
+            key: sum(int(part.get(key, 0) or 0) for part in research_parts)
+            for key in (
+                "dimensions_total",
+                "dimensions_completed",
+                "dimensions_failed",
+                "item_count",
+                "ungrounded_count",
+            )
+        }
+    drawing_impact = (
+        _drawing_impact_state(drawing_impact_result)
+        if drawing_impact_result is not None
+        else fallback_drawing_impact
+    )
+    return {
+        "edit_suggested": totals["edit_suggested"],
+        "report_only": totals["report_only"],
+        "failed_review_count": failed_review_count,
+        "failed_review_specs": failed_review_specs,
+        "verification_failed": totals["verification_failed"],
+        "cache_replay_count": totals["cache_replay_count"],
+        "oldest_cache_age_days": oldest_age,
+        "demotion_count": totals["demotion_count"],
+        "extraction_warning_count": totals["extraction_warning_count"],
+        "tracked_changes_spec_count": totals["tracked_changes_spec_count"],
+        "cross_check": _merge_pass_states(
+            cross_check_parts,
+            count_keys=("finding_count", "chunk_failures", "chunk_skips"),
+        ),
+        "budget_exhausted_count": totals["budget_exhausted_count"],
+        "research": research,
+        "compliance": _merge_pass_states(
+            compliance_parts,
+            count_keys=(
+                "finding_count",
+                "missing",
+                "contradicted",
+                "chunk_failures",
+                "chunk_skips",
+            ),
+        ),
+        "drawing_impact": drawing_impact,
+    }
+
+
+def _collect_report_findings(pipeline_result) -> list:
+    """Every finding a module's report renders: review + cross-check + compliance."""
+    review = getattr(pipeline_result, "review_result", None)
+    findings = list(getattr(review, "findings", None) or []) if review else []
+    cross_check = getattr(pipeline_result, "cross_check_result", None)
+    if cross_check and cross_check.findings:
+        findings.extend(cross_check.findings)
+    compliance = getattr(pipeline_result, "compliance_result", None)
+    if compliance is not None and compliance.findings:
+        findings.extend(compliance.findings)
+    return findings
+
+
+def _program_report_title(program) -> str:
+    """Heading-0 title of a routed-program report.
+
+    The program's display name inside the same ``Spec Critic — … Specification
+    Review Report`` framing every module's ``report_title`` uses, so the
+    program report is named by the program the operator actually selected
+    rather than by a string frozen in the exporter.
+    """
+    return f"Spec Critic — {program.display_name} Specification Review Report"
+
+
+def _program_run_diagnostics(program_result) -> tuple[dict, dict]:
+    """Program-level ``(run-diagnostics summary, verification stats)``.
+
+    The single computation both the Word and the HTML program reports
+    consume, so their banner rows, hint paragraphs, and trust-model
+    histograms are identical by construction. Walks the program's
+    implemented modules in catalog order, feeds each completed child through
+    the same :func:`_summarize_run_diagnostics` /
+    :func:`_summarize_verification_outcomes` the single-module report uses,
+    and rolls the per-module summaries up with
+    :func:`_aggregate_run_diagnostics` (module display names as labels). The
+    trust-model histograms are the outcome stats over the union of every
+    module's findings — one entry per (module, finding), so a spec routed to
+    two modules contributes each module's own findings.
+    """
+    program = get_program(program_result.program_id)
+    labeled_summaries: list[tuple[str, dict]] = []
+    all_findings: list = []
+    for module_id in program.implemented_module_ids:
+        child = program_result.module_results.get(module_id)
+        if child is None:
+            continue
+        findings = _collect_report_findings(child)
+        stats = _summarize_verification_outcomes(findings)
+        summary = _summarize_run_diagnostics(
+            findings=findings,
+            status_counts=stats.get("status_counts", {}),
+            edit_action_counts=stats.get("edit_action_counts", {}),
+            cross_check_result=getattr(child, "cross_check_result", None),
+            pipeline_result=child,
+            compliance_result=getattr(child, "compliance_result", None),
+        )
+        labeled_summaries.append((require_module(module_id).display_name, summary))
+        all_findings.extend(findings)
+    aggregate = _aggregate_run_diagnostics(
+        labeled_summaries,
+        drawing_impact_result=getattr(program_result, "drawing_impact_result", None),
+    )
+    return aggregate, _summarize_verification_outcomes(all_findings)
 
 
 def _write_run_diagnostics_banner(doc: Document, summary: dict) -> None:
@@ -2953,10 +3198,7 @@ def export_program_report(program_result, output_path: Path) -> Path:
         raise ValueError("Cannot export program report: no module results available")
     program = get_program(program_result.program_id)
     doc = _new_report_document()
-    title = doc.add_heading(
-        "Spec Critic — Hyperscale Data Center Specification Review Report",
-        level=0,
-    )
+    title = doc.add_heading(_program_report_title(program), level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     aggregate_review = program_result.review_result
     meta_lines = [
@@ -2986,12 +3228,27 @@ def export_program_report(program_result, output_path: Path) -> Path:
         run = paragraph.add_run(line)
         run.font.size = Pt(10)
 
+    # ONE program-level Run Diagnostics banner, right after the title block
+    # (the single-module position), aggregated across the child modules —
+    # a program run where one module's review of a spec failed must not
+    # read as clean. The per-module walk below deliberately renders no
+    # banner of its own. The same computation feeds the HTML program report.
+    run_diagnostics, verification_stats = _program_run_diagnostics(program_result)
+    _write_run_diagnostics_banner(doc, run_diagnostics)
+
     _write_program_routing_table(doc, program_result)
     _write_summary_table(
         doc,
         aggregate_review,
         program_result.cross_check_result,
         total_elapsed_seconds=program_result.total_elapsed_seconds,
+    )
+    # Program-level trust-model histogram over every module's findings,
+    # right after the program severity summary (the single-module position).
+    _write_trust_model_summary(
+        doc,
+        verification_stats.get("status_counts", {}),
+        verification_stats.get("edit_action_counts", {}),
     )
 
     skipped = list(getattr(program_result, "skipped_files", None) or [])
