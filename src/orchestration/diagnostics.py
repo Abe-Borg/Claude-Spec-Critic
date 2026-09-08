@@ -96,6 +96,46 @@ def _round_cost_lines(lines: dict) -> dict:
     return lines
 
 
+_CALL_USAGE_COUNTERS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "web_search_requests",
+)
+
+
+def _billable_calls(data: dict) -> list[dict]:
+    """Expand one event into the API calls it bills for.
+
+    An event normally describes one call through its flat ``model`` / token /
+    search keys. A verification event whose result escalated carries
+    ``call_usage`` — one entry per paid conversation (the initial pass and
+    the escalated pass, each with its own model) — and is priced per entry,
+    so both calls reach the totals at their own rates. ``call_usage`` is the
+    complete list when present: the flat fields then describe only the kept
+    verdict's call and are NOT counted again. Every entry is normalized to
+    the same counter keys with a model defaulting to the event's.
+    """
+    event_model = str(data.get("model") or "").strip()
+    raw = data.get("call_usage")
+    entries = (
+        [entry for entry in raw if isinstance(entry, dict)]
+        if isinstance(raw, list)
+        else []
+    )
+    if not entries:
+        entries = [data]
+    calls: list[dict] = []
+    for entry in entries:
+        call = {
+            key: int(entry.get(key, 0) or 0) for key in _CALL_USAGE_COUNTERS
+        }
+        call["model"] = str(entry.get("model") or event_model).strip()
+        calls.append(call)
+    return calls
+
+
 def _price_api_call(
     targets: tuple[dict, ...],
     *,
@@ -594,11 +634,15 @@ class DiagnosticsReport:
         for e in self.events:
             if not e.data:
                 continue
-            in_tok = int(e.data.get("input_tokens", 0) or 0)
-            out_tok = int(e.data.get("output_tokens", 0) or 0)
-            cache_create = int(e.data.get("cache_creation_input_tokens", 0) or 0)
-            cache_read = int(e.data.get("cache_read_input_tokens", 0) or 0)
-            search_count = int(e.data.get("web_search_requests", 0) or 0)
+            # One event may bill for more than one call (an escalated
+            # verification: initial pass + escalated pass on different
+            # models). Totals sum over every call; pricing runs per call.
+            calls = _billable_calls(e.data)
+            in_tok = sum(c["input_tokens"] for c in calls)
+            out_tok = sum(c["output_tokens"] for c in calls)
+            cache_create = sum(c["cache_creation_input_tokens"] for c in calls)
+            cache_read = sum(c["cache_read_input_tokens"] for c in calls)
+            search_count = sum(c["web_search_requests"] for c in calls)
             # An in-process shared verdict (``cache_status="shared"``) made no
             # call of its own: the leader's event already carries the tokens
             # and searches the clone repeats for its evidence panel, so a
@@ -611,11 +655,13 @@ class DiagnosticsReport:
                 total_cache_creation_tokens += cache_create
                 total_cache_read_tokens += cache_read
                 total_web_search_requests += search_count
-                if out_tok > 0:
-                    output_samples.append(out_tok)
-                    phase_max = output_max_by_phase.get(e.phase, 0)
-                    if out_tok > phase_max:
-                        output_max_by_phase[e.phase] = out_tok
+                for call in calls:
+                    call_out = call["output_tokens"]
+                    if call_out > 0:
+                        output_samples.append(call_out)
+                        phase_max = output_max_by_phase.get(e.phase, 0)
+                        if call_out > phase_max:
+                            output_max_by_phase[e.phase] = call_out
             stop_reason = e.data.get("stop_reason")
             is_truncated = bool(
                 stop_reason and stop_reason not in ("end_turn", "tool_use", None)
@@ -639,6 +685,7 @@ class DiagnosticsReport:
                 or cache_read
                 or search_count
                 or e.data.get("model")
+                or len(calls) > 1
             )
             if is_shared:
                 # An in-process shared verdict made no call of its own — the
@@ -649,15 +696,16 @@ class DiagnosticsReport:
             if not looks_like_api_call:
                 continue
             bucket = phase_telemetry.setdefault(e.phase, _new_phase_bucket())
-            bucket["calls"] += 1
+            bucket["calls"] += len(calls)
             bucket["input_tokens"] += in_tok
             bucket["output_tokens"] += out_tok
             bucket["cache_creation_input_tokens"] += cache_create
             bucket["cache_read_input_tokens"] += cache_read
             bucket["web_search_requests"] += search_count
-            model = str(e.data.get("model") or "").strip()
-            if model and model not in bucket["models"]:
-                bucket["models"].append(model)
+            for call in calls:
+                model = call["model"]
+                if model and model not in bucket["models"]:
+                    bucket["models"].append(model)
             retry_status = str(e.data.get("retry_status") or "").lower()
             if retry_status == "retry":
                 bucket["retries"] += 1
@@ -675,16 +723,17 @@ class DiagnosticsReport:
             # it may still carry the replayed search count for its evidence
             # panel, but nothing was billed for it in this run.
             if e.data.get("api_call", True):
-                _price_api_call(
-                    (cost_lines, bucket["estimated_cost_usd"]),
-                    model=model,
-                    batch=(call_mode == "batch"),
-                    input_tokens=in_tok,
-                    output_tokens=out_tok,
-                    cache_creation_input_tokens=cache_create,
-                    cache_read_input_tokens=cache_read,
-                    web_search_requests=search_count,
-                )
+                for call in calls:
+                    _price_api_call(
+                        (cost_lines, bucket["estimated_cost_usd"]),
+                        model=call["model"],
+                        batch=(call_mode == "batch"),
+                        input_tokens=call["input_tokens"],
+                        output_tokens=call["output_tokens"],
+                        cache_creation_input_tokens=call["cache_creation_input_tokens"],
+                        cache_read_input_tokens=call["cache_read_input_tokens"],
+                        web_search_requests=call["web_search_requests"],
+                    )
 
         # Verification verdict breakdown + evidence telemetry
         verdicts: dict[str, int] = {}

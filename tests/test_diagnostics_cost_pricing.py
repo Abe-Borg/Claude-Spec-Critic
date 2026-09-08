@@ -121,6 +121,82 @@ def test_shared_verdicts_are_not_priced_twice():
     assert est["total"] == pytest.approx(0.5 + 0.04)
 
 
+SONNET_46 = "claude-sonnet-4-6"  # $3 / $15 per MTok
+
+
+def _escalated_verification_event(**overrides) -> dict:
+    """The per-finding event the GUI emits for an escalated verification.
+
+    The flat fields describe the KEPT (Opus) verdict's call; ``call_usage``
+    lists both paid conversations, each on its own model.
+    """
+    event = {
+        "verdict": "CONFIRMED", "api_call": True, "call_mode": "realtime",
+        "model": OPUS, "input_tokens": 1_000_000, "output_tokens": 0,
+        "web_search_requests": 8, "escalation_attempted": True,
+        "call_usage": [
+            {"model": SONNET_46, "escalated": False, "input_tokens": 1_000_000,
+             "output_tokens": 0, "cache_creation_input_tokens": 0,
+             "cache_read_input_tokens": 0, "web_search_requests": 5,
+             "web_fetch_requests": 0},
+            {"model": OPUS, "escalated": True, "input_tokens": 1_000_000,
+             "output_tokens": 0, "cache_creation_input_tokens": 0,
+             "cache_read_input_tokens": 0, "web_search_requests": 8,
+             "web_fetch_requests": 0},
+        ],
+    }
+    event.update(overrides)
+    return event
+
+
+def test_escalated_verification_prices_both_calls_on_their_own_models():
+    report = DiagnosticsReport()
+    report.log("verification", "info", "Verified: a.docx — CONFIRMED",
+               _escalated_verification_event())
+    s = report.summary()
+    est = _cost(s)
+    # Sonnet 4.6 pass ($3 + 5 searches) + Opus pass ($5 + 8 searches). The
+    # flat (kept-verdict) fields are NOT counted on top of call_usage —
+    # that would be $13 plus 8 more searches.
+    assert est["tokens"] == pytest.approx(3.0 + 5.0)
+    assert est["web_searches"] == pytest.approx(13 / 1000 * WEB_SEARCH_USD_PER_1000)
+    assert est["priced_calls"] == 2 and est["unpriced_calls"] == 0
+    phase = s["phase_telemetry"]["verification"]
+    assert phase["calls"] == 2
+    assert phase["models"] == [SONNET_46, OPUS]
+    assert phase["input_tokens"] == 2_000_000
+    assert phase["web_search_requests"] == 13
+    assert s["total_input_tokens"] == 2_000_000
+    assert s["total_web_search_requests"] == 13
+
+
+def test_call_usage_entry_without_a_model_prices_on_the_event_model():
+    report = DiagnosticsReport()
+    event = _escalated_verification_event()
+    event["call_usage"][1]["model"] = ""
+    report.log("verification", "info", "verdict", event)
+    est = _cost(report.summary())
+    assert est["priced_calls"] == 2
+    assert est["tokens"] == pytest.approx(8.0)
+
+
+def test_verification_event_cache_tokens_are_priced():
+    # The per-finding event now carries the prompt-cache counters the
+    # verifier reads from ``usage`` — previously always absent, so every
+    # verification priced at zero cache spend.
+    report = DiagnosticsReport()
+    report.log("verification", "info", "verdict", {
+        "verdict": "CONFIRMED", "api_call": True, "call_mode": "realtime",
+        "model": OPUS, "input_tokens": 0, "output_tokens": 0,
+        "cache_creation_input_tokens": 100_000, "cache_read_input_tokens": 400_000,
+        "web_search_requests": 0,
+    })
+    est = _cost(report.summary())
+    assert est["cache_writes"] == pytest.approx(0.1 * 5 * CACHE_WRITE_1H_MULTIPLIER)
+    assert est["cache_reads"] == pytest.approx(0.4 * 5 * CACHE_READ_MULTIPLIER)
+    assert est["priced_calls"] == 1
+
+
 def test_failed_call_with_no_usage_is_neither_priced_nor_unpriced():
     report = DiagnosticsReport()
     report.record_api_call(phase="review", model="mystery-model", stop_reason="error")

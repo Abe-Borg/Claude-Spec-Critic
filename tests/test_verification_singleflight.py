@@ -342,6 +342,9 @@ def _unverified_result(**overrides) -> VerificationResult:
         web_search_requests=2,
         input_tokens=1_200,
         output_tokens=300,
+        cache_creation_input_tokens=4_000,
+        cache_read_input_tokens=0,
+        call_usage=[{"model": "unit-test-verifier", "escalated": False, "input_tokens": 1_200}],
         model_used="unit-test-verifier",
     )
     base.update(overrides)
@@ -389,8 +392,11 @@ def test_equivalent_unverified_findings_share_one_leader_call(monkeypatch):
         # Not a disk replay: no cache-age badge, no force-refresh hint.
         assert clone.cache_entry_created_ts == 0.0
         assert _cache_entry_age_days(clone) is None
-        # The leader's spend is not double-counted on the followers.
+        # The leader's spend is not double-counted on the followers — the
+        # cache counters and the per-call list included.
         assert clone.input_tokens == 0 and clone.output_tokens == 0
+        assert clone.cache_creation_input_tokens == 0 and clone.cache_read_input_tokens == 0
+        assert clone.call_usage == []
         assert clone.retry_telemetry is None
         # The verdict's own evidence rides along.
         assert clone.explanation == leader.explanation

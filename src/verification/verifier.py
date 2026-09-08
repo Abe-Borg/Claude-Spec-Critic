@@ -317,6 +317,27 @@ class VerificationResult:
     # replayed result.
     input_tokens: int = 0
     output_tokens: int = 0
+    # Prompt-cache counters from the same ``usage`` block. Every verification
+    # request caches its system prompt + tool schemas, so the cache write
+    # (2x input rate) and cache read (0.1x) tokens are real spend that the
+    # uncached ``input_tokens`` figure above excludes. Same policy as the
+    # token counts: diagnostics only, never persisted, 0 on a replay.
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    # ----- Per-call spend telemetry ---------------------------------------
+    # One entry per paid API conversation this result cost, each with its
+    # own ``model`` and usage counters, so diagnostics can price every call
+    # on its own rate. Populated ONLY when more than one conversation ran —
+    # an escalation (initial pass + escalated pass), including a failed
+    # escalation whose paid usage would otherwise vanish — by
+    # ``_apply_escalation_outcome`` / ``_run_batch_escalation_wave``. Empty
+    # means "the flat ``model_used`` / token / search fields above describe
+    # the one call", which keeps the common path byte-identical. Entry keys:
+    # ``model`` / ``escalated`` / ``input_tokens`` / ``output_tokens`` /
+    # ``cache_creation_input_tokens`` / ``cache_read_input_tokens`` /
+    # ``web_search_requests`` / ``web_fetch_requests``. Runtime telemetry —
+    # not persisted by the cache; zeroed on a shared (single-flight) clone.
+    call_usage: list[dict] = field(default_factory=list)
 
 
 # Verdicts that assert something about the outside world and therefore
@@ -997,6 +1018,22 @@ def _token_usage(message) -> tuple[int, int]:
     )
 
 
+def _cache_token_usage(message) -> tuple[int, int]:
+    """Return ``(cache_creation_input_tokens, cache_read_input_tokens)``.
+
+    The sibling of :func:`_token_usage` for the prompt-cache counters the
+    API reports alongside the uncached input count. Same defensive
+    ``getattr`` chain: a message without a usage block yields ``(0, 0)``.
+    """
+    usage = getattr(message, "usage", None)
+    if usage is None:
+        return 0, 0
+    return (
+        int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+        int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+    )
+
+
 def _collect_fetch_evidence_detailed(
     message,
 ) -> tuple[list[SearchedSource], int, int]:
@@ -1102,17 +1139,22 @@ _USAGE_COUNTER_KEYS = (
     "web_fetch_requests",
     "input_tokens",
     "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
 )
 
 
 def _usage_counters(message) -> dict[str, int]:
     """Read one message's server-tool and token counters as a plain dict."""
     input_tokens, output_tokens = _token_usage(message)
+    cache_creation, cache_read = _cache_token_usage(message)
     return {
         "web_search_requests": _web_search_count(message),
         "web_fetch_requests": _web_fetch_count(message),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cache_creation_input_tokens": cache_creation,
+        "cache_read_input_tokens": cache_read,
     }
 
 
@@ -1156,6 +1198,8 @@ def _conversation_view(message, *, prior_blocks: list, prior_usage: dict | None)
     usage = SimpleNamespace(
         input_tokens=merged["input_tokens"],
         output_tokens=merged["output_tokens"],
+        cache_creation_input_tokens=merged["cache_creation_input_tokens"],
+        cache_read_input_tokens=merged["cache_read_input_tokens"],
         server_tool_use=SimpleNamespace(
             web_search_requests=merged["web_search_requests"],
             web_fetch_requests=merged["web_fetch_requests"],
@@ -1183,6 +1227,8 @@ class _ConversationEvidence:
     fetch_requests: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 def _collect_conversation_evidence(responses) -> _ConversationEvidence:
@@ -1215,6 +1261,9 @@ def _collect_conversation_evidence(responses) -> _ConversationEvidence:
         resp_in, resp_out = _token_usage(resp)
         evidence.input_tokens += resp_in
         evidence.output_tokens += resp_out
+        resp_cache_create, resp_cache_read = _cache_token_usage(resp)
+        evidence.cache_creation_input_tokens += resp_cache_create
+        evidence.cache_read_input_tokens += resp_cache_read
     return evidence
 
 
@@ -1729,6 +1778,46 @@ def _classify_escalation_reason(initial_result: VerificationResult) -> str:
     return "router_decision"
 
 
+def _call_usage_entry(
+    result: VerificationResult, *, escalated: bool, model: str = ""
+) -> dict:
+    """One ``VerificationResult.call_usage`` entry from a result's flat fields.
+
+    ``model`` overrides ``result.model_used`` when the caller knows the model
+    the request actually ran on (a failed batch escalation carries no
+    ``model_used``). Counters are coerced so a hand-built test result with
+    ``None`` in a field still yields ints.
+    """
+    return {
+        "model": str(model or result.model_used or ""),
+        "escalated": bool(escalated),
+        "input_tokens": int(result.input_tokens or 0),
+        "output_tokens": int(result.output_tokens or 0),
+        "cache_creation_input_tokens": int(result.cache_creation_input_tokens or 0),
+        "cache_read_input_tokens": int(result.cache_read_input_tokens or 0),
+        "web_search_requests": int(result.web_search_requests or 0),
+        "web_fetch_requests": int(result.web_fetch_requests or 0),
+    }
+
+
+def _usage_dict_entry(usage: dict | None, *, model: str, escalated: bool) -> dict:
+    """A ``call_usage`` entry from a plain usage-counter dict (the batch wave
+    loop's ``accumulated_usage`` shape) for a call that produced no result."""
+    usage = usage or {}
+    return {
+        "model": str(model or ""),
+        "escalated": bool(escalated),
+        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        "cache_creation_input_tokens": int(
+            usage.get("cache_creation_input_tokens", 0) or 0
+        ),
+        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens", 0) or 0),
+        "web_search_requests": int(usage.get("web_search_requests", 0) or 0),
+        "web_fetch_requests": int(usage.get("web_fetch_requests", 0) or 0),
+    }
+
+
 def _apply_escalation_outcome(
     *,
     initial_result: VerificationResult,
@@ -1751,8 +1840,20 @@ def _apply_escalation_outcome(
     Returns the chosen result with the escalation telemetry
     stamped (``escalation_attempted`` / ``initial_*`` /
     ``escalation_changed_verdict`` / ``escalation_reason`` /
-    ``initial_sources`` / ``models_disagreed``).
+    ``initial_sources`` / ``models_disagreed``) and ``call_usage`` holding
+    BOTH paid conversations — the kept result's flat token / search fields
+    describe only its own call, so without this the other pass's spend (and
+    its model, which bills at a different rate) would vanish from
+    diagnostics.
     """
+    # Capture both sides' spend BEFORE the swap below: whichever result is
+    # kept, the other one's call was still paid for.
+    initial_calls = list(initial_result.call_usage) or [
+        _call_usage_entry(initial_result, escalated=False, model=initial_model)
+    ]
+    esc_calls = list(esc_result.call_usage) or [
+        _call_usage_entry(esc_result, escalated=True)
+    ]
     # Prefer the escalated result when it produced a grounded verdict;
     # otherwise keep the first pass so we don't lose its evidence.
     if esc_result.grounded or (
@@ -1780,6 +1881,7 @@ def _apply_escalation_outcome(
         and bool(esc_result.grounded)
         and esc_result.verdict != initial_verdict
     )
+    result.call_usage = initial_calls + esc_calls
     return result
 
 
@@ -2160,6 +2262,8 @@ def _run_verification_call(
             parsed.fetched_sources = fetched_url_list
             parsed.input_tokens = total_input_tokens
             parsed.output_tokens = total_output_tokens
+            parsed.cache_creation_input_tokens = evidence.cache_creation_input_tokens
+            parsed.cache_read_input_tokens = evidence.cache_read_input_tokens
             # Stamp the routed decision (mode/profile/escalation flag)
             # onto the result via the centralized helper so the real-time
             # path and the batch wave path use the same stamping routine.
@@ -2768,6 +2872,10 @@ def _classify_wave_results(
         parsed.fetched_sources = [s.url for s in deduped_fetched]
         parsed.input_tokens = conversation_usage["input_tokens"]
         parsed.output_tokens = conversation_usage["output_tokens"]
+        parsed.cache_creation_input_tokens = conversation_usage[
+            "cache_creation_input_tokens"
+        ]
+        parsed.cache_read_input_tokens = conversation_usage["cache_read_input_tokens"]
         # Prefer the stored routing decision from the request context so
         # the wave parser stamps the result with the *same*
         # mode/profile/escalation the request was actually built against.
@@ -2962,14 +3070,30 @@ def _run_batch_escalation_wave(
     escalated_count = 0
     contested_count = 0
     for outcome in outcomes:
-        # Operational failure on the escalation pass keeps the initial
-        # verdict rather than downgrading a good Sonnet result.
-        if outcome.classification != "success" or not outcome.parsed_verification:
-            continue
         snap = snapshots.get(outcome.finding_idx)
         if snap is None:
             continue
         finding = findings[outcome.finding_idx]
+        # Operational failure on the escalation pass keeps the initial
+        # verdict rather than downgrading a good Sonnet result — but the
+        # escalated call was still paid for, so its usage (whatever the
+        # wave read before it failed) joins the initial call's on the kept
+        # result's ``call_usage`` instead of vanishing from diagnostics.
+        if outcome.classification != "success" or not outcome.parsed_verification:
+            kept = finding.verification
+            if kept is not None:
+                esc_ctx = escalation_contexts.get(outcome.original_custom_id, {})
+                kept.call_usage = (
+                    list(kept.call_usage)
+                    or [_call_usage_entry(kept, escalated=False, model=snap["model"])]
+                ) + [
+                    _usage_dict_entry(
+                        outcome.accumulated_usage,
+                        model=str(esc_ctx.get("model") or ""),
+                        escalated=True,
+                    )
+                ]
+            continue
         merged = _apply_escalation_outcome(
             initial_result=finding.verification,
             esc_result=outcome.parsed_verification,
@@ -3256,6 +3380,12 @@ def collect_verification_batch_results(
                     web_fetch_requests=int(usage.get("web_fetch_requests", 0) or 0),
                     input_tokens=int(usage.get("input_tokens", 0) or 0),
                     output_tokens=int(usage.get("output_tokens", 0) or 0),
+                    cache_creation_input_tokens=int(
+                        usage.get("cache_creation_input_tokens", 0) or 0
+                    ),
+                    cache_read_input_tokens=int(
+                        usage.get("cache_read_input_tokens", 0) or 0
+                    ),
                 )
                 request_contexts[outcome.original_custom_id]["resolved"] = True
                 terminal_unverified += 1

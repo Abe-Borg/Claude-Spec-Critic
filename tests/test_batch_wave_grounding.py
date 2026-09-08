@@ -371,6 +371,10 @@ def _usage(*, searches: int, input_tokens: int = 100, output_tokens: int = 50) -
         "web_fetch_requests": 0,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        # The fake usage blocks carry no prompt-cache counters; the wave
+        # loop still tracks them (they are priced like every other call).
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
     }
 
 

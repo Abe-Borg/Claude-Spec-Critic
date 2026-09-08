@@ -18,7 +18,9 @@ from types import SimpleNamespace
 from src.orchestration.diagnostics import DiagnosticsReport
 from src.review.reviewer import Finding
 from src.verification.verifier import (
+    _cache_token_usage,
     _classify_wave_results,
+    _collect_conversation_evidence,
     _token_usage,
 )
 from tests.fixtures.fake_anthropic import (
@@ -42,13 +44,42 @@ class TestTokenUsageHelper:
         assert _token_usage(SimpleNamespace()) == (0, 0)
         assert _token_usage(SimpleNamespace(usage=None)) == (0, 0)
 
+    def test_cache_counters_read_from_the_same_usage_block(self):
+        msg = SimpleNamespace(usage=SimpleNamespace(
+            input_tokens=321, output_tokens=99,
+            cache_creation_input_tokens=4_000, cache_read_input_tokens=12_000,
+        ))
+        assert _cache_token_usage(msg) == (4_000, 12_000)
+        # A usage block without the cache keys (older fakes) reads as 0/0,
+        # and the token helper keeps its two-tuple contract.
+        assert _cache_token_usage(SimpleNamespace(usage=SimpleNamespace())) == (0, 0)
+        assert _cache_token_usage(SimpleNamespace()) == (0, 0)
+        assert _token_usage(msg) == (321, 99)
+
+    def test_conversation_evidence_sums_cache_counters_across_responses(self):
+        def _resp(create, read):
+            return SimpleNamespace(
+                content=[],
+                usage=SimpleNamespace(
+                    input_tokens=10, output_tokens=5,
+                    cache_creation_input_tokens=create, cache_read_input_tokens=read,
+                ),
+            )
+
+        evidence = _collect_conversation_evidence([_resp(3_000, 0), _resp(0, 3_000)])
+        assert (evidence.input_tokens, evidence.output_tokens) == (20, 10)
+        assert evidence.cache_creation_input_tokens == 3_000
+        assert evidence.cache_read_input_tokens == 3_000
+
 
 # ---------------------------------------------------------------------------
 # 2. Batch wave parser stamps tokens onto the parsed result
 # ---------------------------------------------------------------------------
 
 
-def _grounded_message_with_tokens(input_tokens=120, output_tokens=60):
+def _grounded_message_with_tokens(
+    input_tokens=120, output_tokens=60, *, cache_create=0, cache_read=0
+):
     msg = verification_tool_use_response(
         payload=sample_verification_verdict_payload(verdict="CONFIRMED")
     )
@@ -57,6 +88,8 @@ def _grounded_message_with_tokens(input_tokens=120, output_tokens=60):
     msg.usage = SimpleNamespace(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cache_creation_input_tokens=cache_create,
+        cache_read_input_tokens=cache_read,
         server_tool_use=SimpleNamespace(web_search_requests=1, web_fetch_requests=0),
     )
     return msg
@@ -81,7 +114,10 @@ class TestWaveParserStampsTokens:
         monkeypatch.setattr(
             V, "retrieve_verification_results_detailed",
             lambda _job: {cid: batch_verification_result(
-                custom_id=cid, message=_grounded_message_with_tokens(120, 60)
+                custom_id=cid,
+                message=_grounded_message_with_tokens(
+                    120, 60, cache_create=2_048, cache_read=8_192
+                ),
             )},
         )
         outcomes = _classify_wave_results(job=job, findings=[f], request_contexts=ctx)
@@ -90,6 +126,12 @@ class TestWaveParserStampsTokens:
         assert parsed is not None
         assert parsed.input_tokens == 120
         assert parsed.output_tokens == 60
+        # The prompt-cache counters ride along so the cost summary can price
+        # the cache write / read of the verification request.
+        assert parsed.cache_creation_input_tokens == 2_048
+        assert parsed.cache_read_input_tokens == 8_192
+        # A single call carries no per-call list — the flat fields are it.
+        assert parsed.call_usage == []
 
     def test_classify_wave_results_carries_raw_message(self, monkeypatch):
         """The success outcome retains the raw batch message (by identity, not
@@ -122,6 +164,19 @@ class TestWaveParserStampsTokens:
 # ---------------------------------------------------------------------------
 # 4. Diagnostics aggregation picks up the tokens from a verification event
 # ---------------------------------------------------------------------------
+
+
+class TestGuiEventShape:
+    def test_batch_controller_emits_cache_counters_and_call_usage(self):
+        """Source pin (no GUI import): the per-finding verification event
+        the batch controller logs carries the cache counters and, for an
+        escalated result, the per-call usage list the cost summary prices."""
+        from pathlib import Path
+
+        source = Path("src/gui/batch_controller.py").read_text(encoding="utf-8")
+        assert '"cache_creation_input_tokens": getattr(' in source
+        assert '"cache_read_input_tokens": getattr(' in source
+        assert 'event_data["call_usage"] = [dict(c) for c in call_usage]' in source
 
 
 class TestDiagnosticsAggregation:

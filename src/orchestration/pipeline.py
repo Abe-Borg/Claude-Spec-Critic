@@ -2562,6 +2562,9 @@ def _shared_clone(result: VerificationResult) -> VerificationResult:
     clone.cache_entry_created_ts = 0.0
     clone.input_tokens = 0
     clone.output_tokens = 0
+    clone.cache_creation_input_tokens = 0
+    clone.cache_read_input_tokens = 0
+    clone.call_usage = []
     clone.retry_telemetry = None
     clone.structured_payload = None
     return clone

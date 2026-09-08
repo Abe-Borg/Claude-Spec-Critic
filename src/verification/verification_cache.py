@@ -922,9 +922,14 @@ _SKIPPED_FIELDS = frozenset({
     "initial_verdict",
     "escalation_changed_verdict",
     "escalation_reason",
-    # Operational token counts — diagnostics only, not persisted.
+    # Operational token counts — diagnostics only, not persisted. The
+    # per-call ``call_usage`` list (an escalated result's two conversations)
+    # is the same spend telemetry in per-call form.
     "input_tokens",
     "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "call_usage",
 })
 
 

@@ -789,12 +789,33 @@ def collect_batch_results(app) -> None:
                                 # correct contribution to this-run spend.
                                 "input_tokens": f.verification.input_tokens,
                                 "output_tokens": f.verification.output_tokens,
+                                # Prompt-cache counters from the same usage
+                                # block — every verification request caches
+                                # system + tools, so the cache write / read
+                                # tokens are real spend the cost summary
+                                # prices at their own rates.
+                                "cache_creation_input_tokens": getattr(
+                                    f.verification, "cache_creation_input_tokens", 0
+                                ),
+                                "cache_read_input_tokens": getattr(
+                                    f.verification, "cache_read_input_tokens", 0
+                                ),
                                 # Surface retry telemetry so the
                                 # per-phase diagnostics rollup can answer
                                 # "which findings burned retries / hit
                                 # the continuation cap?".
                                 "retry_telemetry": f.verification.retry_telemetry,
                             }
+                            # An escalated verification paid for TWO
+                            # conversations (initial + escalated pass, on
+                            # different models); the flat fields above
+                            # describe only the kept verdict's call. The
+                            # per-call list lets the cost summary price
+                            # both at their own rates. Only attached when
+                            # present so a plain event keeps its shape.
+                            call_usage = getattr(f.verification, "call_usage", None) or []
+                            if call_usage:
+                                event_data["call_usage"] = [dict(c) for c in call_usage]
                             bounded_payload = bound_structured_payload(f.verification.structured_payload)
                             if bounded_payload is not None:
                                 event_data["structured_payload"] = bounded_payload
