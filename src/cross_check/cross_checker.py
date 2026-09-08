@@ -757,7 +757,25 @@ def run_chunked_cross_check(
         chunk_failures=chunk_failures,
         chunk_skips=chunk_skips,
     )
+    if status == "failed":
+        # Zero chunks completed: carry the per-chunk errors on the combined
+        # result so the operator sees WHY ("Cross-check failed: <errors>")
+        # instead of "Cross-check failed: None". A partial completion stays
+        # ``completed`` with ``error=None`` — its chunk_failures telemetry
+        # and the summary header already surface the failed chunks.
+        # (Compliance's chunked merge applies the same rule.)
+        combined.error = "; ".join(
+            filter(
+                None,
+                (
+                    r.error
+                    for _cid, r in chunk_results
+                    if r.cross_check_status not in ("completed", "skipped")
+                ),
+            )
+        ) or "All cross-check chunks failed."
     _trace.capture_cross_check_end(
         trace_cross, finding_count=len(findings), status=status,
+        error=combined.error if status == "failed" else None,
     )
     return combined

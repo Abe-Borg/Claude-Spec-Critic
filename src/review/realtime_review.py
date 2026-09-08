@@ -25,7 +25,11 @@ Shape contract with the batch transport (deliberate, tested):
   repair call carrying ``RETRY_TRUNCATED_REVIEW_INSTRUCTION`` — the same
   instructed retry the batch repair pass
   (``pipeline._recover_retryable_review_batch_results``) gives a failed
-  batch item — before the spec is allowed to surface as failed.
+  batch item — before the spec is allowed to surface as failed. A model
+  *refusal* (``stop_reason="refusal"``) is deliberately excluded: it is not
+  a truncation, the instruction cannot address it, and a second full call
+  would only double the spend — the refused spec surfaces as failed after
+  exactly one call.
 * Failure honesty: a spec whose review ultimately fails yields a
   ``ReviewResult`` with ``parse_status`` / ``error`` set (a worker never
   raises), which the shared collect loop buckets into ``truncated_specs`` →
@@ -81,7 +85,13 @@ from .review_request_builder import (
     build_review_request,
     estimate_local_request_tokens,
 )
-from .reviewer import ReviewResult, _get_client, review_result_from_message
+from .reviewer import (
+    PARSE_STATUS_REFUSAL,
+    REPAIRABLE_PARSE_STATUSES,
+    ReviewResult,
+    _get_client,
+    review_result_from_message,
+)
 
 LogFn = Callable[..., None]
 ProgressFn = Callable[..., None]
@@ -415,8 +425,10 @@ def _review_one_spec(
     back off and re-attempt; non-retryable classes terminate immediately).
     A completed-but-truncated/unparseable response gets exactly one inline
     repair call (batch repair parity) before the better of the two results
-    is returned. Every terminal path returns a ``ReviewResult`` — exceptions
-    become error results so one spec's crash never takes down the fan-out.
+    is returned; a model refusal is terminal after the one call (no repair —
+    see ``REPAIRABLE_PARSE_STATUSES``). Every terminal path returns a
+    ``ReviewResult`` — exceptions become error results so one spec's crash
+    never takes down the fan-out.
     """
     job = prepared_job.job
     custom_id = job.custom_id
@@ -447,11 +459,32 @@ def _review_one_spec(
                     max_output_tokens=max_output,
                 )
             )
-            if result.parse_status in ("incomplete", "parse_error"):
+            if result.parse_status == PARSE_STATUS_REFUSAL:
+                # A refusal is terminal, not a truncation: the instructed
+                # repair ("be more concise") cannot address it, so a second
+                # full call would only double the spend. The refused spec
+                # still surfaces as a failed review — the coordinator log
+                # line, ``truncated_specs`` / ``errors`` / ``combined.error``
+                # in collect, and ``PipelineResult.failed_review_specs`` all
+                # carry it, so the report banner and the amber terminal
+                # state fire exactly as for a truncation.
+                _close_review_api_span(
+                    trace_api, result, source="refusal", status="error", error=result.error
+                )
+                return _SpecReviewOutcome(
+                    job_key=job.job_key,
+                    custom_id=custom_id,
+                    filename=filename,
+                    display_name=display_name,
+                    result=result,
+                    telemetry=telemetry,
+                )
+            if result.parse_status in REPAIRABLE_PARSE_STATUSES:
                 # Inline repair — parity with the batch second-batch repair
                 # pass: one instructed retry, then the spec is allowed to
                 # surface as failed. ``replace`` keeps every other request
-                # input byte-identical.
+                # input byte-identical. Gated on the shared repairable set
+                # (truncation / parse error only — never a refusal).
                 _close_review_api_span(trace_api, result, source=str(result.parse_status), status="error", error=result.error)
                 repair_built = prepared_job.repair_built
                 trace_repair = _open_review_api_span(

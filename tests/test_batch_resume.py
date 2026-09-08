@@ -22,6 +22,7 @@ import time
 import types
 from pathlib import Path
 
+import pytest
 from docx import Document
 
 from src.batch.batch import BatchJob
@@ -365,10 +366,11 @@ class TestRepairFallbackResolvesByFilename:
         monkeypatch.setattr(pl, "poll_batch_bounded", lambda *a, **k: PollOutcome(terminal=True, terminal_status="ended"))
         monkeypatch.setattr(
             pl, "preprocess_spec",
-            lambda content, filename, *, cycle: types.SimpleNamespace(
+            lambda content, filename, *, cycle, profile_country=None: types.SimpleNamespace(
                 leed_alerts=[], placeholder_alerts=[], code_cycle_alerts=[],
                 structural_alerts=[], template_marker_alerts=[],
                 invalid_code_cycle_alerts=[], duplicate_paragraph_alerts=[],
+                polity_alerts=[],
             ),
         )
         monkeypatch.setattr(
@@ -435,3 +437,164 @@ class TestHeadlessCollection:
         result = run_batch_collection_headless(sub, cache=VerificationCache(), log=lambda *a, **k: None)
         assert called["verify"] is False  # no findings → verification not attempted
         assert result.review_result.findings == []
+
+
+# ===========================================================================
+# repair_batch_id: additive PendingBatch field (no schema bump)
+# ===========================================================================
+
+
+class TestRepairBatchIdField:
+    def test_round_trip_without_repair_id(self, tmp_path):
+        path = tmp_path / "p.json"
+        pending = PendingBatch.from_submission(_submission())
+        assert pending.repair_batch_id is None
+        save_pending_batch(pending, path=path)
+        # The key is written (so the record shape is explicit) and reads back None.
+        assert json.loads(path.read_text(encoding="utf-8"))["repair_batch_id"] is None
+        loaded = load_pending_batch(path=path)
+        assert loaded is not None
+        assert loaded.repair_batch_id is None
+        assert loaded.schema_version == br._LEGACY_SCHEMA_VERSION  # no schema bump
+
+    def test_round_trip_with_repair_id(self, tmp_path):
+        path = tmp_path / "p.json"
+        pending = PendingBatch.from_submission(_submission())
+        pending.repair_batch_id = "msgbatch_REPAIR"
+        save_pending_batch(pending, path=path)
+        loaded = load_pending_batch(path=path)
+        assert loaded is not None
+        assert loaded.batch_id == "msgbatch_TEST"
+        assert loaded.repair_batch_id == "msgbatch_REPAIR"
+        # Re-saving a loaded record keeps the stamp (the pipeline's
+        # load → stamp → save path).
+        save_pending_batch(loaded, path=path)
+        assert load_pending_batch(path=path).repair_batch_id == "msgbatch_REPAIR"
+
+    def test_legacy_file_without_key_loads_none(self, tmp_path):
+        path = tmp_path / "p.json"
+        path.write_text(
+            json.dumps({"batch_id": "msgbatch_L", "schema_version": br._LEGACY_SCHEMA_VERSION}),
+            encoding="utf-8",
+        )
+        loaded = load_pending_batch(path=path)
+        assert loaded is not None
+        assert loaded.repair_batch_id is None
+
+    def test_blank_or_non_string_repair_id_reads_none(self, tmp_path):
+        for junk in ("   ", 42, ["x"]):
+            path = tmp_path / "p.json"
+            path.write_text(
+                json.dumps({
+                    "batch_id": "msgbatch_L",
+                    "schema_version": br._LEGACY_SCHEMA_VERSION,
+                    "repair_batch_id": junk,
+                }),
+                encoding="utf-8",
+            )
+            assert load_pending_batch(path=path).repair_batch_id is None
+
+    def test_program_child_batch_lookup(self):
+        from src.orchestration.batch_resume import PendingProgramRun
+
+        child = PendingBatch.from_submission(_submission("msgbatch_CHILD"))
+        child.module_id = "datacenter_fire"
+        child.cycle_label = "child-cycle"
+        from dataclasses import asdict
+
+        run = PendingProgramRun(
+            program_id="hyperscale_datacenter",
+            partitions={"datacenter_fire": asdict(child)},
+        )
+        assert run.batch_ids == {"datacenter_fire": "msgbatch_CHILD"}
+        found = run.child_batch("msgbatch_CHILD")
+        assert found is not None
+        assert found.module_id == "datacenter_fire"
+        assert found.cycle_label == "child-cycle"
+        assert run.child_batch("msgbatch_NOPE") is None
+
+
+# ===========================================================================
+# Pending-state saves: retry transient failures, warn on final failure
+# ===========================================================================
+
+
+class TestPendingStateSaveRetries:
+    def test_transient_replace_failure_retries_then_saves(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(br, "_PENDING_SAVE_RETRY_DELAY_SECONDS", 0)
+        path = tmp_path / "p.json"
+        real_replace = Path.replace
+        calls = {"n": 0}
+
+        def flaky_replace(self, target):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise PermissionError(13, "The process cannot access the file")
+            return real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", flaky_replace)
+
+        save_pending_batch(PendingBatch.from_submission(_submission()), path=path)
+
+        assert calls["n"] == 3
+        assert path.exists()
+        assert load_pending_batch(path=path).batch_id == "msgbatch_TEST"
+
+    def test_persistent_failure_logs_warning_and_never_raises(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setattr(br, "_PENDING_SAVE_RETRY_DELAY_SECONDS", 0)
+        path = tmp_path / "p.json"
+        calls = {"n": 0}
+
+        def always_locked(self, target):
+            calls["n"] += 1
+            raise PermissionError(13, "locked by indexer")
+
+        monkeypatch.setattr(Path, "replace", always_locked)
+
+        with caplog.at_level(logging.WARNING, logger="src.orchestration.batch_resume"):
+            save_pending_batch(PendingBatch.from_submission(_submission()), path=path)  # no raise
+
+        assert calls["n"] == br._PENDING_SAVE_ATTEMPTS
+        assert not path.exists()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings, caplog.text
+        text = warnings[-1].getMessage()
+        assert str(path) in text
+        assert "PermissionError" in text
+        assert "locked by indexer" in text
+        assert "not be resumable" in text
+
+    def test_program_manifest_save_shares_the_retry(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        from src.orchestration.batch_resume import PendingProgramRun, save_pending_program_run
+
+        monkeypatch.setattr(br, "_PENDING_SAVE_RETRY_DELAY_SECONDS", 0)
+        path = tmp_path / "m.json"
+        calls = {"n": 0}
+
+        def always_locked(self, target):
+            calls["n"] += 1
+            raise PermissionError(13, "locked")
+
+        monkeypatch.setattr(Path, "replace", always_locked)
+        run = PendingProgramRun(program_id="hyperscale_datacenter")
+
+        with caplog.at_level(logging.WARNING, logger="src.orchestration.batch_resume"):
+            save_pending_program_run(run, path=path)
+
+        assert calls["n"] == br._PENDING_SAVE_ATTEMPTS
+        assert not path.exists()
+        assert any("program-run manifest" in r.getMessage() for r in caplog.records)
+
+    def test_clean_save_does_not_sleep_or_warn(self, tmp_path, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setattr(br.time, "sleep", lambda _s: pytest.fail("must not sleep on a clean save"))
+        path = tmp_path / "p.json"
+        with caplog.at_level(logging.WARNING, logger="src.orchestration.batch_resume"):
+            save_pending_batch(PendingBatch.from_submission(_submission()), path=path)
+        assert path.exists()
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

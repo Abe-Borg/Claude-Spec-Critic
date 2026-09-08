@@ -362,3 +362,84 @@ class TestSynthesisStatusMatrix:
             results, fallback_model="m", cycle=DEFAULT_CYCLE
         )
         assert status == "skipped"
+
+
+# ===========================================================================
+# 6. All-chunks-failed carries the chunk errors on the combined result
+# ===========================================================================
+
+
+class TestAllChunksFailedCarriesError:
+    SPECS = [
+        "22 11 00 - Water.docx",
+        "22 13 00 - Sanitary.docx",
+        "23 05 00 - HVAC.docx",
+        "23 07 00 - Insulation.docx",
+    ]
+
+    def _specs(self):
+        return [_spec(name) for name in self.SPECS]
+
+    def test_all_failed_names_every_chunk_error(self, monkeypatch):
+        _force_chunking(monkeypatch)
+
+        def fake_run_cross_check(specs, _existing, **_kwargs):
+            filenames = {s.filename for s in specs}
+            if any(f.startswith("22") for f in filenames):
+                return _chunk_result("failed", error="div22: API 500 overloaded")
+            return _chunk_result("failed", error="div23: connection reset")
+
+        monkeypatch.setattr(cc, "run_cross_check", fake_run_cross_check)
+
+        combined = run_chunked_cross_check(self._specs(), [], cycle=DEFAULT_CYCLE)
+
+        assert combined.cross_check_status == "failed"
+        assert combined.findings == []
+        assert combined.chunk_failures == 2
+        assert combined.error  # non-empty
+        assert "div22: API 500 overloaded" in combined.error
+        assert "div23: connection reset" in combined.error
+
+    def test_all_failed_without_messages_gets_fallback_text(self, monkeypatch):
+        _force_chunking(monkeypatch)
+        monkeypatch.setattr(
+            cc, "run_cross_check", lambda *_a, **_k: _chunk_result("failed", error="")
+        )
+
+        combined = run_chunked_cross_check(self._specs(), [], cycle=DEFAULT_CYCLE)
+
+        assert combined.cross_check_status == "failed"
+        assert combined.error == "All cross-check chunks failed."
+
+    def test_partial_failure_leaves_error_none(self, monkeypatch):
+        _force_chunking(monkeypatch)
+
+        def fake_run_cross_check(specs, _existing, **_kwargs):
+            filenames = {s.filename for s in specs}
+            if any(f.startswith("22") for f in filenames):
+                return _chunk_result("completed", findings=[_finding("22 11 00 - Water.docx")])
+            return _chunk_result("failed", error="div23 boom")
+
+        monkeypatch.setattr(cc, "run_cross_check", fake_run_cross_check)
+
+        combined = run_chunked_cross_check(self._specs(), [], cycle=DEFAULT_CYCLE)
+
+        assert combined.cross_check_status == "completed"
+        assert combined.error is None
+        assert combined.chunk_failures == 1  # telemetry still flags the failed chunk
+
+    def test_pipeline_status_log_names_the_error(self, monkeypatch):
+        # The operator-facing consequence: "Cross-check failed: <why>", never
+        # "Cross-check failed: None".
+        from src.orchestration.pipeline import _log_cross_check_status
+
+        _force_chunking(monkeypatch)
+        monkeypatch.setattr(
+            cc, "run_cross_check", lambda *_a, **_k: _chunk_result("failed", error="quota exceeded")
+        )
+        combined = run_chunked_cross_check(self._specs(), [], cycle=DEFAULT_CYCLE)
+        lines: list[str] = []
+        _log_cross_check_status(lambda msg, **_kw: lines.append(msg), combined)
+
+        assert lines == ["Cross-check failed: quota exceeded; quota exceeded"]
+        assert "None" not in lines[0]
