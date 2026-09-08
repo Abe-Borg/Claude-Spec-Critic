@@ -64,7 +64,7 @@ class BatchStatus:
 
 
 # Historical stem truncation length. Load-bearing beyond the submit path: the
-# bare-batch resume recovery (orchestration/batch_resume.recover_from_bare_batch_id)
+# bare-batch-id recovery (orchestration/batch_resume.thin_submission_from_batch_results)
 # re-derives each item's real filename by re-sanitizing local names with THIS
 # default and matching the result against the parsed custom-id stem, so the
 # submit path must never emit a stem longer than this or the match silently fails.

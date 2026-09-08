@@ -12,6 +12,10 @@ skipped at collection time on hosts without the ``python3-tk`` package.
 """
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("tkinter")
+
 from src.gui.review_run_controller import on_review_complete
 from src.review.reviewer import ReviewResult
 

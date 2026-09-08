@@ -1014,7 +1014,14 @@ class SpecReviewApp(_CTkDnDRoot):
         os.environ["SPEC_CRITIC_TRACE_DEEP"] = "1" if self._trace_deep_var.get() else "0"
 
     def _on_show_trace_folder(self) -> None:
-        """Open ~/.spec_critic/traces in the OS file explorer."""
+        """Open the trace root in the OS file explorer.
+
+        That is ``SPEC_CRITIC_TRACE_DIR`` when set, else the per-user state
+        directory (``%LOCALAPPDATA%\\SpecCritic\\traces`` on Windows,
+        ``~/Library/Application Support/SpecCritic/traces`` on macOS,
+        ``~/.local/state/SpecCritic/traces`` on Linux) — see
+        ``tracing.config.default_trace_root``.
+        """
         import os
         import platform
         import subprocess

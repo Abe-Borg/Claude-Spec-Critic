@@ -55,7 +55,6 @@ from ..input.drawing_digest import DIGEST_ATTACHMENT_LABEL
 from ..modules import DEFAULT_MODULE, ReviewModule
 from ..review.prompt_serialization import (
     TAG_FINDING,
-    escape_text,
     render_blocks,
     wrap_data_block,
     wrap_document_block,

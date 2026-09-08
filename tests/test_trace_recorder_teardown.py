@@ -26,6 +26,8 @@ import types
 
 import pytest
 
+pytest.importorskip("tkinter")
+
 from src.batch.batch_runtime import PollOutcome
 from src.gui import batch_controller
 from src.tracing.recorder import get_recorder, set_recorder

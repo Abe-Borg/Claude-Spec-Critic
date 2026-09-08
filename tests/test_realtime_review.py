@@ -29,6 +29,7 @@ What's locked in:
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import threading
 import time
@@ -36,6 +37,12 @@ import time as _time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+
+# ``TestModePlumbing`` imports ``src.gui.batch_controller`` /
+# ``src.gui.review_run_controller`` inside test bodies (both pull in
+# ``tkinter`` at module scope). A body-level import is invisible to conftest's
+# collection-time skip list, so the class carries its own skip marker.
+_TK_AVAILABLE = importlib.util.find_spec("tkinter") is not None
 
 from src.batch.batch import BatchJob
 from src.core.api_config import (
@@ -669,6 +676,10 @@ def _fake_prepared():
     return pl._PreparedSpecs(specs=[spec], leed_alerts=[], placeholder_alerts=[])
 
 
+@pytest.mark.skipif(
+    not _TK_AVAILABLE,
+    reason="imports src.gui controllers (tkinter) inside test bodies",
+)
 class TestModePlumbing:
     def test_realtime_start_builds_job_stub_submission(self, monkeypatch, tmp_path):
         monkeypatch.setattr(pl, "_prepare_specs", lambda **kw: _fake_prepared())

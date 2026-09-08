@@ -28,12 +28,22 @@ def _tkinter_available() -> bool:
 
 
 # Skip GUI-dependent test files at collection time when ``tkinter`` is missing
-# (common in CI / containers without the python3-tk system package). The files
-# import ``src.gui`` / ``src.batch_controller`` at module scope, so collection
-# fails outright otherwise. When tkinter is installed, these files run normally.
+# (common in CI / containers without the python3-tk system package). These
+# files import a ``src.gui`` module that pulls in ``tkinter`` / ``customtkinter``
+# at module scope, so collection would fail outright otherwise. When tkinter is
+# installed, they run normally. Each file also guards itself with a top-of-module
+# ``pytest.importorskip`` where it can, so hermeticity does not depend on this
+# list alone; ``tests/test_gui_import_hermeticity.py`` imports every candidate
+# with tkinter hidden and fails when the two drift (a stale entry, a missing
+# file, or a new unguarded GUI import that is not listed here).
 _GUI_DEPENDENT_TESTS = {
-    "test_core_regressions.py",
-    "test_gui_refactor_modules.py",
+    "test_activity_log_pump.py",
+    "test_context_controller_background.py",
+    "test_gui_close_and_logging.py",
+    "test_html_gui_hook.py",
+    "test_program_pipeline.py",
+    "test_program_routing.py",
+    "test_report_export_lifecycle.py",
     "test_review_complete_terminal_state.py",
     "test_trace_recorder_teardown.py",
 }

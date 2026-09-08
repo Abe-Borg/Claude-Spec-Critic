@@ -91,9 +91,13 @@ def current_capture_level() -> str:
 
 
 def default_trace_root() -> Path:
-    """``~/.spec_critic/traces/`` (override via ``SPEC_CRITIC_TRACE_DIR``).
+    """The trace root: ``SPEC_CRITIC_TRACE_DIR`` when set, else ``<user state dir>/traces``.
 
-    Resolves ``~`` and ``$VAR`` in the override. Does NOT create the
+    The default is platformdirs' per-user *state* directory for ``SpecCritic``
+    (``appauthor=False``), so it lands at ``%LOCALAPPDATA%\\SpecCritic\\traces``
+    on Windows, ``~/Library/Application Support/SpecCritic/traces`` on macOS,
+    and ``$XDG_STATE_HOME/SpecCritic/traces`` (``~/.local/state/SpecCritic/traces``)
+    on Linux. Resolves ``~`` and ``$VAR`` in the override. Does NOT create the
     directory — the recorder creates per-run subdirectories on start so
     a disabled run never touches the disk.
     """

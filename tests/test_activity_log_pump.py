@@ -28,6 +28,9 @@ import pytest
 
 # GUI deps are optional in the hermetic suite; skip cleanly when absent
 # (mirrors the repo convention that GUI tests skip without tkinter/ctk).
+# ``src.gui.widgets`` needs both: tkinter (the system Tk package) and the
+# customtkinter wheel on top of it.
+pytest.importorskip("tkinter")
 pytest.importorskip("customtkinter")
 
 from src.gui.widgets import EnhancedLog  # noqa: E402

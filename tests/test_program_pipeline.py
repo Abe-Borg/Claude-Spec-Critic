@@ -9,6 +9,12 @@ from types import SimpleNamespace
 import pytest
 from docx import Document
 
+# ``src.gui.batch_controller`` imports ``tkinter.messagebox`` at module scope;
+# skip cleanly on hosts without the system Tk package. (conftest's
+# ``_GUI_DEPENDENT_TESTS`` is the second guard; the meta-test in
+# tests/test_gui_import_hermeticity.py keeps the two from drifting.)
+pytest.importorskip("tkinter")
+
 from src.batch.batch import BatchJob, BatchStatus
 from src.gui import batch_controller as gui_batch
 from src.modules import require_module

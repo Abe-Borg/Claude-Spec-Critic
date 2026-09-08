@@ -77,6 +77,28 @@ from src.output.report_exporter import export_report  # noqa: E402
 _LEVEL_TAG = {"step": "·", "info": " ", "success": "✓", "warning": "!", "error": "✗"}
 
 
+def _configure_utf8_stdio() -> None:
+    """Best-effort: make ``stdout`` / ``stderr`` UTF-8 so the log glyphs never raise.
+
+    ``_log`` prefixes lines with ``· ✓ ✗``; a legacy Windows console or a
+    redirected pipe hands Python a cp1252 stream on which ``✓`` raises
+    ``UnicodeEncodeError`` — in the middle of a recovery, after the batch was
+    already collected. ``reconfigure`` exists only on ``TextIOWrapper``
+    streams (never on a ``None`` stream), so anything else is left alone, and
+    ``errors="replace"`` degrades an unencodable character to ``?`` rather
+    than a traceback. Never raises.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if stream is None or reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 - a console we cannot reconfigure keeps its encoding
+            pass
+
+
 def _log(msg: str, *, level: str = "info") -> None:
     print(f" {_LEVEL_TAG.get(level, ' ')} {msg}", flush=True)
 
@@ -330,6 +352,7 @@ def _poll_batches(batch_ids: dict[str, str]) -> dict[str, PollOutcome | Exceptio
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_utf8_stdio()
     parser = argparse.ArgumentParser(
         description="Recover / finish a Spec Critic review batch the app stopped polling.",
         formatter_class=argparse.RawDescriptionHelpFormatter,

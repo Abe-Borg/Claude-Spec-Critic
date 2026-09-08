@@ -23,6 +23,16 @@ Nothing from ``src`` (or the packaging helpers) is imported at module load —
 every ``src`` import in this file sits inside a function that ``main`` reaches
 only after the environment is configured.
 
+OS trust store (frozen runs only, also before any ``src`` import): the SDK's
+HTTP stack (``httpx2``) already builds its TLS context from the operating
+system's certificate store through ``truststore``, but the self-updater
+(``src/core/updates.py``) uses the standard library ``urllib``, which trusts
+only ``certifi``'s bundle. ``configure_os_trust_store`` calls
+``truststore.inject_into_ssl()`` so every ``ssl.SSLContext`` created afterwards
+— including urllib's — also honours a certificate installed in the OS store
+(a corporate TLS-intercepting proxy is the common case). It is best-effort: an
+import or injection failure is logged and startup continues on ``certifi``.
+
 The GUI build is windowed (``console=False``), so ``sys.stdout`` may be ``None``
 in the frozen app; ``_emit`` writes results to the file named by
 ``SPEC_CRITIC_SELFCHECK_OUT`` (set by CI) as well as printing when it can,
@@ -77,6 +87,37 @@ def configure_tiktoken_cache(
         return None
     env.setdefault(TIKTOKEN_CACHE_DIR_ENV, os.path.join(base, TIKTOKEN_CACHE_BUNDLE_DIR))
     return env[TIKTOKEN_CACHE_DIR_ENV]
+
+
+def configure_os_trust_store() -> str:
+    """Route stdlib TLS verification through the OS trust store when frozen.
+
+    Returns a short status string for diagnostics: ``"injected"`` when
+    ``truststore.inject_into_ssl()`` ran, ``"not-frozen"`` when nothing was
+    done (source runs keep the interpreter's default), or ``"unavailable"``
+    when the package is missing / injection failed — that case is logged at
+    WARNING and never blocks startup. Idempotent: truststore itself tolerates
+    a second injection.
+    """
+    if not getattr(sys, "frozen", False):
+        return "not-frozen"
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+        return "injected"
+    except Exception as exc:  # noqa: BLE001 - startup must never depend on this
+        try:
+            import logging
+
+            logging.getLogger("spec_critic.app_entry").warning(
+                "OS trust store not enabled (truststore unavailable: %s); "
+                "TLS verification falls back to the bundled certifi CA list.",
+                exc,
+            )
+        except Exception:
+            pass
+        return "unavailable"
 
 
 def _emit(message: str) -> None:
@@ -165,6 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     # First, before any ``src`` import: the tokenizer must find the bundled
     # rank file the moment it is first used.
     configure_tiktoken_cache()
+    # Second, still before any ``src`` import and therefore before any network
+    # use: TLS contexts created from here on trust the OS certificate store.
+    configure_os_trust_store()
     args = sys.argv[1:] if argv is None else list(argv)
     if "--version" in args:
         return _print_version()
