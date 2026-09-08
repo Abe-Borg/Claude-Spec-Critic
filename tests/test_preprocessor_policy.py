@@ -31,6 +31,7 @@ import pytest
 from src.core.code_cycles import CALIFORNIA_2025
 from src.input.preprocessor import (
     DETERMINISTIC_RULE_STALE_CODE_CYCLE,
+    _should_suppress_stale_cycle,
     detect_stale_code_cycle_references,
 )
 from src.review.prompt_serialization import (
@@ -458,3 +459,64 @@ class TestStaleCycleSuppression:
         years = {a["found_year"] for a in alerts}
         assert "2019" not in years
         assert "2022" in years
+
+
+class TestStaleCycleTrailingWindow:
+    """The trailing suppression window cuts at the EARLIEST sentence
+    terminator by position (B-28 d).
+
+    The old loop tried ``"."`` first and stopped at the first terminator
+    *found in tuple order*, so a ``;`` or ``\\n\\n`` that came earlier than
+    the ``.`` was ignored and the window kept a whole extra clause — a
+    negation belonging to the next clause then suppressed an active stale
+    citation.
+    """
+
+    def test_semicolon_before_period_bounds_window(self) -> None:
+        # Old: cut at "." → window "; the prior edition is no longer
+        # referenced" → "prior" / "no longer" suppress the ACTIVE
+        # "Comply with 2019 CBC" (wrong). New: cut at ";" (earlier) →
+        # empty window → flagged (right).
+        content = (
+            "Comply with 2019 CBC; the prior edition is no longer referenced. "
+            "Provide seismic bracing."
+        )
+        assert _should_suppress_stale_cycle(
+            content, content.index("2019"), content.index("CBC") + 3
+        ) is False
+        alerts = detect_stale_code_cycle_references(content, "s.docx", CALIFORNIA_2025)
+        assert [a["found_year"] for a in alerts] == ["2019"]
+
+    def test_paragraph_break_before_period_bounds_window(self) -> None:
+        # Same defect with the "\n\n" terminator: the next paragraph's
+        # "no longer" must not bleed back into the active citation.
+        content = "Comply with 2019 CBC\n\nThe prior edition is no longer used."
+        assert _should_suppress_stale_cycle(
+            content, content.index("2019"), content.index("CBC") + 3
+        ) is False
+        alerts = detect_stale_code_cycle_references(content, "s.docx", CALIFORNIA_2025)
+        assert [a["found_year"] for a in alerts] == ["2019"]
+
+    def test_negation_inside_the_clause_still_suppresses(self) -> None:
+        # The earliest terminator comes AFTER the negation here, so the
+        # descriptive citation is still suppressed — the fix narrows the
+        # window, it does not disable trailing suppression.
+        content = "The 2019 CBC is no longer referenced; comply with the current cycle."
+        assert _should_suppress_stale_cycle(
+            content, content.index("2019"), content.index("CBC") + 3
+        ) is True
+        assert detect_stale_code_cycle_references(content, "s.docx", CALIFORNIA_2025) == []
+
+    def test_period_still_bounds_when_it_is_earliest(self) -> None:
+        content = "Comply with 2019 CBC. The prior edition is no longer used; see above."
+        assert _should_suppress_stale_cycle(
+            content, content.index("2019"), content.index("CBC") + 3
+        ) is False
+        alerts = detect_stale_code_cycle_references(content, "s.docx", CALIFORNIA_2025)
+        assert [a["found_year"] for a in alerts] == ["2019"]
+
+    def test_no_terminator_keeps_full_window(self) -> None:
+        content = "Comply with 2019 CBC which is no longer the adopted edition"
+        assert _should_suppress_stale_cycle(
+            content, content.index("2019"), content.index("CBC") + 3
+        ) is True

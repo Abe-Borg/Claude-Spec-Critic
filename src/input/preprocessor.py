@@ -295,6 +295,12 @@ def _asce7_edition_year(two_digit: str) -> int:
 # negation — see ``_should_suppress_stale_cycle``.
 _STALE_CYCLE_SUPPRESS_WINDOW: int = 80
 
+# Sentence boundaries that narrow the suppression window on either side of
+# a match to the clause the citation sits in. Both scan directions consult
+# the same tuple; the trailing scan cuts at the earliest of them by position
+# (never by tuple order), see ``_should_suppress_stale_cycle``.
+_STALE_CYCLE_SENTENCE_TERMINATORS: tuple[str, ...] = (".", ";", "\n\n")
+
 _STALE_CYCLE_SUPPRESS_PATTERNS: tuple[re.Pattern, ...] = (
     re.compile(r"\bpreviously\b", flags=re.IGNORECASE),
     re.compile(r"\bformerly\b", flags=re.IGNORECASE),
@@ -339,18 +345,28 @@ def _should_suppress_stale_cycle(
     pre_window = content[pre_start:match_start]
     # Restrict the *preceding* window to the current sentence so a
     # negation in a previous clause doesn't suppress the active one.
-    for term in (".", ";", "\n\n"):
+    # Applying every terminator in turn leaves the text after the LAST
+    # terminator of any kind.
+    for term in _STALE_CYCLE_SENTENCE_TERMINATORS:
         cut = pre_window.rfind(term)
         if cut >= 0:
             pre_window = pre_window[cut + len(term):]
     post_end = min(len(content), match_end + _STALE_CYCLE_SUPPRESS_WINDOW)
     post_window = content[match_end:post_end]
-    # Same for the *trailing* window: stop at the next sentence boundary.
-    for term in (".", ";", "\n\n"):
-        cut = post_window.find(term)
-        if cut >= 0:
-            post_window = post_window[:cut]
-            break
+    # Same for the *trailing* window: stop at the EARLIEST terminator of
+    # any kind. The cut has to be the minimum position, not the first
+    # terminator found in tuple order — checking ``"."`` before ``";"``
+    # and stopping there kept the ``;``-separated clause in
+    # "2019 CBC; the prior edition is no longer referenced. Provide…" and
+    # suppressed an active citation on the strength of a negation that
+    # belongs to the next clause.
+    cuts = [
+        cut
+        for cut in (post_window.find(term) for term in _STALE_CYCLE_SENTENCE_TERMINATORS)
+        if cut >= 0
+    ]
+    if cuts:
+        post_window = post_window[: min(cuts)]
     candidates = (pre_window, post_window)
     if not any(w.strip() for w in candidates):
         return False
@@ -745,6 +761,19 @@ def detect_invalid_code_cycle_strings(
 # duplicate is meaningful, small enough to catch a single repeated bullet.
 _DUPLICATE_PARAGRAPH_MIN_LENGTH: int = 80
 
+# Paragraphs the extractor synthesizes from surfaces outside ``<w:body>``
+# (section headers / footers, text boxes, footnotes, endnotes) carry a
+# bracketed label prefix. Their repetition is structural, not editorial — a
+# page header is emitted once per document section, so every multi-section
+# spec would otherwise flag its own running header as a copy-paste defect on
+# every run and carry that noise into the review prompt. The label set
+# mirrors the prefixes ``extractor.extract_text_from_docx`` emits; the match
+# is anchored at the paragraph start so a body paragraph that merely
+# mentions "[Header]" is still eligible.
+_SYNTHETIC_PARAGRAPH_PREFIX_RE = re.compile(
+    r"^\[(?:Header|Footer|Text Box|Footnote [^\]]*|Endnote [^\]]*)\] "
+)
+
 
 def detect_duplicate_paragraphs(
     content: str,
@@ -768,6 +797,11 @@ def detect_duplicate_paragraphs(
       - Skips paragraphs whose stripped text is shorter than ``min_length``.
         This avoids flagging numbered subheadings ("PART 1 - GENERAL") that
         repeat across sections by design.
+      - Skips extractor-synthesized entries (``[Header] …``, ``[Footer] …``,
+        ``[Text Box] …``, ``[Footnote n] …``, ``[Endnote n] …``): a running
+        header repeats once per section by construction, not by mistake.
+        Extraction output itself is untouched — only the detector ignores
+        these lines.
       - Compares with ``casefold()`` + collapsed whitespace so a duplicate
         with trailing whitespace or capitalization differences still flags.
         The reported ``match`` is the verbatim original text, so the user
@@ -785,6 +819,11 @@ def detect_duplicate_paragraphs(
         cursor += len(para) + 2
         stripped = para.strip()
         if len(stripped) < min_length:
+            continue
+        if _SYNTHETIC_PARAGRAPH_PREFIX_RE.match(stripped):
+            # Extractor-synthesized entries repeat by construction (a page
+            # header is emitted once per document section) and are not
+            # copy-paste defects — see ``_SYNTHETIC_PARAGRAPH_PREFIX_RE``.
             continue
         key = re.sub(r"\s+", " ", stripped).casefold()
         seen.setdefault(key, []).append((stripped, para_start))
