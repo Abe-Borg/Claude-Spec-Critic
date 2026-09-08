@@ -6,7 +6,13 @@ Build (on Windows, from the repo root) with:
     pip install -r requirements.txt
     pip install -e . --no-deps
     pip install keyring pyinstaller
+    $env:TIKTOKEN_CACHE_DIR = "$PWD\build\tiktoken_cache"   # warm the tokenizer
+    python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+    Remove-Item Env:TIKTOKEN_CACHE_DIR
     pyinstaller packaging/windows/spec-critic.spec --noconfirm --clean
+
+The warm step is mandatory: the spec bundles that directory (see
+``bundle_assets.py``) and refuses to build when it is missing or empty.
 
 Output: ``dist/SpecCritic/`` (a folder containing ``SpecCritic.exe`` plus its
 bundled interpreter and dependencies). ``packaging/windows/installer.iss``
@@ -22,8 +28,14 @@ and the Inno Setup installer makes it a normal double-click "install" for the
 user regardless.
 """
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
+
+# packaging/windows helpers (importable + unit-tested; see bundle_assets.py).
+if SPECPATH not in sys.path:
+    sys.path.insert(0, SPECPATH)
+from bundle_assets import tiktoken_cache_datas  # noqa: E402
 
 datas = []
 binaries = []
@@ -42,6 +54,17 @@ for _pkg in ("customtkinter", "tkinterdnd2"):
 # package via dynamic import — a classic PyInstaller miss.
 hiddenimports += collect_submodules("tiktoken_ext")
 hiddenimports += ["tiktoken_ext.openai_public"]
+
+# tiktoken's cl100k_base BPE rank file is NOT in the wheel: tiktoken downloads
+# it at first use from an Azure blob host that corporate networks commonly
+# block even when api.anthropic.com is allowed (token analysis then raises,
+# the gauge stays blank, and Run never enables). release.yml warms a
+# build-local cache directory first (SPEC_CRITIC_TIKTOKEN_CACHE_SRC); this
+# bundles every file in it under _internal/tiktoken_cache/ — app_entry.py
+# points TIKTOKEN_CACHE_DIR there when frozen — and FAILS THE BUILD when the
+# directory is missing, empty, or lacks the hash-verified rank file, so an
+# installer that would download at first use can never ship silently.
+datas += tiktoken_cache_datas()
 
 # keyring resolves its backend (Windows Credential Manager) dynamically; bundle
 # every backend plus the metadata it reads to enumerate them. keyring is an
@@ -83,6 +106,20 @@ datas += [(
     os.path.join("src", "tracing", "viewer"),
 )]
 
+# Application icon: packaging/windows/spec-critic.ico when it exists (the
+# asset is still to be supplied — see docs/RELEASE_WINDOWS.md), else None so
+# PyInstaller falls back to its stock windowed icon. Never fabricate one here.
+_icon_path = os.path.join(SPECPATH, "spec-critic.ico")
+_icon = _icon_path if os.path.isfile(_icon_path) else None
+
+# Application manifest. PyInstaller 6.11.1 REPLACES its default manifest with
+# a supplied one (it only re-injects requestedExecutionLevel and the
+# Common-Controls dependency), so spec-critic.manifest mirrors the default
+# template entry for entry and pins <longPathAware>true</longPathAware> — the
+# setting that lets the process open >260-character paths (deep OneDrive /
+# SharePoint sync folders) — rather than relying on a PyInstaller default.
+_manifest = os.path.join(SPECPATH, "spec-critic.manifest")
+
 a = Analysis(
     [os.path.join(SPECPATH, "app_entry.py")],
     pathex=[_repo_root],
@@ -115,7 +152,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # drop an .ico here (icon="app.ico") once one exists
+    icon=_icon,
+    manifest=_manifest,
 )
 
 coll = COLLECT(
