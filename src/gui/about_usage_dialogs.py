@@ -42,6 +42,7 @@ _COPYRIGHT_NOTICE = "Copyright © 2025–2026 Abraham Borg."
 _LICENSE_NAME = "PolyForm Noncommercial License 1.0.0"
 _LICENSE_URL = "https://polyformproject.org/licenses/noncommercial/1.0.0"
 _LINKEDIN_URL = "https://www.linkedin.com/in/abrahamborg/"
+_GITHUB_PROFILE_URL = "https://github.com/Abe-Borg"
 _ANTHROPIC_API_PRIVACY_URL = "https://privacy.anthropic.com/en/collections/10631468-api"
 _ANTHROPIC_TRUST_CENTER_URL = "https://trust.anthropic.com/"
 _SOURCE_REPOSITORY_URL = "https://github.com/Abe-Borg/Claude-Spec-Critic"
@@ -960,6 +961,11 @@ def show_license_dialog(parent) -> None:
         )),
     ])
     _link_label(scroll, _LINKEDIN_URL)
+
+    _render_sections(scroll, [
+        ("GitHub", "More projects and source code:"),
+    ])
+    _link_label(scroll, _GITHUB_PROFILE_URL)
 
     ctk.CTkButton(
         outer, text="Close", width=100, height=32,
