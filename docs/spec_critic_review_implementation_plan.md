@@ -869,6 +869,32 @@ and a separate required CI job. Revisit on a report-initialization defect the sy
 **Acceptance:** malformed shipped JavaScript or a missing required tool fails CI; production report
 bytes are unchanged.
 
+#### 6.1 Implementation status — landed
+
+`tests/test_html_report_javascript.py` (20 tests) and Node pinned in `.github/workflows/tests.yml`
+with `SPEC_CRITIC_REQUIRE_HTML_TEST_TOOLS=1`. Production report bytes are unchanged — the module only
+reads what the exporter wrote.
+
+Both halves of the acceptance criterion were demonstrated rather than assumed:
+
+- **Malformed shipped JavaScript fails.** Three mutations of the exporter's emission — the script
+  truncated mid-function (the shape a real regression takes), an unbalanced brace, and a stray
+  keyword — each turn the suite red.
+- **A missing required tool fails.** Running the module with the flag set and `node` off `PATH`
+  produces 8 failures, not skips. Without the flag the same condition skips, which is the right
+  default for a contributor.
+
+Two things the module pins beyond the letter of §6, because a syntax check that parses the wrong
+bytes proves nothing: the `application/json` payload is never captured as code (asserted, not left to
+the regex's shape), and the CSP hash covers the same bytes that were parsed — otherwise a report could
+ship a script that parses but is blocked by its own CSP.
+
+**Stated limits.** `node --check` is a parse, not an execution, and Node's CommonJS sloppy mode is the
+closest available match to a classic browser `<script>` rather than an identical one — a top-level
+`return` would pass here and fail in a browser. Both are recorded in the module docstring so a future
+reader does not over-trust a green run. The deferred headless-Chromium smoke (WP5.2) is what would
+close them.
+
 ---
 
 ## 7. Step 4 — Bounded redaction and cache-accounting corrections
