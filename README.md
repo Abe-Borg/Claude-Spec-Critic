@@ -234,6 +234,27 @@ Three limits to keep in mind before citing any of these as a quality result:
 - **Live capture runs on the California cycle only** (`evals/live_capture.py` pins
   `CALIFORNIA_2025`), so these fixtures say nothing about data-center module behavior.
 
+**Data-center applicability scenarios.** `evals/dc_applicability.py` covers what the live
+fixtures cannot: whether the data-center modules handle a governing code edition correctly when
+the project's jurisdiction differs from the modules' national pins. The modules pin a 2024
+IBC/IFC basis with NFPA 13-2022 and ASCE 7-22 — all marked `UNVERIFIED` — while the two largest
+hyperscale markets are both on a 2021 IBC base (Virginia's 2021 USBC, and the 2024 Ohio Building
+Code, which despite its name is based on the 2021 IBC), which references NFPA 13-2019 and
+ASCE 7-16. Every adoption fact is cited to a state code agency or the model code itself, never to
+this repository's own pins.
+
+The set is a **specification, not a measurement**: it defines seven scenarios, what correct
+behavior is for each, what goes wrong today, and how to judge a future run — including the
+inversion case where a *correct* finding that defers to local adoption is discarded by
+verification. It runs no model and makes no claim about model behavior; a billed comparison needs
+its own authorization with a dataset, cost ceiling and stopping rule agreed in advance.
+
+Two contracts keep the criteria honest. Each scenario records what the deterministic pre-screen
+emits for its excerpt **observed by running it**, and the tests re-run the real detector — so a
+criterion about the pre-screen can never be one no input could trigger. And because verification
+only runs on findings, a scenario expecting no finding may not also expect a verdict; the ones
+that expect silence say so explicitly rather than carrying an unreachable expectation.
+
 ## Further Reading
 
 - **`CLAUDE.md`** — Engineering reference: source layout, module-level invariants, verification routing tables, feature flag table, test conventions.

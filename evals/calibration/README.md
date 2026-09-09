@@ -287,9 +287,11 @@ out to be correct in every resolved case; these are hand-seeded, unambiguous
 defects, not hard cases.
 
 Live capture pins `CALIFORNIA_2025` (`evals/live_capture.py`), so none of
-these fixtures say anything about data-center module behavior. A separate
-data-center applicability set is tracked as step 1 of
-`docs/spec_critic_review_implementation_plan.md`.
+these fixtures say anything about data-center module behavior. The separate
+data-center applicability set now lives in `evals/dc_applicability.py` — a
+specification of what the step-2 edition-authority change must be judged
+against, written before any model output is reviewed. It defines scenarios and
+criteria only; it runs nothing and measures nothing.
 
 ## Future enhancements (out of Chunk 1 scope)
 
