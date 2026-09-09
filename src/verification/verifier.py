@@ -657,6 +657,37 @@ def _pinned_standards_lines(
     return lines
 
 
+def _base_code_assumption_lines(module: ReviewModule) -> list[str]:
+    """Qualify the module's base codes and seismic anchor, or ``[]``.
+
+    ``edition_summary_lines`` covers ``cycle.standards`` only — the NFPA/ASHRAE
+    list. The base codes and ASCE anchor render from the module's own
+    ``verifier_system_code_basis_lines`` and were left untouched by the
+    standards-block correction, so a module could disclaim its NFPA editions
+    while the line directly above still announced "Current code basis: IBC
+    2024, IFC 2024, ASCE 7-22."
+
+    That is the half the applicability scenarios actually turn on: an adopted
+    2021 IBC in Virginia, ASCE 7-16, a 2024 Ohio code built on the 2021 IBC.
+    Worse than merely incomplete, the juxtaposition made the unqualified line
+    read as *more* authoritative by contrast with the qualified block below it.
+
+    Engine-owned rather than left to module wording: three of the four
+    data-center modules already say "model-code fallback", but relying on each
+    author to phrase it correctly is how the gap appeared in the first place.
+    """
+    if not getattr(module, "project_profile_enabled", False):
+        return []
+    return [
+        "",
+        "Those base-code and seismic editions are reference assumptions on the",
+        "same footing as the standards below — this module spans jurisdictions",
+        "that adopt different editions on different schedules, and which one",
+        "governs this project is not established here. A specification citing a",
+        "different edition is not wrong for differing from them.",
+    ]
+
+
 def _reference_assumption_standards_lines(
     cycle: CodeCycle, entries: list[str]
 ) -> list[str]:
@@ -785,6 +816,7 @@ def _get_verification_system_prompt(
         *module.verifier_system_code_basis_lines.format(
             **code_basis_format_kwargs(cycle)
         ).splitlines(),
+        *_base_code_assumption_lines(module),
         "",
         *_pinned_standards_lines(cycle, module=module),
         "</code_basis>",

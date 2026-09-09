@@ -113,6 +113,69 @@ class TestVerifierPromptAuthority:
         )
 
 
+class TestBaseCodesAndSeismicAreAlsoQualified:
+    """The half the applicability scenarios actually turn on.
+
+    ``edition_summary_lines`` covers ``cycle.standards`` only — the NFPA list.
+    The base codes and ASCE anchor render from the module's own code-basis
+    slot, so the first pass disclaimed NFPA editions while the line directly
+    above still announced "Current code basis: IBC 2024, IFC 2024, ASCE 7-22".
+    Every core scenario turns on exactly those: an adopted 2021 IBC in
+    Virginia, ASCE 7-16, a 2024 Ohio code built on the 2021 IBC.
+
+    The juxtaposition was worse than incomplete — an unqualified line sitting
+    above a carefully qualified block reads as *more* authoritative by
+    contrast.
+    """
+
+    def _system_prompt(self, module_id: str) -> str:
+        from src.verification.verifier import _get_verification_system_prompt
+
+        return _get_verification_system_prompt(get_module(module_id).cycle)
+
+    @pytest.mark.parametrize(
+        "module_id",
+        sorted(m for m, mod in AVAILABLE_MODULES.items() if mod.project_profile_enabled),
+    )
+    def test_the_base_codes_are_qualified_too(self, module_id):
+        text = self._system_prompt(module_id)
+        assert "base-code and seismic editions are reference assumptions" in text
+
+    @pytest.mark.parametrize(
+        "module_id",
+        sorted(m for m, mod in AVAILABLE_MODULES.items() if mod.project_profile_enabled),
+    )
+    def test_no_module_declares_a_current_code_basis(self, module_id):
+        """"Current code basis" asserts something unknown on these modules.
+
+        Engine-guarded above, but the module wording is fixed too: three of the
+        four already said "fallback", and relying on each author to phrase it
+        correctly is how this gap appeared.
+        """
+        module = get_module(module_id)
+        for slot in (
+            module.verifier_system_code_basis_lines,
+            module.verifier_user_code_basis_lines,
+            module.review_user_code_basis_line,
+            module.cross_check_code_basis_line,
+        ):
+            assert "Current code basis" not in slot, module_id
+
+    def test_california_declares_its_basis_unchanged(self):
+        text = self._system_prompt("california_k12_mep")
+        assert "base-code and seismic editions are reference assumptions" not in text
+
+    def test_the_qualification_names_the_multi_jurisdiction_reason(self):
+        text = self._system_prompt("datacenter_fire")
+        assert "spans jurisdictions" in text
+        assert "not wrong for differing from them" in text
+
+    def test_the_editions_are_still_stated(self):
+        """Qualifying them must not remove them."""
+        text = self._system_prompt("datacenter_fire")
+        assert "IBC 2024" in text and "ASCE 7-22" in text
+
+
 class TestPreScreenSuppression:
     def test_a_location_aware_run_surfaces_no_stale_cycle_alert(self):
         result = preprocess_spec(

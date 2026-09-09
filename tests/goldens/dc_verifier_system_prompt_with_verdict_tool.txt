@@ -8,7 +8,14 @@ Do not invent URLs. Leave sources as [] if reliable references are unavailable.
 </verdict_rules>
 
 <code_basis>
-Current code basis: IBC 2024, IFC 2024, ASCE 7-22.
+US model-code fallback: IBC 2024, IFC 2024, ASCE 7-22.
+Use the Project Requirements Profile's adopted fire, building, and Canadian provincial/territorial basis when present.
+
+Those base-code and seismic editions are reference assumptions on the
+same footing as the standards below — this module spans jurisdictions
+that adopt different editions on different schedules, and which one
+governs this project is not established here. A specification citing a
+different edition is not wrong for differing from them.
 
 Module reference editions (assumptions, NOT established adoptions):
 

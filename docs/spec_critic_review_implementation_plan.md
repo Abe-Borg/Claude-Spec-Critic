@@ -508,6 +508,11 @@ Active now, on `project_profile_enabled` modules only:
 - **Pre-screen** — stale-cycle detection suppressed (§5.2 / §5.2.1's intended default). It lands in
   the same change as the prompt, per §5.2's coupling requirement, and `TestSurfacesAgree` asserts the
   two are true for exactly the same modules so they cannot drift apart.
+- **Base codes and seismic anchor** — `_base_code_assumption_lines` qualifies them on the same
+  footing as the standards. `edition_summary_lines` covers `cycle.standards` only, so the first pass
+  disclaimed the NFPA list while the line above still declared a current I-code/ASCE basis — which is
+  what every core scenario turns on. Engine-owned so module wording cannot reopen it;
+  `datacenter_fire`'s slots were corrected to match its siblings.
 - **Review prompt** — the engine's standards clause marks provenance
   ("Module reference editions (assumptions, not confirmed adoptions for this project)"). The module's
   category #2 deference rule is untouched, as §5.2 requires; the DC templates already framed
@@ -523,9 +528,17 @@ the same defect class in smaller form. It is narrower there — Title 24 is one 
 and the confirmed pins were checked against a real adoption table — but it is not zero, and it is
 recorded here rather than left implicit.
 
-**Golden blast radius**, as §3.2 requires it be recorded: exactly five DC goldens changed
-(`dc_verifier_system_prompt_{with,without}_verdict_tool.txt`, `dc_preprocessor_alerts.json`,
-`dc_reviewer_user_message_{plain,full}.txt`). No California golden moved.
+**Golden blast radius**, as §3.2 requires it be recorded: **nine** DC goldens, **zero** California
+ones — the verifier system and user prompts (both verdict-tool variants), the reviewer user messages
+(plain and full), the cross-check and compliance system prompts, and the preprocessor alerts.
+
+The cross-check and compliance prompts are **wider than the three surfaces §5.2 names**, and that is
+deliberate rather than drift. `datacenter_fire` declared "Current code basis: IBC …, IFC …, ASCE …"
+in four module slots, and those slots feed the review, cross-check, compliance and verifier prompts
+alike. Correcting only the verifier's would leave cross-check still asserting a current basis while
+the verifier called the same editions assumptions — a new inconsistency between stages, which is the
+failure §5.2's coupling rule exists to prevent. The wording is corrected once, in the module, and
+every surface that reads it follows.
 
 **The applicability scenarios gained a second measurement.** `observed_detector_alerts` records the
 *raw* detector and `observed_pipeline_alerts` records what a run actually surfaces. They now differ —
