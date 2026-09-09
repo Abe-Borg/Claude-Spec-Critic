@@ -184,6 +184,12 @@ class DCScenario:
     #: step 2 has to change; it is recorded now so the bar cannot drift.
     failure_mode_today: str
     judging_criteria: tuple[str, ...]
+    #: What a real ``preprocess_spec`` run SURFACES for this excerpt, which is
+    #: not the same thing. Step 2 suppresses stale-cycle detection for a
+    #: location-aware module (plan section 5.2), so the raw detector above can
+    #: fire while the pipeline emits nothing. Recording only the raw output
+    #: would let a scenario describe an alert no run ever shows.
+    observed_pipeline_alerts: tuple[str, ...] = ()
     module_pins: dict[str, str] = field(
         default_factory=lambda: {
             "base_codes": "IBC 2024 / IFC 2024",
@@ -244,8 +250,11 @@ SCENARIOS: tuple[DCScenario, ...] = (
         ),
         judging_criteria=(
             "PASS when no edition finding is raised against either citation.",
-            "PASS when the deterministic stale-cycle alert on the 2021 I-code citation "
-            "no longer fires (it fires today — see observed_detector_alerts).",
+            "PASS when no deterministic stale-cycle alert reaches the review request "
+            "for the 2021 I-code citation. Step 2 suppresses the detector for this "
+            "module, so observed_pipeline_alerts is empty while the raw detector in "
+            "observed_detector_alerts still fires — the raw record is what keeps this "
+            "criterion from going vacuous if the vocabulary ever stops matching.",
             "FAIL if any surface proposes 2024 IBC or NFPA 13-2022 as the governing edition.",
             "A REPORT_ONLY note observing that the module pin differs, while naming the "
             "Virginia adoption, is acceptable but not required.",

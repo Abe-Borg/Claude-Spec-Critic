@@ -614,7 +614,9 @@ def _build_verification_prompt(
     )
 
 
-def _pinned_standards_lines(cycle: CodeCycle) -> list[str]:
+def _pinned_standards_lines(
+    cycle: CodeCycle, *, module: ReviewModule | None = None
+) -> list[str]:
     """Render the "Pinned standards editions" block for the verifier prompt.
 
     The California 2025 cycle pins specific
@@ -632,6 +634,11 @@ def _pinned_standards_lines(cycle: CodeCycle) -> list[str]:
     entries = cycle.edition_summary_lines()
     if not entries:
         return []
+
+    owning = module if module is not None else module_for_cycle(cycle)
+    if getattr(owning, "project_profile_enabled", False):
+        return _reference_assumption_standards_lines(cycle, entries)
+
     lines: list[str] = [
         "Pinned standards editions for this cycle:",
         "",
@@ -648,6 +655,74 @@ def _pinned_standards_lines(cycle: CodeCycle) -> list[str]:
         ]
     )
     return lines
+
+
+def _reference_assumption_standards_lines(
+    cycle: CodeCycle, entries: list[str]
+) -> list[str]:
+    """The pinned-standards block for a location-aware module.
+
+    The authoritative wording above is defensible where the pins were confirmed
+    against a single jurisdiction's published adoption table — California's
+    were. It is not defensible on a module that spans many jurisdictions and
+    whose pins carry ``UNVERIFIED`` provenance: there, "treat the pinned edition
+    as authoritative" turns a marked guess into an authority, and a *correct*
+    finding deferring to what a jurisdiction actually adopted gets disputed on
+    the strength of it. That inversion is the defect this replaces
+    (implementation plan section 2.1).
+
+    The replacement must not invert the bias either. A researched adoption
+    claim is also a claim, and the newest published edition is not
+    automatically the governing one — an older edition a jurisdiction actually
+    adopted governs over a newer one it has not. Evidence decides; where
+    evidence is absent, UNVERIFIED is the honest verdict.
+    """
+    unconfirmed = {
+        std.name
+        for std in cycle.standards
+        if std.edition and str(std.source or "").strip().upper().startswith("UNVERIFIED")
+    }
+    marked: list[str] = []
+    for line in entries:
+        name = line[2:].split(":", 1)[0].strip() if line.startswith("- ") else ""
+        suffix = "  [provenance: not confirmed]" if name in unconfirmed else ""
+        marked.append(f"{line}{suffix}")
+
+    total = len([s for s in cycle.standards if s.edition])
+    if unconfirmed:
+        provenance_note = (
+            f"{len(unconfirmed)} of {total} have not been confirmed against an "
+            "adopting jurisdiction and are marked above."
+        )
+    else:
+        provenance_note = (
+            "Their provenance is recorded, but adoption for THIS project is "
+            "still unestablished."
+        )
+
+    return [
+        "Module reference editions (assumptions, NOT established adoptions):",
+        "",
+        *marked,
+        "",
+        *textwrap.wrap(
+            "These are the module's own reference set, not the editions this "
+            "project's jurisdiction is known to have adopted. " + provenance_note,
+            width=72,
+        ),
+        "",
+        "- Do NOT treat a listed edition as authoritative. It is a starting",
+        "  point for a search, never a finding on its own.",
+        "- Do NOT treat a newer published edition as automatically correct",
+        "  either. An older edition a jurisdiction actually adopted governs",
+        "  over a newer one it has not.",
+        "- A spec citing an edition that differs from the list is NOT by itself",
+        "  an error. Establish which edition the governing jurisdiction adopted",
+        "  before rendering CONFIRMED or CORRECTED.",
+        "- If you cannot establish the adopted edition from sources you actually",
+        "  retrieved, return UNVERIFIED and say what you could not establish.",
+        "",
+    ]
 
 
 def _fetch_priority_lines(module: ReviewModule) -> list[str]:
@@ -711,7 +786,7 @@ def _get_verification_system_prompt(
             **code_basis_format_kwargs(cycle)
         ).splitlines(),
         "",
-        *_pinned_standards_lines(cycle),
+        *_pinned_standards_lines(cycle, module=module),
         "</code_basis>",
         "",
         "<search_policy>",

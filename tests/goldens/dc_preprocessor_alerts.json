@@ -1,36 +1,5 @@
 {
-  "code_cycle_alerts": [
-    {
-      "context": "1.01 SUMMARY  A. Provide fire-suppression work per 2018 IBC Chapter 9 and brace piping per ASCE 7-10.  B. The building",
-      "deterministic_rule": "stale_code_cycle",
-      "expected_year": "2024",
-      "filename": "21 13 13 - Wet-Pipe Sprinkler Systems.docx",
-      "found_year": "2018",
-      "match": "2018 IBC",
-      "position": 51,
-      "type": "Stale code cycle reference (2018 vs selected 2024)"
-    },
-    {
-      "context": "andpipe systems.  D. Provide protection consistent with the 2015 International Building Code where referenced.  E. Contractor shall document LEED-NC cre",
-      "deterministic_rule": "stale_code_cycle",
-      "expected_year": "2024",
-      "filename": "21 13 13 - Wet-Pipe Sprinkler Systems.docx",
-      "found_year": "2015",
-      "match": "2015 International Building Code",
-      "position": 268,
-      "type": "Stale code cycle reference (2015 vs selected 2024)"
-    },
-    {
-      "context": "uppression work per 2018 IBC Chapter 9 and brace piping per ASCE 7-10.  B. The building was previously permitted under the 2021 I",
-      "deterministic_rule": "stale_asce7",
-      "expected_edition": "7-22",
-      "filename": "21 13 13 - Wet-Pipe Sprinkler Systems.docx",
-      "found_edition": "7-10",
-      "match": "ASCE 7-10",
-      "position": 91,
-      "type": "Stale ASCE 7 edition (7-10 vs selected 7-22)"
-    }
-  ],
+  "code_cycle_alerts": [],
   "duplicate_paragraph_alerts": [
     {
       "context": "Provide seismic bracing for all suspended sprinkler piping in accordance with the approved structural details and project drawings.",

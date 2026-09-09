@@ -173,6 +173,27 @@ def _standards_fingerprint(cycle) -> str:
     return _digest(rendered)
 
 
+#: Bumped when the verifier's edition-authority wording changes again, so
+#: verdicts rendered under the superseded wording are never reused.
+BASIS_POLICY_NAMESPACE = "bp1"
+
+
+def _basis_policy_namespace(cycle: CodeCycle) -> str:
+    """``BASIS_POLICY_NAMESPACE`` for a location-aware module, else ``""``.
+
+    Empty for California, whose verifier wording is unchanged — its keys stay
+    byte-identical and its entries stay warm. The lookup degrades to ``""`` on
+    any resolution failure: a cache key must never be the thing that raises.
+    """
+    try:
+        from ..modules import module_for_cycle
+
+        module = module_for_cycle(cycle)
+    except Exception:  # pragma: no cover - defensive; keys must not raise
+        return ""
+    return BASIS_POLICY_NAMESPACE if getattr(module, "project_profile_enabled", False) else ""
+
+
 def make_cache_key(
     finding, *, cycle: CodeCycle, jurisdiction_fingerprint: str | None = None
 ) -> str:
@@ -202,6 +223,17 @@ def make_cache_key(
     a profile the key shape is byte-identical to the five-segment format (no
     ``_no_loc`` sentinel), so every existing CA cache entry stays warm and no
     schema bump is needed: profile-present keys are simply new keys.
+
+    The **basis-policy namespace** (implementation plan section 5.11) is
+    appended for a module whose verifier prompt no longer presents pinned
+    editions as authoritative. Those verdicts answer a *different question*
+    from the ones cached under the old wording — a verdict that disputed an
+    adoption-deferring finding because the pin was authoritative must not
+    replay now that it is not — so they need their own namespace. It is
+    derived from the cycle here rather than threaded as a parameter
+    deliberately: the key is already a pure function of the cycle, and a
+    parameter would have to reach three call sites plus every ``get``/``put``
+    caller, where one missed site silently replays a stale verdict.
     """
     code_ref = _normalize(getattr(finding, "codeReference", "")) or "_no_ref"
     action = _normalize(getattr(finding, "actionType", "")) or "_no_action"
@@ -211,6 +243,9 @@ def make_cache_key(
     key = f"{cycle_label}|{std_fp}|{action}|{code_ref}|{_digest(claim)}"
     if jurisdiction_fingerprint:
         key = f"{key}|{jurisdiction_fingerprint}"
+    namespace = _basis_policy_namespace(cycle)
+    if namespace:
+        key = f"{key}|{namespace}"
     return key
 
 

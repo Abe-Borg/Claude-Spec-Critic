@@ -494,6 +494,43 @@ it. It now matches on the AST — a reference, attribute, parameter, keyword arg
 string as a key — which prose cannot produce and every real access shape does. All five access shapes
 were confirmed to still fire it, and a prose-only mention was confirmed not to.
 
+#### 5.3.2 Implementation status — the provenance-only correction has landed
+
+Step 2c delivers §5.11's **provenance-only correction** only. The **researched-context expansion**
+is not implemented and is deliberately still gated: no prompt renders the basis's facts and its
+fingerprint is not in the cache key.
+
+Active now, on `project_profile_enabled` modules only:
+
+- **Verifier prompt** — `verifier._reference_assumption_standards_lines` replaces "treat the pinned
+  edition as authoritative for the cycle" with the §5.5 rules, including the explicit
+  don't-invert guard (a newer publication is not automatically the governing edition).
+- **Pre-screen** — stale-cycle detection suppressed (§5.2 / §5.2.1's intended default). It lands in
+  the same change as the prompt, per §5.2's coupling requirement, and `TestSurfacesAgree` asserts the
+  two are true for exactly the same modules so they cannot drift apart.
+- **Cache namespace** — `BASIS_POLICY_NAMESPACE = "bp1"`, appended for the affected modules. Verdicts
+  under the superseded wording answer a different question and must not replay. Derived from the
+  cycle inside `make_cache_key`, not threaded as a parameter, because a parameter would have to reach
+  three call sites plus every `get`/`put` caller and one missed site replays a stale verdict silently.
+
+**Known scoped-out gap.** §3.2 forbids applying the rewrite to California as a side effect, so
+California keeps the authoritative wording even though **8 of its 15 pins are `UNVERIFIED`**. That is
+the same defect class in smaller form. It is narrower there — Title 24 is one statewide jurisdiction
+and the confirmed pins were checked against a real adoption table — but it is not zero, and it is
+recorded here rather than left implicit.
+
+**Golden blast radius**, as §3.2 requires it be recorded: exactly three DC goldens changed
+(`dc_verifier_system_prompt_{with,without}_verdict_tool.txt`, `dc_preprocessor_alerts.json`). No
+California golden moved.
+
+**The applicability scenarios gained a second measurement.** `observed_detector_alerts` records the
+*raw* detector and `observed_pipeline_alerts` records what a run actually surfaces. They now differ —
+the detector fires, the pipeline emits nothing — and both are executed by the tests. Recording only
+the raw output would have let a scenario describe an alert no run ever shows; recording only the
+pipeline output would have made the pre-screen criteria vacuous the moment suppression landed.
+
+Nine mutations across the three surfaces and the namespace, all confirmed to fail the suite.
+
 ### 5.4 Construction, selection, and trust rules
 
 1. Build once after research and before review submission or worker startup. A profile-less DC run

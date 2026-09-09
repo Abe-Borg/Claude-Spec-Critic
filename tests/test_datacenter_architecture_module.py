@@ -188,11 +188,26 @@ def test_preprocessor_uses_architecture_vocabulary_when_cycle_is_bound(
     )
 
     assert result.leed_alerts == []
-    assert any(alert["found_year"] == "2018" for alert in result.code_cycle_alerts)
     assert any(
         alert["found_year"] == "2019"
         for alert in result.invalid_code_cycle_alerts
     )
+    # Suppressed in the pipeline (plan section 5.2): a 2018-IBC citation may be
+    # this project's governing adoption, and the detector cannot know.
+    assert result.code_cycle_alerts == []
+
+    # Stale-cycle detection is suppressed for this module in the pipeline
+    # (plan section 5.2), so the vocabulary is exercised against the
+    # detector directly — through preprocess_spec the assertion would be
+    # vacuously true and would stop testing the vocabulary at all.
+    from src.input.preprocessor import detect_stale_code_cycle_references
+
+    raw = detect_stale_code_cycle_references(
+        "The project pursues LEED Gold. Comply with 2018 IBC and 2019 IECC.",
+        "07 00 00 Enclosure.docx",
+        module.cycle,
+    )
+    assert any(alert["found_year"] == "2018" for alert in raw)
 
 
 @pytest.mark.parametrize(
