@@ -249,6 +249,12 @@ inversion case where a *correct* finding that defers to local adoption is discar
 verification. It runs no model and makes no claim about model behavior; a billed comparison needs
 its own authorization with a dataset, cost ceiling and stopping rule agreed in advance.
 
+Two contracts keep the criteria honest. Each scenario records what the deterministic pre-screen
+emits for its excerpt **observed by running it**, and the tests re-run the real detector — so a
+criterion about the pre-screen can never be one no input could trigger. And because verification
+only runs on findings, a scenario expecting no finding may not also expect a verdict; the ones
+that expect silence say so explicitly rather than carrying an unreachable expectation.
+
 ## Further Reading
 
 - **`CLAUDE.md`** — Engineering reference: source layout, module-level invariants, verification routing tables, feature flag table, test conventions.

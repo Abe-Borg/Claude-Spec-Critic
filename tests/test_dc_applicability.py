@@ -21,6 +21,7 @@ from pathlib import Path
 
 from evals.dc_applicability import (
     EVALUATION_PROTOCOL,
+    NOT_APPLICABLE,
     REQUIRED_DIMENSIONS,
     SCENARIOS,
     validate_scenarios,
@@ -168,6 +169,90 @@ class TestRealCodeTripwires:
             "verification now reads project_context — revisit "
             "dc_inversion_correct_finding_discarded.failure_mode_today"
         )
+
+
+class TestObservedDetectorBehaviour:
+    """Every pre-screen claim is executed, not asserted.
+
+    A criterion about the deterministic detector is worthless if no input in
+    the scenario can trigger it — step 2 would "pass" the pre-screen without
+    touching it. So each scenario records what the real detector emits for its
+    excerpt today, and this class re-runs the detector to keep that honest.
+    """
+
+    def _detector(self):
+        from src.input.preprocessor import detect_stale_code_cycle_references
+        from src.modules.registry import get_module
+
+        cycle = get_module("datacenter_fire").cycle
+        return lambda text: tuple(
+            a.get("deterministic_rule")
+            for a in detect_stale_code_cycle_references(text, "21 13 13 - Sprinklers.docx", cycle)
+        )
+
+    def test_recorded_detector_output_matches_the_real_detector(self):
+        run = self._detector()
+        for s in SCENARIOS:
+            assert run(s.spec_excerpt) == s.observed_detector_alerts, (
+                f"{s.scenario_id}: recorded observed_detector_alerts is stale. If step 2 "
+                "changed the pre-screen, update the record and re-read the scenario's "
+                "failure_mode_today and judging_criteria."
+            )
+
+    def test_a_detector_criterion_implies_a_detector_that_actually_fires(self):
+        """No scenario may claim a pre-screen fix it cannot demonstrate.
+
+        The NFPA-only excerpts this set originally used could never trigger the
+        detector at all — the data-center vocabulary scans IBC/IFC/IEBC/IFGC and
+        ASCE, never NFPA editions — so the criterion was vacuous.
+        """
+        for s in SCENARIOS:
+            mentions_detector = any(
+                "stale-cycle alert" in c or "stale_asce7" in c for c in s.judging_criteria
+            )
+            if mentions_detector:
+                assert s.observed_detector_alerts, (
+                    f"{s.scenario_id}: claims a detector outcome but its excerpt "
+                    "produces no alerts, so the criterion can never be exercised"
+                )
+
+    def test_at_least_one_scenario_exercises_each_detector_rule(self):
+        seen = {rule for s in SCENARIOS for rule in s.observed_detector_alerts}
+        assert "stale_code_cycle" in seen
+        assert "stale_asce7" in seen
+
+
+class TestFindingExpectationContract:
+    """Verification only runs on findings.
+
+    A scenario expecting no finding cannot also expect a verdict: a scorer
+    honouring that would fail a correct silent review, and one ignoring it
+    would make the comparison ambiguous.
+    """
+
+    def test_no_finding_means_no_verdict_expectation(self):
+        for s in SCENARIOS:
+            if s.finding_expectation == "none":
+                assert not s.expected_review_finding.strip(), s.scenario_id
+                assert s.expected_verdict.startswith(NOT_APPLICABLE), s.scenario_id
+                assert s.expected_status.startswith(NOT_APPLICABLE), s.scenario_id
+
+    def test_required_findings_carry_real_verdicts(self):
+        for s in SCENARIOS:
+            if s.finding_expectation == "required":
+                assert s.expected_review_finding.strip(), s.scenario_id
+                assert not s.expected_verdict.startswith(NOT_APPLICABLE), s.scenario_id
+                assert not s.expected_status.startswith(NOT_APPLICABLE), s.scenario_id
+
+    def test_optional_findings_say_what_silence_scores_as(self):
+        for s in SCENARIOS:
+            if s.finding_expectation == "optional":
+                joined = " ".join(s.judging_criteria).lower()
+                assert "no finding" in joined, s.scenario_id
+
+    def test_every_scenario_declares_an_expectation(self):
+        for s in SCENARIOS:
+            assert s.finding_expectation in {"none", "optional", "required"}, s.scenario_id
 
 
 class TestProtocolHonesty:

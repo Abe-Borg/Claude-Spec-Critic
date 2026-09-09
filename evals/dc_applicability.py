@@ -61,6 +61,11 @@ REQUIRED_DIMENSIONS: frozenset[str] = frozenset(
 
 _RESEARCH_STATES = frozenset({"available", "partial", "unavailable", "conflicting"})
 
+_FINDING_EXPECTATIONS = frozenset({"none", "optional", "required"})
+
+#: Marker used in verdict/status when no finding is expected.
+NOT_APPLICABLE = "N/A"
+
 
 # --------------------------------------------------------------------------
 # Externally sourced adoption facts
@@ -155,12 +160,26 @@ class DCScenario:
     research_state: str
     spec_excerpt: str
     adoption: AdoptionFact | None
-    #: What a correct review pass should produce. "" means "no finding at all"
-    #: — a scenario where the correct behaviour is silence.
+    #: Whether a finding is expected at all. Verification only runs on
+    #: findings, so this governs whether the verdict/status fields mean
+    #: anything: ``none`` requires them to be N/A (a scorer that checked a
+    #: verdict here would fail a correct silent review), ``required`` requires
+    #: real values, and ``optional`` requires the criteria to say what happens
+    #: in both branches.
+    finding_expectation: str
+    #: What a correct review pass should produce. Empty when
+    #: ``finding_expectation`` is ``none``.
     expected_review_finding: str
     #: What a correct verification pass should conclude about that finding.
+    #: ``"N/A"`` when no finding is expected.
     expected_verdict: str
     expected_status: str
+    #: What the deterministic stale-cycle detector emits for ``spec_excerpt``
+    #: TODAY, observed by running it rather than asserted by reading it.
+    #: ``tests/test_dc_applicability.py`` re-runs the real detector and fails
+    #: when this drifts — so a criterion about the pre-screen can never be
+    #: vacuous, and step 2 changing the detector shows up here.
+    observed_detector_alerts: tuple[str, ...]
     #: What the pipeline does today, and why it is wrong. This is the thing
     #: step 2 has to change; it is recorded now so the bar cannot drift.
     failure_mode_today: str
@@ -194,41 +213,51 @@ SCENARIOS: tuple[DCScenario, ...] = (
         scenario_id="dc_va_correct_older_edition",
         dimension="differing_local_adoption",
         summary=(
-            "A Loudoun County spec correctly cites NFPA 13-2019, the edition the "
-            "2021 Virginia USBC actually references. The module pins NFPA 13-2022."
+            "A Loudoun County spec correctly cites its governing 2021 I-code base and "
+            "NFPA 13-2019, the edition that base references. The module pins the 2024 "
+            "IBC and NFPA 13-2022."
         ),
         project=_VA_PROJECT,
         module_id="datacenter_fire",
         research_state="available",
         spec_excerpt=(
-            "A. Automatic sprinkler systems shall be designed and installed in "
+            "A. Comply with the 2021 Virginia Construction Code, based on the 2021 "
+            "International Building Code.\n"
+            "B. Automatic sprinkler systems shall be designed and installed in "
             "accordance with NFPA 13-2019."
         ),
         adoption=VIRGINIA,
+        finding_expectation="none",
         expected_review_finding="",
-        expected_verdict="N/A — no finding should be raised",
-        expected_status="N/A",
+        expected_verdict=NOT_APPLICABLE + " — no finding should be raised",
+        expected_status=NOT_APPLICABLE,
+        observed_detector_alerts=("stale_code_cycle",),
         failure_mode_today=(
-            "The spec is correct, but the module pins NFPA 13-2022 and the deterministic "
-            "stale-cycle detector compares against primary_code_year 2024 with no adoption "
-            "facts. Review category #2 instructs deference where the project context names "
-            "the governing adoption, so review may stay silent; the detector cannot."
+            "Both citations are correct for this jurisdiction, and the deterministic "
+            "stale-cycle detector flags the 2021 I-code citation anyway: it compares "
+            "against cycle.primary_code_year (2024) with no adoption facts at all. "
+            "Observed by running the real detector, not asserted. The NFPA citation is "
+            "not flagged for an unrelated reason — the DC detector vocabulary scans only "
+            "IBC/IFC/IEBC/IFGC plus ASCE, never NFPA editions — which is why this "
+            "scenario carries an I-code citation: a criterion about the pre-screen that "
+            "no input can trigger would let step 2 pass without touching it."
         ),
         judging_criteria=(
-            "PASS when no edition finding is raised against NFPA 13-2019.",
-            "PASS when no deterministic stale-cycle alert fires on this citation.",
-            "FAIL if any surface proposes replacing 2019 with 2022.",
-            "A finding that merely *notes* the module pin differs, without proposing an "
-            "edit and while naming the Virginia adoption, is acceptable but not required.",
+            "PASS when no edition finding is raised against either citation.",
+            "PASS when the deterministic stale-cycle alert on the 2021 I-code citation "
+            "no longer fires (it fires today — see observed_detector_alerts).",
+            "FAIL if any surface proposes 2024 IBC or NFPA 13-2022 as the governing edition.",
+            "A REPORT_ONLY note observing that the module pin differs, while naming the "
+            "Virginia adoption, is acceptable but not required.",
         ),
     ),
     DCScenario(
         scenario_id="dc_va_asce7_prompt_example_collision",
         dimension="differing_local_adoption",
         summary=(
-            "A Loudoun County spec correctly cites ASCE 7-16 — which is the exact "
-            "pairing the review prompt's own category #2 gives as its example of a "
-            "superseded edition ('ASCE 7-16 instead of 7-22')."
+            "A Loudoun County spec correctly cites ASCE 7-16 — the exact pairing the "
+            "review prompt's own category #2 gives as its example of a superseded "
+            "edition ('ASCE 7-16 instead of 7-22')."
         ),
         project=_VA_PROJECT,
         module_id="datacenter_fire",
@@ -238,20 +267,24 @@ SCENARIOS: tuple[DCScenario, ...] = (
             "ASCE 7-16 Chapter 13."
         ),
         adoption=VIRGINIA,
+        finding_expectation="none",
         expected_review_finding="",
-        expected_verdict="N/A — no finding should be raised",
-        expected_status="N/A",
+        expected_verdict=NOT_APPLICABLE + " — no finding should be raised",
+        expected_status=NOT_APPLICABLE,
+        observed_detector_alerts=("stale_asce7",),
         failure_mode_today=(
-            "The review prompt names this precise citation as its example of staleness "
-            "while also instructing deference to project adoption. The two instructions "
-            "point opposite ways on the same string, and the example is the more concrete "
-            "signal. This is the sharpest test of whether deference actually wins."
+            "Three surfaces push the wrong way at once. The detector emits stale_asce7 "
+            "today (observed). The review prompt names this precise citation as its "
+            "example of staleness while the same sentence instructs deference to project "
+            "adoption, so its concrete example and its rule point opposite ways on one "
+            "string. The verifier has neither the adoption facts nor the deference rule."
         ),
         judging_criteria=(
             "PASS when no finding proposes ASCE 7-22 for a 2021-IBC jurisdiction.",
-            "FAIL if the finding cites the prompt's own example as its justification.",
+            "PASS when the stale_asce7 alert no longer fires for this jurisdiction.",
+            "FAIL if a finding cites the prompt's own example as its justification.",
             "Record whether the prompt example or the deference clause dominated — that "
-            "answer determines whether step 2 must change the example as well as the pins.",
+            "answer decides whether step 2 must change the example as well as the pins.",
         ),
     ),
     DCScenario(
@@ -265,23 +298,30 @@ SCENARIOS: tuple[DCScenario, ...] = (
         module_id="datacenter_fire",
         research_state="available",
         spec_excerpt=(
-            "A. Comply with the 2024 Ohio Building Code. Sprinkler systems shall be "
-            "installed per NFPA 13-2019."
+            "A. Comply with the 2024 Ohio Building Code.\n"
+            "B. Sprinkler systems shall be installed per NFPA 13-2019."
         ),
         adoption=OHIO,
+        finding_expectation="none",
         expected_review_finding="",
-        expected_verdict="N/A — no finding should be raised on the NFPA 13 edition",
-        expected_status="N/A",
+        expected_verdict=NOT_APPLICABLE + " — no finding should be raised",
+        expected_status=NOT_APPLICABLE,
+        observed_detector_alerts=(),
         failure_mode_today=(
-            "Year-matching on '2024 Ohio Building Code' agrees with the module's 2024 "
-            "basis and would wrongly license the NFPA 13-2022 pin. The correct chain runs "
-            "through the model-code base (2021 IBC), not the state code's name."
+            "This is a reasoning failure, not a detector failure — the detector is "
+            "silent here (observed, and correctly so: 'Ohio Building Code' is not an "
+            "I-code abbreviation it scans). The risk is that year-matching on '2024 Ohio "
+            "Building Code' agrees with the module's 2024 basis and wrongly licenses the "
+            "NFPA 13-2022 pin. The correct chain runs through the model-code base (2021 "
+            "IBC), not the state code's name."
         ),
         judging_criteria=(
             "PASS when the NFPA 13-2019 citation is left alone.",
             "FAIL if the reasoning treats '2024 OBC' as equivalent to '2024 IBC'.",
-            "FAIL if Ohio's substantial amendments to the model codes are ignored in "
-            "favour of applying the model IBC directly.",
+            "FAIL if Ohio's substantial amendments are ignored in favour of applying the "
+            "model IBC directly.",
+            "The pre-screen is not the surface under test here; do not read a silent "
+            "detector as a pass.",
         ),
     ),
     DCScenario(
@@ -301,23 +341,26 @@ SCENARIOS: tuple[DCScenario, ...] = (
             "accordance with NFPA 13-2022."
         ),
         adoption=VIRGINIA,
+        finding_expectation="required",
         expected_review_finding=(
             "The spec cites NFPA 13-2022, but the 2021 Virginia USBC references "
             "NFPA 13-2019. Confirm the edition with the AHJ before issue."
         ),
         expected_verdict="CONFIRMED",
         expected_status="VERIFIED_SUPPORTED",
+        observed_detector_alerts=(),
         failure_mode_today=(
             "Verification receives the finding, a user_location dict and a jurisdiction "
-            "fingerprint — never the researched adoption facts (src/verification/ contains "
-            "no reference to project_context) — plus an instruction that the pinned edition "
-            "is authoritative. It can ground DISPUTED on the module pin and discard a "
-            "correct finding. DISPUTED is the verdict that tells a reviewer to throw the "
-            "finding away, so this failure is silent."
+            "fingerprint — never the researched adoption facts (src/verification/ "
+            "contains no reference to project_context) — plus an instruction that the "
+            "pinned edition is authoritative. It can ground DISPUTED on the module pin "
+            "and discard a correct finding. DISPUTED is the verdict that tells a reviewer "
+            "to throw the finding away, so this failure is silent. The detector is not "
+            "involved (observed: no alerts)."
         ),
         judging_criteria=(
             "PASS only when the correct finding SURVIVES verification.",
-            "FAIL on DISPUTED — this is the primary failure this scenario exists to detect.",
+            "FAIL on DISPUTED — the primary failure this scenario exists to detect.",
             "FAIL on CORRECTED that rewrites the finding back toward the module pin.",
             "An UNVERIFIED outcome is a partial pass: the finding survives, but the "
             "verifier could not reach the adoption facts it needed.",
@@ -337,28 +380,34 @@ SCENARIOS: tuple[DCScenario, ...] = (
         module_id="datacenter_fire",
         research_state="unavailable",
         spec_excerpt=(
-            "A. Automatic sprinkler systems shall be designed and installed in "
+            "A. Comply with the 2021 International Building Code.\n"
+            "B. Automatic sprinkler systems shall be designed and installed in "
             "accordance with NFPA 13-2019."
         ),
         adoption=None,
+        finding_expectation="optional",
         expected_review_finding=(
-            "Optional, and if raised must be explicitly provisional: the module's "
-            "reference assumption is NFPA 13-2022 (UNVERIFIED, derived from the 2024 IBC), "
-            "and the governing edition for this project has not been established."
+            "Optional. If raised it must be explicitly provisional: the module's "
+            "reference assumption is the 2024 IBC with NFPA 13-2022 (UNVERIFIED), and "
+            "the governing edition for this project has not been established."
         ),
         expected_verdict="UNVERIFIED",
         expected_status="INSUFFICIENT_EVIDENCE",
+        observed_detector_alerts=("stale_code_cycle",),
         failure_mode_today=(
             "With no jurisdiction known, a national model-code year is not a defensible "
-            "comparison target, yet the stale-cycle detector still fires against 2024 and "
-            "the verifier is still told the pin is authoritative. Section 5.2.1 of the plan "
-            "makes suppression the default here."
+            "comparison target, yet the stale-cycle detector fires against 2024 anyway "
+            "(observed) and the verifier is still told the pin is authoritative. Plan "
+            "section 5.2.1 makes suppression the default here."
         ),
         judging_criteria=(
             "PASS when no confident edition edit is proposed.",
-            "PASS when the deterministic stale-cycle detector does not fire.",
+            "PASS when the deterministic stale-cycle alert no longer fires (it fires today).",
+            "A run with no finding at all is a PASS — silence is correct when nothing can "
+            "be established.",
+            "If a finding IS raised it must be provisional and must verify to UNVERIFIED / "
+            "INSUFFICIENT_EVIDENCE; a confident EDIT is a FAIL.",
             "FAIL on any output presenting the UNVERIFIED pin as established.",
-            "A provisional, explicitly-flagged note is acceptable; a confident EDIT is not.",
         ),
     ),
     DCScenario(
@@ -366,28 +415,39 @@ SCENARIOS: tuple[DCScenario, ...] = (
         dimension="partial_research",
         summary=(
             "Research succeeds on some dimensions and fails on the one that would have "
-            "established the sprinkler-standard adoption."
+            "established the sprinkler-standard adoption. The citations in the spec are "
+            "correct; the question is whether the gap stays visible."
         ),
         project=_VA_PROJECT,
         module_id="datacenter_fire",
         research_state="partial",
         spec_excerpt=(
-            "A. Automatic sprinkler systems shall be designed and installed in "
+            "A. Comply with the 2021 Virginia Construction Code, based on the 2021 "
+            "International Building Code.\n"
+            "B. Automatic sprinkler systems shall be designed and installed in "
             "accordance with NFPA 13-2019."
         ),
         adoption=None,
+        finding_expectation="none",
         expected_review_finding="",
-        expected_verdict="UNVERIFIED",
-        expected_status="INSUFFICIENT_EVIDENCE",
+        expected_verdict=NOT_APPLICABLE + " — no finding should be raised",
+        expected_status=NOT_APPLICABLE,
+        observed_detector_alerts=("stale_code_cycle",),
         failure_mode_today=(
             "A partial profile must not read as a complete one. The failed dimension is "
-            "exactly the one that would have settled this question, so the correct "
-            "behaviour is to preserve uncertainty rather than fall back to the pin."
+            "exactly the one that would have settled the sprinkler-edition question, so "
+            "the correct behaviour is to preserve uncertainty rather than fall back to "
+            "the pin. The detector also fires on the 2021 I-code citation today "
+            "(observed). This scenario is judged on report surfaces rather than on a "
+            "verdict: with no finding raised, verification never runs."
         ),
         judging_criteria=(
-            "PASS when the missing dimension is visible in the output.",
+            "PASS when the failed dimension is visible in the report.",
+            "PASS when no edition finding is raised against the correct citations.",
             "FAIL if the module pin silently fills the gap the failed dimension left.",
             "FAIL if the report presents the research as complete.",
+            "Judge this on the Run Diagnostics research row and the requirements section, "
+            "not on a verification verdict.",
         ),
     ),
     DCScenario(
@@ -406,15 +466,18 @@ SCENARIOS: tuple[DCScenario, ...] = (
             "with FM Global Data Sheet 5-32 as required by the Owner's design standard."
         ),
         adoption=VIRGINIA,
+        finding_expectation="none",
         expected_review_finding="",
-        expected_verdict="N/A — no finding should be raised",
-        expected_status="N/A",
+        expected_verdict=NOT_APPLICABLE + " — no finding should be raised",
+        expected_status=NOT_APPLICABLE,
+        observed_detector_alerts=(),
         failure_mode_today=(
             "An owner requirement can be stricter than code without the spec being "
             "non-compliant, and a code citation cannot discharge a contractual one. "
             "Collapsing the two in either direction is an error: treating the FM Global "
-            "requirement as a code citation to verify, or treating the code citation as "
-            "satisfied because the owner standard is stricter."
+            "requirement as adopted law to verify, or treating the code citation as "
+            "satisfied because the owner standard is stricter. The detector is silent "
+            "here (observed); this is a compliance-pass and verification question."
         ),
         judging_criteria=(
             "PASS when both requirements are left standing as separate authorities.",
@@ -499,6 +562,54 @@ def validate_scenarios(scenarios: Iterable[DCScenario] = SCENARIOS) -> list[str]
             )
         if not s.judging_criteria:
             problems.append(f"{s.scenario_id}: judging_criteria must not be empty")
+
+        if s.finding_expectation not in _FINDING_EXPECTATIONS:
+            problems.append(
+                f"{s.scenario_id}: finding_expectation "
+                f"'{s.finding_expectation}' is not one of "
+                f"{sorted(_FINDING_EXPECTATIONS)}"
+            )
+        elif s.finding_expectation == "none":
+            # Verification only runs on findings. A verdict expectation with no
+            # finding to attach it to is unreachable, and a scorer honouring it
+            # would fail a correct silent review.
+            if s.expected_review_finding.strip():
+                problems.append(
+                    f"{s.scenario_id}: finding_expectation 'none' must leave "
+                    "expected_review_finding empty"
+                )
+            for label, value in (
+                ("expected_verdict", s.expected_verdict),
+                ("expected_status", s.expected_status),
+            ):
+                if not value.startswith(NOT_APPLICABLE):
+                    problems.append(
+                        f"{s.scenario_id}: {label} must be '{NOT_APPLICABLE}...' when "
+                        "no finding is expected — verification never runs, so this "
+                        "expectation would be unreachable"
+                    )
+        elif s.finding_expectation == "required":
+            if not s.expected_review_finding.strip():
+                problems.append(
+                    f"{s.scenario_id}: finding_expectation 'required' needs an "
+                    "expected_review_finding"
+                )
+            for label, value in (
+                ("expected_verdict", s.expected_verdict),
+                ("expected_status", s.expected_status),
+            ):
+                if value.startswith(NOT_APPLICABLE):
+                    problems.append(
+                        f"{s.scenario_id}: {label} must be a real value when a "
+                        "finding is required"
+                    )
+        else:  # optional
+            joined = " ".join(s.judging_criteria).lower()
+            if "no finding" not in joined:
+                problems.append(
+                    f"{s.scenario_id}: finding_expectation 'optional' must say in "
+                    "its criteria what a run with no finding scores as"
+                )
 
         # An adoption fact must be sourced outside this repository, or the
         # scenario judges the pins against themselves.
