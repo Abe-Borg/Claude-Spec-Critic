@@ -53,7 +53,7 @@ from ..orchestration.pipeline import (
     BatchSubmission,
     collect_review_batch_results,
     finalize_batch_result,
-    location_inputs_for_submission,
+    verification_inputs_for_submission,
     run_compliance_for_batch,
     run_cross_check_for_batch,
     run_drawing_impact_for_batch,
@@ -711,9 +711,11 @@ def collect_batch_results(app) -> None:
             # submission's persisted profile; (None, None) on profile-less
             # runs keeps request bytes and cache keys unchanged. Mirrored in
             # run_batch_collection_headless.
-            user_location, jurisdiction_fp = location_inputs_for_submission(
-                app._batch_submission
-            )
+            (
+                user_location,
+                jurisdiction_fp,
+                governing_basis,
+            ) = verification_inputs_for_submission(app._batch_submission)
             if review_state.truncated_specs:
                 if diag:
                     for spec_name in review_state.truncated_specs:
@@ -743,6 +745,7 @@ def collect_batch_results(app) -> None:
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
+                    governing_basis=governing_basis,
                 )
                 if diag:
                     from ..orchestration.diagnostics import bound_structured_payload
@@ -923,6 +926,7 @@ def collect_batch_results(app) -> None:
                     cache=cache,
                     user_location=user_location,
                     jurisdiction_fingerprint=jurisdiction_fp,
+                    governing_basis=governing_basis,
                 )
                 if diag:
                     diag.log("cross_check_verification", "success", "Cross-check verification complete")

@@ -154,6 +154,12 @@ When a drawing digest is attached, a final synthesis pass ("drawing-impact synth
 
 Output includes a "Jurisdiction & Client Requirements" report section and a standalone `<report-stem>.profile.json` sidecar. A profile-less run (every run under the default California module) is untouched by any of this — the flag is the switch.
 
+### Which edition governs
+
+A data-center project can sit in any US state or Canadian province, and the edition a jurisdiction has actually adopted is frequently **older** than the newest published one — an NFPA 13 or IBC edition a state adopted years ago governs there regardless of what has been published since. The module's pinned editions are therefore **fallback reference assumptions, not confirmed adoptions**, and every surface now says so: the review and verifier prompts label them that way, the verifier is told that a differing citation is not wrong merely for differing and that the newest edition is not automatically correct either, the report's methodology note tells the reader the same thing, and the stale-edition pre-screen is suppressed (a regex comparing two years cannot answer an adoption question spanning fifty jurisdictions and two countries). Verdicts reached under the previous wording are namespaced out of the cache rather than replayed.
+
+The research pass establishes what a jurisdiction actually adopted. Feeding those findings into the verifier as well — so it weighs the researched adoption against the finding rather than against a pinned guess — is implemented but **off by default**, behind `SPEC_CRITIC_GOVERNING_BASIS_CONTEXT`. It stays off until it has been measured: putting researched claims into a verification prompt changes what the verifier is asked, and the risk runs both ways (a verifier that reflexively believes a research claim over a pinned edition has the same defect facing the other way). With the variable unset, prompts and cache keys are byte-identical to the shipped behavior. The researched facts, when enabled, are labeled as claims to investigate — the research pass's own citations never count as evidence the verifier retrieved.
+
 ## Download & Install (Windows)
 
 Spec Critic ships as a normal downloadable Windows app — no server to host,

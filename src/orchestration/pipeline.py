@@ -60,6 +60,7 @@ from ..batch.batch_runtime import DEFAULT_REVIEW_POLL_POLICY, poll_batch_bounded
 from ..core.api_config import REVIEW_MODEL_DEFAULT, token_count_preflight_enabled
 from ..verification.verifier import (
     VerificationResult,
+    governing_basis_fingerprint,
     start_verification_batch,
     collect_verification_batch_results,
     prepare_findings_for_verification,
@@ -2350,19 +2351,42 @@ def run_drawing_impact_for_batch(
     return state
 
 
-def location_inputs_for_submission(submission) -> tuple[dict | None, str | None]:
-    """Derive ``(user_location, jurisdiction_fingerprint)`` from a submission.
+def verification_inputs_for_submission(
+    submission,
+) -> tuple[dict | None, str | None, dict | None]:
+    """Derive ``(user_location, jurisdiction_fingerprint, governing_basis)``.
 
-    Reads the persisted :class:`ProjectProfile` dict (WS-2). ``(None, None)``
-    for every profile-less run — the tuple then leaves the web_search tool
-    dict and the verification cache key byte-identical to today (D-9).
-    Shared by the GUI collect driver and the headless driver so the two
-    cannot disagree on how location threads into verification.
+    Reads the persisted :class:`ProjectProfile` dict (WS-2) and the run's
+    stored governing-basis snapshot. ``(None, None, None)`` for a profile-less
+    run with no basis — which leaves the web_search tool dict and the
+    verification cache key byte-identical to today (D-9). Shared by the GUI
+    collect driver and the headless driver so the two cannot disagree on what
+    threads into verification.
+
+    The three values travel as one tuple on purpose. They are the complete set
+    of run-scoped context the verification stage takes, and returning them
+    together means adding one cannot leave a driver behind: a call site that
+    is not updated fails to unpack, loudly, at the first run. The alternative
+    — a fourth parallel accessor each driver must remember to call — is the
+    shape whose failure mode is a driver silently verifying without context,
+    which is precisely the class of defect section 2.1 is about.
+
+    The basis is read whether or not a profile is present: a
+    ``project_profile_enabled`` module builds a provenance-only basis even with
+    no profile and no research (:func:`build_run_governing_basis`), and that is
+    exactly the run where the module's pins are the only thing carried.
     """
+    basis = getattr(submission, "governing_basis", None)
+    if not isinstance(basis, dict):
+        basis = None
     profile = ProjectProfile.from_dict(getattr(submission, "project_profile", None))
     if profile is None or not profile.is_complete():
-        return None, None
-    return profile.web_search_user_location(), profile.jurisdiction_fingerprint()
+        return None, None, basis
+    return (
+        profile.web_search_user_location(),
+        profile.jurisdiction_fingerprint(),
+        basis,
+    )
 
 
 def start_batch_verification(
@@ -2374,6 +2398,7 @@ def start_batch_verification(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    governing_basis: dict | None = None,
     api_call_semaphore=None,
 ) -> BatchJob | None:
     """Submit a verification batch, applying the local pre-pass first.
@@ -2388,6 +2413,7 @@ def start_batch_verification(
         cycle=cycle,
         cache=cache,
         jurisdiction_fingerprint=jurisdiction_fingerprint,
+        governing_basis=governing_basis,
         log=log,
         api_call_semaphore=api_call_semaphore,
     )
@@ -2395,7 +2421,12 @@ def start_batch_verification(
         progress(60.0, "Verification: all findings resolved locally / cached.")
         return None
     progress(60.0, f"Submitting {len(remaining)} verification requests...")
-    job = start_verification_batch(remaining, cycle=cycle, user_location=user_location)
+    job = start_verification_batch(
+        remaining,
+        cycle=cycle,
+        user_location=user_location,
+        governing_basis=governing_basis,
+    )
     job.submitted_findings = remaining
     log(f"Verification batch submitted: {job.batch_id}", level="step")
     return job
@@ -2412,6 +2443,7 @@ def collect_batch_verification_results(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    governing_basis: dict | None = None,
     api_call_semaphore=None,
 ) -> list[Finding]:
     submitted = job.submitted_findings if job.submitted_findings is not None else findings
@@ -2425,6 +2457,7 @@ def collect_batch_verification_results(
         cache=cache,
         user_location=user_location,
         jurisdiction_fingerprint=jurisdiction_fingerprint,
+        governing_basis=governing_basis,
         api_call_semaphore=api_call_semaphore,
     )
 
@@ -2439,6 +2472,7 @@ def _execute_verification_attempts(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    governing_basis: dict | None = None,
     api_call_semaphore=None,
 ) -> None:
     """Run the legacy transport attempt for each supplied finding.
@@ -2483,6 +2517,7 @@ def _execute_verification_attempts(
             cycle=cycle,
             cache=cache,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
+            governing_basis=governing_basis,
             log=log,
             api_call_semaphore=api_call_semaphore,
         )
@@ -2503,6 +2538,7 @@ def _execute_verification_attempts(
                 cache=cache,
                 user_location=user_location,
                 jurisdiction_fingerprint=jurisdiction_fingerprint,
+                governing_basis=governing_basis,
                 _trace_parent=trace_parent,
             )
             if api_call_semaphore is None:
@@ -2539,6 +2575,7 @@ def _execute_verification_attempts(
         cache=cache,
         user_location=user_location,
         jurisdiction_fingerprint=jurisdiction_fingerprint,
+        governing_basis=governing_basis,
         api_call_semaphore=api_call_semaphore,
     )
     if job is not None:
@@ -2551,6 +2588,7 @@ def _execute_verification_attempts(
             cache=cache,
             user_location=user_location,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
+            governing_basis=governing_basis,
             api_call_semaphore=api_call_semaphore,
         )
 
@@ -2684,6 +2722,7 @@ def _stamp_grounded_cache_hits(
     cache: VerificationCache,
     cycle: CodeCycle,
     jurisdiction_fingerprint: str | None,
+    basis_fingerprint: str | None,
 ) -> bool:
     """Stamp ``findings`` from one grounded entry, or leave all untouched."""
 
@@ -2693,6 +2732,7 @@ def _stamp_grounded_cache_hits(
             finding,
             cycle=cycle,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
+            basis_fingerprint=basis_fingerprint,
         )
         if cached is None:
             # Entries are never evicted during a run. Since every finding in
@@ -2715,6 +2755,7 @@ def _verify_findings_singleflight(
     cache: VerificationCache,
     user_location: dict | None,
     jurisdiction_fingerprint: str | None,
+    governing_basis: dict | None,
     api_call_semaphore,
 ) -> None:
     """Verify each cache key once; followers reuse or inherit the leader's verdict.
@@ -2738,12 +2779,20 @@ def _verify_findings_singleflight(
     """
 
     cycle = module.cycle
+    # Derived once here and threaded to every key/get in this flight: the
+    # single-flight groups, the cache-fill race checks, the follower
+    # rechecks, and the takeover path must all agree on identity, and
+    # recomputing it per site is how they would drift apart. Section 5.9's
+    # single-flight isolation then falls out for free — two findings under
+    # different bases land in different groups because their keys differ.
+    basis_fingerprint = governing_basis_fingerprint(governing_basis)
     grouped: dict[str, list[Finding]] = {}
     for finding in findings:
         key = make_cache_key(
             finding,
             cycle=cycle,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
+            basis_fingerprint=basis_fingerprint,
         )
         grouped.setdefault(key, []).append(finding)
 
@@ -2770,6 +2819,7 @@ def _verify_findings_singleflight(
             cache=cache,
             user_location=user_location,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
+            governing_basis=governing_basis,
             api_call_semaphore=api_call_semaphore,
         )
 
@@ -2797,6 +2847,7 @@ def _verify_findings_singleflight(
                     cache=cache,
                     cycle=cycle,
                     jurisdiction_fingerprint=jurisdiction_fingerprint,
+                    basis_fingerprint=basis_fingerprint,
                 ):
                     reused += len(group.findings)
                     continue
@@ -2857,6 +2908,7 @@ def _verify_findings_singleflight(
                 cache=cache,
                 cycle=cycle,
                 jurisdiction_fingerprint=jurisdiction_fingerprint,
+                basis_fingerprint=basis_fingerprint,
             ):
                 reused += len(local_followers)
             elif _shareable_verdict(leader_result):
@@ -2879,6 +2931,7 @@ def _verify_findings_singleflight(
                     cache=cache,
                     cycle=cycle,
                     jurisdiction_fingerprint=jurisdiction_fingerprint,
+                    basis_fingerprint=basis_fingerprint,
                 ):
                     reused += len(group.findings)
                     continue
@@ -2906,6 +2959,7 @@ def _verify_findings_singleflight(
                 cache=cache,
                 cycle=cycle,
                 jurisdiction_fingerprint=jurisdiction_fingerprint,
+                basis_fingerprint=basis_fingerprint,
             ):
                 reused += len(group.findings)
             else:
@@ -2950,6 +3004,7 @@ def verify_findings_for_run(
     cache: VerificationCache | None = None,
     user_location: dict | None = None,
     jurisdiction_fingerprint: str | None = None,
+    governing_basis: dict | None = None,
     api_call_semaphore=None,
 ) -> None:
     """Verify ``findings`` in place, sharing grounded work per cache key.
@@ -2978,6 +3033,7 @@ def verify_findings_for_run(
             cache=None,
             user_location=user_location,
             jurisdiction_fingerprint=jurisdiction_fingerprint,
+            governing_basis=governing_basis,
             api_call_semaphore=api_call_semaphore,
         )
         return
@@ -2990,6 +3046,7 @@ def verify_findings_for_run(
         cache=cache,
         user_location=user_location,
         jurisdiction_fingerprint=jurisdiction_fingerprint,
+        governing_basis=governing_basis,
         api_call_semaphore=api_call_semaphore,
     )
 
@@ -3234,7 +3291,9 @@ def run_batch_collection_headless(
     module = get_module(getattr(submission, "module_id", None))
     # WS-4 location-aware verification (D-9): (None, None) on every
     # profile-less run keeps request bytes and cache keys unchanged.
-    user_location, jurisdiction_fp = location_inputs_for_submission(submission)
+    user_location, jurisdiction_fp, governing_basis = verification_inputs_for_submission(
+        submission
+    )
 
     review_state = collect_review_batch_results(submission, log=log)
     transport = getattr(submission, "review_transport", "batch") or "batch"
@@ -3270,6 +3329,7 @@ def run_batch_collection_headless(
         cache=cache,
         user_location=user_location,
         jurisdiction_fingerprint=jurisdiction_fp,
+        governing_basis=governing_basis,
         # The real-time branch fans out individual synchronous verifier calls.
         # A routed program supplies one shared budget so N module collectors
         # do not each create an independent five-call pool.
@@ -3330,6 +3390,7 @@ def run_batch_collection_headless(
         cache=cache,
         user_location=user_location,
         jurisdiction_fingerprint=jurisdiction_fp,
+        governing_basis=governing_basis,
         api_call_semaphore=api_call_semaphore,
     )
     progress(95.0, "Cross-check and compliance findings verified")

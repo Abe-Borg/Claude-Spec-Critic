@@ -195,7 +195,11 @@ def _basis_policy_namespace(cycle: CodeCycle) -> str:
 
 
 def make_cache_key(
-    finding, *, cycle: CodeCycle, jurisdiction_fingerprint: str | None = None
+    finding,
+    *,
+    cycle: CodeCycle,
+    jurisdiction_fingerprint: str | None = None,
+    basis_fingerprint: str | None = None,
 ) -> str:
     """Build a stable cache key for a finding under a given code cycle.
 
@@ -234,6 +238,18 @@ def make_cache_key(
     deliberately: the key is already a pure function of the cycle, and a
     parameter would have to reach three call sites plus every ``get``/``put``
     caller, where one missed site silently replays a stale verdict.
+
+    ``basis_fingerprint`` (implementation plan section 5.9) appends a final
+    ``gb:<fp>`` segment **only when the run's governing basis was actually
+    rendered into the verifier prompt**. That "actually rendered" wording is
+    the whole contract: the fingerprint must describe the context the verifier
+    saw, not the context that happened to be available, because a verdict
+    reached *with* researched adoption facts answers a different question from
+    one reached without them. It is threaded rather than derived because the
+    basis is per-run state the cycle knows nothing about; the safety net is
+    that a caller which omits it produces the exact pre-existing key, so the
+    only reachable failure is a redundant re-verification, never a
+    basis-informed verdict replaying for a basis-less run.
     """
     code_ref = _normalize(getattr(finding, "codeReference", "")) or "_no_ref"
     action = _normalize(getattr(finding, "actionType", "")) or "_no_action"
@@ -246,6 +262,8 @@ def make_cache_key(
     namespace = _basis_policy_namespace(cycle)
     if namespace:
         key = f"{key}|{namespace}"
+    if basis_fingerprint:
+        key = f"{key}|gb:{basis_fingerprint}"
     return key
 
 
@@ -594,9 +612,13 @@ class VerificationCache:
         *,
         cycle: CodeCycle,
         jurisdiction_fingerprint: str | None = None,
+        basis_fingerprint: str | None = None,
     ) -> "VerificationResult | None":
         key = make_cache_key(
-            finding, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
+            finding,
+            cycle=cycle,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            basis_fingerprint=basis_fingerprint,
         )
         with self._lock:
             entry = self._entries.pop(key, None)
@@ -616,6 +638,7 @@ class VerificationCache:
         cycle: CodeCycle,
         result: "VerificationResult",
         jurisdiction_fingerprint: str | None = None,
+        basis_fingerprint: str | None = None,
     ) -> None:
         # Don't cache results that explicitly opted out of caching, or
         # results that came from an unsuccessful local skip path. We only
@@ -670,7 +693,10 @@ class VerificationCache:
         ):
             return
         key = make_cache_key(
-            finding, cycle=cycle, jurisdiction_fingerprint=jurisdiction_fingerprint
+            finding,
+            cycle=cycle,
+            jurisdiction_fingerprint=jurisdiction_fingerprint,
+            basis_fingerprint=basis_fingerprint,
         )
         with self._lock:
             stored = _clone_for_store(result)

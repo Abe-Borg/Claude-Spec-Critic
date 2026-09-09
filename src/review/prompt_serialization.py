@@ -86,6 +86,12 @@ TAG_HEADING = "heading"
 # instruction-prefix invariant tested by ``TestPromptCacheBreakpointSafety``
 # still holds for the spec wrapper.
 TAG_PRE_DETECTED = "pre_detected"
+# Wrapper for the run's governing basis in the verifier system prompt. The
+# body carries researched claims verbatim, and research summarizes pages the
+# web fetched — so this block is the one place untrusted external text reaches
+# a *system* prompt, the highest-trust position in the request. It is escaped
+# like any other document body; see :func:`wrap_document_block`.
+TAG_GOVERNING_BASIS = "governing_basis"
 
 
 def escape_text(value: str | None) -> str:
