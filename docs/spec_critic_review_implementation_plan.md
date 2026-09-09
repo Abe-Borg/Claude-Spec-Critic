@@ -106,9 +106,15 @@ Unchanged from revision 1. Do not include any of the following:
 
 Every row below was confirmed by reading the source at `34df26b`. Line numbers drift; relocate by symbol.
 
+**This is a snapshot taken before step 2, and several rows were deliberately made obsolete by it** —
+the verifier no longer calls a pinned edition authoritative, and verification is no longer blind to the
+adoption research (§5.3.2, §5.3.3). The rows are kept as the evidence the plan was built on, so they
+record what was true then, not what is true now; symbols are named as they existed at that revision and
+must not be updated to current names, or the anchor stops resolving against the revision it cites.
+
 | Observation | Anchor |
 |---|---|
-| `src/verification/` contains **zero** references to `project_context`. Verification receives finding fields, a `user_location` dict, and a `jurisdiction_fingerprint` — never the researched adoption facts. | `src/orchestration/pipeline.py` `verification_inputs_for_submission` |
+| `src/verification/` contains **zero** references to `project_context`. Verification receives finding fields, a `user_location` dict, and a `jurisdiction_fingerprint` — never the researched adoption facts. | `src/orchestration/pipeline.py:2283` `location_inputs_for_submission` |
 | The verifier prompt instructs the model to *"treat the pinned edition as authoritative for the cycle"* — unconditionally, for every module. | `src/verification/verifier.py:646` |
 | The DC fire module pins eleven NFPA standards against a `dc-ibc-2024` national model-code basis; **every one is marked `UNVERIFIED`**. `edition_summary_lines()` renders editions only and drops provenance. | `src/modules/datacenter_fire.py:96–180`; `src/core/code_cycles.py:178` |
 | The DC review prompt names those editions in prose with no provenance marker — but review category #2 *does* instruct deference to project adoption where the project context names it, and project context reaches review. | `src/review/prompts.py:176`; `src/modules/datacenter_fire.py:212` |
