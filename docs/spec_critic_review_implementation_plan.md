@@ -931,6 +931,33 @@ and summary reads still produce valid JSONL. Temporary directories and fabricate
 **Rollback:** one independent commit. A rollback reopens the gap; document it rather than accepting it
 silently.
 
+#### 7.1.1 Implementation status — landed
+
+`tests/test_secret_redaction.py` (65 tests) plus the three fixes. All three bypasses were **reproduced
+with live synthetic credentials before being fixed**, not inferred from reading the code:
+
+| Bypass | Reproduced | Fix |
+|---|---|---|
+| depth-6 `repr()` in both scrubbers | a secret at depth 8 reached output verbatim while the same secret at depth 0 was redacted | container → `_MAX_DEPTH_MARKER`; scalar still scrubbed |
+| `log` message unscrubbed | message leaked while `data` beside it was redacted | message scrubbed and bounded on the same terms |
+| `prompt_ref` raw text | no `scrub_data` call, and deep mode returned `{"inline": text}` raw | both paths scrub; digest computed from stored text |
+
+The scalar carve-out is deliberate: a scalar past the bound cannot recurse, so returning the marker for
+it would discard numeric telemetry and redact-able strings to solve a problem it does not have. Rule
+"retain siblings and numeric telemetry" is pinned directly, as is the bound's original purpose —
+terminating on a cyclic structure.
+
+The digest-from-stored-content requirement earns its own test. Hashing before scrubbing would leave a
+reference pointing at content that is not on disk; hashing after means a secret-free prompt scrubs to
+itself, keeps its existing hash, and neither deduplication nor any previously written reference moves.
+
+Conservative whole-value replacement is retained (C4): a credential-bearing message collapses whole and
+its diagnostic context is lost. That cost is paid only by messages that would otherwise have leaked, and
+it is pinned as intended behavior rather than tolerated silently. `redaction_count` was not touched.
+
+Eight mutations, all confirmed to fail the suite, including the digest-order inversion. No claim is made
+that existing traces are now safe: this fixes the writer only.
+
 ### 7.2 Cache-write accounting (was WP4)
 
 Accounting only. The provider contract was reconfirmed against current documentation: **five-minute

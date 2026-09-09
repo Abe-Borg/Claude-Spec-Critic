@@ -57,6 +57,16 @@ _SECRET_VALUE_PATTERNS = (
 )
 _REDACTED = "<redacted>"
 
+# Emitted in place of a container that sits past the recursion bound. It
+# replaced a bare ``repr(data)``, which defeated the whole scrubber: ``repr``
+# of a nested dict renders every value inside it verbatim, so a credential
+# seven levels down was written out in full while the identical credential one
+# level up was redacted. The bound exists to stop unbounded recursion on a
+# cyclic structure, not to license dumping the subtree — a marker keeps the
+# field visible (the reason the bound returned something at all) without
+# serializing anything it contains.
+_MAX_DEPTH_MARKER = "<max-depth-exceeded>"
+
 
 # ``VerificationResult.cache_status`` value stamped on a single-flight follower
 # that inherited its leader's clean ungrounded verdict in-process. Mirrors
@@ -233,12 +243,20 @@ def _scrub_and_bound(data: Any, *, _depth: int = 0) -> Any:
 
     ``_depth`` is bounded so a cyclic dict cannot loop forever (the
     JSON serializer would also catch this, but the early exit avoids
-    paying for it). The recursion is bounded at six levels — deeper
-    nesting is replaced with its ``repr()`` so the field is still
-    visible without escaping the bound.
+    paying for it). Past the bound, a **container** collapses to
+    ``_MAX_DEPTH_MARKER`` rather than to its ``repr()`` — the repr was a
+    credential bypass, rendering every nested value verbatim (see the
+    constant). A **scalar** past the bound is still scrubbed and bounded
+    normally: it cannot recurse, so there is nothing to protect against, and
+    dropping it would lose numeric telemetry and redact-able strings for no
+    gain.
     """
     if _depth > 6:
-        return _truncate_string(repr(data))
+        if isinstance(data, (dict, list, tuple, set)):
+            return _MAX_DEPTH_MARKER
+        if isinstance(data, str):
+            return _truncate_string(_scrub_value(data))
+        return data
     if isinstance(data, dict):
         out: dict = {}
         for key, value in data.items():
@@ -468,6 +486,16 @@ class DiagnosticsReport:
 
     @_synchronized
     def log(self, phase: str, level: str, message: str, data: Optional[dict] = None) -> None:
+        # The message is scrubbed on the same terms as the structured payload.
+        # Only ``data`` was scrubbed before, which split the two apart for no
+        # reason a caller could see: an exception rendered into the message
+        # ("Request failed: ... x-api-key: sk-ant-...") wrote the credential
+        # out in full while the identical value in ``data`` beside it was
+        # redacted. Messages are formatted from exception text and API
+        # responses, so that is the likelier of the two paths, not the
+        # exotic one. ``_truncate_string`` also applies, matching the byte
+        # bound every other string field already carried.
+        message = _truncate_string(_scrub_value(message)) if isinstance(message, str) else message
         # Cap the event list to bound memory on long-running batch polls.
         # When the cap is exceeded, drop the oldest event and remember that
         # truncation happened so the summary can flag it.
